@@ -26,52 +26,52 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 814 |
+| emitted | 842 |
 | declared | 5 |
 | tested-only | 0 |
-| catalog-only | 1257 |
+| catalog-only | 1229 |
 | total upstream codes | 2076 |
 
 ## Codes
 
 | Code | Category | Home status | Sample Home references | Upstream key |
 | --- | --- | --- | --- | --- |
-| TS1002 | err | emitted | packages/ts_driver/src/ts_driver.zig:1649<br>packages/ts_driver/src/ts_driver.zig:1707<br>packages/ts_driver/src/ts_driver.zig:3450 | Unterminated_string_literal_1002 |
+| TS1002 | err | emitted | packages/ts_driver/src/ts_driver.zig:1675<br>packages/ts_driver/src/ts_driver.zig:1733<br>packages/ts_driver/src/ts_driver.zig:3531 | Unterminated_string_literal_1002 |
 | TS1003 | err | emitted | packages/ts_parser/src/ts_parser.zig:3454<br>packages/ts_parser/src/ts_parser.zig:3817<br>packages/ts_parser/src/ts_parser.zig:4639 | Identifier_expected_1003 |
 | TS1005 | err | emitted | packages/ts_parser/src/ts_parser.zig:571<br>packages/ts_parser/src/ts_parser.zig:885<br>packages/ts_parser/src/ts_parser.zig:2494 | _0_expected_1005 |
-| TS1006 | err | emitted | packages/ts_driver/src/ts_driver.zig:603<br>packages/ts_driver/src/ts_driver.zig:3604<br>packages/ts_driver/src/ts_driver.zig:3629 | A_file_cannot_have_a_reference_to_itself_1006 |
+| TS1006 | err | emitted | packages/ts_driver/src/ts_driver.zig:618<br>packages/ts_driver/src/ts_driver.zig:3685<br>packages/ts_driver/src/ts_driver.zig:3710 | A_file_cannot_have_a_reference_to_itself_1006 |
 | TS1007 | err | catalog-only |  | The_parser_expected_to_find_a_1_to_match_the_0_token_here_1007 |
 | TS1009 | err | emitted | packages/ts_parser/src/ts_parser.zig:1451<br>packages/ts_parser/src/ts_parser.zig:4413<br>packages/ts_parser/src/ts_parser.zig:4454 | Trailing_comma_not_allowed_1009 |
-| TS1010 | err | emitted | packages/ts_driver/src/ts_driver.zig:1659<br>packages/ts_driver/src/ts_driver.zig:3495 | Asterisk_Slash_expected_1010 |
-| TS1011 | err | emitted | packages/ts_parser/src/ts_parser.zig:13458 | An_element_access_expression_should_take_an_argument_1011 |
+| TS1010 | err | emitted | packages/ts_driver/src/ts_driver.zig:1685<br>packages/ts_driver/src/ts_driver.zig:3576 | Asterisk_Slash_expected_1010 |
+| TS1011 | err | emitted | packages/ts_parser/src/ts_parser.zig:14089 | An_element_access_expression_should_take_an_argument_1011 |
 | TS1012 | err | catalog-only |  | Unexpected_token_1012 |
 | TS1013 | err | emitted | packages/ts_parser/src/ts_parser.zig:4008<br>packages/ts_parser/src/ts_parser.zig:4274 | A_rest_parameter_or_binding_pattern_may_not_have_a_trailing_comma_1013 |
-| TS1014 | err | emitted | packages/ts_parser/src/ts_parser.zig:890<br>packages/ts_parser/src/ts_parser.zig:4020<br>packages/ts_parser/src/ts_parser.zig:9284 | A_rest_parameter_must_be_last_in_a_parameter_list_1014 |
-| TS1015 | err | emitted | packages/ts_parser/src/ts_parser.zig:3914<br>packages/ts_parser/src/ts_parser.zig:9246<br>packages/ts_parser/src/ts_parser.zig:16087 | Parameter_cannot_have_question_mark_and_initializer_1015 |
-| TS1016 | err | emitted | packages/ts_checker/src/check.zig:16738<br>packages/ts_parser/src/ts_parser.zig:3964 | A_required_parameter_cannot_follow_an_optional_parameter_1016 |
-| TS1017 | err | emitted | packages/ts_parser/src/ts_parser.zig:10041 | An_index_signature_cannot_have_a_rest_parameter_1017 |
-| TS1018 | err | emitted | packages/ts_parser/src/ts_parser.zig:10045 | An_index_signature_parameter_cannot_have_an_accessibility_modifier_1018 |
-| TS1019 | err | emitted | packages/ts_parser/src/ts_parser.zig:10047 | An_index_signature_parameter_cannot_have_a_question_mark_1019 |
-| TS1020 | err | emitted | packages/ts_parser/src/ts_parser.zig:10415 | An_index_signature_parameter_cannot_have_an_initializer_1020 |
-| TS1021 | err | emitted | packages/ts_parser/src/ts_parser.zig:10457 | An_index_signature_must_have_a_type_annotation_1021 |
-| TS1022 | err | emitted | packages/ts_parser/src/ts_parser.zig:10400 | An_index_signature_parameter_must_have_a_type_annotation_1022 |
+| TS1014 | err | emitted | packages/ts_parser/src/ts_parser.zig:890<br>packages/ts_parser/src/ts_parser.zig:4020<br>packages/ts_parser/src/ts_parser.zig:9294 | A_rest_parameter_must_be_last_in_a_parameter_list_1014 |
+| TS1015 | err | emitted | packages/ts_parser/src/ts_parser.zig:3914<br>packages/ts_parser/src/ts_parser.zig:9256<br>packages/ts_parser/src/ts_parser.zig:16863 | Parameter_cannot_have_question_mark_and_initializer_1015 |
+| TS1016 | err | emitted | packages/ts_checker/src/check.zig:16819<br>packages/ts_parser/src/ts_parser.zig:3964 | A_required_parameter_cannot_follow_an_optional_parameter_1016 |
+| TS1017 | err | emitted | packages/ts_parser/src/ts_parser.zig:10051 | An_index_signature_cannot_have_a_rest_parameter_1017 |
+| TS1018 | err | emitted | packages/ts_parser/src/ts_parser.zig:10055 | An_index_signature_parameter_cannot_have_an_accessibility_modifier_1018 |
+| TS1019 | err | emitted | packages/ts_parser/src/ts_parser.zig:10057 | An_index_signature_parameter_cannot_have_a_question_mark_1019 |
+| TS1020 | err | emitted | packages/ts_parser/src/ts_parser.zig:10425 | An_index_signature_parameter_cannot_have_an_initializer_1020 |
+| TS1021 | err | emitted | packages/ts_parser/src/ts_parser.zig:10467 | An_index_signature_must_have_a_type_annotation_1021 |
+| TS1022 | err | emitted | packages/ts_parser/src/ts_parser.zig:10410 | An_index_signature_parameter_must_have_a_type_annotation_1022 |
 | TS1024 | err | emitted | packages/ts_parser/src/ts_parser.zig:5558 | readonly_modifier_can_only_appear_on_a_property_declaration_or_index_signature_1024 |
-| TS1025 | err | emitted | packages/ts_parser/src/ts_parser.zig:10434 | An_index_signature_cannot_have_a_trailing_comma_1025 |
+| TS1025 | err | emitted | packages/ts_parser/src/ts_parser.zig:10444 | An_index_signature_cannot_have_a_trailing_comma_1025 |
 | TS1028 | err | emitted | packages/ts_parser/src/ts_parser.zig:5358 | Accessibility_modifier_already_seen_1028 |
 | TS1029 | err | emitted | packages/ts_parser/src/ts_parser.zig:3681<br>packages/ts_parser/src/ts_parser.zig:3704<br>packages/ts_parser/src/ts_parser.zig:3723 | _0_modifier_must_precede_1_modifier_1029 |
 | TS1030 | err | emitted | packages/ts_parser/src/ts_parser.zig:3686<br>packages/ts_parser/src/ts_parser.zig:5392<br>packages/ts_parser/src/ts_parser.zig:5425 | _0_modifier_already_seen_1030 |
 | TS1031 | err | emitted | packages/ts_parser/src/ts_parser.zig:4739<br>packages/ts_parser/src/ts_parser.zig:5547<br>packages/ts_parser/src/ts_parser.zig:5566 | _0_modifier_cannot_appear_on_class_elements_of_this_kind_1031 |
-| TS1034 | err | emitted | packages/ts_parser/src/ts_parser.zig:13538 | super_must_be_followed_by_an_argument_list_or_member_access_1034 |
-| TS1035 | err | emitted | packages/ts_parser/src/ts_parser.zig:6399<br>packages/ts_parser/src/ts_parser.zig:23841 | Only_ambient_modules_can_use_quoted_names_1035 |
+| TS1034 | err | emitted | packages/ts_parser/src/ts_parser.zig:14169 | super_must_be_followed_by_an_argument_list_or_member_access_1034 |
+| TS1035 | err | emitted | packages/ts_parser/src/ts_parser.zig:6399<br>packages/ts_parser/src/ts_parser.zig:24828 | Only_ambient_modules_can_use_quoted_names_1035 |
 | TS1036 | err | emitted | packages/ts_parser/src/ts_parser.zig:1618<br>packages/ts_parser/src/ts_parser.zig:2120<br>packages/ts_parser/src/ts_parser.zig:3098 | Statements_are_not_allowed_in_ambient_contexts_1036 |
 | TS1038 | err | emitted | packages/ts_parser/src/ts_parser.zig:2029 | A_declare_modifier_cannot_be_used_in_an_already_ambient_context_1038 |
-| TS1039 | err | emitted | packages/ts_checker/src/check.zig:8064<br>packages/ts_checker/src/check.zig:20476<br>packages/ts_checker/src/check.zig:39807 | Initializers_are_not_allowed_in_ambient_contexts_1039 |
+| TS1039 | err | emitted | packages/ts_checker/src/check.zig:8127<br>packages/ts_checker/src/check.zig:20598<br>packages/ts_checker/src/check.zig:40061 | Initializers_are_not_allowed_in_ambient_contexts_1039 |
 | TS1040 | err | emitted | packages/ts_parser/src/ts_parser.zig:1844<br>packages/ts_parser/src/ts_parser.zig:5398<br>packages/ts_parser/src/ts_parser.zig:5417 | _0_modifier_cannot_be_used_in_an_ambient_context_1040 |
-| TS1042 | err | emitted | packages/ts_parser/src/ts_parser.zig:1864<br>packages/ts_parser/src/ts_parser.zig:4745<br>packages/ts_parser/src/ts_parser.zig:15056 | _0_modifier_cannot_be_used_here_1042 |
+| TS1042 | err | emitted | packages/ts_parser/src/ts_parser.zig:1864<br>packages/ts_parser/src/ts_parser.zig:4745<br>packages/ts_parser/src/ts_parser.zig:15687 | _0_modifier_cannot_be_used_here_1042 |
 | TS1044 | err | emitted | packages/ts_parser/src/ts_parser.zig:1937 | _0_modifier_cannot_appear_on_a_module_or_namespace_element_1044 |
 | TS1046 | err | emitted | packages/ts_parser/src/ts_parser.zig:3383<br>packages/ts_parser/src/ts_parser.zig:6241<br>packages/ts_parser/src/ts_parser.zig:6374 | Top_level_declarations_in_d_ts_files_must_start_with_either_a_declare_or_export_modifier_1046 |
-| TS1047 | err | emitted | packages/ts_parser/src/ts_parser.zig:3889<br>packages/ts_parser/src/ts_parser.zig:23709 | A_rest_parameter_cannot_be_optional_1047 |
-| TS1048 | err | emitted | packages/ts_parser/src/ts_parser.zig:3922<br>packages/ts_parser/src/ts_parser.zig:9250<br>packages/ts_parser/src/ts_parser.zig:23724 | A_rest_parameter_cannot_have_an_initializer_1048 |
+| TS1047 | err | emitted | packages/ts_parser/src/ts_parser.zig:3889<br>packages/ts_parser/src/ts_parser.zig:24696 | A_rest_parameter_cannot_be_optional_1047 |
+| TS1048 | err | emitted | packages/ts_parser/src/ts_parser.zig:3922<br>packages/ts_parser/src/ts_parser.zig:9260<br>packages/ts_parser/src/ts_parser.zig:24711 | A_rest_parameter_cannot_have_an_initializer_1048 |
 | TS1049 | err | emitted | packages/ts_parser/src/ts_parser.zig:4083 | A_set_accessor_must_have_exactly_one_parameter_1049 |
 | TS1051 | err | emitted | packages/ts_parser/src/ts_parser.zig:4092 | A_set_accessor_cannot_have_an_optional_parameter_1051 |
 | TS1052 | err | emitted | packages/ts_parser/src/ts_parser.zig:4098 | A_set_accessor_parameter_cannot_have_an_initializer_1052 |
@@ -82,224 +82,224 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1058 | err | catalog-only |  | The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058 |
 | TS1059 | err | catalog-only |  | A_promise_must_have_a_then_method_1059 |
 | TS1060 | err | catalog-only |  | The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060 |
-| TS1061 | err | emitted | packages/ts_checker/src/check.zig:32302<br>packages/ts_checker/src/check.zig:87357<br>packages/ts_checker/src/check.zig:87380 | Enum_member_must_have_initializer_1061 |
+| TS1061 | err | emitted | packages/ts_checker/src/check.zig:32556<br>packages/ts_checker/src/check.zig:87906<br>packages/ts_checker/src/check.zig:87929 | Enum_member_must_have_initializer_1061 |
 | TS1062 | err | catalog-only |  | Type_is_referenced_directly_or_indirectly_in_the_fulfillment_callback_of_its_own_then_method_1062 |
 | TS1063 | err | emitted | packages/ts_parser/src/ts_parser.zig:7050 | An_export_assignment_cannot_be_used_in_a_namespace_1063 |
-| TS1064 | err | emitted | packages/ts_checker/src/check.zig:8513<br>packages/ts_checker/src/check.zig:90301<br>packages/ts_checker/src/check.zig:90318 | The_return_type_of_an_async_function_or_method_must_be_the_global_Promise_T_type_Did_you_mean_to_wri_1064 |
+| TS1064 | err | emitted | packages/ts_checker/src/check.zig:8576<br>packages/ts_checker/src/check.zig:90850<br>packages/ts_checker/src/check.zig:90867 | The_return_type_of_an_async_function_or_method_must_be_the_global_Promise_T_type_Did_you_mean_to_wri_1064 |
 | TS1065 | err | catalog-only |  | The_return_type_of_an_async_function_or_method_must_be_the_global_Promise_T_type_1065 |
-| TS1066 | err | emitted | packages/ts_checker/src/check.zig:32368<br>packages/ts_checker/src/check.zig:88536<br>packages/ts_checker/src/check.zig:88559 | In_ambient_enum_declarations_member_initializer_must_be_constant_expression_1066 |
+| TS1066 | err | emitted | packages/ts_checker/src/check.zig:32622<br>packages/ts_checker/src/check.zig:89085<br>packages/ts_checker/src/check.zig:89108 | In_ambient_enum_declarations_member_initializer_must_be_constant_expression_1066 |
 | TS1068 | err | emitted | packages/ts_parser/src/ts_parser.zig:4557<br>packages/ts_parser/src/ts_parser.zig:4679 | Unexpected_token_A_constructor_method_accessor_or_property_was_expected_1068 |
-| TS1069 | err | emitted | packages/ts_checker/src/check.zig:40496<br>packages/ts_checker/src/check.zig:99543 | Unexpected_token_A_type_parameter_name_was_expected_without_curly_braces_1069 |
-| TS1070 | err | emitted | packages/ts_parser/src/ts_parser.zig:9777<br>packages/ts_parser/src/ts_parser.zig:9836 | _0_modifier_cannot_appear_on_a_type_member_1070 |
+| TS1069 | err | emitted | packages/ts_checker/src/check.zig:40777<br>packages/ts_checker/src/check.zig:100092 | Unexpected_token_A_type_parameter_name_was_expected_without_curly_braces_1069 |
+| TS1070 | err | emitted | packages/ts_parser/src/ts_parser.zig:9787<br>packages/ts_parser/src/ts_parser.zig:9846 | _0_modifier_cannot_appear_on_a_type_member_1070 |
 | TS1071 | err | emitted | packages/ts_parser/src/ts_parser.zig:4690<br>packages/ts_parser/src/ts_parser.zig:4701<br>packages/ts_parser/src/ts_parser.zig:4705 | _0_modifier_cannot_appear_on_an_index_signature_1071 |
 | TS1079 | err | emitted | packages/ts_parser/src/ts_parser.zig:2053 | A_0_modifier_cannot_be_used_with_an_import_declaration_1079 |
-| TS1084 | err | emitted | packages/ts_driver/src/ts_driver.zig:639<br>packages/ts_driver/src/ts_driver.zig:3529 | Invalid_reference_directive_syntax_1084 |
+| TS1084 | err | emitted | packages/ts_driver/src/ts_driver.zig:654<br>packages/ts_driver/src/ts_driver.zig:3610 | Invalid_reference_directive_syntax_1084 |
 | TS1089 | err | emitted | packages/ts_parser/src/ts_parser.zig:5032<br>packages/ts_parser/src/ts_parser.zig:5037<br>packages/ts_parser/src/ts_parser.zig:5045 | _0_modifier_cannot_appear_on_a_constructor_declaration_1089 |
 | TS1090 | err | emitted | packages/ts_parser/src/ts_parser.zig:3665 | _0_modifier_cannot_appear_on_a_parameter_1090 |
 | TS1091 | err | emitted | packages/ts_parser/src/ts_parser.zig:3075 | Only_a_single_variable_declaration_is_allowed_in_a_for_in_statement_1091 |
-| TS1092 | err | emitted | packages/ts_parser/src/ts_parser.zig:4937<br>packages/ts_parser/src/ts_parser.zig:4944<br>packages/ts_parser/src/ts_parser.zig:23885 | Type_parameters_cannot_appear_on_a_constructor_declaration_1092 |
-| TS1093 | err | emitted | packages/ts_parser/src/ts_parser.zig:4971<br>packages/ts_checker/src/check.zig:98034 | Type_annotation_cannot_appear_on_a_constructor_declaration_1093 |
-| TS1094 | err | emitted | packages/ts_parser/src/ts_parser.zig:4773<br>packages/ts_parser/src/ts_parser.zig:15095 | An_accessor_cannot_have_type_parameters_1094 |
+| TS1092 | err | emitted | packages/ts_parser/src/ts_parser.zig:4937<br>packages/ts_parser/src/ts_parser.zig:4944<br>packages/ts_parser/src/ts_parser.zig:24872 | Type_parameters_cannot_appear_on_a_constructor_declaration_1092 |
+| TS1093 | err | emitted | packages/ts_parser/src/ts_parser.zig:4971<br>packages/ts_checker/src/check.zig:98583 | Type_annotation_cannot_appear_on_a_constructor_declaration_1093 |
+| TS1094 | err | emitted | packages/ts_parser/src/ts_parser.zig:4773<br>packages/ts_parser/src/ts_parser.zig:15726 | An_accessor_cannot_have_type_parameters_1094 |
 | TS1095 | err | emitted | packages/ts_parser/src/ts_parser.zig:4102 | A_set_accessor_cannot_have_a_return_type_annotation_1095 |
-| TS1096 | err | emitted | packages/ts_parser/src/ts_parser.zig:10050<br>packages/ts_parser/src/ts_parser.zig:10052<br>packages/ts_parser/src/ts_parser.zig:10438 | An_index_signature_must_have_exactly_one_parameter_1096 |
+| TS1096 | err | emitted | packages/ts_parser/src/ts_parser.zig:10060<br>packages/ts_parser/src/ts_parser.zig:10062<br>packages/ts_parser/src/ts_parser.zig:10448 | An_index_signature_must_have_exactly_one_parameter_1096 |
 | TS1097 | err | emitted | packages/ts_parser/src/ts_parser.zig:4383<br>packages/ts_parser/src/ts_parser.zig:4446<br>packages/ts_parser/src/ts_parser.zig:6113 | _0_list_cannot_be_empty_1097 |
-| TS1098 | err | emitted | packages/ts_parser/src/ts_parser.zig:10580<br>packages/ts_parser/src/ts_parser.zig:23884 | Type_parameter_list_cannot_be_empty_1098 |
+| TS1098 | err | emitted | packages/ts_parser/src/ts_parser.zig:10590<br>packages/ts_parser/src/ts_parser.zig:24871 | Type_parameter_list_cannot_be_empty_1098 |
 | TS1099 | err | emitted | packages/ts_parser/src/ts_parser.zig:1446 | Type_argument_list_cannot_be_empty_1099 |
-| TS1100 | err | emitted | packages/ts_parser/src/ts_parser.zig:2360<br>packages/ts_parser/src/ts_parser.zig:2508<br>packages/ts_parser/src/ts_parser.zig:21324 | Invalid_use_of_0_in_strict_mode_1100 |
+| TS1100 | err | emitted | packages/ts_parser/src/ts_parser.zig:2360<br>packages/ts_parser/src/ts_parser.zig:2508<br>packages/ts_parser/src/ts_parser.zig:22311 | Invalid_use_of_0_in_strict_mode_1100 |
 | TS1101 | err | emitted | packages/ts_parser/src/ts_parser.zig:3108 | with_statements_are_not_allowed_in_strict_mode_1101 |
-| TS1102 | err | emitted | packages/ts_checker/src/check.zig:59461<br>packages/ts_parser/src/ts_parser.zig:12858<br>packages/ts_parser/src/ts_parser.zig:12937 | delete_cannot_be_called_on_an_identifier_in_strict_mode_1102 |
-| TS1103 | err | emitted | packages/ts_checker/src/check.zig:11136<br>packages/ts_checker/src/check.zig:70297<br>packages/ts_checker/src/check.zig:70320 | for_await_loops_are_only_allowed_within_async_functions_and_at_the_top_levels_of_modules_1103 |
-| TS1104 | err | emitted | packages/ts_parser/src/ts_parser.zig:3163<br>packages/ts_parser/src/ts_parser.zig:16945 | A_continue_statement_can_only_be_used_within_an_enclosing_iteration_statement_1104 |
-| TS1105 | err | emitted | packages/ts_parser/src/ts_parser.zig:3140<br>packages/ts_parser/src/ts_parser.zig:16885<br>packages/ts_parser/src/ts_parser.zig:16932 | A_break_statement_can_only_be_used_within_an_enclosing_iteration_or_switch_statement_1105 |
+| TS1102 | err | emitted | packages/ts_checker/src/check.zig:59742<br>packages/ts_parser/src/ts_parser.zig:13489<br>packages/ts_parser/src/ts_parser.zig:13568 | delete_cannot_be_called_on_an_identifier_in_strict_mode_1102 |
+| TS1103 | err | emitted | packages/ts_checker/src/check.zig:11199<br>packages/ts_checker/src/check.zig:70708<br>packages/ts_checker/src/check.zig:70731 | for_await_loops_are_only_allowed_within_async_functions_and_at_the_top_levels_of_modules_1103 |
+| TS1104 | err | emitted | packages/ts_parser/src/ts_parser.zig:3163<br>packages/ts_parser/src/ts_parser.zig:17721 | A_continue_statement_can_only_be_used_within_an_enclosing_iteration_statement_1104 |
+| TS1105 | err | emitted | packages/ts_parser/src/ts_parser.zig:3140<br>packages/ts_parser/src/ts_parser.zig:17661<br>packages/ts_parser/src/ts_parser.zig:17708 | A_break_statement_can_only_be_used_within_an_enclosing_iteration_or_switch_statement_1105 |
 | TS1106 | err | emitted | packages/ts_parser/src/ts_parser.zig:2995 | The_left_hand_side_of_a_for_of_statement_may_not_be_async_1106 |
 | TS1107 | err | emitted | packages/ts_parser/src/ts_parser.zig:3138<br>packages/ts_parser/src/ts_parser.zig:3161<br>packages/ts_parser/src/ts_parser.zig:3189 | Jump_target_cannot_cross_function_boundary_1107 |
-| TS1108 | err | emitted | packages/ts_checker/src/check.zig:3209<br>packages/ts_checker/src/check.zig:77983<br>packages/ts_checker/src/check.zig:77992 | A_return_statement_can_only_be_used_within_a_function_body_1108 |
-| TS1109 | err | emitted | packages/ts_parser/src/ts_parser.zig:2663<br>packages/ts_parser/src/ts_parser.zig:7407<br>packages/ts_parser/src/ts_parser.zig:8124 | Expression_expected_1109 |
-| TS1110 | err | emitted | packages/ts_parser/src/ts_parser.zig:8864<br>packages/ts_parser/src/ts_parser.zig:9458<br>packages/ts_parser/src/ts_parser.zig:23692 | Type_expected_1110 |
-| TS1111 | err | emitted | packages/ts_checker/src/check.zig:24489<br>packages/ts_driver/src/ts_driver.zig:1875<br>packages/ts_driver/src/ts_driver.zig:2265 | Private_field_0_must_be_declared_in_an_enclosing_class_1111 |
-| TS1113 | err | emitted | packages/ts_checker/src/check.zig:8141<br>packages/ts_checker/src/check.zig:85408 | A_default_clause_cannot_appear_more_than_once_in_a_switch_statement_1113 |
-| TS1114 | err | emitted | packages/ts_parser/src/ts_parser.zig:1665<br>packages/ts_parser/src/ts_parser.zig:16901<br>packages/ts_parser/src/ts_parser.zig:16916 | Duplicate_label_0_1114 |
-| TS1115 | err | emitted | packages/ts_parser/src/ts_parser.zig:3198<br>packages/ts_parser/src/ts_parser.zig:3213<br>packages/ts_parser/src/ts_parser.zig:16852 | A_continue_statement_can_only_jump_to_a_label_of_an_enclosing_iteration_statement_1115 |
-| TS1116 | err | emitted | packages/ts_parser/src/ts_parser.zig:3211<br>packages/ts_parser/src/ts_parser.zig:16851 | A_break_statement_can_only_jump_to_a_label_of_an_enclosing_statement_1116 |
-| TS1117 | err | emitted | packages/ts_checker/src/check.zig:46180 | An_object_literal_cannot_have_multiple_properties_with_the_same_name_1117 |
-| TS1118 | err | emitted | packages/ts_checker/src/check.zig:46297 | An_object_literal_cannot_have_multiple_get_Slashset_accessors_with_the_same_name_1118 |
-| TS1119 | err | emitted | packages/ts_checker/src/check.zig:46232<br>packages/ts_checker/src/check.zig:98381<br>packages/ts_checker/src/check.zig:98400 | An_object_literal_cannot_have_property_and_accessor_with_the_same_name_1119 |
+| TS1108 | err | emitted | packages/ts_checker/src/check.zig:3272<br>packages/ts_checker/src/check.zig:78532<br>packages/ts_checker/src/check.zig:78541 | A_return_statement_can_only_be_used_within_a_function_body_1108 |
+| TS1109 | err | emitted | packages/ts_parser/src/ts_parser.zig:2663<br>packages/ts_parser/src/ts_parser.zig:7417<br>packages/ts_parser/src/ts_parser.zig:8134 | Expression_expected_1109 |
+| TS1110 | err | emitted | packages/ts_parser/src/ts_parser.zig:8874<br>packages/ts_parser/src/ts_parser.zig:9468<br>packages/ts_parser/src/ts_parser.zig:24679 | Type_expected_1110 |
+| TS1111 | err | emitted | packages/ts_checker/src/check.zig:24611<br>packages/ts_driver/src/ts_driver.zig:1901<br>packages/ts_driver/src/ts_driver.zig:2346 | Private_field_0_must_be_declared_in_an_enclosing_class_1111 |
+| TS1113 | err | emitted | packages/ts_checker/src/check.zig:8204<br>packages/ts_checker/src/check.zig:85957 | A_default_clause_cannot_appear_more_than_once_in_a_switch_statement_1113 |
+| TS1114 | err | emitted | packages/ts_parser/src/ts_parser.zig:1665<br>packages/ts_parser/src/ts_parser.zig:17677<br>packages/ts_parser/src/ts_parser.zig:17692 | Duplicate_label_0_1114 |
+| TS1115 | err | emitted | packages/ts_parser/src/ts_parser.zig:3198<br>packages/ts_parser/src/ts_parser.zig:3213<br>packages/ts_parser/src/ts_parser.zig:17628 | A_continue_statement_can_only_jump_to_a_label_of_an_enclosing_iteration_statement_1115 |
+| TS1116 | err | emitted | packages/ts_parser/src/ts_parser.zig:3211<br>packages/ts_parser/src/ts_parser.zig:17627 | A_break_statement_can_only_jump_to_a_label_of_an_enclosing_statement_1116 |
+| TS1117 | err | emitted | packages/ts_checker/src/check.zig:46461 | An_object_literal_cannot_have_multiple_properties_with_the_same_name_1117 |
+| TS1118 | err | emitted | packages/ts_checker/src/check.zig:46578 | An_object_literal_cannot_have_multiple_get_Slashset_accessors_with_the_same_name_1118 |
+| TS1119 | err | emitted | packages/ts_checker/src/check.zig:46513<br>packages/ts_checker/src/check.zig:98930<br>packages/ts_checker/src/check.zig:98949 | An_object_literal_cannot_have_property_and_accessor_with_the_same_name_1119 |
 | TS1120 | err | emitted | packages/ts_parser/src/ts_parser.zig:7008<br>packages/ts_parser/src/ts_parser.zig:7042 | An_export_assignment_cannot_have_modifiers_1120 |
 | TS1121 | err | emitted | packages/ts_parser/src/ts_parser.zig:2530<br>packages/ts_parser/src/ts_parser.zig:2533<br>packages/ts_parser/src/ts_parser.zig:2615 | Octal_literals_are_not_allowed_Use_the_syntax_0_1121 |
-| TS1123 | err | emitted | packages/ts_parser/src/ts_parser.zig:2773<br>packages/ts_parser/src/ts_parser.zig:2808<br>packages/ts_parser/src/ts_parser.zig:7578 | Variable_declaration_list_cannot_be_empty_1123 |
-| TS1124 | err | emitted | packages/ts_driver/src/ts_driver.zig:1677 | Digit_expected_1124 |
-| TS1125 | err | emitted | packages/ts_driver/src/ts_driver.zig:1680 | Hexadecimal_digit_expected_1125 |
-| TS1126 | err | emitted | packages/ts_driver/src/ts_driver.zig:1656 | Unexpected_end_of_text_1126 |
+| TS1123 | err | emitted | packages/ts_parser/src/ts_parser.zig:2773<br>packages/ts_parser/src/ts_parser.zig:2808<br>packages/ts_parser/src/ts_parser.zig:7588 | Variable_declaration_list_cannot_be_empty_1123 |
+| TS1124 | err | emitted | packages/ts_driver/src/ts_driver.zig:1703 | Digit_expected_1124 |
+| TS1125 | err | emitted | packages/ts_driver/src/ts_driver.zig:1706 | Hexadecimal_digit_expected_1125 |
+| TS1126 | err | emitted | packages/ts_driver/src/ts_driver.zig:1682 | Unexpected_end_of_text_1126 |
 | TS1127 | err | emitted | packages/ts_parser/src/ts_parser.zig:2147<br>packages/ts_parser/src/ts_parser.zig:3632<br>packages/ts_parser/src/ts_parser.zig:6262 | Invalid_character_1127 |
 | TS1128 | err | emitted | packages/ts_parser/src/ts_parser.zig:1944<br>packages/ts_parser/src/ts_parser.zig:2129<br>packages/ts_parser/src/ts_parser.zig:2140 | Declaration_or_statement_expected_1128 |
 | TS1129 | err | catalog-only |  | Statement_expected_1129 |
 | TS1130 | err | emitted | packages/ts_parser/src/ts_parser.zig:3320 | case_or_default_expected_1130 |
-| TS1131 | err | emitted | packages/ts_parser/src/ts_parser.zig:9816 | Property_or_signature_expected_1131 |
-| TS1132 | err | emitted | packages/ts_parser/src/ts_parser.zig:6257<br>packages/ts_parser/src/ts_parser.zig:22907 | Enum_member_expected_1132 |
-| TS1134 | err | emitted | packages/ts_parser/src/ts_parser.zig:7753<br>packages/ts_parser/src/ts_parser.zig:7796 | Variable_declaration_expected_1134 |
-| TS1135 | err | emitted | packages/ts_parser/src/ts_parser.zig:13632<br>packages/ts_parser/src/ts_parser.zig:13638 | Argument_expression_expected_1135 |
-| TS1136 | err | emitted | packages/ts_parser/src/ts_parser.zig:14949<br>packages/ts_parser/src/ts_parser.zig:14967<br>packages/ts_parser/src/ts_parser.zig:14972 | Property_assignment_expected_1136 |
-| TS1137 | err | emitted | packages/ts_parser/src/ts_parser.zig:14891 | Expression_or_comma_expected_1137 |
+| TS1131 | err | emitted | packages/ts_parser/src/ts_parser.zig:9826 | Property_or_signature_expected_1131 |
+| TS1132 | err | emitted | packages/ts_parser/src/ts_parser.zig:6257<br>packages/ts_parser/src/ts_parser.zig:23894 | Enum_member_expected_1132 |
+| TS1134 | err | emitted | packages/ts_parser/src/ts_parser.zig:7763<br>packages/ts_parser/src/ts_parser.zig:7806 | Variable_declaration_expected_1134 |
+| TS1135 | err | emitted | packages/ts_parser/src/ts_parser.zig:14263<br>packages/ts_parser/src/ts_parser.zig:14269 | Argument_expression_expected_1135 |
+| TS1136 | err | emitted | packages/ts_parser/src/ts_parser.zig:15580<br>packages/ts_parser/src/ts_parser.zig:15598<br>packages/ts_parser/src/ts_parser.zig:15603 | Property_assignment_expected_1136 |
+| TS1137 | err | emitted | packages/ts_parser/src/ts_parser.zig:15522 | Expression_or_comma_expected_1137 |
 | TS1138 | err | emitted | packages/ts_parser/src/ts_parser.zig:3830 | Parameter_declaration_expected_1138 |
-| TS1139 | err | emitted | packages/ts_parser/src/ts_parser.zig:10623 | Type_parameter_declaration_expected_1139 |
-| TS1140 | err | emitted | packages/ts_parser/src/ts_parser.zig:10718<br>packages/ts_parser/src/ts_parser.zig:10931 | Type_argument_expected_1140 |
-| TS1141 | err | emitted | packages/ts_parser/src/ts_parser.zig:6745<br>packages/ts_parser/src/ts_parser.zig:6783<br>packages/ts_parser/src/ts_parser.zig:10755 | String_literal_expected_1141 |
-| TS1142 | err | emitted | packages/ts_parser/src/ts_parser.zig:3220<br>packages/ts_parser/src/ts_parser.zig:6187<br>packages/ts_parser/src/ts_parser.zig:17010 | Line_break_not_permitted_here_1142 |
+| TS1139 | err | emitted | packages/ts_parser/src/ts_parser.zig:10633 | Type_parameter_declaration_expected_1139 |
+| TS1140 | err | emitted | packages/ts_parser/src/ts_parser.zig:10728<br>packages/ts_parser/src/ts_parser.zig:10941 | Type_argument_expected_1140 |
+| TS1141 | err | emitted | packages/ts_parser/src/ts_parser.zig:6745<br>packages/ts_parser/src/ts_parser.zig:6783<br>packages/ts_parser/src/ts_parser.zig:10765 | String_literal_expected_1141 |
+| TS1142 | err | emitted | packages/ts_parser/src/ts_parser.zig:3220<br>packages/ts_parser/src/ts_parser.zig:6187<br>packages/ts_parser/src/ts_parser.zig:17786 | Line_break_not_permitted_here_1142 |
 | TS1144 | err | emitted | packages/ts_parser/src/ts_parser.zig:3543 | or_expected_1144 |
-| TS1145 | err | emitted | packages/ts_parser/src/ts_parser.zig:14536 | or_JSX_element_expected_1145 |
+| TS1145 | err | emitted | packages/ts_parser/src/ts_parser.zig:15167 | or_JSX_element_expected_1145 |
 | TS1146 | err | emitted | packages/ts_parser/src/ts_parser.zig:5151 | Declaration_expected_1146 |
 | TS1147 | err | emitted | packages/ts_parser/src/ts_parser.zig:6541 | Import_declarations_in_a_namespace_cannot_reference_a_module_1147 |
-| TS1148 | err | emitted | packages/ts_checker/src/check.zig:26967<br>packages/ts_checker/src/check.zig:99585<br>packages/ts_checker/src/check.zig:99609 | Cannot_use_imports_exports_or_module_augmentations_when_module_is_none_1148 |
+| TS1148 | err | emitted | packages/ts_checker/src/check.zig:27089<br>packages/ts_checker/src/check.zig:100134<br>packages/ts_checker/src/check.zig:100158 | Cannot_use_imports_exports_or_module_augmentations_when_module_is_none_1148 |
 | TS1149 | err | catalog-only |  | File_name_0_differs_from_already_included_file_name_1_only_in_casing_1149 |
-| TS1155 | err | emitted | packages/ts_parser/src/ts_parser.zig:2877<br>packages/ts_parser/src/ts_parser.zig:7685<br>packages/ts_parser/src/ts_parser.zig:7719 | _0_declarations_must_be_initialized_1155 |
-| TS1156 | err | emitted | packages/ts_parser/src/ts_parser.zig:7966 | _0_declarations_can_only_be_declared_inside_a_block_1156 |
-| TS1160 | err | emitted | packages/ts_driver/src/ts_driver.zig:1638 | Unterminated_template_literal_1160 |
-| TS1161 | err | emitted | packages/ts_parser/src/ts_parser.zig:11574 | Unterminated_regular_expression_literal_1161 |
-| TS1162 | err | emitted | packages/ts_parser/src/ts_parser.zig:15233 | An_object_member_cannot_be_declared_optional_1162 |
-| TS1163 | err | emitted | packages/ts_parser/src/ts_parser.zig:12994<br>packages/ts_parser/src/ts_parser.zig:13044<br>packages/ts_parser/src/ts_parser.zig:22144 | A_yield_expression_is_only_allowed_in_a_generator_body_1163 |
-| TS1164 | err | emitted | packages/ts_parser/src/ts_parser.zig:6278<br>packages/ts_driver/src/ts_driver.zig:2696 | Computed_property_names_are_not_allowed_in_enums_1164 |
+| TS1155 | err | emitted | packages/ts_parser/src/ts_parser.zig:2877<br>packages/ts_parser/src/ts_parser.zig:7695<br>packages/ts_parser/src/ts_parser.zig:7729 | _0_declarations_must_be_initialized_1155 |
+| TS1156 | err | emitted | packages/ts_parser/src/ts_parser.zig:7976 | _0_declarations_can_only_be_declared_inside_a_block_1156 |
+| TS1160 | err | emitted | packages/ts_driver/src/ts_driver.zig:1664 | Unterminated_template_literal_1160 |
+| TS1161 | err | emitted | packages/ts_parser/src/ts_parser.zig:11584 | Unterminated_regular_expression_literal_1161 |
+| TS1162 | err | emitted | packages/ts_parser/src/ts_parser.zig:15864 | An_object_member_cannot_be_declared_optional_1162 |
+| TS1163 | err | emitted | packages/ts_parser/src/ts_parser.zig:13625<br>packages/ts_parser/src/ts_parser.zig:13675<br>packages/ts_parser/src/ts_parser.zig:23131 | A_yield_expression_is_only_allowed_in_a_generator_body_1163 |
+| TS1164 | err | emitted | packages/ts_parser/src/ts_parser.zig:6278<br>packages/ts_driver/src/ts_driver.zig:2777 | Computed_property_names_are_not_allowed_in_enums_1164 |
 | TS1165 | err | catalog-only |  | A_computed_property_name_in_an_ambient_context_must_refer_to_an_expression_whose_type_is_a_literal_t_1165 |
-| TS1166 | err | emitted | packages/ts_checker/src/check.zig:20076<br>packages/ts_checker/src/check.zig:87018<br>packages/ts_checker/src/check.zig:89928 | A_computed_property_name_in_a_class_property_declaration_must_have_a_simple_literal_type_or_a_unique_1166 |
+| TS1166 | err | emitted | packages/ts_checker/src/check.zig:20198<br>packages/ts_checker/src/check.zig:87567<br>packages/ts_checker/src/check.zig:90477 | A_computed_property_name_in_a_class_property_declaration_must_have_a_simple_literal_type_or_a_unique_1166 |
 | TS1168 | err | catalog-only |  | A_computed_property_name_in_a_method_overload_must_refer_to_an_expression_whose_type_is_a_literal_ty_1168 |
-| TS1169 | err | emitted | packages/ts_parser/src/ts_parser.zig:10054<br>packages/ts_parser/src/ts_parser.zig:10057<br>packages/ts_parser/src/ts_parser.zig:10088 | A_computed_property_name_in_an_interface_must_refer_to_an_expression_whose_type_is_a_literal_type_or_1169 |
-| TS1170 | err | emitted | packages/ts_parser/src/ts_parser.zig:10090 | A_computed_property_name_in_a_type_literal_must_refer_to_an_expression_whose_type_is_a_literal_type__1170 |
-| TS1171 | err | emitted | packages/ts_checker/src/check.zig:46115<br>packages/ts_checker/src/check.zig:98424<br>packages/ts_checker/src/check.zig:98444 | A_comma_expression_is_not_allowed_in_a_computed_property_name_1171 |
+| TS1169 | err | emitted | packages/ts_parser/src/ts_parser.zig:10064<br>packages/ts_parser/src/ts_parser.zig:10067<br>packages/ts_parser/src/ts_parser.zig:10098 | A_computed_property_name_in_an_interface_must_refer_to_an_expression_whose_type_is_a_literal_type_or_1169 |
+| TS1170 | err | emitted | packages/ts_parser/src/ts_parser.zig:10100 | A_computed_property_name_in_a_type_literal_must_refer_to_an_expression_whose_type_is_a_literal_type__1170 |
+| TS1171 | err | emitted | packages/ts_checker/src/check.zig:46396<br>packages/ts_checker/src/check.zig:98973<br>packages/ts_checker/src/check.zig:98993 | A_comma_expression_is_not_allowed_in_a_computed_property_name_1171 |
 | TS1172 | err | emitted | packages/ts_parser/src/ts_parser.zig:4429<br>packages/ts_parser/src/ts_parser.zig:4467<br>packages/ts_parser/src/ts_parser.zig:6120 | extends_clause_already_seen_1172 |
-| TS1173 | err | emitted | packages/ts_parser/src/ts_parser.zig:4469<br>packages/ts_parser/src/ts_parser.zig:23356 | extends_clause_must_precede_implements_clause_1173 |
+| TS1173 | err | emitted | packages/ts_parser/src/ts_parser.zig:4469<br>packages/ts_parser/src/ts_parser.zig:24343 | extends_clause_must_precede_implements_clause_1173 |
 | TS1174 | err | emitted | packages/ts_parser/src/ts_parser.zig:4415 | Classes_can_only_extend_a_single_class_1174 |
 | TS1175 | err | emitted | packages/ts_parser/src/ts_parser.zig:4481 | implements_clause_already_seen_1175 |
 | TS1176 | err | emitted | packages/ts_parser/src/ts_parser.zig:6135 | Interface_declaration_cannot_have_implements_clause_1176 |
-| TS1177 | err | emitted | packages/ts_driver/src/ts_driver.zig:1683 | Binary_digit_expected_1177 |
-| TS1178 | err | emitted | packages/ts_driver/src/ts_driver.zig:1686 | Octal_digit_expected_1178 |
+| TS1177 | err | emitted | packages/ts_driver/src/ts_driver.zig:1709 | Binary_digit_expected_1177 |
+| TS1178 | err | emitted | packages/ts_driver/src/ts_driver.zig:1712 | Octal_digit_expected_1178 |
 | TS1179 | err | emitted | packages/ts_parser/src/ts_parser.zig:4506 | Unexpected_token_expected_1179 |
 | TS1180 | err | emitted | packages/ts_parser/src/ts_parser.zig:4162 | Property_destructuring_pattern_expected_1180 |
 | TS1181 | err | emitted | packages/ts_parser/src/ts_parser.zig:4162 | Array_element_destructuring_pattern_expected_1181 |
-| TS1182 | err | emitted | packages/ts_checker/src/check.zig:39875 | A_destructuring_declaration_must_have_an_initializer_1182 |
+| TS1182 | err | emitted | packages/ts_checker/src/check.zig:40129 | A_destructuring_declaration_must_have_an_initializer_1182 |
 | TS1183 | err | emitted | packages/ts_parser/src/ts_parser.zig:3511<br>packages/ts_parser/src/ts_parser.zig:5008<br>packages/ts_parser/src/ts_parser.zig:5535 | An_implementation_cannot_be_declared_in_ambient_contexts_1183 |
 | TS1184 | err | emitted | packages/ts_parser/src/ts_parser.zig:2255<br>packages/ts_parser/src/ts_parser.zig:4564 | Modifiers_cannot_appear_here_1184 |
-| TS1185 | err | emitted | packages/ts_driver/src/ts_driver.zig:1730<br>packages/ts_driver/src/ts_driver.zig:2109 | Merge_conflict_marker_encountered_1185 |
-| TS1186 | err | emitted | packages/ts_checker/src/check.zig:38799<br>packages/ts_parser/src/ts_parser.zig:4241 | A_rest_element_cannot_have_an_initializer_1186 |
+| TS1185 | err | emitted | packages/ts_driver/src/ts_driver.zig:1756<br>packages/ts_driver/src/ts_driver.zig:2190 | Merge_conflict_marker_encountered_1185 |
+| TS1186 | err | emitted | packages/ts_checker/src/check.zig:39053<br>packages/ts_parser/src/ts_parser.zig:4241 | A_rest_element_cannot_have_an_initializer_1186 |
 | TS1187 | err | emitted | packages/ts_parser/src/ts_parser.zig:3844 | A_parameter_property_may_not_be_declared_using_a_binding_pattern_1187 |
 | TS1188 | err | emitted | packages/ts_parser/src/ts_parser.zig:3075 | Only_a_single_variable_declaration_is_allowed_in_a_for_of_statement_1188 |
 | TS1189 | err | emitted | packages/ts_parser/src/ts_parser.zig:3083 | The_variable_declaration_of_a_for_in_statement_cannot_have_an_initializer_1189 |
 | TS1190 | err | emitted | packages/ts_parser/src/ts_parser.zig:3083 | The_variable_declaration_of_a_for_of_statement_cannot_have_an_initializer_1190 |
 | TS1191 | err | emitted | packages/ts_parser/src/ts_parser.zig:7083 | An_import_declaration_cannot_have_modifiers_1191 |
-| TS1192 | err | emitted | packages/ts_checker/src/check.zig:7002<br>packages/ts_checker/src/check.zig:29341 | Module_0_has_no_default_export_1192 |
-| TS1193 | err | emitted | packages/ts_parser/src/ts_parser.zig:7009<br>packages/ts_parser/src/ts_parser.zig:7211 | An_export_declaration_cannot_have_modifiers_1193 |
-| TS1194 | err | emitted | packages/ts_parser/src/ts_parser.zig:7291<br>packages/ts_parser/src/ts_parser.zig:7293<br>packages/ts_parser/src/ts_parser.zig:7338 | Export_declarations_are_not_permitted_in_a_namespace_1194 |
+| TS1192 | err | emitted | packages/ts_checker/src/check.zig:7065<br>packages/ts_checker/src/check.zig:29581 | Module_0_has_no_default_export_1192 |
+| TS1193 | err | emitted | packages/ts_parser/src/ts_parser.zig:7009<br>packages/ts_parser/src/ts_parser.zig:7221 | An_export_declaration_cannot_have_modifiers_1193 |
+| TS1194 | err | emitted | packages/ts_parser/src/ts_parser.zig:7301<br>packages/ts_parser/src/ts_parser.zig:7303<br>packages/ts_parser/src/ts_parser.zig:7348 | Export_declarations_are_not_permitted_in_a_namespace_1194 |
 | TS1195 | err | catalog-only |  | export_Asterisk_does_not_re_export_a_default_1195 |
 | TS1196 | err | emitted | packages/ts_parser/src/ts_parser.zig:3262 | Catch_clause_variable_type_annotation_must_be_any_or_unknown_if_specified_1196 |
 | TS1197 | err | emitted | packages/ts_parser/src/ts_parser.zig:3276 | Catch_clause_variable_cannot_have_an_initializer_1197 |
-| TS1198 | err | emitted | packages/ts_checker/src/check.zig:11762<br>packages/ts_driver/src/ts_driver.zig:1696 | An_extended_Unicode_escape_value_must_be_between_0x0_and_0x10FFFF_inclusive_1198 |
-| TS1199 | err | emitted | packages/ts_driver/src/ts_driver.zig:1689 | Unterminated_Unicode_escape_sequence_1199 |
-| TS1200 | err | emitted | packages/ts_parser/src/ts_parser.zig:11059<br>packages/ts_parser/src/ts_parser.zig:11215 | Line_terminator_not_permitted_before_arrow_1200 |
-| TS1202 | err | emitted | packages/ts_checker/src/check.zig:26808<br>packages/ts_checker/src/check.zig:71338<br>packages/ts_checker/src/check.zig:97894 | Import_assignment_cannot_be_used_when_targeting_ECMAScript_modules_Consider_using_import_Asterisk_as_1202 |
-| TS1203 | err | emitted | packages/ts_checker/src/check.zig:7056 | Export_assignment_cannot_be_used_when_targeting_ECMAScript_modules_Consider_using_export_default_or__1203 |
-| TS1205 | err | emitted | packages/ts_checker/src/check.zig:3185<br>packages/ts_checker/src/check.zig:85659<br>packages/ts_checker/src/check.zig:85672 | Re_exporting_a_type_when_0_is_enabled_requires_using_export_type_1205 |
-| TS1206 | err | emitted | packages/ts_checker/src/check.zig:17495<br>packages/ts_checker/src/check.zig:17850<br>packages/ts_checker/src/check.zig:17876 | Decorators_are_not_valid_here_1206 |
-| TS1207 | err | emitted | packages/ts_checker/src/check.zig:17835<br>packages/ts_checker/src/check.zig:75072<br>packages/ts_checker/src/check.zig:75115 | Decorators_cannot_be_applied_to_multiple_get_Slashset_accessors_of_the_same_name_1207 |
-| TS1209 | err | emitted | packages/ts_parser/src/ts_parser.zig:13912<br>packages/ts_parser/src/ts_parser.zig:16235 | Invalid_optional_chain_from_new_expression_Did_you_mean_to_call_0_1209 |
-| TS1210 | err | emitted | packages/ts_parser/src/ts_parser.zig:2334<br>packages/ts_parser/src/ts_parser.zig:21311<br>packages/ts_parser/src/ts_parser.zig:21323 | Code_contained_in_a_class_is_evaluated_in_JavaScript_s_strict_mode_which_does_not_allow_this_use_of__1210 |
-| TS1211 | err | emitted | packages/ts_parser/src/ts_parser.zig:7378 | A_class_declaration_without_the_default_modifier_must_have_a_name_1211 |
+| TS1198 | err | emitted | packages/ts_checker/src/check.zig:11825<br>packages/ts_driver/src/ts_driver.zig:1722 | An_extended_Unicode_escape_value_must_be_between_0x0_and_0x10FFFF_inclusive_1198 |
+| TS1199 | err | emitted | packages/ts_driver/src/ts_driver.zig:1715 | Unterminated_Unicode_escape_sequence_1199 |
+| TS1200 | err | emitted | packages/ts_parser/src/ts_parser.zig:11069<br>packages/ts_parser/src/ts_parser.zig:11225 | Line_terminator_not_permitted_before_arrow_1200 |
+| TS1202 | err | emitted | packages/ts_checker/src/check.zig:26930<br>packages/ts_checker/src/check.zig:71749<br>packages/ts_checker/src/check.zig:98443 | Import_assignment_cannot_be_used_when_targeting_ECMAScript_modules_Consider_using_import_Asterisk_as_1202 |
+| TS1203 | err | emitted | packages/ts_checker/src/check.zig:7119 | Export_assignment_cannot_be_used_when_targeting_ECMAScript_modules_Consider_using_export_default_or__1203 |
+| TS1205 | err | emitted | packages/ts_checker/src/check.zig:3248<br>packages/ts_checker/src/check.zig:86208<br>packages/ts_checker/src/check.zig:86221 | Re_exporting_a_type_when_0_is_enabled_requires_using_export_type_1205 |
+| TS1206 | err | emitted | packages/ts_checker/src/check.zig:17617<br>packages/ts_checker/src/check.zig:17972<br>packages/ts_checker/src/check.zig:17998 | Decorators_are_not_valid_here_1206 |
+| TS1207 | err | emitted | packages/ts_checker/src/check.zig:17957<br>packages/ts_checker/src/check.zig:75483<br>packages/ts_checker/src/check.zig:75526 | Decorators_cannot_be_applied_to_multiple_get_Slashset_accessors_of_the_same_name_1207 |
+| TS1209 | err | emitted | packages/ts_parser/src/ts_parser.zig:14543<br>packages/ts_parser/src/ts_parser.zig:17011 | Invalid_optional_chain_from_new_expression_Did_you_mean_to_call_0_1209 |
+| TS1210 | err | emitted | packages/ts_parser/src/ts_parser.zig:2334<br>packages/ts_parser/src/ts_parser.zig:22298<br>packages/ts_parser/src/ts_parser.zig:22310 | Code_contained_in_a_class_is_evaluated_in_JavaScript_s_strict_mode_which_does_not_allow_this_use_of__1210 |
+| TS1211 | err | emitted | packages/ts_parser/src/ts_parser.zig:7388 | A_class_declaration_without_the_default_modifier_must_have_a_name_1211 |
 | TS1212 | err | emitted | packages/ts_parser/src/ts_parser.zig:2399<br>packages/ts_parser/src/ts_parser.zig:2412<br>packages/ts_parser/src/ts_parser.zig:2445 | Identifier_expected_0_is_a_reserved_word_in_strict_mode_1212 |
-| TS1213 | err | emitted | packages/ts_parser/src/ts_parser.zig:2381<br>packages/ts_parser/src/ts_parser.zig:2480<br>packages/ts_parser/src/ts_parser.zig:8895 | Identifier_expected_0_is_a_reserved_word_in_strict_mode_Class_definitions_are_automatically_in_stric_1213 |
+| TS1213 | err | emitted | packages/ts_parser/src/ts_parser.zig:2381<br>packages/ts_parser/src/ts_parser.zig:2480<br>packages/ts_parser/src/ts_parser.zig:8905 | Identifier_expected_0_is_a_reserved_word_in_strict_mode_Class_definitions_are_automatically_in_stric_1213 |
 | TS1214 | err | emitted | packages/ts_parser/src/ts_parser.zig:2385<br>packages/ts_parser/src/ts_parser.zig:2437<br>packages/ts_parser/src/ts_parser.zig:2454 | Identifier_expected_0_is_a_reserved_word_in_strict_mode_Modules_are_automatically_in_strict_mode_1214 |
-| TS1215 | err | emitted | packages/ts_parser/src/ts_parser.zig:2349<br>packages/ts_parser/src/ts_parser.zig:21338 | Invalid_use_of_0_Modules_are_automatically_in_strict_mode_1215 |
-| TS1216 | err | emitted | packages/ts_parser/src/ts_parser.zig:7614 | Identifier_expected_esModule_is_reserved_as_an_exported_marker_when_transforming_ECMAScript_modules_1216 |
-| TS1218 | err | emitted | packages/ts_checker/src/check.zig:7061<br>packages/ts_checker/src/check.zig:100499 | Export_assignment_is_not_supported_when_module_flag_is_system_1218 |
+| TS1215 | err | emitted | packages/ts_parser/src/ts_parser.zig:2349<br>packages/ts_parser/src/ts_parser.zig:22325 | Invalid_use_of_0_Modules_are_automatically_in_strict_mode_1215 |
+| TS1216 | err | emitted | packages/ts_parser/src/ts_parser.zig:7624 | Identifier_expected_esModule_is_reserved_as_an_exported_marker_when_transforming_ECMAScript_modules_1216 |
+| TS1218 | err | emitted | packages/ts_checker/src/check.zig:7124<br>packages/ts_checker/src/check.zig:101048 | Export_assignment_is_not_supported_when_module_flag_is_system_1218 |
 | TS1221 | err | emitted | packages/ts_parser/src/ts_parser.zig:3552<br>packages/ts_parser/src/ts_parser.zig:5013 | Generators_are_not_allowed_in_an_ambient_context_1221 |
-| TS1222 | err | emitted | packages/ts_parser/src/ts_parser.zig:3554<br>packages/ts_parser/src/ts_parser.zig:5015<br>packages/ts_parser/src/ts_parser.zig:23559 | An_overload_signature_cannot_be_declared_as_a_generator_1222 |
-| TS1223 | err | emitted | packages/ts_parser/src/ts_parser.zig:1287<br>packages/ts_parser/src/ts_parser.zig:23113<br>packages/ts_parser/src/ts_parser.zig:23136 | _0_tag_already_specified_1223 |
+| TS1222 | err | emitted | packages/ts_parser/src/ts_parser.zig:3554<br>packages/ts_parser/src/ts_parser.zig:5015<br>packages/ts_parser/src/ts_parser.zig:24546 | An_overload_signature_cannot_be_declared_as_a_generator_1222 |
+| TS1223 | err | emitted | packages/ts_parser/src/ts_parser.zig:1287<br>packages/ts_parser/src/ts_parser.zig:24100<br>packages/ts_parser/src/ts_parser.zig:24123 | _0_tag_already_specified_1223 |
 | TS1224 | err | catalog-only |  | Signature_0_must_be_a_type_predicate_1224 |
-| TS1225 | err | emitted | packages/ts_checker/src/check.zig:16570 | Cannot_find_parameter_0_1225 |
+| TS1225 | err | emitted | packages/ts_checker/src/check.zig:16651 | Cannot_find_parameter_0_1225 |
 | TS1226 | err | catalog-only |  | Type_predicate_0_is_not_assignable_to_1_1226 |
 | TS1227 | err | catalog-only |  | Parameter_0_is_not_in_the_same_position_as_parameter_1_1227 |
-| TS1228 | err | emitted | packages/ts_parser/src/ts_parser.zig:7650 | A_type_predicate_is_only_allowed_in_return_type_position_for_functions_and_methods_1228 |
-| TS1229 | err | emitted | packages/ts_checker/src/check.zig:16517 | A_type_predicate_cannot_reference_a_rest_parameter_1229 |
-| TS1230 | err | emitted | packages/ts_checker/src/check.zig:16561 | A_type_predicate_cannot_reference_element_0_in_a_binding_pattern_1230 |
+| TS1228 | err | emitted | packages/ts_parser/src/ts_parser.zig:7660 | A_type_predicate_is_only_allowed_in_return_type_position_for_functions_and_methods_1228 |
+| TS1229 | err | emitted | packages/ts_checker/src/check.zig:16598 | A_type_predicate_cannot_reference_a_rest_parameter_1229 |
+| TS1230 | err | emitted | packages/ts_checker/src/check.zig:16642 | A_type_predicate_cannot_reference_element_0_in_a_binding_pattern_1230 |
 | TS1231 | err | emitted | packages/ts_parser/src/ts_parser.zig:7048 | An_export_assignment_must_be_at_the_top_level_of_a_file_or_module_declaration_1231 |
 | TS1232 | err | emitted | packages/ts_parser/src/ts_parser.zig:6470 | An_import_declaration_can_only_be_used_at_the_top_level_of_a_namespace_or_module_1232 |
-| TS1233 | err | emitted | packages/ts_parser/src/ts_parser.zig:7224<br>packages/ts_parser/src/ts_parser.zig:7315 | An_export_declaration_can_only_be_used_at_the_top_level_of_a_namespace_or_module_1233 |
+| TS1233 | err | emitted | packages/ts_parser/src/ts_parser.zig:7234<br>packages/ts_parser/src/ts_parser.zig:7325 | An_export_declaration_can_only_be_used_at_the_top_level_of_a_namespace_or_module_1233 |
 | TS1234 | err | emitted | packages/ts_parser/src/ts_parser.zig:2012 | An_ambient_module_declaration_is_only_allowed_at_the_top_level_in_a_file_1234 |
-| TS1235 | err | emitted | packages/ts_parser/src/ts_parser.zig:1636<br>packages/ts_parser/src/ts_parser.zig:16985 | A_namespace_declaration_is_only_allowed_at_the_top_level_of_a_namespace_or_module_1235 |
+| TS1235 | err | emitted | packages/ts_parser/src/ts_parser.zig:1636<br>packages/ts_parser/src/ts_parser.zig:17761 | A_namespace_declaration_is_only_allowed_at_the_top_level_of_a_namespace_or_module_1235 |
 | TS1236 | err | catalog-only |  | The_return_type_of_a_property_decorator_function_must_be_either_void_or_any_1236 |
 | TS1237 | err | catalog-only |  | The_return_type_of_a_parameter_decorator_function_must_be_either_void_or_any_1237 |
-| TS1238 | err | emitted | packages/ts_checker/src/check.zig:17585<br>packages/ts_checker/src/check.zig:17596<br>packages/ts_checker/src/check.zig:17621 | Unable_to_resolve_signature_of_class_decorator_when_called_as_an_expression_1238 |
-| TS1239 | err | emitted | packages/ts_checker/src/check.zig:18046<br>packages/ts_checker/src/check.zig:74928<br>packages/ts_checker/src/check.zig:74954 | Unable_to_resolve_signature_of_parameter_decorator_when_called_as_an_expression_1239 |
-| TS1240 | err | emitted | packages/ts_checker/src/check.zig:17908<br>packages/ts_checker/src/check.zig:18203<br>packages/ts_checker/src/check.zig:74570 | Unable_to_resolve_signature_of_property_decorator_when_called_as_an_expression_1240 |
-| TS1241 | err | emitted | packages/ts_checker/src/check.zig:17865<br>packages/ts_checker/src/check.zig:17891<br>packages/ts_checker/src/check.zig:74514 | Unable_to_resolve_signature_of_method_decorator_when_called_as_an_expression_1241 |
+| TS1238 | err | emitted | packages/ts_checker/src/check.zig:17707<br>packages/ts_checker/src/check.zig:17718<br>packages/ts_checker/src/check.zig:17743 | Unable_to_resolve_signature_of_class_decorator_when_called_as_an_expression_1238 |
+| TS1239 | err | emitted | packages/ts_checker/src/check.zig:18168<br>packages/ts_checker/src/check.zig:75339<br>packages/ts_checker/src/check.zig:75365 | Unable_to_resolve_signature_of_parameter_decorator_when_called_as_an_expression_1239 |
+| TS1240 | err | emitted | packages/ts_checker/src/check.zig:18030<br>packages/ts_checker/src/check.zig:18325<br>packages/ts_checker/src/check.zig:74981 | Unable_to_resolve_signature_of_property_decorator_when_called_as_an_expression_1240 |
+| TS1241 | err | emitted | packages/ts_checker/src/check.zig:17987<br>packages/ts_checker/src/check.zig:18013<br>packages/ts_checker/src/check.zig:74925 | Unable_to_resolve_signature_of_method_decorator_when_called_as_an_expression_1241 |
 | TS1242 | err | emitted | packages/ts_parser/src/ts_parser.zig:1906<br>packages/ts_parser/src/ts_parser.zig:5054 | abstract_modifier_can_only_appear_on_a_class_method_or_property_declaration_1242 |
 | TS1243 | err | emitted | packages/ts_parser/src/ts_parser.zig:4602 | _0_modifier_cannot_be_used_with_1_modifier_1243 |
 | TS1244 | err | emitted | packages/ts_parser/src/ts_parser.zig:4591 | Abstract_methods_can_only_appear_within_an_abstract_class_1244 |
-| TS1245 | err | emitted | packages/ts_checker/src/check.zig:19869<br>packages/ts_checker/src/check.zig:86910<br>packages/ts_checker/src/check.zig:86931 | Method_0_cannot_have_an_implementation_because_it_is_marked_abstract_1245 |
-| TS1246 | err | emitted | packages/ts_parser/src/ts_parser.zig:9928 | An_interface_property_cannot_have_an_initializer_1246 |
-| TS1247 | err | emitted | packages/ts_parser/src/ts_parser.zig:9930 | A_type_literal_property_cannot_have_an_initializer_1247 |
-| TS1248 | err | emitted | packages/ts_parser/src/ts_parser.zig:5574<br>packages/ts_parser/src/ts_parser.zig:16017 | A_class_member_cannot_have_the_0_keyword_1248 |
-| TS1249 | err | emitted | packages/ts_checker/src/check.zig:17854<br>packages/ts_checker/src/check.zig:74878 | A_decorator_can_only_decorate_a_method_implementation_not_an_overload_1249 |
-| TS1250 | err | emitted | packages/ts_checker/src/check.zig:5514<br>packages/ts_checker/src/check.zig:96839<br>packages/ts_checker/src/check.zig:96887 | Function_declarations_are_not_allowed_inside_blocks_in_strict_mode_when_targeting_ES5_1250 |
-| TS1251 | err | emitted | packages/ts_checker/src/check.zig:5510<br>packages/ts_checker/src/check.zig:5516<br>packages/ts_checker/src/check.zig:96855 | Function_declarations_are_not_allowed_inside_blocks_in_strict_mode_when_targeting_ES5_Class_definiti_1251 |
-| TS1252 | err | emitted | packages/ts_checker/src/check.zig:5512<br>packages/ts_checker/src/check.zig:5517<br>packages/ts_checker/src/check.zig:96873 | Function_declarations_are_not_allowed_inside_blocks_in_strict_mode_when_targeting_ES5_Modules_are_au_1252 |
+| TS1245 | err | emitted | packages/ts_checker/src/check.zig:19991<br>packages/ts_checker/src/check.zig:87459<br>packages/ts_checker/src/check.zig:87480 | Method_0_cannot_have_an_implementation_because_it_is_marked_abstract_1245 |
+| TS1246 | err | emitted | packages/ts_parser/src/ts_parser.zig:9938 | An_interface_property_cannot_have_an_initializer_1246 |
+| TS1247 | err | emitted | packages/ts_parser/src/ts_parser.zig:9940 | A_type_literal_property_cannot_have_an_initializer_1247 |
+| TS1248 | err | emitted | packages/ts_parser/src/ts_parser.zig:5574<br>packages/ts_parser/src/ts_parser.zig:16793 | A_class_member_cannot_have_the_0_keyword_1248 |
+| TS1249 | err | emitted | packages/ts_checker/src/check.zig:17976<br>packages/ts_checker/src/check.zig:75289 | A_decorator_can_only_decorate_a_method_implementation_not_an_overload_1249 |
+| TS1250 | err | emitted | packages/ts_checker/src/check.zig:5577<br>packages/ts_checker/src/check.zig:97388<br>packages/ts_checker/src/check.zig:97436 | Function_declarations_are_not_allowed_inside_blocks_in_strict_mode_when_targeting_ES5_1250 |
+| TS1251 | err | emitted | packages/ts_checker/src/check.zig:5573<br>packages/ts_checker/src/check.zig:5579<br>packages/ts_checker/src/check.zig:97404 | Function_declarations_are_not_allowed_inside_blocks_in_strict_mode_when_targeting_ES5_Class_definiti_1251 |
+| TS1252 | err | emitted | packages/ts_checker/src/check.zig:5575<br>packages/ts_checker/src/check.zig:5580<br>packages/ts_checker/src/check.zig:97422 | Function_declarations_are_not_allowed_inside_blocks_in_strict_mode_when_targeting_ES5_Modules_are_au_1252 |
 | TS1253 | err | emitted | packages/ts_parser/src/ts_parser.zig:4593 | Abstract_properties_can_only_appear_within_an_abstract_class_1253 |
-| TS1254 | err | emitted | packages/ts_checker/src/check.zig:8061<br>packages/ts_checker/src/check.zig:39804<br>packages/ts_checker/src/check.zig:95386 | A_const_initializer_in_an_ambient_context_must_be_a_string_or_numeric_literal_or_literal_enum_refere_1254 |
+| TS1254 | err | emitted | packages/ts_checker/src/check.zig:8124<br>packages/ts_checker/src/check.zig:40058<br>packages/ts_checker/src/check.zig:95935 | A_const_initializer_in_an_ambient_context_must_be_a_string_or_numeric_literal_or_literal_enum_refere_1254 |
 | TS1255 | err | emitted | packages/ts_parser/src/ts_parser.zig:5621<br>packages/ts_parser/src/ts_parser.zig:5651 | A_definite_assignment_assertion_is_not_permitted_in_this_context_1255 |
-| TS1257 | err | emitted | packages/ts_parser/src/ts_parser.zig:9491 | A_required_element_cannot_follow_an_optional_element_1257 |
-| TS1258 | err | emitted | packages/ts_parser/src/ts_parser.zig:7161 | A_default_export_must_be_at_the_top_level_of_a_file_or_module_declaration_1258 |
+| TS1257 | err | emitted | packages/ts_parser/src/ts_parser.zig:9501 | A_required_element_cannot_follow_an_optional_element_1257 |
+| TS1258 | err | emitted | packages/ts_parser/src/ts_parser.zig:7171 | A_default_export_must_be_at_the_top_level_of_a_file_or_module_declaration_1258 |
 | TS1259 | err | catalog-only |  | Module_0_can_only_be_default_imported_using_the_1_flag_1259 |
 | TS1260 | err | emitted | packages/ts_parser/src/ts_parser.zig:428 | Keywords_cannot_contain_escape_characters_1260 |
 | TS1261 | err | catalog-only |  | Already_included_file_name_0_differs_from_file_name_1_only_in_casing_1261 |
 | TS1262 | err | emitted | packages/ts_parser/src/ts_parser.zig:678<br>packages/ts_parser/src/ts_parser.zig:6514<br>packages/ts_parser/src/ts_parser.zig:6595 | Identifier_expected_0_is_a_reserved_word_at_the_top_level_of_a_module_1262 |
 | TS1263 | err | emitted | packages/ts_parser/src/ts_parser.zig:5586<br>packages/ts_parser/src/ts_parser.zig:5612<br>packages/ts_parser/src/ts_parser.zig:5643 | Declarations_with_initializers_cannot_also_have_definite_assignment_assertions_1263 |
 | TS1264 | err | emitted | packages/ts_parser/src/ts_parser.zig:5588<br>packages/ts_parser/src/ts_parser.zig:5616<br>packages/ts_parser/src/ts_parser.zig:5647 | Declarations_with_definite_assignment_assertions_must_also_have_type_annotations_1264 |
-| TS1265 | err | emitted | packages/ts_parser/src/ts_parser.zig:9480<br>packages/ts_parser/src/ts_parser.zig:17600<br>packages/ts_parser/src/ts_parser.zig:17629 | A_rest_element_cannot_follow_another_rest_element_1265 |
-| TS1266 | err | emitted | packages/ts_parser/src/ts_parser.zig:9485<br>packages/ts_parser/src/ts_parser.zig:17604<br>packages/ts_parser/src/ts_parser.zig:17625 | An_optional_element_cannot_follow_a_rest_element_1266 |
-| TS1267 | err | emitted | packages/ts_checker/src/check.zig:20324<br>packages/ts_checker/src/check.zig:86852 | Property_0_cannot_have_an_initializer_because_it_is_marked_abstract_1267 |
-| TS1268 | err | emitted | packages/ts_parser/src/ts_parser.zig:10450 | An_index_signature_parameter_type_must_be_string_number_symbol_or_a_template_literal_type_1268 |
-| TS1269 | err | catalog-only |  | Cannot_use_export_import_on_a_type_or_type_only_namespace_when_0_is_enabled_1269 |
-| TS1270 | err | emitted | packages/ts_checker/src/check.zig:18163<br>packages/ts_checker/src/check.zig:74533<br>packages/ts_checker/src/check.zig:74554 | Decorator_function_return_type_0_is_not_assignable_to_type_1_1270 |
-| TS1271 | err | emitted | packages/ts_checker/src/check.zig:18097<br>packages/ts_checker/src/check.zig:18098<br>packages/ts_checker/src/check.zig:100273 | Decorator_function_return_type_is_0_but_is_expected_to_be_void_or_any_1271 |
+| TS1265 | err | emitted | packages/ts_parser/src/ts_parser.zig:9490<br>packages/ts_parser/src/ts_parser.zig:18376<br>packages/ts_parser/src/ts_parser.zig:18405 | A_rest_element_cannot_follow_another_rest_element_1265 |
+| TS1266 | err | emitted | packages/ts_parser/src/ts_parser.zig:9495<br>packages/ts_parser/src/ts_parser.zig:18380<br>packages/ts_parser/src/ts_parser.zig:18401 | An_optional_element_cannot_follow_a_rest_element_1266 |
+| TS1267 | err | emitted | packages/ts_checker/src/check.zig:20446<br>packages/ts_checker/src/check.zig:87401 | Property_0_cannot_have_an_initializer_because_it_is_marked_abstract_1267 |
+| TS1268 | err | emitted | packages/ts_parser/src/ts_parser.zig:10460 | An_index_signature_parameter_type_must_be_string_number_symbol_or_a_template_literal_type_1268 |
+| TS1269 | err | emitted | packages/ts_checker/src/check.zig:29057<br>packages/ts_checker/src/check.zig:101704<br>packages/ts_checker/src/check.zig:101706 | Cannot_use_export_import_on_a_type_or_type_only_namespace_when_0_is_enabled_1269 |
+| TS1270 | err | emitted | packages/ts_checker/src/check.zig:18285<br>packages/ts_checker/src/check.zig:74944<br>packages/ts_checker/src/check.zig:74965 | Decorator_function_return_type_0_is_not_assignable_to_type_1_1270 |
+| TS1271 | err | emitted | packages/ts_checker/src/check.zig:18219<br>packages/ts_checker/src/check.zig:18220<br>packages/ts_checker/src/check.zig:100822 | Decorator_function_return_type_is_0_but_is_expected_to_be_void_or_any_1271 |
 | TS1272 | err | catalog-only |  | A_type_referenced_in_a_decorated_signature_must_be_imported_with_import_type_or_a_namespace_import_w_1272 |
-| TS1273 | err | emitted | packages/ts_parser/src/ts_parser.zig:10671<br>packages/ts_parser/src/ts_parser.zig:1167<br>packages/ts_parser/src/ts_parser.zig:19917 | _0_modifier_cannot_appear_on_a_type_parameter_1273 |
-| TS1274 | err | emitted | packages/ts_parser/src/ts_parser.zig:10677<br>packages/ts_parser/src/ts_parser.zig:19920 | _0_modifier_can_only_appear_on_a_type_parameter_of_a_class_interface_or_type_alias_1274 |
-| TS1275 | err | emitted | packages/ts_parser/src/ts_parser.zig:5662<br>packages/ts_parser/src/ts_parser.zig:20223 | accessor_modifier_can_only_appear_on_a_property_declaration_1275 |
-| TS1276 | err | emitted | packages/ts_parser/src/ts_parser.zig:5657<br>packages/ts_parser/src/ts_parser.zig:20208 | An_accessor_property_cannot_be_declared_optional_1276 |
-| TS1277 | err | emitted | packages/ts_parser/src/ts_parser.zig:10683<br>packages/ts_parser/src/ts_parser.zig:1176<br>packages/ts_parser/src/ts_parser.zig:19924 | _0_modifier_can_only_appear_on_a_type_parameter_of_a_function_method_or_class_1277 |
+| TS1273 | err | emitted | packages/ts_parser/src/ts_parser.zig:10681<br>packages/ts_parser/src/ts_parser.zig:1167<br>packages/ts_parser/src/ts_parser.zig:20693 | _0_modifier_cannot_appear_on_a_type_parameter_1273 |
+| TS1274 | err | emitted | packages/ts_parser/src/ts_parser.zig:10687<br>packages/ts_parser/src/ts_parser.zig:20696 | _0_modifier_can_only_appear_on_a_type_parameter_of_a_class_interface_or_type_alias_1274 |
+| TS1275 | err | emitted | packages/ts_parser/src/ts_parser.zig:5662<br>packages/ts_parser/src/ts_parser.zig:20999 | accessor_modifier_can_only_appear_on_a_property_declaration_1275 |
+| TS1276 | err | emitted | packages/ts_parser/src/ts_parser.zig:5657<br>packages/ts_parser/src/ts_parser.zig:20984 | An_accessor_property_cannot_be_declared_optional_1276 |
+| TS1277 | err | emitted | packages/ts_parser/src/ts_parser.zig:10693<br>packages/ts_parser/src/ts_parser.zig:1176<br>packages/ts_parser/src/ts_parser.zig:20700 | _0_modifier_can_only_appear_on_a_type_parameter_of_a_function_method_or_class_1277 |
 | TS1278 | err | catalog-only |  | The_runtime_will_invoke_the_decorator_with_1_arguments_but_the_decorator_expects_0_1278 |
 | TS1279 | err | catalog-only |  | The_runtime_will_invoke_the_decorator_with_1_arguments_but_the_decorator_expects_at_least_0_1279 |
-| TS1280 | err | emitted | packages/ts_checker/src/check.zig:26734<br>packages/ts_checker/src/check.zig:100547<br>packages/ts_checker/src/check.zig:100567 | Namespaces_are_not_allowed_in_global_script_files_when_0_is_enabled_If_this_file_is_not_intended_to__1280 |
+| TS1280 | err | emitted | packages/ts_checker/src/check.zig:26856<br>packages/ts_checker/src/check.zig:101096<br>packages/ts_checker/src/check.zig:101116 | Namespaces_are_not_allowed_in_global_script_files_when_0_is_enabled_If_this_file_is_not_intended_to__1280 |
 | TS1281 | err | catalog-only |  | Cannot_access_0_from_another_file_without_qualification_when_1_is_enabled_Use_2_instead_1281 |
-| TS1282 | err | emitted | packages/ts_checker/src/check.zig:7375<br>packages/ts_checker/src/check.zig:97680 | An_export_declaration_must_reference_a_value_when_verbatimModuleSyntax_is_enabled_but_0_only_refers__1282 |
-| TS1283 | err | emitted | packages/ts_checker/src/check.zig:7373<br>packages/ts_checker/src/check.zig:97699 | An_export_declaration_must_reference_a_real_value_when_verbatimModuleSyntax_is_enabled_but_0_resolve_1283 |
-| TS1284 | err | emitted | packages/ts_checker/src/check.zig:7371<br>packages/ts_checker/src/check.zig:97715<br>packages/ts_checker/src/check.zig:97749 | An_export_default_must_reference_a_value_when_verbatimModuleSyntax_is_enabled_but_0_only_refers_to_a_1284 |
-| TS1285 | err | emitted | packages/ts_checker/src/check.zig:7371<br>packages/ts_checker/src/check.zig:97734<br>packages/ts_checker/src/check.zig:97750 | An_export_default_must_reference_a_real_value_when_verbatimModuleSyntax_is_enabled_but_0_resolves_to_1285 |
-| TS1286 | err | emitted | packages/ts_checker/src/check.zig:26617<br>packages/ts_checker/src/check.zig:26634 | ESM_syntax_is_not_allowed_in_a_CommonJS_module_when_verbatimModuleSyntax_is_enabled_1286 |
-| TS1287 | err | emitted | packages/ts_checker/src/check.zig:26676<br>packages/ts_checker/src/check.zig:100599<br>packages/ts_checker/src/check.zig:100618 | A_top_level_export_modifier_cannot_be_used_on_value_declarations_in_a_CommonJS_module_when_verbatimM_1287 |
-| TS1288 | err | emitted | packages/ts_checker/src/check.zig:28905<br>packages/ts_checker/src/check.zig:97772<br>packages/ts_checker/src/check.zig:97792 | An_import_alias_cannot_resolve_to_a_type_or_type_only_declaration_when_verbatimModuleSyntax_is_enabl_1288 |
-| TS1289 | err | emitted | packages/ts_checker/src/check.zig:7441<br>packages/ts_checker/src/check.zig:97851 | _0_resolves_to_a_type_only_declaration_and_must_be_marked_type_only_in_this_file_before_re_exporting_1289 |
-| TS1290 | err | emitted | packages/ts_checker/src/check.zig:7439<br>packages/ts_checker/src/check.zig:97873 | _0_resolves_to_a_type_only_declaration_and_must_be_marked_type_only_in_this_file_before_re_exporting_1290 |
-| TS1291 | err | emitted | packages/ts_checker/src/check.zig:7443<br>packages/ts_checker/src/check.zig:97810 | _0_resolves_to_a_type_and_must_be_marked_type_only_in_this_file_before_re_exporting_when_1_is_enable_1291 |
-| TS1292 | err | emitted | packages/ts_checker/src/check.zig:7439<br>packages/ts_checker/src/check.zig:97829 | _0_resolves_to_a_type_and_must_be_marked_type_only_in_this_file_before_re_exporting_when_1_is_enable_1292 |
-| TS1293 | err | emitted | packages/ts_checker/src/check.zig:26619<br>packages/ts_checker/src/check.zig:71307 | ESM_syntax_is_not_allowed_in_a_CommonJS_module_when_module_is_set_to_preserve_1293 |
-| TS1300 | err | emitted | packages/ts_checker/src/check.zig:11154<br>packages/ts_checker/src/check.zig:78064 | with_statements_are_not_allowed_in_an_async_function_block_1300 |
-| TS1308 | err | emitted | packages/ts_checker/src/check.zig:46475<br>packages/ts_checker/src/check.zig:46481<br>packages/ts_driver/src/ts_driver.zig:1877 | await_expressions_are_only_allowed_within_async_functions_and_at_the_top_levels_of_modules_1308 |
-| TS1309 | err | emitted | packages/ts_checker/src/check.zig:46502<br>packages/ts_checker/src/check.zig:46508<br>packages/ts_checker/src/check.zig:93811 | The_current_file_is_a_CommonJS_module_and_cannot_use_await_at_the_top_level_1309 |
-| TS1312 | err | emitted | packages/ts_checker/src/check.zig:67504<br>packages/ts_checker/src/check.zig:89005<br>packages/ts_checker/src/check.zig:89027 | Did_you_mean_to_use_a_Colon_An_can_only_follow_a_property_name_when_the_containing_object_literal_is_1312 |
+| TS1282 | err | emitted | packages/ts_checker/src/check.zig:7438<br>packages/ts_checker/src/check.zig:98229 | An_export_declaration_must_reference_a_value_when_verbatimModuleSyntax_is_enabled_but_0_only_refers__1282 |
+| TS1283 | err | emitted | packages/ts_checker/src/check.zig:7436<br>packages/ts_checker/src/check.zig:98248 | An_export_declaration_must_reference_a_real_value_when_verbatimModuleSyntax_is_enabled_but_0_resolve_1283 |
+| TS1284 | err | emitted | packages/ts_checker/src/check.zig:7434<br>packages/ts_checker/src/check.zig:98264<br>packages/ts_checker/src/check.zig:98298 | An_export_default_must_reference_a_value_when_verbatimModuleSyntax_is_enabled_but_0_only_refers_to_a_1284 |
+| TS1285 | err | emitted | packages/ts_checker/src/check.zig:7434<br>packages/ts_checker/src/check.zig:98283<br>packages/ts_checker/src/check.zig:98299 | An_export_default_must_reference_a_real_value_when_verbatimModuleSyntax_is_enabled_but_0_resolves_to_1285 |
+| TS1286 | err | emitted | packages/ts_checker/src/check.zig:26739<br>packages/ts_checker/src/check.zig:26756 | ESM_syntax_is_not_allowed_in_a_CommonJS_module_when_verbatimModuleSyntax_is_enabled_1286 |
+| TS1287 | err | emitted | packages/ts_checker/src/check.zig:26798<br>packages/ts_checker/src/check.zig:101148<br>packages/ts_checker/src/check.zig:101167 | A_top_level_export_modifier_cannot_be_used_on_value_declarations_in_a_CommonJS_module_when_verbatimM_1287 |
+| TS1288 | err | emitted | packages/ts_checker/src/check.zig:29145<br>packages/ts_checker/src/check.zig:98321<br>packages/ts_checker/src/check.zig:98341 | An_import_alias_cannot_resolve_to_a_type_or_type_only_declaration_when_verbatimModuleSyntax_is_enabl_1288 |
+| TS1289 | err | emitted | packages/ts_checker/src/check.zig:7504<br>packages/ts_checker/src/check.zig:98400 | _0_resolves_to_a_type_only_declaration_and_must_be_marked_type_only_in_this_file_before_re_exporting_1289 |
+| TS1290 | err | emitted | packages/ts_checker/src/check.zig:7502<br>packages/ts_checker/src/check.zig:98422 | _0_resolves_to_a_type_only_declaration_and_must_be_marked_type_only_in_this_file_before_re_exporting_1290 |
+| TS1291 | err | emitted | packages/ts_checker/src/check.zig:7506<br>packages/ts_checker/src/check.zig:98359 | _0_resolves_to_a_type_and_must_be_marked_type_only_in_this_file_before_re_exporting_when_1_is_enable_1291 |
+| TS1292 | err | emitted | packages/ts_checker/src/check.zig:7502<br>packages/ts_checker/src/check.zig:98378 | _0_resolves_to_a_type_and_must_be_marked_type_only_in_this_file_before_re_exporting_when_1_is_enable_1292 |
+| TS1293 | err | emitted | packages/ts_checker/src/check.zig:26741<br>packages/ts_checker/src/check.zig:71718 | ESM_syntax_is_not_allowed_in_a_CommonJS_module_when_module_is_set_to_preserve_1293 |
+| TS1300 | err | emitted | packages/ts_checker/src/check.zig:11217<br>packages/ts_checker/src/check.zig:78613 | with_statements_are_not_allowed_in_an_async_function_block_1300 |
+| TS1308 | err | emitted | packages/ts_checker/src/check.zig:46756<br>packages/ts_checker/src/check.zig:46762<br>packages/ts_driver/src/ts_driver.zig:1903 | await_expressions_are_only_allowed_within_async_functions_and_at_the_top_levels_of_modules_1308 |
+| TS1309 | err | emitted | packages/ts_checker/src/check.zig:46783<br>packages/ts_checker/src/check.zig:46789<br>packages/ts_checker/src/check.zig:94360 | The_current_file_is_a_CommonJS_module_and_cannot_use_await_at_the_top_level_1309 |
+| TS1312 | err | emitted | packages/ts_checker/src/check.zig:67915<br>packages/ts_checker/src/check.zig:89554<br>packages/ts_checker/src/check.zig:89576 | Did_you_mean_to_use_a_Colon_An_can_only_follow_a_property_name_when_the_containing_object_literal_is_1312 |
 | TS1313 | err | emitted | packages/ts_parser/src/ts_parser.zig:2656 | The_body_of_an_if_statement_cannot_be_the_empty_statement_1313 |
-| TS1314 | err | emitted | packages/ts_parser/src/ts_parser.zig:7115 | Global_module_exports_may_only_appear_in_module_files_1314 |
-| TS1315 | err | emitted | packages/ts_parser/src/ts_parser.zig:7113 | Global_module_exports_may_only_appear_in_declaration_files_1315 |
-| TS1316 | err | emitted | packages/ts_parser/src/ts_parser.zig:7111 | Global_module_exports_may_only_appear_at_top_level_1316 |
+| TS1314 | err | emitted | packages/ts_parser/src/ts_parser.zig:7125 | Global_module_exports_may_only_appear_in_module_files_1314 |
+| TS1315 | err | emitted | packages/ts_parser/src/ts_parser.zig:7123 | Global_module_exports_may_only_appear_in_declaration_files_1315 |
+| TS1316 | err | emitted | packages/ts_parser/src/ts_parser.zig:7121 | Global_module_exports_may_only_appear_at_top_level_1316 |
 | TS1317 | err | emitted | packages/ts_parser/src/ts_parser.zig:3768 | A_parameter_property_cannot_be_declared_using_a_rest_parameter_1317 |
-| TS1318 | err | emitted | packages/ts_checker/src/check.zig:19737<br>packages/ts_checker/src/check.zig:86853<br>packages/ts_checker/src/check.zig:86879 | An_abstract_accessor_cannot_have_an_implementation_1318 |
-| TS1319 | err | emitted | packages/ts_parser/src/ts_parser.zig:7164 | A_default_export_can_only_be_used_in_an_ECMAScript_style_module_1319 |
+| TS1318 | err | emitted | packages/ts_checker/src/check.zig:19859<br>packages/ts_checker/src/check.zig:87402<br>packages/ts_checker/src/check.zig:87428 | An_abstract_accessor_cannot_have_an_implementation_1318 |
+| TS1319 | err | emitted | packages/ts_parser/src/ts_parser.zig:7174 | A_default_export_can_only_be_used_in_an_ECMAScript_style_module_1319 |
 | TS1320 | err | catalog-only |  | Type_of_await_operand_must_either_be_a_valid_promise_or_must_not_contain_a_callable_then_member_1320 |
 | TS1321 | err | catalog-only |  | Type_of_yield_operand_in_an_async_generator_must_either_be_a_valid_promise_or_must_not_contain_a_cal_1321 |
 | TS1322 | err | catalog-only |  | Type_of_iterated_elements_of_a_yield_Asterisk_operand_must_either_be_a_valid_promise_or_must_not_con_1322 |
-| TS1323 | err | emitted | packages/ts_checker/src/check.zig:44630<br>packages/ts_checker/src/check.zig:92855 | Dynamic_imports_are_only_supported_when_the_module_flag_is_set_to_es2020_es2022_esnext_commonjs_amd__1323 |
-| TS1324 | err | emitted | packages/ts_checker/src/check.zig:44634<br>packages/ts_checker/src/check.zig:92886<br>packages/ts_checker/src/check.zig:92924 | Dynamic_imports_only_support_a_second_argument_when_the_module_option_is_set_to_esnext_node16_nodene_1324 |
-| TS1325 | err | emitted | packages/ts_checker/src/check.zig:44651<br>packages/ts_checker/src/check.zig:92906<br>packages/ts_checker/src/check.zig:92925 | Argument_of_dynamic_import_cannot_be_spread_element_1325 |
-| TS1326 | err | emitted | packages/ts_checker/src/check.zig:44627<br>packages/ts_checker/src/check.zig:92872 | This_use_of_import_is_invalid_import_calls_can_be_written_but_they_must_have_parentheses_and_cannot__1326 |
+| TS1323 | err | emitted | packages/ts_checker/src/check.zig:44911<br>packages/ts_checker/src/check.zig:93404 | Dynamic_imports_are_only_supported_when_the_module_flag_is_set_to_es2020_es2022_esnext_commonjs_amd__1323 |
+| TS1324 | err | emitted | packages/ts_checker/src/check.zig:44915<br>packages/ts_checker/src/check.zig:93435<br>packages/ts_checker/src/check.zig:93473 | Dynamic_imports_only_support_a_second_argument_when_the_module_option_is_set_to_esnext_node16_nodene_1324 |
+| TS1325 | err | emitted | packages/ts_checker/src/check.zig:44932<br>packages/ts_checker/src/check.zig:93455<br>packages/ts_checker/src/check.zig:93474 | Argument_of_dynamic_import_cannot_be_spread_element_1325 |
+| TS1326 | err | emitted | packages/ts_checker/src/check.zig:44908<br>packages/ts_checker/src/check.zig:93421 | This_use_of_import_is_invalid_import_calls_can_be_written_but_they_must_have_parentheses_and_cannot__1326 |
 | TS1327 | err | catalog-only |  | String_literal_with_double_quotes_expected_1327 |
 | TS1328 | err | catalog-only |  | Property_value_can_only_be_string_literal_numeric_literal_true_false_null_object_literal_or_array_li_1328 |
-| TS1329 | err | emitted | packages/ts_checker/src/check.zig:18124<br>packages/ts_checker/src/check.zig:74496<br>packages/ts_checker/src/check.zig:74513 | _0_accepts_too_few_arguments_to_be_used_as_a_decorator_here_Did_you_mean_to_call_it_first_and_write__1329 |
+| TS1329 | err | emitted | packages/ts_checker/src/check.zig:18246<br>packages/ts_checker/src/check.zig:74907<br>packages/ts_checker/src/check.zig:74924 | _0_accepts_too_few_arguments_to_be_used_as_a_decorator_here_Did_you_mean_to_call_it_first_and_write__1329 |
 | TS1330 | err | catalog-only |  | A_property_of_an_interface_or_type_literal_whose_type_is_a_unique_symbol_type_must_be_readonly_1330 |
 | TS1331 | err | catalog-only |  | A_property_of_a_class_whose_type_is_a_unique_symbol_type_must_be_both_static_and_readonly_1331 |
 | TS1332 | err | catalog-only |  | A_variable_whose_type_is_a_unique_symbol_type_must_be_const_1332 |
@@ -311,45 +311,45 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1339 | err | catalog-only |  | Module_0_does_not_refer_to_a_value_but_is_used_as_a_value_here_1339 |
 | TS1340 | err | catalog-only |  | Module_0_does_not_refer_to_a_type_but_is_used_as_a_type_here_Did_you_mean_typeof_import_0_1340 |
 | TS1341 | err | emitted | packages/ts_parser/src/ts_parser.zig:4767 | Class_constructor_may_not_be_an_accessor_1341 |
-| TS1343 | err | emitted | packages/ts_checker/src/check.zig:46797<br>packages/ts_checker/src/check.zig:71406<br>packages/ts_checker/src/check.zig:71421 | The_import_meta_meta_property_is_only_allowed_when_the_module_option_is_es2020_es2022_esnext_system__1343 |
-| TS1344 | err | emitted | packages/ts_parser/src/ts_parser.zig:1627<br>packages/ts_parser/src/ts_parser.zig:16969<br>packages/ts_parser/src/ts_parser.zig:16984 | A_label_is_not_allowed_here_1344 |
-| TS1345 | err | emitted | packages/ts_checker/src/check.zig:59529 | An_expression_of_type_void_cannot_be_tested_for_truthiness_1345 |
-| TS1346 | err | emitted | packages/ts_checker/src/check.zig:8816<br>packages/ts_checker/src/check.zig:81595 | This_parameter_is_not_allowed_with_use_strict_directive_1346 |
-| TS1347 | err | emitted | packages/ts_checker/src/check.zig:8819<br>packages/ts_checker/src/check.zig:81596 | use_strict_directive_cannot_be_used_with_non_simple_parameter_list_1347 |
+| TS1343 | err | emitted | packages/ts_checker/src/check.zig:47078<br>packages/ts_checker/src/check.zig:71817<br>packages/ts_checker/src/check.zig:71832 | The_import_meta_meta_property_is_only_allowed_when_the_module_option_is_es2020_es2022_esnext_system__1343 |
+| TS1344 | err | emitted | packages/ts_parser/src/ts_parser.zig:1627<br>packages/ts_parser/src/ts_parser.zig:17745<br>packages/ts_parser/src/ts_parser.zig:17760 | A_label_is_not_allowed_here_1344 |
+| TS1345 | err | emitted | packages/ts_checker/src/check.zig:59810 | An_expression_of_type_void_cannot_be_tested_for_truthiness_1345 |
+| TS1346 | err | emitted | packages/ts_checker/src/check.zig:8879<br>packages/ts_checker/src/check.zig:82144 | This_parameter_is_not_allowed_with_use_strict_directive_1346 |
+| TS1347 | err | emitted | packages/ts_checker/src/check.zig:8882<br>packages/ts_checker/src/check.zig:82145 | use_strict_directive_cannot_be_used_with_non_simple_parameter_list_1347 |
 | TS1348 | err | catalog-only |  | Non_simple_parameter_declared_here_1348 |
 | TS1349 | err | catalog-only |  | use_strict_directive_used_here_1349 |
 | TS1350 | message | catalog-only |  | Print_the_final_configuration_instead_of_building_1350 |
-| TS1351 | err | emitted | packages/ts_driver/src/ts_driver.zig:1668<br>packages/ts_driver/src/ts_driver.zig:3479 | An_identifier_or_keyword_cannot_immediately_follow_a_numeric_literal_1351 |
-| TS1352 | err | emitted | packages/ts_driver/src/ts_driver.zig:1671<br>packages/ts_driver/src/ts_driver.zig:3473 | A_bigint_literal_cannot_use_exponential_notation_1352 |
-| TS1353 | err | emitted | packages/ts_driver/src/ts_driver.zig:1674<br>packages/ts_driver/src/ts_driver.zig:3476 | A_bigint_literal_must_be_an_integer_1353 |
-| TS1354 | err | emitted | packages/ts_checker/src/check.zig:35722<br>packages/ts_checker/src/check.zig:80373 | readonly_type_modifier_is_only_permitted_on_array_and_tuple_literal_types_1354 |
+| TS1351 | err | emitted | packages/ts_driver/src/ts_driver.zig:1694<br>packages/ts_driver/src/ts_driver.zig:3560 | An_identifier_or_keyword_cannot_immediately_follow_a_numeric_literal_1351 |
+| TS1352 | err | emitted | packages/ts_driver/src/ts_driver.zig:1697<br>packages/ts_driver/src/ts_driver.zig:3554 | A_bigint_literal_cannot_use_exponential_notation_1352 |
+| TS1353 | err | emitted | packages/ts_driver/src/ts_driver.zig:1700<br>packages/ts_driver/src/ts_driver.zig:3557 | A_bigint_literal_must_be_an_integer_1353 |
+| TS1354 | err | emitted | packages/ts_checker/src/check.zig:35976<br>packages/ts_checker/src/check.zig:80922 | readonly_type_modifier_is_only_permitted_on_array_and_tuple_literal_types_1354 |
 | TS1355 | err | catalog-only |  | A_const_assertions_can_only_be_applied_to_references_to_enum_members_or_string_number_boolean_array__1355 |
 | TS1356 | err | catalog-only |  | Did_you_mean_to_mark_this_function_as_async_1356 |
-| TS1357 | err | emitted | packages/ts_parser/src/ts_parser.zig:6302<br>packages/ts_parser/src/ts_parser.zig:6334<br>packages/ts_parser/src/ts_parser.zig:22909 | An_enum_member_name_must_be_followed_by_a_or_1357 |
-| TS1358 | err | emitted | packages/ts_parser/src/ts_parser.zig:13309<br>packages/ts_parser/src/ts_parser.zig:13426<br>packages/ts_parser/src/ts_parser.zig:16220 | Tagged_template_expressions_are_not_permitted_in_an_optional_chain_1358 |
-| TS1359 | err | emitted | packages/ts_checker/src/check.zig:4845<br>packages/ts_checker/src/check.zig:4853<br>packages/ts_checker/src/check.zig:4861 | Identifier_expected_0_is_a_reserved_word_that_cannot_be_used_here_1359 |
-| TS1360 | err | emitted | packages/ts_checker/src/check.zig:41987<br>packages/ts_checker/src/check.zig:41991<br>packages/ts_checker/src/check.zig:45833 | Type_0_does_not_satisfy_the_expected_type_1_1360 |
-| TS1361 | err | emitted | packages/ts_checker/src/check.zig:51770<br>packages/ts_checker/src/check.zig:72868 | _0_cannot_be_used_as_a_value_because_it_was_imported_using_import_type_1361 |
+| TS1357 | err | emitted | packages/ts_parser/src/ts_parser.zig:6302<br>packages/ts_parser/src/ts_parser.zig:6334<br>packages/ts_parser/src/ts_parser.zig:23896 | An_enum_member_name_must_be_followed_by_a_or_1357 |
+| TS1358 | err | emitted | packages/ts_parser/src/ts_parser.zig:13940<br>packages/ts_parser/src/ts_parser.zig:14057<br>packages/ts_parser/src/ts_parser.zig:16996 | Tagged_template_expressions_are_not_permitted_in_an_optional_chain_1358 |
+| TS1359 | err | emitted | packages/ts_checker/src/check.zig:4908<br>packages/ts_checker/src/check.zig:4916<br>packages/ts_checker/src/check.zig:4924 | Identifier_expected_0_is_a_reserved_word_that_cannot_be_used_here_1359 |
+| TS1360 | err | emitted | packages/ts_checker/src/check.zig:42268<br>packages/ts_checker/src/check.zig:42272<br>packages/ts_checker/src/check.zig:46114 | Type_0_does_not_satisfy_the_expected_type_1_1360 |
+| TS1361 | err | emitted | packages/ts_checker/src/check.zig:52051<br>packages/ts_checker/src/check.zig:73279 | _0_cannot_be_used_as_a_value_because_it_was_imported_using_import_type_1361 |
 | TS1362 | err | catalog-only |  | _0_cannot_be_used_as_a_value_because_it_was_exported_using_export_type_1362 |
 | TS1363 | err | emitted | packages/ts_parser/src/ts_parser.zig:6722 | A_type_only_import_can_specify_a_default_import_or_named_bindings_but_not_both_1363 |
 | TS1364 | message | catalog-only |  | Convert_to_type_only_export_1364 |
 | TS1365 | message | catalog-only |  | Convert_all_re_exported_types_to_type_only_exports_1365 |
 | TS1366 | message | catalog-only |  | Split_into_two_separate_import_declarations_1366 |
 | TS1367 | message | catalog-only |  | Split_all_invalid_type_only_imports_1367 |
-| TS1368 | err | emitted | packages/ts_parser/src/ts_parser.zig:5063<br>packages/ts_parser/src/ts_parser.zig:23903 | Class_constructor_may_not_be_a_generator_1368 |
+| TS1368 | err | emitted | packages/ts_parser/src/ts_parser.zig:5063<br>packages/ts_parser/src/ts_parser.zig:24890 | Class_constructor_may_not_be_a_generator_1368 |
 | TS1369 | message | catalog-only |  | Did_you_mean_0_1369 |
-| TS1375 | err | emitted | packages/ts_checker/src/check.zig:46538<br>packages/ts_checker/src/check.zig:46544<br>packages/ts_checker/src/check.zig:93817 | await_expressions_are_only_allowed_at_the_top_level_of_a_file_when_that_file_is_a_module_but_this_fi_1375 |
+| TS1375 | err | emitted | packages/ts_checker/src/check.zig:46819<br>packages/ts_checker/src/check.zig:46825<br>packages/ts_checker/src/check.zig:94366 | await_expressions_are_only_allowed_at_the_top_level_of_a_file_when_that_file_is_a_module_but_this_fi_1375 |
 | TS1376 | message | catalog-only |  | _0_was_imported_here_1376 |
 | TS1377 | message | catalog-only |  | _0_was_exported_here_1377 |
-| TS1378 | err | emitted | packages/ts_checker/src/check.zig:46520<br>packages/ts_checker/src/check.zig:46528<br>packages/ts_checker/src/check.zig:93766 | Top_level_await_expressions_are_only_allowed_when_the_module_option_is_set_to_es2022_esnext_system_n_1378 |
+| TS1378 | err | emitted | packages/ts_checker/src/check.zig:46801<br>packages/ts_checker/src/check.zig:46809<br>packages/ts_checker/src/check.zig:94315 | Top_level_await_expressions_are_only_allowed_when_the_module_option_is_set_to_es2022_esnext_system_n_1378 |
 | TS1379 | err | catalog-only |  | An_import_alias_cannot_reference_a_declaration_that_was_exported_using_export_type_1379 |
 | TS1380 | err | catalog-only |  | An_import_alias_cannot_reference_a_declaration_that_was_imported_using_import_type_1380 |
-| TS1381 | err | emitted | packages/ts_parser/src/ts_parser.zig:14855 | Unexpected_token_Did_you_mean_or_rbrace_1381 |
-| TS1382 | err | emitted | packages/ts_parser/src/ts_parser.zig:14854 | Unexpected_token_Did_you_mean_or_gt_1382 |
-| TS1385 | err | emitted | packages/ts_parser/src/ts_parser.zig:8507<br>packages/ts_parser/src/ts_parser.zig:23771<br>packages/ts_parser/src/ts_parser.zig:23777 | Function_type_notation_must_be_parenthesized_when_used_in_a_union_type_1385 |
-| TS1386 | err | emitted | packages/ts_parser/src/ts_parser.zig:8507<br>packages/ts_parser/src/ts_parser.zig:23783 | Constructor_type_notation_must_be_parenthesized_when_used_in_a_union_type_1386 |
-| TS1387 | err | emitted | packages/ts_parser/src/ts_parser.zig:8508<br>packages/ts_parser/src/ts_parser.zig:23789 | Function_type_notation_must_be_parenthesized_when_used_in_an_intersection_type_1387 |
-| TS1388 | err | emitted | packages/ts_parser/src/ts_parser.zig:8508<br>packages/ts_parser/src/ts_parser.zig:23795 | Constructor_type_notation_must_be_parenthesized_when_used_in_an_intersection_type_1388 |
+| TS1381 | err | emitted | packages/ts_parser/src/ts_parser.zig:15486 | Unexpected_token_Did_you_mean_or_rbrace_1381 |
+| TS1382 | err | emitted | packages/ts_parser/src/ts_parser.zig:15485 | Unexpected_token_Did_you_mean_or_gt_1382 |
+| TS1385 | err | emitted | packages/ts_parser/src/ts_parser.zig:8517<br>packages/ts_parser/src/ts_parser.zig:24758<br>packages/ts_parser/src/ts_parser.zig:24764 | Function_type_notation_must_be_parenthesized_when_used_in_a_union_type_1385 |
+| TS1386 | err | emitted | packages/ts_parser/src/ts_parser.zig:8517<br>packages/ts_parser/src/ts_parser.zig:24770 | Constructor_type_notation_must_be_parenthesized_when_used_in_a_union_type_1386 |
+| TS1387 | err | emitted | packages/ts_parser/src/ts_parser.zig:8518<br>packages/ts_parser/src/ts_parser.zig:24776 | Function_type_notation_must_be_parenthesized_when_used_in_an_intersection_type_1387 |
+| TS1388 | err | emitted | packages/ts_parser/src/ts_parser.zig:8518<br>packages/ts_parser/src/ts_parser.zig:24782 | Constructor_type_notation_must_be_parenthesized_when_used_in_an_intersection_type_1388 |
 | TS1389 | err | emitted | packages/ts_parser/src/ts_parser.zig:2490 | _0_is_not_allowed_as_a_variable_declaration_name_1389 |
 | TS1390 | err | catalog-only |  | _0_is_not_allowed_as_a_parameter_name_1390 |
 | TS1392 | err | emitted | packages/ts_parser/src/ts_parser.zig:6506 | An_import_alias_cannot_use_import_type_1392 |
@@ -391,25 +391,25 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1428 | message | catalog-only |  | File_is_output_of_project_reference_source_0_1428 |
 | TS1429 | message | catalog-only |  | File_redirects_to_file_0_1429 |
 | TS1430 | message | catalog-only |  | The_file_is_in_the_program_because_Colon_1430 |
-| TS1431 | err | emitted | packages/ts_checker/src/check.zig:11141<br>packages/ts_checker/src/check.zig:70281<br>packages/ts_checker/src/check.zig:70283 | for_await_loops_are_only_allowed_at_the_top_level_of_a_file_when_that_file_is_a_module_but_this_file_1431 |
-| TS1432 | err | emitted | packages/ts_checker/src/check.zig:11144<br>packages/ts_checker/src/check.zig:70282<br>packages/ts_checker/src/check.zig:70283 | Top_level_for_await_loops_are_only_allowed_when_the_module_option_is_set_to_es2022_esnext_system_nod_1432 |
-| TS1433 | err | emitted | packages/ts_parser/src/ts_parser.zig:3789<br>packages/ts_checker/src/check.zig:75040<br>packages/ts_parser/src/ts_parser.zig:20121 | Neither_decorators_nor_modifiers_may_be_applied_to_this_parameters_1433 |
-| TS1434 | err | emitted | packages/ts_parser/src/ts_parser.zig:5376<br>packages/ts_parser/src/ts_parser.zig:8212<br>packages/ts_parser/src/ts_parser.zig:8223 | Unexpected_keyword_or_identifier_1434 |
+| TS1431 | err | emitted | packages/ts_checker/src/check.zig:11204<br>packages/ts_checker/src/check.zig:70692<br>packages/ts_checker/src/check.zig:70694 | for_await_loops_are_only_allowed_at_the_top_level_of_a_file_when_that_file_is_a_module_but_this_file_1431 |
+| TS1432 | err | emitted | packages/ts_checker/src/check.zig:11207<br>packages/ts_checker/src/check.zig:70693<br>packages/ts_checker/src/check.zig:70694 | Top_level_for_await_loops_are_only_allowed_when_the_module_option_is_set_to_es2022_esnext_system_nod_1432 |
+| TS1433 | err | emitted | packages/ts_parser/src/ts_parser.zig:3789<br>packages/ts_checker/src/check.zig:75451<br>packages/ts_parser/src/ts_parser.zig:20897 | Neither_decorators_nor_modifiers_may_be_applied_to_this_parameters_1433 |
+| TS1434 | err | emitted | packages/ts_parser/src/ts_parser.zig:5376<br>packages/ts_parser/src/ts_parser.zig:8222<br>packages/ts_parser/src/ts_parser.zig:8233 | Unexpected_keyword_or_identifier_1434 |
 | TS1435 | err | catalog-only |  | Unknown_keyword_or_identifier_Did_you_mean_0_1435 |
-| TS1436 | err | emitted | packages/ts_parser/src/ts_parser.zig:4620<br>packages/ts_parser/src/ts_parser.zig:6069<br>packages/ts_parser/src/ts_parser.zig:23639 | Decorators_must_precede_the_name_and_all_keywords_of_property_declarations_1436 |
+| TS1436 | err | emitted | packages/ts_parser/src/ts_parser.zig:4620<br>packages/ts_parser/src/ts_parser.zig:6069<br>packages/ts_parser/src/ts_parser.zig:24626 | Decorators_must_precede_the_name_and_all_keywords_of_property_declarations_1436 |
 | TS1437 | err | emitted | packages/ts_parser/src/ts_parser.zig:6380 | Namespace_must_be_given_a_name_1437 |
-| TS1438 | err | emitted | packages/ts_parser/src/ts_parser.zig:6084<br>packages/ts_parser/src/ts_parser.zig:18077 | Interface_must_be_given_a_name_1438 |
-| TS1439 | err | emitted | packages/ts_parser/src/ts_parser.zig:6179<br>packages/ts_parser/src/ts_parser.zig:18094 | Type_alias_must_be_given_a_name_1439 |
+| TS1438 | err | emitted | packages/ts_parser/src/ts_parser.zig:6084<br>packages/ts_parser/src/ts_parser.zig:18853 | Interface_must_be_given_a_name_1438 |
+| TS1439 | err | emitted | packages/ts_parser/src/ts_parser.zig:6179<br>packages/ts_parser/src/ts_parser.zig:18870 | Type_alias_must_be_given_a_name_1439 |
 | TS1440 | err | catalog-only |  | Variable_declaration_not_allowed_at_this_location_1440 |
 | TS1441 | err | emitted | packages/ts_parser/src/ts_parser.zig:5112 | Cannot_start_a_function_call_in_a_type_annotation_1441 |
 | TS1442 | err | emitted | packages/ts_parser/src/ts_parser.zig:5153 | Expected_for_property_initializer_1442 |
 | TS1443 | err | emitted | packages/ts_parser/src/ts_parser.zig:1984 | Module_declaration_names_may_only_use_or_quoted_strings_1443 |
-| TS1448 | err | emitted | packages/ts_checker/src/check.zig:7677<br>packages/ts_checker/src/check.zig:97664 | _0_resolves_to_a_type_only_declaration_and_must_be_re_exported_using_a_type_only_re_export_when_1_is_1448 |
+| TS1448 | err | emitted | packages/ts_checker/src/check.zig:7740<br>packages/ts_checker/src/check.zig:98213 | _0_resolves_to_a_type_only_declaration_and_must_be_re_exported_using_a_type_only_re_export_when_1_is_1448 |
 | TS1449 | message | catalog-only |  | Preserve_unused_imported_values_in_the_JavaScript_output_that_would_otherwise_be_removed_1449 |
-| TS1450 | message | emitted | packages/ts_parser/src/ts_parser.zig:14038 | Dynamic_imports_can_only_accept_a_module_specifier_and_an_optional_set_of_attributes_as_arguments_1450 |
+| TS1450 | message | emitted | packages/ts_parser/src/ts_parser.zig:14669 | Dynamic_imports_can_only_accept_a_module_specifier_and_an_optional_set_of_attributes_as_arguments_1450 |
 | TS1451 | err | catalog-only |  | Private_identifiers_are_only_allowed_in_class_bodies_and_may_only_be_used_as_part_of_a_class_member__1451 |
-| TS1453 | err | emitted | packages/ts_checker/src/check.zig:27131<br>packages/ts_driver/src/ts_driver.zig:648<br>packages/ts_checker/src/check.zig:93556 | resolution_mode_should_be_either_require_or_import_1453 |
-| TS1454 | err | emitted | packages/ts_checker/src/check.zig:27151<br>packages/ts_checker/src/check.zig:93600 | resolution_mode_can_only_be_set_for_type_only_imports_1454 |
+| TS1453 | err | emitted | packages/ts_checker/src/check.zig:27253<br>packages/ts_driver/src/ts_driver.zig:663<br>packages/ts_checker/src/check.zig:94105 | resolution_mode_should_be_either_require_or_import_1453 |
+| TS1454 | err | emitted | packages/ts_checker/src/check.zig:27273<br>packages/ts_checker/src/check.zig:94149 | resolution_mode_can_only_be_set_for_type_only_imports_1454 |
 | TS1455 | err | catalog-only |  | resolution_mode_is_the_only_valid_key_for_type_import_assertions_1455 |
 | TS1456 | err | catalog-only |  | Type_import_assertions_should_have_exactly_one_key_resolution_mode_with_value_import_or_require_1456 |
 | TS1457 | message | catalog-only |  | Matched_by_default_include_pattern_Asterisk_Asterisk_Slash_Asterisk_1457 |
@@ -417,78 +417,78 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1459 | message | catalog-only |  | File_is_CommonJS_module_because_0_has_field_type_whose_value_is_not_module_1459 |
 | TS1460 | message | catalog-only |  | File_is_CommonJS_module_because_0_does_not_have_field_type_1460 |
 | TS1461 | message | catalog-only |  | File_is_CommonJS_module_because_package_json_was_not_found_1461 |
-| TS1463 | err | emitted | packages/ts_checker/src/check.zig:27117<br>packages/ts_checker/src/check.zig:93557<br>packages/ts_checker/src/check.zig:93578 | resolution_mode_is_the_only_valid_key_for_type_import_attributes_1463 |
-| TS1464 | err | emitted | packages/ts_checker/src/check.zig:27108<br>packages/ts_checker/src/check.zig:93558<br>packages/ts_checker/src/check.zig:93579 | Type_import_attributes_should_have_exactly_one_key_resolution_mode_with_value_import_or_require_1464 |
-| TS1470 | err | emitted | packages/ts_checker/src/check.zig:46792<br>packages/ts_checker/src/check.zig:71391<br>packages/ts_checker/src/check.zig:71407 | The_import_meta_meta_property_is_not_allowed_in_files_which_will_build_into_CommonJS_output_1470 |
+| TS1463 | err | emitted | packages/ts_checker/src/check.zig:27239<br>packages/ts_checker/src/check.zig:94106<br>packages/ts_checker/src/check.zig:94127 | resolution_mode_is_the_only_valid_key_for_type_import_attributes_1463 |
+| TS1464 | err | emitted | packages/ts_checker/src/check.zig:27230<br>packages/ts_checker/src/check.zig:94107<br>packages/ts_checker/src/check.zig:94128 | Type_import_attributes_should_have_exactly_one_key_resolution_mode_with_value_import_or_require_1464 |
+| TS1470 | err | emitted | packages/ts_checker/src/check.zig:47073<br>packages/ts_checker/src/check.zig:71802<br>packages/ts_checker/src/check.zig:71818 | The_import_meta_meta_property_is_not_allowed_in_files_which_will_build_into_CommonJS_output_1470 |
 | TS1471 | err | catalog-only |  | Module_0_cannot_be_imported_using_this_construct_The_specifier_only_resolves_to_an_ES_module_which_c_1471 |
 | TS1472 | err | emitted | packages/ts_parser/src/ts_parser.zig:3287 | catch_or_finally_expected_1472 |
 | TS1473 | err | emitted | packages/ts_parser/src/ts_parser.zig:6468 | An_import_declaration_can_only_be_used_at_the_top_level_of_a_module_1473 |
-| TS1474 | err | emitted | packages/ts_parser/src/ts_parser.zig:7222<br>packages/ts_parser/src/ts_parser.zig:7313 | An_export_declaration_can_only_be_used_at_the_top_level_of_a_module_1474 |
+| TS1474 | err | emitted | packages/ts_parser/src/ts_parser.zig:7232<br>packages/ts_parser/src/ts_parser.zig:7323 | An_export_declaration_can_only_be_used_at_the_top_level_of_a_module_1474 |
 | TS1475 | message | catalog-only |  | Control_what_method_is_used_to_detect_module_format_JS_files_1475 |
 | TS1476 | message | catalog-only |  | auto_Colon_Treat_files_with_imports_exports_import_meta_jsx_with_jsx_Colon_react_jsx_or_esm_format_w_1476 |
-| TS1477 | err | emitted | packages/ts_parser/src/ts_parser.zig:13367 | An_instantiation_expression_cannot_be_followed_by_a_property_access_1477 |
+| TS1477 | err | emitted | packages/ts_parser/src/ts_parser.zig:13998 | An_instantiation_expression_cannot_be_followed_by_a_property_access_1477 |
 | TS1478 | err | emitted | packages/ts_parser/src/ts_parser.zig:6898 | Identifier_or_string_literal_expected_1478 |
 | TS1479 | err | catalog-only |  | The_current_file_is_a_CommonJS_module_whose_imports_will_produce_require_calls_however_the_reference_1479 |
 | TS1480 | message | catalog-only |  | To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_create_a_local_packag_1480 |
 | TS1481 | message | catalog-only |  | To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_add_the_field_type_Co_1481 |
 | TS1482 | message | catalog-only |  | To_convert_this_file_to_an_ECMAScript_module_add_the_field_type_Colon_module_to_0_1482 |
 | TS1483 | message | catalog-only |  | To_convert_this_file_to_an_ECMAScript_module_create_a_local_package_json_file_with_type_Colon_module_1483 |
-| TS1484 | err | emitted | packages/ts_checker/src/check.zig:7648<br>packages/ts_checker/src/check.zig:97603<br>packages/ts_checker/src/check.zig:97643 | _0_is_a_type_and_must_be_imported_using_a_type_only_import_when_verbatimModuleSyntax_is_enabled_1484 |
-| TS1485 | err | emitted | packages/ts_checker/src/check.zig:7646<br>packages/ts_checker/src/check.zig:97604<br>packages/ts_checker/src/check.zig:97625 | _0_resolves_to_a_type_only_declaration_and_must_be_imported_using_a_type_only_import_when_verbatimMo_1485 |
+| TS1484 | err | emitted | packages/ts_checker/src/check.zig:7711<br>packages/ts_checker/src/check.zig:98152<br>packages/ts_checker/src/check.zig:98192 | _0_is_a_type_and_must_be_imported_using_a_type_only_import_when_verbatimModuleSyntax_is_enabled_1484 |
+| TS1485 | err | emitted | packages/ts_checker/src/check.zig:7709<br>packages/ts_checker/src/check.zig:98153<br>packages/ts_checker/src/check.zig:98174 | _0_resolves_to_a_type_only_declaration_and_must_be_imported_using_a_type_only_import_when_verbatimMo_1485 |
 | TS1486 | err | catalog-only |  | Decorator_used_before_export_here_1486 |
-| TS1487 | err | emitted | packages/ts_driver/src/ts_driver.zig:1713<br>packages/ts_driver/src/ts_driver.zig:1739<br>packages/ts_driver/src/ts_driver.zig:2148 | Octal_escape_sequences_are_not_allowed_Use_the_syntax_0_1487 |
-| TS1488 | err | emitted | packages/ts_driver/src/ts_driver.zig:1718<br>packages/ts_driver/src/ts_driver.zig:1739<br>packages/ts_driver/src/ts_driver.zig:2152 | Escape_sequence_0_is_not_allowed_1488 |
+| TS1487 | err | emitted | packages/ts_driver/src/ts_driver.zig:1739<br>packages/ts_driver/src/ts_driver.zig:1765<br>packages/ts_driver/src/ts_driver.zig:2229 | Octal_escape_sequences_are_not_allowed_Use_the_syntax_0_1487 |
+| TS1488 | err | emitted | packages/ts_driver/src/ts_driver.zig:1744<br>packages/ts_driver/src/ts_driver.zig:1765<br>packages/ts_driver/src/ts_driver.zig:2233 | Escape_sequence_0_is_not_allowed_1488 |
 | TS1489 | err | emitted | packages/ts_parser/src/ts_parser.zig:2607 | Decimals_with_leading_zeros_are_not_allowed_1489 |
-| TS1490 | err | emitted | packages/ts_driver/src/ts_driver.zig:1727<br>packages/ts_driver/src/ts_driver.zig:2183 | File_appears_to_be_binary_1490 |
-| TS1491 | err | emitted | packages/ts_parser/src/ts_parser.zig:7904 | _0_modifier_cannot_appear_on_a_using_declaration_1491 |
-| TS1492 | err | emitted | packages/ts_parser/src/ts_parser.zig:2791<br>packages/ts_parser/src/ts_parser.zig:7821<br>packages/ts_parser/src/ts_parser.zig:7860 | _0_declarations_may_not_have_binding_patterns_1492 |
+| TS1490 | err | emitted | packages/ts_driver/src/ts_driver.zig:1753<br>packages/ts_driver/src/ts_driver.zig:2264 | File_appears_to_be_binary_1490 |
+| TS1491 | err | emitted | packages/ts_parser/src/ts_parser.zig:7914 | _0_modifier_cannot_appear_on_a_using_declaration_1491 |
+| TS1492 | err | emitted | packages/ts_parser/src/ts_parser.zig:2791<br>packages/ts_parser/src/ts_parser.zig:7831<br>packages/ts_parser/src/ts_parser.zig:7870 | _0_declarations_may_not_have_binding_patterns_1492 |
 | TS1493 | err | emitted | packages/ts_parser/src/ts_parser.zig:2832 | The_left_hand_side_of_a_for_in_statement_cannot_be_a_using_declaration_1493 |
 | TS1494 | err | emitted | packages/ts_parser/src/ts_parser.zig:2832 | The_left_hand_side_of_a_for_in_statement_cannot_be_an_await_using_declaration_1494 |
-| TS1495 | err | emitted | packages/ts_parser/src/ts_parser.zig:7904 | _0_modifier_cannot_appear_on_an_await_using_declaration_1495 |
+| TS1495 | err | emitted | packages/ts_parser/src/ts_parser.zig:7914 | _0_modifier_cannot_appear_on_an_await_using_declaration_1495 |
 | TS1496 | err | catalog-only |  | Identifier_string_literal_or_number_literal_expected_1496 |
-| TS1497 | err | emitted | packages/ts_parser/src/ts_parser.zig:7483<br>packages/ts_parser/src/ts_parser.zig:20000<br>packages/ts_parser/src/ts_parser.zig:20031 | Expression_must_be_enclosed_in_parentheses_to_be_used_as_a_decorator_1497 |
-| TS1498 | err | emitted | packages/ts_parser/src/ts_parser.zig:7490<br>packages/ts_parser/src/ts_parser.zig:20004<br>packages/ts_parser/src/ts_parser.zig:20035 | Invalid_syntax_in_decorator_1498 |
-| TS1499 | err | emitted | packages/ts_parser/src/ts_parser.zig:11514<br>packages/ts_parser/src/ts_parser.zig:11839<br>packages/ts_driver/src/ts_driver.zig:1724 | Unknown_regular_expression_flag_1499 |
-| TS1500 | err | emitted | packages/ts_parser/src/ts_parser.zig:11516<br>packages/ts_parser/src/ts_parser.zig:11841 | Duplicate_regular_expression_flag_1500 |
-| TS1501 | err | emitted | packages/ts_checker/src/check.zig:11716 | This_regular_expression_flag_is_only_available_when_targeting_0_or_later_1501 |
-| TS1502 | err | emitted | packages/ts_parser/src/ts_parser.zig:11518 | The_Unicode_u_flag_and_the_Unicode_Sets_v_flag_cannot_be_set_simultaneously_1502 |
+| TS1497 | err | emitted | packages/ts_parser/src/ts_parser.zig:7493<br>packages/ts_parser/src/ts_parser.zig:20776<br>packages/ts_parser/src/ts_parser.zig:20807 | Expression_must_be_enclosed_in_parentheses_to_be_used_as_a_decorator_1497 |
+| TS1498 | err | emitted | packages/ts_parser/src/ts_parser.zig:7500<br>packages/ts_parser/src/ts_parser.zig:20780<br>packages/ts_parser/src/ts_parser.zig:20811 | Invalid_syntax_in_decorator_1498 |
+| TS1499 | err | emitted | packages/ts_parser/src/ts_parser.zig:11524<br>packages/ts_parser/src/ts_parser.zig:11852<br>packages/ts_driver/src/ts_driver.zig:1750 | Unknown_regular_expression_flag_1499 |
+| TS1500 | err | emitted | packages/ts_parser/src/ts_parser.zig:11526<br>packages/ts_parser/src/ts_parser.zig:11854 | Duplicate_regular_expression_flag_1500 |
+| TS1501 | err | emitted | packages/ts_checker/src/check.zig:11779 | This_regular_expression_flag_is_only_available_when_targeting_0_or_later_1501 |
+| TS1502 | err | emitted | packages/ts_parser/src/ts_parser.zig:11528 | The_Unicode_u_flag_and_the_Unicode_Sets_v_flag_cannot_be_set_simultaneously_1502 |
 | TS1503 | err | catalog-only |  | Named_capturing_groups_are_only_available_when_targeting_ES2018_or_later_1503 |
-| TS1504 | err | emitted | packages/ts_parser/src/ts_parser.zig:11814<br>packages/ts_parser/src/ts_parser.zig:20782 | Subpattern_flags_must_be_present_when_there_is_a_minus_sign_1504 |
-| TS1505 | err | emitted | packages/ts_parser/src/ts_parser.zig:11708<br>packages/ts_parser/src/ts_parser.zig:20750 | Incomplete_quantifier_Digit_expected_1505 |
-| TS1506 | err | emitted | packages/ts_parser/src/ts_parser.zig:11726 | Numbers_out_of_order_in_quantifier_1506 |
-| TS1507 | err | emitted | packages/ts_parser/src/ts_parser.zig:11683<br>packages/ts_parser/src/ts_parser.zig:11746 | There_is_nothing_available_for_repetition_1507 |
-| TS1508 | err | emitted | packages/ts_driver/src/ts_driver.zig:1710 | Unexpected_0_Did_you_mean_to_escape_it_with_backslash_1508 |
-| TS1509 | err | emitted | packages/ts_parser/src/ts_parser.zig:11843<br>packages/ts_parser/src/ts_parser.zig:20767 | This_regular_expression_flag_cannot_be_toggled_within_a_subpattern_1509 |
-| TS1510 | err | emitted | packages/ts_parser/src/ts_parser.zig:11965<br>packages/ts_parser/src/ts_parser.zig:20869<br>packages/ts_parser/src/ts_parser.zig:20885 | k_must_be_followed_by_a_capturing_group_name_enclosed_in_angle_brackets_1510 |
-| TS1511 | err | emitted | packages/ts_parser/src/ts_parser.zig:11974<br>packages/ts_parser/src/ts_parser.zig:20844 | q_is_only_available_inside_character_class_1511 |
-| TS1512 | err | emitted | packages/ts_parser/src/ts_parser.zig:12076<br>packages/ts_parser/src/ts_parser.zig:20819 | c_must_be_followed_by_an_ASCII_letter_1512 |
+| TS1504 | err | emitted | packages/ts_parser/src/ts_parser.zig:11827<br>packages/ts_parser/src/ts_parser.zig:21558 | Subpattern_flags_must_be_present_when_there_is_a_minus_sign_1504 |
+| TS1505 | err | emitted | packages/ts_parser/src/ts_parser.zig:11721<br>packages/ts_parser/src/ts_parser.zig:21526 | Incomplete_quantifier_Digit_expected_1505 |
+| TS1506 | err | emitted | packages/ts_parser/src/ts_parser.zig:11739 | Numbers_out_of_order_in_quantifier_1506 |
+| TS1507 | err | emitted | packages/ts_parser/src/ts_parser.zig:11696<br>packages/ts_parser/src/ts_parser.zig:11759 | There_is_nothing_available_for_repetition_1507 |
+| TS1508 | err | emitted | packages/ts_driver/src/ts_driver.zig:1736 | Unexpected_0_Did_you_mean_to_escape_it_with_backslash_1508 |
+| TS1509 | err | emitted | packages/ts_parser/src/ts_parser.zig:11856<br>packages/ts_parser/src/ts_parser.zig:21543 | This_regular_expression_flag_cannot_be_toggled_within_a_subpattern_1509 |
+| TS1510 | err | emitted | packages/ts_parser/src/ts_parser.zig:11978<br>packages/ts_parser/src/ts_parser.zig:21645<br>packages/ts_parser/src/ts_parser.zig:21661 | k_must_be_followed_by_a_capturing_group_name_enclosed_in_angle_brackets_1510 |
+| TS1511 | err | emitted | packages/ts_parser/src/ts_parser.zig:11987<br>packages/ts_parser/src/ts_parser.zig:21620 | q_is_only_available_inside_character_class_1511 |
+| TS1512 | err | emitted | packages/ts_parser/src/ts_parser.zig:12089<br>packages/ts_parser/src/ts_parser.zig:21595 | c_must_be_followed_by_an_ASCII_letter_1512 |
 | TS1513 | err | catalog-only |  | Undetermined_character_escape_1513 |
-| TS1514 | err | catalog-only |  | Expected_a_capturing_group_name_1514 |
-| TS1515 | err | catalog-only |  | Named_capturing_groups_with_the_same_name_must_be_mutually_exclusive_to_each_other_1515 |
-| TS1516 | err | catalog-only |  | A_character_class_range_must_not_be_bounded_by_another_character_class_1516 |
-| TS1517 | err | emitted | packages/ts_parser/src/ts_parser.zig:12115<br>packages/ts_parser/src/ts_parser.zig:20897 | Range_out_of_order_in_character_class_1517 |
-| TS1518 | err | catalog-only |  | Anything_that_would_possibly_match_more_than_a_single_character_is_invalid_inside_a_negated_characte_1518 |
-| TS1519 | err | catalog-only |  | Operators_must_not_be_mixed_within_a_character_class_Wrap_it_in_a_nested_class_instead_1519 |
-| TS1520 | err | catalog-only |  | Expected_a_class_set_operand_1520 |
-| TS1521 | err | catalog-only |  | q_must_be_followed_by_string_alternatives_enclosed_in_braces_1521 |
-| TS1522 | err | catalog-only |  | A_character_class_must_not_contain_a_reserved_double_punctuator_Did_you_mean_to_escape_it_with_backs_1522 |
-| TS1523 | err | catalog-only |  | Expected_a_Unicode_property_name_1523 |
-| TS1524 | err | catalog-only |  | Unknown_Unicode_property_name_1524 |
-| TS1525 | err | catalog-only |  | Expected_a_Unicode_property_value_1525 |
-| TS1526 | err | catalog-only |  | Unknown_Unicode_property_value_1526 |
-| TS1527 | err | catalog-only |  | Expected_a_Unicode_property_name_or_value_1527 |
-| TS1528 | err | catalog-only |  | Any_Unicode_property_that_would_possibly_match_more_than_a_single_character_is_only_available_when_t_1528 |
-| TS1529 | err | catalog-only |  | Unknown_Unicode_property_name_or_value_1529 |
-| TS1530 | err | catalog-only |  | Unicode_property_value_expressions_are_only_available_when_the_Unicode_u_flag_or_the_Unicode_Sets_v__1530 |
-| TS1531 | err | catalog-only |  | _0_must_be_followed_by_a_Unicode_property_value_expression_enclosed_in_braces_1531 |
-| TS1532 | err | catalog-only |  | There_is_no_capturing_group_named_0_in_this_regular_expression_1532 |
-| TS1533 | err | catalog-only |  | This_backreference_refers_to_a_group_that_does_not_exist_There_are_only_0_capturing_groups_in_this_r_1533 |
-| TS1534 | err | catalog-only |  | This_backreference_refers_to_a_group_that_does_not_exist_There_are_no_capturing_groups_in_this_regul_1534 |
-| TS1535 | err | emitted | packages/ts_parser/src/ts_parser.zig:12035<br>packages/ts_parser/src/ts_parser.zig:12237<br>packages/ts_parser/src/ts_parser.zig:20925 | This_character_cannot_be_escaped_in_a_regular_expression_1535 |
-| TS1536 | err | emitted | packages/ts_parser/src/ts_parser.zig:12183<br>packages/ts_parser/src/ts_parser.zig:20955 | Octal_escape_sequences_and_backreferences_are_not_allowed_in_a_character_class_If_this_was_intended__1536 |
-| TS1537 | err | emitted | packages/ts_parser/src/ts_parser.zig:12189<br>packages/ts_parser/src/ts_parser.zig:20986 | Decimal_escape_sequences_and_backreferences_are_not_allowed_in_a_character_class_1537 |
-| TS1538 | err | emitted | packages/ts_parser/src/ts_parser.zig:12217<br>packages/ts_parser/src/ts_parser.zig:12023<br>packages/ts_parser/src/ts_parser.zig:21005 | Unicode_escape_sequences_are_only_available_when_the_Unicode_u_flag_or_the_Unicode_Sets_v_flag_is_se_1538 |
-| TS1539 | err | emitted | packages/ts_parser/src/ts_parser.zig:15216<br>packages/ts_parser/src/ts_parser.zig:21022 | A_bigint_literal_cannot_be_used_as_a_property_name_1539 |
+| TS1514 | err | emitted | packages/ts_parser/src/ts_parser.zig:12389<br>packages/ts_parser/src/ts_parser.zig:12456 | Expected_a_capturing_group_name_1514 |
+| TS1515 | err | emitted | packages/ts_parser/src/ts_parser.zig:12467 | Named_capturing_groups_with_the_same_name_must_be_mutually_exclusive_to_each_other_1515 |
+| TS1516 | err | emitted | packages/ts_parser/src/ts_parser.zig:12816<br>packages/ts_parser/src/ts_parser.zig:12819 | A_character_class_range_must_not_be_bounded_by_another_character_class_1516 |
+| TS1517 | err | emitted | packages/ts_parser/src/ts_parser.zig:12128<br>packages/ts_parser/src/ts_parser.zig:21673 | Range_out_of_order_in_character_class_1517 |
+| TS1518 | err | emitted | packages/ts_parser/src/ts_parser.zig:12657 | Anything_that_would_possibly_match_more_than_a_single_character_is_invalid_inside_a_negated_characte_1518 |
+| TS1519 | err | emitted | packages/ts_parser/src/ts_parser.zig:12757 | Operators_must_not_be_mixed_within_a_character_class_Wrap_it_in_a_nested_class_instead_1519 |
+| TS1520 | err | emitted | packages/ts_parser/src/ts_parser.zig:12736<br>packages/ts_parser/src/ts_parser.zig:12761 | Expected_a_class_set_operand_1520 |
+| TS1521 | err | emitted | packages/ts_parser/src/ts_parser.zig:12859 | q_must_be_followed_by_string_alternatives_enclosed_in_braces_1521 |
+| TS1522 | err | emitted | packages/ts_parser/src/ts_parser.zig:12799 | A_character_class_must_not_contain_a_reserved_double_punctuator_Did_you_mean_to_escape_it_with_backs_1522 |
+| TS1523 | err | emitted | packages/ts_parser/src/ts_parser.zig:12633 | Expected_a_Unicode_property_name_1523 |
+| TS1524 | err | emitted | packages/ts_parser/src/ts_parser.zig:12635 | Unknown_Unicode_property_name_1524 |
+| TS1525 | err | emitted | packages/ts_parser/src/ts_parser.zig:12643 | Expected_a_Unicode_property_value_1525 |
+| TS1526 | err | emitted | packages/ts_parser/src/ts_parser.zig:12646 | Unknown_Unicode_property_value_1526 |
+| TS1527 | err | emitted | packages/ts_parser/src/ts_parser.zig:12652 | Expected_a_Unicode_property_name_or_value_1527 |
+| TS1528 | err | emitted | packages/ts_parser/src/ts_parser.zig:12655 | Any_Unicode_property_that_would_possibly_match_more_than_a_single_character_is_only_available_when_t_1528 |
+| TS1529 | err | emitted | packages/ts_parser/src/ts_parser.zig:12662 | Unknown_Unicode_property_name_or_value_1529 |
+| TS1530 | err | emitted | packages/ts_parser/src/ts_parser.zig:12669 | Unicode_property_value_expressions_are_only_available_when_the_Unicode_u_flag_or_the_Unicode_Sets_v__1530 |
+| TS1531 | err | emitted | packages/ts_parser/src/ts_parser.zig:12622 | _0_must_be_followed_by_a_Unicode_property_value_expression_enclosed_in_braces_1531 |
+| TS1532 | err | emitted | packages/ts_parser/src/ts_parser.zig:12513 | There_is_no_capturing_group_named_0_in_this_regular_expression_1532 |
+| TS1533 | err | emitted | packages/ts_parser/src/ts_parser.zig:12529 | This_backreference_refers_to_a_group_that_does_not_exist_There_are_only_0_capturing_groups_in_this_r_1533 |
+| TS1534 | err | emitted | packages/ts_parser/src/ts_parser.zig:12531 | This_backreference_refers_to_a_group_that_does_not_exist_There_are_no_capturing_groups_in_this_regul_1534 |
+| TS1535 | err | emitted | packages/ts_parser/src/ts_parser.zig:12048<br>packages/ts_parser/src/ts_parser.zig:12250<br>packages/ts_parser/src/ts_parser.zig:21701 | This_character_cannot_be_escaped_in_a_regular_expression_1535 |
+| TS1536 | err | emitted | packages/ts_parser/src/ts_parser.zig:12196<br>packages/ts_parser/src/ts_parser.zig:21731 | Octal_escape_sequences_and_backreferences_are_not_allowed_in_a_character_class_If_this_was_intended__1536 |
+| TS1537 | err | emitted | packages/ts_parser/src/ts_parser.zig:12202<br>packages/ts_parser/src/ts_parser.zig:21762 | Decimal_escape_sequences_and_backreferences_are_not_allowed_in_a_character_class_1537 |
+| TS1538 | err | emitted | packages/ts_parser/src/ts_parser.zig:12230<br>packages/ts_parser/src/ts_parser.zig:12036<br>packages/ts_parser/src/ts_parser.zig:21781 | Unicode_escape_sequences_are_only_available_when_the_Unicode_u_flag_or_the_Unicode_Sets_v_flag_is_se_1538 |
+| TS1539 | err | emitted | packages/ts_parser/src/ts_parser.zig:15847<br>packages/ts_parser/src/ts_parser.zig:21798 | A_bigint_literal_cannot_be_used_as_a_property_name_1539 |
 | TS1541 | err | catalog-only |  | Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541 |
 | TS1542 | err | catalog-only |  | Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542 |
 | TS1543 | err | catalog-only |  | Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543 |
@@ -496,232 +496,232 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2200 | err | catalog-only |  | The_types_of_0_are_incompatible_between_these_types_2200 |
 | TS2201 | err | catalog-only |  | The_types_returned_by_0_are_incompatible_between_these_types_2201 |
 | TS2206 | err | emitted | packages/ts_parser/src/ts_parser.zig:6657 | The_type_modifier_cannot_be_used_on_a_named_import_when_import_type_is_used_on_its_import_statement_2206 |
-| TS2207 | err | emitted | packages/ts_parser/src/ts_parser.zig:7237 | The_type_modifier_cannot_be_used_on_a_named_export_when_export_type_is_used_on_its_export_statement_2207 |
+| TS2207 | err | emitted | packages/ts_parser/src/ts_parser.zig:7247 | The_type_modifier_cannot_be_used_on_a_named_export_when_export_type_is_used_on_its_export_statement_2207 |
 | TS2208 | err | catalog-only |  | This_type_parameter_might_need_an_extends_0_constraint_2208 |
 | TS2209 | err | catalog-only |  | The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209 |
 | TS2210 | err | catalog-only |  | The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210 |
 | TS2211 | message | catalog-only |  | Add_extends_constraint_2211 |
 | TS2212 | message | catalog-only |  | Add_extends_constraint_to_all_type_parameters_2212 |
-| TS2300 | err | emitted | packages/ts_checker/src/check.zig:7073<br>packages/ts_checker/src/check.zig:22089<br>packages/ts_checker/src/check.zig:22153 | Duplicate_identifier_0_2300 |
-| TS2301 | err | emitted | packages/ts_checker/src/check.zig:51582<br>packages/ts_checker/src/check.zig:51591<br>packages/ts_checker/src/check.zig:70726 | Initializer_of_instance_member_variable_0_cannot_reference_identifier_1_declared_in_the_constructor_2301 |
-| TS2302 | err | emitted | packages/ts_checker/src/check.zig:46075<br>packages/ts_checker/src/check.zig:62671<br>packages/ts_checker/src/check.zig:62684 | Static_members_cannot_reference_class_type_parameters_2302 |
-| TS2303 | err | emitted | packages/ts_checker/src/check.zig:28786<br>packages/ts_checker/src/check.zig:71026<br>packages/ts_checker/src/check.zig:71051 | Circular_definition_of_import_alias_0_2303 |
-| TS2304 | err | emitted | packages/ts_checker/src/check.zig:20621<br>packages/ts_checker/src/check.zig:41238<br>packages/ts_checker/src/check.zig:46706 | Cannot_find_name_0_2304 |
-| TS2305 | err | emitted | packages/ts_checker/src/check.zig:29071<br>packages/ts_checker/src/check.zig:29087<br>packages/ts_checker/src/check.zig:81469 | Module_0_has_no_exported_member_1_2305 |
-| TS2306 | err | emitted | packages/ts_checker/src/check.zig:27385<br>packages/ts_checker/src/check.zig:70933<br>packages/ts_checker/src/check.zig:70962 | File_0_is_not_a_module_2306 |
-| TS2307 | err | emitted | packages/ts_checker/src/check.zig:26836<br>packages/ts_checker/src/check.zig:26908<br>packages/ts_checker/src/check.zig:27607 | Cannot_find_module_0_or_its_corresponding_type_declarations_2307 |
-| TS2308 | err | emitted | packages/ts_checker/src/check.zig:7000<br>packages/ts_checker/src/check.zig:70911 | Module_0_has_already_exported_a_member_named_1_Consider_explicitly_re_exporting_to_resolve_the_ambig_2308 |
-| TS2309 | err | emitted | packages/ts_checker/src/check.zig:7078<br>packages/ts_checker/src/check.zig:70500<br>packages/ts_checker/src/check.zig:70517 | An_export_assignment_cannot_be_used_in_a_module_with_other_exported_elements_2309 |
-| TS2310 | err | emitted | packages/ts_checker/src/check.zig:5943<br>packages/ts_checker/src/check.zig:76849 | Type_0_recursively_references_itself_as_a_base_type_2310 |
+| TS2300 | err | emitted | packages/ts_checker/src/check.zig:7136<br>packages/ts_checker/src/check.zig:22211<br>packages/ts_checker/src/check.zig:22275 | Duplicate_identifier_0_2300 |
+| TS2301 | err | emitted | packages/ts_checker/src/check.zig:51863<br>packages/ts_checker/src/check.zig:51872<br>packages/ts_checker/src/check.zig:71137 | Initializer_of_instance_member_variable_0_cannot_reference_identifier_1_declared_in_the_constructor_2301 |
+| TS2302 | err | emitted | packages/ts_checker/src/check.zig:46356<br>packages/ts_checker/src/check.zig:62952<br>packages/ts_checker/src/check.zig:62965 | Static_members_cannot_reference_class_type_parameters_2302 |
+| TS2303 | err | emitted | packages/ts_checker/src/check.zig:28908<br>packages/ts_checker/src/check.zig:71437<br>packages/ts_checker/src/check.zig:71462 | Circular_definition_of_import_alias_0_2303 |
+| TS2304 | err | emitted | packages/ts_checker/src/check.zig:20743<br>packages/ts_checker/src/check.zig:41519<br>packages/ts_checker/src/check.zig:46987 | Cannot_find_name_0_2304 |
+| TS2305 | err | emitted | packages/ts_checker/src/check.zig:29311<br>packages/ts_checker/src/check.zig:29327<br>packages/ts_checker/src/check.zig:82018 | Module_0_has_no_exported_member_1_2305 |
+| TS2306 | err | emitted | packages/ts_checker/src/check.zig:27507<br>packages/ts_checker/src/check.zig:71344<br>packages/ts_checker/src/check.zig:71373 | File_0_is_not_a_module_2306 |
+| TS2307 | err | emitted | packages/ts_checker/src/check.zig:26958<br>packages/ts_checker/src/check.zig:27030<br>packages/ts_checker/src/check.zig:27729 | Cannot_find_module_0_or_its_corresponding_type_declarations_2307 |
+| TS2308 | err | emitted | packages/ts_checker/src/check.zig:7063<br>packages/ts_checker/src/check.zig:71322 | Module_0_has_already_exported_a_member_named_1_Consider_explicitly_re_exporting_to_resolve_the_ambig_2308 |
+| TS2309 | err | emitted | packages/ts_checker/src/check.zig:7141<br>packages/ts_checker/src/check.zig:70911<br>packages/ts_checker/src/check.zig:70928 | An_export_assignment_cannot_be_used_in_a_module_with_other_exported_elements_2309 |
+| TS2310 | err | emitted | packages/ts_checker/src/check.zig:6006<br>packages/ts_checker/src/check.zig:77398 | Type_0_recursively_references_itself_as_a_base_type_2310 |
 | TS2311 | err | catalog-only |  | Cannot_find_name_0_Did_you_mean_to_write_this_in_an_async_function_2311 |
-| TS2312 | err | emitted | packages/ts_checker/src/check.zig:34401<br>packages/ts_checker/src/check.zig:34426<br>packages/ts_checker/src/check.zig:98494 | An_interface_can_only_extend_an_object_type_or_intersection_of_object_types_with_statically_known_me_2312 |
-| TS2313 | err | emitted | packages/ts_checker/src/check.zig:62397 | Type_parameter_0_has_a_circular_constraint_2313 |
-| TS2314 | err | emitted | packages/ts_checker/src/check.zig:33691<br>packages/ts_checker/src/check.zig:34185<br>packages/ts_checker/src/check.zig:36098 | Generic_type_0_requires_1_type_argument_s_2314 |
-| TS2315 | err | emitted | packages/ts_checker/src/check.zig:33828<br>packages/ts_checker/src/check.zig:87202 | Type_0_is_not_generic_2315 |
+| TS2312 | err | emitted | packages/ts_checker/src/check.zig:34655<br>packages/ts_checker/src/check.zig:34680<br>packages/ts_checker/src/check.zig:99043 | An_interface_can_only_extend_an_object_type_or_intersection_of_object_types_with_statically_known_me_2312 |
+| TS2313 | err | emitted | packages/ts_checker/src/check.zig:62678 | Type_parameter_0_has_a_circular_constraint_2313 |
+| TS2314 | err | emitted | packages/ts_checker/src/check.zig:33945<br>packages/ts_checker/src/check.zig:34439<br>packages/ts_checker/src/check.zig:36352 | Generic_type_0_requires_1_type_argument_s_2314 |
+| TS2315 | err | emitted | packages/ts_checker/src/check.zig:34082<br>packages/ts_checker/src/check.zig:87751 | Type_0_is_not_generic_2315 |
 | TS2316 | err | catalog-only |  | Global_type_0_must_be_a_class_or_interface_type_2316 |
 | TS2317 | err | catalog-only |  | Global_type_0_must_have_1_type_parameter_s_2317 |
-| TS2318 | err | emitted | packages/ts_checker/src/check.zig:9048<br>packages/ts_checker/src/check.zig:17997<br>packages/ts_checker/src/check.zig:18006 | Cannot_find_global_type_0_2318 |
+| TS2318 | err | emitted | packages/ts_checker/src/check.zig:9111<br>packages/ts_checker/src/check.zig:18119<br>packages/ts_checker/src/check.zig:18128 | Cannot_find_global_type_0_2318 |
 | TS2319 | err | catalog-only |  | Named_property_0_of_types_1_and_2_are_not_identical_2319 |
-| TS2320 | err | emitted | packages/ts_checker/src/check.zig:31219 | Interface_0_cannot_simultaneously_extend_types_1_and_2_2320 |
+| TS2320 | err | emitted | packages/ts_checker/src/check.zig:31473 | Interface_0_cannot_simultaneously_extend_types_1_and_2_2320 |
 | TS2321 | err | catalog-only |  | Excessive_stack_depth_comparing_types_0_and_1_2321 |
-| TS2322 | err | emitted | packages/ts_checker/src/check.zig:3153<br>packages/ts_checker/src/check.zig:3159<br>packages/ts_checker/src/check.zig:3221 | Type_0_is_not_assignable_to_type_1_2322 |
-| TS2323 | err | emitted | packages/ts_checker/src/check.zig:6701<br>packages/ts_checker/src/check.zig:6705<br>packages/ts_checker/src/check.zig:6772 | Cannot_redeclare_exported_variable_0_2323 |
+| TS2322 | err | emitted | packages/ts_checker/src/check.zig:3216<br>packages/ts_checker/src/check.zig:3222<br>packages/ts_checker/src/check.zig:3284 | Type_0_is_not_assignable_to_type_1_2322 |
+| TS2323 | err | emitted | packages/ts_checker/src/check.zig:6764<br>packages/ts_checker/src/check.zig:6768<br>packages/ts_checker/src/check.zig:6835 | Cannot_redeclare_exported_variable_0_2323 |
 | TS2324 | err | catalog-only |  | Property_0_is_missing_in_type_1_2324 |
 | TS2325 | err | catalog-only |  | Property_0_is_private_in_type_1_but_not_in_type_2_2325 |
-| TS2326 | err | emitted | packages/ts_checker/src/check.zig:31392<br>packages/ts_checker/src/check.zig:101643<br>packages/ts_checker/src/check.zig:101646 | Types_of_property_0_are_incompatible_2326 |
-| TS2327 | err | emitted | packages/ts_checker/src/check.zig:31382<br>packages/ts_checker/src/check.zig:101674<br>packages/ts_checker/src/check.zig:101675 | Property_0_is_optional_in_type_1_but_required_in_type_2_2327 |
+| TS2326 | err | emitted | packages/ts_checker/src/check.zig:31646<br>packages/ts_checker/src/check.zig:66061<br>packages/ts_checker/src/check.zig:66066 | Types_of_property_0_are_incompatible_2326 |
+| TS2327 | err | emitted | packages/ts_checker/src/check.zig:31636<br>packages/ts_checker/src/check.zig:102342<br>packages/ts_checker/src/check.zig:102343 | Property_0_is_optional_in_type_1_but_required_in_type_2_2327 |
 | TS2328 | err | catalog-only |  | Types_of_parameters_0_and_1_are_incompatible_2328 |
-| TS2329 | err | catalog-only |  | Index_signature_for_type_0_is_missing_in_type_1_2329 |
-| TS2330 | err | emitted | packages/ts_checker/src/check.zig:31418<br>packages/ts_checker/src/check.zig:101704<br>packages/ts_checker/src/check.zig:101705 | _0_and_1_index_signatures_are_incompatible_2330 |
-| TS2331 | err | emitted | packages/ts_checker/src/check.zig:46085<br>packages/ts_checker/src/check.zig:51690<br>packages/ts_checker/src/check.zig:89115 | this_cannot_be_referenced_in_a_module_or_namespace_body_2331 |
-| TS2332 | err | emitted | packages/ts_checker/src/check.zig:51624<br>packages/ts_checker/src/check.zig:56685 | this_cannot_be_referenced_in_current_location_2332 |
-| TS2334 | err | declared | packages/ts_checker/src/check.zig:100372 | this_cannot_be_referenced_in_a_static_property_initializer_2334 |
-| TS2335 | err | emitted | packages/ts_checker/src/check.zig:44537<br>packages/ts_checker/src/check.zig:45124<br>packages/ts_checker/src/check.zig:45448 | super_can_only_be_referenced_in_a_derived_class_2335 |
-| TS2336 | err | emitted | packages/ts_checker/src/check.zig:45099<br>packages/ts_checker/src/check.zig:98585<br>packages/ts_checker/src/check.zig:98610 | super_cannot_be_referenced_in_constructor_arguments_2336 |
-| TS2337 | err | emitted | packages/ts_checker/src/check.zig:44515<br>packages/ts_checker/src/check.zig:44566 | Super_calls_are_not_permitted_outside_constructors_or_in_nested_functions_inside_constructors_2337 |
-| TS2338 | err | declared | packages/ts_checker/src/check.zig:100389<br>packages/ts_checker/src/check.zig:100403<br>packages/ts_checker/src/check.zig:100415 | super_property_access_is_permitted_only_in_a_constructor_member_function_or_member_accessor_of_a_der_2338 |
-| TS2339 | err | emitted | packages/ts_checker/src/check.zig:13121<br>packages/ts_checker/src/check.zig:13215<br>packages/ts_checker/src/check.zig:13340 | Property_0_does_not_exist_on_type_1_2339 |
-| TS2340 | err | emitted | packages/ts_checker/src/check.zig:48437 | Only_public_and_protected_methods_of_the_base_class_are_accessible_via_the_super_keyword_2340 |
-| TS2341 | err | emitted | packages/ts_checker/src/check.zig:22683<br>packages/ts_checker/src/check.zig:73788<br>packages/ts_checker/src/check.zig:73813 | Property_0_is_private_and_only_accessible_within_class_1_2341 |
-| TS2343 | err | emitted | packages/ts_driver/src/ts_driver.zig:1473<br>packages/ts_program/src/ts_program.zig:800 | This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_ve_2343 |
-| TS2344 | err | emitted | packages/ts_checker/src/check.zig:55037<br>packages/ts_checker/src/check.zig:95980<br>packages/ts_checker/src/check.zig:95998 | Type_0_does_not_satisfy_the_constraint_1_2344 |
-| TS2345 | err | emitted | packages/ts_checker/src/check.zig:61192<br>packages/ts_checker/src/check.zig:61253<br>packages/ts_checker/src/check.zig:61274 | Argument_of_type_0_is_not_assignable_to_parameter_of_type_1_2345 |
-| TS2347 | err | emitted | packages/ts_checker/src/check.zig:44305<br>packages/ts_checker/src/check.zig:44859<br>packages/ts_checker/src/check.zig:44862 | Untyped_function_calls_may_not_accept_type_arguments_2347 |
-| TS2348 | err | emitted | packages/ts_checker/src/check.zig:45057<br>packages/ts_checker/src/check.zig:45059 | Value_of_type_0_is_not_callable_Did_you_mean_to_include_new_2348 |
-| TS2349 | err | emitted | packages/ts_checker/src/check.zig:45004<br>packages/ts_checker/src/check.zig:45073<br>packages/ts_checker/src/check.zig:85776 | This_expression_is_not_callable_2349 |
-| TS2350 | err | emitted | packages/ts_checker/src/check.zig:44232<br>packages/ts_checker/src/check.zig:44472<br>packages/ts_checker/src/check.zig:72376 | Only_a_void_function_can_be_called_with_the_new_keyword_2350 |
-| TS2351 | err | emitted | packages/ts_checker/src/check.zig:44462<br>packages/ts_checker/src/check.zig:44464<br>packages/ts_checker/src/check.zig:72361 | This_expression_is_not_constructable_2351 |
-| TS2352 | err | emitted | packages/ts_checker/src/check.zig:69094<br>packages/ts_checker/src/check.zig:69102<br>packages/ts_checker/src/check.zig:77741 | Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the__2352 |
-| TS2353 | err | emitted | packages/ts_checker/src/check.zig:47099<br>packages/ts_checker/src/check.zig:47180<br>packages/ts_checker/src/check.zig:64935 | Object_literal_may_only_specify_known_properties_and_0_does_not_exist_in_type_1_2353 |
+| TS2329 | err | emitted | packages/ts_checker/src/check.zig:66090<br>packages/ts_checker/src/check.zig:102461<br>packages/ts_checker/src/check.zig:102477 | Index_signature_for_type_0_is_missing_in_type_1_2329 |
+| TS2330 | err | emitted | packages/ts_checker/src/check.zig:31672<br>packages/ts_checker/src/check.zig:102372<br>packages/ts_checker/src/check.zig:102373 | _0_and_1_index_signatures_are_incompatible_2330 |
+| TS2331 | err | emitted | packages/ts_checker/src/check.zig:46366<br>packages/ts_checker/src/check.zig:51971<br>packages/ts_checker/src/check.zig:89664 | this_cannot_be_referenced_in_a_module_or_namespace_body_2331 |
+| TS2332 | err | emitted | packages/ts_checker/src/check.zig:51905<br>packages/ts_checker/src/check.zig:56966 | this_cannot_be_referenced_in_current_location_2332 |
+| TS2334 | err | declared | packages/ts_checker/src/check.zig:100921 | this_cannot_be_referenced_in_a_static_property_initializer_2334 |
+| TS2335 | err | emitted | packages/ts_checker/src/check.zig:44818<br>packages/ts_checker/src/check.zig:45405<br>packages/ts_checker/src/check.zig:45729 | super_can_only_be_referenced_in_a_derived_class_2335 |
+| TS2336 | err | emitted | packages/ts_checker/src/check.zig:45380<br>packages/ts_checker/src/check.zig:99134<br>packages/ts_checker/src/check.zig:99159 | super_cannot_be_referenced_in_constructor_arguments_2336 |
+| TS2337 | err | emitted | packages/ts_checker/src/check.zig:44796<br>packages/ts_checker/src/check.zig:44847 | Super_calls_are_not_permitted_outside_constructors_or_in_nested_functions_inside_constructors_2337 |
+| TS2338 | err | declared | packages/ts_checker/src/check.zig:100938<br>packages/ts_checker/src/check.zig:100952<br>packages/ts_checker/src/check.zig:100964 | super_property_access_is_permitted_only_in_a_constructor_member_function_or_member_accessor_of_a_der_2338 |
+| TS2339 | err | emitted | packages/ts_checker/src/check.zig:13184<br>packages/ts_checker/src/check.zig:13278<br>packages/ts_checker/src/check.zig:13403 | Property_0_does_not_exist_on_type_1_2339 |
+| TS2340 | err | emitted | packages/ts_checker/src/check.zig:48718 | Only_public_and_protected_methods_of_the_base_class_are_accessible_via_the_super_keyword_2340 |
+| TS2341 | err | emitted | packages/ts_checker/src/check.zig:22805<br>packages/ts_checker/src/check.zig:74199<br>packages/ts_checker/src/check.zig:74224 | Property_0_is_private_and_only_accessible_within_class_1_2341 |
+| TS2343 | err | emitted | packages/ts_driver/src/ts_driver.zig:1499<br>packages/ts_program/src/ts_program.zig:800 | This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_ve_2343 |
+| TS2344 | err | emitted | packages/ts_checker/src/check.zig:55318<br>packages/ts_checker/src/check.zig:96529<br>packages/ts_checker/src/check.zig:96547 | Type_0_does_not_satisfy_the_constraint_1_2344 |
+| TS2345 | err | emitted | packages/ts_checker/src/check.zig:61473<br>packages/ts_checker/src/check.zig:61534<br>packages/ts_checker/src/check.zig:61555 | Argument_of_type_0_is_not_assignable_to_parameter_of_type_1_2345 |
+| TS2347 | err | emitted | packages/ts_checker/src/check.zig:44586<br>packages/ts_checker/src/check.zig:45140<br>packages/ts_checker/src/check.zig:45143 | Untyped_function_calls_may_not_accept_type_arguments_2347 |
+| TS2348 | err | emitted | packages/ts_checker/src/check.zig:45338<br>packages/ts_checker/src/check.zig:45340 | Value_of_type_0_is_not_callable_Did_you_mean_to_include_new_2348 |
+| TS2349 | err | emitted | packages/ts_checker/src/check.zig:45285<br>packages/ts_checker/src/check.zig:45354<br>packages/ts_checker/src/check.zig:86325 | This_expression_is_not_callable_2349 |
+| TS2350 | err | emitted | packages/ts_checker/src/check.zig:44513<br>packages/ts_checker/src/check.zig:44753<br>packages/ts_checker/src/check.zig:72787 | Only_a_void_function_can_be_called_with_the_new_keyword_2350 |
+| TS2351 | err | emitted | packages/ts_checker/src/check.zig:44743<br>packages/ts_checker/src/check.zig:44745<br>packages/ts_checker/src/check.zig:72772 | This_expression_is_not_constructable_2351 |
+| TS2352 | err | emitted | packages/ts_checker/src/check.zig:69505<br>packages/ts_checker/src/check.zig:69513<br>packages/ts_checker/src/check.zig:78290 | Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the__2352 |
+| TS2353 | err | emitted | packages/ts_checker/src/check.zig:47380<br>packages/ts_checker/src/check.zig:47461<br>packages/ts_checker/src/check.zig:65216 | Object_literal_may_only_specify_known_properties_and_0_does_not_exist_in_type_1_2353 |
 | TS2354 | err | catalog-only |  | This_syntax_requires_an_imported_helper_but_module_0_cannot_be_found_2354 |
-| TS2355 | err | emitted | packages/ts_checker/src/check.zig:8633<br>packages/ts_checker/src/check.zig:75896<br>packages/ts_checker/src/check.zig:91480 | A_function_whose_declared_type_is_neither_undefined_void_nor_any_must_return_a_value_2355 |
-| TS2356 | err | emitted | packages/ts_checker/src/check.zig:44046<br>packages/ts_checker/src/check.zig:44052<br>packages/ts_checker/src/check.zig:44067 | An_arithmetic_operand_must_be_of_type_any_number_bigint_or_an_enum_type_2356 |
-| TS2357 | err | emitted | packages/ts_checker/src/check.zig:58442<br>packages/ts_parser/src/ts_parser.zig:13229<br>packages/ts_parser/src/ts_parser.zig:14241 | The_operand_of_an_increment_or_decrement_operator_must_be_a_variable_or_a_property_access_2357 |
-| TS2358 | err | emitted | packages/ts_checker/src/check.zig:59317<br>packages/ts_checker/src/check.zig:71716<br>packages/ts_checker/src/check.zig:72169 | The_left_hand_side_of_an_instanceof_expression_must_be_of_type_any_an_object_type_or_a_type_paramete_2358 |
-| TS2359 | err | emitted | packages/ts_checker/src/check.zig:59325<br>packages/ts_checker/src/check.zig:72213<br>packages/ts_checker/src/check.zig:72236 | The_right_hand_side_of_an_instanceof_expression_must_be_either_of_type_any_a_class_function_or_other_2359 |
-| TS2362 | err | emitted | packages/ts_checker/src/check.zig:44069<br>packages/ts_checker/src/check.zig:59193<br>packages/ts_checker/src/check.zig:59241 | The_left_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type_2362 |
-| TS2363 | err | emitted | packages/ts_checker/src/check.zig:44099<br>packages/ts_checker/src/check.zig:59196<br>packages/ts_checker/src/check.zig:59244 | The_right_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type_2363 |
-| TS2364 | err | emitted | packages/ts_checker/src/check.zig:68091<br>packages/ts_parser/src/ts_parser.zig:14222<br>packages/ts_checker/src/check.zig:97912 | The_left_hand_side_of_an_assignment_expression_must_be_a_variable_or_a_property_access_2364 |
-| TS2365 | err | emitted | packages/ts_checker/src/check.zig:57871<br>packages/ts_checker/src/check.zig:57912<br>packages/ts_checker/src/check.zig:57918 | Operator_0_cannot_be_applied_to_types_1_and_2_2365 |
-| TS2366 | err | emitted | packages/ts_checker/src/check.zig:8623<br>packages/ts_checker/src/check.zig:98535<br>packages/ts_checker/src/check.zig:98563 | Function_lacks_ending_return_statement_and_return_type_does_not_include_undefined_2366 |
-| TS2367 | err | emitted | packages/ts_checker/src/check.zig:66294<br>packages/ts_checker/src/check.zig:66298<br>packages/ts_checker/src/check.zig:74296 | This_comparison_appears_to_be_unintentional_because_the_types_0_and_1_have_no_overlap_2367 |
-| TS2368 | err | emitted | packages/ts_checker/src/check.zig:62584<br>packages/ts_checker/src/check.zig:98460<br>packages/ts_checker/src/check.zig:98479 | Type_parameter_name_cannot_be_0_2368 |
-| TS2369 | err | emitted | packages/ts_checker/src/check.zig:69683<br>packages/ts_checker/src/check.zig:69688<br>packages/ts_checker/src/check.zig:69695 | A_parameter_property_is_only_allowed_in_a_constructor_implementation_2369 |
-| TS2370 | err | emitted | packages/ts_checker/src/check.zig:16854<br>packages/ts_checker/src/check.zig:16871<br>packages/ts_checker/src/check.zig:35649 | A_rest_parameter_must_be_of_an_array_type_2370 |
-| TS2371 | err | emitted | packages/ts_checker/src/check.zig:16672<br>packages/ts_checker/src/check.zig:35652<br>packages/ts_checker/src/check.zig:81068 | A_parameter_initializer_is_only_allowed_in_a_function_or_constructor_implementation_2371 |
-| TS2372 | err | emitted | packages/ts_checker/src/check.zig:12904<br>packages/ts_checker/src/check.zig:90238<br>packages/ts_checker/src/check.zig:90259 | Parameter_0_cannot_reference_itself_2372 |
-| TS2373 | err | emitted | packages/ts_checker/src/check.zig:12904<br>packages/ts_checker/src/check.zig:90186<br>packages/ts_checker/src/check.zig:90208 | Parameter_0_cannot_reference_identifier_1_declared_after_it_2373 |
-| TS2374 | err | emitted | packages/ts_checker/src/check.zig:24229<br>packages/ts_checker/src/check.zig:24236<br>packages/ts_checker/src/check.zig:77212 | Duplicate_index_signature_for_type_0_2374 |
-| TS2375 | err | emitted | packages/ts_checker/src/check.zig:69644<br>packages/ts_checker/src/check.zig:78799<br>packages/ts_checker/src/check.zig:78809 | Type_0_is_not_assignable_to_type_1_with_exactOptionalPropertyTypes_Colon_true_Consider_adding_undefi_2375 |
-| TS2376 | err | emitted | packages/ts_checker/src/check.zig:56305<br>packages/ts_checker/src/check.zig:56309<br>packages/ts_checker/src/check.zig:98681 | A_super_call_must_be_the_first_statement_in_the_constructor_to_refer_to_super_or_this_when_a_derived_2376 |
-| TS2377 | err | emitted | packages/ts_checker/src/check.zig:21208<br>packages/ts_checker/src/check.zig:77436 | Constructors_for_derived_classes_must_contain_a_super_call_2377 |
-| TS2378 | err | emitted | packages/ts_checker/src/check.zig:9089<br>packages/ts_checker/src/check.zig:92163<br>packages/ts_checker/src/check.zig:92174 | A_get_accessor_must_return_a_value_2378 |
+| TS2355 | err | emitted | packages/ts_checker/src/check.zig:8696<br>packages/ts_checker/src/check.zig:76307<br>packages/ts_checker/src/check.zig:92029 | A_function_whose_declared_type_is_neither_undefined_void_nor_any_must_return_a_value_2355 |
+| TS2356 | err | emitted | packages/ts_checker/src/check.zig:44327<br>packages/ts_checker/src/check.zig:44333<br>packages/ts_checker/src/check.zig:44348 | An_arithmetic_operand_must_be_of_type_any_number_bigint_or_an_enum_type_2356 |
+| TS2357 | err | emitted | packages/ts_checker/src/check.zig:58723<br>packages/ts_parser/src/ts_parser.zig:13860<br>packages/ts_parser/src/ts_parser.zig:14872 | The_operand_of_an_increment_or_decrement_operator_must_be_a_variable_or_a_property_access_2357 |
+| TS2358 | err | emitted | packages/ts_checker/src/check.zig:59598<br>packages/ts_checker/src/check.zig:72127<br>packages/ts_checker/src/check.zig:72580 | The_left_hand_side_of_an_instanceof_expression_must_be_of_type_any_an_object_type_or_a_type_paramete_2358 |
+| TS2359 | err | emitted | packages/ts_checker/src/check.zig:59606<br>packages/ts_checker/src/check.zig:72624<br>packages/ts_checker/src/check.zig:72647 | The_right_hand_side_of_an_instanceof_expression_must_be_either_of_type_any_a_class_function_or_other_2359 |
+| TS2362 | err | emitted | packages/ts_checker/src/check.zig:44350<br>packages/ts_checker/src/check.zig:59474<br>packages/ts_checker/src/check.zig:59522 | The_left_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type_2362 |
+| TS2363 | err | emitted | packages/ts_checker/src/check.zig:44380<br>packages/ts_checker/src/check.zig:59477<br>packages/ts_checker/src/check.zig:59525 | The_right_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type_2363 |
+| TS2364 | err | emitted | packages/ts_checker/src/check.zig:68502<br>packages/ts_parser/src/ts_parser.zig:14853<br>packages/ts_checker/src/check.zig:98461 | The_left_hand_side_of_an_assignment_expression_must_be_a_variable_or_a_property_access_2364 |
+| TS2365 | err | emitted | packages/ts_checker/src/check.zig:58152<br>packages/ts_checker/src/check.zig:58193<br>packages/ts_checker/src/check.zig:58199 | Operator_0_cannot_be_applied_to_types_1_and_2_2365 |
+| TS2366 | err | emitted | packages/ts_checker/src/check.zig:8686<br>packages/ts_checker/src/check.zig:99084<br>packages/ts_checker/src/check.zig:99112 | Function_lacks_ending_return_statement_and_return_type_does_not_include_undefined_2366 |
+| TS2367 | err | emitted | packages/ts_checker/src/check.zig:66705<br>packages/ts_checker/src/check.zig:66709<br>packages/ts_checker/src/check.zig:74707 | This_comparison_appears_to_be_unintentional_because_the_types_0_and_1_have_no_overlap_2367 |
+| TS2368 | err | emitted | packages/ts_checker/src/check.zig:62865<br>packages/ts_checker/src/check.zig:99009<br>packages/ts_checker/src/check.zig:99028 | Type_parameter_name_cannot_be_0_2368 |
+| TS2369 | err | emitted | packages/ts_checker/src/check.zig:70094<br>packages/ts_checker/src/check.zig:70099<br>packages/ts_checker/src/check.zig:70106 | A_parameter_property_is_only_allowed_in_a_constructor_implementation_2369 |
+| TS2370 | err | emitted | packages/ts_checker/src/check.zig:16935<br>packages/ts_checker/src/check.zig:16952<br>packages/ts_checker/src/check.zig:35903 | A_rest_parameter_must_be_of_an_array_type_2370 |
+| TS2371 | err | emitted | packages/ts_checker/src/check.zig:16753<br>packages/ts_checker/src/check.zig:35906<br>packages/ts_checker/src/check.zig:81617 | A_parameter_initializer_is_only_allowed_in_a_function_or_constructor_implementation_2371 |
+| TS2372 | err | emitted | packages/ts_checker/src/check.zig:12967<br>packages/ts_checker/src/check.zig:90787<br>packages/ts_checker/src/check.zig:90808 | Parameter_0_cannot_reference_itself_2372 |
+| TS2373 | err | emitted | packages/ts_checker/src/check.zig:12967<br>packages/ts_checker/src/check.zig:90735<br>packages/ts_checker/src/check.zig:90757 | Parameter_0_cannot_reference_identifier_1_declared_after_it_2373 |
+| TS2374 | err | emitted | packages/ts_checker/src/check.zig:24351<br>packages/ts_checker/src/check.zig:24358<br>packages/ts_checker/src/check.zig:77761 | Duplicate_index_signature_for_type_0_2374 |
+| TS2375 | err | emitted | packages/ts_checker/src/check.zig:70055<br>packages/ts_checker/src/check.zig:79348<br>packages/ts_checker/src/check.zig:79358 | Type_0_is_not_assignable_to_type_1_with_exactOptionalPropertyTypes_Colon_true_Consider_adding_undefi_2375 |
+| TS2376 | err | emitted | packages/ts_checker/src/check.zig:56586<br>packages/ts_checker/src/check.zig:56590<br>packages/ts_checker/src/check.zig:99230 | A_super_call_must_be_the_first_statement_in_the_constructor_to_refer_to_super_or_this_when_a_derived_2376 |
+| TS2377 | err | emitted | packages/ts_checker/src/check.zig:21330<br>packages/ts_checker/src/check.zig:77985 | Constructors_for_derived_classes_must_contain_a_super_call_2377 |
+| TS2378 | err | emitted | packages/ts_checker/src/check.zig:9152<br>packages/ts_checker/src/check.zig:92712<br>packages/ts_checker/src/check.zig:92723 | A_get_accessor_must_return_a_value_2378 |
 | TS2379 | err | catalog-only |  | Argument_of_type_0_is_not_assignable_to_parameter_of_type_1_with_exactOptionalPropertyTypes_Colon_tr_2379 |
-| TS2383 | err | emitted | packages/ts_checker/src/check.zig:6105<br>packages/ts_checker/src/check.zig:81113 | Overload_signatures_must_all_be_exported_or_non_exported_2383 |
-| TS2384 | err | emitted | packages/ts_checker/src/check.zig:6108 | Overload_signatures_must_all_be_ambient_or_non_ambient_2384 |
-| TS2385 | err | emitted | packages/ts_checker/src/check.zig:24036<br>packages/ts_checker/src/check.zig:81614 | Overload_signatures_must_all_be_public_private_or_protected_2385 |
-| TS2386 | err | emitted | packages/ts_parser/src/ts_parser.zig:9900<br>packages/ts_parser/src/ts_parser.zig:17506<br>packages/ts_parser/src/ts_parser.zig:17525 | Overload_signatures_must_all_be_optional_or_required_2386 |
-| TS2387 | err | emitted | packages/ts_checker/src/check.zig:19902<br>packages/ts_checker/src/check.zig:23983<br>packages/ts_checker/src/check.zig:77509 | Function_overload_must_be_static_2387 |
-| TS2388 | err | emitted | packages/ts_checker/src/check.zig:19902<br>packages/ts_checker/src/check.zig:23983<br>packages/ts_checker/src/check.zig:77510 | Function_overload_must_not_be_static_2388 |
-| TS2389 | err | emitted | packages/ts_checker/src/check.zig:5991<br>packages/ts_checker/src/check.zig:24064<br>packages/ts_checker/src/check.zig:77025 | Function_implementation_name_must_be_0_2389 |
-| TS2390 | err | emitted | packages/ts_checker/src/check.zig:20576<br>packages/ts_checker/src/check.zig:24095<br>packages/ts_checker/src/check.zig:76371 | Constructor_implementation_is_missing_2390 |
-| TS2391 | err | emitted | packages/ts_checker/src/check.zig:6189<br>packages/ts_checker/src/check.zig:24101<br>packages/ts_parser/src/ts_parser.zig:5714 | Function_implementation_is_missing_or_not_immediately_following_the_declaration_2391 |
-| TS2392 | err | emitted | packages/ts_checker/src/check.zig:20585<br>packages/ts_checker/src/check.zig:95182<br>packages/ts_checker/src/check.zig:95198 | Multiple_constructor_implementations_are_not_allowed_2392 |
-| TS2393 | err | emitted | packages/ts_checker/src/check.zig:6201<br>packages/ts_checker/src/check.zig:6703<br>packages/ts_checker/src/check.zig:6707 | Duplicate_function_implementation_2393 |
-| TS2394 | err | emitted | packages/ts_checker/src/check.zig:7909<br>packages/ts_checker/src/check.zig:7939<br>packages/ts_checker/src/check.zig:19967 | This_overload_signature_is_not_compatible_with_its_implementation_signature_2394 |
-| TS2395 | err | emitted | packages/ts_checker/src/check.zig:6047<br>packages/ts_checker/src/check.zig:6053<br>packages/ts_checker/src/check.zig:7255 | Individual_declarations_in_merged_declaration_0_must_be_all_exported_or_all_local_2395 |
-| TS2396 | err | emitted | packages/ts_checker/src/check.zig:12371<br>packages/ts_checker/src/check.zig:100439<br>packages/ts_checker/src/check.zig:100455 | Duplicate_identifier_arguments_Compiler_uses_arguments_to_initialize_rest_parameters_2396 |
-| TS2397 | err | emitted | packages/ts_checker/src/check.zig:39727<br>packages/ts_checker/src/check.zig:70332<br>packages/ts_checker/src/check.zig:70347 | Declaration_name_conflicts_with_built_in_global_identifier_0_2397 |
-| TS2398 | err | emitted | packages/ts_checker/src/check.zig:19574<br>packages/ts_checker/src/check.zig:95217<br>packages/ts_checker/src/check.zig:95231 | constructor_cannot_be_used_as_a_parameter_property_name_2398 |
+| TS2383 | err | emitted | packages/ts_checker/src/check.zig:6168<br>packages/ts_checker/src/check.zig:81662 | Overload_signatures_must_all_be_exported_or_non_exported_2383 |
+| TS2384 | err | emitted | packages/ts_checker/src/check.zig:6171 | Overload_signatures_must_all_be_ambient_or_non_ambient_2384 |
+| TS2385 | err | emitted | packages/ts_checker/src/check.zig:24158<br>packages/ts_checker/src/check.zig:82163 | Overload_signatures_must_all_be_public_private_or_protected_2385 |
+| TS2386 | err | emitted | packages/ts_parser/src/ts_parser.zig:9910<br>packages/ts_parser/src/ts_parser.zig:18282<br>packages/ts_parser/src/ts_parser.zig:18301 | Overload_signatures_must_all_be_optional_or_required_2386 |
+| TS2387 | err | emitted | packages/ts_checker/src/check.zig:20024<br>packages/ts_checker/src/check.zig:24105<br>packages/ts_checker/src/check.zig:78058 | Function_overload_must_be_static_2387 |
+| TS2388 | err | emitted | packages/ts_checker/src/check.zig:20024<br>packages/ts_checker/src/check.zig:24105<br>packages/ts_checker/src/check.zig:78059 | Function_overload_must_not_be_static_2388 |
+| TS2389 | err | emitted | packages/ts_checker/src/check.zig:6054<br>packages/ts_checker/src/check.zig:24186<br>packages/ts_checker/src/check.zig:77574 | Function_implementation_name_must_be_0_2389 |
+| TS2390 | err | emitted | packages/ts_checker/src/check.zig:20698<br>packages/ts_checker/src/check.zig:24217<br>packages/ts_checker/src/check.zig:76782 | Constructor_implementation_is_missing_2390 |
+| TS2391 | err | emitted | packages/ts_checker/src/check.zig:6252<br>packages/ts_checker/src/check.zig:24223<br>packages/ts_parser/src/ts_parser.zig:5714 | Function_implementation_is_missing_or_not_immediately_following_the_declaration_2391 |
+| TS2392 | err | emitted | packages/ts_checker/src/check.zig:20707<br>packages/ts_checker/src/check.zig:95731<br>packages/ts_checker/src/check.zig:95747 | Multiple_constructor_implementations_are_not_allowed_2392 |
+| TS2393 | err | emitted | packages/ts_checker/src/check.zig:6264<br>packages/ts_checker/src/check.zig:6766<br>packages/ts_checker/src/check.zig:6770 | Duplicate_function_implementation_2393 |
+| TS2394 | err | emitted | packages/ts_checker/src/check.zig:7972<br>packages/ts_checker/src/check.zig:8002<br>packages/ts_checker/src/check.zig:20089 | This_overload_signature_is_not_compatible_with_its_implementation_signature_2394 |
+| TS2395 | err | emitted | packages/ts_checker/src/check.zig:6110<br>packages/ts_checker/src/check.zig:6116<br>packages/ts_checker/src/check.zig:7318 | Individual_declarations_in_merged_declaration_0_must_be_all_exported_or_all_local_2395 |
+| TS2396 | err | emitted | packages/ts_checker/src/check.zig:12434<br>packages/ts_checker/src/check.zig:100988<br>packages/ts_checker/src/check.zig:101004 | Duplicate_identifier_arguments_Compiler_uses_arguments_to_initialize_rest_parameters_2396 |
+| TS2397 | err | emitted | packages/ts_checker/src/check.zig:39981<br>packages/ts_checker/src/check.zig:70743<br>packages/ts_checker/src/check.zig:70758 | Declaration_name_conflicts_with_built_in_global_identifier_0_2397 |
+| TS2398 | err | emitted | packages/ts_checker/src/check.zig:19696<br>packages/ts_checker/src/check.zig:95766<br>packages/ts_checker/src/check.zig:95780 | constructor_cannot_be_used_as_a_parameter_property_name_2398 |
 | TS2399 | err | catalog-only |  | Duplicate_identifier_this_Compiler_uses_variable_declaration_this_to_capture_this_reference_2399 |
 | TS2400 | err | catalog-only |  | Expression_resolves_to_variable_declaration_this_that_compiler_uses_to_capture_this_reference_2400 |
-| TS2401 | err | emitted | packages/ts_checker/src/check.zig:56295<br>packages/ts_checker/src/check.zig:98632<br>packages/ts_checker/src/check.zig:98660 | A_super_call_must_be_a_root_level_statement_within_a_constructor_of_a_derived_class_that_contains_in_2401 |
+| TS2401 | err | emitted | packages/ts_checker/src/check.zig:56576<br>packages/ts_checker/src/check.zig:99181<br>packages/ts_checker/src/check.zig:99209 | A_super_call_must_be_a_root_level_statement_within_a_constructor_of_a_derived_class_that_contains_in_2401 |
 | TS2402 | err | catalog-only |  | Expression_resolves_to_super_that_compiler_uses_to_capture_base_class_reference_2402 |
-| TS2403 | err | emitted | packages/ts_checker/src/check.zig:42415<br>packages/ts_checker/src/check.zig:42429<br>packages/ts_checker/src/check.zig:42613 | Subsequent_variable_declarations_must_have_the_same_type_Variable_0_must_be_of_type_1_but_here_has_t_2403 |
+| TS2403 | err | emitted | packages/ts_checker/src/check.zig:42696<br>packages/ts_checker/src/check.zig:42710<br>packages/ts_checker/src/check.zig:42894 | Subsequent_variable_declarations_must_have_the_same_type_Variable_0_must_be_of_type_1_but_here_has_t_2403 |
 | TS2404 | err | emitted | packages/ts_parser/src/ts_parser.zig:2817<br>packages/ts_parser/src/ts_parser.zig:3091 | The_left_hand_side_of_a_for_in_statement_cannot_use_a_type_annotation_2404 |
-| TS2405 | err | emitted | packages/ts_checker/src/check.zig:67908<br>packages/ts_checker/src/check.zig:67920<br>packages/ts_checker/src/check.zig:67926 | The_left_hand_side_of_a_for_in_statement_must_be_of_type_string_or_any_2405 |
-| TS2406 | err | emitted | packages/ts_checker/src/check.zig:67933<br>packages/ts_checker/src/check.zig:67938<br>packages/ts_checker/src/check.zig:67942 | The_left_hand_side_of_a_for_in_statement_must_be_a_variable_or_a_property_access_2406 |
-| TS2407 | err | emitted | packages/ts_checker/src/check.zig:3414<br>packages/ts_checker/src/check.zig:3428<br>packages/ts_checker/src/check.zig:3430 | The_right_hand_side_of_a_for_in_statement_must_be_of_type_any_an_object_type_or_a_type_parameter_but_2407 |
-| TS2408 | err | emitted | packages/ts_checker/src/check.zig:8362<br>packages/ts_checker/src/check.zig:95144<br>packages/ts_checker/src/check.zig:95161 | Setters_cannot_return_a_value_2408 |
+| TS2405 | err | emitted | packages/ts_checker/src/check.zig:68319<br>packages/ts_checker/src/check.zig:68331<br>packages/ts_checker/src/check.zig:68337 | The_left_hand_side_of_a_for_in_statement_must_be_of_type_string_or_any_2405 |
+| TS2406 | err | emitted | packages/ts_checker/src/check.zig:68344<br>packages/ts_checker/src/check.zig:68349<br>packages/ts_checker/src/check.zig:68353 | The_left_hand_side_of_a_for_in_statement_must_be_a_variable_or_a_property_access_2406 |
+| TS2407 | err | emitted | packages/ts_checker/src/check.zig:3477<br>packages/ts_checker/src/check.zig:3491<br>packages/ts_checker/src/check.zig:3493 | The_right_hand_side_of_a_for_in_statement_must_be_of_type_any_an_object_type_or_a_type_parameter_but_2407 |
+| TS2408 | err | emitted | packages/ts_checker/src/check.zig:8425<br>packages/ts_checker/src/check.zig:95693<br>packages/ts_checker/src/check.zig:95710 | Setters_cannot_return_a_value_2408 |
 | TS2409 | err | catalog-only |  | Return_type_of_constructor_signature_must_be_assignable_to_the_instance_type_of_the_class_2409 |
-| TS2410 | err | emitted | packages/ts_parser/src/ts_parser.zig:3099<br>packages/ts_parser/src/ts_parser.zig:3110<br>packages/ts_parser/src/ts_parser.zig:21560 | The_with_statement_is_not_supported_All_symbols_in_a_with_block_will_have_type_any_2410 |
-| TS2411 | err | emitted | packages/ts_checker/src/check.zig:31882<br>packages/ts_checker/src/check.zig:31905<br>packages/ts_checker/src/check.zig:31913 | Property_0_of_type_1_is_not_assignable_to_2_index_type_3_2411 |
+| TS2410 | err | emitted | packages/ts_parser/src/ts_parser.zig:3099<br>packages/ts_parser/src/ts_parser.zig:3110<br>packages/ts_parser/src/ts_parser.zig:22547 | The_with_statement_is_not_supported_All_symbols_in_a_with_block_will_have_type_any_2410 |
+| TS2411 | err | emitted | packages/ts_checker/src/check.zig:32136<br>packages/ts_checker/src/check.zig:32159<br>packages/ts_checker/src/check.zig:32167 | Property_0_of_type_1_is_not_assignable_to_2_index_type_3_2411 |
 | TS2412 | err | catalog-only |  | Type_0_is_not_assignable_to_type_1_with_exactOptionalPropertyTypes_Colon_true_Consider_adding_undefi_2412 |
-| TS2413 | err | emitted | packages/ts_checker/src/check.zig:34920<br>packages/ts_checker/src/check.zig:84783<br>packages/ts_checker/src/check.zig:84806 | _0_index_type_1_is_not_assignable_to_2_index_type_3_2413 |
+| TS2413 | err | emitted | packages/ts_checker/src/check.zig:35174<br>packages/ts_checker/src/check.zig:85332<br>packages/ts_checker/src/check.zig:85355 | _0_index_type_1_is_not_assignable_to_2_index_type_3_2413 |
 | TS2414 | err | emitted | packages/ts_parser/src/ts_parser.zig:4360 | Class_name_cannot_be_0_2414 |
-| TS2415 | err | emitted | packages/ts_checker/src/check.zig:25576<br>packages/ts_checker/src/check.zig:25710<br>packages/ts_checker/src/check.zig:25763 | Class_0_incorrectly_extends_base_class_1_2415 |
-| TS2416 | err | emitted | packages/ts_checker/src/check.zig:24615<br>packages/ts_checker/src/check.zig:25771<br>packages/ts_checker/src/check.zig:76038 | Property_0_in_type_1_is_not_assignable_to_the_same_property_in_base_type_2_2416 |
-| TS2417 | err | emitted | packages/ts_checker/src/check.zig:24731<br>packages/ts_checker/src/check.zig:25734<br>packages/ts_checker/src/check.zig:86642 | Class_static_side_0_incorrectly_extends_base_class_static_side_1_2417 |
+| TS2415 | err | emitted | packages/ts_checker/src/check.zig:25698<br>packages/ts_checker/src/check.zig:25832<br>packages/ts_checker/src/check.zig:25885 | Class_0_incorrectly_extends_base_class_1_2415 |
+| TS2416 | err | emitted | packages/ts_checker/src/check.zig:24737<br>packages/ts_checker/src/check.zig:25893<br>packages/ts_checker/src/check.zig:76449 | Property_0_in_type_1_is_not_assignable_to_the_same_property_in_base_type_2_2416 |
+| TS2417 | err | emitted | packages/ts_checker/src/check.zig:24853<br>packages/ts_checker/src/check.zig:25856<br>packages/ts_checker/src/check.zig:87191 | Class_static_side_0_incorrectly_extends_base_class_static_side_1_2417 |
 | TS2418 | err | catalog-only |  | Type_of_computed_property_s_value_is_0_which_is_not_assignable_to_type_1_2418 |
 | TS2419 | err | catalog-only |  | Types_of_construct_signatures_are_incompatible_2419 |
-| TS2420 | err | emitted | packages/ts_checker/src/check.zig:20795<br>packages/ts_checker/src/check.zig:21369<br>packages/ts_checker/src/check.zig:76940 | Class_0_incorrectly_implements_interface_1_2420 |
+| TS2420 | err | emitted | packages/ts_checker/src/check.zig:20917<br>packages/ts_checker/src/check.zig:21491<br>packages/ts_checker/src/check.zig:77489 | Class_0_incorrectly_implements_interface_1_2420 |
 | TS2422 | err | catalog-only |  | A_class_can_only_implement_an_object_type_or_intersection_of_object_types_with_statically_known_memb_2422 |
-| TS2423 | err | emitted | packages/ts_checker/src/check.zig:24933<br>packages/ts_checker/src/check.zig:70794<br>packages/ts_checker/src/check.zig:70817 | Class_0_defines_instance_member_function_1_but_extended_class_2_defines_it_as_instance_member_access_2423 |
-| TS2425 | err | emitted | packages/ts_checker/src/check.zig:25019<br>packages/ts_checker/src/check.zig:98754<br>packages/ts_checker/src/check.zig:98810 | Class_0_defines_instance_member_property_1_but_extended_class_2_defines_it_as_instance_member_functi_2425 |
-| TS2426 | err | emitted | packages/ts_checker/src/check.zig:25007<br>packages/ts_checker/src/check.zig:98786<br>packages/ts_checker/src/check.zig:98811 | Class_0_defines_instance_member_accessor_1_but_extended_class_2_defines_it_as_instance_member_functi_2426 |
+| TS2423 | err | emitted | packages/ts_checker/src/check.zig:25055<br>packages/ts_checker/src/check.zig:71205<br>packages/ts_checker/src/check.zig:71228 | Class_0_defines_instance_member_function_1_but_extended_class_2_defines_it_as_instance_member_access_2423 |
+| TS2425 | err | emitted | packages/ts_checker/src/check.zig:25141<br>packages/ts_checker/src/check.zig:99303<br>packages/ts_checker/src/check.zig:99359 | Class_0_defines_instance_member_property_1_but_extended_class_2_defines_it_as_instance_member_functi_2425 |
+| TS2426 | err | emitted | packages/ts_checker/src/check.zig:25129<br>packages/ts_checker/src/check.zig:99335<br>packages/ts_checker/src/check.zig:99360 | Class_0_defines_instance_member_accessor_1_but_extended_class_2_defines_it_as_instance_member_functi_2426 |
 | TS2427 | err | emitted | packages/ts_parser/src/ts_parser.zig:6096 | Interface_name_cannot_be_0_2427 |
-| TS2428 | err | emitted | packages/ts_checker/src/check.zig:6480<br>packages/ts_checker/src/check.zig:76636<br>packages/ts_checker/src/check.zig:76656 | All_declarations_of_0_must_have_identical_type_parameters_2428 |
-| TS2430 | err | emitted | packages/ts_checker/src/check.zig:30714<br>packages/ts_checker/src/check.zig:31325<br>packages/ts_checker/src/check.zig:31339 | Interface_0_incorrectly_extends_interface_1_2430 |
-| TS2431 | err | emitted | packages/ts_checker/src/check.zig:32240<br>packages/ts_checker/src/check.zig:74095 | Enum_name_cannot_be_0_2431 |
+| TS2428 | err | emitted | packages/ts_checker/src/check.zig:6543<br>packages/ts_checker/src/check.zig:77047<br>packages/ts_checker/src/check.zig:77067 | All_declarations_of_0_must_have_identical_type_parameters_2428 |
+| TS2430 | err | emitted | packages/ts_checker/src/check.zig:30954<br>packages/ts_checker/src/check.zig:31579<br>packages/ts_checker/src/check.zig:31593 | Interface_0_incorrectly_extends_interface_1_2430 |
+| TS2431 | err | emitted | packages/ts_checker/src/check.zig:32494<br>packages/ts_checker/src/check.zig:74506 | Enum_name_cannot_be_0_2431 |
 | TS2432 | err | catalog-only |  | In_an_enum_with_multiple_declarations_only_one_declaration_can_omit_an_initializer_for_its_first_enu_2432 |
-| TS2433 | err | emitted | packages/ts_checker/src/check.zig:4967 | A_namespace_declaration_cannot_be_in_a_different_file_from_a_class_or_function_with_which_it_is_merg_2433 |
-| TS2434 | err | emitted | packages/ts_checker/src/check.zig:5719<br>packages/ts_checker/src/check.zig:5752 | A_namespace_declaration_cannot_be_located_prior_to_a_class_or_function_with_which_it_is_merged_2434 |
+| TS2433 | err | emitted | packages/ts_checker/src/check.zig:5030 | A_namespace_declaration_cannot_be_in_a_different_file_from_a_class_or_function_with_which_it_is_merg_2433 |
+| TS2434 | err | emitted | packages/ts_checker/src/check.zig:5782<br>packages/ts_checker/src/check.zig:5815 | A_namespace_declaration_cannot_be_located_prior_to_a_class_or_function_with_which_it_is_merged_2434 |
 | TS2435 | err | catalog-only |  | Ambient_modules_cannot_be_nested_in_other_modules_or_namespaces_2435 |
 | TS2436 | err | catalog-only |  | Ambient_module_declaration_cannot_specify_relative_module_name_2436 |
-| TS2437 | err | emitted | packages/ts_checker/src/check.zig:28831<br>packages/ts_checker/src/check.zig:72697 | Module_0_is_hidden_by_a_local_declaration_with_the_same_name_2437 |
-| TS2438 | err | emitted | packages/ts_checker/src/check.zig:28811<br>packages/ts_checker/src/check.zig:72722 | Import_name_cannot_be_0_2438 |
+| TS2437 | err | emitted | packages/ts_checker/src/check.zig:28953<br>packages/ts_checker/src/check.zig:73108 | Module_0_is_hidden_by_a_local_declaration_with_the_same_name_2437 |
+| TS2438 | err | emitted | packages/ts_checker/src/check.zig:28933<br>packages/ts_checker/src/check.zig:73133 | Import_name_cannot_be_0_2438 |
 | TS2439 | err | catalog-only |  | Import_or_export_declaration_in_an_ambient_module_declaration_cannot_reference_module_through_relati_2439 |
-| TS2440 | err | emitted | packages/ts_checker/src/check.zig:6906<br>packages/ts_checker/src/check.zig:72658<br>packages/ts_checker/src/check.zig:72698 | Import_declaration_conflicts_with_local_declaration_of_0_2440 |
-| TS2441 | err | emitted | packages/ts_checker/src/check.zig:10919<br>packages/ts_checker/src/check.zig:98256<br>packages/ts_checker/src/check.zig:98289 | Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_2441 |
+| TS2440 | err | emitted | packages/ts_checker/src/check.zig:6969<br>packages/ts_checker/src/check.zig:73069<br>packages/ts_checker/src/check.zig:73109 | Import_declaration_conflicts_with_local_declaration_of_0_2440 |
+| TS2441 | err | emitted | packages/ts_checker/src/check.zig:10982<br>packages/ts_checker/src/check.zig:98805<br>packages/ts_checker/src/check.zig:98838 | Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_2441 |
 | TS2442 | err | catalog-only |  | Types_have_separate_declarations_of_a_private_property_0_2442 |
 | TS2443 | err | catalog-only |  | Property_0_is_protected_but_type_1_is_not_a_class_derived_from_2_2443 |
 | TS2444 | err | catalog-only |  | Property_0_is_protected_in_type_1_but_public_in_type_2_2444 |
-| TS2445 | err | emitted | packages/ts_checker/src/check.zig:23072<br>packages/ts_checker/src/check.zig:73860<br>packages/ts_checker/src/check.zig:73879 | Property_0_is_protected_and_only_accessible_within_class_1_and_its_subclasses_2445 |
+| TS2445 | err | emitted | packages/ts_checker/src/check.zig:23194<br>packages/ts_checker/src/check.zig:74271<br>packages/ts_checker/src/check.zig:74290 | Property_0_is_protected_and_only_accessible_within_class_1_and_its_subclasses_2445 |
 | TS2446 | err | catalog-only |  | Property_0_is_protected_and_only_accessible_through_an_instance_of_class_1_This_is_an_instance_of_cl_2446 |
-| TS2447 | err | emitted | packages/ts_checker/src/check.zig:59233<br>packages/ts_checker/src/check.zig:100893<br>packages/ts_checker/src/check.zig:100895 | The_0_operator_is_not_allowed_for_boolean_types_Consider_using_1_instead_2447 |
-| TS2448 | err | emitted | packages/ts_checker/src/check.zig:3531<br>packages/ts_checker/src/check.zig:7696<br>packages/ts_checker/src/check.zig:12903 | Block_scoped_variable_0_used_before_its_declaration_2448 |
-| TS2449 | err | emitted | packages/ts_checker/src/check.zig:12071<br>packages/ts_checker/src/check.zig:63162<br>packages/ts_checker/src/check.zig:74217 | Class_0_used_before_its_declaration_2449 |
+| TS2447 | err | emitted | packages/ts_checker/src/check.zig:59514<br>packages/ts_checker/src/check.zig:101442<br>packages/ts_checker/src/check.zig:101444 | The_0_operator_is_not_allowed_for_boolean_types_Consider_using_1_instead_2447 |
+| TS2448 | err | emitted | packages/ts_checker/src/check.zig:3594<br>packages/ts_checker/src/check.zig:7759<br>packages/ts_checker/src/check.zig:12966 | Block_scoped_variable_0_used_before_its_declaration_2448 |
+| TS2449 | err | emitted | packages/ts_checker/src/check.zig:12134<br>packages/ts_checker/src/check.zig:63443<br>packages/ts_checker/src/check.zig:74628 | Class_0_used_before_its_declaration_2449 |
 | TS2450 | err | catalog-only |  | Enum_0_used_before_its_declaration_2450 |
-| TS2451 | err | emitted | packages/ts_checker/src/check.zig:22095<br>packages/ts_checker/src/check.zig:22104<br>packages/ts_checker/src/check.zig:22111 | Cannot_redeclare_block_scoped_variable_0_2451 |
-| TS2452 | err | emitted | packages/ts_parser/src/ts_parser.zig:6287<br>packages/ts_parser/src/ts_parser.zig:22908 | An_enum_member_cannot_have_a_numeric_name_2452 |
-| TS2454 | err | emitted | packages/ts_checker/src/check.zig:10543<br>packages/ts_checker/src/check.zig:17793<br>packages/ts_checker/src/check.zig:63141 | Variable_0_is_used_before_being_assigned_2454 |
-| TS2456 | err | emitted | packages/ts_checker/src/check.zig:33275<br>packages/ts_checker/src/check.zig:33282<br>packages/ts_checker/src/check.zig:77663 | Type_alias_0_circularly_references_itself_2456 |
+| TS2451 | err | emitted | packages/ts_checker/src/check.zig:22217<br>packages/ts_checker/src/check.zig:22226<br>packages/ts_checker/src/check.zig:22233 | Cannot_redeclare_block_scoped_variable_0_2451 |
+| TS2452 | err | emitted | packages/ts_parser/src/ts_parser.zig:6287<br>packages/ts_parser/src/ts_parser.zig:23895 | An_enum_member_cannot_have_a_numeric_name_2452 |
+| TS2454 | err | emitted | packages/ts_checker/src/check.zig:10606<br>packages/ts_checker/src/check.zig:17915<br>packages/ts_checker/src/check.zig:63422 | Variable_0_is_used_before_being_assigned_2454 |
+| TS2456 | err | emitted | packages/ts_checker/src/check.zig:33529<br>packages/ts_checker/src/check.zig:33536<br>packages/ts_checker/src/check.zig:78212 | Type_alias_0_circularly_references_itself_2456 |
 | TS2457 | err | emitted | packages/ts_parser/src/ts_parser.zig:6203 | Type_alias_name_cannot_be_0_2457 |
 | TS2458 | err | catalog-only |  | An_AMD_module_cannot_have_multiple_name_assignments_2458 |
-| TS2459 | err | emitted | packages/ts_checker/src/check.zig:29026<br>packages/ts_checker/src/check.zig:101095<br>packages/ts_checker/src/check.zig:101097 | Module_0_declares_1_locally_but_it_is_not_exported_2459 |
-| TS2460 | err | emitted | packages/ts_checker/src/check.zig:29039<br>packages/ts_checker/src/check.zig:101115<br>packages/ts_checker/src/check.zig:101117 | Module_0_declares_1_locally_but_it_is_exported_as_2_2460 |
-| TS2461 | err | emitted | packages/ts_checker/src/check.zig:3512<br>packages/ts_checker/src/check.zig:3516<br>packages/ts_checker/src/check.zig:38720 | Type_0_is_not_an_array_type_2461 |
-| TS2462 | err | emitted | packages/ts_checker/src/check.zig:38791<br>packages/ts_checker/src/check.zig:38925<br>packages/ts_parser/src/ts_parser.zig:4281 | A_rest_element_must_be_last_in_a_destructuring_pattern_2462 |
-| TS2463 | err | emitted | packages/ts_checker/src/check.zig:16730<br>packages/ts_parser/src/ts_parser.zig:3880<br>packages/ts_parser/src/ts_parser.zig:3600 | A_binding_pattern_parameter_cannot_be_optional_in_an_implementation_signature_2463 |
-| TS2464 | err | emitted | packages/ts_checker/src/check.zig:19656<br>packages/ts_checker/src/check.zig:20070<br>packages/ts_checker/src/check.zig:46124 | A_computed_property_name_must_be_of_type_string_number_symbol_or_any_2464 |
-| TS2465 | err | emitted | packages/ts_checker/src/check.zig:51680<br>packages/ts_checker/src/check.zig:56691<br>packages/ts_checker/src/check.zig:75793 | this_cannot_be_referenced_in_a_computed_property_name_2465 |
-| TS2466 | err | emitted | packages/ts_checker/src/check.zig:19631<br>packages/ts_checker/src/check.zig:20042<br>packages/ts_checker/src/check.zig:46081 | super_cannot_be_referenced_in_a_computed_property_name_2466 |
-| TS2467 | err | emitted | packages/ts_checker/src/check.zig:19626<br>packages/ts_checker/src/check.zig:20037<br>packages/ts_checker/src/check.zig:30628 | A_computed_property_name_cannot_reference_a_type_parameter_from_its_containing_type_2467 |
+| TS2459 | err | emitted | packages/ts_checker/src/check.zig:29266<br>packages/ts_checker/src/check.zig:101644<br>packages/ts_checker/src/check.zig:101646 | Module_0_declares_1_locally_but_it_is_not_exported_2459 |
+| TS2460 | err | emitted | packages/ts_checker/src/check.zig:29279<br>packages/ts_checker/src/check.zig:101664<br>packages/ts_checker/src/check.zig:101666 | Module_0_declares_1_locally_but_it_is_exported_as_2_2460 |
+| TS2461 | err | emitted | packages/ts_checker/src/check.zig:3575<br>packages/ts_checker/src/check.zig:3579<br>packages/ts_checker/src/check.zig:38974 | Type_0_is_not_an_array_type_2461 |
+| TS2462 | err | emitted | packages/ts_checker/src/check.zig:39045<br>packages/ts_checker/src/check.zig:39179<br>packages/ts_parser/src/ts_parser.zig:4281 | A_rest_element_must_be_last_in_a_destructuring_pattern_2462 |
+| TS2463 | err | emitted | packages/ts_checker/src/check.zig:16811<br>packages/ts_parser/src/ts_parser.zig:3880<br>packages/ts_parser/src/ts_parser.zig:3600 | A_binding_pattern_parameter_cannot_be_optional_in_an_implementation_signature_2463 |
+| TS2464 | err | emitted | packages/ts_checker/src/check.zig:19778<br>packages/ts_checker/src/check.zig:20192<br>packages/ts_checker/src/check.zig:46405 | A_computed_property_name_must_be_of_type_string_number_symbol_or_any_2464 |
+| TS2465 | err | emitted | packages/ts_checker/src/check.zig:51961<br>packages/ts_checker/src/check.zig:56972<br>packages/ts_checker/src/check.zig:76204 | this_cannot_be_referenced_in_a_computed_property_name_2465 |
+| TS2466 | err | emitted | packages/ts_checker/src/check.zig:19753<br>packages/ts_checker/src/check.zig:20164<br>packages/ts_checker/src/check.zig:46362 | super_cannot_be_referenced_in_a_computed_property_name_2466 |
+| TS2467 | err | emitted | packages/ts_checker/src/check.zig:19748<br>packages/ts_checker/src/check.zig:20159<br>packages/ts_checker/src/check.zig:30868 | A_computed_property_name_cannot_reference_a_type_parameter_from_its_containing_type_2467 |
 | TS2468 | err | catalog-only |  | Cannot_find_global_value_0_2468 |
-| TS2469 | err | emitted | packages/ts_checker/src/check.zig:57554<br>packages/ts_checker/src/check.zig:57571<br>packages/ts_checker/src/check.zig:74337 | The_0_operator_cannot_be_applied_to_type_symbol_2469 |
+| TS2469 | err | emitted | packages/ts_checker/src/check.zig:57835<br>packages/ts_checker/src/check.zig:57852<br>packages/ts_checker/src/check.zig:74748 | The_0_operator_cannot_be_applied_to_type_symbol_2469 |
 | TS2472 | err | catalog-only |  | Spread_operator_in_new_expressions_is_only_available_when_targeting_ECMAScript_5_and_higher_2472 |
-| TS2473 | err | emitted | packages/ts_checker/src/check.zig:32254<br>packages/ts_checker/src/check.zig:100774<br>packages/ts_checker/src/check.zig:100776 | Enum_declarations_must_all_be_const_or_non_const_2473 |
-| TS2474 | err | emitted | packages/ts_checker/src/check.zig:32361<br>packages/ts_checker/src/check.zig:72437<br>packages/ts_checker/src/check.zig:87269 | const_enum_member_initializers_must_be_constant_expressions_2474 |
+| TS2473 | err | emitted | packages/ts_checker/src/check.zig:32508<br>packages/ts_checker/src/check.zig:101323<br>packages/ts_checker/src/check.zig:101325 | Enum_declarations_must_all_be_const_or_non_const_2473 |
+| TS2474 | err | emitted | packages/ts_checker/src/check.zig:32615<br>packages/ts_checker/src/check.zig:72848<br>packages/ts_checker/src/check.zig:87818 | const_enum_member_initializers_must_be_constant_expressions_2474 |
 | TS2475 | err | catalog-only |  | const_enums_can_only_be_used_in_property_or_index_access_expressions_or_the_right_hand_side_of_an_im_2475 |
 | TS2476 | err | catalog-only |  | A_const_enum_member_can_only_be_accessed_using_a_string_literal_2476 |
-| TS2477 | err | emitted | packages/ts_checker/src/check.zig:32351 | const_enum_member_initializer_was_evaluated_to_a_non_finite_value_2477 |
-| TS2478 | err | emitted | packages/ts_checker/src/check.zig:32349 | const_enum_member_initializer_was_evaluated_to_disallowed_value_NaN_2478 |
+| TS2477 | err | emitted | packages/ts_checker/src/check.zig:32605 | const_enum_member_initializer_was_evaluated_to_a_non_finite_value_2477 |
+| TS2478 | err | emitted | packages/ts_checker/src/check.zig:32603 | const_enum_member_initializer_was_evaluated_to_disallowed_value_NaN_2478 |
 | TS2480 | err | emitted | packages/ts_parser/src/ts_parser.zig:2761 | let_is_not_allowed_to_be_used_as_a_name_in_let_or_const_declarations_2480 |
-| TS2481 | err | emitted | packages/ts_checker/src/check.zig:3543<br>packages/ts_checker/src/check.zig:79463 | Cannot_initialize_outer_scoped_variable_0_in_the_same_scope_as_block_scoped_declaration_1_2481 |
+| TS2481 | err | emitted | packages/ts_checker/src/check.zig:3606<br>packages/ts_checker/src/check.zig:80012 | Cannot_initialize_outer_scoped_variable_0_in_the_same_scope_as_block_scoped_declaration_1_2481 |
 | TS2483 | err | emitted | packages/ts_parser/src/ts_parser.zig:2817<br>packages/ts_parser/src/ts_parser.zig:3091 | The_left_hand_side_of_a_for_of_statement_cannot_use_a_type_annotation_2483 |
 | TS2484 | err | catalog-only |  | Export_declaration_conflicts_with_exported_declaration_of_0_2484 |
-| TS2487 | err | emitted | packages/ts_checker/src/check.zig:68095 | The_left_hand_side_of_a_for_of_statement_must_be_a_variable_or_a_property_access_2487 |
-| TS2488 | err | emitted | packages/ts_checker/src/check.zig:12433<br>packages/ts_checker/src/check.zig:16125<br>packages/ts_checker/src/check.zig:38649 | Type_0_must_have_a_Symbol_iterator_method_that_returns_an_iterator_2488 |
+| TS2487 | err | emitted | packages/ts_checker/src/check.zig:68506 | The_left_hand_side_of_a_for_of_statement_must_be_a_variable_or_a_property_access_2487 |
+| TS2488 | err | emitted | packages/ts_checker/src/check.zig:12496<br>packages/ts_checker/src/check.zig:16206<br>packages/ts_checker/src/check.zig:38903 | Type_0_must_have_a_Symbol_iterator_method_that_returns_an_iterator_2488 |
 | TS2489 | err | catalog-only |  | An_iterator_must_have_a_next_method_2489 |
-| TS2490 | err | emitted | packages/ts_checker/src/check.zig:16115<br>packages/ts_checker/src/check.zig:16130<br>packages/ts_checker/src/check.zig:16141 | The_type_returned_by_the_0_method_of_an_iterator_must_have_a_value_property_2490 |
+| TS2490 | err | emitted | packages/ts_checker/src/check.zig:16196<br>packages/ts_checker/src/check.zig:16211<br>packages/ts_checker/src/check.zig:16222 | The_type_returned_by_the_0_method_of_an_iterator_must_have_a_value_property_2490 |
 | TS2491 | err | emitted | packages/ts_parser/src/ts_parser.zig:2822<br>packages/ts_parser/src/ts_parser.zig:2998 | The_left_hand_side_of_a_for_in_statement_cannot_be_a_destructuring_pattern_2491 |
-| TS2492 | err | emitted | packages/ts_checker/src/check.zig:11999<br>packages/ts_checker/src/check.zig:101009<br>packages/ts_checker/src/check.zig:101011 | Cannot_redeclare_identifier_0_in_catch_clause_2492 |
-| TS2493 | err | emitted | packages/ts_checker/src/check.zig:39554<br>packages/ts_checker/src/check.zig:79773<br>packages/ts_checker/src/check.zig:79784 | Tuple_type_0_of_length_1_has_no_element_at_index_2_2493 |
+| TS2492 | err | emitted | packages/ts_checker/src/check.zig:12062<br>packages/ts_checker/src/check.zig:101558<br>packages/ts_checker/src/check.zig:101560 | Cannot_redeclare_identifier_0_in_catch_clause_2492 |
+| TS2493 | err | emitted | packages/ts_checker/src/check.zig:39808<br>packages/ts_checker/src/check.zig:80322<br>packages/ts_checker/src/check.zig:80333 | Tuple_type_0_of_length_1_has_no_element_at_index_2_2493 |
 | TS2494 | err | catalog-only |  | Using_a_string_in_a_for_of_statement_is_only_supported_in_ECMAScript_5_and_higher_2494 |
-| TS2495 | err | emitted | packages/ts_checker/src/check.zig:38737<br>packages/ts_checker/src/check.zig:79520 | Type_0_is_not_an_array_type_or_a_string_type_2495 |
-| TS2496 | err | emitted | packages/ts_checker/src/check.zig:51754<br>packages/ts_checker/src/check.zig:96333<br>packages/ts_checker/src/check.zig:96354 | The_arguments_object_cannot_be_referenced_in_an_arrow_function_in_ES5_Consider_using_a_standard_func_2496 |
+| TS2495 | err | emitted | packages/ts_checker/src/check.zig:38991<br>packages/ts_checker/src/check.zig:80069 | Type_0_is_not_an_array_type_or_a_string_type_2495 |
+| TS2496 | err | emitted | packages/ts_checker/src/check.zig:52035<br>packages/ts_checker/src/check.zig:96882<br>packages/ts_checker/src/check.zig:96903 | The_arguments_object_cannot_be_referenced_in_an_arrow_function_in_ES5_Consider_using_a_standard_func_2496 |
 | TS2497 | err | catalog-only |  | This_module_can_only_be_referenced_with_ECMAScript_imports_Slashexports_by_turning_on_the_0_flag_and_2497 |
 | TS2498 | err | catalog-only |  | Module_0_uses_export_and_cannot_be_used_with_export_Asterisk_2498 |
-| TS2499 | err | emitted | packages/ts_parser/src/ts_parser.zig:10842 | An_interface_can_only_extend_an_identifier_Slashqualified_name_with_optional_type_arguments_2499 |
-| TS2500 | err | emitted | packages/ts_parser/src/ts_parser.zig:10849 | A_class_can_only_implement_an_identifier_Slashqualified_name_with_optional_type_arguments_2500 |
+| TS2499 | err | emitted | packages/ts_parser/src/ts_parser.zig:10852 | An_interface_can_only_extend_an_identifier_Slashqualified_name_with_optional_type_arguments_2499 |
+| TS2500 | err | emitted | packages/ts_parser/src/ts_parser.zig:10859 | A_class_can_only_implement_an_identifier_Slashqualified_name_with_optional_type_arguments_2500 |
 | TS2501 | err | catalog-only |  | A_rest_element_cannot_contain_a_binding_pattern_2501 |
-| TS2502 | err | emitted | packages/ts_checker/src/check.zig:33233<br>packages/ts_checker/src/check.zig:33256<br>packages/ts_checker/src/check.zig:42523 | _0_is_referenced_directly_or_indirectly_in_its_own_type_annotation_2502 |
-| TS2503 | err | emitted | packages/ts_checker/src/check.zig:28859<br>packages/ts_checker/src/check.zig:28890<br>packages/ts_checker/src/check.zig:36169 | Cannot_find_namespace_0_2503 |
+| TS2502 | err | emitted | packages/ts_checker/src/check.zig:33487<br>packages/ts_checker/src/check.zig:33510<br>packages/ts_checker/src/check.zig:42804 | _0_is_referenced_directly_or_indirectly_in_its_own_type_annotation_2502 |
+| TS2503 | err | emitted | packages/ts_checker/src/check.zig:28988<br>packages/ts_checker/src/check.zig:29019<br>packages/ts_checker/src/check.zig:36423 | Cannot_find_namespace_0_2503 |
 | TS2504 | err | catalog-only |  | Type_0_must_have_a_Symbol_asyncIterator_method_that_returns_an_async_iterator_2504 |
-| TS2505 | err | emitted | packages/ts_checker/src/check.zig:17069<br>packages/ts_checker/src/check.zig:83996 | A_generator_cannot_have_a_void_type_annotation_2505 |
+| TS2505 | err | emitted | packages/ts_checker/src/check.zig:17191<br>packages/ts_checker/src/check.zig:84545 | A_generator_cannot_have_a_void_type_annotation_2505 |
 | TS2506 | err | catalog-only |  | _0_is_referenced_directly_or_indirectly_in_its_own_base_expression_2506 |
-| TS2507 | err | emitted | packages/ts_checker/src/check.zig:19033<br>packages/ts_checker/src/check.zig:34021 | Type_0_is_not_a_constructor_function_type_2507 |
+| TS2507 | err | emitted | packages/ts_checker/src/check.zig:19155<br>packages/ts_checker/src/check.zig:34275 | Type_0_is_not_a_constructor_function_type_2507 |
 | TS2508 | err | catalog-only |  | No_base_constructor_has_the_specified_number_of_type_arguments_2508 |
 | TS2509 | err | catalog-only |  | Base_constructor_return_type_0_is_not_an_object_type_or_intersection_of_object_types_with_statically_2509 |
 | TS2510 | err | catalog-only |  | Base_constructors_must_all_have_the_same_return_type_2510 |
-| TS2511 | err | emitted | packages/ts_checker/src/check.zig:44266<br>packages/ts_checker/src/check.zig:44280<br>packages/ts_checker/src/check.zig:49200 | Cannot_create_an_instance_of_an_abstract_class_2511 |
+| TS2511 | err | emitted | packages/ts_checker/src/check.zig:44547<br>packages/ts_checker/src/check.zig:44561<br>packages/ts_checker/src/check.zig:49481 | Cannot_create_an_instance_of_an_abstract_class_2511 |
 | TS2512 | err | catalog-only |  | Overload_signatures_must_all_be_abstract_or_non_abstract_2512 |
 | TS2513 | err | catalog-only |  | Abstract_method_0_in_class_1_cannot_be_accessed_via_super_expression_2513 |
-| TS2514 | err | emitted | packages/ts_checker/src/check.zig:45528 | A_tuple_type_cannot_be_indexed_with_a_negative_value_2514 |
-| TS2515 | err | emitted | packages/ts_checker/src/check.zig:21014<br>packages/ts_checker/src/check.zig:21113<br>packages/ts_checker/src/check.zig:86823 | Non_abstract_class_0_does_not_implement_inherited_abstract_member_1_from_class_2_2515 |
+| TS2514 | err | emitted | packages/ts_checker/src/check.zig:45809 | A_tuple_type_cannot_be_indexed_with_a_negative_value_2514 |
+| TS2515 | err | emitted | packages/ts_checker/src/check.zig:21136<br>packages/ts_checker/src/check.zig:21235<br>packages/ts_checker/src/check.zig:87372 | Non_abstract_class_0_does_not_implement_inherited_abstract_member_1_from_class_2_2515 |
 | TS2516 | err | catalog-only |  | All_declarations_of_an_abstract_method_must_be_consecutive_2516 |
 | TS2517 | err | catalog-only |  | Cannot_assign_an_abstract_constructor_type_to_a_non_abstract_constructor_type_2517 |
 | TS2518 | err | catalog-only |  | A_this_based_type_guard_is_not_compatible_with_a_parameter_based_type_guard_2518 |
 | TS2519 | err | catalog-only |  | An_async_iterator_must_have_a_next_method_2519 |
 | TS2520 | err | catalog-only |  | Duplicate_identifier_0_Compiler_uses_declaration_1_to_support_async_functions_2520 |
 | TS2522 | err | catalog-only |  | The_arguments_object_cannot_be_referenced_in_an_async_function_or_method_in_ES5_Consider_using_a_sta_2522 |
-| TS2523 | err | emitted | packages/ts_parser/src/ts_parser.zig:13104<br>packages/ts_parser/src/ts_parser.zig:13162 | yield_expressions_cannot_be_used_in_a_parameter_initializer_2523 |
-| TS2524 | err | emitted | packages/ts_parser/src/ts_parser.zig:12976<br>packages/ts_parser/src/ts_parser.zig:12986 | await_expressions_cannot_be_used_in_a_parameter_initializer_2524 |
-| TS2526 | err | emitted | packages/ts_checker/src/check.zig:69792<br>packages/ts_checker/src/check.zig:94828<br>packages/ts_checker/src/check.zig:94839 | A_this_type_is_available_only_in_a_non_static_member_of_a_class_or_interface_2526 |
+| TS2523 | err | emitted | packages/ts_parser/src/ts_parser.zig:13735<br>packages/ts_parser/src/ts_parser.zig:13793 | yield_expressions_cannot_be_used_in_a_parameter_initializer_2523 |
+| TS2524 | err | emitted | packages/ts_parser/src/ts_parser.zig:13607<br>packages/ts_parser/src/ts_parser.zig:13617 | await_expressions_cannot_be_used_in_a_parameter_initializer_2524 |
+| TS2526 | err | emitted | packages/ts_checker/src/check.zig:70203<br>packages/ts_checker/src/check.zig:95377<br>packages/ts_checker/src/check.zig:95388 | A_this_type_is_available_only_in_a_non_static_member_of_a_class_or_interface_2526 |
 | TS2527 | err | catalog-only |  | The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527 |
-| TS2528 | err | emitted | packages/ts_checker/src/check.zig:6724<br>packages/ts_checker/src/check.zig:6727<br>packages/ts_checker/src/check.zig:6794 | A_module_cannot_have_multiple_default_exports_2528 |
+| TS2528 | err | emitted | packages/ts_checker/src/check.zig:6787<br>packages/ts_checker/src/check.zig:6790<br>packages/ts_checker/src/check.zig:6857 | A_module_cannot_have_multiple_default_exports_2528 |
 | TS2529 | err | catalog-only |  | Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_containing_async_func_2529 |
 | TS2530 | err | catalog-only |  | Property_0_is_incompatible_with_index_signature_2530 |
 | TS2531 | err | catalog-only |  | Object_is_possibly_null_2531 |
-| TS2532 | err | emitted | packages/ts_checker/src/check.zig:38701<br>packages/ts_checker/src/check.zig:39907<br>packages/ts_checker/src/check.zig:45140 | Object_is_possibly_undefined_2532 |
+| TS2532 | err | emitted | packages/ts_checker/src/check.zig:38955<br>packages/ts_checker/src/check.zig:40161<br>packages/ts_checker/src/check.zig:45421 | Object_is_possibly_undefined_2532 |
 | TS2533 | err | catalog-only |  | Object_is_possibly_null_or_undefined_2533 |
 | TS2534 | err | catalog-only |  | A_function_returning_never_cannot_have_a_reachable_end_point_2534 |
-| TS2536 | err | emitted | packages/ts_checker/src/check.zig:62997<br>packages/ts_checker/src/check.zig:63006<br>packages/ts_checker/src/check.zig:83217 | Type_0_cannot_be_used_to_index_type_1_2536 |
-| TS2537 | err | emitted | packages/ts_checker/src/check.zig:13279<br>packages/ts_checker/src/check.zig:73962<br>packages/ts_checker/src/check.zig:90140 | Type_0_has_no_matching_index_signature_for_type_1_2537 |
-| TS2538 | err | emitted | packages/ts_checker/src/check.zig:45765<br>packages/ts_checker/src/check.zig:45769<br>packages/ts_checker/src/check.zig:68159 | Type_0_cannot_be_used_as_an_index_type_2538 |
-| TS2539 | err | emitted | packages/ts_checker/src/check.zig:43877<br>packages/ts_checker/src/check.zig:43906<br>packages/ts_checker/src/check.zig:79058 | Cannot_assign_to_0_because_it_is_not_a_variable_2539 |
-| TS2540 | err | emitted | packages/ts_checker/src/check.zig:23130<br>packages/ts_checker/src/check.zig:32995<br>packages/ts_checker/src/check.zig:86012 | Cannot_assign_to_0_because_it_is_a_read_only_property_2540 |
-| TS2542 | err | emitted | packages/ts_checker/src/check.zig:23366<br>packages/ts_checker/src/check.zig:86274<br>packages/ts_checker/src/check.zig:86288 | Index_signature_in_type_0_only_permits_reading_2542 |
+| TS2536 | err | emitted | packages/ts_checker/src/check.zig:63278<br>packages/ts_checker/src/check.zig:63287<br>packages/ts_checker/src/check.zig:83766 | Type_0_cannot_be_used_to_index_type_1_2536 |
+| TS2537 | err | emitted | packages/ts_checker/src/check.zig:13342<br>packages/ts_checker/src/check.zig:74373<br>packages/ts_checker/src/check.zig:90689 | Type_0_has_no_matching_index_signature_for_type_1_2537 |
+| TS2538 | err | emitted | packages/ts_checker/src/check.zig:46046<br>packages/ts_checker/src/check.zig:46050<br>packages/ts_checker/src/check.zig:68570 | Type_0_cannot_be_used_as_an_index_type_2538 |
+| TS2539 | err | emitted | packages/ts_checker/src/check.zig:44158<br>packages/ts_checker/src/check.zig:44187<br>packages/ts_checker/src/check.zig:79607 | Cannot_assign_to_0_because_it_is_not_a_variable_2539 |
+| TS2540 | err | emitted | packages/ts_checker/src/check.zig:23252<br>packages/ts_checker/src/check.zig:33249<br>packages/ts_checker/src/check.zig:86561 | Cannot_assign_to_0_because_it_is_a_read_only_property_2540 |
+| TS2542 | err | emitted | packages/ts_checker/src/check.zig:23488<br>packages/ts_checker/src/check.zig:86823<br>packages/ts_checker/src/check.zig:86837 | Index_signature_in_type_0_only_permits_reading_2542 |
 | TS2543 | err | catalog-only |  | Duplicate_identifier_newTarget_Compiler_uses_variable_declaration_newTarget_to_capture_new_target_me_2543 |
 | TS2544 | err | catalog-only |  | Expression_resolves_to_variable_declaration_newTarget_that_compiler_uses_to_capture_new_target_meta__2544 |
 | TS2545 | err | catalog-only |  | A_mixin_class_must_have_a_constructor_with_a_single_rest_parameter_of_type_any_2545 |
@@ -730,40 +730,40 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2549 | err | catalog-only |  | Type_0_is_not_an_array_type_or_a_string_type_or_does_not_have_a_Symbol_iterator_method_that_returns__2549 |
 | TS2550 | err | catalog-only |  | Property_0_does_not_exist_on_type_1_Do_you_need_to_change_your_target_library_Try_changing_the_lib_c_2550 |
 | TS2551 | err | catalog-only |  | Property_0_does_not_exist_on_type_1_Did_you_mean_2_2551 |
-| TS2552 | err | emitted | packages/ts_checker/src/check.zig:41238<br>packages/ts_checker/src/check.zig:46706<br>packages/ts_checker/src/check.zig:46707 | Cannot_find_name_0_Did_you_mean_1_2552 |
+| TS2552 | err | emitted | packages/ts_checker/src/check.zig:41519<br>packages/ts_checker/src/check.zig:46987<br>packages/ts_checker/src/check.zig:46988 | Cannot_find_name_0_Did_you_mean_1_2552 |
 | TS2553 | err | catalog-only |  | Computed_values_are_not_permitted_in_an_enum_with_string_valued_members_2553 |
-| TS2554 | err | emitted | packages/ts_checker/src/check.zig:43054<br>packages/ts_checker/src/check.zig:44644<br>packages/ts_checker/src/check.zig:61168 | Expected_0_arguments_but_got_1_2554 |
-| TS2555 | err | emitted | packages/ts_checker/src/check.zig:61168<br>packages/ts_checker/src/check.zig:75600 | Expected_at_least_0_arguments_but_got_1_2555 |
-| TS2556 | err | emitted | packages/ts_checker/src/check.zig:61173<br>packages/ts_checker/src/check.zig:61225<br>packages/ts_checker/src/check.zig:89412 | A_spread_argument_must_either_have_a_tuple_type_or_be_passed_to_a_rest_parameter_2556 |
-| TS2558 | err | emitted | packages/ts_checker/src/check.zig:44410<br>packages/ts_checker/src/check.zig:44788<br>packages/ts_checker/src/check.zig:44817 | Expected_0_type_arguments_but_got_1_2558 |
-| TS2559 | err | emitted | packages/ts_checker/src/check.zig:66122<br>packages/ts_checker/src/check.zig:70155<br>packages/ts_checker/src/check.zig:70183 | Type_0_has_no_properties_in_common_with_type_1_2559 |
+| TS2554 | err | emitted | packages/ts_checker/src/check.zig:43335<br>packages/ts_checker/src/check.zig:44925<br>packages/ts_checker/src/check.zig:61449 | Expected_0_arguments_but_got_1_2554 |
+| TS2555 | err | emitted | packages/ts_checker/src/check.zig:61449<br>packages/ts_checker/src/check.zig:76011 | Expected_at_least_0_arguments_but_got_1_2555 |
+| TS2556 | err | emitted | packages/ts_checker/src/check.zig:61454<br>packages/ts_checker/src/check.zig:61506<br>packages/ts_checker/src/check.zig:89961 | A_spread_argument_must_either_have_a_tuple_type_or_be_passed_to_a_rest_parameter_2556 |
+| TS2558 | err | emitted | packages/ts_checker/src/check.zig:44691<br>packages/ts_checker/src/check.zig:45069<br>packages/ts_checker/src/check.zig:45098 | Expected_0_type_arguments_but_got_1_2558 |
+| TS2559 | err | emitted | packages/ts_checker/src/check.zig:66533<br>packages/ts_checker/src/check.zig:70566<br>packages/ts_checker/src/check.zig:70594 | Type_0_has_no_properties_in_common_with_type_1_2559 |
 | TS2560 | err | catalog-only |  | Value_of_type_0_has_no_properties_in_common_with_type_1_Did_you_mean_to_call_it_2560 |
 | TS2561 | err | catalog-only |  | Object_literal_may_only_specify_known_properties_but_0_does_not_exist_in_type_1_Did_you_mean_to_writ_2561 |
 | TS2562 | err | catalog-only |  | Base_class_expressions_cannot_reference_class_type_parameters_2562 |
 | TS2563 | err | catalog-only |  | The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563 |
-| TS2564 | err | emitted | packages/ts_checker/src/check.zig:20111<br>packages/ts_checker/src/check.zig:20512<br>packages/ts_checker/src/check.zig:77303 | Property_0_has_no_initializer_and_is_not_definitely_assigned_in_the_constructor_2564 |
-| TS2565 | err | emitted | packages/ts_checker/src/check.zig:9699<br>packages/ts_checker/src/check.zig:21805<br>packages/ts_checker/src/check.zig:72520 | Property_0_is_used_before_being_assigned_2565 |
+| TS2564 | err | emitted | packages/ts_checker/src/check.zig:20233<br>packages/ts_checker/src/check.zig:20634<br>packages/ts_checker/src/check.zig:77852 | Property_0_has_no_initializer_and_is_not_definitely_assigned_in_the_constructor_2564 |
+| TS2565 | err | emitted | packages/ts_checker/src/check.zig:9762<br>packages/ts_checker/src/check.zig:21927<br>packages/ts_checker/src/check.zig:72931 | Property_0_is_used_before_being_assigned_2565 |
 | TS2566 | err | catalog-only |  | A_rest_element_cannot_have_a_property_name_2566 |
 | TS2567 | err | catalog-only |  | Enum_declarations_can_only_merge_with_namespace_or_other_enum_declarations_2567 |
 | TS2568 | err | catalog-only |  | Property_0_may_not_exist_on_type_1_Did_you_mean_2_2568 |
 | TS2570 | err | catalog-only |  | Could_not_find_name_0_Did_you_mean_1_2570 |
 | TS2571 | err | catalog-only |  | Object_is_of_type_unknown_2571 |
 | TS2574 | err | catalog-only |  | A_rest_element_type_must_be_an_array_type_2574 |
-| TS2575 | err | emitted | packages/ts_checker/src/check.zig:44739<br>packages/ts_checker/src/check.zig:49458<br>packages/ts_checker/src/check.zig:99193 | No_overload_expects_0_arguments_but_overloads_do_exist_that_expect_either_1_or_2_arguments_2575 |
-| TS2576 | err | emitted | packages/ts_checker/src/check.zig:58003 | Property_0_does_not_exist_on_type_1_Did_you_mean_to_access_the_static_member_2_instead_2576 |
+| TS2575 | err | emitted | packages/ts_checker/src/check.zig:45020<br>packages/ts_checker/src/check.zig:49739<br>packages/ts_checker/src/check.zig:99742 | No_overload_expects_0_arguments_but_overloads_do_exist_that_expect_either_1_or_2_arguments_2575 |
+| TS2576 | err | emitted | packages/ts_checker/src/check.zig:58284 | Property_0_does_not_exist_on_type_1_Did_you_mean_to_access_the_static_member_2_instead_2576 |
 | TS2577 | err | catalog-only |  | Return_type_annotation_circularly_references_itself_2577 |
-| TS2578 | err | emitted | packages/ts_checker/src/check.zig:3117<br>packages/ts_checker/src/check.zig:71805<br>packages/ts_checker/src/check.zig:71822 | Unused_ts_expect_error_directive_2578 |
+| TS2578 | err | emitted | packages/ts_checker/src/check.zig:3180<br>packages/ts_checker/src/check.zig:72216<br>packages/ts_checker/src/check.zig:72233 | Unused_ts_expect_error_directive_2578 |
 | TS2580 | err | catalog-only |  | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_node_Try_npm_i_save_dev_types_Slashno_2580 |
 | TS2581 | err | catalog-only |  | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_jQuery_Try_npm_i_save_dev_types_Slash_2581 |
 | TS2582 | err | catalog-only |  | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_a_test_runner_Try_npm_i_save_dev_type_2582 |
-| TS2583 | err | emitted | packages/ts_checker/src/check.zig:54032<br>packages/ts_checker/src/check.zig:70548<br>packages/ts_checker/src/check.zig:70566 | Cannot_find_name_0_Do_you_need_to_change_your_target_library_Try_changing_the_lib_compiler_option_to_2583 |
+| TS2583 | err | emitted | packages/ts_checker/src/check.zig:54313<br>packages/ts_checker/src/check.zig:70959<br>packages/ts_checker/src/check.zig:70977 | Cannot_find_name_0_Do_you_need_to_change_your_target_library_Try_changing_the_lib_compiler_option_to_2583 |
 | TS2584 | err | catalog-only |  | Cannot_find_name_0_Do_you_need_to_change_your_target_library_Try_changing_the_lib_compiler_option_to_2584 |
 | TS2585 | err | catalog-only |  | _0_only_refers_to_a_type_but_is_being_used_as_a_value_here_Do_you_need_to_change_your_target_library_2585 |
-| TS2588 | err | emitted | packages/ts_checker/src/check.zig:3563<br>packages/ts_checker/src/check.zig:43890<br>packages/ts_checker/src/check.zig:71528 | Cannot_assign_to_0_because_it_is_a_constant_2588 |
+| TS2588 | err | emitted | packages/ts_checker/src/check.zig:3626<br>packages/ts_checker/src/check.zig:44171<br>packages/ts_checker/src/check.zig:71939 | Cannot_assign_to_0_because_it_is_a_constant_2588 |
 | TS2589 | err | catalog-only |  | Type_instantiation_is_excessively_deep_and_possibly_infinite_2589 |
 | TS2590 | err | catalog-only |  | Expression_produces_a_union_type_that_is_too_complex_to_represent_2590 |
-| TS2591 | err | emitted | packages/ts_checker/src/check.zig:49659<br>packages/ts_checker/src/check.zig:54014<br>packages/ts_checker/src/check.zig:61508 | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_node_Try_npm_i_save_dev_types_Slashno_2591 |
-| TS2592 | err | emitted | packages/ts_checker/src/check.zig:49660<br>packages/ts_checker/src/check.zig:54045<br>packages/ts_checker/src/check.zig:95448 | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_jQuery_Try_npm_i_save_dev_types_Slash_2592 |
+| TS2591 | err | emitted | packages/ts_checker/src/check.zig:49940<br>packages/ts_checker/src/check.zig:54295<br>packages/ts_checker/src/check.zig:61789 | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_node_Try_npm_i_save_dev_types_Slashno_2591 |
+| TS2592 | err | emitted | packages/ts_checker/src/check.zig:49941<br>packages/ts_checker/src/check.zig:54326<br>packages/ts_checker/src/check.zig:95997 | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_jQuery_Try_npm_i_save_dev_types_Slash_2592 |
 | TS2593 | err | catalog-only |  | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_a_test_runner_Try_npm_i_save_dev_type_2593 |
 | TS2594 | err | catalog-only |  | This_module_is_declared_with_export_and_can_only_be_used_with_a_default_import_when_using_the_0_flag_2594 |
 | TS2595 | err | catalog-only |  | _0_can_only_be_imported_by_using_a_default_import_2595 |
@@ -772,13 +772,13 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2598 | err | catalog-only |  | _0_can_only_be_imported_by_using_a_require_call_or_by_turning_on_the_esModuleInterop_flag_and_using__2598 |
 | TS2602 | err | catalog-only |  | JSX_element_implicitly_has_type_any_because_the_global_type_JSX_Element_does_not_exist_2602 |
 | TS2603 | err | catalog-only |  | Property_0_in_type_1_is_not_assignable_to_type_2_2603 |
-| TS2604 | err | emitted | packages/ts_checker/src/check.zig:46918<br>packages/ts_checker/src/check.zig:46922<br>packages/ts_checker/src/check.zig:46925 | JSX_element_type_0_does_not_have_any_construct_or_call_signatures_2604 |
+| TS2604 | err | emitted | packages/ts_checker/src/check.zig:47199<br>packages/ts_checker/src/check.zig:47203<br>packages/ts_checker/src/check.zig:47206 | JSX_element_type_0_does_not_have_any_construct_or_call_signatures_2604 |
 | TS2606 | err | catalog-only |  | Property_0_of_JSX_spread_attribute_is_not_assignable_to_target_property_2606 |
 | TS2607 | err | catalog-only |  | JSX_element_class_does_not_support_attributes_because_it_does_not_have_a_0_property_2607 |
 | TS2608 | err | catalog-only |  | The_global_type_JSX_0_may_not_have_more_than_one_property_2608 |
 | TS2609 | err | catalog-only |  | JSX_spread_child_must_be_an_array_type_2609 |
-| TS2610 | err | emitted | packages/ts_checker/src/check.zig:24786<br>packages/ts_checker/src/check.zig:24790<br>packages/ts_checker/src/check.zig:75969 | _0_is_defined_as_an_accessor_in_class_1_but_is_overridden_here_in_2_as_an_instance_property_2610 |
-| TS2611 | err | emitted | packages/ts_checker/src/check.zig:24878<br>packages/ts_checker/src/check.zig:24882<br>packages/ts_checker/src/check.zig:75983 | _0_is_defined_as_a_property_in_class_1_but_is_overridden_here_in_2_as_an_accessor_2611 |
+| TS2610 | err | emitted | packages/ts_checker/src/check.zig:24908<br>packages/ts_checker/src/check.zig:24912<br>packages/ts_checker/src/check.zig:76380 | _0_is_defined_as_an_accessor_in_class_1_but_is_overridden_here_in_2_as_an_instance_property_2610 |
+| TS2611 | err | emitted | packages/ts_checker/src/check.zig:25000<br>packages/ts_checker/src/check.zig:25004<br>packages/ts_checker/src/check.zig:76394 | _0_is_defined_as_a_property_in_class_1_but_is_overridden_here_in_2_as_an_accessor_2611 |
 | TS2612 | err | catalog-only |  | Property_0_will_overwrite_the_base_property_in_1_If_this_is_intentional_add_an_initializer_Otherwise_2612 |
 | TS2613 | err | catalog-only |  | Module_0_has_no_default_export_Did_you_mean_to_use_import_1_from_0_instead_2613 |
 | TS2614 | err | catalog-only |  | Module_0_has_no_exported_member_1_Did_you_mean_to_use_import_1_from_0_instead_2614 |
@@ -794,11 +794,11 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2625 | err | catalog-only |  | Variadic_element_at_position_0_in_source_does_not_match_element_at_position_1_in_target_2625 |
 | TS2626 | err | catalog-only |  | Type_at_position_0_in_source_is_not_compatible_with_type_at_position_1_in_target_2626 |
 | TS2627 | err | catalog-only |  | Type_at_positions_0_through_1_in_source_is_not_compatible_with_type_at_position_2_in_target_2627 |
-| TS2628 | err | emitted | packages/ts_checker/src/check.zig:58485 | Cannot_assign_to_0_because_it_is_an_enum_2628 |
-| TS2629 | err | emitted | packages/ts_checker/src/check.zig:58486 | Cannot_assign_to_0_because_it_is_a_class_2629 |
-| TS2630 | err | emitted | packages/ts_checker/src/check.zig:43874<br>packages/ts_checker/src/check.zig:71539 | Cannot_assign_to_0_because_it_is_a_function_2630 |
-| TS2631 | err | emitted | packages/ts_checker/src/check.zig:58487 | Cannot_assign_to_0_because_it_is_a_namespace_2631 |
-| TS2632 | err | emitted | packages/ts_checker/src/check.zig:58488<br>packages/ts_checker/src/check.zig:99250<br>packages/ts_checker/src/check.zig:99268 | Cannot_assign_to_0_because_it_is_an_import_2632 |
+| TS2628 | err | emitted | packages/ts_checker/src/check.zig:58766 | Cannot_assign_to_0_because_it_is_an_enum_2628 |
+| TS2629 | err | emitted | packages/ts_checker/src/check.zig:58767 | Cannot_assign_to_0_because_it_is_a_class_2629 |
+| TS2630 | err | emitted | packages/ts_checker/src/check.zig:44155<br>packages/ts_checker/src/check.zig:71950 | Cannot_assign_to_0_because_it_is_a_function_2630 |
+| TS2631 | err | emitted | packages/ts_checker/src/check.zig:58768 | Cannot_assign_to_0_because_it_is_a_namespace_2631 |
+| TS2632 | err | emitted | packages/ts_checker/src/check.zig:58769<br>packages/ts_checker/src/check.zig:99799<br>packages/ts_checker/src/check.zig:99817 | Cannot_assign_to_0_because_it_is_an_import_2632 |
 | TS2633 | err | catalog-only |  | JSX_property_access_expressions_cannot_include_JSX_namespace_names_2633 |
 | TS2634 | err | catalog-only |  | _0_index_signatures_are_incompatible_2634 |
 | TS2635 | err | catalog-only |  | Type_0_has_no_signatures_for_which_the_type_argument_list_is_applicable_2635 |
@@ -807,108 +807,108 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2638 | err | catalog-only |  | Type_0_may_represent_a_primitive_value_which_is_not_permitted_as_the_right_operand_of_the_in_operato_2638 |
 | TS2639 | err | catalog-only |  | React_components_cannot_include_JSX_namespace_names_2639 |
 | TS2649 | err | catalog-only |  | Cannot_augment_module_0_with_value_exports_because_it_resolves_to_a_non_module_entity_2649 |
-| TS2650 | err | emitted | packages/ts_checker/src/check.zig:21068 | Non_abstract_class_expression_is_missing_implementations_for_the_following_members_of_0_Colon_1_and__2650 |
+| TS2650 | err | emitted | packages/ts_checker/src/check.zig:21190 | Non_abstract_class_expression_is_missing_implementations_for_the_following_members_of_0_Colon_1_and__2650 |
 | TS2651 | err | catalog-only |  | A_member_initializer_in_a_enum_declaration_cannot_reference_members_declared_after_it_including_memb_2651 |
-| TS2652 | err | emitted | packages/ts_checker/src/check.zig:7253<br>packages/ts_checker/src/check.zig:71079<br>packages/ts_checker/src/check.zig:97951 | Merged_declaration_0_cannot_include_a_default_export_declaration_Consider_adding_a_separate_export_d_2652 |
+| TS2652 | err | emitted | packages/ts_checker/src/check.zig:7316<br>packages/ts_checker/src/check.zig:71490<br>packages/ts_checker/src/check.zig:98500 | Merged_declaration_0_cannot_include_a_default_export_declaration_Consider_adding_a_separate_export_d_2652 |
 | TS2653 | err | catalog-only |  | Non_abstract_class_expression_does_not_implement_inherited_abstract_member_0_from_class_1_2653 |
-| TS2654 | err | emitted | packages/ts_checker/src/check.zig:21070<br>packages/ts_checker/src/check.zig:21141 | Non_abstract_class_0_is_missing_implementations_for_the_following_members_of_1_Colon_2_2654 |
-| TS2655 | err | emitted | packages/ts_checker/src/check.zig:21070 | Non_abstract_class_0_is_missing_implementations_for_the_following_members_of_1_Colon_2_and_3_more_2655 |
-| TS2656 | err | emitted | packages/ts_checker/src/check.zig:21068<br>packages/ts_checker/src/check.zig:21141 | Non_abstract_class_expression_is_missing_implementations_for_the_following_members_of_0_Colon_1_2656 |
+| TS2654 | err | emitted | packages/ts_checker/src/check.zig:21192<br>packages/ts_checker/src/check.zig:21263 | Non_abstract_class_0_is_missing_implementations_for_the_following_members_of_1_Colon_2_2654 |
+| TS2655 | err | emitted | packages/ts_checker/src/check.zig:21192 | Non_abstract_class_0_is_missing_implementations_for_the_following_members_of_1_Colon_2_and_3_more_2655 |
+| TS2656 | err | emitted | packages/ts_checker/src/check.zig:21190<br>packages/ts_checker/src/check.zig:21263 | Non_abstract_class_expression_is_missing_implementations_for_the_following_members_of_0_Colon_1_2656 |
 | TS2657 | err | catalog-only |  | JSX_expressions_must_have_one_parent_element_2657 |
 | TS2658 | err | catalog-only |  | Type_0_provides_no_match_for_the_signature_1_2658 |
 | TS2659 | err | catalog-only |  | super_is_only_allowed_in_members_of_object_literal_expressions_when_option_target_is_ES2015_or_highe_2659 |
-| TS2660 | err | emitted | packages/ts_checker/src/check.zig:44535<br>packages/ts_checker/src/check.zig:45089<br>packages/ts_checker/src/check.zig:45122 | super_can_only_be_referenced_in_members_of_derived_classes_or_object_literal_expressions_2660 |
-| TS2661 | err | emitted | packages/ts_checker/src/check.zig:5292<br>packages/ts_checker/src/check.zig:7586<br>packages/ts_checker/src/check.zig:71116 | Cannot_export_0_Only_local_declarations_can_be_exported_from_a_module_2661 |
+| TS2660 | err | emitted | packages/ts_checker/src/check.zig:44816<br>packages/ts_checker/src/check.zig:45370<br>packages/ts_checker/src/check.zig:45403 | super_can_only_be_referenced_in_members_of_derived_classes_or_object_literal_expressions_2660 |
+| TS2661 | err | emitted | packages/ts_checker/src/check.zig:5355<br>packages/ts_checker/src/check.zig:7649<br>packages/ts_checker/src/check.zig:71527 | Cannot_export_0_Only_local_declarations_can_be_exported_from_a_module_2661 |
 | TS2662 | err | catalog-only |  | Cannot_find_name_0_Did_you_mean_the_static_member_1_0_2662 |
-| TS2663 | err | emitted | packages/ts_checker/src/check.zig:53653<br>packages/ts_checker/src/check.zig:71467 | Cannot_find_name_0_Did_you_mean_the_instance_member_this_0_2663 |
+| TS2663 | err | emitted | packages/ts_checker/src/check.zig:53934<br>packages/ts_checker/src/check.zig:71878 | Cannot_find_name_0_Did_you_mean_the_instance_member_this_0_2663 |
 | TS2664 | err | catalog-only |  | Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664 |
-| TS2665 | err | emitted | packages/ts_checker/src/check.zig:5635<br>packages/ts_checker/src/check.zig:5668<br>packages/ts_checker/src/check.zig:72816 | Invalid_module_name_in_augmentation_Module_0_resolves_to_an_untyped_module_at_1_which_cannot_be_augm_2665 |
+| TS2665 | err | emitted | packages/ts_checker/src/check.zig:5698<br>packages/ts_checker/src/check.zig:5731<br>packages/ts_checker/src/check.zig:73227 | Invalid_module_name_in_augmentation_Module_0_resolves_to_an_untyped_module_at_1_which_cannot_be_augm_2665 |
 | TS2666 | err | catalog-only |  | Exports_and_export_assignments_are_not_permitted_in_module_augmentations_2666 |
 | TS2667 | err | catalog-only |  | Imports_are_not_permitted_in_module_augmentations_Consider_moving_them_to_the_enclosing_external_mod_2667 |
 | TS2668 | err | catalog-only |  | export_modifier_cannot_be_applied_to_ambient_modules_and_module_augmentations_since_they_are_always__2668 |
-| TS2669 | err | emitted | packages/ts_checker/src/check.zig:5283<br>packages/ts_checker/src/check.zig:92453<br>packages/ts_checker/src/check.zig:92470 | Augmentations_for_the_global_scope_can_only_be_directly_nested_in_external_modules_or_ambient_module_2669 |
+| TS2669 | err | emitted | packages/ts_checker/src/check.zig:5346<br>packages/ts_checker/src/check.zig:93002<br>packages/ts_checker/src/check.zig:93019 | Augmentations_for_the_global_scope_can_only_be_directly_nested_in_external_modules_or_ambient_module_2669 |
 | TS2670 | err | catalog-only |  | Augmentations_for_the_global_scope_should_have_declare_modifier_unless_they_appear_in_already_ambien_2670 |
 | TS2671 | err | catalog-only |  | Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671 |
 | TS2672 | err | catalog-only |  | Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672 |
-| TS2673 | err | emitted | packages/ts_checker/src/check.zig:44252<br>packages/ts_checker/src/check.zig:100954<br>packages/ts_checker/src/check.zig:100956 | Constructor_of_class_0_is_private_and_only_accessible_within_the_class_declaration_2673 |
-| TS2674 | err | emitted | packages/ts_checker/src/check.zig:44261<br>packages/ts_checker/src/check.zig:100969<br>packages/ts_checker/src/check.zig:100971 | Constructor_of_class_0_is_protected_and_only_accessible_within_the_class_declaration_2674 |
-| TS2675 | err | emitted | packages/ts_checker/src/check.zig:19135<br>packages/ts_checker/src/check.zig:101055<br>packages/ts_checker/src/check.zig:101057 | Cannot_extend_a_class_0_Class_constructor_is_marked_as_private_2675 |
-| TS2676 | err | emitted | packages/ts_checker/src/check.zig:19303<br>packages/ts_checker/src/check.zig:19304<br>packages/ts_checker/src/check.zig:100825 | Accessors_must_both_be_abstract_or_non_abstract_2676 |
-| TS2677 | err | emitted | packages/ts_checker/src/check.zig:16535<br>packages/ts_checker/src/check.zig:100735<br>packages/ts_checker/src/check.zig:100737 | A_type_predicate_s_type_must_be_assignable_to_its_parameter_s_type_2677 |
-| TS2678 | err | emitted | packages/ts_checker/src/check.zig:66256<br>packages/ts_checker/src/check.zig:66260<br>packages/ts_checker/src/check.zig:85388 | Type_0_is_not_comparable_to_type_1_2678 |
+| TS2673 | err | emitted | packages/ts_checker/src/check.zig:44533<br>packages/ts_checker/src/check.zig:101503<br>packages/ts_checker/src/check.zig:101505 | Constructor_of_class_0_is_private_and_only_accessible_within_the_class_declaration_2673 |
+| TS2674 | err | emitted | packages/ts_checker/src/check.zig:44542<br>packages/ts_checker/src/check.zig:101518<br>packages/ts_checker/src/check.zig:101520 | Constructor_of_class_0_is_protected_and_only_accessible_within_the_class_declaration_2674 |
+| TS2675 | err | emitted | packages/ts_checker/src/check.zig:19257<br>packages/ts_checker/src/check.zig:101604<br>packages/ts_checker/src/check.zig:101606 | Cannot_extend_a_class_0_Class_constructor_is_marked_as_private_2675 |
+| TS2676 | err | emitted | packages/ts_checker/src/check.zig:19425<br>packages/ts_checker/src/check.zig:19426<br>packages/ts_checker/src/check.zig:101374 | Accessors_must_both_be_abstract_or_non_abstract_2676 |
+| TS2677 | err | emitted | packages/ts_checker/src/check.zig:16616<br>packages/ts_checker/src/check.zig:101284<br>packages/ts_checker/src/check.zig:101286 | A_type_predicate_s_type_must_be_assignable_to_its_parameter_s_type_2677 |
+| TS2678 | err | emitted | packages/ts_checker/src/check.zig:66667<br>packages/ts_checker/src/check.zig:66671<br>packages/ts_checker/src/check.zig:85937 | Type_0_is_not_comparable_to_type_1_2678 |
 | TS2679 | err | catalog-only |  | A_function_that_is_called_with_the_new_keyword_cannot_have_a_this_type_that_is_void_2679 |
-| TS2680 | err | emitted | packages/ts_checker/src/check.zig:16675<br>packages/ts_checker/src/check.zig:75054 | A_0_parameter_must_be_the_first_parameter_2680 |
-| TS2681 | err | emitted | packages/ts_checker/src/check.zig:16689<br>packages/ts_checker/src/check.zig:100672<br>packages/ts_checker/src/check.zig:100683 | A_constructor_cannot_have_a_this_parameter_2681 |
-| TS2683 | err | emitted | packages/ts_checker/src/check.zig:26429<br>packages/ts_checker/src/check.zig:26434<br>packages/ts_checker/src/check.zig:46097 | this_implicitly_has_type_any_because_it_does_not_have_a_type_annotation_2683 |
-| TS2684 | err | emitted | packages/ts_checker/src/check.zig:49575<br>packages/ts_checker/src/check.zig:49579<br>packages/ts_checker/src/check.zig:49632 | The_this_context_of_type_0_is_not_assignable_to_method_s_this_of_type_1_2684 |
+| TS2680 | err | emitted | packages/ts_checker/src/check.zig:16756<br>packages/ts_checker/src/check.zig:75465 | A_0_parameter_must_be_the_first_parameter_2680 |
+| TS2681 | err | emitted | packages/ts_checker/src/check.zig:16770<br>packages/ts_checker/src/check.zig:101221<br>packages/ts_checker/src/check.zig:101232 | A_constructor_cannot_have_a_this_parameter_2681 |
+| TS2683 | err | emitted | packages/ts_checker/src/check.zig:26551<br>packages/ts_checker/src/check.zig:26556<br>packages/ts_checker/src/check.zig:46378 | this_implicitly_has_type_any_because_it_does_not_have_a_type_annotation_2683 |
+| TS2684 | err | emitted | packages/ts_checker/src/check.zig:49856<br>packages/ts_checker/src/check.zig:49860<br>packages/ts_checker/src/check.zig:49913 | The_this_context_of_type_0_is_not_assignable_to_method_s_this_of_type_1_2684 |
 | TS2685 | err | catalog-only |  | The_this_types_of_each_signature_are_incompatible_2685 |
 | TS2686 | err | catalog-only |  | _0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686 |
-| TS2687 | err | emitted | packages/ts_checker/src/check.zig:6391 | All_declarations_of_0_must_have_identical_modifiers_2687 |
+| TS2687 | err | emitted | packages/ts_checker/src/check.zig:6454 | All_declarations_of_0_must_have_identical_modifiers_2687 |
 | TS2688 | err | catalog-only |  | Cannot_find_type_definition_file_for_0_2688 |
-| TS2689 | err | emitted | packages/ts_checker/src/check.zig:34117<br>packages/ts_checker/src/check.zig:78114 | Cannot_extend_an_interface_0_Did_you_mean_implements_2689 |
+| TS2689 | err | emitted | packages/ts_checker/src/check.zig:34371<br>packages/ts_checker/src/check.zig:78663 | Cannot_extend_an_interface_0_Did_you_mean_implements_2689 |
 | TS2690 | err | catalog-only |  | _0_only_refers_to_a_type_but_is_being_used_as_a_value_here_Did_you_mean_to_use_1_in_0_2690 |
 | TS2692 | err | catalog-only |  | _0_is_a_primitive_but_1_is_a_wrapper_object_Prefer_using_0_when_possible_2692 |
-| TS2693 | err | emitted | packages/ts_checker/src/check.zig:35425<br>packages/ts_checker/src/check.zig:53556<br>packages/ts_checker/src/check.zig:53960 | _0_only_refers_to_a_type_but_is_being_used_as_a_value_here_2693 |
-| TS2694 | err | emitted | packages/ts_checker/src/check.zig:29964<br>packages/ts_checker/src/check.zig:29976<br>packages/ts_checker/src/check.zig:36235 | Namespace_0_has_no_exported_member_1_2694 |
+| TS2693 | err | emitted | packages/ts_checker/src/check.zig:35679<br>packages/ts_checker/src/check.zig:53837<br>packages/ts_checker/src/check.zig:54241 | _0_only_refers_to_a_type_but_is_being_used_as_a_value_here_2693 |
+| TS2694 | err | emitted | packages/ts_checker/src/check.zig:30204<br>packages/ts_checker/src/check.zig:30216<br>packages/ts_checker/src/check.zig:36489 | Namespace_0_has_no_exported_member_1_2694 |
 | TS2696 | err | catalog-only |  | The_Object_type_is_assignable_to_very_few_other_types_Did_you_mean_to_use_the_any_type_instead_2696 |
 | TS2697 | err | catalog-only |  | An_async_function_or_method_must_return_a_Promise_Make_sure_you_have_a_declaration_for_Promise_or_in_2697 |
-| TS2698 | err | emitted | packages/ts_checker/src/check.zig:45997<br>packages/ts_checker/src/check.zig:47114<br>packages/ts_checker/src/check.zig:73498 | Spread_types_may_only_be_created_from_object_types_2698 |
-| TS2699 | err | emitted | packages/ts_checker/src/check.zig:20177<br>packages/ts_checker/src/check.zig:86777<br>packages/ts_checker/src/check.zig:86797 | Static_property_0_conflicts_with_built_in_property_Function_0_of_constructor_function_1_2699 |
-| TS2700 | err | emitted | packages/ts_checker/src/check.zig:13011<br>packages/ts_checker/src/check.zig:99362<br>packages/ts_checker/src/check.zig:99378 | Rest_types_may_only_be_created_from_object_types_2700 |
+| TS2698 | err | emitted | packages/ts_checker/src/check.zig:46278<br>packages/ts_checker/src/check.zig:47395<br>packages/ts_checker/src/check.zig:73909 | Spread_types_may_only_be_created_from_object_types_2698 |
+| TS2699 | err | emitted | packages/ts_checker/src/check.zig:20299<br>packages/ts_checker/src/check.zig:87326<br>packages/ts_checker/src/check.zig:87346 | Static_property_0_conflicts_with_built_in_property_Function_0_of_constructor_function_1_2699 |
+| TS2700 | err | emitted | packages/ts_checker/src/check.zig:13074<br>packages/ts_checker/src/check.zig:99911<br>packages/ts_checker/src/check.zig:99927 | Rest_types_may_only_be_created_from_object_types_2700 |
 | TS2701 | err | catalog-only |  | The_target_of_an_object_rest_assignment_must_be_a_variable_or_a_property_access_2701 |
-| TS2702 | err | emitted | packages/ts_checker/src/check.zig:28871 | _0_only_refers_to_a_type_but_is_being_used_as_a_namespace_here_2702 |
-| TS2703 | err | emitted | packages/ts_checker/src/check.zig:59465<br>packages/ts_parser/src/ts_parser.zig:12859<br>packages/ts_checker/src/check.zig:79069 | The_operand_of_a_delete_operator_must_be_a_property_reference_2703 |
-| TS2704 | err | emitted | packages/ts_checker/src/check.zig:59471 | The_operand_of_a_delete_operator_cannot_be_a_read_only_property_2704 |
+| TS2702 | err | emitted | packages/ts_checker/src/check.zig:29000 | _0_only_refers_to_a_type_but_is_being_used_as_a_namespace_here_2702 |
+| TS2703 | err | emitted | packages/ts_checker/src/check.zig:59746<br>packages/ts_parser/src/ts_parser.zig:13490<br>packages/ts_checker/src/check.zig:79618 | The_operand_of_a_delete_operator_must_be_a_property_reference_2703 |
+| TS2704 | err | emitted | packages/ts_checker/src/check.zig:59752 | The_operand_of_a_delete_operator_cannot_be_a_read_only_property_2704 |
 | TS2705 | err | catalog-only |  | An_async_function_or_method_in_ES5_requires_the_Promise_constructor_Make_sure_you_have_a_declaration_2705 |
-| TS2706 | err | emitted | packages/ts_checker/src/check.zig:62366<br>packages/ts_checker/src/check.zig:101146<br>packages/ts_checker/src/check.zig:101163 | Required_type_parameters_may_not_follow_optional_type_parameters_2706 |
+| TS2706 | err | emitted | packages/ts_checker/src/check.zig:62647<br>packages/ts_checker/src/check.zig:101814<br>packages/ts_checker/src/check.zig:101831 | Required_type_parameters_may_not_follow_optional_type_parameters_2706 |
 | TS2707 | err | catalog-only |  | Generic_type_0_requires_between_1_and_2_type_arguments_2707 |
-| TS2708 | err | emitted | packages/ts_checker/src/check.zig:52608<br>packages/ts_checker/src/check.zig:92200<br>packages/ts_checker/src/check.zig:92658 | Cannot_use_namespace_0_as_a_value_2708 |
+| TS2708 | err | emitted | packages/ts_checker/src/check.zig:52889<br>packages/ts_checker/src/check.zig:92749<br>packages/ts_checker/src/check.zig:93207 | Cannot_use_namespace_0_as_a_value_2708 |
 | TS2709 | err | catalog-only |  | Cannot_use_namespace_0_as_a_type_2709 |
-| TS2710 | err | emitted | packages/ts_checker/src/check.zig:47143<br>packages/ts_checker/src/check.zig:73143 | _0_are_specified_twice_The_attribute_named_0_will_be_overwritten_2710 |
+| TS2710 | err | emitted | packages/ts_checker/src/check.zig:47424<br>packages/ts_checker/src/check.zig:73554 | _0_are_specified_twice_The_attribute_named_0_will_be_overwritten_2710 |
 | TS2711 | err | catalog-only |  | A_dynamic_import_call_returns_a_Promise_Make_sure_you_have_a_declaration_for_Promise_or_include_ES20_2711 |
 | TS2712 | err | catalog-only |  | A_dynamic_import_call_in_ES5_requires_the_Promise_constructor_Make_sure_you_have_a_declaration_for_t_2712 |
 | TS2713 | err | catalog-only |  | Cannot_access_0_1_because_0_is_a_type_but_not_a_namespace_Did_you_mean_to_retrieve_the_type_of_the_p_2713 |
-| TS2714 | err | emitted | packages/ts_checker/src/check.zig:7329<br>packages/ts_checker/src/check.zig:99142<br>packages/ts_checker/src/check.zig:99163 | The_expression_of_an_export_assignment_must_be_an_identifier_or_qualified_name_in_an_ambient_context_2714 |
+| TS2714 | err | emitted | packages/ts_checker/src/check.zig:7392<br>packages/ts_checker/src/check.zig:99691<br>packages/ts_checker/src/check.zig:99712 | The_expression_of_an_export_assignment_must_be_an_identifier_or_qualified_name_in_an_ambient_context_2714 |
 | TS2715 | err | catalog-only |  | Abstract_property_0_in_class_1_cannot_be_accessed_in_the_constructor_2715 |
-| TS2716 | err | emitted | packages/ts_checker/src/check.zig:62557<br>packages/ts_checker/src/check.zig:101209<br>packages/ts_checker/src/check.zig:101237 | Type_parameter_0_has_a_circular_default_2716 |
-| TS2717 | err | emitted | packages/ts_checker/src/check.zig:6357<br>packages/ts_checker/src/check.zig:22508<br>packages/ts_checker/src/check.zig:76504 | Subsequent_property_declarations_must_have_the_same_type_Property_0_must_be_of_type_1_but_here_has_t_2717 |
-| TS2718 | err | emitted | packages/ts_checker/src/check.zig:46175<br>packages/ts_checker/src/check.zig:99430<br>packages/ts_checker/src/check.zig:99456 | Duplicate_property_0_2718 |
+| TS2716 | err | emitted | packages/ts_checker/src/check.zig:62838<br>packages/ts_checker/src/check.zig:101877<br>packages/ts_checker/src/check.zig:101905 | Type_parameter_0_has_a_circular_default_2716 |
+| TS2717 | err | emitted | packages/ts_checker/src/check.zig:6420<br>packages/ts_checker/src/check.zig:22630<br>packages/ts_checker/src/check.zig:76915 | Subsequent_property_declarations_must_have_the_same_type_Property_0_must_be_of_type_1_but_here_has_t_2717 |
+| TS2718 | err | emitted | packages/ts_checker/src/check.zig:46456<br>packages/ts_checker/src/check.zig:99979<br>packages/ts_checker/src/check.zig:100005 | Duplicate_property_0_2718 |
 | TS2719 | err | catalog-only |  | Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719 |
 | TS2720 | err | catalog-only |  | Class_0_incorrectly_implements_class_1_Did_you_mean_to_extend_1_and_inherit_its_members_as_a_subclas_2720 |
 | TS2721 | err | catalog-only |  | Cannot_invoke_an_object_which_is_possibly_null_2721 |
-| TS2722 | err | emitted | packages/ts_checker/src/check.zig:44496<br>packages/ts_checker/src/check.zig:91867<br>packages/ts_checker/src/check.zig:91887 | Cannot_invoke_an_object_which_is_possibly_undefined_2722 |
+| TS2722 | err | emitted | packages/ts_checker/src/check.zig:44777<br>packages/ts_checker/src/check.zig:92416<br>packages/ts_checker/src/check.zig:92436 | Cannot_invoke_an_object_which_is_possibly_undefined_2722 |
 | TS2723 | err | catalog-only |  | Cannot_invoke_an_object_which_is_possibly_null_or_undefined_2723 |
-| TS2724 | err | emitted | packages/ts_checker/src/check.zig:29059<br>packages/ts_checker/src/check.zig:29104<br>packages/ts_checker/src/check.zig:81146 | _0_has_no_exported_member_named_1_Did_you_mean_2_2724 |
-| TS2725 | err | emitted | packages/ts_checker/src/check.zig:18305 | Class_name_cannot_be_Object_when_targeting_ES5_with_module_0_2725 |
+| TS2724 | err | emitted | packages/ts_checker/src/check.zig:29299<br>packages/ts_checker/src/check.zig:29344<br>packages/ts_checker/src/check.zig:81695 | _0_has_no_exported_member_named_1_Did_you_mean_2_2724 |
+| TS2725 | err | emitted | packages/ts_checker/src/check.zig:18427 | Class_name_cannot_be_Object_when_targeting_ES5_with_module_0_2725 |
 | TS2726 | err | catalog-only |  | Cannot_find_lib_definition_for_0_2726 |
 | TS2727 | err | catalog-only |  | Cannot_find_lib_definition_for_0_Did_you_mean_1_2727 |
 | TS2728 | message | catalog-only |  | _0_is_declared_here_2728 |
-| TS2729 | err | emitted | packages/ts_checker/src/check.zig:25050<br>packages/ts_checker/src/check.zig:25085<br>packages/ts_checker/src/check.zig:25119 | Property_0_is_used_before_its_initialization_2729 |
-| TS2730 | err | emitted | packages/ts_checker/src/check.zig:8776<br>packages/ts_checker/src/check.zig:91325 | An_arrow_function_cannot_have_a_this_parameter_2730 |
-| TS2731 | err | emitted | packages/ts_checker/src/check.zig:57639<br>packages/ts_checker/src/check.zig:101492<br>packages/ts_checker/src/check.zig:101508 | Implicit_conversion_of_a_symbol_to_a_string_will_fail_at_runtime_Consider_wrapping_this_expression_i_2731 |
+| TS2729 | err | emitted | packages/ts_checker/src/check.zig:25172<br>packages/ts_checker/src/check.zig:25207<br>packages/ts_checker/src/check.zig:25241 | Property_0_is_used_before_its_initialization_2729 |
+| TS2730 | err | emitted | packages/ts_checker/src/check.zig:8839<br>packages/ts_checker/src/check.zig:91874 | An_arrow_function_cannot_have_a_this_parameter_2730 |
+| TS2731 | err | emitted | packages/ts_checker/src/check.zig:57920<br>packages/ts_checker/src/check.zig:102160<br>packages/ts_checker/src/check.zig:102176 | Implicit_conversion_of_a_symbol_to_a_string_will_fail_at_runtime_Consider_wrapping_this_expression_i_2731 |
 | TS2732 | err | catalog-only |  | Cannot_find_module_0_Consider_using_resolveJsonModule_to_import_module_with_json_extension_2732 |
 | TS2733 | err | catalog-only |  | Property_0_was_also_declared_here_2733 |
 | TS2734 | err | catalog-only |  | Are_you_missing_a_semicolon_2734 |
 | TS2735 | err | catalog-only |  | Did_you_mean_for_0_to_be_constrained_to_type_new_args_Colon_any_1_2735 |
 | TS2736 | err | catalog-only |  | Operator_0_cannot_be_applied_to_type_1_2736 |
-| TS2737 | err | emitted | packages/ts_checker/src/check.zig:69778<br>packages/ts_checker/src/check.zig:101333<br>packages/ts_checker/src/check.zig:101350 | BigInt_literals_are_not_available_when_targeting_lower_than_ES2020_2737 |
+| TS2737 | err | emitted | packages/ts_checker/src/check.zig:70189<br>packages/ts_checker/src/check.zig:102001<br>packages/ts_checker/src/check.zig:102018 | BigInt_literals_are_not_available_when_targeting_lower_than_ES2020_2737 |
 | TS2738 | message | catalog-only |  | An_outer_value_of_this_is_shadowed_by_this_container_2738 |
-| TS2739 | err | emitted | packages/ts_checker/src/check.zig:39864<br>packages/ts_checker/src/check.zig:82964<br>packages/ts_checker/src/check.zig:83043 | Type_0_is_missing_the_following_properties_from_type_1_Colon_2_2739 |
+| TS2739 | err | emitted | packages/ts_checker/src/check.zig:40118<br>packages/ts_checker/src/check.zig:83513<br>packages/ts_checker/src/check.zig:83592 | Type_0_is_missing_the_following_properties_from_type_1_Colon_2_2739 |
 | TS2740 | err | catalog-only |  | Type_0_is_missing_the_following_properties_from_type_1_Colon_2_and_3_more_2740 |
-| TS2741 | err | emitted | packages/ts_checker/src/check.zig:65830<br>packages/ts_checker/src/check.zig:73262<br>packages/ts_checker/src/check.zig:78879 | Property_0_is_missing_in_type_1_but_required_in_type_2_2741 |
+| TS2741 | err | emitted | packages/ts_checker/src/check.zig:66241<br>packages/ts_checker/src/check.zig:73673<br>packages/ts_checker/src/check.zig:79428 | Property_0_is_missing_in_type_1_but_required_in_type_2_2741 |
 | TS2742 | err | catalog-only |  | The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742 |
 | TS2743 | err | catalog-only |  | No_overload_expects_0_type_arguments_but_overloads_do_exist_that_expect_either_1_or_2_type_arguments_2743 |
-| TS2744 | err | emitted | packages/ts_checker/src/check.zig:62423<br>packages/ts_checker/src/check.zig:101189<br>packages/ts_checker/src/check.zig:101208 | Type_parameter_defaults_can_only_reference_previously_declared_type_parameters_2744 |
+| TS2744 | err | emitted | packages/ts_checker/src/check.zig:62704<br>packages/ts_checker/src/check.zig:101857<br>packages/ts_checker/src/check.zig:101876 | Type_parameter_defaults_can_only_reference_previously_declared_type_parameters_2744 |
 | TS2745 | err | catalog-only |  | This_JSX_tag_s_0_prop_expects_type_1_which_requires_multiple_children_but_only_a_single_child_was_pr_2745 |
-| TS2746 | err | emitted | packages/ts_checker/src/check.zig:47164<br>packages/ts_checker/src/check.zig:73160<br>packages/ts_checker/src/check.zig:73667 | This_JSX_tag_s_0_prop_expects_a_single_child_of_type_1_but_multiple_children_were_provided_2746 |
-| TS2747 | err | emitted | packages/ts_checker/src/check.zig:47170<br>packages/ts_checker/src/check.zig:73205 | _0_components_don_t_accept_text_as_child_elements_Text_in_JSX_has_the_type_string_but_the_expected_t_2747 |
+| TS2746 | err | emitted | packages/ts_checker/src/check.zig:47445<br>packages/ts_checker/src/check.zig:73571<br>packages/ts_checker/src/check.zig:74078 | This_JSX_tag_s_0_prop_expects_a_single_child_of_type_1_but_multiple_children_were_provided_2746 |
+| TS2747 | err | emitted | packages/ts_checker/src/check.zig:47451<br>packages/ts_checker/src/check.zig:73616 | _0_components_don_t_accept_text_as_child_elements_Text_in_JSX_has_the_type_string_but_the_expected_t_2747 |
 | TS2748 | err | catalog-only |  | Cannot_access_ambient_const_enums_when_0_is_enabled_2748 |
 | TS2749 | err | catalog-only |  | _0_refers_to_a_value_but_is_being_used_as_a_type_here_Did_you_mean_typeof_0_2749 |
 | TS2750 | err | catalog-only |  | The_implementation_signature_is_declared_here_2750 |
 | TS2751 | err | catalog-only |  | Circularity_originates_in_type_at_this_location_2751 |
 | TS2752 | err | catalog-only |  | The_first_export_default_is_here_2752 |
 | TS2753 | err | catalog-only |  | Another_export_default_is_here_2753 |
-| TS2754 | err | emitted | packages/ts_parser/src/ts_parser.zig:13345<br>packages/ts_parser/src/ts_parser.zig:13536 | super_may_not_use_type_arguments_2754 |
+| TS2754 | err | emitted | packages/ts_parser/src/ts_parser.zig:13976<br>packages/ts_parser/src/ts_parser.zig:14167 | super_may_not_use_type_arguments_2754 |
 | TS2755 | err | catalog-only |  | No_constituent_of_type_0_is_callable_2755 |
 | TS2756 | err | catalog-only |  | Not_all_constituents_of_type_0_are_callable_2756 |
 | TS2757 | err | catalog-only |  | Type_0_has_no_call_signatures_2757 |
@@ -921,9 +921,9 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2764 | err | catalog-only |  | Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_spread_will_al_2764 |
 | TS2765 | err | catalog-only |  | Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_destructuring__2765 |
 | TS2766 | err | catalog-only |  | Cannot_delegate_iteration_to_value_because_the_next_method_of_its_iterator_expects_type_1_but_the_co_2766 |
-| TS2767 | err | emitted | packages/ts_checker/src/check.zig:16160<br>packages/ts_checker/src/check.zig:84169 | The_0_property_of_an_iterator_must_be_a_method_2767 |
+| TS2767 | err | emitted | packages/ts_checker/src/check.zig:16241<br>packages/ts_checker/src/check.zig:84718 | The_0_property_of_an_iterator_must_be_a_method_2767 |
 | TS2768 | err | catalog-only |  | The_0_property_of_an_async_iterator_must_be_a_method_2768 |
-| TS2769 | err | emitted | packages/ts_checker/src/check.zig:44387<br>packages/ts_checker/src/check.zig:44743<br>packages/ts_checker/src/check.zig:49219 | No_overload_matches_this_call_2769 |
+| TS2769 | err | emitted | packages/ts_checker/src/check.zig:44668<br>packages/ts_checker/src/check.zig:45024<br>packages/ts_checker/src/check.zig:49500 | No_overload_matches_this_call_2769 |
 | TS2770 | err | catalog-only |  | The_last_overload_gave_the_following_error_2770 |
 | TS2771 | err | catalog-only |  | The_last_overload_is_declared_here_2771 |
 | TS2772 | err | catalog-only |  | Overload_0_of_1_2_gave_the_following_error_2772 |
@@ -931,44 +931,44 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2774 | err | catalog-only |  | This_condition_will_always_return_true_since_this_function_is_always_defined_Did_you_mean_to_call_it_2774 |
 | TS2775 | err | catalog-only |  | Assertions_require_every_name_in_the_call_target_to_be_declared_with_an_explicit_type_annotation_2775 |
 | TS2776 | err | catalog-only |  | Assertions_require_the_call_target_to_be_an_identifier_or_qualified_name_2776 |
-| TS2777 | err | emitted | packages/ts_checker/src/check.zig:43920 | The_operand_of_an_increment_or_decrement_operator_may_not_be_an_optional_property_access_2777 |
-| TS2778 | err | emitted | packages/ts_checker/src/check.zig:38935 | The_target_of_an_object_rest_assignment_may_not_be_an_optional_property_access_2778 |
-| TS2779 | err | emitted | packages/ts_checker/src/check.zig:39009<br>packages/ts_checker/src/check.zig:43922 | The_left_hand_side_of_an_assignment_expression_may_not_be_an_optional_property_access_2779 |
-| TS2780 | err | emitted | packages/ts_checker/src/check.zig:67903 | The_left_hand_side_of_a_for_in_statement_may_not_be_an_optional_property_access_2780 |
-| TS2781 | err | emitted | packages/ts_checker/src/check.zig:68070<br>packages/ts_checker/src/check.zig:68081 | The_left_hand_side_of_a_for_of_statement_may_not_be_an_optional_property_access_2781 |
+| TS2777 | err | emitted | packages/ts_checker/src/check.zig:44201 | The_operand_of_an_increment_or_decrement_operator_may_not_be_an_optional_property_access_2777 |
+| TS2778 | err | emitted | packages/ts_checker/src/check.zig:39189 | The_target_of_an_object_rest_assignment_may_not_be_an_optional_property_access_2778 |
+| TS2779 | err | emitted | packages/ts_checker/src/check.zig:39263<br>packages/ts_checker/src/check.zig:44203 | The_left_hand_side_of_an_assignment_expression_may_not_be_an_optional_property_access_2779 |
+| TS2780 | err | emitted | packages/ts_checker/src/check.zig:68314 | The_left_hand_side_of_a_for_in_statement_may_not_be_an_optional_property_access_2780 |
+| TS2781 | err | emitted | packages/ts_checker/src/check.zig:68481<br>packages/ts_checker/src/check.zig:68492 | The_left_hand_side_of_a_for_of_statement_may_not_be_an_optional_property_access_2781 |
 | TS2782 | message | catalog-only |  | _0_needs_an_explicit_type_annotation_2782 |
-| TS2783 | err | emitted | packages/ts_checker/src/check.zig:46059<br>packages/ts_checker/src/check.zig:47762<br>packages/ts_checker/src/check.zig:73222 | _0_is_specified_more_than_once_so_this_usage_will_be_overwritten_2783 |
-| TS2784 | err | emitted | packages/ts_checker/src/check.zig:16682<br>packages/ts_checker/src/check.zig:76782<br>packages/ts_checker/src/check.zig:89750 | get_and_set_accessors_cannot_declare_this_parameters_2784 |
+| TS2783 | err | emitted | packages/ts_checker/src/check.zig:46340<br>packages/ts_checker/src/check.zig:48043<br>packages/ts_checker/src/check.zig:73633 | _0_is_specified_more_than_once_so_this_usage_will_be_overwritten_2783 |
+| TS2784 | err | emitted | packages/ts_checker/src/check.zig:16763<br>packages/ts_checker/src/check.zig:77331<br>packages/ts_checker/src/check.zig:90299 | get_and_set_accessors_cannot_declare_this_parameters_2784 |
 | TS2785 | err | catalog-only |  | This_spread_always_overwrites_this_property_2785 |
 | TS2786 | err | declared |  | _0_cannot_be_used_as_a_JSX_component_2786 |
 | TS2787 | err | catalog-only |  | Its_return_type_0_is_not_a_valid_JSX_element_2787 |
 | TS2788 | err | catalog-only |  | Its_instance_type_0_is_not_a_valid_JSX_element_2788 |
 | TS2789 | err | catalog-only |  | Its_element_type_0_is_not_a_valid_JSX_element_2789 |
-| TS2790 | err | emitted | packages/ts_checker/src/check.zig:59475<br>packages/ts_checker/src/check.zig:79124<br>packages/ts_checker/src/check.zig:79146 | The_operand_of_a_delete_operator_must_be_optional_2790 |
-| TS2791 | err | emitted | packages/ts_checker/src/check.zig:59202<br>packages/ts_checker/src/check.zig:101419<br>packages/ts_checker/src/check.zig:101437 | Exponentiation_cannot_be_performed_on_bigint_values_unless_the_target_option_is_set_to_es2016_or_lat_2791 |
-| TS2792 | err | emitted | packages/ts_checker/src/check.zig:26895<br>packages/ts_checker/src/check.zig:27622<br>packages/ts_checker/src/check.zig:30351 | Cannot_find_module_0_Did_you_mean_to_set_the_moduleResolution_option_to_nodenext_or_to_add_aliases_t_2792 |
+| TS2790 | err | emitted | packages/ts_checker/src/check.zig:59756<br>packages/ts_checker/src/check.zig:79673<br>packages/ts_checker/src/check.zig:79695 | The_operand_of_a_delete_operator_must_be_optional_2790 |
+| TS2791 | err | emitted | packages/ts_checker/src/check.zig:59483<br>packages/ts_checker/src/check.zig:102087<br>packages/ts_checker/src/check.zig:102105 | Exponentiation_cannot_be_performed_on_bigint_values_unless_the_target_option_is_set_to_es2016_or_lat_2791 |
+| TS2792 | err | emitted | packages/ts_checker/src/check.zig:27017<br>packages/ts_checker/src/check.zig:27744<br>packages/ts_checker/src/check.zig:30591 | Cannot_find_module_0_Did_you_mean_to_set_the_moduleResolution_option_to_nodenext_or_to_add_aliases_t_2792 |
 | TS2793 | err | catalog-only |  | The_call_would_have_succeeded_against_this_implementation_but_implementation_signatures_of_overloads_2793 |
 | TS2794 | err | catalog-only |  | Expected_0_arguments_but_got_1_Did_you_forget_to_include_void_in_your_type_argument_to_Promise_2794 |
-| TS2795 | err | emitted | packages/ts_checker/src/check.zig:33099<br>packages/ts_checker/src/check.zig:101268<br>packages/ts_checker/src/check.zig:101284 | The_intrinsic_keyword_can_only_be_used_to_declare_compiler_provided_intrinsic_types_2795 |
+| TS2795 | err | emitted | packages/ts_checker/src/check.zig:33353<br>packages/ts_checker/src/check.zig:101936<br>packages/ts_checker/src/check.zig:101952 | The_intrinsic_keyword_can_only_be_used_to_declare_compiler_provided_intrinsic_types_2795 |
 | TS2796 | err | catalog-only |  | It_is_likely_that_you_are_missing_a_comma_to_separate_these_two_template_expressions_They_form_a_tag_2796 |
-| TS2797 | err | emitted | packages/ts_checker/src/check.zig:19066 | A_mixin_class_that_extends_from_a_type_variable_containing_an_abstract_construct_signature_must_also_2797 |
+| TS2797 | err | emitted | packages/ts_checker/src/check.zig:19188 | A_mixin_class_that_extends_from_a_type_variable_containing_an_abstract_construct_signature_must_also_2797 |
 | TS2798 | err | catalog-only |  | The_declaration_was_marked_as_deprecated_here_2798 |
 | TS2799 | err | catalog-only |  | Type_produces_a_tuple_type_that_is_too_large_to_represent_2799 |
 | TS2800 | err | catalog-only |  | Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800 |
 | TS2801 | err | catalog-only |  | This_condition_will_always_return_true_since_this_0_is_always_defined_2801 |
-| TS2802 | err | emitted | packages/ts_checker/src/check.zig:67965<br>packages/ts_checker/src/check.zig:74046 | Type_0_can_only_be_iterated_through_when_using_the_downlevelIteration_flag_or_with_a_target_of_es201_2802 |
-| TS2803 | err | emitted | packages/ts_checker/src/check.zig:22942<br>packages/ts_checker/src/check.zig:22949<br>packages/ts_checker/src/check.zig:94781 | Cannot_assign_to_private_method_0_Private_methods_are_not_writable_2803 |
-| TS2804 | err | emitted | packages/ts_checker/src/check.zig:22489<br>packages/ts_checker/src/check.zig:94742 | Duplicate_identifier_0_Static_and_instance_elements_cannot_share_the_same_private_name_2804 |
-| TS2806 | err | emitted | packages/ts_checker/src/check.zig:22973<br>packages/ts_checker/src/check.zig:22974<br>packages/ts_checker/src/check.zig:94799 | Private_accessor_was_defined_without_a_getter_2806 |
+| TS2802 | err | emitted | packages/ts_checker/src/check.zig:68376<br>packages/ts_checker/src/check.zig:74457 | Type_0_can_only_be_iterated_through_when_using_the_downlevelIteration_flag_or_with_a_target_of_es201_2802 |
+| TS2803 | err | emitted | packages/ts_checker/src/check.zig:23064<br>packages/ts_checker/src/check.zig:23071<br>packages/ts_checker/src/check.zig:95330 | Cannot_assign_to_private_method_0_Private_methods_are_not_writable_2803 |
+| TS2804 | err | emitted | packages/ts_checker/src/check.zig:22611<br>packages/ts_checker/src/check.zig:95291 | Duplicate_identifier_0_Static_and_instance_elements_cannot_share_the_same_private_name_2804 |
+| TS2806 | err | emitted | packages/ts_checker/src/check.zig:23095<br>packages/ts_checker/src/check.zig:23096<br>packages/ts_checker/src/check.zig:95348 | Private_accessor_was_defined_without_a_getter_2806 |
 | TS2807 | err | catalog-only |  | This_syntax_requires_an_imported_helper_named_1_with_2_parameters_which_is_not_compatible_with_the_o_2807 |
-| TS2808 | err | emitted | packages/ts_checker/src/check.zig:33614<br>packages/ts_checker/src/check.zig:33615<br>packages/ts_checker/src/check.zig:81974 | A_get_accessor_must_be_at_least_as_accessible_as_the_setter_2808 |
+| TS2808 | err | emitted | packages/ts_checker/src/check.zig:33868<br>packages/ts_checker/src/check.zig:33869<br>packages/ts_checker/src/check.zig:82523 | A_get_accessor_must_be_at_least_as_accessible_as_the_setter_2808 |
 | TS2809 | err | catalog-only |  | Declaration_or_statement_expected_This_follows_a_block_of_statements_so_if_you_intended_to_write_a_d_2809 |
 | TS2810 | err | catalog-only |  | Expected_1_argument_but_got_0_new_Promise_needs_a_JSDoc_hint_to_produce_a_resolve_that_can_be_called_2810 |
 | TS2811 | err | catalog-only |  | Initializer_for_property_0_2811 |
 | TS2812 | err | catalog-only |  | Property_0_does_not_exist_on_type_1_Try_changing_the_lib_compiler_option_to_include_dom_2812 |
 | TS2813 | err | catalog-only |  | Class_declaration_cannot_implement_overload_list_for_0_2813 |
 | TS2814 | err | catalog-only |  | Function_with_bodies_can_only_merge_with_classes_that_are_ambient_2814 |
-| TS2815 | err | emitted | packages/ts_checker/src/check.zig:51736<br>packages/ts_checker/src/check.zig:51741<br>packages/ts_checker/src/check.zig:96374 | arguments_cannot_be_referenced_in_property_initializers_2815 |
+| TS2815 | err | emitted | packages/ts_checker/src/check.zig:52017<br>packages/ts_checker/src/check.zig:52022<br>packages/ts_checker/src/check.zig:96923 | arguments_cannot_be_referenced_in_property_initializers_2815 |
 | TS2816 | err | catalog-only |  | Cannot_use_this_in_a_static_property_initializer_of_a_decorated_class_2816 |
 | TS2817 | err | catalog-only |  | Property_0_has_no_initializer_and_is_not_definitely_assigned_in_a_class_static_block_2817 |
 | TS2818 | err | catalog-only |  | Duplicate_identifier_0_Compiler_reserves_name_1_when_emitting_super_references_in_static_initializer_2818 |
@@ -977,84 +977,84 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2821 | err | catalog-only |  | Import_assertions_are_only_supported_when_the_module_option_is_set_to_esnext_nodenext_or_preserve_2821 |
 | TS2822 | err | catalog-only |  | Import_assertions_cannot_be_used_with_type_only_imports_or_exports_2822 |
 | TS2823 | err | catalog-only |  | Import_attributes_are_only_supported_when_the_module_option_is_set_to_esnext_nodenext_or_preserve_2823 |
-| TS2833 | err | emitted | packages/ts_checker/src/check.zig:36169<br>packages/ts_checker/src/check.zig:95468 | Cannot_find_namespace_0_Did_you_mean_1_2833 |
-| TS2834 | err | emitted | packages/ts_checker/src/check.zig:27462<br>packages/ts_checker/src/check.zig:95880 | Relative_import_paths_need_explicit_file_extensions_in_ECMAScript_imports_when_moduleResolution_is_n_2834 |
-| TS2835 | err | emitted | packages/ts_checker/src/check.zig:27462<br>packages/ts_checker/src/check.zig:95856 | Relative_import_paths_need_explicit_file_extensions_in_ECMAScript_imports_when_moduleResolution_is_n_2835 |
+| TS2833 | err | emitted | packages/ts_checker/src/check.zig:36423<br>packages/ts_checker/src/check.zig:96017 | Cannot_find_namespace_0_Did_you_mean_1_2833 |
+| TS2834 | err | emitted | packages/ts_checker/src/check.zig:27584<br>packages/ts_checker/src/check.zig:96429 | Relative_import_paths_need_explicit_file_extensions_in_ECMAScript_imports_when_moduleResolution_is_n_2834 |
+| TS2835 | err | emitted | packages/ts_checker/src/check.zig:27584<br>packages/ts_checker/src/check.zig:96405 | Relative_import_paths_need_explicit_file_extensions_in_ECMAScript_imports_when_moduleResolution_is_n_2835 |
 | TS2836 | err | catalog-only |  | Import_assertions_are_not_allowed_on_statements_that_compile_to_CommonJS_require_calls_2836 |
 | TS2837 | err | catalog-only |  | Import_assertion_values_must_be_string_literal_expressions_2837 |
-| TS2838 | err | emitted | packages/ts_checker/src/check.zig:67448<br>packages/ts_checker/src/check.zig:82788<br>packages/ts_checker/src/check.zig:82800 | All_declarations_of_0_must_have_identical_constraints_2838 |
-| TS2839 | err | emitted | packages/ts_checker/src/check.zig:66331<br>packages/ts_driver/src/ts_driver.zig:1897<br>packages/ts_checker/src/check.zig:71679 | This_condition_will_always_return_0_since_JavaScript_compares_objects_by_reference_not_value_2839 |
-| TS2840 | err | emitted | packages/ts_checker/src/check.zig:34456 | An_interface_cannot_extend_a_primitive_type_like_0_It_can_only_extend_other_named_object_types_2840 |
-| TS2842 | err | emitted | packages/ts_parser/src/ts_parser.zig:9349 | _0_is_an_unused_renaming_of_1_Did_you_intend_to_use_it_as_a_type_annotation_2842 |
+| TS2838 | err | emitted | packages/ts_checker/src/check.zig:67859<br>packages/ts_checker/src/check.zig:83337<br>packages/ts_checker/src/check.zig:83349 | All_declarations_of_0_must_have_identical_constraints_2838 |
+| TS2839 | err | emitted | packages/ts_checker/src/check.zig:66742<br>packages/ts_driver/src/ts_driver.zig:1923<br>packages/ts_checker/src/check.zig:72090 | This_condition_will_always_return_0_since_JavaScript_compares_objects_by_reference_not_value_2839 |
+| TS2840 | err | emitted | packages/ts_checker/src/check.zig:34710 | An_interface_cannot_extend_a_primitive_type_like_0_It_can_only_extend_other_named_object_types_2840 |
+| TS2842 | err | emitted | packages/ts_parser/src/ts_parser.zig:9359 | _0_is_an_unused_renaming_of_1_Did_you_intend_to_use_it_as_a_type_annotation_2842 |
 | TS2843 | err | catalog-only |  | We_can_only_write_a_type_for_0_by_adding_a_type_for_the_entire_parameter_here_2843 |
 | TS2844 | err | catalog-only |  | Type_of_instance_member_variable_0_cannot_reference_identifier_1_declared_in_the_constructor_2844 |
 | TS2845 | err | catalog-only |  | This_condition_will_always_return_0_2845 |
-| TS2846 | err | emitted | packages/ts_checker/src/check.zig:27816<br>packages/ts_checker/src/check.zig:27876<br>packages/ts_checker/src/check.zig:93685 | A_declaration_file_cannot_be_imported_without_import_type_Did_you_mean_to_import_an_implementation_f_2846 |
+| TS2846 | err | emitted | packages/ts_checker/src/check.zig:27938<br>packages/ts_checker/src/check.zig:27998<br>packages/ts_checker/src/check.zig:94234 | A_declaration_file_cannot_be_imported_without_import_type_Did_you_mean_to_import_an_implementation_f_2846 |
 | TS2848 | err | declared |  | The_right_hand_side_of_an_instanceof_expression_must_not_be_an_instantiation_expression_2848 |
 | TS2849 | err | catalog-only |  | Target_signature_provides_too_few_arguments_Expected_0_or_more_but_got_1_2849 |
 | TS2850 | err | catalog-only |  | The_initializer_of_a_using_declaration_must_be_either_an_object_with_a_Symbol_dispose_method_or_be_n_2850 |
 | TS2851 | err | catalog-only |  | The_initializer_of_an_await_using_declaration_must_be_either_an_object_with_a_Symbol_asyncDispose_or_2851 |
-| TS2852 | err | emitted | packages/ts_parser/src/ts_parser.zig:7945 | await_using_statements_are_only_allowed_within_async_functions_and_at_the_top_levels_of_modules_2852 |
-| TS2853 | err | emitted | packages/ts_parser/src/ts_parser.zig:7947 | await_using_statements_are_only_allowed_at_the_top_level_of_a_file_when_that_file_is_a_module_but_th_2853 |
-| TS2854 | err | emitted | packages/ts_checker/src/check.zig:39745 | Top_level_await_using_statements_are_only_allowed_when_the_module_option_is_set_to_es2022_esnext_sys_2854 |
+| TS2852 | err | emitted | packages/ts_parser/src/ts_parser.zig:7955 | await_using_statements_are_only_allowed_within_async_functions_and_at_the_top_levels_of_modules_2852 |
+| TS2853 | err | emitted | packages/ts_parser/src/ts_parser.zig:7957 | await_using_statements_are_only_allowed_at_the_top_level_of_a_file_when_that_file_is_a_module_but_th_2853 |
+| TS2854 | err | emitted | packages/ts_checker/src/check.zig:39999 | Top_level_await_using_statements_are_only_allowed_when_the_module_option_is_set_to_es2022_esnext_sys_2854 |
 | TS2855 | err | catalog-only |  | Class_field_0_defined_by_the_parent_class_is_not_accessible_in_the_child_class_via_super_2855 |
 | TS2856 | err | catalog-only |  | Import_attributes_are_not_allowed_on_statements_that_compile_to_CommonJS_require_calls_2856 |
 | TS2857 | err | catalog-only |  | Import_attributes_cannot_be_used_with_type_only_imports_or_exports_2857 |
 | TS2858 | err | catalog-only |  | Import_attribute_values_must_be_string_literal_expressions_2858 |
 | TS2859 | err | catalog-only |  | Excessive_complexity_comparing_types_0_and_1_2859 |
-| TS2860 | err | emitted | packages/ts_checker/src/check.zig:58875<br>packages/ts_checker/src/check.zig:72255 | The_left_hand_side_of_an_instanceof_expression_must_be_assignable_to_the_first_argument_of_the_right_2860 |
-| TS2861 | err | emitted | packages/ts_checker/src/check.zig:58869<br>packages/ts_checker/src/check.zig:72256 | An_object_s_Symbol_hasInstance_method_must_return_a_boolean_value_for_it_to_be_used_on_the_right_han_2861 |
+| TS2860 | err | emitted | packages/ts_checker/src/check.zig:59156<br>packages/ts_checker/src/check.zig:72666 | The_left_hand_side_of_an_instanceof_expression_must_be_assignable_to_the_first_argument_of_the_right_2860 |
+| TS2861 | err | emitted | packages/ts_checker/src/check.zig:59150<br>packages/ts_checker/src/check.zig:72667 | An_object_s_Symbol_hasInstance_method_must_return_a_boolean_value_for_it_to_be_used_on_the_right_han_2861 |
 | TS2862 | err | catalog-only |  | Type_0_is_generic_and_can_only_be_indexed_for_reading_2862 |
-| TS2863 | err | emitted | packages/ts_checker/src/check.zig:33951 | A_class_cannot_extend_a_primitive_type_like_0_Classes_can_only_extend_constructable_values_2863 |
+| TS2863 | err | emitted | packages/ts_checker/src/check.zig:34205 | A_class_cannot_extend_a_primitive_type_like_0_Classes_can_only_extend_constructable_values_2863 |
 | TS2864 | err | catalog-only |  | A_class_cannot_implement_a_primitive_type_like_0_It_can_only_implement_other_named_object_types_2864 |
 | TS2865 | err | catalog-only |  | Import_0_conflicts_with_local_value_so_must_be_declared_with_a_type_only_import_when_isolatedModules_2865 |
 | TS2866 | err | catalog-only |  | Import_0_conflicts_with_global_value_used_in_this_file_so_must_be_declared_with_a_type_only_import_w_2866 |
 | TS2867 | err | catalog-only |  | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_Bun_Try_npm_i_save_dev_types_Slashbun_2867 |
-| TS2868 | err | emitted | packages/ts_checker/src/check.zig:54064 | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_Bun_Try_npm_i_save_dev_types_Slashbun_2868 |
-| TS2869 | err | emitted | packages/ts_checker/src/check.zig:59523<br>packages/ts_checker/src/check.zig:100247 | Right_operand_of_is_unreachable_because_the_left_operand_is_never_nullish_2869 |
+| TS2868 | err | emitted | packages/ts_checker/src/check.zig:54345 | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_Bun_Try_npm_i_save_dev_types_Slashbun_2868 |
+| TS2869 | err | emitted | packages/ts_checker/src/check.zig:59804<br>packages/ts_checker/src/check.zig:100796 | Right_operand_of_is_unreachable_because_the_left_operand_is_never_nullish_2869 |
 | TS2870 | err | catalog-only |  | This_binary_expression_is_never_nullish_Are_you_missing_parentheses_2870 |
-| TS2871 | err | emitted | packages/ts_checker/src/check.zig:59521<br>packages/ts_checker/src/check.zig:100193<br>packages/ts_checker/src/check.zig:100204 | This_expression_is_always_nullish_2871 |
-| TS2872 | err | emitted | packages/ts_checker/src/check.zig:59416<br>packages/ts_checker/src/check.zig:59536<br>packages/ts_checker/src/check.zig:59549 | This_kind_of_expression_is_always_truthy_2872 |
-| TS2873 | err | emitted | packages/ts_checker/src/check.zig:59424<br>packages/ts_checker/src/check.zig:59435<br>packages/ts_checker/src/check.zig:59555 | This_kind_of_expression_is_always_falsy_2873 |
-| TS2874 | err | emitted | packages/ts_driver/src/ts_driver.zig:890 | This_JSX_tag_requires_0_to_be_in_scope_but_it_could_not_be_found_2874 |
-| TS2875 | err | emitted | packages/ts_driver/src/ts_driver.zig:880<br>packages/ts_driver/src/ts_driver.zig:3199 | This_JSX_tag_requires_the_module_path_0_to_exist_but_none_could_be_found_Make_sure_you_have_types_fo_2875 |
-| TS2876 | err | emitted | packages/ts_checker/src/check.zig:26820<br>packages/ts_checker/src/check.zig:93040 | This_relative_import_path_is_unsafe_to_rewrite_because_it_looks_like_a_file_name_but_actually_resolv_2876 |
+| TS2871 | err | emitted | packages/ts_checker/src/check.zig:59802<br>packages/ts_checker/src/check.zig:100742<br>packages/ts_checker/src/check.zig:100753 | This_expression_is_always_nullish_2871 |
+| TS2872 | err | emitted | packages/ts_checker/src/check.zig:59697<br>packages/ts_checker/src/check.zig:59817<br>packages/ts_checker/src/check.zig:59830 | This_kind_of_expression_is_always_truthy_2872 |
+| TS2873 | err | emitted | packages/ts_checker/src/check.zig:59705<br>packages/ts_checker/src/check.zig:59716<br>packages/ts_checker/src/check.zig:59836 | This_kind_of_expression_is_always_falsy_2873 |
+| TS2874 | err | emitted | packages/ts_driver/src/ts_driver.zig:905 | This_JSX_tag_requires_0_to_be_in_scope_but_it_could_not_be_found_2874 |
+| TS2875 | err | emitted | packages/ts_driver/src/ts_driver.zig:895<br>packages/ts_driver/src/ts_driver.zig:3280 | This_JSX_tag_requires_the_module_path_0_to_exist_but_none_could_be_found_Make_sure_you_have_types_fo_2875 |
+| TS2876 | err | emitted | packages/ts_checker/src/check.zig:26942<br>packages/ts_checker/src/check.zig:93589 | This_relative_import_path_is_unsafe_to_rewrite_because_it_looks_like_a_file_name_but_actually_resolv_2876 |
 | TS2877 | err | catalog-only |  | This_import_uses_a_0_extension_to_resolve_to_an_input_TypeScript_file_but_will_not_be_rewritten_duri_2877 |
 | TS2878 | err | catalog-only |  | This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878 |
 | TS2879 | err | catalog-only |  | Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879 |
-| TS4002 | err | emitted | packages/ts_checker/src/check.zig:18660<br>packages/ts_checker/src/check.zig:99928<br>packages/ts_checker/src/check.zig:99939 | Type_parameter_0_of_exported_class_has_or_is_using_private_name_1_4002 |
+| TS4002 | err | emitted | packages/ts_checker/src/check.zig:18782<br>packages/ts_checker/src/check.zig:100477<br>packages/ts_checker/src/check.zig:100488 | Type_parameter_0_of_exported_class_has_or_is_using_private_name_1_4002 |
 | TS4004 | err | catalog-only |  | Type_parameter_0_of_exported_interface_has_or_is_using_private_name_1_4004 |
 | TS4006 | err | catalog-only |  | Type_parameter_0_of_constructor_signature_from_exported_interface_has_or_is_using_private_name_1_4006 |
 | TS4008 | err | catalog-only |  | Type_parameter_0_of_call_signature_from_exported_interface_has_or_is_using_private_name_1_4008 |
 | TS4010 | err | catalog-only |  | Type_parameter_0_of_public_static_method_from_exported_class_has_or_is_using_private_name_1_4010 |
 | TS4012 | err | catalog-only |  | Type_parameter_0_of_public_method_from_exported_class_has_or_is_using_private_name_1_4012 |
 | TS4014 | err | catalog-only |  | Type_parameter_0_of_method_from_exported_interface_has_or_is_using_private_name_1_4014 |
-| TS4016 | err | emitted | packages/ts_checker/src/check.zig:18661<br>packages/ts_checker/src/check.zig:99961<br>packages/ts_checker/src/check.zig:99801 | Type_parameter_0_of_exported_function_has_or_is_using_private_name_1_4016 |
-| TS4019 | err | emitted | packages/ts_checker/src/check.zig:18521<br>packages/ts_checker/src/check.zig:99717<br>packages/ts_checker/src/check.zig:99775 | Implements_clause_of_exported_class_0_has_or_is_using_private_name_1_4019 |
-| TS4020 | err | emitted | packages/ts_checker/src/check.zig:18524<br>packages/ts_checker/src/check.zig:99689<br>packages/ts_checker/src/check.zig:99733 | extends_clause_of_exported_class_0_has_or_is_using_private_name_1_4020 |
+| TS4016 | err | emitted | packages/ts_checker/src/check.zig:18783<br>packages/ts_checker/src/check.zig:100510<br>packages/ts_checker/src/check.zig:100350 | Type_parameter_0_of_exported_function_has_or_is_using_private_name_1_4016 |
+| TS4019 | err | emitted | packages/ts_checker/src/check.zig:18643<br>packages/ts_checker/src/check.zig:100266<br>packages/ts_checker/src/check.zig:100324 | Implements_clause_of_exported_class_0_has_or_is_using_private_name_1_4019 |
+| TS4020 | err | emitted | packages/ts_checker/src/check.zig:18646<br>packages/ts_checker/src/check.zig:100238<br>packages/ts_checker/src/check.zig:100282 | extends_clause_of_exported_class_0_has_or_is_using_private_name_1_4020 |
 | TS4021 | err | catalog-only |  | extends_clause_of_exported_class_has_or_is_using_private_name_0_4021 |
-| TS4022 | err | emitted | packages/ts_checker/src/check.zig:18518<br>packages/ts_checker/src/check.zig:99703<br>packages/ts_checker/src/check.zig:99776 | extends_clause_of_exported_interface_0_has_or_is_using_private_name_1_4022 |
+| TS4022 | err | emitted | packages/ts_checker/src/check.zig:18640<br>packages/ts_checker/src/check.zig:100252<br>packages/ts_checker/src/check.zig:100325 | extends_clause_of_exported_interface_0_has_or_is_using_private_name_1_4022 |
 | TS4023 | err | catalog-only |  | Exported_variable_0_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4023 |
 | TS4024 | err | catalog-only |  | Exported_variable_0_has_or_is_using_name_1_from_private_module_2_4024 |
-| TS4025 | err | emitted | packages/ts_checker/src/check.zig:18589<br>packages/ts_checker/src/check.zig:99815<br>packages/ts_checker/src/check.zig:99826 | Exported_variable_0_has_or_is_using_private_name_1_4025 |
+| TS4025 | err | emitted | packages/ts_checker/src/check.zig:18711<br>packages/ts_checker/src/check.zig:100364<br>packages/ts_checker/src/check.zig:100375 | Exported_variable_0_has_or_is_using_private_name_1_4025 |
 | TS4026 | err | catalog-only |  | Public_static_property_0_of_exported_class_has_or_is_using_name_1_from_external_module_2_but_cannot__4026 |
 | TS4027 | err | catalog-only |  | Public_static_property_0_of_exported_class_has_or_is_using_name_1_from_private_module_2_4027 |
-| TS4028 | err | emitted | packages/ts_checker/src/check.zig:18767<br>packages/ts_checker/src/check.zig:99861<br>packages/ts_checker/src/check.zig:99874 | Public_static_property_0_of_exported_class_has_or_is_using_private_name_1_4028 |
+| TS4028 | err | emitted | packages/ts_checker/src/check.zig:18889<br>packages/ts_checker/src/check.zig:100410<br>packages/ts_checker/src/check.zig:100423 | Public_static_property_0_of_exported_class_has_or_is_using_private_name_1_4028 |
 | TS4029 | err | catalog-only |  | Public_property_0_of_exported_class_has_or_is_using_name_1_from_external_module_2_but_cannot_be_name_4029 |
 | TS4030 | err | catalog-only |  | Public_property_0_of_exported_class_has_or_is_using_name_1_from_private_module_2_4030 |
-| TS4031 | err | emitted | packages/ts_checker/src/check.zig:18774<br>packages/ts_checker/src/check.zig:99860<br>packages/ts_checker/src/check.zig:99875 | Public_property_0_of_exported_class_has_or_is_using_private_name_1_4031 |
+| TS4031 | err | emitted | packages/ts_checker/src/check.zig:18896<br>packages/ts_checker/src/check.zig:100409<br>packages/ts_checker/src/check.zig:100424 | Public_property_0_of_exported_class_has_or_is_using_private_name_1_4031 |
 | TS4032 | err | catalog-only |  | Property_0_of_exported_interface_has_or_is_using_name_1_from_private_module_2_4032 |
-| TS4033 | err | emitted | packages/ts_checker/src/check.zig:18946<br>packages/ts_checker/src/check.zig:100093<br>packages/ts_checker/src/check.zig:100120 | Property_0_of_exported_interface_has_or_is_using_private_name_1_4033 |
+| TS4033 | err | emitted | packages/ts_checker/src/check.zig:19068<br>packages/ts_checker/src/check.zig:100642<br>packages/ts_checker/src/check.zig:100669 | Property_0_of_exported_interface_has_or_is_using_private_name_1_4033 |
 | TS4034 | err | catalog-only |  | Parameter_type_of_public_static_setter_0_from_exported_class_has_or_is_using_name_1_from_private_mod_4034 |
-| TS4035 | err | emitted | packages/ts_checker/src/check.zig:18853<br>packages/ts_checker/src/check.zig:100080<br>packages/ts_checker/src/check.zig:99802 | Parameter_type_of_public_static_setter_0_from_exported_class_has_or_is_using_private_name_1_4035 |
+| TS4035 | err | emitted | packages/ts_checker/src/check.zig:18975<br>packages/ts_checker/src/check.zig:100629<br>packages/ts_checker/src/check.zig:100351 | Parameter_type_of_public_static_setter_0_from_exported_class_has_or_is_using_private_name_1_4035 |
 | TS4036 | err | catalog-only |  | Parameter_type_of_public_setter_0_from_exported_class_has_or_is_using_name_1_from_private_module_2_4036 |
-| TS4037 | err | emitted | packages/ts_checker/src/check.zig:18855<br>packages/ts_checker/src/check.zig:100065<br>packages/ts_checker/src/check.zig:99802 | Parameter_type_of_public_setter_0_from_exported_class_has_or_is_using_private_name_1_4037 |
+| TS4037 | err | emitted | packages/ts_checker/src/check.zig:18977<br>packages/ts_checker/src/check.zig:100614<br>packages/ts_checker/src/check.zig:100351 | Parameter_type_of_public_setter_0_from_exported_class_has_or_is_using_private_name_1_4037 |
 | TS4038 | err | catalog-only |  | Return_type_of_public_static_getter_0_from_exported_class_has_or_is_using_name_1_from_external_modul_4038 |
 | TS4039 | err | catalog-only |  | Return_type_of_public_static_getter_0_from_exported_class_has_or_is_using_name_1_from_private_module_4039 |
-| TS4040 | err | emitted | packages/ts_checker/src/check.zig:18815<br>packages/ts_checker/src/check.zig:100079<br>packages/ts_checker/src/check.zig:99802 | Return_type_of_public_static_getter_0_from_exported_class_has_or_is_using_private_name_1_4040 |
+| TS4040 | err | emitted | packages/ts_checker/src/check.zig:18937<br>packages/ts_checker/src/check.zig:100628<br>packages/ts_checker/src/check.zig:100351 | Return_type_of_public_static_getter_0_from_exported_class_has_or_is_using_private_name_1_4040 |
 | TS4041 | err | catalog-only |  | Return_type_of_public_getter_0_from_exported_class_has_or_is_using_name_1_from_external_module_2_but_4041 |
 | TS4042 | err | catalog-only |  | Return_type_of_public_getter_0_from_exported_class_has_or_is_using_name_1_from_private_module_2_4042 |
-| TS4043 | err | emitted | packages/ts_checker/src/check.zig:18817<br>packages/ts_checker/src/check.zig:100064<br>packages/ts_checker/src/check.zig:99802 | Return_type_of_public_getter_0_from_exported_class_has_or_is_using_private_name_1_4043 |
+| TS4043 | err | emitted | packages/ts_checker/src/check.zig:18939<br>packages/ts_checker/src/check.zig:100613<br>packages/ts_checker/src/check.zig:100351 | Return_type_of_public_getter_0_from_exported_class_has_or_is_using_private_name_1_4043 |
 | TS4044 | err | catalog-only |  | Return_type_of_constructor_signature_from_exported_interface_has_or_is_using_name_0_from_private_mod_4044 |
 | TS4045 | err | catalog-only |  | Return_type_of_constructor_signature_from_exported_interface_has_or_is_using_private_name_0_4045 |
 | TS4046 | err | catalog-only |  | Return_type_of_call_signature_from_exported_interface_has_or_is_using_name_0_from_private_module_1_4046 |
@@ -1063,36 +1063,36 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS4049 | err | catalog-only |  | Return_type_of_index_signature_from_exported_interface_has_or_is_using_private_name_0_4049 |
 | TS4050 | err | catalog-only |  | Return_type_of_public_static_method_from_exported_class_has_or_is_using_name_0_from_external_module__4050 |
 | TS4051 | err | catalog-only |  | Return_type_of_public_static_method_from_exported_class_has_or_is_using_name_0_from_private_module_1_4051 |
-| TS4052 | err | emitted | packages/ts_checker/src/check.zig:18827<br>packages/ts_checker/src/check.zig:100022<br>packages/ts_checker/src/check.zig:99802 | Return_type_of_public_static_method_from_exported_class_has_or_is_using_private_name_0_4052 |
+| TS4052 | err | emitted | packages/ts_checker/src/check.zig:18949<br>packages/ts_checker/src/check.zig:100571<br>packages/ts_checker/src/check.zig:100351 | Return_type_of_public_static_method_from_exported_class_has_or_is_using_private_name_0_4052 |
 | TS4053 | err | catalog-only |  | Return_type_of_public_method_from_exported_class_has_or_is_using_name_0_from_external_module_1_but_c_4053 |
 | TS4054 | err | catalog-only |  | Return_type_of_public_method_from_exported_class_has_or_is_using_name_0_from_private_module_1_4054 |
-| TS4055 | err | emitted | packages/ts_checker/src/check.zig:18829<br>packages/ts_checker/src/check.zig:100008<br>packages/ts_checker/src/check.zig:100036 | Return_type_of_public_method_from_exported_class_has_or_is_using_private_name_0_4055 |
+| TS4055 | err | emitted | packages/ts_checker/src/check.zig:18951<br>packages/ts_checker/src/check.zig:100557<br>packages/ts_checker/src/check.zig:100585 | Return_type_of_public_method_from_exported_class_has_or_is_using_private_name_0_4055 |
 | TS4056 | err | catalog-only |  | Return_type_of_method_from_exported_interface_has_or_is_using_name_0_from_private_module_1_4056 |
-| TS4057 | err | emitted | packages/ts_checker/src/check.zig:18919<br>packages/ts_checker/src/check.zig:100106<br>packages/ts_checker/src/check.zig:99802 | Return_type_of_method_from_exported_interface_has_or_is_using_private_name_0_4057 |
+| TS4057 | err | emitted | packages/ts_checker/src/check.zig:19041<br>packages/ts_checker/src/check.zig:100655<br>packages/ts_checker/src/check.zig:100351 | Return_type_of_method_from_exported_interface_has_or_is_using_private_name_0_4057 |
 | TS4058 | err | catalog-only |  | Return_type_of_exported_function_has_or_is_using_name_0_from_external_module_1_but_cannot_be_named_4058 |
 | TS4059 | err | catalog-only |  | Return_type_of_exported_function_has_or_is_using_name_0_from_private_module_1_4059 |
-| TS4060 | err | emitted | packages/ts_checker/src/check.zig:18710<br>packages/ts_checker/src/check.zig:99972<br>packages/ts_checker/src/check.zig:99994 | Return_type_of_exported_function_has_or_is_using_private_name_0_4060 |
+| TS4060 | err | emitted | packages/ts_checker/src/check.zig:18832<br>packages/ts_checker/src/check.zig:100521<br>packages/ts_checker/src/check.zig:100543 | Return_type_of_exported_function_has_or_is_using_private_name_0_4060 |
 | TS4061 | err | catalog-only |  | Parameter_0_of_constructor_from_exported_class_has_or_is_using_name_1_from_external_module_2_but_can_4061 |
 | TS4062 | err | catalog-only |  | Parameter_0_of_constructor_from_exported_class_has_or_is_using_name_1_from_private_module_2_4062 |
-| TS4063 | err | emitted | packages/ts_checker/src/check.zig:18872<br>packages/ts_checker/src/check.zig:100050<br>packages/ts_checker/src/check.zig:99802 | Parameter_0_of_constructor_from_exported_class_has_or_is_using_private_name_1_4063 |
+| TS4063 | err | emitted | packages/ts_checker/src/check.zig:18994<br>packages/ts_checker/src/check.zig:100599<br>packages/ts_checker/src/check.zig:100351 | Parameter_0_of_constructor_from_exported_class_has_or_is_using_private_name_1_4063 |
 | TS4064 | err | catalog-only |  | Parameter_0_of_constructor_signature_from_exported_interface_has_or_is_using_name_1_from_private_mod_4064 |
 | TS4065 | err | catalog-only |  | Parameter_0_of_constructor_signature_from_exported_interface_has_or_is_using_private_name_1_4065 |
 | TS4066 | err | catalog-only |  | Parameter_0_of_call_signature_from_exported_interface_has_or_is_using_name_1_from_private_module_2_4066 |
 | TS4067 | err | catalog-only |  | Parameter_0_of_call_signature_from_exported_interface_has_or_is_using_private_name_1_4067 |
 | TS4068 | err | catalog-only |  | Parameter_0_of_public_static_method_from_exported_class_has_or_is_using_name_1_from_external_module__4068 |
 | TS4069 | err | catalog-only |  | Parameter_0_of_public_static_method_from_exported_class_has_or_is_using_name_1_from_private_module_2_4069 |
-| TS4070 | err | emitted | packages/ts_checker/src/check.zig:18875<br>packages/ts_checker/src/check.zig:100023<br>packages/ts_checker/src/check.zig:99802 | Parameter_0_of_public_static_method_from_exported_class_has_or_is_using_private_name_1_4070 |
+| TS4070 | err | emitted | packages/ts_checker/src/check.zig:18997<br>packages/ts_checker/src/check.zig:100572<br>packages/ts_checker/src/check.zig:100351 | Parameter_0_of_public_static_method_from_exported_class_has_or_is_using_private_name_1_4070 |
 | TS4071 | err | catalog-only |  | Parameter_0_of_public_method_from_exported_class_has_or_is_using_name_1_from_external_module_2_but_c_4071 |
 | TS4072 | err | catalog-only |  | Parameter_0_of_public_method_from_exported_class_has_or_is_using_name_1_from_private_module_2_4072 |
-| TS4073 | err | emitted | packages/ts_checker/src/check.zig:18877<br>packages/ts_checker/src/check.zig:100009<br>packages/ts_checker/src/check.zig:100037 | Parameter_0_of_public_method_from_exported_class_has_or_is_using_private_name_1_4073 |
+| TS4073 | err | emitted | packages/ts_checker/src/check.zig:18999<br>packages/ts_checker/src/check.zig:100558<br>packages/ts_checker/src/check.zig:100586 | Parameter_0_of_public_method_from_exported_class_has_or_is_using_private_name_1_4073 |
 | TS4074 | err | catalog-only |  | Parameter_0_of_method_from_exported_interface_has_or_is_using_name_1_from_private_module_2_4074 |
-| TS4075 | err | emitted | packages/ts_checker/src/check.zig:18935<br>packages/ts_checker/src/check.zig:100107<br>packages/ts_checker/src/check.zig:99802 | Parameter_0_of_method_from_exported_interface_has_or_is_using_private_name_1_4075 |
+| TS4075 | err | emitted | packages/ts_checker/src/check.zig:19057<br>packages/ts_checker/src/check.zig:100656<br>packages/ts_checker/src/check.zig:100351 | Parameter_0_of_method_from_exported_interface_has_or_is_using_private_name_1_4075 |
 | TS4076 | err | catalog-only |  | Parameter_0_of_exported_function_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4076 |
 | TS4077 | err | catalog-only |  | Parameter_0_of_exported_function_has_or_is_using_name_1_from_private_module_2_4077 |
-| TS4078 | err | emitted | packages/ts_checker/src/check.zig:18727<br>packages/ts_checker/src/check.zig:99983<br>packages/ts_checker/src/check.zig:99995 | Parameter_0_of_exported_function_has_or_is_using_private_name_1_4078 |
-| TS4081 | err | emitted | packages/ts_checker/src/check.zig:18635<br>packages/ts_checker/src/check.zig:100131<br>packages/ts_checker/src/check.zig:100153 | Exported_type_alias_0_has_or_is_using_private_name_1_4081 |
+| TS4078 | err | emitted | packages/ts_checker/src/check.zig:18849<br>packages/ts_checker/src/check.zig:100532<br>packages/ts_checker/src/check.zig:100544 | Parameter_0_of_exported_function_has_or_is_using_private_name_1_4078 |
+| TS4081 | err | emitted | packages/ts_checker/src/check.zig:18757<br>packages/ts_checker/src/check.zig:100680<br>packages/ts_checker/src/check.zig:100702 | Exported_type_alias_0_has_or_is_using_private_name_1_4081 |
 | TS4082 | err | catalog-only |  | Default_export_of_the_module_has_or_is_using_private_name_0_4082 |
-| TS4083 | err | emitted | packages/ts_checker/src/check.zig:18621<br>packages/ts_checker/src/check.zig:100142 | Type_parameter_0_of_exported_type_alias_has_or_is_using_private_name_1_4083 |
+| TS4083 | err | emitted | packages/ts_checker/src/check.zig:18743<br>packages/ts_checker/src/check.zig:100691 | Type_parameter_0_of_exported_type_alias_has_or_is_using_private_name_1_4083 |
 | TS4084 | err | catalog-only |  | Exported_type_alias_0_has_or_is_using_private_name_1_from_module_2_4084 |
 | TS4085 | err | catalog-only |  | Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085 |
 | TS4091 | err | catalog-only |  | Parameter_0_of_index_signature_from_exported_interface_has_or_is_using_name_1_from_private_module_2_4091 |
@@ -1114,19 +1114,19 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS4108 | err | catalog-only |  | Parameter_0_of_accessor_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4108 |
 | TS4109 | err | catalog-only |  | Type_arguments_for_0_circularly_reference_themselves_4109 |
 | TS4110 | err | catalog-only |  | Tuple_type_arguments_circularly_reference_themselves_4110 |
-| TS4111 | err | emitted | packages/ts_checker/src/check.zig:45354<br>packages/ts_checker/src/check.zig:80770<br>packages/ts_checker/src/check.zig:80790 | Property_0_comes_from_an_index_signature_so_it_must_be_accessed_with_0_4111 |
-| TS4112 | err | emitted | packages/ts_checker/src/check.zig:23639<br>packages/ts_checker/src/check.zig:76159 | This_member_cannot_have_an_override_modifier_because_its_containing_class_0_does_not_extend_another__4112 |
-| TS4113 | err | emitted | packages/ts_checker/src/check.zig:23690<br>packages/ts_checker/src/check.zig:23698<br>packages/ts_checker/src/check.zig:76144 | This_member_cannot_have_an_override_modifier_because_it_is_not_declared_in_the_base_class_0_4113 |
-| TS4114 | err | emitted | packages/ts_checker/src/check.zig:23749<br>packages/ts_checker/src/check.zig:23820<br>packages/ts_checker/src/check.zig:23826 | This_member_must_have_an_override_modifier_because_it_overrides_a_member_in_the_base_class_0_4114 |
-| TS4115 | err | emitted | packages/ts_checker/src/check.zig:23749 | This_parameter_property_must_have_an_override_modifier_because_it_overrides_a_member_in_base_class_0_4115 |
-| TS4116 | err | emitted | packages/ts_checker/src/check.zig:23737<br>packages/ts_checker/src/check.zig:23743 | This_member_must_have_an_override_modifier_because_it_overrides_an_abstract_method_that_is_declared__4116 |
-| TS4117 | err | emitted | packages/ts_checker/src/check.zig:23670<br>packages/ts_checker/src/check.zig:76199<br>packages/ts_checker/src/check.zig:76241 | This_member_cannot_have_an_override_modifier_because_it_is_not_declared_in_the_base_class_0_Did_you__4117 |
+| TS4111 | err | emitted | packages/ts_checker/src/check.zig:45635<br>packages/ts_checker/src/check.zig:81319<br>packages/ts_checker/src/check.zig:81339 | Property_0_comes_from_an_index_signature_so_it_must_be_accessed_with_0_4111 |
+| TS4112 | err | emitted | packages/ts_checker/src/check.zig:23761<br>packages/ts_checker/src/check.zig:76570 | This_member_cannot_have_an_override_modifier_because_its_containing_class_0_does_not_extend_another__4112 |
+| TS4113 | err | emitted | packages/ts_checker/src/check.zig:23812<br>packages/ts_checker/src/check.zig:23820<br>packages/ts_checker/src/check.zig:76555 | This_member_cannot_have_an_override_modifier_because_it_is_not_declared_in_the_base_class_0_4113 |
+| TS4114 | err | emitted | packages/ts_checker/src/check.zig:23871<br>packages/ts_checker/src/check.zig:23942<br>packages/ts_checker/src/check.zig:23948 | This_member_must_have_an_override_modifier_because_it_overrides_a_member_in_the_base_class_0_4114 |
+| TS4115 | err | emitted | packages/ts_checker/src/check.zig:23871 | This_parameter_property_must_have_an_override_modifier_because_it_overrides_a_member_in_base_class_0_4115 |
+| TS4116 | err | emitted | packages/ts_checker/src/check.zig:23859<br>packages/ts_checker/src/check.zig:23865 | This_member_must_have_an_override_modifier_because_it_overrides_an_abstract_method_that_is_declared__4116 |
+| TS4117 | err | emitted | packages/ts_checker/src/check.zig:23792<br>packages/ts_checker/src/check.zig:76610<br>packages/ts_checker/src/check.zig:76652 | This_member_cannot_have_an_override_modifier_because_it_is_not_declared_in_the_base_class_0_Did_you__4117 |
 | TS4118 | err | catalog-only |  | The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118 |
-| TS4119 | err | emitted | packages/ts_checker/src/check.zig:23769<br>packages/ts_checker/src/check.zig:23773<br>packages/ts_checker/src/check.zig:76303 | This_member_must_have_a_JSDoc_comment_with_an_override_tag_because_it_overrides_a_member_in_the_base_4119 |
+| TS4119 | err | emitted | packages/ts_checker/src/check.zig:23891<br>packages/ts_checker/src/check.zig:23895<br>packages/ts_checker/src/check.zig:76714 | This_member_must_have_a_JSDoc_comment_with_an_override_tag_because_it_overrides_a_member_in_the_base_4119 |
 | TS4120 | err | catalog-only |  | This_parameter_property_must_have_a_JSDoc_comment_with_an_override_tag_because_it_overrides_a_member_4120 |
-| TS4121 | err | emitted | packages/ts_checker/src/check.zig:23626<br>packages/ts_checker/src/check.zig:76281 | This_member_cannot_have_a_JSDoc_comment_with_an_override_tag_because_its_containing_class_0_does_not_4121 |
-| TS4122 | err | emitted | packages/ts_checker/src/check.zig:23690<br>packages/ts_checker/src/check.zig:23696<br>packages/ts_checker/src/check.zig:76261 | This_member_cannot_have_a_JSDoc_comment_with_an_override_tag_because_it_is_not_declared_in_the_base__4122 |
-| TS4123 | err | emitted | packages/ts_checker/src/check.zig:23658<br>packages/ts_checker/src/check.zig:76222 | This_member_cannot_have_a_JSDoc_comment_with_an_override_tag_because_it_is_not_declared_in_the_base__4123 |
+| TS4121 | err | emitted | packages/ts_checker/src/check.zig:23748<br>packages/ts_checker/src/check.zig:76692 | This_member_cannot_have_a_JSDoc_comment_with_an_override_tag_because_its_containing_class_0_does_not_4121 |
+| TS4122 | err | emitted | packages/ts_checker/src/check.zig:23812<br>packages/ts_checker/src/check.zig:23818<br>packages/ts_checker/src/check.zig:76672 | This_member_cannot_have_a_JSDoc_comment_with_an_override_tag_because_it_is_not_declared_in_the_base__4122 |
+| TS4123 | err | emitted | packages/ts_checker/src/check.zig:23780<br>packages/ts_checker/src/check.zig:76633 | This_member_cannot_have_a_JSDoc_comment_with_an_override_tag_because_it_is_not_declared_in_the_base__4123 |
 | TS4124 | err | catalog-only |  | Compiler_option_0_of_value_1_is_unstable_Use_nightly_TypeScript_to_silence_this_error_Try_updating_w_4124 |
 | TS4125 | err | catalog-only |  | Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125 |
 | TS4126 | err | catalog-only |  | One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126 |
@@ -1138,7 +1138,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5024 | err | emitted | packages/tsconfig/src/tsconfig.zig:361<br>packages/tsconfig/src/tsconfig.zig:1600 | Compiler_option_0_requires_a_value_of_type_1_5024 |
 | TS5025 | err | emitted | packages/tsconfig/src/tsconfig.zig:392 | Unknown_compiler_option_0_Did_you_mean_1_5025 |
 | TS5033 | err | catalog-only |  | Could_not_write_file_0_Colon_1_5033 |
-| TS5042 | err | emitted | packages/ts_cli/src/tsc_main.zig:907 | Option_project_cannot_be_mixed_with_source_files_on_a_command_line_5042 |
+| TS5042 | err | emitted | packages/ts_cli/src/tsc_main.zig:934 | Option_project_cannot_be_mixed_with_source_files_on_a_command_line_5042 |
 | TS5047 | err | emitted | packages/tsconfig/src/tsconfig.zig:466 | Option_isolatedModules_can_only_be_used_when_either_option_module_is_provided_or_option_target_is_ES_5047 |
 | TS5051 | err | emitted | packages/tsconfig/src/tsconfig.zig:985 | Option_0_can_only_be_used_when_either_option_inlineSourceMap_or_option_sourceMap_is_provided_5051 |
 | TS5052 | err | emitted | packages/tsconfig/src/tsconfig.zig:954 | Option_0_cannot_be_specified_without_specifying_option_1_5052 |
@@ -1147,34 +1147,34 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5055 | err | catalog-only |  | Cannot_write_file_0_because_it_would_overwrite_input_file_5055 |
 | TS5056 | err | catalog-only |  | Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056 |
 | TS5057 | err | catalog-only |  | Cannot_find_a_tsconfig_json_file_at_the_specified_directory_Colon_0_5057 |
-| TS5058 | err | emitted | packages/ts_cli/src/tsc_main.zig:918 | The_specified_path_does_not_exist_Colon_0_5058 |
+| TS5058 | err | emitted | packages/ts_cli/src/tsc_main.zig:945 | The_specified_path_does_not_exist_Colon_0_5058 |
 | TS5059 | err | emitted | packages/tsconfig/src/tsconfig.zig:1371 | Invalid_value_for_reactNamespace_0_is_not_a_valid_identifier_5059 |
-| TS5061 | err | emitted | packages/ts_checker/src/check.zig:5694<br>packages/tsconfig/src/tsconfig.zig:1042<br>packages/ts_checker/src/check.zig:70529 | Pattern_0_can_have_at_most_one_Asterisk_character_5061 |
+| TS5061 | err | emitted | packages/ts_checker/src/check.zig:5757<br>packages/tsconfig/src/tsconfig.zig:1042<br>packages/ts_checker/src/check.zig:70940 | Pattern_0_can_have_at_most_one_Asterisk_character_5061 |
 | TS5062 | err | emitted | packages/tsconfig/src/tsconfig.zig:1057 | Substitution_0_in_pattern_1_can_have_at_most_one_Asterisk_character_5062 |
 | TS5063 | err | emitted | packages/ts_conformance/src/ts_conformance.zig:2083 | Substitutions_for_pattern_0_should_be_an_array_5063 |
 | TS5064 | err | emitted | packages/tsconfig/src/tsconfig.zig:370<br>packages/tsconfig/src/tsconfig.zig:1839<br>packages/tsconfig/src/tsconfig.zig:367 | Substitution_0_for_pattern_1_has_incorrect_type_expected_string_got_2_5064 |
 | TS5065 | err | emitted | packages/tsconfig/src/tsconfig.zig:895<br>packages/tsconfig/src/tsconfig.zig:903 | File_specification_cannot_contain_a_parent_directory_that_appears_after_a_recursive_directory_wildca_5065 |
 | TS5066 | err | emitted | packages/tsconfig/src/tsconfig.zig:1071 | Substitutions_for_pattern_0_shouldn_t_be_an_empty_array_5066 |
-| TS5067 | err | emitted | packages/ts_driver/src/ts_driver.zig:274<br>packages/tsconfig/src/tsconfig.zig:1341<br>packages/ts_driver/src/ts_driver.zig:3316 | Invalid_value_for_jsxFactory_0_is_not_a_valid_identifier_or_qualified_name_5067 |
+| TS5067 | err | emitted | packages/ts_driver/src/ts_driver.zig:289<br>packages/tsconfig/src/tsconfig.zig:1341<br>packages/ts_driver/src/ts_driver.zig:3397 | Invalid_value_for_jsxFactory_0_is_not_a_valid_identifier_or_qualified_name_5067 |
 | TS5068 | err | catalog-only |  | Adding_a_tsconfig_json_file_will_help_organize_projects_that_contain_both_TypeScript_and_JavaScript__5068 |
 | TS5069 | err | emitted | packages/tsconfig/src/tsconfig.zig:1256 | Option_0_cannot_be_specified_without_specifying_option_1_or_option_2_5069 |
-| TS5070 | err | emitted | packages/ts_driver/src/ts_driver.zig:338<br>packages/ts_driver/src/ts_driver.zig:3867 | Option_resolveJsonModule_cannot_be_specified_when_moduleResolution_is_set_to_classic_5070 |
-| TS5071 | err | emitted | packages/ts_driver/src/ts_driver.zig:351<br>packages/ts_driver/src/ts_driver.zig:3845<br>packages/ts_driver/src/ts_driver.zig:3873 | Option_resolveJsonModule_cannot_be_specified_when_module_is_set_to_none_system_or_umd_5071 |
+| TS5070 | err | emitted | packages/ts_driver/src/ts_driver.zig:353<br>packages/ts_driver/src/ts_driver.zig:3948 | Option_resolveJsonModule_cannot_be_specified_when_moduleResolution_is_set_to_classic_5070 |
+| TS5071 | err | emitted | packages/ts_driver/src/ts_driver.zig:366<br>packages/ts_driver/src/ts_driver.zig:3926<br>packages/ts_driver/src/ts_driver.zig:3954 | Option_resolveJsonModule_cannot_be_specified_when_module_is_set_to_none_system_or_umd_5071 |
 | TS5072 | err | catalog-only |  | Unknown_build_option_0_5072 |
 | TS5073 | err | catalog-only |  | Build_option_0_requires_a_value_of_type_1_5073 |
 | TS5074 | err | catalog-only |  | Option_incremental_can_only_be_specified_using_tsconfig_emitting_to_single_file_or_when_option_tsBui_5074 |
 | TS5075 | err | catalog-only |  | _0_is_assignable_to_the_constraint_of_type_1_but_1_could_be_instantiated_with_a_different_subtype_of_5075 |
-| TS5076 | err | emitted | packages/ts_parser/src/ts_parser.zig:12757<br>packages/ts_parser/src/ts_parser.zig:12768<br>packages/ts_parser/src/ts_parser.zig:12780 | _0_and_1_operations_cannot_be_mixed_without_parentheses_5076 |
+| TS5076 | err | emitted | packages/ts_parser/src/ts_parser.zig:13388<br>packages/ts_parser/src/ts_parser.zig:13399<br>packages/ts_parser/src/ts_parser.zig:13411 | _0_and_1_operations_cannot_be_mixed_without_parentheses_5076 |
 | TS5077 | err | catalog-only |  | Unknown_build_option_0_Did_you_mean_1_5077 |
 | TS5078 | err | catalog-only |  | Unknown_watch_option_0_5078 |
 | TS5079 | err | catalog-only |  | Unknown_watch_option_0_Did_you_mean_1_5079 |
 | TS5080 | err | catalog-only |  | Watch_option_0_requires_a_value_of_type_1_5080 |
-| TS5081 | err | emitted | packages/ts_cli/src/tsc_main.zig:930 | Cannot_find_a_tsconfig_json_file_at_the_current_directory_Colon_0_5081 |
+| TS5081 | err | emitted | packages/ts_cli/src/tsc_main.zig:957 | Cannot_find_a_tsconfig_json_file_at_the_current_directory_Colon_0_5081 |
 | TS5082 | err | catalog-only |  | _0_could_be_instantiated_with_an_arbitrary_type_which_could_be_unrelated_to_1_5082 |
 | TS5083 | err | catalog-only |  | Cannot_read_file_0_5083 |
-| TS5085 | err | emitted | packages/ts_parser/src/ts_parser.zig:9469 | A_tuple_member_cannot_be_both_optional_and_rest_5085 |
-| TS5086 | err | emitted | packages/ts_parser/src/ts_parser.zig:9474 | A_labeled_tuple_element_is_declared_as_optional_with_a_question_mark_after_the_name_and_before_the_c_5086 |
-| TS5087 | err | emitted | packages/ts_parser/src/ts_parser.zig:9472<br>packages/ts_parser/src/ts_parser.zig:17576 | A_labeled_tuple_element_is_declared_as_rest_with_a_before_the_name_rather_than_before_the_type_5087 |
+| TS5085 | err | emitted | packages/ts_parser/src/ts_parser.zig:9479 | A_tuple_member_cannot_be_both_optional_and_rest_5085 |
+| TS5086 | err | emitted | packages/ts_parser/src/ts_parser.zig:9484 | A_labeled_tuple_element_is_declared_as_optional_with_a_question_mark_after_the_name_and_before_the_c_5086 |
+| TS5087 | err | emitted | packages/ts_parser/src/ts_parser.zig:9482<br>packages/ts_parser/src/ts_parser.zig:18352 | A_labeled_tuple_element_is_declared_as_rest_with_a_before_the_name_rather_than_before_the_type_5087 |
 | TS5088 | err | emitted | packages/ts_emit/src/d_ts_emit.zig:224 | The_inferred_type_of_0_references_a_type_with_a_cyclic_structure_which_cannot_be_trivially_serialize_5088 |
 | TS5089 | err | emitted | packages/tsconfig/src/tsconfig.zig:1272 | Option_0_cannot_be_specified_when_option_jsx_is_1_5089 |
 | TS5090 | err | emitted | packages/tsconfig/src/tsconfig.zig:1084 | Non_relative_paths_are_not_allowed_when_baseUrl_is_not_set_Did_you_forget_a_leading_Slash_5090 |
@@ -1184,15 +1184,15 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5094 | err | catalog-only |  | Compiler_option_0_may_not_be_used_with_build_5094 |
 | TS5095 | err | emitted | packages/tsconfig/src/tsconfig.zig:1210 | Option_0_can_only_be_used_when_module_is_set_to_preserve_commonjs_or_es2015_or_later_5095 |
 | TS5096 | err | emitted | packages/tsconfig/src/tsconfig.zig:476 | Option_allowImportingTsExtensions_can_only_be_used_when_one_of_noEmit_emitDeclarationOnly_or_rewrite_5096 |
-| TS5097 | err | emitted | packages/ts_checker/src/check.zig:27883<br>packages/ts_checker/src/check.zig:93664<br>packages/ts_checker/src/check.zig:93684 | An_import_path_can_only_end_with_a_0_extension_when_allowImportingTsExtensions_is_enabled_5097 |
+| TS5097 | err | emitted | packages/ts_checker/src/check.zig:28005<br>packages/ts_checker/src/check.zig:94213<br>packages/ts_checker/src/check.zig:94233 | An_import_path_can_only_end_with_a_0_extension_when_allowImportingTsExtensions_is_enabled_5097 |
 | TS5098 | err | emitted | packages/tsconfig/src/tsconfig.zig:1224 | Option_0_can_only_be_used_when_moduleResolution_is_set_to_node16_nodenext_or_bundler_5098 |
-| TS5101 | err | emitted | packages/ts_driver/src/ts_driver.zig:364<br>packages/ts_driver/src/ts_driver.zig:3771<br>packages/ts_conformance/src/ts_conformance.zig:49432 | Option_0_is_deprecated_and_will_stop_functioning_in_TypeScript_1_Specify_compilerOption_ignoreDeprec_5101 |
-| TS5102 | err | emitted | packages/ts_checker/src/check.zig:2954<br>packages/tsconfig/src/tsconfig.zig:867 | Option_0_has_been_removed_Please_remove_it_from_your_configuration_5102 |
+| TS5101 | err | emitted | packages/ts_driver/src/ts_driver.zig:379<br>packages/ts_driver/src/ts_driver.zig:3852<br>packages/ts_conformance/src/ts_conformance.zig:49432 | Option_0_is_deprecated_and_will_stop_functioning_in_TypeScript_1_Specify_compilerOption_ignoreDeprec_5101 |
+| TS5102 | err | emitted | packages/ts_checker/src/check.zig:3017<br>packages/tsconfig/src/tsconfig.zig:867 | Option_0_has_been_removed_Please_remove_it_from_your_configuration_5102 |
 | TS5103 | err | emitted | packages/tsconfig/src/tsconfig.zig:457 | Invalid_value_for_ignoreDeprecations_5103 |
 | TS5104 | err | catalog-only |  | Option_0_is_redundant_and_cannot_be_specified_with_option_1_5104 |
-| TS5105 | err | emitted | packages/ts_driver/src/ts_driver.zig:410<br>packages/ts_driver/src/ts_driver.zig:3963 | Option_verbatimModuleSyntax_cannot_be_used_when_module_is_set_to_UMD_AMD_or_System_5105 |
+| TS5105 | err | emitted | packages/ts_driver/src/ts_driver.zig:425<br>packages/ts_driver/src/ts_driver.zig:4044 | Option_verbatimModuleSyntax_cannot_be_used_when_module_is_set_to_UMD_AMD_or_System_5105 |
 | TS5106 | message | emitted | packages/tsconfig/src/tsconfig.zig:874 | Use_0_instead_5106 |
-| TS5107 | err | emitted | packages/ts_driver/src/ts_driver.zig:393<br>packages/ts_driver/src/ts_driver.zig:1068<br>packages/ts_driver/src/ts_driver.zig:3805 | Option_0_1_is_deprecated_and_will_stop_functioning_in_TypeScript_2_Specify_compilerOption_ignoreDepr_5107 |
+| TS5107 | err | emitted | packages/ts_driver/src/ts_driver.zig:408<br>packages/ts_driver/src/ts_driver.zig:1083<br>packages/ts_driver/src/ts_driver.zig:3886 | Option_0_1_is_deprecated_and_will_stop_functioning_in_TypeScript_2_Specify_compilerOption_ignoreDepr_5107 |
 | TS5108 | err | emitted | packages/tsconfig/src/tsconfig.zig:870 | Option_0_1_has_been_removed_Please_remove_it_from_your_configuration_5108 |
 | TS5109 | err | emitted | packages/tsconfig/src/tsconfig.zig:1196 | Option_moduleResolution_must_be_set_to_0_or_left_unspecified_when_option_module_is_set_to_1_5109 |
 | TS5110 | err | emitted | packages/tsconfig/src/tsconfig.zig:1239 | Option_module_must_be_set_to_0_when_option_moduleResolution_is_set_to_1_5110 |
@@ -1239,7 +1239,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6050 | err | catalog-only |  | Unable_to_open_file_0_6050 |
 | TS6051 | err | catalog-only |  | Corrupted_locale_file_0_6051 |
 | TS6052 | message | catalog-only |  | Raise_error_on_expressions_and_declarations_with_an_implied_any_type_6052 |
-| TS6053 | err | emitted | packages/ts_driver/src/ts_driver.zig:509<br>packages/ts_driver/src/ts_driver.zig:3509<br>packages/ts_driver/src/ts_driver.zig:3610 | File_0_not_found_6053 |
+| TS6053 | err | emitted | packages/ts_driver/src/ts_driver.zig:524<br>packages/ts_driver/src/ts_driver.zig:3590<br>packages/ts_driver/src/ts_driver.zig:3691 | File_0_not_found_6053 |
 | TS6054 | err | catalog-only |  | File_0_has_an_unsupported_extension_The_only_supported_extensions_are_1_6054 |
 | TS6055 | message | catalog-only |  | Suppress_noImplicitAny_errors_for_indexing_objects_lacking_index_signatures_6055 |
 | TS6056 | message | catalog-only |  | Do_not_emit_declarations_for_code_that_has_an_internal_annotation_6056 |
@@ -1350,8 +1350,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6184 | message | catalog-only |  | Reusing_resolution_of_module_0_from_1_of_old_program_it_was_successfully_resolved_to_2_with_Package__6184 |
 | TS6186 | message | catalog-only |  | Enable_strict_checking_of_function_types_6186 |
 | TS6187 | message | catalog-only |  | Enable_strict_checking_of_property_initialization_in_classes_6187 |
-| TS6188 | err | emitted | packages/ts_parser/src/ts_parser.zig:2579<br>packages/ts_driver/src/ts_driver.zig:1662 | Numeric_separators_are_not_allowed_here_6188 |
-| TS6189 | err | emitted | packages/ts_driver/src/ts_driver.zig:1665 | Multiple_consecutive_numeric_separators_are_not_permitted_6189 |
+| TS6188 | err | emitted | packages/ts_parser/src/ts_parser.zig:2579<br>packages/ts_driver/src/ts_driver.zig:1688 | Numeric_separators_are_not_allowed_here_6188 |
+| TS6189 | err | emitted | packages/ts_driver/src/ts_driver.zig:1691 | Multiple_consecutive_numeric_separators_are_not_permitted_6189 |
 | TS6191 | message | catalog-only |  | Whether_to_keep_outdated_console_output_in_watch_mode_instead_of_clearing_the_screen_6191 |
 | TS6193 | message | catalog-only |  | Found_1_error_Watching_for_file_changes_6193 |
 | TS6194 | message | catalog-only |  | Found_0_errors_Watching_for_file_changes_6194 |
@@ -1362,7 +1362,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6202 | err | catalog-only |  | Project_references_may_not_form_a_circular_graph_Cycle_detected_Colon_0_6202 |
 | TS6203 | message | catalog-only |  | _0_was_also_declared_here_6203 |
 | TS6204 | message | catalog-only |  | and_here_6204 |
-| TS6205 | err | emitted | packages/ts_checker/src/check.zig:11947<br>packages/ts_checker/src/check.zig:78400<br>packages/ts_checker/src/check.zig:78418 | All_type_parameters_are_unused_6205 |
+| TS6205 | err | emitted | packages/ts_checker/src/check.zig:12010<br>packages/ts_checker/src/check.zig:78949<br>packages/ts_checker/src/check.zig:78967 | All_type_parameters_are_unused_6205 |
 | TS6206 | message | catalog-only |  | package_json_has_a_typesVersions_field_with_version_specific_path_mappings_6206 |
 | TS6207 | message | catalog-only |  | package_json_does_not_have_a_typesVersions_entry_that_matches_version_0_6207 |
 | TS6208 | message | catalog-only |  | package_json_has_a_typesVersions_entry_0_that_matches_compiler_version_1_looking_for_a_pattern_to_ma_6208 |
@@ -1419,7 +1419,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6260 | message | catalog-only |  | Found_0_errors_in_the_same_file_starting_at_Colon_1_6260 |
 | TS6261 | message | catalog-only |  | Found_0_errors_in_1_files_6261 |
 | TS6262 | message | catalog-only |  | File_name_0_has_a_1_extension_looking_up_2_instead_6262 |
-| TS6263 | err | emitted | packages/ts_checker/src/check.zig:27540<br>packages/ts_checker/src/check.zig:27556<br>packages/ts_checker/src/check.zig:81232 | Module_0_was_resolved_to_1_but_allowArbitraryExtensions_is_not_set_6263 |
+| TS6263 | err | emitted | packages/ts_checker/src/check.zig:27662<br>packages/ts_checker/src/check.zig:27678<br>packages/ts_checker/src/check.zig:81781 | Module_0_was_resolved_to_1_but_allowArbitraryExtensions_is_not_set_6263 |
 | TS6264 | message | catalog-only |  | Enable_importing_files_with_any_extension_provided_a_declaration_file_is_present_6264 |
 | TS6265 | message | catalog-only |  | Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265 |
 | TS6266 | err | catalog-only |  | Option_0_can_only_be_specified_on_command_line_6266 |
@@ -1665,114 +1665,114 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6929 | message | catalog-only |  | Compiles_the_current_project_with_additional_settings_6929 |
 | TS6930 | message | catalog-only |  | true_for_ES2022_and_above_including_ESNext_6930 |
 | TS6931 | err | catalog-only |  | List_of_file_name_suffixes_to_search_when_resolving_a_module_6931 |
-| TS7005 | err | emitted | packages/ts_checker/src/check.zig:40113<br>packages/ts_checker/src/check.zig:77964<br>packages/ts_checker/src/check.zig:77974 | Variable_0_implicitly_has_an_1_type_7005 |
-| TS7006 | err | emitted | packages/ts_checker/src/check.zig:17018<br>packages/ts_checker/src/check.zig:31054<br>packages/ts_checker/src/check.zig:75156 | Parameter_0_implicitly_has_an_1_type_7006 |
-| TS7008 | err | emitted | packages/ts_checker/src/check.zig:31025<br>packages/ts_checker/src/check.zig:78128<br>packages/ts_checker/src/check.zig:78149 | Member_0_implicitly_has_an_1_type_7008 |
-| TS7009 | err | emitted | packages/ts_checker/src/check.zig:44442<br>packages/ts_checker/src/check.zig:72398<br>packages/ts_checker/src/check.zig:84710 | new_expression_whose_target_lacks_a_construct_signature_implicitly_has_an_any_type_7009 |
-| TS7010 | err | emitted | packages/ts_checker/src/check.zig:15399<br>packages/ts_checker/src/check.zig:17201<br>packages/ts_checker/src/check.zig:31039 | _0_which_lacks_return_type_annotation_implicitly_has_an_1_return_type_7010 |
-| TS7011 | err | emitted | packages/ts_checker/src/check.zig:15382<br>packages/ts_checker/src/check.zig:79857<br>packages/ts_checker/src/check.zig:79886 | Function_expression_which_lacks_return_type_annotation_implicitly_has_an_0_return_type_7011 |
+| TS7005 | err | emitted | packages/ts_checker/src/check.zig:40388<br>packages/ts_checker/src/check.zig:77203<br>packages/ts_checker/src/check.zig:78513 | Variable_0_implicitly_has_an_1_type_7005 |
+| TS7006 | err | emitted | packages/ts_checker/src/check.zig:17133<br>packages/ts_checker/src/check.zig:31308<br>packages/ts_checker/src/check.zig:75567 | Parameter_0_implicitly_has_an_1_type_7006 |
+| TS7008 | err | emitted | packages/ts_checker/src/check.zig:31278<br>packages/ts_checker/src/check.zig:77228<br>packages/ts_checker/src/check.zig:78677 | Member_0_implicitly_has_an_1_type_7008 |
+| TS7009 | err | emitted | packages/ts_checker/src/check.zig:44723<br>packages/ts_checker/src/check.zig:72809<br>packages/ts_checker/src/check.zig:85259 | new_expression_whose_target_lacks_a_construct_signature_implicitly_has_an_any_type_7009 |
+| TS7010 | err | emitted | packages/ts_checker/src/check.zig:15479<br>packages/ts_checker/src/check.zig:17323<br>packages/ts_checker/src/check.zig:31293 | _0_which_lacks_return_type_annotation_implicitly_has_an_1_return_type_7010 |
+| TS7011 | err | emitted | packages/ts_checker/src/check.zig:15452<br>packages/ts_checker/src/check.zig:80406<br>packages/ts_checker/src/check.zig:80435 | Function_expression_which_lacks_return_type_annotation_implicitly_has_an_0_return_type_7011 |
 | TS7012 | err | catalog-only |  | This_overload_implicitly_returns_the_type_0_because_it_lacks_a_return_type_annotation_7012 |
-| TS7013 | err | emitted | packages/ts_checker/src/check.zig:30664<br>packages/ts_checker/src/check.zig:99065<br>packages/ts_checker/src/check.zig:99094 | Construct_signature_which_lacks_return_type_annotation_implicitly_has_an_any_return_type_7013 |
-| TS7014 | err | emitted | packages/ts_checker/src/check.zig:40707 | Function_type_which_lacks_return_type_annotation_implicitly_has_an_0_return_type_7014 |
-| TS7015 | err | emitted | packages/ts_checker/src/check.zig:45643<br>packages/ts_checker/src/check.zig:98924<br>packages/ts_checker/src/check.zig:98950 | Element_implicitly_has_an_any_type_because_index_expression_is_not_of_type_number_7015 |
-| TS7016 | err | emitted | packages/ts_checker/src/check.zig:27326<br>packages/ts_checker/src/check.zig:28109<br>packages/ts_checker/src/check.zig:28147 | Could_not_find_a_declaration_file_for_module_0_1_implicitly_has_an_any_type_7016 |
-| TS7017 | err | emitted | packages/ts_checker/src/check.zig:56779<br>packages/ts_checker/src/check.zig:75834 | Element_implicitly_has_an_any_type_because_type_0_has_no_index_signature_7017 |
-| TS7018 | err | emitted | packages/ts_checker/src/check.zig:31088<br>packages/ts_checker/src/check.zig:93883 | Object_literal_s_property_0_implicitly_has_an_1_type_7018 |
-| TS7019 | err | emitted | packages/ts_checker/src/check.zig:16987 | Rest_parameter_0_implicitly_has_an_any_type_7019 |
-| TS7020 | err | emitted | packages/ts_checker/src/check.zig:30674<br>packages/ts_checker/src/check.zig:99006<br>packages/ts_checker/src/check.zig:99035 | Call_signature_which_lacks_return_type_annotation_implicitly_has_an_any_return_type_7020 |
-| TS7022 | err | emitted | packages/ts_checker/src/check.zig:17016<br>packages/ts_checker/src/check.zig:68260<br>packages/ts_checker/src/check.zig:75368 | _0_implicitly_has_type_any_because_it_does_not_have_a_type_annotation_and_is_referenced_directly_or__7022 |
-| TS7023 | err | emitted | packages/ts_checker/src/check.zig:68292<br>packages/ts_checker/src/check.zig:84187<br>packages/ts_checker/src/check.zig:84205 | _0_implicitly_has_return_type_any_because_it_does_not_have_a_return_type_annotation_and_is_reference_7023 |
+| TS7013 | err | emitted | packages/ts_checker/src/check.zig:30904<br>packages/ts_checker/src/check.zig:99614<br>packages/ts_checker/src/check.zig:99643 | Construct_signature_which_lacks_return_type_annotation_implicitly_has_an_any_return_type_7013 |
+| TS7014 | err | emitted | packages/ts_checker/src/check.zig:40988 | Function_type_which_lacks_return_type_annotation_implicitly_has_an_0_return_type_7014 |
+| TS7015 | err | emitted | packages/ts_checker/src/check.zig:45924<br>packages/ts_checker/src/check.zig:99473<br>packages/ts_checker/src/check.zig:99499 | Element_implicitly_has_an_any_type_because_index_expression_is_not_of_type_number_7015 |
+| TS7016 | err | emitted | packages/ts_checker/src/check.zig:27448<br>packages/ts_checker/src/check.zig:28231<br>packages/ts_checker/src/check.zig:28269 | Could_not_find_a_declaration_file_for_module_0_1_implicitly_has_an_any_type_7016 |
+| TS7017 | err | emitted | packages/ts_checker/src/check.zig:57060<br>packages/ts_checker/src/check.zig:76245 | Element_implicitly_has_an_any_type_because_type_0_has_no_index_signature_7017 |
+| TS7018 | err | emitted | packages/ts_checker/src/check.zig:31342<br>packages/ts_checker/src/check.zig:94432 | Object_literal_s_property_0_implicitly_has_an_1_type_7018 |
+| TS7019 | err | emitted | packages/ts_checker/src/check.zig:17093<br>packages/ts_checker/src/check.zig:77184 | Rest_parameter_0_implicitly_has_an_any_type_7019 |
+| TS7020 | err | emitted | packages/ts_checker/src/check.zig:30914<br>packages/ts_checker/src/check.zig:99555<br>packages/ts_checker/src/check.zig:99584 | Call_signature_which_lacks_return_type_annotation_implicitly_has_an_any_return_type_7020 |
+| TS7022 | err | emitted | packages/ts_checker/src/check.zig:17129<br>packages/ts_checker/src/check.zig:68671<br>packages/ts_checker/src/check.zig:75779 | _0_implicitly_has_type_any_because_it_does_not_have_a_type_annotation_and_is_referenced_directly_or__7022 |
+| TS7023 | err | emitted | packages/ts_checker/src/check.zig:68703<br>packages/ts_checker/src/check.zig:84736<br>packages/ts_checker/src/check.zig:84754 | _0_implicitly_has_return_type_any_because_it_does_not_have_a_return_type_annotation_and_is_reference_7023 |
 | TS7024 | err | catalog-only |  | Function_implicitly_has_return_type_any_because_it_does_not_have_a_return_type_annotation_and_is_ref_7024 |
-| TS7025 | err | emitted | packages/ts_checker/src/check.zig:15338 | Generator_implicitly_has_yield_type_0_Consider_supplying_a_return_type_annotation_7025 |
-| TS7026 | err | emitted | packages/ts_checker/src/check.zig:46884<br>packages/ts_checker/src/check.zig:46894<br>packages/ts_checker/src/check.zig:67424 | JSX_element_implicitly_has_type_any_because_no_interface_JSX_0_exists_7026 |
-| TS7029 | err | emitted | packages/ts_checker/src/check.zig:8207<br>packages/ts_checker/src/check.zig:98844<br>packages/ts_checker/src/check.zig:98877 | Fallthrough_case_in_switch_7029 |
-| TS7030 | err | emitted | packages/ts_checker/src/check.zig:8673<br>packages/ts_checker/src/check.zig:98080<br>packages/ts_checker/src/check.zig:98129 | Not_all_code_paths_return_a_value_7030 |
-| TS7031 | err | emitted | packages/ts_checker/src/check.zig:13531<br>packages/ts_checker/src/check.zig:13554<br>packages/ts_checker/src/check.zig:13642 | Binding_element_0_implicitly_has_an_1_type_7031 |
-| TS7032 | err | emitted | packages/ts_checker/src/check.zig:31102<br>packages/ts_checker/src/check.zig:94095 | Property_0_implicitly_has_type_any_because_its_set_accessor_lacks_a_parameter_type_annotation_7032 |
+| TS7025 | err | emitted | packages/ts_checker/src/check.zig:15401 | Generator_implicitly_has_yield_type_0_Consider_supplying_a_return_type_annotation_7025 |
+| TS7026 | err | emitted | packages/ts_checker/src/check.zig:47165<br>packages/ts_checker/src/check.zig:47175<br>packages/ts_checker/src/check.zig:67835 | JSX_element_implicitly_has_type_any_because_no_interface_JSX_0_exists_7026 |
+| TS7029 | err | emitted | packages/ts_checker/src/check.zig:8270<br>packages/ts_checker/src/check.zig:99393<br>packages/ts_checker/src/check.zig:99426 | Fallthrough_case_in_switch_7029 |
+| TS7030 | err | emitted | packages/ts_checker/src/check.zig:8736<br>packages/ts_checker/src/check.zig:98629<br>packages/ts_checker/src/check.zig:98678 | Not_all_code_paths_return_a_value_7030 |
+| TS7031 | err | emitted | packages/ts_checker/src/check.zig:13594<br>packages/ts_checker/src/check.zig:13617<br>packages/ts_checker/src/check.zig:13705 | Binding_element_0_implicitly_has_an_1_type_7031 |
+| TS7032 | err | emitted | packages/ts_checker/src/check.zig:31356<br>packages/ts_checker/src/check.zig:94644 | Property_0_implicitly_has_type_any_because_its_set_accessor_lacks_a_parameter_type_annotation_7032 |
 | TS7033 | err | catalog-only |  | Property_0_implicitly_has_type_any_because_its_get_accessor_lacks_a_return_type_annotation_7033 |
-| TS7034 | err | emitted | packages/ts_checker/src/check.zig:40113<br>packages/ts_checker/src/check.zig:77950<br>packages/ts_checker/src/check.zig:91268 | Variable_0_implicitly_has_type_1_in_some_locations_where_its_type_cannot_be_determined_7034 |
+| TS7034 | err | emitted | packages/ts_checker/src/check.zig:40390<br>packages/ts_checker/src/check.zig:77204<br>packages/ts_checker/src/check.zig:78499 | Variable_0_implicitly_has_type_1_in_some_locations_where_its_type_cannot_be_determined_7034 |
 | TS7035 | err | catalog-only |  | Try_npm_i_save_dev_types_Slash_1_if_it_exists_or_add_a_new_declaration_d_ts_file_containing_declare__7035 |
-| TS7036 | err | emitted | packages/ts_checker/src/check.zig:44675<br>packages/ts_checker/src/check.zig:92834<br>packages/ts_checker/src/check.zig:100697 | Dynamic_import_s_specifier_must_be_of_type_string_but_here_has_type_0_7036 |
+| TS7036 | err | emitted | packages/ts_checker/src/check.zig:44956<br>packages/ts_checker/src/check.zig:93383<br>packages/ts_checker/src/check.zig:101246 | Dynamic_import_s_specifier_must_be_of_type_string_but_here_has_type_0_7036 |
 | TS7037 | message | catalog-only |  | Enables_emit_interoperability_between_CommonJS_and_ES_Modules_via_creation_of_namespace_objects_for__7037 |
 | TS7038 | message | catalog-only |  | Type_originates_at_this_import_A_namespace_style_import_cannot_be_called_or_constructed_and_will_cau_7038 |
 | TS7039 | err | catalog-only |  | Mapped_object_type_implicitly_has_an_any_template_type_7039 |
 | TS7040 | err | catalog-only |  | If_the_0_package_actually_exposes_this_module_consider_sending_a_pull_request_to_amend_https_Colon_S_7040 |
-| TS7041 | err | emitted | packages/ts_checker/src/check.zig:51706<br>packages/ts_checker/src/check.zig:101556<br>packages/ts_checker/src/check.zig:101574 | The_containing_arrow_function_captures_the_global_value_of_this_7041 |
+| TS7041 | err | emitted | packages/ts_checker/src/check.zig:51987<br>packages/ts_checker/src/check.zig:102224<br>packages/ts_checker/src/check.zig:102242 | The_containing_arrow_function_captures_the_global_value_of_this_7041 |
 | TS7042 | err | catalog-only |  | Module_0_was_resolved_to_1_but_resolveJsonModule_is_not_used_7042 |
-| TS7043 | suggestion | catalog-only |  | Variable_0_implicitly_has_an_1_type_but_a_better_type_may_be_inferred_from_usage_7043 |
-| TS7044 | suggestion | catalog-only |  | Parameter_0_implicitly_has_an_1_type_but_a_better_type_may_be_inferred_from_usage_7044 |
-| TS7045 | suggestion | catalog-only |  | Member_0_implicitly_has_an_1_type_but_a_better_type_may_be_inferred_from_usage_7045 |
-| TS7046 | suggestion | catalog-only |  | Variable_0_implicitly_has_type_1_in_some_locations_but_a_better_type_may_be_inferred_from_usage_7046 |
-| TS7047 | suggestion | catalog-only |  | Rest_parameter_0_implicitly_has_an_any_type_but_a_better_type_may_be_inferred_from_usage_7047 |
+| TS7043 | suggestion | emitted | packages/ts_checker/src/check.zig:40384<br>packages/ts_checker/src/check.zig:77217 | Variable_0_implicitly_has_an_1_type_but_a_better_type_may_be_inferred_from_usage_7043 |
+| TS7044 | suggestion | emitted | packages/ts_checker/src/check.zig:17131<br>packages/ts_checker/src/check.zig:77126<br>packages/ts_checker/src/check.zig:77129 | Parameter_0_implicitly_has_an_1_type_but_a_better_type_may_be_inferred_from_usage_7044 |
+| TS7045 | suggestion | emitted | packages/ts_checker/src/check.zig:31276<br>packages/ts_checker/src/check.zig:77230 | Member_0_implicitly_has_an_1_type_but_a_better_type_may_be_inferred_from_usage_7045 |
+| TS7046 | suggestion | emitted | packages/ts_checker/src/check.zig:40386<br>packages/ts_checker/src/check.zig:77207<br>packages/ts_checker/src/check.zig:77216 | Variable_0_implicitly_has_type_1_in_some_locations_but_a_better_type_may_be_inferred_from_usage_7046 |
+| TS7047 | suggestion | emitted | packages/ts_checker/src/check.zig:17091<br>packages/ts_checker/src/check.zig:77186<br>packages/ts_checker/src/check.zig:77188 | Rest_parameter_0_implicitly_has_an_any_type_but_a_better_type_may_be_inferred_from_usage_7047 |
 | TS7048 | suggestion | catalog-only |  | Property_0_implicitly_has_type_any_but_a_better_type_for_its_get_accessor_may_be_inferred_from_usage_7048 |
 | TS7049 | suggestion | catalog-only |  | Property_0_implicitly_has_type_any_but_a_better_type_for_its_set_accessor_may_be_inferred_from_usage_7049 |
-| TS7050 | suggestion | catalog-only |  | _0_implicitly_has_an_1_return_type_but_a_better_type_may_be_inferred_from_usage_7050 |
+| TS7050 | suggestion | emitted | packages/ts_checker/src/check.zig:15477 | _0_implicitly_has_an_1_return_type_but_a_better_type_may_be_inferred_from_usage_7050 |
 | TS7051 | err | catalog-only |  | Parameter_has_a_name_but_no_type_Did_you_mean_0_Colon_1_7051 |
 | TS7052 | err | catalog-only |  | Element_implicitly_has_an_any_type_because_type_0_has_no_index_signature_Did_you_mean_to_call_1_7052 |
-| TS7053 | err | emitted | packages/ts_checker/src/check.zig:45660<br>packages/ts_checker/src/check.zig:45681<br>packages/ts_checker/src/check.zig:45709 | Element_implicitly_has_an_any_type_because_expression_of_type_0_can_t_be_used_to_index_type_1_7053 |
+| TS7053 | err | emitted | packages/ts_checker/src/check.zig:45941<br>packages/ts_checker/src/check.zig:45962<br>packages/ts_checker/src/check.zig:45990 | Element_implicitly_has_an_any_type_because_expression_of_type_0_can_t_be_used_to_index_type_1_7053 |
 | TS7054 | err | catalog-only |  | No_index_signature_with_a_parameter_of_type_0_was_found_on_type_1_7054 |
-| TS7055 | err | emitted | packages/ts_checker/src/check.zig:15334 | _0_which_lacks_return_type_annotation_implicitly_has_an_1_yield_type_7055 |
+| TS7055 | err | emitted | packages/ts_checker/src/check.zig:15397 | _0_which_lacks_return_type_annotation_implicitly_has_an_1_yield_type_7055 |
 | TS7056 | err | catalog-only |  | The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056 |
-| TS7057 | err | emitted | packages/ts_checker/src/check.zig:15198<br>packages/ts_checker/src/check.zig:15209<br>packages/ts_parser/src/ts_parser.zig:13120 | yield_expression_implicitly_results_in_an_any_type_because_its_containing_generator_lacks_a_return_t_7057 |
+| TS7057 | err | emitted | packages/ts_checker/src/check.zig:15261<br>packages/ts_checker/src/check.zig:15272<br>packages/ts_parser/src/ts_parser.zig:13751 | yield_expression_implicitly_results_in_an_any_type_because_its_containing_generator_lacks_a_return_t_7057 |
 | TS7058 | err | catalog-only |  | If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058 |
 | TS7059 | err | catalog-only |  | This_syntax_is_reserved_in_files_with_the_mts_or_cts_extension_Use_an_as_expression_instead_7059 |
 | TS7060 | err | catalog-only |  | This_syntax_is_reserved_in_files_with_the_mts_or_cts_extension_Add_a_trailing_comma_or_explicit_cons_7060 |
-| TS7061 | err | emitted | packages/ts_parser/src/ts_parser.zig:9590 | A_mapped_type_may_not_declare_properties_or_methods_7061 |
+| TS7061 | err | emitted | packages/ts_parser/src/ts_parser.zig:9600 | A_mapped_type_may_not_declare_properties_or_methods_7061 |
 | TS8001 | err | catalog-only |  | You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001 |
-| TS8002 | err | emitted | packages/ts_checker/src/check.zig:26815<br>packages/ts_checker/src/check.zig:71323<br>packages/ts_checker/src/check.zig:71339 | import_can_only_be_used_in_TypeScript_files_8002 |
+| TS8002 | err | emitted | packages/ts_checker/src/check.zig:26937<br>packages/ts_checker/src/check.zig:71734<br>packages/ts_checker/src/check.zig:71750 | import_can_only_be_used_in_TypeScript_files_8002 |
 | TS8003 | err | emitted | packages/ts_parser/src/ts_parser.zig:5766 | export_can_only_be_used_in_TypeScript_files_8003 |
-| TS8004 | err | emitted | packages/ts_checker/src/check.zig:40308<br>packages/ts_driver/src/ts_driver.zig:1888<br>packages/ts_checker/src/check.zig:76343 | Type_parameter_declarations_can_only_be_used_in_TypeScript_files_8004 |
+| TS8004 | err | emitted | packages/ts_checker/src/check.zig:40589<br>packages/ts_driver/src/ts_driver.zig:1914<br>packages/ts_checker/src/check.zig:76754 | Type_parameter_declarations_can_only_be_used_in_TypeScript_files_8004 |
 | TS8005 | err | emitted | packages/ts_parser/src/ts_parser.zig:5771 | implements_clauses_can_only_be_used_in_TypeScript_files_8005 |
-| TS8006 | err | emitted | packages/ts_checker/src/check.zig:7521<br>packages/ts_checker/src/check.zig:7535<br>packages/ts_checker/src/check.zig:26996 | _0_declarations_can_only_be_used_in_TypeScript_files_8006 |
+| TS8006 | err | emitted | packages/ts_checker/src/check.zig:7584<br>packages/ts_checker/src/check.zig:7598<br>packages/ts_checker/src/check.zig:27118 | _0_declarations_can_only_be_used_in_TypeScript_files_8006 |
 | TS8008 | err | emitted | packages/ts_parser/src/ts_parser.zig:5776 | Type_aliases_can_only_be_used_in_TypeScript_files_8008 |
-| TS8009 | err | emitted | packages/ts_checker/src/check.zig:23589<br>packages/ts_checker/src/check.zig:40360<br>packages/ts_checker/src/check.zig:76325 | The_0_modifier_can_only_be_used_in_TypeScript_files_8009 |
-| TS8010 | err | emitted | packages/ts_checker/src/check.zig:40371<br>packages/ts_checker/src/check.zig:40381 | Type_annotations_can_only_be_used_in_TypeScript_files_8010 |
+| TS8009 | err | emitted | packages/ts_checker/src/check.zig:23711<br>packages/ts_checker/src/check.zig:40641<br>packages/ts_checker/src/check.zig:76736 | The_0_modifier_can_only_be_used_in_TypeScript_files_8009 |
+| TS8010 | err | emitted | packages/ts_checker/src/check.zig:40652<br>packages/ts_checker/src/check.zig:40662 | Type_annotations_can_only_be_used_in_TypeScript_files_8010 |
 | TS8011 | err | emitted | packages/ts_parser/src/ts_parser.zig:5761 | Type_arguments_can_only_be_used_in_TypeScript_files_8011 |
 | TS8012 | err | emitted | packages/ts_parser/src/ts_parser.zig:5781 | Parameter_modifiers_can_only_be_used_in_TypeScript_files_8012 |
 | TS8013 | err | emitted | packages/ts_parser/src/ts_parser.zig:5786 | Non_null_assertions_can_only_be_used_in_TypeScript_files_8013 |
 | TS8016 | err | emitted | packages/ts_parser/src/ts_parser.zig:5792 | Type_assertion_expressions_can_only_be_used_in_TypeScript_files_8016 |
-| TS8017 | err | emitted | packages/ts_checker/src/check.zig:40321<br>packages/ts_checker/src/check.zig:40326<br>packages/ts_driver/src/ts_driver.zig:1892 | Signature_declarations_can_only_be_used_in_TypeScript_files_8017 |
+| TS8017 | err | emitted | packages/ts_checker/src/check.zig:40602<br>packages/ts_checker/src/check.zig:40607<br>packages/ts_driver/src/ts_driver.zig:1918 | Signature_declarations_can_only_be_used_in_TypeScript_files_8017 |
 | TS8019 | message | catalog-only |  | Report_errors_in_js_files_8019 |
-| TS8020 | err | emitted | packages/ts_parser/src/ts_parser.zig:8831<br>packages/ts_parser/src/ts_parser.zig:8837<br>packages/ts_parser/src/ts_parser.zig:9095 | JSDoc_types_can_only_be_used_inside_documentation_comments_8020 |
-| TS8021 | err | emitted | packages/ts_checker/src/check.zig:2658<br>packages/ts_checker/src/check.zig:90929<br>packages/ts_checker/src/check.zig:90957 | JSDoc_typedef_tag_should_either_have_a_type_annotation_or_be_followed_by_property_or_member_tags_8021 |
-| TS8022 | err | emitted | packages/ts_checker/src/check.zig:2801<br>packages/ts_checker/src/check.zig:90743 | JSDoc_0_is_not_attached_to_a_class_8022 |
-| TS8023 | err | emitted | packages/ts_checker/src/check.zig:2871<br>packages/ts_checker/src/check.zig:90802<br>packages/ts_checker/src/check.zig:90824 | JSDoc_0_1_does_not_match_the_extends_2_clause_8023 |
-| TS8024 | err | emitted | packages/ts_checker/src/check.zig:40451<br>packages/ts_parser/src/ts_parser.zig:882<br>packages/ts_checker/src/check.zig:91502 | JSDoc_param_tag_has_name_0_but_there_is_no_parameter_with_that_name_8024 |
-| TS8025 | err | emitted | packages/ts_checker/src/check.zig:2821<br>packages/ts_checker/src/check.zig:90767<br>packages/ts_checker/src/check.zig:90786 | Class_declarations_cannot_have_more_than_one_augments_or_extends_tag_8025 |
-| TS8026 | err | emitted | packages/ts_checker/src/check.zig:34160<br>packages/ts_checker/src/check.zig:90860<br>packages/ts_checker/src/check.zig:90902 | Expected_0_type_arguments_provide_these_with_an_extends_tag_8026 |
-| TS8027 | err | emitted | packages/ts_checker/src/check.zig:34173<br>packages/ts_checker/src/check.zig:90882 | Expected_0_1_type_arguments_provide_these_with_an_extends_tag_8027 |
+| TS8020 | err | emitted | packages/ts_parser/src/ts_parser.zig:8841<br>packages/ts_parser/src/ts_parser.zig:8847<br>packages/ts_parser/src/ts_parser.zig:9105 | JSDoc_types_can_only_be_used_inside_documentation_comments_8020 |
+| TS8021 | err | emitted | packages/ts_checker/src/check.zig:2721<br>packages/ts_checker/src/check.zig:91478<br>packages/ts_checker/src/check.zig:91506 | JSDoc_typedef_tag_should_either_have_a_type_annotation_or_be_followed_by_property_or_member_tags_8021 |
+| TS8022 | err | emitted | packages/ts_checker/src/check.zig:2864<br>packages/ts_checker/src/check.zig:91292 | JSDoc_0_is_not_attached_to_a_class_8022 |
+| TS8023 | err | emitted | packages/ts_checker/src/check.zig:2934<br>packages/ts_checker/src/check.zig:91351<br>packages/ts_checker/src/check.zig:91373 | JSDoc_0_1_does_not_match_the_extends_2_clause_8023 |
+| TS8024 | err | emitted | packages/ts_checker/src/check.zig:40732<br>packages/ts_parser/src/ts_parser.zig:882<br>packages/ts_checker/src/check.zig:92051 | JSDoc_param_tag_has_name_0_but_there_is_no_parameter_with_that_name_8024 |
+| TS8025 | err | emitted | packages/ts_checker/src/check.zig:2884<br>packages/ts_checker/src/check.zig:91316<br>packages/ts_checker/src/check.zig:91335 | Class_declarations_cannot_have_more_than_one_augments_or_extends_tag_8025 |
+| TS8026 | err | emitted | packages/ts_checker/src/check.zig:34414<br>packages/ts_checker/src/check.zig:91409<br>packages/ts_checker/src/check.zig:91451 | Expected_0_type_arguments_provide_these_with_an_extends_tag_8026 |
+| TS8027 | err | emitted | packages/ts_checker/src/check.zig:34427<br>packages/ts_checker/src/check.zig:91431 | Expected_0_1_type_arguments_provide_these_with_an_extends_tag_8027 |
 | TS8028 | err | catalog-only |  | JSDoc_may_only_appear_in_the_last_parameter_of_a_signature_8028 |
-| TS8029 | err | emitted | packages/ts_checker/src/check.zig:40674 | JSDoc_param_tag_has_name_0_but_there_is_no_parameter_with_that_name_It_would_match_arguments_if_it_h_8029 |
-| TS8030 | err | emitted | packages/ts_checker/src/check.zig:8761<br>packages/ts_checker/src/check.zig:91461 | The_type_of_a_function_declaration_must_match_the_function_s_signature_8030 |
+| TS8029 | err | emitted | packages/ts_checker/src/check.zig:40955 | JSDoc_param_tag_has_name_0_but_there_is_no_parameter_with_that_name_It_would_match_arguments_if_it_h_8029 |
+| TS8030 | err | emitted | packages/ts_checker/src/check.zig:8824<br>packages/ts_checker/src/check.zig:92010 | The_type_of_a_function_declaration_must_match_the_function_s_signature_8030 |
 | TS8031 | err | catalog-only |  | You_cannot_rename_a_module_via_a_global_import_8031 |
 | TS8032 | err | emitted | packages/ts_parser/src/ts_parser.zig:964 | Qualified_name_0_is_not_allowed_without_a_leading_param_object_1_8032 |
 | TS8033 | err | emitted | packages/ts_parser/src/ts_parser.zig:1221 | A_JSDoc_typedef_comment_may_not_contain_multiple_type_tags_8033 |
 | TS8034 | err | catalog-only |  | The_tag_was_first_specified_here_8034 |
 | TS8035 | err | catalog-only |  | You_cannot_rename_elements_that_are_defined_in_a_node_modules_folder_8035 |
 | TS8036 | err | catalog-only |  | You_cannot_rename_elements_that_are_defined_in_another_node_modules_folder_8036 |
-| TS8037 | err | emitted | packages/ts_checker/src/check.zig:45799<br>packages/ts_driver/src/ts_driver.zig:1884<br>packages/ts_checker/src/check.zig:77823 | Type_satisfaction_expressions_can_only_be_used_in_TypeScript_files_8037 |
-| TS8038 | err | emitted | packages/ts_checker/src/check.zig:17450<br>packages/ts_checker/src/check.zig:74393<br>packages/ts_checker/src/check.zig:74417 | Decorators_may_not_appear_after_export_or_export_default_if_they_also_appear_before_export_8038 |
-| TS8039 | err | emitted | packages/ts_parser/src/ts_parser.zig:1310<br>packages/ts_parser/src/ts_parser.zig:23091 | A_JSDoc_template_tag_may_not_follow_a_typedef_callback_or_overload_tag_8039 |
+| TS8037 | err | emitted | packages/ts_checker/src/check.zig:46080<br>packages/ts_driver/src/ts_driver.zig:1910<br>packages/ts_checker/src/check.zig:78372 | Type_satisfaction_expressions_can_only_be_used_in_TypeScript_files_8037 |
+| TS8038 | err | emitted | packages/ts_checker/src/check.zig:17572<br>packages/ts_checker/src/check.zig:74804<br>packages/ts_checker/src/check.zig:74828 | Decorators_may_not_appear_after_export_or_export_default_if_they_also_appear_before_export_8038 |
+| TS8039 | err | emitted | packages/ts_parser/src/ts_parser.zig:1310<br>packages/ts_parser/src/ts_parser.zig:24078 | A_JSDoc_template_tag_may_not_follow_a_typedef_callback_or_overload_tag_8039 |
 | TS9005 | err | catalog-only |  | Declaration_emit_for_this_file_requires_using_private_name_0_An_explicit_type_annotation_may_unblock_9005 |
 | TS9006 | err | catalog-only |  | Declaration_emit_for_this_file_requires_using_private_name_0_from_module_1_An_explicit_type_annotati_9006 |
-| TS9007 | err | emitted | packages/ts_checker/src/check.zig:3791<br>packages/ts_checker/src/check.zig:87476 | Function_must_have_an_explicit_return_type_annotation_with_isolatedDeclarations_9007 |
-| TS9008 | err | emitted | packages/ts_checker/src/check.zig:3785<br>packages/ts_checker/src/check.zig:4292<br>packages/ts_checker/src/check.zig:87950 | Method_must_have_an_explicit_return_type_annotation_with_isolatedDeclarations_9008 |
-| TS9009 | err | emitted | packages/ts_checker/src/check.zig:4443<br>packages/ts_checker/src/check.zig:4445<br>packages/ts_checker/src/check.zig:88205 | At_least_one_accessor_must_have_an_explicit_type_annotation_with_isolatedDeclarations_9009 |
-| TS9010 | err | emitted | packages/ts_checker/src/check.zig:3727<br>packages/ts_checker/src/check.zig:87506<br>packages/ts_checker/src/check.zig:87613 | Variable_must_have_an_explicit_type_annotation_with_isolatedDeclarations_9010 |
-| TS9011 | err | emitted | packages/ts_checker/src/check.zig:3818<br>packages/ts_checker/src/check.zig:87677 | Parameter_must_have_an_explicit_type_annotation_with_isolatedDeclarations_9011 |
-| TS9012 | err | emitted | packages/ts_checker/src/check.zig:4101<br>packages/ts_checker/src/check.zig:87821 | Property_must_have_an_explicit_type_annotation_with_isolatedDeclarations_9012 |
-| TS9013 | err | emitted | packages/ts_checker/src/check.zig:4652<br>packages/ts_checker/src/check.zig:87614<br>packages/ts_checker/src/check.zig:87774 | Expression_type_can_t_be_inferred_with_isolatedDeclarations_9013 |
-| TS9014 | err | emitted | packages/ts_checker/src/check.zig:4496<br>packages/ts_checker/src/check.zig:88414 | Computed_properties_must_be_number_or_string_literals_variables_or_dotted_expressions_with_isolatedD_9014 |
-| TS9015 | err | emitted | packages/ts_checker/src/check.zig:4271<br>packages/ts_checker/src/check.zig:87972 | Objects_that_contain_spread_assignments_can_t_be_inferred_with_isolatedDeclarations_9015 |
-| TS9016 | err | emitted | packages/ts_checker/src/check.zig:4281<br>packages/ts_checker/src/check.zig:87993 | Objects_that_contain_shorthand_properties_can_t_be_inferred_with_isolatedDeclarations_9016 |
-| TS9017 | err | emitted | packages/ts_checker/src/check.zig:3681<br>packages/ts_checker/src/check.zig:3756<br>packages/ts_checker/src/check.zig:4649 | Only_const_arrays_can_be_inferred_with_isolatedDeclarations_9017 |
-| TS9018 | err | emitted | packages/ts_checker/src/check.zig:4454<br>packages/ts_checker/src/check.zig:88014 | Arrays_with_spread_elements_can_t_inferred_with_isolatedDeclarations_9018 |
-| TS9019 | err | emitted | packages/ts_checker/src/check.zig:4231<br>packages/ts_checker/src/check.zig:4233<br>packages/ts_checker/src/check.zig:88037 | Binding_elements_can_t_be_exported_directly_with_isolatedDeclarations_9019 |
-| TS9020 | err | emitted | packages/ts_checker/src/check.zig:4513<br>packages/ts_checker/src/check.zig:88137<br>packages/ts_checker/src/check.zig:88166 | Enum_member_initializers_must_be_computable_without_references_to_external_symbols_with_isolatedDecl_9020 |
-| TS9021 | err | emitted | packages/ts_checker/src/check.zig:4332<br>packages/ts_checker/src/check.zig:88439 | Extends_clause_can_t_contain_an_expression_with_isolatedDeclarations_9021 |
-| TS9022 | err | emitted | packages/ts_checker/src/check.zig:3684<br>packages/ts_checker/src/check.zig:3764<br>packages/ts_checker/src/check.zig:87637 | Inference_from_class_expressions_is_not_supported_with_isolatedDeclarations_9022 |
-| TS9023 | err | emitted | packages/ts_checker/src/check.zig:3980<br>packages/ts_checker/src/check.zig:87544<br>packages/ts_checker/src/check.zig:87573 | Assigning_properties_to_functions_without_declaring_them_is_not_supported_with_isolatedDeclarations__9023 |
-| TS9025 | err | emitted | packages/ts_checker/src/check.zig:3808<br>packages/ts_checker/src/check.zig:87712<br>packages/ts_checker/src/check.zig:87731 | Declaration_emit_for_this_parameter_requires_implicitly_adding_undefined_to_its_type_This_is_not_sup_9025 |
+| TS9007 | err | emitted | packages/ts_checker/src/check.zig:3854<br>packages/ts_checker/src/check.zig:88025 | Function_must_have_an_explicit_return_type_annotation_with_isolatedDeclarations_9007 |
+| TS9008 | err | emitted | packages/ts_checker/src/check.zig:3848<br>packages/ts_checker/src/check.zig:4355<br>packages/ts_checker/src/check.zig:88499 | Method_must_have_an_explicit_return_type_annotation_with_isolatedDeclarations_9008 |
+| TS9009 | err | emitted | packages/ts_checker/src/check.zig:4506<br>packages/ts_checker/src/check.zig:4508<br>packages/ts_checker/src/check.zig:88754 | At_least_one_accessor_must_have_an_explicit_type_annotation_with_isolatedDeclarations_9009 |
+| TS9010 | err | emitted | packages/ts_checker/src/check.zig:3790<br>packages/ts_checker/src/check.zig:88055<br>packages/ts_checker/src/check.zig:88162 | Variable_must_have_an_explicit_type_annotation_with_isolatedDeclarations_9010 |
+| TS9011 | err | emitted | packages/ts_checker/src/check.zig:3881<br>packages/ts_checker/src/check.zig:88226 | Parameter_must_have_an_explicit_type_annotation_with_isolatedDeclarations_9011 |
+| TS9012 | err | emitted | packages/ts_checker/src/check.zig:4164<br>packages/ts_checker/src/check.zig:88370 | Property_must_have_an_explicit_type_annotation_with_isolatedDeclarations_9012 |
+| TS9013 | err | emitted | packages/ts_checker/src/check.zig:4715<br>packages/ts_checker/src/check.zig:88163<br>packages/ts_checker/src/check.zig:88323 | Expression_type_can_t_be_inferred_with_isolatedDeclarations_9013 |
+| TS9014 | err | emitted | packages/ts_checker/src/check.zig:4559<br>packages/ts_checker/src/check.zig:88963 | Computed_properties_must_be_number_or_string_literals_variables_or_dotted_expressions_with_isolatedD_9014 |
+| TS9015 | err | emitted | packages/ts_checker/src/check.zig:4334<br>packages/ts_checker/src/check.zig:88521 | Objects_that_contain_spread_assignments_can_t_be_inferred_with_isolatedDeclarations_9015 |
+| TS9016 | err | emitted | packages/ts_checker/src/check.zig:4344<br>packages/ts_checker/src/check.zig:88542 | Objects_that_contain_shorthand_properties_can_t_be_inferred_with_isolatedDeclarations_9016 |
+| TS9017 | err | emitted | packages/ts_checker/src/check.zig:3744<br>packages/ts_checker/src/check.zig:3819<br>packages/ts_checker/src/check.zig:4712 | Only_const_arrays_can_be_inferred_with_isolatedDeclarations_9017 |
+| TS9018 | err | emitted | packages/ts_checker/src/check.zig:4517<br>packages/ts_checker/src/check.zig:88563 | Arrays_with_spread_elements_can_t_inferred_with_isolatedDeclarations_9018 |
+| TS9019 | err | emitted | packages/ts_checker/src/check.zig:4294<br>packages/ts_checker/src/check.zig:4296<br>packages/ts_checker/src/check.zig:88586 | Binding_elements_can_t_be_exported_directly_with_isolatedDeclarations_9019 |
+| TS9020 | err | emitted | packages/ts_checker/src/check.zig:4576<br>packages/ts_checker/src/check.zig:88686<br>packages/ts_checker/src/check.zig:88715 | Enum_member_initializers_must_be_computable_without_references_to_external_symbols_with_isolatedDecl_9020 |
+| TS9021 | err | emitted | packages/ts_checker/src/check.zig:4395<br>packages/ts_checker/src/check.zig:88988 | Extends_clause_can_t_contain_an_expression_with_isolatedDeclarations_9021 |
+| TS9022 | err | emitted | packages/ts_checker/src/check.zig:3747<br>packages/ts_checker/src/check.zig:3827<br>packages/ts_checker/src/check.zig:88186 | Inference_from_class_expressions_is_not_supported_with_isolatedDeclarations_9022 |
+| TS9023 | err | emitted | packages/ts_checker/src/check.zig:4043<br>packages/ts_checker/src/check.zig:88093<br>packages/ts_checker/src/check.zig:88122 | Assigning_properties_to_functions_without_declaring_them_is_not_supported_with_isolatedDeclarations__9023 |
+| TS9025 | err | emitted | packages/ts_checker/src/check.zig:3871<br>packages/ts_checker/src/check.zig:88261<br>packages/ts_checker/src/check.zig:88280 | Declaration_emit_for_this_parameter_requires_implicitly_adding_undefined_to_its_type_This_is_not_sup_9025 |
 | TS9026 | err | catalog-only |  | Declaration_emit_for_this_file_requires_preserving_this_import_for_augmentations_This_is_not_support_9026 |
 | TS9027 | err | catalog-only |  | Add_a_type_annotation_to_the_variable_0_9027 |
 | TS9028 | err | catalog-only |  | Add_a_type_annotation_to_the_parameter_0_9028 |
@@ -1784,76 +1784,76 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS9034 | err | catalog-only |  | Add_a_return_type_to_the_method_9034 |
 | TS9035 | err | catalog-only |  | Add_satisfies_and_a_type_assertion_to_this_expression_satisfies_T_as_T_to_make_the_type_explicit_9035 |
 | TS9036 | err | catalog-only |  | Move_the_expression_in_default_export_to_a_variable_and_add_a_type_annotation_to_it_9036 |
-| TS9037 | err | emitted | packages/ts_checker/src/check.zig:3686<br>packages/ts_checker/src/check.zig:87850<br>packages/ts_checker/src/check.zig:87935 | Default_exports_can_t_be_inferred_with_isolatedDeclarations_9037 |
-| TS9038 | err | emitted | packages/ts_checker/src/check.zig:4277<br>packages/ts_checker/src/check.zig:4342<br>packages/ts_checker/src/check.zig:4349 | Computed_property_names_on_class_or_object_literals_cannot_be_inferred_with_isolatedDeclarations_9038 |
-| TS9039 | err | emitted | packages/ts_checker/src/check.zig:4828<br>packages/ts_checker/src/check.zig:87750<br>packages/ts_checker/src/check.zig:87773 | Type_containing_private_name_0_can_t_be_used_with_isolatedDeclarations_9039 |
-| TS17001 | err | emitted | packages/ts_parser/src/ts_parser.zig:14513 | JSX_elements_cannot_have_multiple_attributes_with_the_same_name_17001 |
-| TS17002 | err | emitted | packages/ts_parser/src/ts_parser.zig:14643 | Expected_corresponding_JSX_closing_tag_for_0_17002 |
-| TS17004 | err | emitted | packages/ts_checker/src/check.zig:46827<br>packages/ts_driver/src/ts_driver.zig:3141<br>packages/ts_driver/src/ts_driver.zig:3168 | Cannot_use_JSX_unless_the_jsx_flag_is_provided_17004 |
-| TS17005 | err | emitted | packages/ts_checker/src/check.zig:44531 | A_constructor_cannot_contain_a_super_call_when_its_class_extends_null_17005 |
-| TS17006 | err | emitted | packages/ts_parser/src/ts_parser.zig:12733<br>packages/ts_parser/src/ts_parser.zig:21072 | An_unary_expression_with_the_0_operator_is_not_allowed_in_the_left_hand_side_of_an_exponentiation_ex_17006 |
-| TS17007 | err | emitted | packages/ts_parser/src/ts_parser.zig:12713<br>packages/ts_parser/src/ts_parser.zig:21088 | A_type_assertion_expression_is_not_allowed_in_the_left_hand_side_of_an_exponentiation_expression_Con_17007 |
-| TS17008 | err | emitted | packages/ts_parser/src/ts_parser.zig:14606 | JSX_element_0_has_no_corresponding_closing_tag_17008 |
-| TS17009 | err | emitted | packages/ts_checker/src/check.zig:21226<br>packages/ts_checker/src/check.zig:56436 | super_must_be_called_before_accessing_this_in_the_constructor_of_a_derived_class_17009 |
+| TS9037 | err | emitted | packages/ts_checker/src/check.zig:3749<br>packages/ts_checker/src/check.zig:88399<br>packages/ts_checker/src/check.zig:88484 | Default_exports_can_t_be_inferred_with_isolatedDeclarations_9037 |
+| TS9038 | err | emitted | packages/ts_checker/src/check.zig:4340<br>packages/ts_checker/src/check.zig:4405<br>packages/ts_checker/src/check.zig:4412 | Computed_property_names_on_class_or_object_literals_cannot_be_inferred_with_isolatedDeclarations_9038 |
+| TS9039 | err | emitted | packages/ts_checker/src/check.zig:4891<br>packages/ts_checker/src/check.zig:88299<br>packages/ts_checker/src/check.zig:88322 | Type_containing_private_name_0_can_t_be_used_with_isolatedDeclarations_9039 |
+| TS17001 | err | emitted | packages/ts_parser/src/ts_parser.zig:15144 | JSX_elements_cannot_have_multiple_attributes_with_the_same_name_17001 |
+| TS17002 | err | emitted | packages/ts_parser/src/ts_parser.zig:15274 | Expected_corresponding_JSX_closing_tag_for_0_17002 |
+| TS17004 | err | emitted | packages/ts_checker/src/check.zig:47108<br>packages/ts_driver/src/ts_driver.zig:3222<br>packages/ts_driver/src/ts_driver.zig:3249 | Cannot_use_JSX_unless_the_jsx_flag_is_provided_17004 |
+| TS17005 | err | emitted | packages/ts_checker/src/check.zig:44812 | A_constructor_cannot_contain_a_super_call_when_its_class_extends_null_17005 |
+| TS17006 | err | emitted | packages/ts_parser/src/ts_parser.zig:13364<br>packages/ts_parser/src/ts_parser.zig:22059 | An_unary_expression_with_the_0_operator_is_not_allowed_in_the_left_hand_side_of_an_exponentiation_ex_17006 |
+| TS17007 | err | emitted | packages/ts_parser/src/ts_parser.zig:13344<br>packages/ts_parser/src/ts_parser.zig:22075 | A_type_assertion_expression_is_not_allowed_in_the_left_hand_side_of_an_exponentiation_expression_Con_17007 |
+| TS17008 | err | emitted | packages/ts_parser/src/ts_parser.zig:15237 | JSX_element_0_has_no_corresponding_closing_tag_17008 |
+| TS17009 | err | emitted | packages/ts_checker/src/check.zig:21348<br>packages/ts_checker/src/check.zig:56717 | super_must_be_called_before_accessing_this_in_the_constructor_of_a_derived_class_17009 |
 | TS17010 | err | emitted | packages/tsconfig/src/tsconfig.zig:443 | Unknown_type_acquisition_option_0_17010 |
-| TS17011 | err | emitted | packages/ts_checker/src/check.zig:44556<br>packages/ts_checker/src/check.zig:56452 | super_must_be_called_before_accessing_a_property_of_super_in_the_constructor_of_a_derived_class_17011 |
-| TS17012 | err | emitted | packages/ts_parser/src/ts_parser.zig:14014 | _0_is_not_a_valid_meta_property_for_keyword_1_Did_you_mean_2_17012 |
-| TS17013 | err | emitted | packages/ts_parser/src/ts_parser.zig:13866<br>packages/ts_parser/src/ts_parser.zig:18937 | Meta_property_0_is_only_allowed_in_the_body_of_a_function_declaration_function_expression_or_constru_17013 |
-| TS17014 | err | emitted | packages/ts_parser/src/ts_parser.zig:14438<br>packages/ts_parser/src/ts_parser.zig:14442 | JSX_fragment_has_no_corresponding_closing_tag_17014 |
-| TS17015 | err | emitted | packages/ts_parser/src/ts_parser.zig:14411 | Expected_corresponding_closing_tag_for_JSX_fragment_17015 |
-| TS17016 | err | emitted | packages/ts_checker/src/check.zig:46862<br>packages/ts_driver/src/ts_driver.zig:3243 | The_jsxFragmentFactory_compiler_option_must_be_provided_to_use_JSX_fragments_with_the_jsxFactory_com_17016 |
-| TS17017 | err | emitted | packages/ts_checker/src/check.zig:46864<br>packages/ts_driver/src/ts_driver.zig:898<br>packages/ts_driver/src/ts_driver.zig:3216 | An_jsxFrag_pragma_is_required_when_using_an_jsx_pragma_with_JSX_fragments_17017 |
+| TS17011 | err | emitted | packages/ts_checker/src/check.zig:44837<br>packages/ts_checker/src/check.zig:56733 | super_must_be_called_before_accessing_a_property_of_super_in_the_constructor_of_a_derived_class_17011 |
+| TS17012 | err | emitted | packages/ts_parser/src/ts_parser.zig:14645 | _0_is_not_a_valid_meta_property_for_keyword_1_Did_you_mean_2_17012 |
+| TS17013 | err | emitted | packages/ts_parser/src/ts_parser.zig:14497<br>packages/ts_parser/src/ts_parser.zig:19713 | Meta_property_0_is_only_allowed_in_the_body_of_a_function_declaration_function_expression_or_constru_17013 |
+| TS17014 | err | emitted | packages/ts_parser/src/ts_parser.zig:15069<br>packages/ts_parser/src/ts_parser.zig:15073 | JSX_fragment_has_no_corresponding_closing_tag_17014 |
+| TS17015 | err | emitted | packages/ts_parser/src/ts_parser.zig:15042 | Expected_corresponding_closing_tag_for_JSX_fragment_17015 |
+| TS17016 | err | emitted | packages/ts_checker/src/check.zig:47143<br>packages/ts_driver/src/ts_driver.zig:3324 | The_jsxFragmentFactory_compiler_option_must_be_provided_to_use_JSX_fragments_with_the_jsxFactory_com_17016 |
+| TS17017 | err | emitted | packages/ts_checker/src/check.zig:47145<br>packages/ts_driver/src/ts_driver.zig:913<br>packages/ts_driver/src/ts_driver.zig:3297 | An_jsxFrag_pragma_is_required_when_using_an_jsx_pragma_with_JSX_fragments_17017 |
 | TS17018 | err | emitted | packages/tsconfig/src/tsconfig.zig:443 | Unknown_type_acquisition_option_0_Did_you_mean_1_17018 |
-| TS17019 | err | emitted | packages/ts_parser/src/ts_parser.zig:8744 | _0_at_the_end_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17019 |
-| TS17020 | err | emitted | packages/ts_parser/src/ts_parser.zig:8847<br>packages/ts_parser/src/ts_parser.zig:8859 | _0_at_the_start_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17020 |
-| TS17021 | err | emitted | packages/ts_parser/src/ts_parser.zig:14457<br>packages/ts_parser/src/ts_parser.zig:14752<br>packages/ts_parser/src/ts_parser.zig:19619 | Unicode_escape_sequence_cannot_appear_here_17021 |
+| TS17019 | err | emitted | packages/ts_parser/src/ts_parser.zig:8754 | _0_at_the_end_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17019 |
+| TS17020 | err | emitted | packages/ts_parser/src/ts_parser.zig:8857<br>packages/ts_parser/src/ts_parser.zig:8869 | _0_at_the_start_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17020 |
+| TS17021 | err | emitted | packages/ts_parser/src/ts_parser.zig:15088<br>packages/ts_parser/src/ts_parser.zig:15383<br>packages/ts_parser/src/ts_parser.zig:20395 | Unicode_escape_sequence_cannot_appear_here_17021 |
 | TS18002 | err | emitted | packages/tsconfig/src/tsconfig.zig:428 | The_files_list_in_config_file_0_is_empty_18002 |
-| TS18003 | err | emitted | packages/ts_cli/src/tsc_main.zig:944 | No_inputs_were_found_in_config_file_0_Specified_include_paths_were_1_and_exclude_paths_were_2_18003 |
-| TS18004 | err | emitted | packages/ts_checker/src/check.zig:46714<br>packages/ts_checker/src/check.zig:78078<br>packages/ts_checker/src/check.zig:78096 | No_value_exists_in_scope_for_the_shorthand_property_0_Either_declare_one_or_provide_an_initializer_18004 |
-| TS18006 | err | emitted | packages/ts_checker/src/check.zig:20281<br>packages/ts_checker/src/check.zig:70763<br>packages/ts_checker/src/check.zig:70777 | Classes_may_not_have_a_field_named_constructor_18006 |
-| TS18007 | err | emitted | packages/ts_parser/src/ts_parser.zig:14313 | JSX_expressions_may_not_use_the_comma_operator_Did_you_mean_to_write_an_array_18007 |
+| TS18003 | err | emitted | packages/ts_cli/src/tsc_main.zig:971 | No_inputs_were_found_in_config_file_0_Specified_include_paths_were_1_and_exclude_paths_were_2_18003 |
+| TS18004 | err | emitted | packages/ts_checker/src/check.zig:46995<br>packages/ts_checker/src/check.zig:78627<br>packages/ts_checker/src/check.zig:78645 | No_value_exists_in_scope_for_the_shorthand_property_0_Either_declare_one_or_provide_an_initializer_18004 |
+| TS18006 | err | emitted | packages/ts_checker/src/check.zig:20403<br>packages/ts_checker/src/check.zig:71174<br>packages/ts_checker/src/check.zig:71188 | Classes_may_not_have_a_field_named_constructor_18006 |
+| TS18007 | err | emitted | packages/ts_parser/src/ts_parser.zig:14944 | JSX_expressions_may_not_use_the_comma_operator_Did_you_mean_to_write_an_array_18007 |
 | TS18009 | err | emitted | packages/ts_parser/src/ts_parser.zig:3854 | Private_identifiers_cannot_be_used_as_parameters_18009 |
-| TS18010 | err | emitted | packages/ts_parser/src/ts_parser.zig:5669<br>packages/ts_parser/src/ts_parser.zig:5668<br>packages/ts_parser/src/ts_parser.zig:21619 | An_accessibility_modifier_cannot_be_used_with_a_private_identifier_18010 |
-| TS18011 | err | emitted | packages/ts_checker/src/check.zig:59478<br>packages/ts_checker/src/check.zig:79165 | The_operand_of_a_delete_operator_cannot_be_a_private_identifier_18011 |
+| TS18010 | err | emitted | packages/ts_parser/src/ts_parser.zig:5669<br>packages/ts_parser/src/ts_parser.zig:5668<br>packages/ts_parser/src/ts_parser.zig:22606 | An_accessibility_modifier_cannot_be_used_with_a_private_identifier_18010 |
+| TS18011 | err | emitted | packages/ts_checker/src/check.zig:59759<br>packages/ts_checker/src/check.zig:79714 | The_operand_of_a_delete_operator_cannot_be_a_private_identifier_18011 |
 | TS18012 | err | emitted | packages/ts_parser/src/ts_parser.zig:4853 | constructor_is_a_reserved_word_18012 |
-| TS18013 | err | emitted | packages/ts_checker/src/check.zig:22787<br>packages/ts_checker/src/check.zig:79204<br>packages/ts_checker/src/check.zig:79208 | Property_0_is_not_accessible_outside_class_1_because_it_has_a_private_identifier_18013 |
-| TS18014 | err | emitted | packages/ts_checker/src/check.zig:22819<br>packages/ts_checker/src/check.zig:79199<br>packages/ts_checker/src/check.zig:79235 | The_property_0_cannot_be_accessed_on_type_1_within_this_class_because_it_is_shadowed_by_another_priv_18014 |
+| TS18013 | err | emitted | packages/ts_checker/src/check.zig:22909<br>packages/ts_checker/src/check.zig:79753<br>packages/ts_checker/src/check.zig:79757 | Property_0_is_not_accessible_outside_class_1_because_it_has_a_private_identifier_18013 |
+| TS18014 | err | emitted | packages/ts_checker/src/check.zig:22941<br>packages/ts_checker/src/check.zig:79748<br>packages/ts_checker/src/check.zig:79784 | The_property_0_cannot_be_accessed_on_type_1_within_this_class_because_it_is_shadowed_by_another_priv_18014 |
 | TS18015 | err | catalog-only |  | Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015 |
-| TS18016 | err | emitted | packages/ts_parser/src/ts_parser.zig:9855<br>packages/ts_parser/src/ts_parser.zig:15081<br>packages/ts_parser/src/ts_parser.zig:15204 | Private_identifiers_are_not_allowed_outside_class_bodies_18016 |
+| TS18016 | err | emitted | packages/ts_parser/src/ts_parser.zig:9865<br>packages/ts_parser/src/ts_parser.zig:15712<br>packages/ts_parser/src/ts_parser.zig:15835 | Private_identifiers_are_not_allowed_outside_class_bodies_18016 |
 | TS18017 | err | catalog-only |  | The_shadowing_declaration_of_0_is_defined_here_18017 |
 | TS18018 | err | catalog-only |  | The_declaration_of_0_that_you_probably_intended_to_use_is_defined_here_18018 |
 | TS18019 | err | emitted | packages/ts_parser/src/ts_parser.zig:5677<br>packages/ts_parser/src/ts_parser.zig:5684<br>packages/ts_parser/src/ts_parser.zig:5676 | _0_modifier_cannot_be_used_with_a_private_identifier_18019 |
 | TS18024 | err | emitted | packages/ts_parser/src/ts_parser.zig:6293 | An_enum_member_cannot_be_named_with_a_private_identifier_18024 |
-| TS18026 | err | emitted | packages/ts_driver/src/ts_driver.zig:1733<br>packages/ts_driver/src/ts_driver.zig:2130 | can_only_be_used_at_the_start_of_a_file_18026 |
-| TS18027 | err | emitted | packages/ts_checker/src/check.zig:10960<br>packages/ts_checker/src/check.zig:74710<br>packages/ts_checker/src/check.zig:74749 | Compiler_reserves_name_0_when_emitting_private_identifier_downlevel_18027 |
-| TS18028 | err | emitted | packages/ts_parser/src/ts_parser.zig:5692<br>packages/ts_parser/src/ts_parser.zig:5691<br>packages/ts_parser/src/ts_parser.zig:21659 | Private_identifiers_are_only_available_when_targeting_ECMAScript_2015_and_higher_18028 |
-| TS18029 | err | emitted | packages/ts_parser/src/ts_parser.zig:7592 | Private_identifiers_are_not_allowed_in_variable_declarations_18029 |
-| TS18030 | err | emitted | packages/ts_parser/src/ts_parser.zig:13290<br>packages/ts_parser/src/ts_parser.zig:13314<br>packages/ts_parser/src/ts_parser.zig:16205 | An_optional_chain_cannot_contain_private_identifiers_18030 |
+| TS18026 | err | emitted | packages/ts_driver/src/ts_driver.zig:1759<br>packages/ts_driver/src/ts_driver.zig:2211 | can_only_be_used_at_the_start_of_a_file_18026 |
+| TS18027 | err | emitted | packages/ts_checker/src/check.zig:11023<br>packages/ts_checker/src/check.zig:75121<br>packages/ts_checker/src/check.zig:75160 | Compiler_reserves_name_0_when_emitting_private_identifier_downlevel_18027 |
+| TS18028 | err | emitted | packages/ts_parser/src/ts_parser.zig:5692<br>packages/ts_parser/src/ts_parser.zig:5691<br>packages/ts_parser/src/ts_parser.zig:22646 | Private_identifiers_are_only_available_when_targeting_ECMAScript_2015_and_higher_18028 |
+| TS18029 | err | emitted | packages/ts_parser/src/ts_parser.zig:7602 | Private_identifiers_are_not_allowed_in_variable_declarations_18029 |
+| TS18030 | err | emitted | packages/ts_parser/src/ts_parser.zig:13921<br>packages/ts_parser/src/ts_parser.zig:13945<br>packages/ts_parser/src/ts_parser.zig:16981 | An_optional_chain_cannot_contain_private_identifiers_18030 |
 | TS18031 | err | catalog-only |  | The_intersection_0_was_reduced_to_never_because_property_1_has_conflicting_types_in_some_constituent_18031 |
 | TS18032 | err | catalog-only |  | The_intersection_0_was_reduced_to_never_because_property_1_exists_in_multiple_constituents_and_is_pr_18032 |
-| TS18033 | err | emitted | packages/ts_checker/src/check.zig:32423<br>packages/ts_checker/src/check.zig:87268<br>packages/ts_checker/src/check.zig:87440 | Type_0_is_not_assignable_to_type_1_as_required_for_computed_enum_member_values_18033 |
+| TS18033 | err | emitted | packages/ts_checker/src/check.zig:32677<br>packages/ts_checker/src/check.zig:87817<br>packages/ts_checker/src/check.zig:87989 | Type_0_is_not_assignable_to_type_1_as_required_for_computed_enum_member_values_18033 |
 | TS18034 | message | catalog-only |  | Specify_the_JSX_fragment_factory_function_to_use_when_targeting_react_JSX_emit_with_jsxFactory_compi_18034 |
-| TS18035 | err | emitted | packages/ts_driver/src/ts_driver.zig:274<br>packages/tsconfig/src/tsconfig.zig:1356<br>packages/ts_driver/src/ts_driver.zig:3294 | Invalid_value_for_jsxFragmentFactory_0_is_not_a_valid_identifier_or_qualified_name_18035 |
-| TS18036 | err | emitted | packages/ts_checker/src/check.zig:17457<br>packages/ts_checker/src/check.zig:17503<br>packages/ts_checker/src/check.zig:74682 | Class_decorators_can_t_be_used_with_static_private_identifier_Consider_removing_the_experimental_dec_18036 |
-| TS18037 | err | emitted | packages/ts_checker/src/check.zig:46392<br>packages/ts_checker/src/check.zig:93455 | await_expression_cannot_be_used_inside_a_class_static_block_18037 |
-| TS18038 | err | emitted | packages/ts_checker/src/check.zig:11130<br>packages/ts_checker/src/check.zig:93470 | for_await_loops_cannot_be_used_inside_a_class_static_block_18038 |
+| TS18035 | err | emitted | packages/ts_driver/src/ts_driver.zig:289<br>packages/tsconfig/src/tsconfig.zig:1356<br>packages/ts_driver/src/ts_driver.zig:3375 | Invalid_value_for_jsxFragmentFactory_0_is_not_a_valid_identifier_or_qualified_name_18035 |
+| TS18036 | err | emitted | packages/ts_checker/src/check.zig:17579<br>packages/ts_checker/src/check.zig:17625<br>packages/ts_checker/src/check.zig:75093 | Class_decorators_can_t_be_used_with_static_private_identifier_Consider_removing_the_experimental_dec_18036 |
+| TS18037 | err | emitted | packages/ts_checker/src/check.zig:46673<br>packages/ts_checker/src/check.zig:94004 | await_expression_cannot_be_used_inside_a_class_static_block_18037 |
+| TS18038 | err | emitted | packages/ts_checker/src/check.zig:11193<br>packages/ts_checker/src/check.zig:94019 | for_await_loops_cannot_be_used_inside_a_class_static_block_18038 |
 | TS18039 | err | catalog-only |  | Invalid_use_of_0_It_cannot_be_used_inside_a_class_static_block_18039 |
-| TS18041 | err | emitted | packages/ts_checker/src/check.zig:3203<br>packages/ts_checker/src/check.zig:93489 | A_return_statement_cannot_be_used_inside_a_class_static_block_18041 |
-| TS18042 | err | emitted | packages/ts_checker/src/check.zig:29195<br>packages/ts_checker/src/check.zig:97525<br>packages/ts_checker/src/check.zig:97548 | _0_is_a_type_and_cannot_be_imported_in_JavaScript_files_Use_1_in_a_JSDoc_type_annotation_18042 |
-| TS18043 | err | emitted | packages/ts_checker/src/check.zig:7616<br>packages/ts_checker/src/check.zig:97566<br>packages/ts_checker/src/check.zig:97585 | Types_cannot_appear_in_export_declarations_in_JavaScript_files_18043 |
+| TS18041 | err | emitted | packages/ts_checker/src/check.zig:3266<br>packages/ts_checker/src/check.zig:94038 | A_return_statement_cannot_be_used_inside_a_class_static_block_18041 |
+| TS18042 | err | emitted | packages/ts_checker/src/check.zig:29435<br>packages/ts_checker/src/check.zig:98074<br>packages/ts_checker/src/check.zig:98097 | _0_is_a_type_and_cannot_be_imported_in_JavaScript_files_Use_1_in_a_JSDoc_type_annotation_18042 |
+| TS18043 | err | emitted | packages/ts_checker/src/check.zig:7679<br>packages/ts_checker/src/check.zig:98115<br>packages/ts_checker/src/check.zig:98134 | Types_cannot_appear_in_export_declarations_in_JavaScript_files_18043 |
 | TS18044 | message | catalog-only |  | _0_is_automatically_exported_here_18044 |
-| TS18045 | err | emitted | packages/ts_checker/src/check.zig:20263 | Properties_with_the_accessor_modifier_are_only_available_when_targeting_ECMAScript_2015_and_higher_18045 |
-| TS18046 | err | emitted | packages/ts_checker/src/check.zig:67545<br>packages/ts_checker/src/check.zig:82352<br>packages/ts_checker/src/check.zig:82379 | _0_is_of_type_unknown_18046 |
-| TS18047 | err | emitted | packages/ts_checker/src/check.zig:69015<br>packages/ts_checker/src/check.zig:93933<br>packages/ts_checker/src/check.zig:93954 | _0_is_possibly_null_18047 |
-| TS18048 | err | emitted | packages/ts_checker/src/check.zig:69016<br>packages/ts_checker/src/check.zig:93932<br>packages/ts_checker/src/check.zig:93955 | _0_is_possibly_undefined_18048 |
-| TS18049 | err | emitted | packages/ts_checker/src/check.zig:69017<br>packages/ts_checker/src/check.zig:93931<br>packages/ts_checker/src/check.zig:93953 | _0_is_possibly_null_or_undefined_18049 |
-| TS18050 | err | emitted | packages/ts_checker/src/check.zig:58275<br>packages/ts_checker/src/check.zig:58312<br>packages/ts_checker/src/check.zig:72345 | The_value_0_cannot_be_used_here_18050 |
+| TS18045 | err | emitted | packages/ts_checker/src/check.zig:20385 | Properties_with_the_accessor_modifier_are_only_available_when_targeting_ECMAScript_2015_and_higher_18045 |
+| TS18046 | err | emitted | packages/ts_checker/src/check.zig:67956<br>packages/ts_checker/src/check.zig:82901<br>packages/ts_checker/src/check.zig:82928 | _0_is_of_type_unknown_18046 |
+| TS18047 | err | emitted | packages/ts_checker/src/check.zig:69426<br>packages/ts_checker/src/check.zig:94482<br>packages/ts_checker/src/check.zig:94503 | _0_is_possibly_null_18047 |
+| TS18048 | err | emitted | packages/ts_checker/src/check.zig:69427<br>packages/ts_checker/src/check.zig:94481<br>packages/ts_checker/src/check.zig:94504 | _0_is_possibly_undefined_18048 |
+| TS18049 | err | emitted | packages/ts_checker/src/check.zig:69428<br>packages/ts_checker/src/check.zig:94480<br>packages/ts_checker/src/check.zig:94502 | _0_is_possibly_null_or_undefined_18049 |
+| TS18050 | err | emitted | packages/ts_checker/src/check.zig:58556<br>packages/ts_checker/src/check.zig:58593<br>packages/ts_checker/src/check.zig:72756 | The_value_0_cannot_be_used_here_18050 |
 | TS18051 | err | emitted | packages/tsconfig/src/tsconfig.zig:416 | Compiler_option_0_cannot_be_given_an_empty_string_18051 |
 | TS18053 | err | catalog-only |  | Its_type_0_is_not_a_valid_JSX_element_type_18053 |
-| TS18054 | err | emitted | packages/ts_parser/src/ts_parser.zig:7943 | await_using_statements_cannot_be_used_inside_a_class_static_block_18054 |
-| TS18055 | err | emitted | packages/ts_checker/src/check.zig:32337<br>packages/ts_checker/src/check.zig:87436<br>packages/ts_checker/src/check.zig:87460 | _0_has_a_string_type_but_must_have_syntactically_recognizable_string_syntax_when_isolatedModules_is__18055 |
-| TS18056 | err | emitted | packages/ts_checker/src/check.zig:32291<br>packages/ts_checker/src/check.zig:87404 | Enum_member_following_a_non_literal_numeric_member_must_have_an_initializer_when_isolatedModules_is__18056 |
-| TS18057 | err | emitted | packages/ts_checker/src/check.zig:26985<br>packages/ts_checker/src/check.zig:88466<br>packages/ts_checker/src/check.zig:88495 | String_literal_import_and_export_names_are_not_supported_when_the_module_flag_is_set_to_es2015_or_es_18057 |
+| TS18054 | err | emitted | packages/ts_parser/src/ts_parser.zig:7953 | await_using_statements_cannot_be_used_inside_a_class_static_block_18054 |
+| TS18055 | err | emitted | packages/ts_checker/src/check.zig:32591<br>packages/ts_checker/src/check.zig:87985<br>packages/ts_checker/src/check.zig:88009 | _0_has_a_string_type_but_must_have_syntactically_recognizable_string_syntax_when_isolatedModules_is__18055 |
+| TS18056 | err | emitted | packages/ts_checker/src/check.zig:32545<br>packages/ts_checker/src/check.zig:87953 | Enum_member_following_a_non_literal_numeric_member_must_have_an_initializer_when_isolatedModules_is__18056 |
+| TS18057 | err | emitted | packages/ts_checker/src/check.zig:27107<br>packages/ts_checker/src/check.zig:89015<br>packages/ts_checker/src/check.zig:89044 | String_literal_import_and_export_names_are_not_supported_when_the_module_flag_is_set_to_es2015_or_es_18057 |
 | TS69010 | message | catalog-only |  | module_AMD_or_UMD_or_System_or_ES6_then_Classic_Otherwise_Node_69010 |
 | TS80001 | suggestion | catalog-only |  | File_is_a_CommonJS_module_it_may_be_converted_to_an_ES_module_80001 |
 | TS80002 | suggestion | catalog-only |  | This_constructor_function_may_be_converted_to_a_class_declaration_80002 |
