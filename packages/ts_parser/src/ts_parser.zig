@@ -11708,13 +11708,22 @@ pub const Parser = struct {
         const end_i: usize = @intCast(end);
         if (start_i >= self.source.len or self.source[start_i] != '/') return;
         const close_at = self.regexLiteralClose(start_i, end_i) orelse return;
-        const unicode_mode = self.regexLiteralHasFlag(close_at + 1, end_i, 'u') or
-            self.regexLiteralHasFlag(close_at + 1, end_i, 'v');
+        const unicode_sets_mode = self.regexLiteralHasFlag(close_at + 1, end_i, 'v');
+        const unicode_mode = self.regexLiteralHasFlag(close_at + 1, end_i, 'u') or unicode_sets_mode;
 
         var i = start_i + 1;
         while (i < close_at and i < self.source.len) {
             const ch = self.source[i];
             if (ch == '\\') {
+                if (unicode_sets_mode and i + 1 < close_at and self.source[i + 1] == 'q') {
+                    try self.reportCodeAtWithSpan(
+                        @intCast(i),
+                        start_tok.line,
+                        2,
+                        1511,
+                        "'\\q' is only available inside character class.",
+                    );
+                }
                 try self.reportInvalidControlEscapeIfNeeded(i, close_at, start_tok.line, unicode_mode);
                 i += if (i + 1 < close_at) 2 else 1;
                 continue;
@@ -20224,6 +20233,31 @@ test "parser: non-unicode regex accepts annex-b control escape recovery" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1512);
+    }
+}
+
+test "parser: unicode sets regex reports q escape outside character class" {
+    var s = try newTestSetup("let x = /\\q/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1511) {
+            found = true;
+            try T.expectEqualStrings("'\\q' is only available inside character class.", d.message);
+        }
+    }
+    try T.expect(found);
+}
+
+test "parser: q escape is TS1511 only in unicode sets atom mode" {
+    var s = try newTestSetup("let x = /\\q/u; let y = /[\\q{a|b}]/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1511);
     }
 }
 
