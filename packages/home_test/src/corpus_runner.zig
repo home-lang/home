@@ -483,6 +483,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-parse-query.test.js",
     "integration/bun-types/fixture/5396.test.ts",
     "js/web/html/FormData.test.ts",
+    "js/web/fetch/body-clone.test.ts",
     "js/web/fetch/blob-write.test.ts",
     "js/web/fetch/utf8-bom.test.ts",
     "js/web/fetch/form-data-boundary-crash.test.ts",
@@ -8282,13 +8283,38 @@ const harness_prelude =
     \\function __home_stream_has_pending_pull(body) {
     \\  return !!(body && !body.__home_closed && body.__home_underlying_source && typeof body.__home_underlying_source.pull === "function");
     \\}
+    \\function __home_stream_chunks_replayable(body) {
+    \\  return !!(body && Array.isArray(body.__home_chunks) && body.__home_closed === true && !__home_stream_has_pending_pull(body));
+    \\}
+    \\function __home_stream_all_chunks_body(body) {
+    \\  return body && Array.isArray(body.__home_all_chunks) ? { __home_chunks: body.__home_all_chunks } : null;
+    \\}
+    \\function __home_deferred_chunk_reader(body) {
+    \\  const pending = body.__home_start_pending || Promise.resolve(undefined);
+    \\  const chunks = body.__home_all_chunks || [];
+    \\  return {
+    \\    getReader() {
+    \\      let index = 0;
+    \\      return {
+    \\        read() {
+    \\          return __home_then(pending, () => index < chunks.length ? { done: false, value: chunks[index++] } : { done: true, value: undefined });
+    \\        },
+    \\        cancel() {
+    \\          index = chunks.length;
+    \\          return Promise.resolve(undefined);
+    \\        },
+    \\      };
+    \\    },
+    \\  };
+    \\}
     \\function __home_body_bytes(body) {
-    \\  if (body && Array.isArray(body.__home_chunks) && !__home_stream_has_pending_pull(body)) return Promise.resolve(__home_body_bytes_sync(body));
+    \\  if (body && body.__home_start_pending && Array.isArray(body.__home_all_chunks)) return __home_then(body.__home_start_pending, () => __home_body_bytes_sync(__home_stream_all_chunks_body(body)));
+    \\  if (__home_stream_chunks_replayable(body)) return Promise.resolve(__home_body_bytes_sync(body));
     \\  if (body && typeof body.getReader === "function") {
     \\    const reader = body.getReader();
     \\    const chunks = [];
     \\    function pump() {
-    \\      return reader.read().then(result => {
+    \\      return __home_then(reader.read(), result => {
     \\        if (result.done) {
     \\          const bytes = [];
     \\          for (const chunk of chunks) {
@@ -8427,13 +8453,24 @@ const harness_prelude =
     \\    return blob;
     \\  });
     \\};
+    \\Response.prototype.bytes = function() {
+    \\  return __home_consume_body(this).then(bytes => new Uint8Array(bytes));
+    \\};
     \\Response.prototype.formData = function() {
     \\  return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\};
     \\Response.prototype.clone = function() {
-    \\  if (this.body && Array.isArray(this.body.__home_chunks) && !__home_stream_has_pending_pull(this.body)) {
+    \\  if (__home_stream_chunks_replayable(this.body)) {
     \\    const chunks = this.body.__home_chunks.slice();
     \\    return new Response(new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }), { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\  }
+    \\  if (this.body && this.body.__home_start_pending && Array.isArray(this.body.__home_all_chunks)) {
+    \\    const body = this.body;
+    \\    return new Response(__home_deferred_chunk_reader(body), { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\  }
+    \\  if (__home_stream_has_pending_pull(this.body)) {
+    \\    const source = this.body.__home_underlying_source;
+    \\    return new Response(new ReadableStream({ pull(controller) { return source.pull(controller); }, cancel(reason) { return source.cancel ? source.cancel(reason) : undefined; } }), { status: this.status, statusText: this.statusText, headers: this.headers });
     \\  }
     \\  if (this.body && typeof this.body.tee === "function") {
     \\    const branches = this.body.tee();
@@ -8806,9 +8843,17 @@ const harness_prelude =
     \\    return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\  };
     \\  Request.prototype.clone = function() {
-    \\    if (this.body && Array.isArray(this.body.__home_chunks) && !__home_stream_has_pending_pull(this.body)) {
+    \\    if (__home_stream_chunks_replayable(this.body)) {
     \\      const chunks = this.body.__home_chunks.slice();
     \\      return new Request(this, { body: new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }) });
+    \\    }
+    \\    if (this.body && this.body.__home_start_pending && Array.isArray(this.body.__home_all_chunks)) {
+    \\      const body = this.body;
+    \\      return new Request(this, { body: __home_deferred_chunk_reader(body) });
+    \\    }
+    \\    if (__home_stream_has_pending_pull(this.body)) {
+    \\      const source = this.body.__home_underlying_source;
+    \\      return new Request(this, { body: new ReadableStream({ pull(controller) { return source.pull(controller); }, cancel(reason) { return source.cancel ? source.cancel(reason) : undefined; } }) });
     \\    }
     \\    if (this.body && typeof this.body.tee === "function") {
     \\      const branches = this.body.tee();
@@ -9811,7 +9856,9 @@ const harness_prelude =
     \\if (typeof ReadableStream !== "function") {
     \\  var ReadableStream = function(underlyingSource) {
     \\    this.__home_chunks = [];
+    \\    this.__home_all_chunks = [];
     \\    this.__home_closed = false;
+    \\    this.__home_start_pending = null;
     \\    this.locked = false;
     \\    this.__home_underlying_source = underlyingSource || {};
     \\    const stream = this;
@@ -9819,12 +9866,18 @@ const harness_prelude =
     \\      enqueue(chunk) {
     \\        if (stream.__home_closed) throw new TypeError("ReadableStream is closed");
     \\        stream.__home_chunks.push(chunk);
+    \\        __home_array_append(stream.__home_all_chunks, chunk);
     \\      },
     \\      close() {
     \\        stream.__home_closed = true;
     \\      },
     \\    };
-    \\    if (underlyingSource && typeof underlyingSource.start === "function") underlyingSource.start(controller);
+    \\    if (underlyingSource && typeof underlyingSource.start === "function") {
+    \\      const startResult = underlyingSource.start(controller);
+    \\      if (__home_is_thenable(startResult)) this.__home_start_pending = __home_then(startResult, () => {
+    \\        stream.__home_start_pending = null;
+    \\      });
+    \\    }
     \\  };
     \\  ReadableStream.prototype.getReader = function() {
     \\    const stream = this;
@@ -9832,6 +9885,7 @@ const harness_prelude =
     \\      enqueue(chunk) {
     \\        if (stream.__home_closed) throw new TypeError("ReadableStream is closed");
     \\        stream.__home_chunks.push(chunk);
+    \\        __home_array_append(stream.__home_all_chunks, chunk);
     \\      },
     \\      close() {
     \\        stream.__home_closed = true;
@@ -9840,8 +9894,9 @@ const harness_prelude =
     \\    return {
     \\      read() {
     \\        if (stream.__home_chunks.length > 0) return Promise.resolve({ done: false, value: stream.__home_chunks.shift() });
+    \\        if (stream.__home_start_pending) return __home_then(stream.__home_start_pending, () => this.read());
     \\        if (!stream.__home_closed && stream.__home_underlying_source && typeof stream.__home_underlying_source.pull === "function") {
-    \\          return Promise.resolve(stream.__home_underlying_source.pull(controller)).then(() => {
+    \\          return __home_then(stream.__home_underlying_source.pull(controller), () => {
     \\            if (stream.__home_chunks.length > 0) return { done: false, value: stream.__home_chunks.shift() };
     \\            return { done: !!stream.__home_closed, value: undefined };
     \\          });
@@ -9867,6 +9922,8 @@ const harness_prelude =
     \\  ReadableStream = function(underlyingSource, strategy) {
     \\    let capturedController = null;
     \\    let capturedChunks = null;
+    \\    let capturedClosed = false;
+    \\    let capturedStream = null;
     \\    let exposeCapturedChunks = false;
     \\    let source = underlyingSource;
     \\    if (source && typeof source.start === "function") {
@@ -9884,6 +9941,8 @@ const harness_prelude =
     \\              if (property === "close") {
     \\                return function() {
     \\                  target.__home_desired_size = 0;
+    \\                  capturedClosed = true;
+    \\                  if (capturedStream) capturedStream.__home_closed = true;
     \\                  return target.close.apply(target, arguments);
     \\                };
     \\              }
@@ -9914,7 +9973,9 @@ const harness_prelude =
     \\      });
     \\    }
     \\    const stream = new __home_NativeReadableStream(source, strategy);
+    \\    capturedStream = stream;
     \\    if (capturedChunks && exposeCapturedChunks) stream.__home_chunks = capturedChunks;
+    \\    if (capturedChunks && exposeCapturedChunks) stream.__home_closed = capturedClosed;
     \\    if (capturedController) __home_stream_controllers.set(stream, capturedController);
     \\    return stream;
     \\  };
@@ -10002,9 +10063,13 @@ const harness_prelude =
     \\}
     \\function __home_readable_stream_to_array_buffer(stream) {
     \\  if (!stream) throw new TypeError("Expected ReadableStream");
-    \\  if (Array.isArray(stream.__home_chunks) && !__home_stream_has_pending_pull(stream)) return __home_concat_array_buffers(stream.__home_chunks);
-    \\  return __home_body_bytes(stream).then(bytes => new Uint8Array(bytes).buffer);
+    \\  if (__home_stream_chunks_replayable(stream)) return __home_concat_array_buffers(stream.__home_chunks);
+    \\  return __home_then(__home_body_bytes(stream), bytes => new Uint8Array(bytes).buffer);
     \\}
+    \\Bun.readableStreamToBytes = function(stream) {
+    \\  if (!stream) throw new TypeError("Expected ReadableStream");
+    \\  return __home_then(__home_body_bytes(stream), bytes => new Uint8Array(bytes));
+    \\};
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_body_methods) {
     \\  Object.defineProperty(ReadableStream.prototype, "__home_body_methods", { value: true });
     \\  ReadableStream.prototype.text = function() {
