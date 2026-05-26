@@ -798,6 +798,55 @@ pub const Parser = struct {
         return self.interner.intern(slice[0..end]) catch error.OutOfMemory;
     }
 
+    fn stringLiteralContent(self: *const Parser, tok: Token) []const u8 {
+        const slice = self.source[tok.span.start..tok.span.end];
+        if (slice.len < 2) return slice;
+        return slice[1 .. slice.len - 1];
+    }
+
+    fn moduleNameIsRelativeOrRootedDiskPath(name: []const u8) bool {
+        if (std.mem.startsWith(u8, name, "./") or
+            std.mem.startsWith(u8, name, "../") or
+            std.mem.eql(u8, name, ".") or
+            std.mem.eql(u8, name, ".."))
+        {
+            return true;
+        }
+        if (std.mem.startsWith(u8, name, "/") or std.mem.startsWith(u8, name, "\\\\")) return true;
+        return name.len >= 3 and
+            std.ascii.isAlphabetic(name[0]) and
+            name[1] == ':' and
+            (name[2] == '/' or name[2] == '\\');
+    }
+
+    fn reportBigIntPropertyName(self: *Parser, tok: Token) ParseError!void {
+        if (tok.kind != .bigint_literal) return;
+        try self.reportCodeAtWithSpan(
+            tok.span.start,
+            tok.line,
+            tok.span.end - tok.span.start,
+            1539,
+            "A 'bigint' literal cannot be used as a property name.",
+        );
+    }
+
+    fn reportAmbientExternalModuleRelativeImportOrExport(self: *Parser, start: Token, module_tok: Token) ParseError!void {
+        if (!self.in_string_named_module or module_tok.kind != .string_literal) return;
+        if (!moduleNameIsRelativeOrRootedDiskPath(self.stringLiteralContent(module_tok))) return;
+        try self.reportCodeAt(
+            start.span.start,
+            start.line,
+            2439,
+            "Import or export declaration in an ambient module declaration cannot reference module through relative module name.",
+        );
+    }
+
+    fn nodeLooksLikePrivateIdentifier(self: *const Parser, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
+        const span_ = self.hir.spanOf(node);
+        return span_.start < self.source.len and self.source[span_.start] == '#';
+    }
+
     // ========================================================================
     // Public entry
     // ========================================================================
@@ -4815,6 +4864,7 @@ pub const Parser = struct {
                     self.peekAt(1).kind == .private_identifier or
                     self.peekAt(1).kind == .string_literal or
                     self.peekAt(1).kind == .number_literal or
+                    self.peekAt(1).kind == .bigint_literal or
                     self.peekAt(1).kind.isContextualKeyword()) and
                     (self.peekAt(2).kind == .open_paren or self.peekAt(2).kind == .less_than) or
                     self.peekAt(1).kind == .open_bracket))
@@ -4909,6 +4959,7 @@ pub const Parser = struct {
                 self.peek().kind == .private_identifier or
                 self.peek().kind == .string_literal or
                 self.peek().kind == .number_literal or
+                self.peek().kind == .bigint_literal or
                 self.peek().kind == .kw_constructor or
                 self.peek().kind == .kw_interface or
                 self.peek().kind == .kw_var or
@@ -5250,6 +5301,7 @@ pub const Parser = struct {
                     try self.reportOptionalAutoAccessor(optional_member_token);
                 }
                 try self.consumeClassPropertyTerminator();
+                try self.reportBigIntPropertyName(name_tok);
                 if (name_tok.kind == .private_identifier) {
                     try self.reportPrivateIdentifierTargetDiagnostic(name_tok);
                     try self.reportPrivateIdentifierModifierDiagnostics(mods, true);
@@ -5607,6 +5659,7 @@ pub const Parser = struct {
             kind == .private_identifier or
             kind == .string_literal or
             kind == .number_literal or
+            kind == .bigint_literal or
             kind == .kw_constructor or
             kind == .kw_interface or
             kind == .open_bracket or
@@ -6441,6 +6494,27 @@ pub const Parser = struct {
         {
             try self.reportCodeAt(name_tok.span.start, name_tok.line, 1035, "Only ambient modules can use quoted names.");
         }
+        if (name_tok.kind == .string_literal and self.ambient_depth > 0) {
+            if (self.namespace_depth > 0) {
+                try self.reportCodeAtWithSpan(
+                    name_tok.span.start,
+                    name_tok.line,
+                    name_tok.span.end - name_tok.span.start,
+                    2435,
+                    "Ambient modules cannot be nested in other modules or namespaces.",
+                );
+            } else if (!self.top_level_external_module_indicator and
+                moduleNameIsRelativeOrRootedDiskPath(self.stringLiteralContent(name_tok)))
+            {
+                try self.reportCodeAtWithSpan(
+                    name_tok.span.start,
+                    name_tok.line,
+                    name_tok.span.end - name_tok.span.start,
+                    2436,
+                    "Ambient module declaration cannot specify relative module name.",
+                );
+            }
+        }
         var name_end = name_tok.span.end;
         while (self.peek().kind == .dot) {
             _ = self.advance();
@@ -6585,6 +6659,7 @@ pub const Parser = struct {
                         "Import declarations in a namespace cannot reference a module.",
                     );
                 }
+                try self.reportAmbientExternalModuleRelativeImportOrExport(start, mod_tok);
                 _ = try self.expect(.close_paren, "')' after require module specifier");
                 try self.consumeStatementTerminator();
             } else if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren) {
@@ -6612,6 +6687,7 @@ pub const Parser = struct {
         if (self.peek().kind == .string_literal) {
             // bare side-effect import: `import "module";`
             const mod_tok = self.advance();
+            try self.reportAmbientExternalModuleRelativeImportOrExport(start, mod_tok);
             // Optional import attributes: `with { type: "json" }` (TS 5.3+)
             // or legacy `assert { type: "json" }` — parsed and discarded.
             try self.skipImportAttributesClause();
@@ -6792,6 +6868,7 @@ pub const Parser = struct {
             };
             break :blk synth;
         };
+        try self.reportAmbientExternalModuleRelativeImportOrExport(start, mod_tok);
         // Optional import attributes: `with { type: "json" }` (TS 5.3+)
         // or legacy `assert { type: "json" }` — parsed and discarded.
         try self.skipImportAttributesClause();
@@ -7297,6 +7374,7 @@ pub const Parser = struct {
             var has_module_specifier = false;
             if (self.match(.kw_from)) {
                 const mod_tok = try self.expect(.string_literal, "module specifier");
+                try self.reportAmbientExternalModuleRelativeImportOrExport(start, mod_tok);
                 module_id = try self.internStringLiteral(mod_tok);
                 module_tok_start = mod_tok.span.start;
                 module_tok_line = mod_tok.line;
@@ -7355,6 +7433,7 @@ pub const Parser = struct {
             }
             _ = try self.expect(.kw_from, "'from' after 'export *'");
             const mod_tok = try self.expect(.string_literal, "module specifier");
+            try self.reportAmbientExternalModuleRelativeImportOrExport(start, mod_tok);
             try self.skipImportAttributesClause();
             try self.consumeStatementTerminator();
             const mod_id = try self.internStringLiteral(mod_tok);
@@ -10029,6 +10108,7 @@ pub const Parser = struct {
             }
 
             // Property: `name: T;`.
+            try self.reportBigIntPropertyName(name_tok);
             var type_node: NodeId = hir_mod.none_node_id;
             if (self.match(.colon)) type_node = try self.parseTypeAnnotation();
             // TS1246/TS1247: a property in an interface body / type
@@ -10125,6 +10205,7 @@ pub const Parser = struct {
         return (name_kind == .identifier or
             name_kind == .string_literal or
             name_kind == .number_literal or
+            name_kind == .bigint_literal or
             name_kind.isContextualKeyword()) and
             self.peekAt(2).kind == .open_paren;
     }
@@ -14538,6 +14619,18 @@ pub const Parser = struct {
                     return e;
                 }
                 _ = try self.expectMatching(.close_paren, "')' expected.", open, "(", ")");
+                if (self.class_body_depth > 0 and self.nodeLooksLikePrivateIdentifier(e)) {
+                    const private_span = self.hir.spanOf(e);
+                    if (!self.hasDiagnosticAt(1451, private_span.start)) {
+                        try self.reportCodeAtWithSpan(
+                            private_span.start,
+                            self.lineAt(private_span.start),
+                            private_span.end - private_span.start,
+                            1451,
+                            "Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression",
+                        );
+                    }
+                }
                 return e;
             },
             .less_than => {
@@ -15705,6 +15798,7 @@ pub const Parser = struct {
                     .private_identifier,
                     .string_literal,
                     .number_literal,
+                    .bigint_literal,
                     .open_bracket,
                     => true,
                     else => next_kind.isKeyword() or next_kind.isContextualKeyword(),
@@ -15767,6 +15861,7 @@ pub const Parser = struct {
                     self.peekAt(1).kind == .private_identifier or
                     self.peekAt(1).kind == .string_literal or
                     self.peekAt(1).kind == .number_literal or
+                    self.peekAt(1).kind == .bigint_literal or
                     self.peekAt(1).kind.isContextualKeyword()) and
                     (self.peekAt(2).kind == .open_paren or self.peekAt(2).kind == .less_than)) or
                     self.peekAt(1).kind == .open_bracket))
@@ -15977,6 +16072,7 @@ pub const Parser = struct {
                 continue;
             }
             if (self.match(.colon)) {
+                try self.reportBigIntPropertyName(prop_start);
                 if (arrayLiteralElementCanStart(self.peek().kind)) {
                     value = try self.parseAssignmentExpression();
                 } else {
@@ -16049,6 +16145,7 @@ pub const Parser = struct {
                     value = key;
                 }
             } else {
+                try self.reportBigIntPropertyName(prop_start);
                 try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
             }
             const prop = try self.builder.addObjectProperty(
@@ -16106,6 +16203,7 @@ pub const Parser = struct {
             .private_identifier,
             .string_literal,
             .number_literal,
+            .bigint_literal,
             .open_bracket,
             .dot_dot_dot,
             .asterisk,
@@ -16904,6 +17002,23 @@ test "parser: optional chain rejects private identifiers" {
     try T.expectEqual(@as(usize, 3), count);
 }
 
+test "parser: parenthesized private identifier expression reports TS1451 in class body" {
+    var s = try newTestSetup(
+        \\class A {
+        \\  #b;
+        \\  m(v) {
+        \\    return (#b) in v;
+        \\  }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1451) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression", d.message);
+}
+
 test "parser: optional chain rejects tagged templates" {
     var s = try newTestSetup(
         \\a?.`b`;
@@ -17194,6 +17309,26 @@ test "parser: bigint literal" {
     try T.expectEqual(hir_mod.NodeKind.literal_bigint, s.hir.kindOf(top));
     const bi = hir_mod.literalBigIntOf(&s.hir, top);
     try T.expectEqualStrings("9007199254740993", s.interner.get(bi.digits));
+}
+
+test "parser: bigint literal property names report TS1539 only for properties" {
+    var s = try newTestSetup(
+        \\const o = { 1n: 1, 2n() {}, get 3n() { return 1; } };
+        \\class C { 4n; 5n() {} }
+        \\interface I { 6n: string; 7n(): void }
+        \\type T = { 8n: string; 9n(): void };
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_1539: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1539) {
+            count_1539 += 1;
+            try T.expectEqualStrings("A 'bigint' literal cannot be used as a property name.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 4), count_1539);
 }
 
 test "parser: ASI — return on its own line" {
@@ -19307,6 +19442,56 @@ test "parser: TS1234 not reported for top-level ambient module" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1234);
     }
+}
+
+test "parser: ambient external module names report TS2435 and TS2436" {
+    var s = try newTestSetup(
+        \\declare module "./rel" {}
+        \\declare module "C:/abs" {}
+        \\namespace N {
+        \\    declare module "nested" {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_2435: usize = 0;
+    var count_2436: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2435) {
+            count_2435 += 1;
+            try T.expectEqualStrings("Ambient modules cannot be nested in other modules or namespaces.", d.message);
+        }
+        if (d.code == 2436) {
+            count_2436 += 1;
+            try T.expectEqualStrings("Ambient module declaration cannot specify relative module name.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 1), count_2435);
+    try T.expectEqual(@as(usize, 2), count_2436);
+}
+
+test "parser: ambient external module relative imports and exports report TS2439" {
+    var s = try newTestSetup(
+        \\declare module "outer" {
+        \\    import req = require("./req");
+        \\    import "./side";
+        \\    import def from "./def";
+        \\    export { x } from "./exp";
+        \\    export * from "./star";
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_2439: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2439) {
+            count_2439 += 1;
+            try T.expectEqualStrings("Import or export declaration in an ambient module declaration cannot reference module through relative module name.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 5), count_2439);
 }
 
 test "parser: TS1194 export declarations not permitted in a namespace" {

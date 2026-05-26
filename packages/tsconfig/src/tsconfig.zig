@@ -733,6 +733,16 @@ pub const compiler_option_message_diagnostics = [_]OptionMessageDiagnostic{
         .code = 18034,
         .message = "Specify the JSX fragment factory function to use when targeting 'react' JSX emit with 'jsxFactory' compiler option is specified, e.g. 'Fragment'.",
     },
+    .{
+        .option = "newLine",
+        .code = 6060,
+        .message = "Specify the end of line sequence to be used when emitting files: 'CRLF' (dos) or 'LF' (unix).",
+    },
+    .{
+        .option = "init",
+        .code = 6070,
+        .message = "Initializes a TypeScript project and creates a tsconfig.json file.",
+    },
 };
 
 pub fn compilerOptionMessageDiagnostic(option: []const u8) ?OptionMessageDiagnostic {
@@ -1053,6 +1063,7 @@ fn appendConfigParseDiagnostic(
         5092 => try std.fmt.allocPrint(gpa, "The root value of a '{s}' file must be an object.", .{diag.file_kind}),
         1327 => try gpa.dupe(u8, "String literal with double quotes expected."),
         1328 => try gpa.dupe(u8, "Property value can only be string literal, numeric literal, 'true', 'false', 'null', object literal or array literal."),
+        6266 => try std.fmt.allocPrint(gpa, "Option '{s}' can only be specified on command line.", .{diag.option}),
         else => unreachable,
     };
     try diags.append(gpa, .{
@@ -1065,6 +1076,7 @@ fn appendConfigParseDiagnostic(
             6258 => diag.option,
             5092 => "",
             1327, 1328 => "",
+            6266 => diag.option,
             else => "",
         },
     });
@@ -1973,6 +1985,11 @@ fn collectConfigParseDiagnostics(arena: std.mem.Allocator, root: jsonc.Value.Obj
 
     if (root.get("compilerOptions")) |co_v| {
         if (co_v.asObject()) |co| {
+            for (co.keys) |key| {
+                if (compilerOptionIsCommandLineOnly(key)) {
+                    try out.append(arena, .{ .code = 6266, .option = key });
+                }
+            }
             if (co.get("paths")) |paths_v| {
                 if (paths_v.asObject()) |paths| {
                     try collectPathParseDiagnostics(arena, &out, paths);
@@ -1982,6 +1999,21 @@ fn collectConfigParseDiagnostics(arena: std.mem.Allocator, root: jsonc.Value.Obj
     }
 
     return out.toOwnedSlice(arena);
+}
+
+fn compilerOptionIsCommandLineOnly(key: []const u8) bool {
+    const command_line_only = comptime [_][]const u8{
+        "help",
+        "watch",
+        "locale",
+        "showConfig",
+        "listFilesOnly",
+        "ignoreConfig",
+    };
+    inline for (command_line_only) |name| {
+        if (std.ascii.eqlIgnoreCase(key, name)) return true;
+    }
+    return false;
 }
 
 fn collectPathParseDiagnostics(
@@ -2414,6 +2446,38 @@ pub fn moduleFormatSuggestionDiagnostic(
 
 pub fn freeModuleFormatDiagnostic(gpa: std.mem.Allocator, diag: ModuleFormatDiagnostic) void {
     if (diag.owns_message) gpa.free(diag.message);
+}
+
+pub fn noInputsDiagnostic(
+    gpa: std.mem.Allocator,
+    config_file: []const u8,
+    include_paths: []const u8,
+    exclude_paths: []const u8,
+) !ValidationDiagnostic {
+    return .{
+        .code = 18003,
+        .message = try std.fmt.allocPrint(gpa, "No inputs were found in config file '{s}'. Specified 'include' paths were '{s}' and 'exclude' paths were '{s}'.", .{ config_file, include_paths, exclude_paths }),
+        .owns_message = true,
+        .field = "files",
+    };
+}
+
+pub fn projectReferenceCompositeDiagnostic(gpa: std.mem.Allocator, project: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6306,
+        .message = try std.fmt.allocPrint(gpa, "Referenced project '{s}' must have setting \"composite\": true.", .{project}),
+        .owns_message = true,
+        .field = "references",
+    };
+}
+
+pub fn projectReferenceNoEmitDiagnostic(gpa: std.mem.Allocator, project: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6310,
+        .message = try std.fmt.allocPrint(gpa, "Referenced project '{s}' may not disable emit.", .{project}),
+        .owns_message = true,
+        .field = "references",
+    };
 }
 
 fn parseStringArray(arena: std.mem.Allocator, v: jsonc.Value) ![][]const u8 {
@@ -2934,6 +2998,33 @@ test "tsconfig.validate: compiler option table reports TS5023 TS5024 and TS5025"
     try t.expectEqualStrings("Unknown compiler option 'futureFlag'.", diags[1].message);
     try t.expectEqual(@as(u32, 5024), diags[2].code);
     try t.expectEqualStrings("Compiler option 'strict' requires a value of type boolean.", diags[2].message);
+}
+
+test "tsconfig.validate: command-line-only compiler options report TS6266" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "showConfig": true,
+        \\    "listFilesOnly": true,
+        \\    "ignoreConfig": true,
+        \\    "watch": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 4), diags.len);
+    try t.expectEqual(@as(u32, 6266), diags[0].code);
+    try t.expectEqualStrings("Option 'showConfig' can only be specified on command line.", diags[0].message);
+    try t.expectEqualStrings("showConfig", diags[0].field);
+    try t.expectEqual(@as(u32, 6266), diags[1].code);
+    try t.expectEqualStrings("listFilesOnly", diags[1].field);
+    try t.expectEqual(@as(u32, 6266), diags[2].code);
+    try t.expectEqualStrings("ignoreConfig", diags[2].field);
+    try t.expectEqual(@as(u32, 6266), diags[3].code);
+    try t.expectEqualStrings("watch", diags[3].field);
 }
 
 test "tsconfig.validate: watchOptions reports TS5078 TS5079 and TS5080" {
@@ -4589,6 +4680,26 @@ test "tsconfig.validate: invalid reactNamespace reports TS5059" {
     try t.expectEqual(@as(u32, 5059), diags[0].code);
     try t.expectEqualStrings("Invalid value for '--reactNamespace'. 'my-React-Lib' is not a valid identifier.", diags[0].message);
     try t.expectEqualStrings("reactNamespace", diags[0].field);
+}
+
+test "tsconfig diagnostics: no-input and project-reference helpers mirror upstream messages" {
+    const no_inputs = try noInputsDiagnostic(t.allocator, "/repo/tsconfig.json", "[\"src/**/*\"]", "[\"dist\"]");
+    defer if (no_inputs.owns_message) t.allocator.free(no_inputs.message);
+    try t.expectEqual(@as(u32, 18003), no_inputs.code);
+    try t.expectEqualStrings("No inputs were found in config file '/repo/tsconfig.json'. Specified 'include' paths were '[\"src/**/*\"]' and 'exclude' paths were '[\"dist\"]'.", no_inputs.message);
+    try t.expectEqualStrings("files", no_inputs.field);
+
+    const composite = try projectReferenceCompositeDiagnostic(t.allocator, "/repo/pkg-a");
+    defer if (composite.owns_message) t.allocator.free(composite.message);
+    try t.expectEqual(@as(u32, 6306), composite.code);
+    try t.expectEqualStrings("Referenced project '/repo/pkg-a' must have setting \"composite\": true.", composite.message);
+    try t.expectEqualStrings("references", composite.field);
+
+    const no_emit = try projectReferenceNoEmitDiagnostic(t.allocator, "/repo/pkg-b");
+    defer if (no_emit.owns_message) t.allocator.free(no_emit.message);
+    try t.expectEqual(@as(u32, 6310), no_emit.code);
+    try t.expectEqualStrings("Referenced project '/repo/pkg-b' may not disable emit.", no_emit.message);
+    try t.expectEqualStrings("references", no_emit.field);
 }
 
 // ============================================================================

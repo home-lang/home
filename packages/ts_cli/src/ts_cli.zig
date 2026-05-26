@@ -104,6 +104,8 @@ pub const ProjectDiagnosticKind = enum {
     specified_path_does_not_exist,
     add_tsconfig_json,
     cannot_find_config_at_current_directory,
+    file_not_found,
+    unsupported_extension,
 };
 
 pub const ProjectDiagnostic = struct {
@@ -153,7 +155,11 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
         } else if (std.mem.eql(u8, a, "--all")) {
             opts.show_all_help = true;
         } else if (std.mem.eql(u8, a, "--build") or std.mem.eql(u8, a, "-b")) {
-            opts.build = true;
+            if (i == 0) {
+                opts.build = true;
+            } else {
+                appendCliDiagnostic(&opts, .{ .code = 6369, .option = "build" });
+            }
         } else if (buildOptionName(a)) |name| {
             if (opts.build) {
                 applyBuildBoolOption(&opts, name);
@@ -240,6 +246,8 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.incremental = true;
         } else if (std.mem.eql(u8, a, "--no-incremental")) {
             opts.incremental = false;
+        } else if (tsConfigOnlyOptionName(a)) |config_only| {
+            i = parseTsConfigOnlyOption(args, i, &opts, config_only);
         } else if (a.len > 0 and a[0] == '-') {
             // Unknown flag — silently accept for forward-compat per
             // TS_PARITY_PLAN. A future cycle promotes selected
@@ -254,6 +262,7 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             try files.append(gpa, a);
         }
     }
+    appendBuildCombinationDiagnostics(&opts);
     opts.files = try files.toOwnedSlice(gpa);
     return opts;
 }
@@ -286,6 +295,65 @@ fn applyBuildBoolOption(opts: *Options, name: []const u8) void {
     if (std.mem.eql(u8, name, "stopBuildOnErrors")) opts.build_stop_on_errors = true;
 }
 
+fn appendBuildCombinationDiagnostics(opts: *Options) void {
+    if (!opts.build) return;
+    if (opts.build_clean and opts.build_force) appendCliDiagnostic(opts, .{ .code = 6370, .option = "clean", .expected = "force" });
+    if (opts.build_clean and opts.build_verbose) appendCliDiagnostic(opts, .{ .code = 6370, .option = "clean", .expected = "verbose" });
+    if (opts.build_clean and opts.watch) appendCliDiagnostic(opts, .{ .code = 6370, .option = "clean", .expected = "watch" });
+    if (opts.watch and opts.build_dry) appendCliDiagnostic(opts, .{ .code = 6370, .option = "watch", .expected = "dry" });
+}
+
+const TsConfigOnlyOption = struct {
+    name: []const u8,
+    boolean: bool,
+    inline_value: ?[]const u8 = null,
+};
+
+fn tsConfigOnlyOptionName(arg: []const u8) ?TsConfigOnlyOption {
+    const name = unknownDashedOptionName(arg) orelse return null;
+    const config_only = comptime [_]TsConfigOnlyOption{
+        .{ .name = "composite", .boolean = true },
+        .{ .name = "disableSourceOfProjectReferenceRedirect", .boolean = true },
+        .{ .name = "disableSolutionSearching", .boolean = true },
+        .{ .name = "disableReferencedProjectLoad", .boolean = true },
+        .{ .name = "paths", .boolean = false },
+        .{ .name = "rootDirs", .boolean = false },
+        .{ .name = "plugins", .boolean = false },
+    };
+    inline for (config_only) |candidate| {
+        if (std.mem.eql(u8, name, candidate.name)) {
+            var result = candidate;
+            if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+                result.inline_value = arg[eq + 1 ..];
+            }
+            return result;
+        }
+    }
+    return null;
+}
+
+fn parseTsConfigOnlyOption(args: []const []const u8, i: usize, opts: *Options, config_only: TsConfigOnlyOption) usize {
+    const value = config_only.inline_value orelse if (i + 1 < args.len and (args[i + 1].len == 0 or args[i + 1][0] != '-')) args[i + 1] else null;
+    if (config_only.boolean) {
+        if (value) |v| {
+            if (std.mem.eql(u8, v, "false") or std.mem.eql(u8, v, "null")) return if (config_only.inline_value == null) i + 1 else i;
+            if (std.mem.eql(u8, v, "true") and config_only.inline_value == null) {
+                appendCliDiagnostic(opts, .{ .code = 6230, .option = config_only.name });
+                return i + 1;
+            }
+        }
+        appendCliDiagnostic(opts, .{ .code = 6230, .option = config_only.name });
+        return i;
+    }
+
+    if (value) |v| {
+        if (std.mem.eql(u8, v, "null")) return if (config_only.inline_value == null) i + 1 else i;
+    }
+    appendCliDiagnostic(opts, .{ .code = 6064, .option = config_only.name });
+    if (config_only.inline_value == null and i + 1 < args.len and (args[i + 1].len == 0 or args[i + 1][0] != '-')) return i + 1;
+    return i;
+}
+
 fn buildStringOptionName(arg: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, arg, "--generateCpuProfile")) return "generateCpuProfile";
     if (std.mem.eql(u8, arg, "--generateTrace")) return "generateTrace";
@@ -302,9 +370,13 @@ fn buildModeCompilerOnlyOption(arg: []const u8) ?[]const u8 {
         "outDir",
         "outFile",
         "tsBuildInfoFile",
+        "composite",
         "declaration",
         "emitDeclarationOnly",
         "isolatedDeclarations",
+        "paths",
+        "rootDirs",
+        "plugins",
     };
     inline for (compiler_only) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return candidate;
@@ -378,11 +450,15 @@ fn levenshteinIcase(a: []const u8, b: []const u8) usize {
 
 pub fn formatCliDiagnostic(gpa: std.mem.Allocator, diag: CliDiagnostic) ![]const u8 {
     return switch (diag.code) {
+        6064 => try std.fmt.allocPrint(gpa, "error TS6064: Option '{s}' can only be specified in 'tsconfig.json' file or set to 'null' on command line.", .{diag.option}),
+        6230 => try std.fmt.allocPrint(gpa, "error TS6230: Option '{s}' can only be specified in 'tsconfig.json' file or set to 'false' or 'null' on command line.", .{diag.option}),
         5072 => try std.fmt.allocPrint(gpa, "error TS5072: Unknown build option '{s}'.", .{diag.option}),
         5073 => try std.fmt.allocPrint(gpa, "error TS5073: Build option '{s}' requires a value of type {s}.", .{ diag.option, diag.expected }),
         5077 => try std.fmt.allocPrint(gpa, "error TS5077: Unknown build option '{s}'. Did you mean '{s}'?", .{ diag.option, diag.suggestion.? }),
         5093 => try std.fmt.allocPrint(gpa, "error TS5093: Compiler option '--{s}' may only be used with '--build'.", .{diag.option}),
         5094 => try std.fmt.allocPrint(gpa, "error TS5094: Compiler option '--{s}' may not be used with '--build'.", .{diag.option}),
+        6369 => try gpa.dupe(u8, "error TS6369: Option '--build' must be the first command line argument."),
+        6370 => try std.fmt.allocPrint(gpa, "error TS6370: Options '{s}' and '{s}' cannot be combined.", .{ diag.option, diag.expected }),
         else => unreachable,
     };
 }
@@ -398,6 +474,8 @@ pub fn projectDiagnostic(kind: ProjectDiagnosticKind, path: []const u8, detail: 
         .specified_path_does_not_exist => .{ .code = 5058, .path = path },
         .add_tsconfig_json => .{ .code = 5068 },
         .cannot_find_config_at_current_directory => .{ .code = 5081, .path = path },
+        .file_not_found => .{ .code = 6053, .path = path },
+        .unsupported_extension => .{ .code = 6054, .path = path, .detail = detail },
     };
 }
 
@@ -412,6 +490,8 @@ pub fn formatProjectDiagnostic(gpa: std.mem.Allocator, diag: ProjectDiagnostic) 
         5068 => try gpa.dupe(u8, "error TS5068: Adding a tsconfig.json file will help organize projects that contain both TypeScript and JavaScript files. Learn more at https://aka.ms/tsconfig."),
         5081 => try std.fmt.allocPrint(gpa, "error TS5081: Cannot find a tsconfig.json file at the current directory: {s}.", .{diag.path}),
         5083 => try std.fmt.allocPrint(gpa, "error TS5083: Cannot read file '{s}'.", .{diag.path}),
+        6053 => try std.fmt.allocPrint(gpa, "error TS6053: File '{s}' not found.", .{diag.path}),
+        6054 => try std.fmt.allocPrint(gpa, "error TS6054: File '{s}' has an unsupported extension. The only supported extensions are {s}.", .{ diag.path, diag.detail }),
         else => unreachable,
     };
 }
@@ -443,6 +523,14 @@ pub const helpText: []const u8 =
 ;
 
 pub const versionText: []const u8 = "home tsc 0.1.0 (TS-compat 5.x)";
+pub const InitDiagnostic = struct {
+    code: u32,
+    message: []const u8,
+};
+pub const init_success_diagnostic: InitDiagnostic = .{
+    .code = 6071,
+    .message = "message TS6071: Successfully created a tsconfig.json file.",
+};
 
 pub const RunResult = struct {
     code: ExitCode,
@@ -467,6 +555,9 @@ pub fn dispatch(opts: Options) RunResult {
     }
     if (opts.show_help or opts.show_all_help) {
         return .{ .code = .success, .stdout_text = helpText };
+    }
+    if (opts.init_config) {
+        return .{ .code = .success, .stdout_text = init_success_diagnostic.message };
     }
     if (opts.target) |target| {
         if (tsconfig_mod.Target.fromString(target) == null) return invalidCustomTypeOption("--target", targetValuesText);
@@ -493,7 +584,7 @@ pub fn dispatch(opts: Options) RunResult {
             .stderr_text = "error TS5074: Option '--incremental' can only be specified using tsconfig, emitting to single file or when option '--tsBuildInfoFile' is specified.",
         };
     }
-    if (opts.files.len == 0 and opts.project == null and !opts.init_config) {
+    if (opts.files.len == 0 and opts.project == null) {
         return .{
             .code = .config_error,
             .stderr_text = "error: no input files; pass paths or --project=<dir>",
@@ -698,6 +789,17 @@ test "parseArgs: build-only options outside build report TS5093" {
     }
 }
 
+test "parseArgs: --build after another option reports TS6369" {
+    const argv = [_][]const u8{ "--pretty", "--build" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(u8, 1), opts.parse_diagnostic_count);
+    try T.expectEqual(@as(u32, 6369), opts.parse_diagnostics[0].code);
+    const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[0]);
+    defer T.allocator.free(text);
+    try T.expectEqualStrings("error TS6369: Option '--build' must be the first command line argument.", text);
+}
+
 test "parseArgs: build mode reports unknown build options and suggestions" {
     const argv = [_][]const u8{ "--build", "--invalidOption", "--verbse" };
     const opts = try parseArgs(T.allocator, &argv);
@@ -720,6 +822,47 @@ test "parseArgs: build mode reports unknown build options and suggestions" {
     }
 }
 
+test "parseArgs: build mode reports TS6370 for nonsensical option pairs" {
+    const argv = [_][]const u8{ "--build", "--clean", "--force", "--verbose", "--watch" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(u8, 3), opts.parse_diagnostic_count);
+    const expected = [_][2][]const u8{
+        .{ "clean", "force" },
+        .{ "clean", "verbose" },
+        .{ "clean", "watch" },
+    };
+    for (expected, 0..) |pair, i| {
+        try T.expectEqual(@as(u32, 6370), opts.parse_diagnostics[i].code);
+        try T.expectEqualStrings(pair[0], opts.parse_diagnostics[i].option);
+        try T.expectEqualStrings(pair[1], opts.parse_diagnostics[i].expected);
+    }
+    const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[0]);
+    defer T.allocator.free(text);
+    try T.expectEqualStrings("error TS6370: Options 'clean' and 'force' cannot be combined.", text);
+}
+
+test "parseArgs: tsconfig-only options on command line report TS6064 and TS6230" {
+    const argv = [_][]const u8{ "--composite", "--paths", "src/*", "--rootDirs=null", "--disableSolutionSearching", "false" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(u8, 2), opts.parse_diagnostic_count);
+    try T.expectEqual(@as(u32, 6230), opts.parse_diagnostics[0].code);
+    try T.expectEqualStrings("composite", opts.parse_diagnostics[0].option);
+    {
+        const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[0]);
+        defer T.allocator.free(text);
+        try T.expectEqualStrings("error TS6230: Option 'composite' can only be specified in 'tsconfig.json' file or set to 'false' or 'null' on command line.", text);
+    }
+    try T.expectEqual(@as(u32, 6064), opts.parse_diagnostics[1].code);
+    try T.expectEqualStrings("paths", opts.parse_diagnostics[1].option);
+    {
+        const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[1]);
+        defer T.allocator.free(text);
+        try T.expectEqualStrings("error TS6064: Option 'paths' can only be specified in 'tsconfig.json' file or set to 'null' on command line.", text);
+    }
+}
+
 test "parseArgs: build mode reports TS5073 and TS5094 option mismatches" {
     const argv = [_][]const u8{ "--build", "--generateTrace", "--tsBuildInfoFile", "cache.tsbuildinfo", "--strict" };
     const opts = try parseArgs(T.allocator, &argv);
@@ -735,11 +878,11 @@ test "parseArgs: build mode reports TS5073 and TS5094 option mismatches" {
 }
 
 test "parseArgs: build mode accepts build bool options and projects" {
-    const argv = [_][]const u8{ "--build", "--clean", "--dry", "--force", "-v", "--stopBuildOnErrors", "packages/a" };
+    const argv = [_][]const u8{ "--build", "--dry", "--force", "-v", "--stopBuildOnErrors", "packages/a" };
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
     try T.expect(opts.build);
-    try T.expect(opts.build_clean);
+    try T.expect(!opts.build_clean);
     try T.expect(opts.build_dry);
     try T.expect(opts.build_force);
     try T.expect(opts.build_verbose);
@@ -747,6 +890,12 @@ test "parseArgs: build mode accepts build bool options and projects" {
     try T.expectEqual(@as(u8, 0), opts.parse_diagnostic_count);
     try T.expectEqual(@as(usize, 1), opts.files.len);
     try T.expectEqualStrings("packages/a", opts.files[0]);
+
+    const clean_argv = [_][]const u8{ "--build", "--clean", "packages/b" };
+    const clean_opts = try parseArgs(T.allocator, &clean_argv);
+    defer T.allocator.free(clean_opts.files);
+    try T.expect(clean_opts.build_clean);
+    try T.expectEqual(@as(u8, 0), clean_opts.parse_diagnostic_count);
 }
 
 test "option help metadata includes upstream message diagnostics" {
@@ -759,6 +908,12 @@ test "option help metadata includes upstream message diagnostics" {
 
     const module_detection_default = tsconfig_mod.compilerOptionMessageDiagnostic("moduleDetection.default").?;
     try T.expectEqual(@as(u32, 1476), module_detection_default.code);
+
+    const newline = tsconfig_mod.compilerOptionMessageDiagnostic("newLine").?;
+    try T.expectEqual(@as(u32, 6060), newline.code);
+
+    const init = tsconfig_mod.compilerOptionMessageDiagnostic("init").?;
+    try T.expectEqual(@as(u32, 6070), init.code);
 }
 
 test "dispatch: --version returns versionText to stdout" {
@@ -775,6 +930,14 @@ test "dispatch: --help returns helpText to stdout" {
     const r = dispatch(opts);
     try T.expectEqual(ExitCode.success, r.code);
     try T.expect(std.mem.indexOf(u8, r.stdout_text, "Usage:") != null);
+}
+
+test "dispatch: --init returns TS6071 success message" {
+    var opts: Options = .{};
+    opts.init_config = true;
+    const r = dispatch(opts);
+    try T.expectEqual(ExitCode.success, r.code);
+    try T.expect(std.mem.indexOf(u8, r.stdout_text, "TS6071") != null);
 }
 
 test "dispatch: missing input is a config error" {
@@ -823,8 +986,10 @@ test "formatProjectDiagnostic: project and file diagnostics mirror upstream mess
         projectDiagnostic(.specified_path_does_not_exist, "missing/tsconfig.json", ""),
         projectDiagnostic(.add_tsconfig_json, "", ""),
         projectDiagnostic(.cannot_find_config_at_current_directory, "/repo", ""),
+        projectDiagnostic(.file_not_found, "src/missing.ts", ""),
+        projectDiagnostic(.unsupported_extension, "src/style.css", "'.ts', '.tsx', '.d.ts', '.js', '.jsx'"),
     };
-    const expected_codes = [_]u32{ 5001, 5012, 5083, 5033, 5054, 5057, 5058, 5068, 5081 };
+    const expected_codes = [_]u32{ 5001, 5012, 5083, 5033, 5054, 5057, 5058, 5068, 5081, 6053, 6054 };
     for (cases, expected_codes) |diag, code| {
         try T.expectEqual(code, diag.code);
         const text = try formatProjectDiagnostic(T.allocator, diag);
