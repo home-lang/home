@@ -3542,7 +3542,8 @@ pub const Parser = struct {
                 defer param_decorators.deinit(self.gpa);
                 while (self.peek().kind == .at) {
                     const at_tok = self.advance();
-                    const dec_expr = try self.parseLeftHandSideExpression();
+                    const dec_expr = try self.parseDecoratorExpressionBody();
+                    try self.validateDecoratorExpression(dec_expr);
                     const dec_node = try self.builder.addDecorator(.{
                         .start = at_tok.span.start,
                         .end = self.hir.spanOf(dec_expr).end,
@@ -4412,6 +4413,7 @@ pub const Parser = struct {
                     defer self.generator_depth = 0;
                     break :blk try self.parseClassMemberDecoratorExpression();
                 };
+                try self.validateDecoratorExpression(dec_expr);
                 const dec_node = try self.builder.addDecorator(.{
                     .start = dec_tok.span.start,
                     .end = self.hir.spanOf(dec_expr).end,
@@ -4503,6 +4505,7 @@ pub const Parser = struct {
                     defer self.generator_depth = 0;
                     break :blk try self.parseClassMemberDecoratorExpression();
                 };
+                try self.validateDecoratorExpression(dec_expr);
                 const dec_node = try self.builder.addDecorator(.{
                     .start = dec_tok.span.start,
                     .end = self.hir.spanOf(dec_expr).end,
@@ -5888,33 +5891,7 @@ pub const Parser = struct {
     }
 
     fn parseClassMemberDecoratorExpression(self: *Parser) ParseError!NodeId {
-        var node = try self.parsePrimaryExpression();
-        while (true) {
-            switch (self.peek().kind) {
-                .dot => {
-                    _ = self.advance();
-                    const name_tok = try self.expectIdentifierLike();
-                    const name_id = try self.internToken(name_tok);
-                    node = try self.builder.addMemberAccess(
-                        .{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end },
-                        node,
-                        name_id,
-                        false,
-                    );
-                },
-                .open_paren => {
-                    const args = try self.parseArgumentList();
-                    defer self.gpa.free(args);
-                    node = try self.builder.addCall(
-                        .{ .start = self.hir.spanOf(node).start, .end = self.tokens[self.cursor - 1].span.end },
-                        node,
-                        args,
-                    );
-                },
-                else => break,
-            }
-        }
-        return node;
+        return try self.parseDecoratorExpressionBody();
     }
 
     fn parseInterfaceDeclaration(self: *Parser) ParseError!NodeId {
@@ -7204,7 +7181,141 @@ pub const Parser = struct {
             const empty = self.interner.intern("") catch return error.OutOfMemory;
             return try self.builder.addIdentifier(.{ .start = tok.span.start, .end = tok.span.start }, empty);
         }
-        return try self.parseLeftHandSideExpression();
+        const expr = try self.parseDecoratorExpressionBody();
+        try self.validateDecoratorExpression(expr);
+        return expr;
+    }
+
+    fn parseDecoratorExpressionBody(self: *Parser) ParseError!NodeId {
+        var node = try self.parsePrimaryExpression();
+        while (true) {
+            const t = self.peek();
+            switch (t.kind) {
+                .dot => {
+                    _ = self.advance();
+                    const name_tok = try self.expectIdentifierLike();
+                    const name_id = try self.internToken(name_tok);
+                    node = try self.builder.addMemberAccess(.{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end }, node, name_id, false);
+                },
+                .question_dot => {
+                    _ = self.advance();
+                    if (self.peek().kind == .open_paren) {
+                        const args = try self.parseArgumentList();
+                        defer self.gpa.free(args);
+                        node = try self.builder.addOptionalCall(.{ .start = self.hir.spanOf(node).start, .end = self.tokens[self.cursor - 1].span.end }, node, args);
+                    } else if (self.peek().kind == .open_bracket) {
+                        _ = self.advance();
+                        node = try self.finishElementAccess(node, true);
+                    } else {
+                        const name_tok = try self.expectIdentifierLike();
+                        const name_id = try self.internToken(name_tok);
+                        node = try self.builder.addMemberAccess(.{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end }, node, name_id, true);
+                    }
+                },
+                .open_paren => {
+                    const args = try self.parseArgumentList();
+                    defer self.gpa.free(args);
+                    node = try self.builder.addCall(.{ .start = self.hir.spanOf(node).start, .end = self.tokens[self.cursor - 1].span.end }, node, args);
+                },
+                .less_than => {
+                    if (self.findCallTypeArgsEnd(self.cursor)) |after_gt| {
+                        const type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                        defer self.gpa.free(type_args);
+                        if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
+                            node = try self.parseTaggedTemplateWithTypeArgs(node, type_args);
+                        } else {
+                            const args = try self.parseArgumentList();
+                            defer self.gpa.free(args);
+                            node = try self.builder.addCallWithTypeArgs(.{ .start = self.hir.spanOf(node).start, .end = self.tokens[self.cursor - 1].span.end }, node, args, type_args);
+                        }
+                    } else break;
+                },
+                .bang => {
+                    _ = self.advance();
+                    const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = t.span.end };
+                    try self.reportNonNullOnlyInTsIfNeeded(sp.start);
+                    node = try self.builder.addNonNullExpression(sp, node);
+                },
+                .no_substitution_template, .template_head => {
+                    node = try self.parseTaggedTemplateWithTypeArgs(node, &.{});
+                },
+                else => break,
+            }
+        }
+        return node;
+    }
+
+    fn validateDecoratorExpression(self: *Parser, expr: NodeId) ParseError!void {
+        if (self.parenthesizedNodeStart(expr) != null) return;
+        const invalid_span = self.invalidDecoratorSyntaxSpan(expr) orelse return;
+        const expr_span = self.hir.spanOf(expr);
+        try self.reportCodeAtWithSpan(
+            expr_span.start,
+            self.sourceLineAtPos(expr_span.start),
+            expr_span.end - expr_span.start,
+            1497,
+            "Expression must be enclosed in parentheses to be used as a decorator.",
+        );
+        try self.reportCodeAtWithSpan(
+            invalid_span.start,
+            self.sourceLineAtPos(invalid_span.start),
+            invalid_span.end - invalid_span.start,
+            1498,
+            "Invalid syntax in decorator.",
+        );
+    }
+
+    fn invalidDecoratorSyntaxSpan(self: *Parser, expr: NodeId) ?Span {
+        var node = expr;
+        var can_have_call_expression = true;
+        var error_span: ?Span = null;
+        while (node != hir_mod.none_node_id) {
+            switch (self.hir.kindOf(node)) {
+                .non_null_expr => {
+                    node = hir_mod.asExpressionOf(self.hir, node).expr;
+                    continue;
+                },
+                .call_expr => {
+                    const call = hir_mod.callOf(self.hir, node);
+                    if (self.nodeSpanContainsByte(node, '`')) error_span = self.hir.spanOf(node);
+                    if (!can_have_call_expression) error_span = self.hir.spanOf(node);
+                    if (call.optional) error_span = self.optionalChainTokenSpan(node) orelse self.hir.spanOf(node);
+                    node = call.callee;
+                    can_have_call_expression = false;
+                    continue;
+                },
+                .member_access => {
+                    const member = hir_mod.memberOf(self.hir, node);
+                    if (member.optional) error_span = self.optionalChainTokenSpan(node) orelse self.hir.spanOf(node);
+                    node = member.object;
+                    can_have_call_expression = false;
+                    continue;
+                },
+                .identifier => break,
+                else => {
+                    error_span = self.hir.spanOf(node);
+                    break;
+                },
+            }
+        }
+        return error_span;
+    }
+
+    fn nodeSpanContainsByte(self: *Parser, node: NodeId, needle: u8) bool {
+        const sp = self.hir.spanOf(node);
+        if (sp.end > self.source.len or sp.start >= sp.end) return false;
+        return std.mem.indexOfScalar(u8, self.source[sp.start..sp.end], needle) != null;
+    }
+
+    fn optionalChainTokenSpan(self: *Parser, node: NodeId) ?Span {
+        const sp = self.hir.spanOf(node);
+        if (sp.start >= sp.end or sp.end > self.source.len) return null;
+        const text = self.source[sp.start..sp.end];
+        if (std.mem.indexOf(u8, text, "?.")) |rel| {
+            const start = sp.start + @as(u32, @intCast(rel));
+            return .{ .start = start, .end = start + 2 };
+        }
+        return null;
     }
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
@@ -19095,6 +19206,108 @@ test "parser: decorator with call expression" {
     try T.expectEqual(hir_mod.NodeKind.decorator, s.hir.kindOf(stmts[0]));
     const dec = hir_mod.decoratorOf(&s.hir, stmts[0]);
     try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(dec.expression));
+}
+
+test "parser: decorator accepts unparenthesized valid expression forms" {
+    const cases = [_][]const u8{
+        "@dec class C {}",
+        "@ns.dec class C {}",
+        "@ns.dec(1) class C {}",
+        "@dec<T>() class C {}",
+        "@dec!() class C {}",
+        "@dec!.x class C {}",
+        "@ns.dec.x() class C {}",
+    };
+    for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        for (s.parser.diagnostics.items) |d| {
+            try T.expect(d.code != 1497);
+            try T.expect(d.code != 1498);
+        }
+    }
+}
+
+test "parser: decorator optional chain reports TS1497 and TS1498" {
+    var s = try newTestSetup("@foo?.bar class Foo {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    var found_1497 = false;
+    var found_1498 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1497) {
+            found_1497 = true;
+            try T.expectEqualStrings("Expression must be enclosed in parentheses to be used as a decorator.", d.message);
+        }
+        if (d.code == 1498) {
+            found_1498 = true;
+            try T.expectEqualStrings("Invalid syntax in decorator.", d.message);
+        }
+    }
+    try T.expect(found_1497);
+    try T.expect(found_1498);
+}
+
+test "parser: decorator reports TS1497 and TS1498 for invalid unparenthesized expressions" {
+    const cases = [_][]const u8{
+        "@new Dec() class C {}",
+        "@tag`x` class C {}",
+        "@dec()() class C {}",
+        "@dec().x class C {}",
+        "@dec?.() class C {}",
+        "@ns?.dec class C {}",
+        "@dec?.[x] class C {}",
+    };
+    for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+
+        var found_1497 = false;
+        var found_1498 = false;
+        for (s.parser.diagnostics.items) |d| {
+            if (d.code == 1497) {
+                found_1497 = true;
+                try T.expectEqualStrings("Expression must be enclosed in parentheses to be used as a decorator.", d.message);
+            }
+            if (d.code == 1498) {
+                found_1498 = true;
+                try T.expectEqualStrings("Invalid syntax in decorator.", d.message);
+            }
+        }
+        try T.expect(found_1497);
+        try T.expect(found_1498);
+    }
+}
+
+test "parser: parenthesized decorator expression suppresses TS1497 and TS1498" {
+    const cases = [_][]const u8{
+        "@(new Dec()) class C {}",
+        "@(tag`x`) class C {}",
+        "@(dec()()) class C {}",
+        "@(dec[0]) class C {}",
+    };
+    for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        for (s.parser.diagnostics.items) |d| {
+            try T.expect(d.code != 1497);
+            try T.expect(d.code != 1498);
+        }
+    }
+}
+
+test "parser: decorator context does not consume plain element access as TS1497" {
+    var s = try newTestSetup("@dec[0] class C {}");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1497);
+        try T.expect(d.code != 1498);
+    }
 }
 
 test "parser: multiple decorators" {
