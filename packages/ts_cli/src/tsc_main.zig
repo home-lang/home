@@ -754,6 +754,13 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             .TS => .TS,
             .HM => .HM,
         };
+        // Map the driver's nested elaboration chain (tsc `messageChain`)
+        // into the renderer's chain so it surfaces as indented
+        // continuation lines under the header. Allocated in an arena tied
+        // to this diagnostic's render; freed right after.
+        var chain_arena = std.heap.ArenaAllocator.init(ctx.gpa);
+        defer chain_arena.deinit();
+        const rendered_chain = mapDriverChain(chain_arena.allocator(), d.chain) catch &.{};
         const fdiag: ts_diagnostics.Diagnostic = .{
             .file = f.path,
             .line = pos.line,
@@ -763,6 +770,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             .severity = .err,
             .message = d.message,
             .span_len = 0,
+            .chain = rendered_chain,
         };
         const formatted = if (ctx.use_pretty)
             ts_diagnostics.formatPretty(ctx.gpa, fdiag, f.source, ctx.use_color) catch continue
@@ -772,6 +780,25 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
         std.debug.print("{s}\n", .{formatted});
         if (d.phase != .emit) ctx.any_errors.* = true;
     }
+}
+
+/// Recursively map a driver elaboration chain into the renderer's
+/// `ChainEntry` shape (message + children only; the renderer flattens
+/// tsc-style without re-printing the per-entry code). Allocated in the
+/// caller's arena.
+fn mapDriverChain(
+    arena: std.mem.Allocator,
+    chain: []const ts_driver.DiagnosticChainEntry,
+) error{OutOfMemory}![]const ts_diagnostics.ChainEntry {
+    if (chain.len == 0) return &.{};
+    const out = try arena.alloc(ts_diagnostics.ChainEntry, chain.len);
+    for (chain, 0..) |entry, i| {
+        out[i] = .{
+            .message = entry.message,
+            .children = try mapDriverChain(arena, entry.children),
+        };
+    }
+    return out;
 }
 
 /// Walk `project_dir` recursively, collect every TypeScript-shaped
