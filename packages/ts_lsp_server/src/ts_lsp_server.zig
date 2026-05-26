@@ -151,6 +151,10 @@ pub const Method = enum {
     text_document_selection_range,
     text_document_linked_editing_range,
     workspace_will_rename_files,
+    workspace_did_rename_files,
+    workspace_did_create_files,
+    workspace_did_delete_files,
+    workspace_did_change_watched_files,
     workspace_execute_command,
     text_document_moniker,
     text_document_inline_value,
@@ -210,6 +214,10 @@ pub const Method = enum {
             .{ "textDocument/selectionRange", Method.text_document_selection_range },
             .{ "textDocument/linkedEditingRange", Method.text_document_linked_editing_range },
             .{ "workspace/willRenameFiles", Method.workspace_will_rename_files },
+            .{ "workspace/didRenameFiles", Method.workspace_did_rename_files },
+            .{ "workspace/didCreateFiles", Method.workspace_did_create_files },
+            .{ "workspace/didDeleteFiles", Method.workspace_did_delete_files },
+            .{ "workspace/didChangeWatchedFiles", Method.workspace_did_change_watched_files },
             .{ "workspace/executeCommand", Method.workspace_execute_command },
             .{ "textDocument/moniker", Method.text_document_moniker },
             .{ "textDocument/inlineValue", Method.text_document_inline_value },
@@ -290,6 +298,10 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "workspace/symbol",
     "workspace/diagnostic",
     "workspace/willRenameFiles",
+    "workspace/didRenameFiles",
+    "workspace/didCreateFiles",
+    "workspace/didDeleteFiles",
+    "workspace/didChangeWatchedFiles",
     "workspace/executeCommand",
     // Call hierarchy.
     "callHierarchy/incomingCalls",
@@ -2760,6 +2772,68 @@ pub fn handleWillRenameFiles(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `workspace/didRenameFiles` notification: editor has
+/// committed a rename. The paired `willRenameFiles` request returns
+/// WorkspaceEdits the server wants applied alongside the rename;
+/// this post-rename notification carries no `oldUri`-keyed edits
+/// since the rename is already done. The handler validates the
+/// `files` array shape and acknowledges. A future enhancement would
+/// drop the old paths from `Program.by_path` and re-resolve imports
+/// that pointed at them.
+pub fn handleDidRenameFiles(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "files") orelse return error.MissingFiles;
+}
+
+/// Handle a `workspace/didCreateFiles` notification: the editor has
+/// committed file creations. Validates the `files` array shape and
+/// acknowledges. A future enhancement would call `Program.add` for
+/// each new path so subsequent diagnostic pulls observe them without
+/// waiting for an explicit `didOpen`.
+pub fn handleDidCreateFiles(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "files") orelse return error.MissingFiles;
+}
+
+/// Handle a `workspace/didDeleteFiles` notification: the editor has
+/// committed file deletions. Validates the `files` array shape and
+/// acknowledges. A future enhancement would purge the deleted paths
+/// from `Program.by_path` and re-resolve imports.
+pub fn handleDidDeleteFiles(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "files") orelse return error.MissingFiles;
+}
+
+/// Handle a `workspace/didChangeWatchedFiles` notification: a file
+/// watcher registered via dynamic capability fired. Validates the
+/// `changes` array shape and acknowledges. A future enhancement would
+/// dispatch each change by `type` (1=Created, 2=Changed, 3=Deleted)
+/// to refresh the program graph.
+pub fn handleDidChangeWatchedFiles(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "changes") orelse return error.MissingChanges;
+}
+
 /// Convert a 0-based byte offset into a 0-based `(line, character)`
 /// LSP position. Walks `source` once. Used by `handleInlayHint` to
 /// project `Service.inlayHints` byte positions back into LSP space.
@@ -3598,6 +3672,22 @@ pub fn dispatchRequest(
             if (is_notification) return &.{};
             return try handleWillRenameFiles(service, gpa, id, params);
         },
+        .workspace_did_rename_files => {
+            try handleDidRenameFiles(service, gpa, params);
+            return &.{};
+        },
+        .workspace_did_create_files => {
+            try handleDidCreateFiles(service, gpa, params);
+            return &.{};
+        },
+        .workspace_did_delete_files => {
+            try handleDidDeleteFiles(service, gpa, params);
+            return &.{};
+        },
+        .workspace_did_change_watched_files => {
+            try handleDidChangeWatchedFiles(service, gpa, params);
+            return &.{};
+        },
         .workspace_execute_command => {
             if (is_notification) return &.{};
             return try handleExecuteCommand(service, gpa, id, params);
@@ -4023,6 +4113,67 @@ test "handleDidSave: accepts notification without text payload" {
 
     const id = program.lookupPath("/main.ts") orelse return error.TestUnexpectedResult;
     try T.expectEqualStrings("let x = 1;", program.fileById(id).source);
+}
+
+test "handleDidRenameFiles: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"workspace/didRenameFiles","params":{"files":[{"oldUri":"file:///a.ts","newUri":"file:///b.ts"}]}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidRenameFiles(&svc, T.allocator, params);
+}
+
+test "handleDidCreateFiles: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"workspace/didCreateFiles","params":{"files":[{"uri":"file:///new.ts"}]}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidCreateFiles(&svc, T.allocator, params);
+}
+
+test "handleDidDeleteFiles: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"workspace/didDeleteFiles","params":{"files":[{"uri":"file:///gone.ts"}]}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidDeleteFiles(&svc, T.allocator, params);
+}
+
+test "handleDidChangeWatchedFiles: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    // type 2 = Changed per LSP `FileChangeType` enum.
+    const body =
+        \\{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"file:///watched.ts","type":2}]}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidChangeWatchedFiles(&svc, T.allocator, params);
 }
 
 test "handleWillSave: accepts notification (no-op)" {
