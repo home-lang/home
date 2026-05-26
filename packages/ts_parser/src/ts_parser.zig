@@ -12554,7 +12554,7 @@ pub const Parser = struct {
                         .message = msg,
                     });
                 }
-                try self.reportRegexUnicodePropertyEscapeDiagnostics(i, close_at, start_tok.line, unicode_mode);
+                _ = try self.reportRegexUnicodePropertyEscapeDiagnostics(i, close_at, start_tok.line, unicode_mode, unicode_sets_mode);
                 try self.reportRegexUnicodeEscapeAvailability(i, close_at, start_tok.line, unicode_mode);
                 if (unicode_mode and i + 1 < close_at and
                     !(unicode_sets_mode and self.source[i + 1] == 'q') and
@@ -12589,6 +12589,15 @@ pub const Parser = struct {
                     );
                 }
                 try self.reportInvalidControlEscapeIfNeeded(i, close_at, start_tok.line, unicode_mode);
+                if (i + 2 < close_at and
+                    (self.source[i + 1] == 'p' or self.source[i + 1] == 'P' or self.source[i + 1] == 'u') and
+                    self.source[i + 2] == '{')
+                {
+                    if (self.regexClassBraceEscapeEnd(i + 2, close_at)) |escape_end| {
+                        i = escape_end;
+                        continue;
+                    }
+                }
                 i += if (i + 1 < close_at) 2 else 1;
                 continue;
             }
@@ -12635,16 +12644,23 @@ pub const Parser = struct {
         );
     }
 
+    const RegexUnicodePropertyEscapeKind = enum {
+        none,
+        character,
+        string_set,
+    };
+
     fn reportRegexUnicodePropertyEscapeDiagnostics(
         self: *Parser,
         slash_pos: usize,
         limit: usize,
         line: u32,
         unicode_mode: bool,
-    ) ParseError!void {
-        if (slash_pos + 1 >= limit) return;
+        unicode_sets_mode: bool,
+    ) ParseError!RegexUnicodePropertyEscapeKind {
+        if (slash_pos + 1 >= limit) return .none;
         const esc = self.source[slash_pos + 1];
-        if (esc != 'p' and esc != 'P') return;
+        if (esc != 'p' and esc != 'P') return .none;
         if (slash_pos + 2 >= limit or self.source[slash_pos + 2] != '{') {
             if (unicode_mode) {
                 const msg = try std.fmt.allocPrint(
@@ -12660,13 +12676,16 @@ pub const Parser = struct {
                     .message = msg,
                 });
             }
-            return;
+            return .none;
         }
 
         const content_start = slash_pos + 3;
         var pos = content_start;
+        var result: RegexUnicodePropertyEscapeKind = .character;
         while (pos < limit and pos < self.source.len and isRegexUnicodePropertyWord(self.source[pos])) : (pos += 1) {}
+        const property_name_or_value = self.source[content_start..pos];
         if (pos < limit and self.source[pos] == '=') {
+            const property = regexNonBinaryUnicodeProperty(property_name_or_value);
             if (pos == content_start) {
                 try self.reportCodeAtWithSpan(
                     @intCast(content_start),
@@ -12675,10 +12694,19 @@ pub const Parser = struct {
                     1523,
                     "Expected a Unicode property name.",
                 );
+            } else if (property == null) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(content_start),
+                    line,
+                    @intCast(pos - content_start),
+                    1524,
+                    "Unknown Unicode property name.",
+                );
             }
             pos += 1;
             const value_start = pos;
             while (pos < limit and pos < self.source.len and isRegexUnicodePropertyWord(self.source[pos])) : (pos += 1) {}
+            const property_value = self.source[value_start..pos];
             if (pos == value_start) {
                 try self.reportCodeAtWithSpan(
                     @intCast(value_start),
@@ -12687,6 +12715,16 @@ pub const Parser = struct {
                     1525,
                     "Expected a Unicode property value.",
                 );
+            } else if (property) |p| {
+                if (!regexUnicodePropertyValueAllowed(p, property_value)) {
+                    try self.reportCodeAtWithSpan(
+                        @intCast(value_start),
+                        line,
+                        @intCast(pos - value_start),
+                        1526,
+                        "Unknown Unicode property value.",
+                    );
+                }
             }
         } else if (pos == content_start) {
             try self.reportCodeAtWithSpan(
@@ -12695,6 +12733,36 @@ pub const Parser = struct {
                 0,
                 1527,
                 "Expected a Unicode property name or value.",
+            );
+        } else if (isRegexBinaryUnicodeStringProperty(property_name_or_value)) {
+            if (!unicode_sets_mode) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(content_start),
+                    line,
+                    @intCast(pos - content_start),
+                    1528,
+                    "Any Unicode property that would possibly match more than a single character is only available when the Unicode Sets (v) flag is set.",
+                );
+            } else if (esc == 'P') {
+                try self.reportCodeAtWithSpan(
+                    @intCast(content_start),
+                    line,
+                    @intCast(pos - content_start),
+                    1518,
+                    "Anything that would possibly match more than a single character is invalid inside a negated character class.",
+                );
+            } else {
+                result = .string_set;
+            }
+        } else if (!isRegexUnicodeGeneralCategoryValue(property_name_or_value) and
+            !isRegexBinaryUnicodeProperty(property_name_or_value))
+        {
+            try self.reportCodeAtWithSpan(
+                @intCast(content_start),
+                line,
+                @intCast(pos - content_start),
+                1529,
+                "Unknown Unicode property name or value.",
             );
         }
 
@@ -12708,6 +12776,7 @@ pub const Parser = struct {
                 "Unicode property value expressions are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.",
             );
         }
+        return result;
     }
 
     fn reportRegexUnicodeEscapeAvailability(
@@ -12770,7 +12839,7 @@ pub const Parser = struct {
         }
         while (i < close_at and i < self.source.len) {
             if (self.source[i] == ']') return i + 1;
-            const min_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode, unicode_sets_mode);
+            const min_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode, unicode_sets_mode, negated);
             if (negated and min_atom.kind == .string_set and min_atom.string_set_may_be_multi) {
                 try self.reportCodeAtWithSpan(
                     @intCast(min_atom.start),
@@ -12787,7 +12856,7 @@ pub const Parser = struct {
                 continue;
             }
             i += 1;
-            const max_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode, unicode_sets_mode);
+            const max_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode, unicode_sets_mode, negated);
             if (negated and max_atom.kind == .string_set and max_atom.string_set_may_be_multi) {
                 try self.reportCodeAtWithSpan(
                     @intCast(max_atom.start),
@@ -12916,6 +12985,7 @@ pub const Parser = struct {
         line: u32,
         unicode_mode: bool,
         unicode_sets_mode: bool,
+        negated_class: bool,
     ) ParseError!RegexClassAtom {
         if (start >= limit or start >= self.source.len) return .{ .start = start, .end = start, .value = null };
         if (self.source[start] != '\\') {
@@ -12952,7 +13022,7 @@ pub const Parser = struct {
                 "'\\q' must be followed by string alternatives enclosed in braces.",
             );
         }
-        try self.reportRegexUnicodePropertyEscapeDiagnostics(start, limit, line, unicode_mode);
+        const property_escape_kind = try self.reportRegexUnicodePropertyEscapeDiagnostics(start, limit, line, unicode_mode, unicode_sets_mode);
         try self.reportRegexUnicodeEscapeAvailability(start, limit, line, unicode_mode);
         if (scanRegexClassOctalEscape(self.source, start, limit)) |octal| {
             const msg = try std.fmt.allocPrint(
@@ -13008,6 +13078,15 @@ pub const Parser = struct {
                     self.regexClassBraceEscapeEnd(start + 2, limit) orelse start + 2
                 else
                     start + 2;
+                if (property_escape_kind == .string_set) {
+                    return .{
+                        .start = start,
+                        .end = prop_end,
+                        .kind = .string_set,
+                        .value = null,
+                        .string_set_may_be_multi = negated_class,
+                    };
+                }
                 return .{ .start = start, .end = prop_end, .kind = .class_escape, .value = null };
             },
             'x' => {
@@ -13146,6 +13225,570 @@ pub const Parser = struct {
     fn isRegexUnicodePropertyWord(ch: u8) bool {
         return std.ascii.isAlphanumeric(ch) or ch == '_';
     }
+
+    const RegexNonBinaryUnicodeProperty = enum {
+        general_category,
+        script,
+    };
+
+    fn regexNonBinaryUnicodeProperty(name: []const u8) ?RegexNonBinaryUnicodeProperty {
+        if (std.mem.eql(u8, name, "General_Category") or std.mem.eql(u8, name, "gc")) return .general_category;
+        if (std.mem.eql(u8, name, "Script") or
+            std.mem.eql(u8, name, "sc") or
+            std.mem.eql(u8, name, "Script_Extensions") or
+            std.mem.eql(u8, name, "scx"))
+        {
+            return .script;
+        }
+        return null;
+    }
+
+    fn regexUnicodePropertyValueAllowed(property: RegexNonBinaryUnicodeProperty, value: []const u8) bool {
+        return switch (property) {
+            .general_category => regexNameInSet(regex_unicode_general_category_values, value),
+            .script => regexNameInSet(regex_unicode_script_values, value),
+        };
+    }
+
+    fn isRegexBinaryUnicodeProperty(value: []const u8) bool {
+        return regexNameInSet(regex_binary_unicode_properties, value);
+    }
+
+    fn isRegexBinaryUnicodeStringProperty(value: []const u8) bool {
+        return regexNameInSet(regex_binary_unicode_string_properties, value);
+    }
+
+    fn isRegexUnicodeGeneralCategoryValue(value: []const u8) bool {
+        return regexNameInSet(regex_unicode_general_category_values, value);
+    }
+
+    fn regexNameInSet(set: []const []const u8, value: []const u8) bool {
+        for (set) |item| {
+            if (std.mem.eql(u8, item, value)) return true;
+        }
+        return false;
+    }
+
+    const regex_binary_unicode_properties = &[_][]const u8{
+        "ASCII",
+        "ASCII_Hex_Digit",
+        "AHex",
+        "Alphabetic",
+        "Alpha",
+        "Any",
+        "Assigned",
+        "Bidi_Control",
+        "Bidi_C",
+        "Bidi_Mirrored",
+        "Bidi_M",
+        "Case_Ignorable",
+        "CI",
+        "Cased",
+        "Changes_When_Casefolded",
+        "CWCF",
+        "Changes_When_Casemapped",
+        "CWCM",
+        "Changes_When_Lowercased",
+        "CWL",
+        "Changes_When_NFKC_Casefolded",
+        "CWKCF",
+        "Changes_When_Titlecased",
+        "CWT",
+        "Changes_When_Uppercased",
+        "CWU",
+        "Dash",
+        "Default_Ignorable_Code_Point",
+        "DI",
+        "Deprecated",
+        "Dep",
+        "Diacritic",
+        "Dia",
+        "Emoji",
+        "Emoji_Component",
+        "EComp",
+        "Emoji_Modifier",
+        "EMod",
+        "Emoji_Modifier_Base",
+        "EBase",
+        "Emoji_Presentation",
+        "EPres",
+        "Extended_Pictographic",
+        "ExtPict",
+        "Extender",
+        "Ext",
+        "Grapheme_Base",
+        "Gr_Base",
+        "Grapheme_Extend",
+        "Gr_Ext",
+        "Hex_Digit",
+        "Hex",
+        "IDS_Binary_Operator",
+        "IDSB",
+        "IDS_Trinary_Operator",
+        "IDST",
+        "ID_Continue",
+        "IDC",
+        "ID_Start",
+        "IDS",
+        "Ideographic",
+        "Ideo",
+        "Join_Control",
+        "Join_C",
+        "Logical_Order_Exception",
+        "LOE",
+        "Lowercase",
+        "Lower",
+        "Math",
+        "Noncharacter_Code_Point",
+        "NChar",
+        "Pattern_Syntax",
+        "Pat_Syn",
+        "Pattern_White_Space",
+        "Pat_WS",
+        "Quotation_Mark",
+        "QMark",
+        "Radical",
+        "Regional_Indicator",
+        "RI",
+        "Sentence_Terminal",
+        "STerm",
+        "Soft_Dotted",
+        "SD",
+        "Terminal_Punctuation",
+        "Term",
+        "Unified_Ideograph",
+        "UIdeo",
+        "Uppercase",
+        "Upper",
+        "Variation_Selector",
+        "VS",
+        "White_Space",
+        "space",
+        "XID_Continue",
+        "XIDC",
+        "XID_Start",
+        "XIDS",
+    };
+
+    const regex_binary_unicode_string_properties = &[_][]const u8{
+        "Basic_Emoji",
+        "Emoji_Keycap_Sequence",
+        "RGI_Emoji_Modifier_Sequence",
+        "RGI_Emoji_Flag_Sequence",
+        "RGI_Emoji_Tag_Sequence",
+        "RGI_Emoji_ZWJ_Sequence",
+        "RGI_Emoji",
+    };
+
+    const regex_unicode_general_category_values = &[_][]const u8{
+        "C",
+        "Other",
+        "Cc",
+        "Control",
+        "cntrl",
+        "Cf",
+        "Format",
+        "Cn",
+        "Unassigned",
+        "Co",
+        "Private_Use",
+        "Cs",
+        "Surrogate",
+        "L",
+        "Letter",
+        "LC",
+        "Cased_Letter",
+        "Ll",
+        "Lowercase_Letter",
+        "Lm",
+        "Modifier_Letter",
+        "Lo",
+        "Other_Letter",
+        "Lt",
+        "Titlecase_Letter",
+        "Lu",
+        "Uppercase_Letter",
+        "M",
+        "Mark",
+        "Combining_Mark",
+        "Mc",
+        "Spacing_Mark",
+        "Me",
+        "Enclosing_Mark",
+        "Mn",
+        "Nonspacing_Mark",
+        "N",
+        "Number",
+        "Nd",
+        "Decimal_Number",
+        "digit",
+        "Nl",
+        "Letter_Number",
+        "No",
+        "Other_Number",
+        "P",
+        "Punctuation",
+        "punct",
+        "Pc",
+        "Connector_Punctuation",
+        "Pd",
+        "Dash_Punctuation",
+        "Pe",
+        "Close_Punctuation",
+        "Pf",
+        "Final_Punctuation",
+        "Pi",
+        "Initial_Punctuation",
+        "Po",
+        "Other_Punctuation",
+        "Ps",
+        "Open_Punctuation",
+        "S",
+        "Symbol",
+        "Sc",
+        "Currency_Symbol",
+        "Sk",
+        "Modifier_Symbol",
+        "Sm",
+        "Math_Symbol",
+        "So",
+        "Other_Symbol",
+        "Z",
+        "Separator",
+        "Zl",
+        "Line_Separator",
+        "Zp",
+        "Paragraph_Separator",
+        "Zs",
+        "Space_Separator",
+    };
+
+    const regex_unicode_script_values = &[_][]const u8{
+        "Adlm",
+        "Adlam",
+        "Aghb",
+        "Caucasian_Albanian",
+        "Ahom",
+        "Arab",
+        "Arabic",
+        "Armi",
+        "Imperial_Aramaic",
+        "Armn",
+        "Armenian",
+        "Avst",
+        "Avestan",
+        "Bali",
+        "Balinese",
+        "Bamu",
+        "Bamum",
+        "Bass",
+        "Bassa_Vah",
+        "Batk",
+        "Batak",
+        "Beng",
+        "Bengali",
+        "Bhks",
+        "Bhaiksuki",
+        "Bopo",
+        "Bopomofo",
+        "Brah",
+        "Brahmi",
+        "Brai",
+        "Braille",
+        "Bugi",
+        "Buginese",
+        "Buhd",
+        "Buhid",
+        "Cakm",
+        "Chakma",
+        "Cans",
+        "Canadian_Aboriginal",
+        "Cari",
+        "Carian",
+        "Cham",
+        "Cher",
+        "Cherokee",
+        "Chrs",
+        "Chorasmian",
+        "Copt",
+        "Coptic",
+        "Qaac",
+        "Cpmn",
+        "Cypro_Minoan",
+        "Cprt",
+        "Cypriot",
+        "Cyrl",
+        "Cyrillic",
+        "Deva",
+        "Devanagari",
+        "Diak",
+        "Dives_Akuru",
+        "Dogr",
+        "Dogra",
+        "Dsrt",
+        "Deseret",
+        "Dupl",
+        "Duployan",
+        "Egyp",
+        "Egyptian_Hieroglyphs",
+        "Elba",
+        "Elbasan",
+        "Elym",
+        "Elymaic",
+        "Ethi",
+        "Ethiopic",
+        "Geor",
+        "Georgian",
+        "Glag",
+        "Glagolitic",
+        "Gong",
+        "Gunjala_Gondi",
+        "Gonm",
+        "Masaram_Gondi",
+        "Goth",
+        "Gothic",
+        "Gran",
+        "Grantha",
+        "Grek",
+        "Greek",
+        "Gujr",
+        "Gujarati",
+        "Guru",
+        "Gurmukhi",
+        "Hang",
+        "Hangul",
+        "Hani",
+        "Han",
+        "Hano",
+        "Hanunoo",
+        "Hatr",
+        "Hatran",
+        "Hebr",
+        "Hebrew",
+        "Hira",
+        "Hiragana",
+        "Hluw",
+        "Anatolian_Hieroglyphs",
+        "Hmng",
+        "Pahawh_Hmong",
+        "Hmnp",
+        "Nyiakeng_Puachue_Hmong",
+        "Hrkt",
+        "Katakana_Or_Hiragana",
+        "Hung",
+        "Old_Hungarian",
+        "Ital",
+        "Old_Italic",
+        "Java",
+        "Javanese",
+        "Kali",
+        "Kayah_Li",
+        "Kana",
+        "Katakana",
+        "Kawi",
+        "Khar",
+        "Kharoshthi",
+        "Khmr",
+        "Khmer",
+        "Khoj",
+        "Khojki",
+        "Kits",
+        "Khitan_Small_Script",
+        "Knda",
+        "Kannada",
+        "Kthi",
+        "Kaithi",
+        "Lana",
+        "Tai_Tham",
+        "Laoo",
+        "Lao",
+        "Latn",
+        "Latin",
+        "Lepc",
+        "Lepcha",
+        "Limb",
+        "Limbu",
+        "Lina",
+        "Linear_A",
+        "Linb",
+        "Linear_B",
+        "Lisu",
+        "Lyci",
+        "Lycian",
+        "Lydi",
+        "Lydian",
+        "Mahj",
+        "Mahajani",
+        "Maka",
+        "Makasar",
+        "Mand",
+        "Mandaic",
+        "Mani",
+        "Manichaean",
+        "Marc",
+        "Marchen",
+        "Medf",
+        "Medefaidrin",
+        "Mend",
+        "Mende_Kikakui",
+        "Merc",
+        "Meroitic_Cursive",
+        "Mero",
+        "Meroitic_Hieroglyphs",
+        "Mlym",
+        "Malayalam",
+        "Modi",
+        "Mong",
+        "Mongolian",
+        "Mroo",
+        "Mro",
+        "Mtei",
+        "Meetei_Mayek",
+        "Mult",
+        "Multani",
+        "Mymr",
+        "Myanmar",
+        "Nagm",
+        "Nag_Mundari",
+        "Nand",
+        "Nandinagari",
+        "Narb",
+        "Old_North_Arabian",
+        "Nbat",
+        "Nabataean",
+        "Newa",
+        "Nkoo",
+        "Nko",
+        "Nshu",
+        "Nushu",
+        "Ogam",
+        "Ogham",
+        "Olck",
+        "Ol_Chiki",
+        "Orkh",
+        "Old_Turkic",
+        "Orya",
+        "Oriya",
+        "Osge",
+        "Osage",
+        "Osma",
+        "Osmanya",
+        "Ougr",
+        "Old_Uyghur",
+        "Palm",
+        "Palmyrene",
+        "Pauc",
+        "Pau_Cin_Hau",
+        "Perm",
+        "Old_Permic",
+        "Phag",
+        "Phags_Pa",
+        "Phli",
+        "Inscriptional_Pahlavi",
+        "Phlp",
+        "Psalter_Pahlavi",
+        "Phnx",
+        "Phoenician",
+        "Plrd",
+        "Miao",
+        "Prti",
+        "Inscriptional_Parthian",
+        "Rjng",
+        "Rejang",
+        "Rohg",
+        "Hanifi_Rohingya",
+        "Runr",
+        "Runic",
+        "Samr",
+        "Samaritan",
+        "Sarb",
+        "Old_South_Arabian",
+        "Saur",
+        "Saurashtra",
+        "Sgnw",
+        "SignWriting",
+        "Shaw",
+        "Shavian",
+        "Shrd",
+        "Sharada",
+        "Sidd",
+        "Siddham",
+        "Sind",
+        "Khudawadi",
+        "Sinh",
+        "Sinhala",
+        "Sogd",
+        "Sogdian",
+        "Sogo",
+        "Old_Sogdian",
+        "Sora",
+        "Sora_Sompeng",
+        "Soyo",
+        "Soyombo",
+        "Sund",
+        "Sundanese",
+        "Sylo",
+        "Syloti_Nagri",
+        "Syrc",
+        "Syriac",
+        "Tagb",
+        "Tagbanwa",
+        "Takr",
+        "Takri",
+        "Tale",
+        "Tai_Le",
+        "Talu",
+        "New_Tai_Lue",
+        "Taml",
+        "Tamil",
+        "Tang",
+        "Tangut",
+        "Tavt",
+        "Tai_Viet",
+        "Telu",
+        "Telugu",
+        "Tfng",
+        "Tifinagh",
+        "Tglg",
+        "Tagalog",
+        "Thaa",
+        "Thaana",
+        "Thai",
+        "Tibt",
+        "Tibetan",
+        "Tirh",
+        "Tirhuta",
+        "Tnsa",
+        "Tangsa",
+        "Toto",
+        "Ugar",
+        "Ugaritic",
+        "Vaii",
+        "Vai",
+        "Vith",
+        "Vithkuqi",
+        "Wara",
+        "Warang_Citi",
+        "Wcho",
+        "Wancho",
+        "Xpeo",
+        "Old_Persian",
+        "Xsux",
+        "Cuneiform",
+        "Yezi",
+        "Yezidi",
+        "Yiii",
+        "Yi",
+        "Zanb",
+        "Zanabazar_Square",
+        "Zinh",
+        "Inherited",
+        "Qaai",
+        "Zyyy",
+        "Common",
+        "Zzzz",
+        "Unknown",
+    };
 
     fn isInvalidRegexIdentityEscape(ch: u8) bool {
         if (std.ascii.isDigit(ch)) return false;
@@ -22307,6 +22950,64 @@ test "parser: regex Unicode property escape syntax diagnostics" {
     try T.expect(saw_1523);
     try T.expect(saw_1525);
     try T.expect(saw_1530);
+}
+
+test "parser: regex Unicode property escape validates names and values" {
+    var s = try newTestSetup("let a = /\\p{Nope=Latin}/u; let b = /\\p{Script=Nope}/u; let c = /\\p{Latin}/u; let d = /\\p{RGI_Emoji}/u; let e = /\\p{Letter}/u; let f = /\\p{Script=Latin}/u; let g = /\\p{sc=Latn}/u; let h = /\\p{RGI_Emoji}/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1524 = false;
+    var saw_1526 = false;
+    var saw_1528 = false;
+    var saw_1529 = false;
+    for (s.parser.diagnostics.items) |d| {
+        switch (d.code) {
+            1524 => {
+                saw_1524 = true;
+                try T.expectEqualStrings("Unknown Unicode property name.", d.message);
+            },
+            1526 => {
+                saw_1526 = true;
+                try T.expectEqualStrings("Unknown Unicode property value.", d.message);
+            },
+            1528 => {
+                saw_1528 = true;
+                try T.expectEqualStrings("Any Unicode property that would possibly match more than a single character is only available when the Unicode Sets (v) flag is set.", d.message);
+            },
+            1529 => {
+                saw_1529 = true;
+                try T.expectEqualStrings("Unknown Unicode property name or value.", d.message);
+            },
+            1508 => try T.expect(false),
+            else => {},
+        }
+    }
+    try T.expect(saw_1524);
+    try T.expect(saw_1526);
+    try T.expect(saw_1528);
+    try T.expect(saw_1529);
+}
+
+test "parser: regex Unicode string properties participate in unicode sets class grammar" {
+    var s = try newTestSetup("let a = /[^\\p{RGI_Emoji}]/v; let b = /[\\p{RGI_Emoji}-a]/v; let c = /[\\P{RGI_Emoji}]/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1516 = false;
+    var saw_1518 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1516) {
+            saw_1516 = true;
+            try T.expectEqualStrings("A character class range must not be bounded by another character class.", d.message);
+        }
+        if (d.code == 1518) {
+            saw_1518 = true;
+            try T.expectEqualStrings("Anything that would possibly match more than a single character is invalid inside a negated character class.", d.message);
+        }
+    }
+    try T.expect(saw_1516);
+    try T.expect(saw_1518);
 }
 
 test "parser: regex invalid identity and unicode escapes report scanner codes" {

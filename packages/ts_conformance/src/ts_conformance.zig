@@ -50108,6 +50108,64 @@ test "conformance: runCorpus supports exact diagnostic entries" {
     try T.expectEqual(@as(u32, 1), results.items[0].actual_diag_count);
 }
 
+test "conformance: exact diagnostic entries cover recent TS parity tranche" {
+    const exact = [_]CorpusEntry{
+        .{
+            .name = "jsx-adjacent-roots-ts2657",
+            .source = "let v = <div></div><span></span>;",
+            .path = "tests/jsx-adjacent-roots.tsx",
+            .is_tsx = true,
+            .expected_errors = "tests/jsx-adjacent-roots.tsx(1,9): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.\n" ++
+                "tests/jsx-adjacent-roots.tsx(1,9): error TS2657: JSX expressions must have one parent element.",
+            .use_exact_errors = true,
+        },
+        .{
+            .name = "type-import-assertion-ts1455",
+            .source = "type BadKey = import(\"pkg\", { assert: {\"bad\": \"require\"} }).RequireInterface;",
+            .path = "tests/type-import-assertion-bad-key.ts",
+            .expected_errors = "tests/type-import-assertion-bad-key.ts(1,22): error TS2307: Cannot find module 'pkg' or its corresponding type declarations.\n" ++
+                "tests/type-import-assertion-bad-key.ts(1,41): error TS1455: `resolution-mode` is the only valid key for type import assertions.",
+            .use_exact_errors = true,
+        },
+        .{
+            .name = "type-import-assertion-ts1456",
+            .source = "type Empty = import(\"pkg\", { assert: {} }).RequireInterface;",
+            .path = "tests/type-import-assertion-empty.ts",
+            .expected_errors = "tests/type-import-assertion-empty.ts(1,21): error TS2307: Cannot find module 'pkg' or its corresponding type declarations.\n" ++
+                "tests/type-import-assertion-empty.ts(1,38): error TS1456: Type import assertions should have exactly one key - `resolution-mode` - with value `import` or `require`.",
+            .use_exact_errors = true,
+        },
+        .{
+            .name = "const-enum-value-use-ts2475-ts2476",
+            .source =
+            \\const enum E { A }
+            \\let x = E;
+            \\let y = E[1];
+            ,
+            .path = "tests/const-enum-value-use.ts",
+            .expected_errors = "tests/const-enum-value-use.ts(2,9): error TS2475: 'const' enums can only be used in property or index access expressions or the right hand side of an import declaration or export assignment or type query.\n" ++
+                "tests/const-enum-value-use.ts(3,11): error TS2476: A const enum member can only be accessed using a string literal.",
+            .use_exact_errors = true,
+        },
+    };
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        freeResults(T.allocator, results.items);
+        results.deinit(T.allocator);
+    }
+
+    const stats = try runCorpus(T.allocator, &exact, &results);
+    for (results.items) |r| {
+        if (r.outcome == .failed) {
+            std.debug.print("[recent exact fail] {s}: {s}\n", .{ r.name, r.detail });
+        }
+    }
+    try T.expectEqual(@as(u32, exact.len), stats.total());
+    try T.expectEqual(@as(u32, exact.len), stats.passed);
+    try T.expectEqual(@as(u32, 0), stats.failed);
+}
+
 test "conformance: builtin corpus runs and reports pass rate" {
     var results: std.ArrayListUnmanaged(Result) = .empty;
     defer {

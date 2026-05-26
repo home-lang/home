@@ -308,6 +308,7 @@ pub const OptionParseDiagnostic = struct {
 pub const ConfigParseDiagnostic = struct {
     code: u32,
     option: []const u8 = "",
+    expected: []const u8 = "",
     pattern: []const u8 = "",
     actual: []const u8 = "",
     file_kind: []const u8 = "tsconfig.json",
@@ -338,6 +339,12 @@ pub const PackageMapKind = enum {
     imports,
 };
 
+pub const ProjectReference = struct {
+    path: []const u8,
+    prepend: bool = false,
+    circular: bool = false,
+};
+
 pub const TsConfig = struct {
     /// The path this config came from (set by the loader; empty when
     /// parsed via `parseString`).
@@ -357,8 +364,8 @@ pub const TsConfig = struct {
     include: ?[][]const u8,
     /// `exclude`: glob patterns. `null` if not present.
     exclude: ?[][]const u8,
-    /// `references`: project-references entries. Phase 9 fills in.
-    references: [][]const u8,
+    /// `references`: project-reference entries.
+    references: []ProjectReference,
     /// Unknown keys seen inside top-level `typeAcquisition`. TypeScript
     /// validates that object with its own option table rather than
     /// treating these as generic unknown root keys.
@@ -456,6 +463,16 @@ pub const TsConfig = struct {
         }
         if (self.exclude) |exclude| {
             try validateFileSpecs(gpa, &diags, exclude, "exclude");
+        }
+        for (self.references) |ref| {
+            if (ref.prepend) {
+                try diags.append(gpa, .{
+                    .code = 5102,
+                    .message = try gpa.dupe(u8, "Option 'prepend' has been removed. Please remove it from your configuration."),
+                    .owns_message = true,
+                    .field = "references",
+                });
+            }
         }
 
         if (co.ignore_deprecations) |ignore_deprecations| {
@@ -755,9 +772,39 @@ pub const compiler_option_message_diagnostics = [_]OptionMessageDiagnostic{
         .message = "Specify the end of line sequence to be used when emitting files: 'CRLF' (dos) or 'LF' (unix).",
     },
     .{
+        .option = "experimentalDecorators",
+        .code = 6065,
+        .message = "Enables experimental support for ES7 decorators.",
+    },
+    .{
         .option = "init",
         .code = 6070,
         .message = "Initializes a TypeScript project and creates a tsconfig.json file.",
+    },
+    .{
+        .option = "suppressExcessPropertyErrors",
+        .code = 6072,
+        .message = "Suppress excess property checks for object literals.",
+    },
+    .{
+        .option = "pretty.legacy",
+        .code = 6073,
+        .message = "Stylize errors and messages using color and context (experimental).",
+    },
+    .{
+        .option = "baseUrl",
+        .code = 6083,
+        .message = "Base directory to resolve non-absolute module names.",
+    },
+    .{
+        .option = "build",
+        .code = 6302,
+        .message = "Enable project compilation",
+    },
+    .{
+        .option = "tsBuildInfoFile",
+        .code = 6380,
+        .message = "Specify file to store incremental compilation information",
     },
 };
 
@@ -1080,6 +1127,7 @@ fn appendConfigParseDiagnostic(
         1327 => try gpa.dupe(u8, "String literal with double quotes expected."),
         1328 => try gpa.dupe(u8, "Property value can only be string literal, numeric literal, 'true', 'false', 'null', object literal or array literal."),
         6266 => try std.fmt.allocPrint(gpa, "Option '{s}' can only be specified on command line.", .{diag.option}),
+        5024 => try std.fmt.allocPrint(gpa, "Compiler option '{s}' requires a value of type {s}.", .{ diag.option, diag.expected }),
         else => unreachable,
     };
     try diags.append(gpa, .{
@@ -1093,6 +1141,7 @@ fn appendConfigParseDiagnostic(
             5092 => "",
             1327, 1328 => "",
             6266 => diag.option,
+            5024 => diag.option,
             else => "",
         },
     });
@@ -2013,6 +2062,28 @@ fn collectConfigParseDiagnostics(arena: std.mem.Allocator, root: jsonc.Value.Obj
             }
         }
     }
+    if (root.get("references")) |references_v| {
+        if (references_v.asArray()) |references| {
+            for (references) |ref_v| {
+                const ref = ref_v.asObject() orelse continue;
+                if (ref.get("path")) |path_v| {
+                    if (path_v.asString() == null) {
+                        try out.append(arena, .{
+                            .code = 5024,
+                            .option = "reference.path",
+                            .expected = "string",
+                        });
+                    }
+                } else {
+                    try out.append(arena, .{
+                        .code = 5024,
+                        .option = "reference.path",
+                        .expected = "string",
+                    });
+                }
+            }
+        }
+    }
 
     return out.toOwnedSlice(arena);
 }
@@ -2153,13 +2224,17 @@ pub fn parseString(
     }
     if (root.get("references")) |v| {
         if (v.asArray()) |refs| {
-            const out = try arena.alloc([]const u8, refs.len);
+            const out = try arena.alloc(ProjectReference, refs.len);
             var n: usize = 0;
             for (refs) |r| {
                 if (r.asObject()) |o| {
                     if (o.get("path")) |p| {
                         if (p.asString()) |s| {
-                            out[n] = s;
+                            out[n] = .{
+                                .path = s,
+                                .prepend = if (o.get("prepend")) |prepend| prepend.asBool() orelse false else false,
+                                .circular = if (o.get("circular")) |circular| circular.asBool() orelse false else false,
+                            };
                             n += 1;
                         }
                     }
@@ -2556,6 +2631,15 @@ pub fn arbitraryExtensionImportDiagnostic(gpa: std.mem.Allocator, module_name: [
         .message = try std.fmt.allocPrint(gpa, "Module '{s}' was resolved to '{s}', but '--allowArbitraryExtensions' is not set.", .{ module_name, resolved_file }),
         .owns_message = true,
         .field = "allowArbitraryExtensions",
+    };
+}
+
+pub fn moduleResolutionStartDiagnostic(gpa: std.mem.Allocator, module_name: []const u8, from_file: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6086,
+        .message = try std.fmt.allocPrint(gpa, "======== Resolving module '{s}' from '{s}'. ========", .{ module_name, from_file }),
+        .owns_message = true,
+        .field = "traceResolution",
     };
 }
 
@@ -3848,6 +3932,35 @@ test "tsconfig.validate: empty files list is allowed with references or extends"
     try t.expectEqual(@as(usize, 0), ext_diags.len);
 }
 
+test "tsconfig: project references keep typed metadata and validate reference.path" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "references": [
+        \\    { "path": "./pkg-a", "prepend": true, "circular": true },
+        \\    { "path": 123 },
+        \\    { "prepend": true }
+        \\  ]
+        \\}
+    );
+    try t.expectEqual(@as(usize, 1), cfg.references.len);
+    try t.expectEqualStrings("./pkg-a", cfg.references[0].path);
+    try t.expect(cfg.references[0].prepend);
+    try t.expect(cfg.references[0].circular);
+
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), diags.len);
+    try t.expectEqual(@as(u32, 5024), diags[0].code);
+    try t.expectEqualStrings("Compiler option 'reference.path' requires a value of type string.", diags[0].message);
+    try t.expectEqual(@as(u32, 5024), diags[1].code);
+    try t.expectEqual(@as(u32, 5102), diags[2].code);
+    try t.expectEqualStrings("Option 'prepend' has been removed. Please remove it from your configuration.", diags[2].message);
+    try t.expectEqualStrings("references", diags[2].field);
+}
+
 test "tsconfig.validate: unknown typeAcquisition keys report TS17010" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
@@ -4851,6 +4964,12 @@ test "tsconfig diagnostics: no-input and project-reference helpers mirror upstre
     try t.expectEqual(@as(u32, 6263), arbitrary.code);
     try t.expectEqualStrings("Module './component.html' was resolved to 'component.d.html.ts', but '--allowArbitraryExtensions' is not set.", arbitrary.message);
     try t.expectEqualStrings("allowArbitraryExtensions", arbitrary.field);
+
+    const trace = try moduleResolutionStartDiagnostic(t.allocator, "react", "/repo/src/app.tsx");
+    defer if (trace.owns_message) t.allocator.free(trace.message);
+    try t.expectEqual(@as(u32, 6086), trace.code);
+    try t.expectEqualStrings("======== Resolving module 'react' from '/repo/src/app.tsx'. ========", trace.message);
+    try t.expectEqualStrings("traceResolution", trace.field);
 
     const cycle = try projectReferenceCycleDiagnostic(t.allocator, "/repo/a -> /repo/b -> /repo/a");
     defer if (cycle.owns_message) t.allocator.free(cycle.message);

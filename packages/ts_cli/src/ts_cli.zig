@@ -132,6 +132,80 @@ pub const ProjectDiagnostic = struct {
     option: []const u8 = "",
 };
 
+pub const BuildStatusKind = enum {
+    output_older_than_input,
+    newest_input_older_than_output,
+    output_missing,
+    dependency_out_of_date,
+    up_to_date_with_dts_from_dependencies,
+    projects_in_build,
+    dry_delete_files,
+    dry_build_project,
+    building_project,
+    updating_output_timestamps,
+    up_to_date,
+    skipped_dependency_errors,
+    dependency_errors,
+    updating_unchanged_output_timestamps,
+    dry_update_timestamps,
+    version_mismatch,
+    skipped_dependency_not_built,
+    dependency_not_built,
+    forcibly_rebuilt,
+    buildinfo_pending_emit,
+    buildinfo_read_error,
+    buildinfo_options_changed,
+    buildinfo_root_removed,
+    buildinfo_report_errors,
+    out_of_date_reason,
+};
+
+pub const BuildStatusDiagnostic = struct {
+    kind: BuildStatusKind,
+    project: []const u8 = "",
+    output: []const u8 = "",
+    input: []const u8 = "",
+    dependency: []const u8 = "",
+    files: []const u8 = "",
+    version: []const u8 = "",
+    current_version: []const u8 = "",
+    buildinfo_file: []const u8 = "",
+    reason: []const u8 = "",
+};
+
+const BuildStatusMessage = struct {
+    kind: BuildStatusKind,
+    code: u32,
+};
+
+pub const build_status_messages = [_]BuildStatusMessage{
+    .{ .kind = .output_older_than_input, .code = 6350 },
+    .{ .kind = .newest_input_older_than_output, .code = 6351 },
+    .{ .kind = .output_missing, .code = 6352 },
+    .{ .kind = .dependency_out_of_date, .code = 6353 },
+    .{ .kind = .up_to_date_with_dts_from_dependencies, .code = 6354 },
+    .{ .kind = .projects_in_build, .code = 6355 },
+    .{ .kind = .dry_delete_files, .code = 6356 },
+    .{ .kind = .dry_build_project, .code = 6357 },
+    .{ .kind = .building_project, .code = 6358 },
+    .{ .kind = .updating_output_timestamps, .code = 6359 },
+    .{ .kind = .up_to_date, .code = 6361 },
+    .{ .kind = .skipped_dependency_errors, .code = 6362 },
+    .{ .kind = .dependency_errors, .code = 6363 },
+    .{ .kind = .updating_unchanged_output_timestamps, .code = 6371 },
+    .{ .kind = .dry_update_timestamps, .code = 6374 },
+    .{ .kind = .version_mismatch, .code = 6381 },
+    .{ .kind = .skipped_dependency_not_built, .code = 6382 },
+    .{ .kind = .dependency_not_built, .code = 6383 },
+    .{ .kind = .forcibly_rebuilt, .code = 6388 },
+    .{ .kind = .buildinfo_pending_emit, .code = 6399 },
+    .{ .kind = .buildinfo_read_error, .code = 6401 },
+    .{ .kind = .buildinfo_options_changed, .code = 6406 },
+    .{ .kind = .buildinfo_root_removed, .code = 6412 },
+    .{ .kind = .buildinfo_report_errors, .code = 6419 },
+    .{ .kind = .out_of_date_reason, .code = 6420 },
+};
+
 pub const ParseError = error{
     OutOfMemory,
     UnknownFlag,
@@ -916,6 +990,43 @@ pub fn formatProjectDiagnostic(gpa: std.mem.Allocator, diag: ProjectDiagnostic) 
     };
 }
 
+pub fn buildStatusCode(kind: BuildStatusKind) u32 {
+    for (build_status_messages) |message| {
+        if (message.kind == kind) return message.code;
+    }
+    unreachable;
+}
+
+pub fn formatBuildStatusDiagnostic(gpa: std.mem.Allocator, diag: BuildStatusDiagnostic) ![]const u8 {
+    return switch (diag.kind) {
+        .output_older_than_input => try std.fmt.allocPrint(gpa, "message TS6350: Project '{s}' is out of date because output '{s}' is older than input '{s}'", .{ diag.project, diag.output, diag.input }),
+        .newest_input_older_than_output => try std.fmt.allocPrint(gpa, "message TS6351: Project '{s}' is up to date because newest input '{s}' is older than output '{s}'", .{ diag.project, diag.input, diag.output }),
+        .output_missing => try std.fmt.allocPrint(gpa, "message TS6352: Project '{s}' is out of date because output file '{s}' does not exist", .{ diag.project, diag.output }),
+        .dependency_out_of_date => try std.fmt.allocPrint(gpa, "message TS6353: Project '{s}' is out of date because its dependency '{s}' is out of date", .{ diag.project, diag.dependency }),
+        .up_to_date_with_dts_from_dependencies => try std.fmt.allocPrint(gpa, "message TS6354: Project '{s}' is up to date with .d.ts files from its dependencies", .{diag.project}),
+        .projects_in_build => try std.fmt.allocPrint(gpa, "message TS6355: Projects in this build: {s}", .{diag.files}),
+        .dry_delete_files => try std.fmt.allocPrint(gpa, "message TS6356: A non-dry build would delete the following files: {s}", .{diag.files}),
+        .dry_build_project => try std.fmt.allocPrint(gpa, "message TS6357: A non-dry build would build project '{s}'", .{diag.project}),
+        .building_project => try std.fmt.allocPrint(gpa, "message TS6358: Building project '{s}'...", .{diag.project}),
+        .updating_output_timestamps => try std.fmt.allocPrint(gpa, "message TS6359: Updating output timestamps of project '{s}'...", .{diag.project}),
+        .up_to_date => try std.fmt.allocPrint(gpa, "message TS6361: Project '{s}' is up to date", .{diag.project}),
+        .skipped_dependency_errors => try std.fmt.allocPrint(gpa, "message TS6362: Skipping build of project '{s}' because its dependency '{s}' has errors", .{ diag.project, diag.dependency }),
+        .dependency_errors => try std.fmt.allocPrint(gpa, "message TS6363: Project '{s}' can't be built because its dependency '{s}' has errors", .{ diag.project, diag.dependency }),
+        .updating_unchanged_output_timestamps => try std.fmt.allocPrint(gpa, "message TS6371: Updating unchanged output timestamps of project '{s}'...", .{diag.project}),
+        .dry_update_timestamps => try std.fmt.allocPrint(gpa, "message TS6374: A non-dry build would update timestamps for output of project '{s}'", .{diag.project}),
+        .version_mismatch => try std.fmt.allocPrint(gpa, "message TS6381: Project '{s}' is out of date because output for it was generated with version '{s}' that differs with current version '{s}'", .{ diag.project, diag.version, diag.current_version }),
+        .skipped_dependency_not_built => try std.fmt.allocPrint(gpa, "message TS6382: Skipping build of project '{s}' because its dependency '{s}' was not built", .{ diag.project, diag.dependency }),
+        .dependency_not_built => try std.fmt.allocPrint(gpa, "message TS6383: Project '{s}' can't be built because its dependency '{s}' was not built", .{ diag.project, diag.dependency }),
+        .forcibly_rebuilt => try std.fmt.allocPrint(gpa, "message TS6388: Project '{s}' is being forcibly rebuilt", .{diag.project}),
+        .buildinfo_pending_emit => try std.fmt.allocPrint(gpa, "message TS6399: Project '{s}' is out of date because buildinfo file '{s}' indicates that some of the changes were not emitted", .{ diag.project, diag.buildinfo_file }),
+        .buildinfo_read_error => try std.fmt.allocPrint(gpa, "message TS6401: Project '{s}' is out of date because there was error reading file '{s}'", .{ diag.project, diag.buildinfo_file }),
+        .buildinfo_options_changed => try std.fmt.allocPrint(gpa, "message TS6406: Project '{s}' is out of date because buildinfo file '{s}' indicates there is change in compilerOptions", .{ diag.project, diag.buildinfo_file }),
+        .buildinfo_root_removed => try std.fmt.allocPrint(gpa, "message TS6412: Project '{s}' is out of date because buildinfo file '{s}' indicates that file '{s}' was root file of compilation but not any more.", .{ diag.project, diag.buildinfo_file, diag.input }),
+        .buildinfo_report_errors => try std.fmt.allocPrint(gpa, "message TS6419: Project '{s}' is out of date because buildinfo file '{s}' indicates that program needs to report errors.", .{ diag.project, diag.buildinfo_file }),
+        .out_of_date_reason => try std.fmt.allocPrint(gpa, "message TS6420: Project '{s}' is out of date because {s}.", .{ diag.project, diag.reason }),
+    };
+}
+
 pub const helpText: []const u8 =
     \\Usage: home tsc [files...] [options]
     \\
@@ -1472,8 +1583,26 @@ test "option help metadata includes upstream message diagnostics" {
     const newline = tsconfig_mod.compilerOptionMessageDiagnostic("newLine").?;
     try T.expectEqual(@as(u32, 6060), newline.code);
 
+    const experimental_decorators = tsconfig_mod.compilerOptionMessageDiagnostic("experimentalDecorators").?;
+    try T.expectEqual(@as(u32, 6065), experimental_decorators.code);
+
     const init = tsconfig_mod.compilerOptionMessageDiagnostic("init").?;
     try T.expectEqual(@as(u32, 6070), init.code);
+
+    const suppress_excess = tsconfig_mod.compilerOptionMessageDiagnostic("suppressExcessPropertyErrors").?;
+    try T.expectEqual(@as(u32, 6072), suppress_excess.code);
+
+    const pretty_legacy = tsconfig_mod.compilerOptionMessageDiagnostic("pretty.legacy").?;
+    try T.expectEqual(@as(u32, 6073), pretty_legacy.code);
+
+    const base_url = tsconfig_mod.compilerOptionMessageDiagnostic("baseUrl").?;
+    try T.expectEqual(@as(u32, 6083), base_url.code);
+
+    const build = tsconfig_mod.compilerOptionMessageDiagnostic("build").?;
+    try T.expectEqual(@as(u32, 6302), build.code);
+
+    const ts_build_info = tsconfig_mod.compilerOptionMessageDiagnostic("tsBuildInfoFile").?;
+    try T.expectEqual(@as(u32, 6380), ts_build_info.code);
 }
 
 test "dispatch: --version returns versionText to stdout" {
@@ -1557,6 +1686,54 @@ test "formatProjectDiagnostic: project and file diagnostics mirror upstream mess
         var code_buf: [16]u8 = undefined;
         const code_text = try std.fmt.bufPrint(&code_buf, "TS{d}", .{code});
         try T.expect(std.mem.indexOf(u8, text, code_text) != null);
+    }
+}
+
+test "formatBuildStatusDiagnostic: build graph messages mirror upstream codes" {
+    const cases = [_]struct {
+        diag: BuildStatusDiagnostic,
+        code: u32,
+        fragment: []const u8,
+    }{
+        .{
+            .diag = .{ .kind = .output_older_than_input, .project = "packages/a", .output = "dist/a.js", .input = "src/a.ts" },
+            .code = 6350,
+            .fragment = "output 'dist/a.js' is older than input 'src/a.ts'",
+        },
+        .{
+            .diag = .{ .kind = .projects_in_build, .files = "packages/a, packages/b" },
+            .code = 6355,
+            .fragment = "Projects in this build: packages/a, packages/b",
+        },
+        .{
+            .diag = .{ .kind = .skipped_dependency_errors, .project = "packages/app", .dependency = "packages/lib" },
+            .code = 6362,
+            .fragment = "because its dependency 'packages/lib' has errors",
+        },
+        .{
+            .diag = .{ .kind = .version_mismatch, .project = "packages/app", .version = "5.9.3", .current_version = "6.0.0-dev" },
+            .code = 6381,
+            .fragment = "generated with version '5.9.3' that differs with current version '6.0.0-dev'",
+        },
+        .{
+            .diag = .{ .kind = .buildinfo_root_removed, .project = "packages/app", .buildinfo_file = ".tsbuildinfo", .input = "src/old.ts" },
+            .code = 6412,
+            .fragment = "file 'src/old.ts' was root file of compilation but not any more.",
+        },
+        .{
+            .diag = .{ .kind = .out_of_date_reason, .project = "packages/app", .reason = "compilerOptions changed" },
+            .code = 6420,
+            .fragment = "because compilerOptions changed.",
+        },
+    };
+    for (cases) |case| {
+        try T.expectEqual(case.code, buildStatusCode(case.diag.kind));
+        const text = try formatBuildStatusDiagnostic(T.allocator, case.diag);
+        defer T.allocator.free(text);
+        var code_buf: [16]u8 = undefined;
+        const code_text = try std.fmt.bufPrint(&code_buf, "TS{d}", .{case.code});
+        try T.expect(std.mem.indexOf(u8, text, code_text) != null);
+        try T.expect(std.mem.indexOf(u8, text, case.fragment) != null);
     }
 }
 
