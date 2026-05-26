@@ -6586,6 +6586,13 @@ pub const Parser = struct {
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
                 const spec_type_only = self.match(.kw_type);
+                // TS2206 — a named import specifier cannot carry its own
+                // `type` modifier when the whole statement is already an
+                // `import type {...}`. Anchored at the specifier's `type`
+                // keyword. Mirrors `checkGrammarTypeOnlyNamedImportsOrExports`.
+                if (is_type_only and spec_type_only) {
+                    try self.reportCodeAt(spec_start.span.start, spec_start.line, 2206, "The 'type' modifier cannot be used on a named import when 'import type' is used on its import statement.");
+                }
                 const imported_tok = try self.expectModuleExportName();
                 const imported_is_string_literal = imported_tok.kind == .string_literal;
                 var local_id = try self.internModuleExportName(imported_tok);
@@ -7159,6 +7166,13 @@ pub const Parser = struct {
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
                 const spec_type_only = self.match(.kw_type);
+                // TS2207 — a named export specifier cannot carry its own
+                // `type` modifier when the whole statement is already an
+                // `export type {...}`. Anchored at the specifier's `type`
+                // keyword. Mirrors `checkGrammarTypeOnlyNamedImportsOrExports`.
+                if (is_type_only and spec_type_only) {
+                    try self.reportCodeAt(spec_start.span.start, spec_start.line, 2207, "The 'type' modifier cannot be used on a named export when 'export type' is used on its export statement.");
+                }
                 const imported_tok = try self.expectModuleExportName();
                 const imported_id = try self.internModuleExportName(imported_tok);
                 const imported_is_string_literal = imported_tok.kind == .string_literal;
@@ -24198,5 +24212,53 @@ test "parser: TS7061 stays clean for a well-formed mapped type" {
         defer destroyTestSetup(s);
         _ = s.parser.parseSourceFile() catch {};
         try T.expectEqual(@as(u32, 0), countDiag(s, 7061));
+    }
+}
+
+
+test "parser: TS2206 fires for a type-modified specifier under import type" {
+    var s = try newTestSetup(
+        \\import type { type A } from "mod";
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    const d = findDiag(s, 2206) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("The 'type' modifier cannot be used on a named import when 'import type' is used on its import statement.", d.message);
+}
+
+test "parser: TS2206 stays clean for a plain import type" {
+    const cases = [_][]const u8{
+        "import type { A } from \"mod\";",
+        "import { type A } from \"mod\";",
+        "import { A, type B } from \"mod\";",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        try T.expectEqual(@as(u32, 0), countDiag(s, 2206));
+    }
+}
+
+test "parser: TS2207 fires for a type-modified specifier under export type" {
+    var s = try newTestSetup(
+        \\export type { type A } from "mod";
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    const d = findDiag(s, 2207) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("The 'type' modifier cannot be used on a named export when 'export type' is used on its export statement.", d.message);
+}
+
+test "parser: TS2207 stays clean for a plain export type" {
+    const cases = [_][]const u8{
+        "export type { A } from \"mod\";",
+        "export { type A } from \"mod\";",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        try T.expectEqual(@as(u32, 0), countDiag(s, 2207));
     }
 }
