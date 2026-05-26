@@ -13868,6 +13868,23 @@ pub const Parser = struct {
                 const args = try self.parseArgumentList();
                 defer self.gpa.free(args);
                 const close_pos = self.tokens[self.cursor - 1].span.end;
+                // TS1450: a dynamic `import()` expression accepts only a
+                // module specifier and an optional attributes object, so
+                // an empty argument list or more than two arguments is a
+                // grammar error. Mirrors upstream tsgo
+                // `checkGrammarImportCallExpression` (grammarchecks.go
+                // ~L2192): `argumentNodes == 0 || > 2`. Anchored at the
+                // whole call expression (`import(...)`), matching tsc's
+                // `grammarErrorOnNode(node, …)` span.
+                if (args.len == 0 or args.len > 2) {
+                    try self.reportCodeWithSpanAt(
+                        t.span.start,
+                        t.line,
+                        1450,
+                        close_pos - t.span.start,
+                        "Dynamic imports can only accept a module specifier and an optional set of attributes as arguments",
+                    );
+                }
                 return try self.builder.addCall(.{ .start = t.span.start, .end = close_pos }, callee, args);
             },
             .kw_function => {
@@ -24306,5 +24323,41 @@ test "parser: TS1179 stays clean for well-formed heritage clauses" {
         defer destroyTestSetup(s);
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1179));
+    }
+}
+
+test "parser: TS1450 fires for a dynamic import with no arguments" {
+    // Mirrors upstream `checkGrammarImportCallExpression`
+    // (grammarchecks.go ~L2192): `import()` has zero arguments, so it
+    // cannot name a module specifier — TS1450. Note the message has no
+    // trailing period upstream (it is a Message-category text).
+    var s = try newTestSetup("const m = import();");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1450) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Dynamic imports can only accept a module specifier and an optional set of attributes as arguments", d.message);
+}
+
+test "parser: TS1450 fires for a dynamic import with three arguments" {
+    // More than two arguments (specifier + attributes) is also invalid.
+    var s = try newTestSetup("const m = import(\"a\", { with: {} }, extra);");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1450) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Dynamic imports can only accept a module specifier and an optional set of attributes as arguments", d.message);
+}
+
+test "parser: TS1450 stays clean for one- and two-argument dynamic imports" {
+    // `import("m")` and `import("m", { ... })` are the two valid arities
+    // and must not draw TS1450.
+    const cases = [_][]const u8{
+        "const m = import(\"mod\");",
+        "const m = import(\"mod\", { with: { type: \"json\" } });",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1450));
     }
 }
