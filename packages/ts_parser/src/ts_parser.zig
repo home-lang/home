@@ -3183,6 +3183,10 @@ pub const Parser = struct {
         }
         var finally_block: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_finally)) finally_block = try self.parseBlockStatement();
+        if (catch_block == hir_mod.none_node_id and finally_block == hir_mod.none_node_id) {
+            const tok = self.peek();
+            try self.reportCodeAtWithSpan(tok.span.start, tok.line, tok.span.end - tok.span.start, 1472, "'catch' or 'finally' expected.");
+        }
         const end_pos: u32 = if (finally_block != hir_mod.none_node_id)
             self.hir.spanOf(finally_block).end
         else if (catch_block != hir_mod.none_node_id)
@@ -16014,6 +16018,19 @@ test "parser: try without catch" {
     const tp = hir_mod.tryOf(&s.hir, top);
     try T.expectEqual(hir_mod.none_node_id, tp.catch_block);
     try T.expect(tp.finally_block != hir_mod.none_node_id);
+}
+
+test "parser: try without catch or finally reports TS1472" {
+    var s = try newTestSetup("try { f(); };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1472), d.code);
+    try T.expectEqualStrings("'catch' or 'finally' expected.", d.message);
+    try T.expectEqual(@as(u32, 12), d.pos);
+    try T.expectEqual(@as(u32, 1), d.span_len);
 }
 
 test "parser: export and declare modifiers in blocks report TS1184" {
