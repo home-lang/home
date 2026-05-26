@@ -100,6 +100,16 @@ normalization transform so the suite stays green; `decorators.test.ts`
 and `transpiler.test.js` still need the copied Bun parser/lowerer/printer
 path before promotion.
 
+Parser hot-path probe update (2026-05-26): after the FD/sys shim batch
+and mechanical printer/sourcemap/String stdlib shims, the temporary
+native parser enablement advances past the former `bun.FD`,
+`RuntimeTranspilerCache`, `MacroContext`, and BunString allocation
+blockers. The active compile frontier is now the printer/analyze cone:
+hash-map context adaptation, stale `std.AutoArrayHashMap`, remaining
+`.{} -> .empty` printer sites, missing `bun.strings` WTF-8 helpers,
+CommonJS export-map iteration, `std.Io.GenericWriter`, and
+`bun.ArenaAllocator`.
+
 Next implementation ledger:
 
 | Work item | Required shape |

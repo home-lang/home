@@ -320,6 +320,16 @@ pub const cpp = struct {
         _ = out;
         @panic("home_rt.cpp.BunString__fromJS needs the C++ FFI bridge (Phase 12.2)");
     }
+
+    pub fn BunString__fromLatin1Unitialized(len: usize) String {
+        _ = len;
+        return .dead;
+    }
+
+    pub fn BunString__fromUTF16Unitialized(len: usize) String {
+        _ = len;
+        return .dead;
+    }
 };
 
 const TestJSCExterns = struct {
