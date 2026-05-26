@@ -78,6 +78,44 @@ pub inline fn assert_eql(comptime actual: anytype, comptime expected: anytype) v
     }
 }
 
+/// One-shot initializer wrapper. `std.once` was removed in Zig 0.17;
+/// this is the home_rt-side replacement (a verbatim port of the
+/// upstream `bun.once` body from `bun.zig`, inlined here so callers
+/// that already resolve `bun` to `home_rt` find it without pulling
+/// in the rest of bun.zig). `call` takes an args tuple so zero-arg
+/// initializers go through `.call(.{})`. Used by
+/// `runtime/webcore/ObjectURLRegistry.zig`.
+pub fn once(comptime f: anytype) Once(f) {
+    return Once(f){};
+}
+
+pub fn Once(comptime f: anytype) type {
+    return struct {
+        const Return = @typeInfo(@TypeOf(f)).@"fn".return_type.?;
+
+        done: bool = false,
+        payload: Return = undefined,
+        mutex: Mutex = .{},
+
+        pub fn call(self: *@This(), args: std.meta.ArgsTuple(@TypeOf(f))) Return {
+            if (@atomicLoad(bool, &self.done, .acquire))
+                return self.payload;
+            return self.callSlow(args);
+        }
+
+        fn callSlow(self: *@This(), args: std.meta.ArgsTuple(@TypeOf(f))) Return {
+            @branchHint(.cold);
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            if (!self.done) {
+                self.payload = @call(.auto, f, args);
+                @atomicStore(bool, &self.done, true, .release);
+            }
+            return self.payload;
+        }
+    };
+}
+
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
 }
