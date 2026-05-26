@@ -26,7 +26,15 @@ const Environment = home_rt.Environment;
 const Exception = home_rt.jsc.Exception;
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+//
+// Import the canonical `JSGlobalObject` opaque from `./JSGlobalObject.zig`
+// so the extern `pinScope` / `unpinScope` argument types unify with the
+// rest of the JSC subtree. Without this, every caller that spells
+// `home_rt.jsc.JSGlobalObject` would surface a "pointer type child
+// 'jsc.JSGlobalObject.JSGlobalObject' cannot cast into pointer type
+// child 'jsc.TopExceptionScope.JSGlobalObject'" mismatch — both
+// opaques would be distinct types despite the same name.
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 
 // Upstream gates on `Environment.allow_assert or enable_asan` /
 // `ci_assert`. Home's `Environment` only exports `allow_assert`
