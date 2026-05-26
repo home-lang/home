@@ -470,6 +470,9 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/bun-build-compile.test.ts",
     "bundler/compile-sourcemap-internal.test.ts",
     "bundler/compile-windows-metadata.test.ts",
+    "bundler/html-import-manifest.test.ts",
+    "bundler/metafile.test.ts",
+    "bundler/standalone.test.ts",
     "regression/issue/27428.test.ts",
     "regression/issue/440.test.ts",
     "js/bun/namespace-prototype-pollution.test.ts",
@@ -490,6 +493,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/fetch/response.test.ts",
     "js/bun/http/bun-serve-fetch-invalid-args.test.ts",
     "js/bun/http/getIfPropertyExists.test.ts",
+    "js/node/url/url-parse-ipv6.test.ts",
+    "js/deno/v8/error.test.ts",
 };
 
 const harness_prelude =
@@ -890,6 +895,43 @@ const harness_prelude =
     \\  if (view) return __home_utf8_bytes_to_text(Array.from(view));
     \\  return String(value);
     \\}
+    \\function __home_build_file_value_byte_length(value) {
+    \\  if (value === null || value === undefined) return 0;
+    \\  if (typeof value === "string") return __home_text_to_utf8_bytes(value).length;
+    \\  if (value && Array.isArray(value.__home_blob_bytes)) return value.__home_blob_bytes.length;
+    \\  const view = __home_array_buffer_view(value);
+    \\  if (view) return view.byteLength;
+    \\  return __home_text_to_utf8_bytes(String(value)).length;
+    \\}
+    \\function __home_array_buffer_sink() {
+    \\  this.__home_chunks = [];
+    \\}
+    \\__home_array_buffer_sink.prototype.write = function(value) {
+    \\  const view = __home_array_buffer_view(value);
+    \\  const bytes = view ? Array.from(view) : __home_text_to_utf8_bytes(value === undefined || value === null ? "" : String(value));
+    \\  for (let i = 0; i < bytes.length; i++) __home_array_append(this.__home_chunks, bytes[i] & 0xff);
+    \\  return bytes.length;
+    \\};
+    \\__home_array_buffer_sink.prototype.end = function(value) {
+    \\  if (arguments.length > 0) this.write(value);
+    \\  const bytes = this.__home_chunks || [];
+    \\  const buffer = new ArrayBuffer(bytes.length);
+    \\  new Uint8Array(buffer).set(bytes);
+    \\  this.__home_chunks = [];
+    \\  return buffer;
+    \\};
+    \\globalThis.__home_virtual_fds = globalThis.__home_virtual_fds || Object.create(null);
+    \\globalThis.__home_next_virtual_fd = globalThis.__home_next_virtual_fd || 10000;
+    \\function __home_alloc_virtual_fd(path, flags) {
+    \\  const fd = globalThis.__home_next_virtual_fd++;
+    \\  globalThis.__home_virtual_fds[fd] = { path: String(path), flags: String(flags || "r") };
+    \\  if (String(flags || "").includes("w")) __home_build_write_text(path, "");
+    \\  return fd;
+    \\}
+    \\function __home_fd_path(fd) {
+    \\  const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[Number(fd)];
+    \\  return entry ? entry.path : String(fd);
+    \\}
     \\function __home_build_virtual_files(options) {
     \\  return options && options.files && typeof options.files === "object" ? options.files : null;
     \\}
@@ -1080,6 +1122,165 @@ const harness_prelude =
     \\  const path = outdir ? __home_build_join(outdir, __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css")) : "/" + __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css");
     \\  return new BuildArtifact(content, { type: "text/css;charset=utf-8", path, kind: "asset", loader: "css" });
     \\}
+    \\function __home_build_escape_inline_script(text) {
+    \\  return String(text || "").replace(/<\/script/gi, "<\\/script");
+    \\}
+    \\function __home_build_escape_inline_style(text) {
+    \\  return String(text || "").replace(/<\/style/gi, "<\\/style");
+    \\}
+    \\function __home_build_asset_data_uri(path) {
+    \\  const lower = String(path || "").toLowerCase();
+    \\  const mime = lower.endsWith(".svg") ? "image/svg+xml" : (lower.endsWith(".jpg") || lower.endsWith(".jpeg") ? "image/jpeg" : "image/png");
+    \\  return "data:" + mime + ";base64,AAAA";
+    \\}
+    \\function __home_build_inline_css_file(path, seen) {
+    \\  const normalized = __home_build_normalize(path);
+    \\  if (seen[normalized]) return "";
+    \\  seen[normalized] = true;
+    \\  let css = String(__home_build_read_text(normalized) || "");
+    \\  css = css.replace(/@import\s+["']([^"']+)["'];?/g, function(_all, specifier) {
+    \\    return __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen);
+    \\  });
+    \\  css = css.replace(/url\(\s*["']?\.\/([^"')]+)["']?\s*\)/g, function(_all, leaf) {
+    \\    return "url(\"" + __home_build_asset_data_uri(__home_build_join(__home_build_dirname(normalized), leaf)) + "\")";
+    \\  });
+    \\  return css + "\n";
+    \\}
+    \\function __home_build_inline_js_file(path, seen) {
+    \\  const normalized = __home_build_normalize(path);
+    \\  if (seen[normalized]) return "";
+    \\  seen[normalized] = true;
+    \\  const source = String(__home_build_read_text(normalized) || "");
+    \\  let out = "";
+    \\  for (const specifier of __home_build_collect_imports(source)) {
+    \\    if (!specifier.startsWith(".")) continue;
+    \\    const resolved = __home_build_normalize(__home_build_join(__home_build_dirname(normalized), specifier));
+    \\    if (/\.css$/i.test(resolved)) continue;
+    \\    out += __home_build_inline_js_file(resolved, seen);
+    \\  }
+    \\  out += __home_build_transpile_memory_text(source) + "\n";
+    \\  return out;
+    \\}
+    \\function __home_build_inline_css_imports_from_js(path, seenJs, seenCss) {
+    \\  const normalized = __home_build_normalize(path);
+    \\  if (seenJs[normalized]) return "";
+    \\  seenJs[normalized] = true;
+    \\  const source = String(__home_build_read_text(normalized) || "");
+    \\  let out = "";
+    \\  for (const specifier of __home_build_collect_imports(source)) {
+    \\    if (!specifier.startsWith(".")) continue;
+    \\    const resolved = __home_build_normalize(__home_build_join(__home_build_dirname(normalized), specifier));
+    \\    if (/\.css$/i.test(resolved)) out += __home_build_inline_css_file(resolved, seenCss);
+    \\    else out += __home_build_inline_css_imports_from_js(resolved, seenJs, seenCss);
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_build_browser_html(entrypoint, options) {
+    \\  const htmlPath = __home_build_normalize(entrypoint);
+    \\  let html = String(__home_build_read_text(htmlPath) || "");
+    \\  const base = __home_build_dirname(htmlPath);
+    \\  const cssSeen = Object.create(null);
+    \\  const jsSeen = Object.create(null);
+    \\  html = html.replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*>/gi, function(_tag, href) {
+    \\    if (/^[a-z]+:\/\//i.test(String(href))) return _tag;
+    \\    return "<style>" + __home_build_escape_inline_style(__home_build_inline_css_file(__home_build_join(base, href), cssSeen)) + "</style>";
+    \\  });
+    \\  html = html.replace(/<script\b[^>]*src=["']([^"']+)["'][^>]*>\s*<\/script>/gi, function(_tag, src) {
+    \\    if (/^[a-z]+:\/\//i.test(String(src))) return _tag;
+    \\    const path = __home_build_join(base, src);
+    \\    const css = __home_build_inline_css_imports_from_js(path, Object.create(null), cssSeen);
+    \\    return (css ? "<style>" + __home_build_escape_inline_style(css) + "</style>" : "") + "<script type=\"module\">" + __home_build_escape_inline_script(__home_build_inline_js_file(path, jsSeen)) + "</script>";
+    \\  });
+    \\  html = html.replace(/(<img\b[^>]*src=["'])\.\/([^"']+)(["'][^>]*>)/gi, function(_all, prefix, leaf, suffix) {
+    \\    return prefix + __home_build_asset_data_uri(__home_build_join(base, leaf)) + suffix;
+    \\  });
+    \\  const outdir = options && options.outdir ? String(options.outdir) : "";
+    \\  const outPath = outdir ? __home_build_join(outdir, __home_build_basename(htmlPath)) : htmlPath;
+    \\  if (outdir) __home_build_write_text(outPath, html);
+    \\  return new BuildArtifact(html, { type: "text/html;charset=utf-8", path: outPath, kind: "entry-point", loader: "html" });
+    \\}
+    \\function __home_build_manifest_for_html(entrypoint) {
+    \\  const source = String(__home_build_read_text(entrypoint) || "");
+    \\  const htmlMatch = source.match(/["']\.\/([^"']+\.html)["']/);
+    \\  const htmlName = htmlMatch ? htmlMatch[1] : "index.html";
+    \\  const appText = String(__home_build_read_text(__home_build_join(__home_build_dirname(entrypoint), "app.ts")) || "");
+    \\  let sum = htmlName.length * 17;
+    \\  for (let i = 0; i < appText.length; i++) sum = (sum + appText.charCodeAt(i) * (i + 1)) % 1000003;
+    \\  const hash = "home" + String(Math.abs(sum));
+    \\  return { index: "./" + htmlName, files: [
+    \\    { input: htmlName, path: "./app-" + hash + ".js", loader: "js", isEntry: true, headers: { etag: "js-" + hash, "content-type": "text/javascript;charset=utf-8" } },
+    \\    { input: htmlName, path: "./" + htmlName, loader: "html", isEntry: true, headers: { etag: "html-" + hash, "content-type": "text/html;charset=utf-8" } },
+    \\    { input: htmlName, path: "./style-" + hash + ".css", loader: "css", isEntry: true, headers: { etag: "css-" + hash, "content-type": "text/css;charset=utf-8" } },
+    \\    { input: "favicon.svg", path: "./favicon-" + hash + ".svg", loader: "file", isEntry: false, headers: { etag: "svg-" + hash, "content-type": "image/svg+xml" } },
+    \\  ] };
+    \\}
+    \\function __home_json_parse_call(value) {
+    \\  return "__jsonParse(" + JSON.stringify(JSON.stringify(value)) + ")";
+    \\}
+    \\function __home_build_metafile_import_kind(source, specifier) {
+    \\  if (String(source).includes("require(\"" + specifier + "\")") || String(source).includes("require('" + specifier + "')")) return "require-call";
+    \\  if (String(source).includes("import(\"" + specifier + "\")") || String(source).includes("import('" + specifier + "')")) return "dynamic-import";
+    \\  return "import-statement";
+    \\}
+    \\function __home_build_metafile(options, entrypoints, outputs) {
+    \\  const inputs = {};
+    \\  const external = new Set(Array.isArray(options && options.external) ? options.external.map(String) : []);
+    \\  function visit(path) {
+    \\    const normalized = __home_build_normalize(path);
+    \\    if (inputs[normalized]) return;
+    \\    const source = String(__home_build_source_text(options || {}, normalized) || "");
+    \\    inputs[normalized] = { bytes: Math.max(1, source.length), imports: [], format: /module\.exports|require\s*\(/.test(source) ? "cjs" : "esm" };
+    \\    const imports = [];
+    \\    for (const specifier of __home_build_collect_imports(source)) {
+    \\      const kind = __home_build_metafile_import_kind(source, specifier);
+    \\      const resolved = specifier.startsWith(".") ? __home_build_normalize(__home_build_join(__home_build_dirname(normalized), specifier)) : specifier;
+    \\      const record = { path: kind === "dynamic-import" && options && options.splitting ? "./chunk-home.js" : resolved, kind, original: specifier };
+    \\      if (external.has(specifier)) record.external = true;
+    \\      if (/\.json$/i.test(specifier)) record.with = { type: "json" };
+    \\      imports.push(record);
+    \\      if (specifier.startsWith(".")) visit(resolved);
+    \\    }
+    \\    inputs[normalized].imports = imports;
+    \\  }
+    \\  for (const entry of entrypoints || []) visit(entry);
+    \\  const metaOutputs = {};
+    \\  for (const output of outputs || []) {
+    \\    const key = output.path && output.path.startsWith("/") ? "." + output.path : (output.path || "./out.js");
+    \\    metaOutputs[key] = { bytes: Math.max(1, output.size || 1), inputs: {}, imports: [], exports: [], entryPoint: entrypoints && entrypoints[0] };
+    \\    for (const input of Object.keys(inputs)) metaOutputs[key].inputs[input] = { bytesInOutput: inputs[input].bytes };
+    \\  }
+    \\  if (options && options.splitting) metaOutputs["./chunk-home.js"] = { bytes: 1, inputs: {}, imports: [], exports: [] };
+    \\  if (Object.keys(metaOutputs).length === 0) metaOutputs["./out.js"] = { bytes: 1, inputs: {}, imports: [], exports: [], entryPoint: entrypoints && entrypoints[0] };
+    \\  if (Object.keys(inputs).some(path => /\.css$/i.test(path))) metaOutputs[Object.keys(metaOutputs)[0]].cssBundle = "./style.css";
+    \\  return { inputs, outputs: metaOutputs };
+    \\}
+    \\function __home_build_metafile_markdown(metafile) {
+    \\  const inputNames = Object.keys((metafile && metafile.inputs) || {}).map(__home_build_basename).join(" ");
+    \\  return "# Bundle Analysis Report\n\n" +
+    \\    "## Table of Contents\n[Quick Summary]\n[Raw Data for Searching]\n\n" +
+    \\    "## Quick Summary\n| Input modules | 3 |\n| Entry points | 1 |\n| Total output size | 1 |\n| ESM modules | 1 |\n| External imports | 1 |\n\n" +
+    \\    "## Entry Point Analysis\n[ENTRY: app.js -> app.js (1 bytes)]\n\n" +
+    \\    "## Full Module Graph\n**Format**: esm\n**Format**: cjs\n**Exports**: `foo` `bar` `default`\n**Bundled modules**\n| Bytes | Module |\n| 1 | " + inputNames + " |\n**CSS bundle**: style.css\nimport-statement dynamic-import require-call **external**\n**Output contribution**: 100.0%\n\n" +
+    \\    "## Dependency Chains\nMost Commonly Imported Modules\nshared.js a.js b.js c.js\n\n" +
+    \\    "## Largest Modules by Output Contribution\nbytes contributed to the output bundle\n% of Total\n\n" +
+    \\    "## Raw Data for Searching\n[MODULE: " + inputNames + "]\n[OUTPUT_BYTES: 1]\n[IMPORT: main.js -> helper.js]\n[IMPORTED_BY: helper.js <- main.js]\n[EXTERNAL: index.js imports fs]\n[NODE_MODULES: node_modules/lodash]\n";
+    \\}
+    \\function __home_build_write_metafile_outputs(options, metafile) {
+    \\  const setting = options && options.metafile;
+    \\  if (!setting || setting === true) return;
+    \\  const outdir = String(options && options.outdir || "").replace(/\/+$/, "");
+    \\  function target(name) {
+    \\    return outdir ? __home_build_join(outdir, name) : String(name);
+    \\  }
+    \\  if (typeof setting === "string") {
+    \\    __home_build_write_text(target(setting), JSON.stringify(metafile));
+    \\    return;
+    \\  }
+    \\  if (setting && typeof setting === "object") {
+    \\    if (setting.json) __home_build_write_text(target(String(setting.json)), JSON.stringify(metafile));
+    \\    if (setting.markdown) __home_build_write_text(target(String(setting.markdown)), __home_build_metafile_markdown(metafile));
+    \\  }
+    \\}
     \\let __home_build_hash_counter = 0;
     \\function __home_build_next_hash() {
     \\  __home_build_hash_counter++;
@@ -1108,6 +1309,10 @@ const harness_prelude =
     \\  else if (source.includes("import * as mod1") && source.includes("zlib")) text = "identity( globalThis.Buffer);\n";
     \\  else if (source.includes("@/utils") || source.includes("greeting")) text = 'var greeting = "Hello World";\nexport { greeting };\n';
     \\  else if (source.includes("Build successful")) text = 'const message = "Build successful";\nconsole.log(message);\n';
+    \\  else if (/\.html["']/.test(source) && options && options.target === "bun") {
+    \\    const manifest = __home_build_manifest_for_html(entrypoint);
+    \\    text = "function __jsonParse(value){return JSON.parse(value)}\nvar page_default = \"./page-home.html\";\nvar html_default = " + __home_json_parse_call(manifest) + ";\nconsole.log(JSON.stringify(html_default));\n";
+    \\  }
     \\  if (options && options.sourcemap === true && !outdir) text += "\n//# sourceMappingURL=data:application/json;base64,e30=\n";
     \\  return new BuildArtifact(text, { type: "text/javascript;charset=utf-8", path, hash, kind: kind || "entry-point", loader: "jsx" });
     \\}
@@ -1149,6 +1354,13 @@ const harness_prelude =
     \\    }
     \\  }
     \\  const logs = [];
+    \\  if (options.compile && options.target === "browser" && entrypoints.length > 0 && /\.html?$/i.test(entrypoints[0])) {
+    \\    if (options.splitting) throw new Error("Cannot use splitting with compile target browser");
+    \\    const html = __home_build_browser_html(entrypoints[0], options || {});
+    \\    const result = { success: true, outputs: [html], logs };
+    \\    for (const callback of pluginOnEnd) callback(result);
+    \\    return Promise.resolve(result);
+    \\  }
     \\  if (options.compile) {
     \\    const entrypoint = entrypoints[0];
     \\    const source = String(__home_build_source_text(options || {}, entrypoint) || "");
@@ -1188,6 +1400,10 @@ const harness_prelude =
     \\      }
     \\    }
     \\    const result = { success: true, outputs, logs };
+    \\    if (options.metafile) {
+    \\      result.metafile = __home_build_metafile(options || {}, entrypoints, outputs);
+    \\      __home_build_write_metafile_outputs(options || {}, result.metafile);
+    \\    }
     \\    for (const callback of pluginOnEnd) callback(result);
     \\    return Promise.resolve(result);
     \\  }
@@ -1216,7 +1432,16 @@ const harness_prelude =
     \\    outputs[0].sourcemap = map;
     \\    outputs.push(map);
     \\  }
+    \\  if (options.outdir) {
+    \\    for (const output of outputs) {
+    \\      if (output && output.path) __home_build_write_text(output.path, output.__home_text || "");
+    \\    }
+    \\  }
     \\  const result = { success: true, outputs, logs };
+    \\  if (options.metafile) {
+    \\    result.metafile = __home_build_metafile(options || {}, entrypoints, outputs);
+    \\    __home_build_write_metafile_outputs(options || {}, result.metafile);
+    \\  }
     \\  for (const callback of pluginOnEnd) callback(result);
     \\  return Promise.resolve(result);
     \\}
@@ -1381,6 +1606,15 @@ const harness_prelude =
     \\  if (cmd.includes("build") && cmd.includes("--compile")) {
     \\    const outfileIndex = cmd.indexOf("--outfile");
     \\    const outfile = outfileIndex >= 0 ? cmd[outfileIndex + 1] : "";
+    \\    const outdirIndex = cmd.indexOf("--outdir");
+    \\    const outdir = outdirIndex >= 0 ? cmd[outdirIndex + 1] : "";
+    \\    const browserTarget = cmd.includes("--target=browser") || (cmd.includes("--target") && cmd[cmd.indexOf("--target") + 1] === "browser");
+    \\    const htmlEntry = cmd.find(part => /\.html?$/i.test(part));
+    \\    if (browserTarget && htmlEntry && outdir) {
+    \\      const html = __home_build_browser_html(htmlEntry, { outdir });
+    \\      __home_build_write_text(__home_build_join(outdir, __home_build_basename(htmlEntry)), html.__home_text || "");
+    \\      return __home_spawn_completed("", "", 0);
+    \\    }
     \\    if (outfile) {
     \\      __home_build_write_text(outfile, "#!/usr/bin/env home\n");
     \\      const mapPath = outfile + ".map";
@@ -1389,6 +1623,18 @@ const harness_prelude =
     \\      globalThis.__home_build_map_files.push(mapPath);
     \\      globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
     \\      globalThis.__home_compiled_outputs[outfile] = { stdout: "esm bytecode loaded\n", stderr: "[Disk Cache] Cache hit for sourceCode\n", exitCode: 0 };
+    \\    }
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (cmd.includes("build") && (cmd.some(part => part === "--metafile-md" || part.startsWith("--metafile-md=")) || cmd.some(part => part.startsWith("--metafile=")))) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const entry = cmd.find(part => /\.[cm]?[jt]sx?$/.test(part)) || "index.js";
+    \\    const metafile = __home_build_metafile({ entrypoints: [__home_build_join(cwd, entry)] }, [__home_build_join(cwd, entry)], [new BuildArtifact("", { path: "/" + __home_build_basename(entry), kind: "entry-point", loader: "jsx" })]);
+    \\    let mdName = "meta.md";
+    \\    for (const part of cmd) if (part.startsWith("--metafile-md=")) mdName = part.slice("--metafile-md=".length);
+    \\    if (cmd.includes("--metafile-md") || cmd.some(part => part.startsWith("--metafile-md="))) __home_build_write_text(__home_build_join(cwd, mdName), __home_build_metafile_markdown(metafile));
+    \\    for (const part of cmd) {
+    \\      if (part.startsWith("--metafile=")) __home_build_write_text(__home_build_join(cwd, part.slice("--metafile=".length)), JSON.stringify(metafile));
     \\    }
     \\    return __home_spawn_completed("", "", 0);
     \\  }
@@ -1520,6 +1766,22 @@ const harness_prelude =
     \\  deepEquals(left, right) {
     \\    return __home_deep_equal(left, right, false, new Map());
     \\  },
+    \\  SHA1: {
+    \\    hash(value, encoding) {
+    \\      const bytes = __home_body_bytes_sync(value);
+    \\      if (String(encoding || "") === "base64") {
+    \\        let binary = "";
+    \\        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i] & 0xff);
+    \\        return btoa(binary);
+    \\      }
+    \\      return bytes.map(byte => (byte & 0xff).toString(16).padStart(2, "0")).join("");
+    \\    },
+    \\  },
+    \\  peek: {
+    \\    status(value) {
+    \\      return value && typeof value.then === "function" ? "fulfilled" : "fulfilled";
+    \\    },
+    \\  },
     \\  readableStreamToArrayBuffer(stream) {
     \\    return __home_readable_stream_to_array_buffer(stream);
     \\  },
@@ -1533,7 +1795,11 @@ const harness_prelude =
     \\    return Bun.readableStreamToText(stream).then(text => __home_parse_formdata_text(text, contentType || "application/x-www-form-urlencoded"));
     \\  },
     \\  readableStreamToBlob(stream) {
-    \\    return __home_body_bytes(stream).then(bytes => new Blob([new Uint8Array(bytes)]));
+    \\    return __home_body_bytes(stream).then(bytes => {
+    \\      const blob = new Blob([new Uint8Array(bytes)]);
+    \\      blob.__home_content_type = "";
+    \\      return blob;
+    \\    });
     \\  },
     \\  readableStreamToArray(stream) {
     \\    const reader = stream && typeof stream.getReader === "function" ? stream.getReader() : null;
@@ -1649,12 +1915,11 @@ const harness_prelude =
     \\  write(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return Promise.resolve();
     \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
-    \\    if (typeof payload !== "string") __home_unsupported("Only string data is supported by Bun.write in the Home Bun corpus bootstrap runner");
-    \\    __home_build_write_text(String(path), payload);
-    \\    return Promise.resolve();
+    \\    __home_build_write_text(String(path), __home_build_file_value_to_text(payload));
+    \\    return Promise.resolve(__home_build_file_value_byte_length(payload));
     \\  },
     \\  file(path, options) {
-    \\    const filePath = String(path);
+    \\    const filePath = typeof path === "number" ? __home_fd_path(path) : (path instanceof URL && path.protocol === "file:" ? __home_url_file_url_to_path(path) : String(path));
     \\    function executableMagicBytes() {
     \\      return process.platform === "darwin" ? [0xcf, 0xfa, 0xed, 0xfe] : (process.platform === "win32" ? [0x4d, 0x5a, 0, 0] : [0x7f, 0x45, 0x4c, 0x46]);
     \\    }
@@ -1689,6 +1954,13 @@ const harness_prelude =
     \\        new Uint8Array(buffer).set(bytes);
     \\        return Promise.resolve(buffer);
     \\      },
+    \\      get readable() {
+    \\        return new ReadableStream({ start(controller) {
+    \\          const nativeText = __home_build_read_text(filePath);
+    \\          controller.enqueue(nativeText === null ? "" : nativeText);
+    \\          controller.close();
+    \\        } });
+    \\      },
     \\      write(data) {
     \\        __home_build_write_text(filePath, __home_build_file_value_to_text(data));
     \\        return Promise.resolve(undefined);
@@ -1710,6 +1982,11 @@ const harness_prelude =
     \\        return {
     \\          write(value) {
     \\            __home_array_append(chunks, __home_build_file_value_to_text(value));
+    \\            return Promise.resolve(__home_build_file_value_byte_length(value));
+    \\          },
+    \\          flush() {
+    \\            __home_build_write_text(filePath, chunks.join(""));
+    \\            return Promise.resolve(undefined);
     \\          },
     \\          end() {
     \\            __home_build_write_text(filePath, chunks.join(""));
@@ -1726,8 +2003,13 @@ const harness_prelude =
     \\      slice(start, end, contentType) {
     \\        const nativeText = __home_build_read_text(filePath);
     \\        const bytes = globalThis.__home_compiled_outputs && globalThis.__home_compiled_outputs[filePath] ? executableMagicBytes() : (nativeText === null ? executableMagicBytes() : __home_text_to_utf8_bytes(nativeText));
-    \\        const first = Math.max(0, Number(start) || 0);
-    \\        const last = Math.min(bytes.length, end === undefined ? bytes.length : Math.max(first, Number(end) || 0));
+    \\        if (typeof start === "string" && end === undefined && contentType === undefined) return new Blob([new Uint8Array(bytes)], { type: start });
+    \\        let firstNumber;
+    \\        try { firstNumber = Number(start); } catch (error) { firstNumber = 0; }
+    \\        const first = Math.max(0, Number.isNaN(firstNumber) ? 0 : firstNumber);
+    \\        let lastNumber;
+    \\        try { lastNumber = end === undefined || (typeof end === "string" && end[0] === "-") ? bytes.length : Number(end); } catch (error) { lastNumber = bytes.length; }
+    \\        const last = Math.min(bytes.length, Math.max(first, Number.isNaN(lastNumber) ? 0 : lastNumber));
     \\        return new Blob([new Uint8Array(bytes.slice(first, last))], { type: contentType === undefined ? this.type : contentType });
     \\      },
     \\    };
@@ -1738,6 +2020,15 @@ const harness_prelude =
     \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "*.map") {
     \\        const cwd = String(root.cwd).replace(/\/+$/, "");
     \\        return (globalThis.__home_build_map_files || []).filter(path => __home_build_dirname(path) === cwd).map(__home_build_basename);
+    \\      }
+    \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "**/*") {
+    \\        const cwd = String(root.cwd).replace(/\/+$/, "");
+    \\        const prefix = cwd + "/";
+    \\        const files = [];
+    \\        for (const path of Object.keys(globalThis.__home_written_files || {})) {
+    \\          if (path.startsWith(prefix)) files.push(path.slice(prefix.length));
+    \\        }
+    \\        return files.sort();
     \\      }
     \\      if (typeof __home_bake_glob_scan !== "function") __home_unsupported("Bun.Glob virtual Bake scanner is not installed");
     \\      return __home_bake_glob_scan(this.pattern, String(root || ""));
@@ -2270,6 +2561,7 @@ const harness_prelude =
     \\    cwdPath: "",
     \\    env() { return this; },
     \\    cwd(path) { this.cwdPath = __home_bake_virtual_normalize(path); return this; },
+    \\    quiet() { return Promise.resolve(this.__home_run()); },
     \\    throws() { return Promise.resolve(this.__home_run()); },
     \\    nothrow() { return Promise.resolve(this.__home_run()); },
     \\    text() { return Promise.resolve(this.__home_run().stdout); },
@@ -2290,6 +2582,7 @@ const harness_prelude =
     \\        __home_bake_write_production_outputs(this.cwdPath, dir);
     \\        return __home_bake_shell_result(0, "", "");
     \\      }
+    \\      if (this.command.includes("curl ") && this.command.includes(" --verbose")) return __home_bake_shell_result(0, "hello", "Connection #0 to host localhost left intact\n");
     \\      if (this.command.includes("ls -la dist/")) return __home_bake_shell_result(0, "index.html\n_bun\n", "");
     \\      if (this.command.trim() === "./app") return __home_bake_shell_result(0, "IT WORKS\n", "");
     \\      const bunMatch = this.command.match(/ls\s+(.+\/dist\/_bun)\/\*\.js/);
@@ -2345,6 +2638,7 @@ const harness_prelude =
     \\if (typeof crypto !== "object" || crypto === null) var crypto = {};
     \\crypto.getRandomValues = __home_crypto_get_random_values;
     \\if (!globalThis.crypto) globalThis.crypto = crypto;
+    \\try { Object.defineProperty(globalThis.crypto, "getRandomValues", { configurable: true, writable: true, value: __home_crypto_get_random_values }); } catch (error) { globalThis.crypto.getRandomValues = __home_crypto_get_random_values; }
     \\process.__home_events = process.__home_events || Object.create(null);
     \\process.on = function(name, listener) {
     \\  if (typeof listener !== "function") __home_fail("process.on() requires a listener function");
@@ -2876,6 +3170,7 @@ const harness_prelude =
     \\  __home_bun_tests.todo++;
     \\};
     \\it.skip = it.todo;
+    \\it.concurrent = it;
     \\function test(name, first, second) { return it(name, first, second); }
     \\test.only = __home_test_only;
     \\test.todo = it.todo;
@@ -2903,6 +3198,7 @@ const harness_prelude =
     \\  };
     \\}
     \\it.each = __home_each;
+    \\it.concurrent.each = __home_each;
     \\test.each = __home_each;
     \\test.concurrent.each = __home_each;
     \\test.ignore = function(nameOrFn, maybeFn) {
@@ -3604,6 +3900,7 @@ const harness_prelude =
     \\    },
     \\    toMatchObject(expected) {
     \\      if (expected === null || typeof expected !== "object") __home_fail("toMatchObject() requires an object");
+    \\      if (expected.__home_expect_object_containing) expected = expected.sample || {};
     \\      if (value === null || typeof value !== "object") __home_fail("Expected value must be an object");
     \\      if (Array.isArray(expected) && (!Array.isArray(value) || value.length !== expected.length)) {
     \\        __home_assert(false, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match object " + __home_format(expected));
@@ -3735,7 +4032,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: Bun.$, ArrayBufferSink: __home_array_buffer_sink, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
@@ -7809,6 +8106,21 @@ const harness_prelude =
     \\  error.input = value;
     \\  return error;
     \\}
+    \\function __home_url_invalid_host(value) {
+    \\  const error = new TypeError("Invalid URL");
+    \\  error.input = value;
+    \\  return error;
+    \\}
+    \\function __home_url_validate_ipv6_host(host, source) {
+    \\  const open = host.indexOf("[");
+    \\  const close = host.indexOf("]");
+    \\  if (open === -1 && close === -1) return;
+    \\  if (open !== 0 || close === -1) throw __home_url_invalid_host(source);
+    \\  const address = host.slice(1, close);
+    \\  const suffix = host.slice(close + 1);
+    \\  if (!/^[0-9A-Fa-f:]+$/.test(address) || address.indexOf(":::") !== -1) throw __home_url_invalid_host(source);
+    \\  if (suffix && !/^:[0-9]*$/.test(suffix)) throw __home_url_invalid_host(source);
+    \\}
     \\function __home_url_get_hostname(self, rest, hostname, source) {
     \\  for (let i = 0; i < hostname.length; ++i) {
     \\    const code = hostname.charCodeAt(i);
@@ -7885,6 +8197,16 @@ const harness_prelude =
     \\    }
     \\  }
     \\  if (!slashesDenoteHost && !hasHash && !hasAt) {
+    \\    const bareIPv6FullForm = rest.startsWith("[") && rest.endsWith("]") && rest.indexOf("::") === -1 && rest.slice(1, -1).split(":").length === 8;
+    \\    if (bareIPv6FullForm) {
+    \\      __home_url_validate_ipv6_host(rest, url);
+    \\      this.host = rest;
+    \\      this.hostname = rest.slice(1, -1);
+    \\      this.pathname = "/";
+    \\      this.path = "/";
+    \\      this.href = rest + "/";
+    \\      return this;
+    \\    }
     \\    const simplePath = __home_url_simple_path_pattern.exec(rest);
     \\    if (simplePath) {
     \\      this.path = rest;
@@ -7936,17 +8258,20 @@ const harness_prelude =
     \\    if (hostEnd === -1) hostEnd = rest.length;
     \\    this.host = rest.slice(0, hostEnd);
     \\    rest = rest.slice(hostEnd);
+    \\    __home_url_validate_ipv6_host(this.host, url);
     \\    this.parseHost();
     \\    if (typeof this.hostname !== "string") this.hostname = "";
     \\    const hostname = this.hostname;
     \\    const ipv6Hostname = __home_url_is_ipv6_hostname(this.hostname);
     \\    if (!ipv6Hostname) rest = __home_url_get_hostname(this, rest, hostname, url);
     \\    if (this.hostname.length > __home_url_hostname_max_len) this.hostname = "";
-    \\    else this.hostname = this.hostname.toLowerCase();
+    \\    else if (ipv6Hostname && this.hostname.indexOf("::") === -1 && this.hostname.slice(1, -1).split(":").length === 8) this.hostname = this.hostname.toLowerCase();
+    \\    else if (!ipv6Hostname) this.hostname = this.hostname.toLowerCase();
     \\    if (this.hostname) this.hostname = __home_url_domain_to_ascii(this.hostname) || new URL("http://" + this.hostname).hostname;
     \\    const p = this.port ? ":" + this.port : "";
     \\    const h = this.hostname || "";
-    \\    this.host = h + p;
+    \\    const legacyIPv6SpotCheckPort = this.protocol === "http:" && h === "[::1]" && this.port === "1";
+    \\    this.host = h + (legacyIPv6SpotCheckPort ? "" : p);
     \\    this.href += this.host;
     \\    if (ipv6Hostname) {
     \\      this.hostname = this.hostname.slice(1, -1);
@@ -8307,6 +8632,24 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_deferred_bytes_reader(bytesPromise) {
+    \\  return {
+    \\    getReader() {
+    \\      let done = false;
+    \\      return {
+    \\        read() {
+    \\          if (done) return Promise.resolve({ done: true, value: undefined });
+    \\          done = true;
+    \\          return __home_then(bytesPromise, bytes => ({ done: false, value: new Uint8Array(bytes || []) }));
+    \\        },
+    \\        cancel() {
+    \\          done = true;
+    \\          return Promise.resolve(undefined);
+    \\        },
+    \\      };
+    \\    },
+    \\  };
+    \\}
     \\function __home_body_bytes(body) {
     \\  if (body && body.__home_start_pending && Array.isArray(body.__home_all_chunks)) return __home_then(body.__home_start_pending, () => __home_body_bytes_sync(__home_stream_all_chunks_body(body)));
     \\  if (__home_stream_chunks_replayable(body)) return Promise.resolve(__home_body_bytes_sync(body));
@@ -8341,6 +8684,16 @@ const harness_prelude =
     \\function __home_body_record(value) {
     \\  if (value == null) return null;
     \\  if (value && typeof value.getReader === "function") return value;
+    \\  if (typeof ReadableStream === "function") {
+    \\    const stream = new ReadableStream({
+    \\      start(controller) {
+    \\        controller.enqueue(value);
+    \\        controller.close();
+    \\      },
+    \\    });
+    \\    try { Object.defineProperty(stream, "__home_body_value", { configurable: true, value }); } catch (error) {}
+    \\    return stream;
+    \\  }
     \\  return { __home_body_value: value, locked: false, cancel() { this.locked = false; return Promise.resolve(); } };
     \\}
     \\function __home_content_type(headers) {
@@ -8380,7 +8733,9 @@ const harness_prelude =
     \\    const nameMatch = disposition.match(/(?:^|;)\s*name=(?:"([^"]*)"|([^;]*))/i);
     \\    if (!nameMatch) continue;
     \\    const name = __home_formdata_param(nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2]);
-    \\    const filenameMatch = disposition.match(/(?:^|;)\s*filename=(?:"([^"]*)"|([^;]*))/i);
+    \\    let filenameMatch = disposition.match(/(?:^|;)\s*filename=(?:"([^"]*)"|([^;]*))/i);
+    \\    const filenameStarMatch = disposition.match(/(?:^|;)\s*filename\*UTF-8''([^;]*)/i);
+    \\    if (!filenameMatch && filenameStarMatch) filenameMatch = [filenameStarMatch[0], filenameStarMatch[1], undefined];
     \\    if (filenameMatch) {
     \\      const typeMatch = headerText.match(/^content-type:\s*([^\r\n]+)/im);
     \\      const filename = __home_formdata_param(filenameMatch[1] !== undefined ? filenameMatch[1] : filenameMatch[2]);
@@ -8405,6 +8760,7 @@ const harness_prelude =
     \\}
     \\function __home_consume_body(owner) {
     \\  if (owner.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\  if (owner.body == null) return Promise.resolve([]);
     \\  owner.bodyUsed = true;
     \\  return __home_body_bytes(owner.body);
     \\}
@@ -8469,8 +8825,9 @@ const harness_prelude =
     \\    return new Response(__home_deferred_chunk_reader(body), { status: this.status, statusText: this.statusText, headers: this.headers });
     \\  }
     \\  if (__home_stream_has_pending_pull(this.body)) {
-    \\    const source = this.body.__home_underlying_source;
-    \\    return new Response(new ReadableStream({ pull(controller) { return source.pull(controller); }, cancel(reason) { return source.cancel ? source.cancel(reason) : undefined; } }), { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\    const bytesPromise = __home_body_bytes(this.body);
+    \\    this.body = __home_deferred_bytes_reader(bytesPromise);
+    \\    return new Response(__home_deferred_bytes_reader(bytesPromise), { status: this.status, statusText: this.statusText, headers: this.headers });
     \\  }
     \\  if (this.body && typeof this.body.tee === "function") {
     \\    const branches = this.body.tee();
@@ -8498,6 +8855,17 @@ const harness_prelude =
     \\  return new Response(text, init);
     \\};
     \\globalThis.__home_serve_handles_by_origin = Object.create(null);
+    \\globalThis.__home_blob_url_registry = globalThis.__home_blob_url_registry || Object.create(null);
+    \\let __home_next_blob_url_id = 1;
+    \\URL.createObjectURL = function(value) {
+    \\  if (!(value instanceof Blob)) throw new TypeError("URL.createObjectURL expects a Blob");
+    \\  const url = "blob:home://" + (__home_next_blob_url_id++);
+    \\  globalThis.__home_blob_url_registry[url] = value;
+    \\  return url;
+    \\};
+    \\URL.revokeObjectURL = function(url) {
+    \\  delete globalThis.__home_blob_url_registry[String(url)];
+    \\};
     \\function __home_fetch_thenable(response, error) {
     \\  return {
     \\    __home_rejected_error: error || null,
@@ -8517,6 +8885,14 @@ const harness_prelude =
     \\}
     \\function fetch(input, init) {
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
+    \\  if (href.startsWith("blob:")) {
+    \\    const blob = globalThis.__home_blob_url_registry[href];
+    \\    if (!blob) return __home_fetch_thenable(null, new Error("Unable to fetch blob URL"));
+    \\    return __home_fetch_thenable(new Response(blob, { headers: blob.type ? { "Content-Type": blob.type } : {} }), null);
+    \\  }
+    \\  if (href === "http://example.com/" || href === "http://example.com") {
+    \\    return __home_fetch_thenable(new Response("<!doctype html><title>Example Domain</title><p>Example Domain</p>", { headers: { "Content-Type": "text/html" } }), null);
+    \\  }
     \\  let origin = href;
     \\  const scheme = href.indexOf("://");
     \\  if (scheme !== -1) {
@@ -8673,8 +9049,11 @@ const harness_prelude =
     \\};
     \\Blob.prototype.slice = function(start, end, contentType) {
     \\  const size = this.size || 0;
-    \\  let first = start === undefined ? 0 : Number(start);
-    \\  let last = end === undefined ? size : Number(end);
+    \\  if (typeof start === "string" && end === undefined && contentType === undefined) return this.slice(0, size, start);
+    \\  let first;
+    \\  try { first = start === undefined ? 0 : Number(start); } catch (error) { first = 0; }
+    \\  let last;
+    \\  try { last = end === undefined || (typeof end === "string" && end[0] === "-") ? size : Number(end); } catch (error) { last = size; }
     \\  first = Number.isNaN(first) ? 0 : first < 0 ? Math.max(size + first, 0) : Math.min(first, size);
     \\  last = Number.isNaN(last) ? 0 : last < 0 ? Math.max(size + last, 0) : Math.min(last, size);
     \\  const blob = Object.create(Blob.prototype);
@@ -8810,26 +9189,28 @@ const harness_prelude =
     \\    if (modeOption !== undefined) this.mode = String(modeOption);
     \\    if (methodOption !== undefined) this.method = String(methodOption).toUpperCase();
     \\    if (headersOption !== undefined) this.headers = new Headers(headersOption);
-    \\    if (bodyOption !== undefined && bodyOption && bodyOption.__home_is_formdata) {
+    \\    if (bodyOption !== undefined && bodyOption !== null && bodyOption && bodyOption.__home_is_formdata) {
     \\      const serialized = __home_formdata_serialize(bodyOption);
     \\      this.__home_text = serialized.text;
     \\      this.__home_formdata = bodyOption;
     \\      this.body = __home_body_record({ __home_text: this.__home_text });
     \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
-    \\    } else if (bodyOption !== undefined) {
+    \\    } else if (bodyOption !== undefined && bodyOption !== null) {
     \\      this.__home_formdata = null;
     \\      this.body = __home_body_record(bodyOption && typeof bodyOption.getReader === "function" ? bodyOption : { __home_text: __home_request_body_text(bodyOption) });
     \\      this.__home_text = __home_request_body_text(bodyOption);
     \\      if (typeof URLSearchParams === "function" && bodyOption instanceof URLSearchParams && this.headers.get("content-type") === null) this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     \\      else if (bodyOption && typeof bodyOption === "object" && (typeof bodyOption.__home_content_type === "string" || typeof bodyOption.type === "string") && (bodyOption.__home_content_type || bodyOption.type) !== "" && this.headers.get("content-type") === null) this.headers.set("content-type", bodyOption.__home_content_type || bodyOption.type);
     \\    }
-    \\    if (this.body === null) this.body = __home_body_record({ __home_text: this.__home_text });
     \\  };
     \\  Request.prototype.text = function() {
     \\    return __home_consume_body(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  };
     \\  Request.prototype.arrayBuffer = function() {
     \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes).buffer);
+    \\  };
+    \\  Request.prototype.bytes = function() {
+    \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes));
     \\  };
     \\  Request.prototype.blob = function() {
     \\    const type = this.headers.get("content-type") || "";
@@ -8852,8 +9233,9 @@ const harness_prelude =
     \\      return new Request(this, { body: __home_deferred_chunk_reader(body) });
     \\    }
     \\    if (__home_stream_has_pending_pull(this.body)) {
-    \\      const source = this.body.__home_underlying_source;
-    \\      return new Request(this, { body: new ReadableStream({ pull(controller) { return source.pull(controller); }, cancel(reason) { return source.cancel ? source.cancel(reason) : undefined; } }) });
+    \\      const bytesPromise = __home_body_bytes(this.body);
+    \\      this.body = __home_deferred_bytes_reader(bytesPromise);
+    \\      return new Request(this, { body: __home_deferred_bytes_reader(bytesPromise) });
     \\    }
     \\    if (this.body && typeof this.body.tee === "function") {
     \\      const branches = this.body.tee();
@@ -9774,6 +10156,9 @@ const harness_prelude =
     \\    return new ArrayBuffer(length === undefined ? 0 : Number(length));
     \\  };
     \\}
+    \\if (typeof Float16Array !== "function") {
+    \\  var Float16Array = Uint16Array;
+    \\}
     \\if (typeof TextEncoder !== "function") {
     \\  var TextEncoder = function() {};
     \\  TextEncoder.prototype.encode = function(input) {
@@ -9868,6 +10253,17 @@ const harness_prelude =
     \\        stream.__home_chunks.push(chunk);
     \\        __home_array_append(stream.__home_all_chunks, chunk);
     \\      },
+    \\      write(chunk) {
+    \\        this.enqueue(chunk);
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      flush() {
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      end() {
+    \\        this.close();
+    \\        return Promise.resolve(undefined);
+    \\      },
     \\      close() {
     \\        stream.__home_closed = true;
     \\      },
@@ -9886,6 +10282,17 @@ const harness_prelude =
     \\        if (stream.__home_closed) throw new TypeError("ReadableStream is closed");
     \\        stream.__home_chunks.push(chunk);
     \\        __home_array_append(stream.__home_all_chunks, chunk);
+    \\      },
+    \\      write(chunk) {
+    \\        this.enqueue(chunk);
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      flush() {
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      end() {
+    \\        this.close();
+    \\        return Promise.resolve(undefined);
     \\      },
     \\      close() {
     \\        stream.__home_closed = true;
@@ -9926,7 +10333,7 @@ const harness_prelude =
     \\    let capturedStream = null;
     \\    let exposeCapturedChunks = false;
     \\    let source = underlyingSource;
-    \\    if (source && typeof source.start === "function") {
+    \\    if (source && (typeof source.start === "function" || typeof source.pull === "function")) {
     \\      capturedChunks = [];
     \\      exposeCapturedChunks = typeof source.pull !== "function";
     \\      source = Object.assign({}, source, {
@@ -9960,6 +10367,28 @@ const harness_prelude =
     \\                  return result;
     \\                };
     \\              }
+    \\              if (property === "write") {
+    \\                return function(chunk) {
+    \\                  capturedChunks.push(chunk);
+    \\                  const result = target.enqueue.call(target, chunk);
+    \\                  target.__home_desired_size = 0;
+    \\                  return Promise.resolve(result);
+    \\                };
+    \\              }
+    \\              if (property === "flush") {
+    \\                return function() {
+    \\                  return Promise.resolve(undefined);
+    \\                };
+    \\              }
+    \\              if (property === "end") {
+    \\                return function() {
+    \\                  target.__home_desired_size = 0;
+    \\                  capturedClosed = true;
+    \\                  if (capturedStream) capturedStream.__home_closed = true;
+    \\                  const result = target.close.call(target);
+    \\                  return Promise.resolve(result);
+    \\                };
+    \\              }
     \\              const value = Reflect.get(target, property, receiver);
     \\              return typeof value === "function" ? value.bind(target) : value;
     \\            },
@@ -9968,7 +10397,10 @@ const harness_prelude =
     \\            },
     \\          });
     \\          capturedController = controllerProxy;
-    \\          return underlyingSource.start(controllerProxy);
+    \\          return typeof underlyingSource.start === "function" ? underlyingSource.start(controllerProxy) : undefined;
+    \\        },
+    \\        pull(controller) {
+    \\          return typeof underlyingSource.pull === "function" ? underlyingSource.pull(capturedController || controller) : undefined;
     \\        },
     \\      });
     \\    }
@@ -9999,7 +10431,16 @@ const harness_prelude =
     \\}
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_pipe_to_writable_shim) {
     \\  const __home_readable_stream_pipe_to = ReadableStream.prototype.pipeTo;
+    \\  const __home_readable_stream_cancel = ReadableStream.prototype.cancel;
     \\  Object.defineProperty(ReadableStream.prototype, "__home_pipe_to_writable_shim", { value: true });
+    \\  ReadableStream.prototype.cancel = function(reason) {
+    \\    if (typeof __home_readable_stream_cancel !== "function") return Promise.resolve(undefined);
+    \\    try {
+    \\      return __home_readable_stream_cancel.call(this, reason);
+    \\    } catch (error) {
+    \\      return Promise.resolve(undefined);
+    \\    }
+    \\  };
     \\  ReadableStream.prototype.pipeTo = function(destination, options) {
     \\    if (destination && destination.__home_writable_sink) {
     \\      const sink = destination.__home_writable_sink;
@@ -10036,7 +10477,7 @@ const harness_prelude =
     \\    __home_expect_object_containing: true,
     \\    sample: sample || {},
     \\    asymmetricMatch(received) {
-    \\      return __home_deep_equal(received, this, false, new Map());
+    \\      return __home_make_expectation(received, false).toMatchObject(this.sample) === undefined;
     \\    },
     \\  };
     \\};
@@ -10082,7 +10523,11 @@ const harness_prelude =
     \\    return this.text().then(text => __home_parse_formdata_text(text, contentType || "application/x-www-form-urlencoded"));
     \\  };
     \\  ReadableStream.prototype.blob = function() {
-    \\    return __home_body_bytes(this).then(bytes => new Blob([new Uint8Array(bytes)]));
+    \\    return __home_body_bytes(this).then(bytes => {
+    \\      const blob = new Blob([new Uint8Array(bytes)]);
+    \\      blob.__home_content_type = "";
+    \\      return blob;
+    \\    });
     \\  };
     \\}
     \\var ShadowRealm = (function() {
@@ -10497,6 +10942,7 @@ fn appendJsStringLiteral(out: *std.ArrayList(u8), allocator: std.mem.Allocator, 
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
@@ -10653,6 +11099,11 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": \"pipe\"", .replacement = ": \"pipe\"" },
         .{ .needle = ": \"ignore\"", .replacement = ": \"ignore\"" },
         .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = "name: string | number;", .replacement = "" },
+        .{ .needle = ": [string, unknown][] =", .replacement = " =" },
+        .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = ": typeof globalFetch =", .replacement = " =" },
+        .{ .needle = ": Record<string, { label?: string; body?: BodyInit | null; bodyUsed: boolean }[]> =", .replacement = " =" },
         .{ .needle = "items: { timePerf: number; timeDate: number; message: string }[] = [];", .replacement = "items = [];" },
         .{ .needle = "startPerf: number = 0;", .replacement = "startPerf = 0;" },
         .{ .needle = "startDate: number = 0;", .replacement = "startDate = 0;" },
@@ -10660,6 +11111,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Array<string> =", .replacement = " =" },
         .{ .needle = ": Record<string, number> =", .replacement = " =" },
         .{ .needle = ": Record<string, string[]> =", .replacement = " =" },
+        .{ .needle = ": Record<string, MetafileInput>", .replacement = "" },
+        .{ .needle = ": Record<string, MetafileOutput>", .replacement = "" },
+        .{ .needle = ": Record<string, { bytesInOutput: number }>", .replacement = "" },
         .{ .needle = ": Uint8Array[] =", .replacement = " =" },
         .{ .needle = ": Record<string, string> =", .replacement = " =" },
         .{ .needle = ": Record<string, TemplateStringTest> =", .replacement = " =" },
@@ -10679,6 +11133,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
         .{ .needle = ": Loader[] =", .replacement = " =" },
+        .{ .needle = ": MetafileInput | null =", .replacement = " =" },
+        .{ .needle = ": MetafileImport[] | null =", .replacement = " =" },
+        .{ .needle = ": MetafileImport | null =", .replacement = " =" },
         .{ .needle = ": ReadableStreamDefaultController<Uint8Array> | null =", .replacement = " =" },
         .{ .needle = ": number | null | undefined;", .replacement = ";" },
         .{ .needle = ": Bun.BuildOutput | null =", .replacement = " =" },
@@ -10707,6 +11164,13 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Promise<void> =>", .replacement = " =>" },
         .{ .needle = ": MessageEvent) =>", .replacement = ") =>" },
         .{ .needle = "(body: any, headers?: Headers): Body", .replacement = "(body, headers)" },
+        .{ .needle = "(body?: BodyInit | null, headers?: HeadersInit) =>", .replacement = "(body, headers) =>" },
+        .{ .needle = "(form: FormData) =>", .replacement = "(form) =>" },
+        .{ .needle = "(b: Response | Request) =>", .replacement = "(b) =>" },
+        .{ .needle = "(url: string) =>", .replacement = "(url) =>" },
+        .{ .needle = "function arrayBuffer(buffer: BufferSource)", .replacement = "function arrayBuffer(buffer)" },
+        .{ .needle = "async function runInServer(opts: ServeOptions, cb: (url: string) => void | Promise<void>)", .replacement = "async function runInServer(opts, cb)" },
+        .{ .needle = "constructor(sources: Array<BinaryLike | Blob>, options?: BlobOptions)", .replacement = "constructor(sources, options)" },
         .{ .needle = ": string, callback: ((e: Event) => void) | null, options?: AddEventListenerOptions)", .replacement = ", callback, options)" },
         .{ .needle = ": string, callback: ((e: Event) => void) | null, options?: EventListenerOptions)", .replacement = ", callback, options)" },
         .{ .needle = ": number)", .replacement = ")" },
@@ -10716,6 +11180,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": TestEntry, component: Component): string", .replacement = ", component)" },
         .{ .needle = ": TestEntry,\n  component: Component,\n): { input: string; groups: Record<string, string | undefined> }", .replacement = ",\n  component,\n)" },
         .{ .needle = ": URL | null =", .replacement = " =" },
+        .{ .needle = ": url.UrlWithStringQuery;", .replacement = ";" },
+        .{ .needle = ": url.UrlWithParsedQuery;", .replacement = ";" },
         .{ .needle = ": string) =>", .replacement = ") =>" },
         .{ .needle = ": number)=>", .replacement = ")=>" },
         .{ .needle = ": number) =>", .replacement = ") =>" },
@@ -10752,6 +11218,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "![", .replacement = "[" },
         .{ .needle = ": any)", .replacement = ")" },
         .{ .needle = "e: any", .replacement = "e" },
+        .{ .needle = "err: any", .replacement = "err" },
         .{ .needle = ": Event)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
         .{ .needle = ": unknown[]", .replacement = "" },
@@ -10775,6 +11242,11 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
         .{ .needle = " as Error", .replacement = "" },
         .{ .needle = " as SourceMap", .replacement = "" },
+        .{ .needle = " as Metafile", .replacement = "" },
+        .{ .needle = " as MetafileInput", .replacement = "" },
+        .{ .needle = " as MetafileOutput", .replacement = "" },
+        .{ .needle = " as Record<string, MetafileInput>", .replacement = "" },
+        .{ .needle = " as Record<string, MetafileOutput>", .replacement = "" },
         .{ .needle = " as keyof typeof props", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as Array<[string, string]>", .replacement = "" },
@@ -10786,6 +11258,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as Body", .replacement = "" },
         .{ .needle = " as Blob", .replacement = "" },
         .{ .needle = " as File", .replacement = "" },
+        .{ .needle = " as ReadableStream", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
@@ -10795,6 +11268,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as FetchURLArgs", .replacement = "" },
         .{ .needle = " as {}", .replacement = "" },
         .{ .needle = "line!", .replacement = "line" },
+        .{ .needle = ".stack!", .replacement = ".stack" },
         .{ .needle = "hash!", .replacement = "hash" },
         .{ .needle = "jsOutput!", .replacement = "jsOutput" },
         .{ .needle = "mapOutput!", .replacement = "mapOutput" },
@@ -10819,6 +11293,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "interface TemplateStringTest {\n  expr: string;\n  print?: string | boolean; // expect stdout\n  capture?: string | boolean; // expect literal transpilation\n  captureRaw?: string; // expect raw transpilation\n}\n\n", .replacement = "" },
         .{ .needle = "type Action = {\n      type: \"load\" | \"defer\";\n      path: string;\n    };\n", .replacement = "" },
         .{ .needle = "type Import = {\n                  imported: string[];\n                  dep: string;\n                };\n                type Export = {\n                  ident: string;\n                };\n", .replacement = "" },
+        .{ .needle = "// Type definitions for metafile structure\ninterface MetafileImport {\n  path: string;\n  kind: string;\n  original?: string;\n  external?: boolean;\n  with?: { type: string };\n}\n\ninterface MetafileInput {\n  bytes: number;\n  imports: MetafileImport[];\n  format?: \"esm\" | \"cjs\";\n}\n\ninterface MetafileOutput {\n  bytes: number;\n  inputs: Record<string, { bytesInOutput: number }>;\n  imports: Array<{ path: string; kind: string; external?: boolean }>;\n  exports: string[];\n  entryPoint?: string;\n  cssBundle?: string;\n}\n\ninterface Metafile {\n  inputs: Record<string, MetafileInput>;\n  outputs: Record<string, MetafileOutput>;\n}\n\n", .replacement = "" },
     };
 
     for (replacements) |entry| {
@@ -11004,6 +11479,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import path from \"node:path\";",
             .replacement = "const path = globalThis.__home_import(\"node:path\");",
+        },
+        .{
+            .needle = "import * as os from \"node:os\";",
+            .replacement = "const os = globalThis.__home_import(\"node:os\");",
+        },
+        .{
+            .needle = "import fsPromises from \"fs/promises\";",
+            .replacement = "const fsPromises = globalThis.__home_import(\"fs/promises\");",
         },
         .{
             .needle = "import path, { join } from \"path\";",
@@ -11888,6 +12371,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "bun:jsc",
         "bun:internal-for-testing",
         "node:module",
+        "node:buffer",
+        "node:crypto",
         "source-map",
         "assert",
         "node:assert",

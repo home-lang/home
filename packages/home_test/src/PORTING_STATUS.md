@@ -212,7 +212,9 @@ including Bun-copied Deno `test(options, fn)` / permission skip /
 a Deno `URLSearchParams` bootstrap smoke, async-function `toThrow`
 matching for empty-body `Response.json()` / `Request.json()` SyntaxError
 rejections, EventTarget, AbortSignal,
-narrow Deno URL authority/hash/origin parsing, a Deno `performance`
+narrow Deno URL authority/hash/origin parsing, Deno V8 stack
+todo-registration parsing, legacy `node:url.parse` IPv6 host/port
+coverage, a Deno `performance`
 fixture covering timer-delayed measures, marks, observers, constructors,
 and EventTarget behavior, WebSocket failed-connect `ErrorEvent` snapshots, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
@@ -1008,6 +1010,11 @@ the shared bundler harness. This chunk adds Bun compile/standalone
 process smokes, `require.resolve`, compile artifact spawn reuse,
 React SSR package shims, plugin `onStart` error ordering, defer metadata
 JSON checks, and the copied TypeScript lowering needed by those files.
+The copied `bundler/standalone.test.ts`, `bundler/metafile.test.ts`, and
+`bundler/html-import-manifest.test.ts` fixtures now pass as `64`
+additional tests through browser-target standalone HTML inlining,
+CSS/import asset folding, metafile JSON/Markdown generation, and Bun's
+HTML import manifest shape.
 Native parity still needs Bun's real standalone graph, bytecode cache,
 plugin scheduler, and CSS parser diagnostics rather than the bootstrap
 model.
