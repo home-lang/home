@@ -993,6 +993,11 @@ pub fn compileSource(
             continue;
         }
         const normalized = normalizeScannerDiagnostic(d.message);
+        if (scannerDiagnosticIsInvalidStringTemplateEscape(normalized) and
+            scannerDiagnosticFallsInTaggedTemplate(c.tokens.items, d.pos))
+        {
+            continue;
+        }
         try c.diagnostics.append(gpa, .{
             .phase = .lex,
             .pos = d.pos,
@@ -1547,6 +1552,14 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "Unexpected '}'. Did you mean to escape it with backslash?")) {
         return .{ .code = 1508, .message = message };
     }
+    if (std.mem.startsWith(u8, message, "Octal escape sequences are not allowed. Use the syntax ")) {
+        return .{ .code = 1487, .message = message };
+    }
+    if (std.mem.startsWith(u8, message, "Escape sequence '") and
+        std.mem.endsWith(u8, message, "' is not allowed."))
+    {
+        return .{ .code = 1488, .message = message };
+    }
     // TS1499 — invalid regex flag character (anything outside the
     // ES2024 set g/i/m/s/u/y/d/v). Scanner emits at the offending
     // flag column so the (line, col) anchor matches tsc.
@@ -1560,6 +1573,66 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
         return .{ .code = 18026, .message = message };
     }
     return .{ .message = message };
+}
+
+fn scannerDiagnosticIsInvalidStringTemplateEscape(d: NormalizedScannerDiagnostic) bool {
+    return d.code == 1487 or d.code == 1488;
+}
+
+fn tokenCanPrecedeTaggedTemplate(kind: ts_lexer.TokenKind) bool {
+    return switch (kind) {
+        .identifier,
+        .private_identifier,
+        .kw_this,
+        .kw_super,
+        .kw_import,
+        .close_paren,
+        .close_bracket,
+        .no_substitution_template,
+        .template_tail,
+        => true,
+        else => false,
+    };
+}
+
+fn scannerDiagnosticFallsInTaggedTemplate(tokens: []const Token, pos: u32) bool {
+    var tagged_template_stack: [128]bool = undefined;
+    var template_depth: usize = 0;
+    var prev_kind: ?ts_lexer.TokenKind = null;
+
+    for (tokens) |tok| {
+        const in_tok = pos >= tok.span.start and pos < tok.span.end;
+        switch (tok.kind) {
+            .no_substitution_template => {
+                const tagged = if (prev_kind) |k| tokenCanPrecedeTaggedTemplate(k) else false;
+                if (in_tok) return tagged;
+            },
+            .template_head => {
+                const tagged = if (prev_kind) |k| tokenCanPrecedeTaggedTemplate(k) else false;
+                if (in_tok) return tagged;
+                if (template_depth < tagged_template_stack.len) {
+                    tagged_template_stack[template_depth] = tagged;
+                }
+                template_depth += 1;
+            },
+            .template_middle => {
+                const tagged = template_depth > 0 and
+                    template_depth <= tagged_template_stack.len and
+                    tagged_template_stack[template_depth - 1];
+                if (in_tok) return tagged;
+            },
+            .template_tail => {
+                const tagged = template_depth > 0 and
+                    template_depth <= tagged_template_stack.len and
+                    tagged_template_stack[template_depth - 1];
+                if (in_tok) return tagged;
+                if (template_depth > 0) template_depth -= 1;
+            },
+            else => {},
+        }
+        if (tok.kind != .eof) prev_kind = tok.kind;
+    }
+    return false;
 }
 
 fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -1900,6 +1973,42 @@ test "driver: misplaced shebang diagnostic maps to TS18026" {
         }
     }
     try T.expect(found);
+}
+
+test "driver: string and template invalid escape diagnostics map to TS1487 and TS1488" {
+    var c = try compileSource(T.allocator, "const a = \"\\1\"; const b = `\\9`;", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found_1487 = false;
+    var found_1488 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1487) {
+            found_1487 = true;
+            try T.expectEqualStrings("Octal escape sequences are not allowed. Use the syntax '\\x01'.", d.message);
+        }
+        if (d.code == 1488) {
+            found_1488 = true;
+            try T.expectEqualStrings("Escape sequence '\\9' is not allowed.", d.message);
+        }
+    }
+    try T.expect(found_1487);
+    try T.expect(found_1488);
+}
+
+test "driver: tagged template suppresses invalid escape diagnostics" {
+    var c = try compileSource(T.allocator, "tag`\\1${tag`\\8`}\\9`;", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1487);
+        try T.expect(d.code != 1488);
+    }
 }
 
 test "driver: alwaysStrict enables strict parser early errors" {

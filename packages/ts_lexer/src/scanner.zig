@@ -197,6 +197,16 @@ pub const Scanner = struct {
         }) catch {};
     }
 
+    fn reportFmtAt(self: *Scanner, gpa: std.mem.Allocator, pos: u32, line: u32, comptime fmt: []const u8, args: anytype) void {
+        const owned = std.fmt.allocPrint(self.diag_arena.allocator(), fmt, args) catch return;
+        self.diagnostics.append(gpa, .{
+            .pos = pos,
+            .line = line,
+            .column = pos - self.line_start,
+            .message = owned,
+        }) catch {};
+    }
+
     fn reportUnicodeEscapeUnexpectedBrace(self: *Scanner, gpa: std.mem.Allocator, from: u32, line: u32) void {
         var p = from;
         while (p < self.source.len) : (p += 1) {
@@ -278,6 +288,29 @@ pub const Scanner = struct {
         const esc_pos = slash_pos + 1;
         if (esc_pos >= self.source.len) return esc_pos;
         const esc = self.source[esc_pos];
+        if (esc >= '0' and esc <= '7') {
+            var end = esc_pos + 1;
+            if (esc == '0' and (end >= self.source.len or !isDecimalDigit(self.source[end]))) {
+                return end;
+            }
+            if (esc >= '0' and esc <= '3' and end < self.source.len and isOctalDigit(self.source[end])) {
+                end += 1;
+            }
+            if (end < self.source.len and isOctalDigit(self.source[end])) {
+                end += 1;
+            }
+            var value: u32 = 0;
+            var p = esc_pos;
+            while (p < end) : (p += 1) {
+                value = value * 8 + @as(u32, self.source[p] - '0');
+            }
+            self.reportFmtAt(gpa, slash_pos, line, "Octal escape sequences are not allowed. Use the syntax '\\x{x:0>2}'.", .{value});
+            return end;
+        }
+        if (esc == '8' or esc == '9') {
+            self.reportFmtAt(gpa, slash_pos, line, "Escape sequence '\\{c}' is not allowed.", .{esc});
+            return esc_pos + 1;
+        }
         if (esc == 'x') return self.scanEscapedHexDigits(gpa, esc_pos + 1, 2, line);
         if (esc != 'u') return esc_pos + 1;
         if (esc_pos + 1 < self.source.len and self.source[esc_pos + 1] == '{') {
@@ -824,15 +857,7 @@ pub const Scanner = struct {
                     return error.UnterminatedString;
                 }
                 const esc = self.source[self.pos];
-                if (esc == 'u') {
-                    self.pos = self.scanEscapeSequence(gpa, slash_pos, line, false);
-                    continue;
-                }
-                if (esc == 'x') {
-                    self.pos = self.scanEscapeSequence(gpa, slash_pos, line, false);
-                    continue;
-                }
-                self.pos += 1;
+                self.pos = self.scanEscapeSequence(gpa, slash_pos, line, false);
                 // Line-continuation: a backslash followed by \n / \r
                 // (handled above by consuming the `\\` then the newline).
                 if (esc == '\n') {
@@ -907,11 +932,7 @@ pub const Scanner = struct {
                 self.pos += 1;
                 if (self.isAtEnd()) break;
                 const esc = self.source[self.pos];
-                if (esc == 'u' or esc == 'x') {
-                    self.pos = self.scanEscapeSequence(gpa, slash_pos, self.line, false);
-                    continue;
-                }
-                self.pos += 1;
+                self.pos = self.scanEscapeSequence(gpa, slash_pos, self.line, false);
                 if (esc == '\n') {
                     self.line += 1;
                     self.line_start = self.pos;
@@ -1694,6 +1715,36 @@ test "Scanner: string literals — single and double" {
     try t.expectEqualStrings("\"bar\"", toks.items[1].bytes(s.source));
     try t.expectEqual(TokenKind.string_literal, toks.items[2].kind);
     try t.expectEqualStrings("'with\\'quote'", toks.items[2].bytes(s.source));
+}
+
+test "Scanner: string legacy octal and decimal escapes report TS-compatible messages" {
+    var s = Scanner.init(t.allocator, "\"\\1\" \"\\47\" \"\\177\" \"\\08\" \"\\8\" \"\\0\"");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(@as(usize, 7), toks.items.len);
+    try t.expectEqual(@as(usize, 5), s.diagnostics.items.len);
+    try t.expectEqual(@as(u32, 1), s.diagnostics.items[0].pos);
+    try t.expectEqualStrings("Octal escape sequences are not allowed. Use the syntax '\\x01'.", s.diagnostics.items[0].message);
+    try t.expectEqualStrings("Octal escape sequences are not allowed. Use the syntax '\\x27'.", s.diagnostics.items[1].message);
+    try t.expectEqualStrings("Octal escape sequences are not allowed. Use the syntax '\\x7f'.", s.diagnostics.items[2].message);
+    try t.expectEqualStrings("Octal escape sequences are not allowed. Use the syntax '\\x00'.", s.diagnostics.items[3].message);
+    try t.expectEqual(@as(u32, 19), s.diagnostics.items[3].pos);
+    try t.expectEqualStrings("Escape sequence '\\8' is not allowed.", s.diagnostics.items[4].message);
+}
+
+test "Scanner: template legacy octal and decimal escapes report when untagged" {
+    var s = Scanner.init(t.allocator, "`\\5${x}\\9`");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.template_head, toks.items[0].kind);
+    try t.expectEqual(TokenKind.template_tail, toks.items[2].kind);
+    try t.expectEqual(@as(usize, 2), s.diagnostics.items.len);
+    try t.expectEqualStrings("Octal escape sequences are not allowed. Use the syntax '\\x05'.", s.diagnostics.items[0].message);
+    try t.expectEqualStrings("Escape sequence '\\9' is not allowed.", s.diagnostics.items[1].message);
 }
 
 test "Scanner: unterminated string at EOF is a hard error" {
