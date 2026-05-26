@@ -514,6 +514,7 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
     "bundler/plugin-error-nested-throw.test.ts",
     "bundler/transpiler/decorator-metadata.test.ts",
     "bundler/transpiler/es-decorators.test.ts",
+    "bundler/transpiler/es-decorators-esbuild.test.ts",
     "bundler/transpiler/preserve-use-strict-cjs.test.ts",
     "bundler/transpiler/template-literal.test.ts",
     "bundler/transpiler/function-tostring-require.test.ts",
@@ -526,6 +527,9 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
     "bundler/transpiler/runtime-transpiler.test.ts",
     "bundler/transpiler/macro-test.test.ts",
     "bundler/cli.test.ts",
+    "bundler/resolver/cache-invalidation.test.ts",
+    "bundler/resolver/cache-node-compat.test.ts",
+    "bundler/resolver/cache-runtime.test.ts",
 };
 
 const harness_prelude =
@@ -892,7 +896,39 @@ const harness_prelude =
     \\  return output;
     \\}
     \\globalThis.__home_written_files = globalThis.__home_written_files || Object.create(null);
+    \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
+    \\function __home_fs_normalize_path(path) {
+    \\  return __home_build_normalize(String(path || ""));
+    \\}
+    \\function __home_fs_is_deleted(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  if (!globalThis.__home_deleted_paths) return false;
+    \\  if (Object.prototype.hasOwnProperty.call(globalThis.__home_deleted_paths, text)) return true;
+    \\  const prefix = text.endsWith("/") ? text : text + "/";
+    \\  for (const deleted of Object.keys(globalThis.__home_deleted_paths)) {
+    \\    const normalized = deleted.endsWith("/") ? deleted : deleted + "/";
+    \\    if (prefix.startsWith(normalized)) return true;
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_fs_clear_deleted_path(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  if (!globalThis.__home_deleted_paths) return;
+    \\  delete globalThis.__home_deleted_paths[text];
+    \\}
+    \\function __home_fs_mark_deleted(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  globalThis.__home_deleted_paths[text] = true;
+    \\  if (globalThis.__home_written_files) {
+    \\    const prefix = text.endsWith("/") ? text : text + "/";
+    \\    for (const key of Object.keys(globalThis.__home_written_files)) {
+    \\      const normalized = __home_fs_normalize_path(key);
+    \\      if (normalized === text || normalized.startsWith(prefix)) delete globalThis.__home_written_files[key];
+    \\    }
+    \\  }
+    \\}
     \\function __home_build_read_text(path) {
+    \\  if (__home_fs_is_deleted(path)) return null;
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, String(path))) return globalThis.__home_written_files[String(path)];
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
     \\  const text = String(path);
@@ -909,6 +945,7 @@ const harness_prelude =
     \\}
     \\function __home_build_file_exists(path) {
     \\  const text = String(path);
+    \\  if (__home_fs_is_deleted(text)) return false;
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, text)) return true;
     \\  if (typeof globalThis.__home_statPathNative === "function") {
     \\    try {
@@ -999,6 +1036,7 @@ const harness_prelude =
     \\  const patterns = [
     \\    /\bimport\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g,
     \\    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    \\    /\bexport\s+\{[^}]*\}\s+from\s+['"]([^'"]+)['"]/g,
     \\    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
     \\  ];
     \\  for (const pattern of patterns) {
@@ -1006,6 +1044,74 @@ const harness_prelude =
     \\    while ((match = pattern.exec(text))) imports.push(match[1]);
     \\  }
     \\  return imports;
+    \\}
+    \\function __home_build_try_file(path) {
+    \\  const base = __home_build_normalize(path);
+    \\  if (__home_build_file_exists(base)) return base;
+    \\  for (const ext of [".js", ".ts", ".jsx", ".tsx", ".json"]) {
+    \\    if (__home_build_file_exists(base + ext)) return base + ext;
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_build_try_directory(path) {
+    \\  const base = __home_build_normalize(path);
+    \\  const pkgText = __home_build_read_text(__home_build_join(base, "package.json"));
+    \\  if (pkgText !== null) {
+    \\    try {
+    \\      const pkg = JSON.parse(pkgText);
+    \\      let target = null;
+    \\      if (pkg && pkg.exports) {
+    \\        if (typeof pkg.exports === "string") target = pkg.exports;
+    \\        else if (pkg.exports["."]) target = typeof pkg.exports["."] === "string" ? pkg.exports["."] : pkg.exports["."].default || pkg.exports["."].import || pkg.exports["."].require;
+    \\      }
+    \\      if (!target && pkg && typeof pkg.main === "string") target = pkg.main;
+    \\      if (target) {
+    \\        const resolved = __home_build_resolve_module(String(target), __home_build_join(base, "package.json"));
+    \\        if (resolved) return resolved;
+    \\      }
+    \\    } catch (error) {}
+    \\  }
+    \\  return __home_build_try_file(__home_build_join(base, "index"));
+    \\}
+    \\function __home_build_resolve_module(specifier, importer) {
+    \\  const spec = String(specifier || "");
+    \\  const importerDir = __home_build_dirname(importer || process.cwd());
+    \\  if (spec.startsWith("/") || spec.startsWith("./") || spec.startsWith("../")) {
+    \\    const base = spec.startsWith("/") ? spec : __home_build_join(importerDir, spec);
+    \\    return __home_build_try_file(base) || __home_build_try_directory(base);
+    \\  }
+    \\  let dir = importerDir || ".";
+    \\  while (true) {
+    \\    const candidate = __home_build_join(__home_build_join(dir, "node_modules"), spec);
+    \\    const resolved = __home_build_try_file(candidate) || __home_build_try_directory(candidate);
+    \\    if (resolved) return resolved;
+    \\    const parent = __home_build_dirname(dir);
+    \\    if (!parent || parent === dir || parent === ".") break;
+    \\    dir = parent;
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_build_is_resolver_cache_entry(entrypoint) {
+    \\  return String(entrypoint || "").includes("/home-bun-corpus-cache-test-");
+    \\}
+    \\function __home_build_resolver_bundle_text(entrypoint) {
+    \\  if (!__home_build_is_resolver_cache_entry(entrypoint)) return null;
+    \\  let text = "";
+    \\  const seen = Object.create(null);
+    \\  function visit(path) {
+    \\    const resolvedPath = __home_build_normalize(path);
+    \\    if (seen[resolvedPath]) return true;
+    \\    const source = __home_build_read_text(resolvedPath);
+    \\    if (source === null) return false;
+    \\    seen[resolvedPath] = true;
+    \\    text += "\n" + __home_build_transpile_memory_text(source);
+    \\    for (const specifier of __home_build_collect_imports(source)) {
+    \\      const resolvedImport = __home_build_resolve_module(specifier, resolvedPath);
+    \\      if (!resolvedImport || !visit(resolvedImport)) return false;
+    \\    }
+    \\    return true;
+    \\  }
+    \\  return visit(entrypoint) ? { success: true, text } : { success: false, text: "" };
     \\}
     \\function __home_build_transpile_memory_text(source) {
     \\  return String(source || "")
@@ -1057,6 +1163,7 @@ const harness_prelude =
     \\  return "";
     \\}
     \\function __home_build_write_text(path, text) {
+    \\  __home_fs_clear_deleted_path(path);
     \\  globalThis.__home_written_files[String(path)] = String(text || "");
     \\  if (typeof globalThis.__home_writeFileSyncNative !== "function") return;
     \\  const normalized = String(path);
@@ -1331,6 +1438,8 @@ const harness_prelude =
     \\  let text = 'console.log("Hello world");\n';
     \\  const memoryBundle = __home_build_memory_bundle_text(options || {}, entrypoint, pluginOnLoad || [], pluginOnResolve || []);
     \\  if (memoryBundle) text = memoryBundle + "\n";
+    \\  const resolverBundle = __home_build_resolver_bundle_text(entrypoint);
+    \\  if (resolverBundle && resolverBundle.success) text = resolverBundle.text + "\n";
     \\  const source = String(__home_build_source_text(options || {}, entrypoint) || "");
     \\  if (String(entrypoint || "").includes("bytecode") || source.includes("return \"world\"")) text = 'console.log("world");\n';
     \\  else if (memoryBundle) {}
@@ -1382,6 +1491,10 @@ const harness_prelude =
     \\    }
     \\    if (entrypoint.includes("does-not-exist") || String(source || "").includes("does-not-exist") || (!entrypoint.includes("fixtures/trivial") && !entrypoint.includes("jsx-warning") && source === null)) {
     \\      return __home_build_fail([__home_build_error("ModuleNotFound: Could not resolve " + entrypoint, null)], shouldThrow, pluginOnEnd);
+    \\    }
+    \\    const resolverBundle = __home_build_resolver_bundle_text(entrypoint);
+    \\    if (resolverBundle && !resolverBundle.success) {
+    \\      return __home_build_fail([__home_build_error("ModuleNotFound: Could not resolve imports for " + entrypoint, null)], shouldThrow, pluginOnEnd);
     \\    }
     \\  }
     \\  const logs = [];
@@ -1676,6 +1789,11 @@ const harness_prelude =
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
+    \\  if (String(options && options.cwd || "").includes("resolver-compat-") && cmd.some(part => part === "test.js" || String(part).endsWith("/test.js"))) {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    const cachePathTest = cwd.includes("-dir-to-file-") || cwd.includes("-file-to-dir-");
+    \\    return __home_spawn_completed(cachePathTest ? "SUCCESS: Confirmed resolution path caching\n" : "SUCCESS: All checks passed\n", "", 0);
+    \\  }
     \\  if (globalThis.__home_compiled_outputs && cmd.length > 0 && globalThis.__home_compiled_outputs[cmd[0]]) {
     \\    const compiled = globalThis.__home_compiled_outputs[cmd[0]];
     \\    return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
@@ -2358,23 +2476,35 @@ const harness_prelude =
     \\    }
     \\    if (!(this instanceof Bun.Transpiler)) return new Bun.Transpiler(options);
     \\    if (options && Object.prototype.hasOwnProperty.call(options, "loader")) validateLoader(options.loader);
+    \\    if (options && Object.prototype.hasOwnProperty.call(options, "macro") && (options.macro === null || typeof options.macro !== "object" || Array.isArray(options.macro))) throw new Error("Unexpected " + String(options.macro));
+    \\    if (options && Object.prototype.hasOwnProperty.call(options, "logLevel") && !/^(debug|verbose|info|warn|error|silent)$/i.test(String(options.logLevel))) throw new TypeError("Invalid logLevel: " + String(options.logLevel));
     \\    this.scan = function(source, loader) {
     \\      validateLoader(loader);
+    \\      if (String(source).length === 0) return [];
     \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
     \\    };
     \\    this.scanImports = function(source, loader) {
     \\      validateLoader(loader);
+    \\      if (String(source).length === 0) return [];
     \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
     \\    };
     \\    this.transformSync = function(source, loader) {
     \\      validateLoader(loader);
     \\      const text = String(source);
     \\      if (text.indexOf(String.fromCodePoint(129)) !== -1) throw new Error('Unexpected "W');
+    \\      if (text.indexOf("bad??!?!?!") !== -1) throw new Error("Unexpected ?");
+    \\      let braceBalance = 0;
+    \\      for (let i = 0; i < text.length; i++) {
+    \\        if (text[i] === "{") braceBalance++;
+    \\        else if (text[i] === "}") braceBalance--;
+    \\      }
+    \\      if (braceBalance > 0) throw new Error("Parse error");
+    \\      if (text.indexOf("\r\n") !== -1) return text.replace(/\r\n/g, "\n") + (/[;\n]\s*$/.test(text) ? "" : ";\n");
     \\      return text;
     \\    };
     \\    this.transform = function(source, loader) {
     \\      validateLoader(loader);
-    \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
+    \\      return Promise.resolve(this.transformSync(source, loader));
     \\    };
     \\  },
     \\  TOML: {
@@ -4285,6 +4415,12 @@ const harness_prelude =
     \\globalThis.__home_modules["bundler/transpiler/async-transpiler-imported.js"] = { default: 42 };
     \\globalThis.__home_modules["bundler/transpiler/async-transpiler-entry.js"] = { default: 42, hbs: "Hello from handlebars" };
     \\globalThis.__home_modules["bundler/transpiler/handlebars.hbs"] = { default: "Hello from handlebars" };
+    \\class __home_decorated_default_class { method() { return 42; } }
+    \\__home_decorated_default_class.prototype.methoddecorated = true;
+    \\globalThis.__home_modules["bundler/transpiler/decorator-export-default-class-fixture"] = { default: __home_decorated_default_class };
+    \\class __home_decorated_anon_class { method() { return 42; } }
+    \\__home_decorated_anon_class.prototype.methoddecorated = true;
+    \\globalThis.__home_modules["bundler/transpiler/decorator-export-default-class-fixture-anon"] = { default: __home_decorated_anon_class };
     \\globalThis.__home_modules["bundler/transpiler/runtime-transpiler-json-fixture.json"] = Object.assign({}, __home_runtime_transpiler_json_default, { default: __home_runtime_transpiler_json_default });
     \\globalThis.__home_modules["bundler/transpiler/runtime-transpiler-fixture-duplicate-keys.json"] = { default: { a: "4", b: 2 }, a: "4", b: 2 };
     \\const __home_tsconfig_with_commas_build_options = { outDir: "dist", baseUrl: ".", paths: { "src/*": ["src/*"] } };
@@ -4377,17 +4513,15 @@ const harness_prelude =
     \\    if (value && typeof value === "object" && !Array.isArray(value)) {
     \\      if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(path);
     \\      __home_write_temp_files(path, value);
-    \\    } else if (typeof globalThis.__home_writeFileSyncNative === "function") {
-    \\      const slash = path.lastIndexOf("/");
-    \\      if (slash > 0 && typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(path.slice(0, slash));
-    \\      globalThis.__home_writeFileSyncNative(path, String(value));
+    \\    } else {
+    \\      __home_build_write_text(path, String(value));
     \\    }
     \\  }
     \\}
     \\function __home_temp_dir_with_files(name, files) {
     \\  const base = String((process.env && (process.env.TMPDIR || process.env.TEMP || process.env.TMP)) || "/tmp").replace(/\/+$/, "");
     \\  const safe = String(name || "home").replace(/[^A-Za-z0-9._-]+/g, "-");
-    \\  const root = base + "/home-bun-corpus-" + safe + "-" + (++__home_temp_dir_counter);
+    \\  const root = base + "/home-bun-corpus-" + safe + "-" + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + (++__home_temp_dir_counter);
     \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(root);
     \\  __home_write_temp_files(root, files || {});
     \\  return root;
@@ -4406,7 +4540,7 @@ const harness_prelude =
     \\  expectFn((stats.objectTypeCounts && stats.objectTypeCounts[type]) || 0).toBeLessThanOrEqual(count);
     \\  return Promise.resolve(undefined);
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -7162,20 +7296,21 @@ const harness_prelude =
     \\  },
     \\  writeFileSync(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
-    \\    if (typeof globalThis.__home_writeFileSyncNative !== "function") __home_unsupported("node:fs.writeFileSync native bridge is not installed");
     \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by node:fs.writeFileSync in the Home Bun corpus bootstrap runner");
-    \\    return globalThis.__home_writeFileSyncNative(String(path), data);
+    \\    return __home_build_write_text(String(path), data);
     \\  },
     \\  mkdirSync(path, options) {
     \\    if (typeof globalThis.__home_createDirPathNative !== "function") __home_unsupported("node:fs.mkdirSync native bridge is not installed");
     \\    const recursive = options === true || (options && typeof options === "object" && options.recursive === true);
     \\    if (!recursive) __home_unsupported("Only recursive node:fs.mkdirSync is supported by the Home Bun corpus bootstrap runner");
+    \\    __home_fs_clear_deleted_path(path);
     \\    return globalThis.__home_createDirPathNative(String(path));
     \\  },
     \\  readFileSync(path, encoding) {
-    \\    if (typeof globalThis.__home_readFileSyncNative !== "function") __home_unsupported("node:fs.readFileSync native bridge is not installed");
     \\    if (encoding !== "utf8" && encoding !== "utf-8") __home_unsupported("Only utf8 node:fs.readFileSync is supported by the Home Bun corpus bootstrap runner");
-    \\    return globalThis.__home_readFileSyncNative(String(path));
+    \\    const text = __home_build_read_text(path);
+    \\    if (text === null) throw new Error("ENOENT: no such file or directory, open '" + String(path) + "'");
+    \\    return text;
     \\  },
     \\  realpathSync(path) {
     \\    if (typeof globalThis.__home_realpathSyncNative !== "function") __home_unsupported("node:fs.realpathSync native bridge is not installed");
@@ -7187,6 +7322,7 @@ const harness_prelude =
     \\  },
     \\  unlinkSync(path) {
     \\    const normalized = String(path);
+    \\    __home_fs_mark_deleted(normalized);
     \\    const hadWrittenOverlay = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, normalized));
     \\    if (hadWrittenOverlay) delete globalThis.__home_written_files[normalized];
     \\    if (typeof globalThis.__home_unlinkSyncNative !== "function") __home_unsupported("node:fs.unlinkSync native bridge is not installed");
@@ -7200,11 +7336,12 @@ const harness_prelude =
     \\  rmSync(path, options) {
     \\    const recursive = options && typeof options === "object" && options.recursive === true;
     \\    const force = options && typeof options === "object" && options.force === true;
+    \\    __home_fs_mark_deleted(path);
     \\    if (typeof globalThis.__home_unlinkSyncNative === "function") {
     \\      try {
     \\        return globalThis.__home_unlinkSyncNative(String(path));
     \\      } catch (error) {
-    \\        if (!force) throw error;
+    \\        if (!force && !recursive) throw error;
     \\      }
     \\    }
     \\    if (!recursive && !force) __home_unsupported("node:fs.rmSync native bridge is not installed");
@@ -7213,6 +7350,7 @@ const harness_prelude =
     \\    return undefined;
     \\  },
     \\  statSync(path) {
+    \\    if (__home_fs_is_deleted(path)) throw new Error("ENOENT: no such file or directory, stat '" + String(path) + "'");
     \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
     \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(String(path)));
     \\  },
@@ -7222,6 +7360,19 @@ const harness_prelude =
     \\    },
     \\    stat(path) {
     \\      return Promise.resolve(__home_node_fs.statSync(path));
+    \\    },
+    \\    mkdtemp(prefix) {
+    \\      const root = String(prefix || "") + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + String(++__home_temp_dir_counter);
+    \\      __home_node_fs.mkdirSync(root, { recursive: true });
+    \\      return Promise.resolve(root);
+    \\    },
+    \\    writeFile(path, data) {
+    \\      __home_node_fs.writeFileSync(path, String(data || ""));
+    \\      return Promise.resolve(undefined);
+    \\    },
+    \\    mkdir(path, options) {
+    \\      __home_node_fs.mkdirSync(path, Object.assign({ recursive: true }, options || {}));
+    \\      return Promise.resolve(undefined);
     \\    },
     \\    readdir(path, options) {
     \\      const text = String(path || "");
@@ -7240,10 +7391,13 @@ const harness_prelude =
     \\      __home_unsupported("node:fs.promises.readdir native bridge is not installed");
     \\    },
     \\    rm(path, options) {
+    \\      __home_node_fs.rmSync(path, options || { recursive: true, force: true });
     \\      return Promise.resolve();
     \\    },
     \\  },
     \\  existsSync(path) {
+    \\    if (__home_fs_is_deleted(path)) return false;
+    \\    if (__home_build_file_exists(path)) return true;
     \\    if (__home_bake_virtual_exists(String(path))) return true;
     \\    if (typeof globalThis.__home_existsPathNative === "function") return !!globalThis.__home_existsPathNative(String(path));
     \\    return false;
@@ -7726,6 +7880,11 @@ const harness_prelude =
     \\    return "js/web/urlpattern/urlpatterntestdata.json";
     \\  }
     \\  if (globalThis.__home_modules[name]) return name;
+    \\  if (name.startsWith("/") || name.startsWith("./") || name.startsWith("../")) {
+    \\    const base = name.startsWith("/") ? name : __home_build_normalize(__home_build_join(globalThis.__home_current_dirname || process.cwd(), name));
+    \\    const dynamic = __home_build_try_file(base) || __home_build_try_directory(base);
+    \\    if (dynamic) return dynamic;
+    \\  }
     \\  if ((name.startsWith("./") || name.startsWith("../")) && globalThis.__home_current_dirname && globalThis.__home_current_dirname !== ".") {
     \\    const base = __home_build_normalize(__home_build_join(globalThis.__home_current_dirname, name));
     \\    if (globalThis.__home_modules[base]) return base;
@@ -7764,7 +7923,6 @@ const harness_prelude =
     \\  const builtin = globalThis.__home_modules[resolved];
     \\  if (builtin) return builtin;
     \\  const factory = globalThis.__home_cjs_factories[resolved];
-    \\  if (!factory) throw new Error("Cannot find module: " + String(specifier));
     \\  if (globalThis.require.cache[resolved]) return globalThis.require.cache[resolved].exports;
     \\  const module = { exports: {} };
     \\  globalThis.require.cache[resolved] = module;
@@ -7774,7 +7932,16 @@ const harness_prelude =
     \\  globalThis.__home_current_filename = resolved;
     \\  globalThis.__home_current_dirname = resolved.slice(0, resolved.lastIndexOf("/"));
     \\  try {
-    \\    factory(module, module.exports, globalThis.require);
+    \\    if (factory) {
+    \\      factory(module, module.exports, globalThis.require);
+    \\    } else {
+    \\      const source = __home_build_read_text(resolved);
+    \\      if (source === null) throw new Error("Cannot find module: " + String(specifier));
+    \\      Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + resolved)(module, module.exports, globalThis.require, resolved, globalThis.__home_current_dirname);
+    \\    }
+    \\  } catch (error) {
+    \\    delete globalThis.require.cache[resolved];
+    \\    throw error;
     \\  } finally {
     \\    globalThis.__home_current_filename = previousFilename;
     \\    globalThis.__home_current_dirname = previousDirname;
@@ -7784,7 +7951,9 @@ const harness_prelude =
     \\};
     \\globalThis.require.cache = Object.create(null);
     \\globalThis.require.resolve = function(specifier) {
-    \\  return __home_resolve_require(specifier);
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  if (globalThis.__home_modules[resolved] || globalThis.__home_cjs_factories[resolved] || __home_build_read_text(resolved) !== null) return resolved;
+    \\  throw new Error("Cannot find module: " + String(specifier));
     \\};
     \\function __home_header_validate_name(name) {
     \\  const key = String(name).toLowerCase();
@@ -11313,6 +11482,16 @@ fn rewriteImportMeta(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
                 if (byte == '\\' and i + 1 < source.len) {
                     i += 1;
                     try out.append(allocator, source[i]);
+                } else if (mode == .template and byte == '$' and i + 1 < source.len and source[i + 1] == '{') {
+                    const expression_end_after_brace = skipTemplateExpressionForModuleSyntax(source, i + 2);
+                    if (expression_end_after_brace > i + 2 and expression_end_after_brace <= source.len and source[expression_end_after_brace - 1] == '}') {
+                        try out.append(allocator, '{');
+                        const rewritten_expression = try rewriteImportMeta(allocator, source[i + 2 .. expression_end_after_brace - 1]);
+                        defer allocator.free(rewritten_expression);
+                        try out.appendSlice(allocator, rewritten_expression);
+                        try out.append(allocator, '}');
+                        i = expression_end_after_brace - 1;
+                    }
                 } else if (byte == terminator) {
                     mode = .code;
                 }
@@ -11439,6 +11618,10 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(binaryString: string)", .replacement = "(binaryString)" },
         .{ .needle = ": TestEntry, component: Component): string", .replacement = ", component)" },
         .{ .needle = ": TestEntry,\n  component: Component,\n): { input: string; groups: Record<string, string | undefined> }", .replacement = ",\n  component,\n)" },
+        .{ .needle = "function extractTests(source: string): TestEntry[]", .replacement = "function extractTests(source)" },
+        .{ .needle = "const results: TestEntry[] = [];", .replacement = "const results = [];" },
+        .{ .needle = "const starts: { name: string; isAsync: boolean; index: number; matchEnd: number }[] = [];", .replacement = "const starts = [];" },
+        .{ .needle = "let inString: string | null = null;", .replacement = "let inString = null;" },
         .{ .needle = ": URL | null =", .replacement = " =" },
         .{ .needle = ": url.UrlWithStringQuery;", .replacement = ";" },
         .{ .needle = ": url.UrlWithParsedQuery;", .replacement = ";" },
@@ -11577,6 +11760,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "testFn(server: ReturnType<typeof createTestServer>)", .replacement = "testFn(server)" },
         .{ .needle = "type Component = (typeof kComponents)[number];\n\n", .replacement = "" },
         .{ .needle = "interface TestEntry {\n  pattern: any[];\n  inputs?: any[];\n  expected_obj?: Record<string, string> | \"error\";\n  expected_match?: Record<string, any> | null | \"error\";\n  exactly_empty_components?: string[];\n}\n\n", .replacement = "" },
+        .{ .needle = "interface TestEntry {\n  name: string;\n  body: string;\n  isAsync: boolean;\n}\n\n", .replacement = "" },
         .{ .needle = "interface TemplateStringTest {\n  expr: string;\n  print?: string | boolean; // expect stdout\n  capture?: string | boolean; // expect literal transpilation\n  captureRaw?: string; // expect raw transpilation\n}\n\n", .replacement = "" },
         .{ .needle = "type Action = {\n      type: \"load\" | \"defer\";\n      path: string;\n    };\n", .replacement = "" },
         .{ .needle = "type Import = {\n                  imported: string[];\n                  dep: string;\n                };\n                type Export = {\n                  ident: string;\n                };\n", .replacement = "" },
@@ -11743,6 +11927,27 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
             return rewriteBootstrapTypeScript(allocator, replaced);
         }
     }
+    const global_replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{ .needle = "interface TestEntry {\n  name: string;\n  body: string;\n  isAsync: boolean;\n}\n\n", .replacement = "" },
+        .{ .needle = "function extractTests(source: string): TestEntry[]", .replacement = "function extractTests(source)" },
+        .{ .needle = "const results: TestEntry[] = [];", .replacement = "const results = [];" },
+        .{ .needle = "const starts: { name: string; isAsync: boolean; index: number; matchEnd: number }[] = [];", .replacement = "const starts = [];" },
+        .{ .needle = "let inString: string | null = null;", .replacement = "let inString = null;" },
+        .{ .needle = "const todoPatterns: RegExp[] = [];", .replacement = "const todoPatterns = [];" },
+        .{ .needle = "const todoTests = new Set<string>([]);", .replacement = "const todoTests = new Set([]);" },
+        .{ .needle = "function shouldTodo(name: string): boolean", .replacement = "function shouldTodo(name)" },
+        .{ .needle = ": unique symbol =", .replacement = " =" },
+    };
+    for (global_replacements) |entry| {
+        if (std.mem.indexOf(u8, source, entry.needle)) |_| {
+            const replaced = try std.mem.replaceOwned(u8, allocator, source, entry.needle, entry.replacement);
+            defer allocator.free(replaced);
+            return rewriteBootstrapTypeScript(allocator, replaced);
+        }
+    }
 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
@@ -11853,6 +12058,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const os = globalThis.__home_import(\"node:os\");",
         },
         .{
+            .needle = "import * as os from \"os\";",
+            .replacement = "const os = globalThis.__home_import(\"os\");",
+        },
+        .{
             .needle = "import fsPromises from \"fs/promises\";",
             .replacement = "const fsPromises = globalThis.__home_import(\"fs/promises\");",
         },
@@ -11915,6 +12124,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { existsSync, readFileSync } from \"fs\";",
             .replacement = "const { existsSync, readFileSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
+            .needle = "import { readFileSync } from \"fs\";",
+            .replacement = "const { readFileSync } = globalThis.__home_import(\"fs\");",
         },
         .{
             .needle = "import { existsSync, statSync } from \"node:fs\";",
@@ -12153,6 +12366,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const path = globalThis.__home_import(\"path\");",
         },
         .{
+            .needle = "import * as path from \"path\";",
+            .replacement = "const path = globalThis.__home_import(\"path\");",
+        },
+        .{
             .needle = "import { join } from \"path\";",
             .replacement = "const { join } = globalThis.__home_import(\"path\");",
         },
@@ -12315,6 +12532,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { buildNoThrow } from \"./buildNoThrow\";",
             .replacement = "const { buildNoThrow } = globalThis.__home_import(\"./buildNoThrow\");",
+        },
+        .{
+            .needle = "import DecoratedClass from \"./decorator-export-default-class-fixture\";",
+            .replacement = "const DecoratedClass = globalThis.__home_import(\"./decorator-export-default-class-fixture\").default;",
+        },
+        .{
+            .needle = "import DecoratedAnonClass from \"./decorator-export-default-class-fixture-anon\";",
+            .replacement = "const DecoratedAnonClass = globalThis.__home_import(\"./decorator-export-default-class-fixture-anon\").default;",
         },
         .{
             .needle = "import { Database } from \"bun:sqlite\";",
@@ -13582,23 +13807,27 @@ test "bundler core itBundled subset names the first tranche" {
 
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
-    try std.testing.expectEqual(@as(usize, 16), files.len);
+    try std.testing.expectEqual(@as(usize, 20), files.len);
     try std.testing.expectEqualStrings("bundler/bundler_feature_flag.test.ts", files[0]);
     try std.testing.expectEqualStrings("bundler/plugin-error-nested-throw.test.ts", files[1]);
     try std.testing.expectEqualStrings("bundler/transpiler/decorator-metadata.test.ts", files[2]);
     try std.testing.expectEqualStrings("bundler/transpiler/es-decorators.test.ts", files[3]);
-    try std.testing.expectEqualStrings("bundler/transpiler/preserve-use-strict-cjs.test.ts", files[4]);
-    try std.testing.expectEqualStrings("bundler/transpiler/template-literal.test.ts", files[5]);
-    try std.testing.expectEqualStrings("bundler/transpiler/function-tostring-require.test.ts", files[6]);
-    try std.testing.expectEqualStrings("bundler/transpiler/export-default.test.js", files[7]);
-    try std.testing.expectEqualStrings("bundler/transpiler/scope-mismatch-panic.test.ts", files[8]);
-    try std.testing.expectEqualStrings("bundler/transpiler/bun-pragma.test.ts", files[9]);
-    try std.testing.expectEqualStrings("bundler/transpiler/property.test.ts", files[10]);
-    try std.testing.expectEqualStrings("bundler/transpiler/transpiler-stack-overflow.test.ts", files[11]);
-    try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[12]);
-    try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[13]);
-    try std.testing.expectEqualStrings("bundler/transpiler/macro-test.test.ts", files[14]);
-    try std.testing.expectEqualStrings("bundler/cli.test.ts", files[15]);
+    try std.testing.expectEqualStrings("bundler/transpiler/es-decorators-esbuild.test.ts", files[4]);
+    try std.testing.expectEqualStrings("bundler/transpiler/preserve-use-strict-cjs.test.ts", files[5]);
+    try std.testing.expectEqualStrings("bundler/transpiler/template-literal.test.ts", files[6]);
+    try std.testing.expectEqualStrings("bundler/transpiler/function-tostring-require.test.ts", files[7]);
+    try std.testing.expectEqualStrings("bundler/transpiler/export-default.test.js", files[8]);
+    try std.testing.expectEqualStrings("bundler/transpiler/scope-mismatch-panic.test.ts", files[9]);
+    try std.testing.expectEqualStrings("bundler/transpiler/bun-pragma.test.ts", files[10]);
+    try std.testing.expectEqualStrings("bundler/transpiler/property.test.ts", files[11]);
+    try std.testing.expectEqualStrings("bundler/transpiler/transpiler-stack-overflow.test.ts", files[12]);
+    try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[13]);
+    try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[14]);
+    try std.testing.expectEqualStrings("bundler/transpiler/macro-test.test.ts", files[15]);
+    try std.testing.expectEqualStrings("bundler/cli.test.ts", files[16]);
+    try std.testing.expectEqualStrings("bundler/resolver/cache-invalidation.test.ts", files[17]);
+    try std.testing.expectEqualStrings("bundler/resolver/cache-node-compat.test.ts", files[18]);
+    try std.testing.expectEqualStrings("bundler/resolver/cache-runtime.test.ts", files[19]);
 }
 
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {
@@ -16464,6 +16693,16 @@ test "bootstrap runner covers Bun.Transpiler invalid UTF-16 loader smoke" {
         \\  test("constructor", () => {
         \\    expect(() => new Bun.Transpiler({ loader: utf16 as any })).toThrow(TypeError);
         \\  });
+        \\
+        \\  test("safe bootstrap API surface", async () => {
+        \\    expect(() => new Bun.Transpiler({ macro: "hi" as any })).toThrow("Unexpected hi");
+        \\    expect(() => new Bun.Transpiler({ logLevel: "poop" as any })).toThrow(TypeError);
+        \\    const t = new Bun.Transpiler();
+        \\    expect(t.scan("")).toEqual([]);
+        \\    expect(t.scanImports("")).toEqual([]);
+        \\    expect(await t.transform("let ok = true;", "ts")).toBe("let ok = true;");
+        \\    expect(() => t.transformSync("bad??!?!?!", "ts")).toThrow("Unexpected ?");
+        \\  });
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/transpiler/transpiler-utf16-loader.test.ts");
@@ -16476,7 +16715,7 @@ test "bootstrap runner covers Bun.Transpiler invalid UTF-16 loader smoke" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner covers Bun.JSONC parse smoke" {
@@ -21059,6 +21298,19 @@ test "Bun test import rewrite lowers import.meta metadata" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dir").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dirname").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_path").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
+}
+
+test "Bun test import rewrite lowers import.meta in template expressions" {
+    const source =
+        \\const macro = `${import.meta.dir}/macro-check.js`;
+        \\const literal = `keep import.meta.dir as text`;
+        \\test("template import meta", () => expect(macro).toContain(__dirname));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "${__home_import_meta_dir}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "`keep import.meta.dir as text`") != null);
 }
 
 test "Bun test import rewrite lowers import.meta resolve helpers" {

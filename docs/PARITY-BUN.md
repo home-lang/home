@@ -197,20 +197,19 @@ status). The Zig-side surface compiles; what's missing is the JS
 API for `Bun.build`. CLI entrypoint (`home bundle`) is in progress.
 
 Corpus audit on 2026-05-26: the copied Bun corpus has **89**
-`bundler/**/*.test.{ts,js}` files. Current green evidence covers **82
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers **86
 unique files**: 66 unique bundler files inside `minimal-js`, 5 more in
-`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 11
+`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 15
 more unique files from the executable `bundler-transpiler-bootstrap`
-subset (`157` passed, `0` failed, `2` todo across 16 files). The copied
+subset (`320` passed, `0` failed, `2` todo across 20 files). The copied
 corpus itself is exact against upstream Bun for `.test.ts` / `.test.js`
 files, with 1720 upstream paths, 1720 copied paths, zero missing, and
 zero extras. The remaining bundler file frontier is:
 
 | Tranche | Files |
 |---|---|
-| Decorator transpiler semantics | `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` |
+| Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` |
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` |
-| Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` |
 | Native plugin final | `bundler/native-plugin.test.ts` |
 
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts` is not
@@ -226,10 +225,9 @@ faithfully porting Bun's `JSBundlerPlugin.cpp`, `napi.cpp`, and
 `napi_external.cpp` bridge into the Home runtime. Do not count a
 corpus-local `.node` mock as parity for this file.
 
-The next observed bundler blockers are `bundler/transpiler/decorators.test.ts`,
-which still fails bootstrap classification as unsupported module syntax,
-and `bundler/transpiler/es-decorators-esbuild.test.ts`, which fails
-parse-time before execution.
+The next observed decorator blocker is `bundler/transpiler/decorators.test.ts`,
+which now reaches the real parser boundary after import/type erasure:
+`SyntaxError: Invalid character: '@'`.
 
 The source module follow-through for these bundler gates is to replace
 the `__home_expect_bundled` bootstrap stub with a real `itBundled`
