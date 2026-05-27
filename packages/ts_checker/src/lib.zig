@@ -670,11 +670,45 @@ pub fn consoleGlobal(
     const sig_log = try ti.internSignature(&[_]TypeId{any_arr}, void_t, false);
     try rest_set.put(gpa, sig_log, {});
 
+    // `(): void` — no-arg helpers used by `console.groupEnd`,
+    // `console.time*`, `console.dir` (with no args), `console.clear`.
+    const sig_void_void = try ti.internSignature(&[_]TypeId{}, void_t, false);
+    // `(label?: string): void` — used by `time` / `timeEnd` /
+    // `timeLog` / `count` / `countReset` / `group` / `groupCollapsed`.
+    const string_t = types.Primitive.string_t;
+    const undef_t = types.Primitive.undefined_t;
+    const optional_string = try ti.internUnion(&[_]TypeId{ string_t, undef_t });
+    const sig_optional_label = try ti.internSignature(&[_]TypeId{optional_string}, void_t, false);
+
     const m = [_]types.ObjectMember{
+        // Standard logging surface.
         .{ .name = try sint.intern("log"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("error"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("warn"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("info"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Debug / trace — same variadic shape.
+        .{ .name = try sint.intern("debug"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("trace"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("dir"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("table"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("assert"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("dirxml"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Grouping (label?: string).
+        .{ .name = try sint.intern("group"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("groupCollapsed"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("groupEnd"), .type = sig_void_void, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Timing.
+        .{ .name = try sint.intern("time"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("timeEnd"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("timeLog"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("timeStamp"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Counting.
+        .{ .name = try sint.intern("count"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("countReset"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Misc.
+        .{ .name = try sint.intern("clear"), .type = sig_void_void, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("profile"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("profileEnd"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.console_global = try ti.internObjectType(&m);
     return cache.console_global;
