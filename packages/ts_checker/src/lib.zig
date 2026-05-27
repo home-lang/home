@@ -304,14 +304,34 @@ pub fn arrayProto(
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
     const sig_every = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
     const sig_some = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
-    const sig_includes = try ti.internSignature(&[_]TypeId{elem}, boolean_t, false);
-    const sig_indexOf = try ti.internSignature(&[_]TypeId{elem}, number_t, false);
+    // `includes(searchElement: T, fromIndex?: number): boolean`. The
+    // optional fromIndex was missing; upstream lib.d.ts declares it.
+    const sig_includes = try ti.internSignature(&[_]TypeId{ elem, optional_number_t }, boolean_t, false);
+    // `indexOf(searchElement: T, fromIndex?: number): number`. Same
+    // upstream shape as `lastIndexOf` (which already had fromIndex).
+    const sig_indexOf = try ti.internSignature(&[_]TypeId{ elem, optional_number_t }, number_t, false);
     const sig_slice = try ti.internSignature(&[_]TypeId{ optional_number_t, optional_number_t }, arr_t, false);
-    const sig_join = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
+    // `join(separator?: string): string` — the separator is optional;
+    // upstream defaults to `,`. We declared it required, tripping
+    // TS2554 on `arr.join()` with no args.
+    const optional_string_t = try ti.internUnion(&[_]TypeId{ string_t, undef_t });
+    const sig_join = try ti.internSignature(&[_]TypeId{optional_string_t}, string_t, false);
     const sig_find = try ti.internSignature(&[_]TypeId{cb_t_unknown}, t_or_undef, false);
-    const sig_concat = try ti.internSignature(&[_]TypeId{arr_t}, arr_t, false);
+    // `concat(...items: (T | T[])[]): T[]` — accepts both individual
+    // values and arrays of values as varargs. Upstream uses
+    // `ConcatArray<T>` for array-like sources; `T | T[]` covers the
+    // common patterns. The trailing union-arr param is registered in
+    // `rest_set` so call sites expand to 0+ `T | T[]` arguments.
+    const t_or_arr_t = try ti.internUnion(&[_]TypeId{ elem, arr_t });
+    const concat_rest_arr = try ti.internArrayType(sint, t_or_arr_t);
+    const sig_concat = try ti.internSignature(&[_]TypeId{concat_rest_arr}, arr_t, false);
+    try rest_set.put(gpa, sig_concat, {});
     const sig_reverse = try ti.internSignature(&[_]TypeId{}, arr_t, false);
-    const sig_sort = try ti.internSignature(&[_]TypeId{cb_tt_num}, arr_t, false);
+    // `sort(compareFn?: (a: T, b: T) => number): T[]` — the comparator
+    // is optional; upstream defaults to a string-coerce comparator.
+    // We declared it required, tripping TS2554 on `arr.sort()`.
+    const optional_cb_tt_num = try ti.internUnion(&[_]TypeId{ cb_tt_num, undef_t });
+    const sig_sort = try ti.internSignature(&[_]TypeId{optional_cb_tt_num}, arr_t, false);
     const sig_to_array = try ti.internSignature(&[_]TypeId{}, arr_t, false);
     const number_arr = try ti.internArrayType(sint, number_t);
     const sig_keys = try ti.internSignature(&[_]TypeId{}, number_arr, false);
@@ -351,8 +371,10 @@ pub fn arrayProto(
     const sig_unshift = try ti.internSignature(&[_]TypeId{arr_t}, number_t, false);
     try rest_set.put(gpa, sig_unshift, {});
     // `splice(start: number, deleteCount?: number, ...items: T[]): T[]`.
-    // The trailing `any[]` param is the rest binder.
-    const sig_splice = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t, any_arr }, arr_t, false);
+    // The trailing `T[]` param is the rest binder — using `arr_t`
+    // (T[]) instead of `any_arr` preserves type safety on inserted
+    // items so `nums.splice(0, 1, "x")` correctly fires TS2345.
+    const sig_splice = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t, arr_t }, arr_t, false);
     try rest_set.put(gpa, sig_splice, {});
 
     const m = [_]types.ObjectMember{
