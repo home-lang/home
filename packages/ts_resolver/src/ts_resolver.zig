@@ -217,12 +217,131 @@ pub const Resolver = struct {
             return error.NotFound;
         }
 
-        // Bare specifier — paths mapping → node_modules.
+        // Bare specifier — paths mapping → `#imports` → self-name → node_modules.
         if (try self.tryPathsMapping(specifier)) |r| return r;
+        // The modern resolvers (node16/nodenext/bundler) honor a few
+        // package.json-scope-relative lookups BEFORE walking node_modules,
+        // matching tsc's `resolveModuleName` order (`loadModuleFromImports`
+        // then `loadModuleFromSelfNameReference`). The legacy `node10` and
+        // `classic` strategies skip both — they only ever consult
+        // node_modules / `main` (no `exports`-scoped indirection).
+        if (self.exportsResolutionEnabled()) {
+            // `#`-prefixed private subpath imports resolve against the
+            // nearest enclosing `package.json` `imports` map.
+            if (specifier.len > 0 and specifier[0] == '#') {
+                if (try self.tryImportsMapping(specifier, containing_file)) |r| return r;
+                // A `#`-prefixed specifier never resolves through
+                // node_modules; if the imports map didn't cover it, it's
+                // unresolved (tsc treats `#`-specifiers as scope-private).
+                return error.NotFound;
+            }
+            // Self-name: `import "<own-name>/sub"` from inside a package
+            // whose `package.json` declares a matching `name` + `exports`.
+            if (try self.trySelfNameReference(specifier, containing_file)) |r| return r;
+        }
         if (try self.tryNodeModules(specifier, containing_file)) |r| {
             return try self.attachExportsAlternateResult(r, specifier, containing_file);
         }
         return error.NotFound;
+    }
+
+    /// Walk up from `containing_file`'s directory to the nearest
+    /// `package.json` and return `(dir, package.json path)`. Mirrors
+    /// tsc's `getPackageScopeForPath` — the enclosing package scope is
+    /// the first ancestor directory holding a `package.json`. Returns
+    /// null when no ancestor has one.
+    const PackageScope = struct { dir: []const u8, pkg_json: []const u8 };
+    fn getPackageScope(self: *Resolver, containing_file: []const u8) ResolveError!?PackageScope {
+        var dir = dirname(containing_file);
+        while (true) {
+            const pkg_path = try self.joinPath(dir, "package.json");
+            if (self.fs.fileExists(pkg_path)) {
+                return .{ .dir = dir, .pkg_json = pkg_path };
+            }
+            if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
+            const parent = dirname(dir);
+            if (std.mem.eql(u8, parent, dir)) break;
+            dir = parent;
+        }
+        return null;
+    }
+
+    /// tsc's `loadModuleFromSelfNameReference`: when the enclosing
+    /// `package.json` has a `name` AND an `exports` map, a bare specifier
+    /// that begins with that `name` resolves through the package's own
+    /// `exports` (so a package can import itself by name). Returns null
+    /// when there is no matching scope or the specifier's leading path
+    /// components don't equal the package name.
+    fn trySelfNameReference(
+        self: *Resolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!?Resolution {
+        const scope = (try self.getPackageScope(containing_file)) orelse return null;
+        const bytes = self.fs.readFile(self.gpa, scope.pkg_json) catch return null;
+        defer self.gpa.free(bytes);
+        var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return null;
+        defer parsed.deinit();
+        if (parsed.value != .object) return null;
+        const obj = parsed.value.object;
+        // Self-name only applies to packages that publish `exports`;
+        // without it there is no self-name channel (matches the
+        // `!scope.contents.packageJsonContent.exports` guard upstream).
+        if (obj.get("exports") == null) return null;
+        const name_v = obj.get("name") orelse return null;
+        if (name_v != .string) return null;
+        const name = name_v.string;
+        if (name.len == 0) return null;
+        // The specifier must be `<name>` exactly or `<name>/<subpath>`.
+        if (!std.mem.startsWith(u8, specifier, name)) return null;
+        const rest = specifier[name.len..];
+        const subpath: []const u8 = if (rest.len == 0)
+            "."
+        else if (rest[0] == '/')
+            rest[1..]
+        else
+            return null; // `name` matched only as a prefix of a longer name
+        const outcome = try self.resolvePackageSubpath(scope.dir, scope.pkg_json, subpath);
+        switch (outcome) {
+            .resolved => |r| return .{ .path = r.path, .source = .package_exports, .is_declaration = r.is_declaration },
+            .blocked, .none => return null,
+        }
+    }
+
+    /// tsc's `loadModuleFromImports`: a `#`-prefixed specifier resolves
+    /// against the nearest enclosing `package.json` `imports` map (the
+    /// private-subpath analogue of `exports`). Honors the same condition
+    /// chain and `null`-short-circuit semantics as `exports`. Returns
+    /// null when no scope/`imports` entry covers the specifier.
+    fn tryImportsMapping(
+        self: *Resolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!?Resolution {
+        const scope = (try self.getPackageScope(containing_file)) orelse return null;
+        const bytes = self.fs.readFile(self.gpa, scope.pkg_json) catch return null;
+        defer self.gpa.free(bytes);
+        var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return null;
+        defer parsed.deinit();
+        if (parsed.value != .object) return null;
+        const obj = parsed.value.object;
+        const imports_v = obj.get("imports") orelse return null;
+        // `imports` keys are always `#`-prefixed; reuse the same subpath
+        // lookup machinery as `exports` (exact key then `*` pattern).
+        if (try self.lookupExports(imports_v, specifier)) |target| {
+            switch (target) {
+                .matched_null => return null, // hard rejection
+                .matched => |m| {
+                    const joined = try self.joinPath(scope.dir, m);
+                    if (try self.tryFileWithExtensions(joined)) |r| {
+                        return .{ .path = r.path, .source = .package_exports, .is_declaration = r.is_declaration };
+                    }
+                    return null;
+                },
+                .not_matched => return null,
+            }
+        }
+        return null;
     }
 
     /// Mirrors tsc's `resolveNodeLike` alternate-result post-step: when
@@ -781,10 +900,14 @@ pub const Resolver = struct {
         }
         if (node != .object) return null;
         const obj = node.object;
+        // Subpath-keyed when a key begins with `.` (`exports`) OR `#`
+        // (`imports`). The `imports` map shares this shape but its keys
+        // are private `#`-prefixed specifiers rather than `./` subpaths.
         const looks_subpath_keyed = blk: {
             var it = obj.iterator();
             while (it.next()) |e| {
-                if (std.mem.startsWith(u8, e.key_ptr.*, ".")) break :blk true;
+                if (std.mem.startsWith(u8, e.key_ptr.*, ".") or
+                    std.mem.startsWith(u8, e.key_ptr.*, "#")) break :blk true;
             }
             break :blk false;
         };
@@ -2269,4 +2392,196 @@ test "Resolver: package types — ABSOLUTE value discards package dir" {
     const res = try r.resolve("typescript", "/a.ts");
     try T.expectEqualStrings("/.ts/typescript.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+// =============================================================================
+// Self-name + `#imports` resolution (TS2307 false-positive reduction).
+//
+// These mirror tsc's `loadModuleFromSelfNameReference` and
+// `loadModuleFromImports`: a package may `import "<own-name>/sub"` and
+// resolve it through its OWN `exports`, and a `#`-prefixed specifier
+// resolves against the enclosing `package.json` `imports` map. Both are
+// gated on the modern resolvers (node16/nodenext/bundler).
+// =============================================================================
+
+test "Resolver: self-name — package imports itself by name via root exports" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{
+        \\  "name": "my-pkg",
+        \\  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.mjs" } }
+        \\}
+    );
+    try vfs.addFile("/proj/dist/index.d.ts", "export const x: number;");
+    try vfs.addFile("/proj/dist/index.mjs", "");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    const res = try r.resolve("my-pkg", "/proj/src/main.ts");
+    try T.expectEqualStrings("/proj/dist/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: self-name — subpath resolves through own exports pattern" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{
+        \\  "name": "@scope/lib",
+        \\  "exports": { "./*": { "types": "./types/*.d.ts" } }
+        \\}
+    );
+    try vfs.addFile("/proj/types/feature.d.ts", "export const f: number;");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .bundler });
+    defer r.deinit();
+    const res = try r.resolve("@scope/lib/feature", "/proj/src/main.ts");
+    try T.expectEqualStrings("/proj/types/feature.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: self-name — requires `exports`; bare name without exports falls through" {
+    // Negative: a package.json `name` WITHOUT an `exports` map does not
+    // grant a self-name channel, so `import "my-pkg"` from inside is
+    // genuinely unresolved (matching tsc's exports guard).
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{ "name": "my-pkg", "main": "./index.js" }
+    );
+    try vfs.addFile("/proj/index.js", "");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("my-pkg", "/proj/src/main.ts"));
+}
+
+test "Resolver: self-name — disabled under node10 (legacy) strategy" {
+    // Negative: the legacy node10 strategy never consults self-name,
+    // so the same import is unresolved.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{
+        \\  "name": "my-pkg",
+        \\  "exports": { ".": "./dist/index.d.ts" }
+        \\}
+    );
+    try vfs.addFile("/proj/dist/index.d.ts", "");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("my-pkg", "/proj/src/main.ts"));
+}
+
+test "Resolver: self-name — wrong name prefix does not match" {
+    // Negative: `my-pkg-extra` is NOT covered by self-name for `my-pkg`
+    // (the name must match on whole path components), so it falls
+    // through to node_modules and fails.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{
+        \\  "name": "my-pkg",
+        \\  "exports": { ".": "./dist/index.d.ts" }
+        \\}
+    );
+    try vfs.addFile("/proj/dist/index.d.ts", "");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("my-pkg-extra", "/proj/src/main.ts"));
+}
+
+test "Resolver: self-name — node_modules still wins for a DIFFERENT package name" {
+    // Self-name must not shadow ordinary dependency resolution: a sibling
+    // dependency `other` under node_modules resolves normally even though
+    // the enclosing package declares its own name + exports.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{ "name": "my-pkg", "exports": { ".": "./dist/index.d.ts" } }
+    );
+    try vfs.addFile("/proj/dist/index.d.ts", "");
+    try vfs.addFile("/proj/node_modules/other/package.json",
+        \\{ "name": "other", "types": "./other.d.ts" }
+    );
+    try vfs.addFile("/proj/node_modules/other/other.d.ts", "");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    const res = try r.resolve("other", "/proj/src/main.ts");
+    try T.expectEqualStrings("/proj/node_modules/other/other.d.ts", res.path);
+}
+
+test "Resolver: #imports — private subpath resolves through `imports` map" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{
+        \\  "name": "my-pkg",
+        \\  "imports": { "#internal/*": { "types": "./src/internal/*.d.ts" } }
+        \\}
+    );
+    try vfs.addFile("/proj/src/internal/util.d.ts", "export const u: number;");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    const res = try r.resolve("#internal/util", "/proj/src/main.ts");
+    try T.expectEqualStrings("/proj/src/internal/util.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: #imports — exact key beats node_modules and never walks it" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{ "name": "my-pkg", "imports": { "#dep": "./shim.d.ts" } }
+    );
+    try vfs.addFile("/proj/shim.d.ts", "");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .bundler });
+    defer r.deinit();
+    const res = try r.resolve("#dep", "/proj/src/main.ts");
+    try T.expectEqualStrings("/proj/shim.d.ts", res.path);
+}
+
+test "Resolver: #imports — unmatched `#` specifier is a hard NotFound" {
+    // Negative: a `#`-prefixed specifier with no covering `imports` entry
+    // must NOT fall back to node_modules — it is genuinely unresolved.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{ "name": "my-pkg", "imports": { "#known": "./known.d.ts" } }
+    );
+    try vfs.addFile("/proj/known.d.ts", "");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("#unknown", "/proj/src/main.ts"));
+}
+
+test "Resolver: #imports — disabled under classic strategy" {
+    // Negative: classic strategy never looks at `imports`.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{ "name": "my-pkg", "imports": { "#x": "./x.d.ts" } }
+    );
+    try vfs.addFile("/proj/x.d.ts", "");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .classic });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("#x", "/proj/src/main.ts"));
 }
