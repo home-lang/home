@@ -499,6 +499,12 @@ pub fn objectGlobal(
     const sig_is = try ti.internSignature(&[_]TypeId{ any_t, any_t }, boolean_t, false);
     // `Object.getOwnPropertyDescriptors(o): any` (es2017).
     const sig_own_descriptors = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    // `Object.hasOwn(o, key): boolean` (es2022) — replacement for
+    // `Object.prototype.hasOwnProperty.call(o, key)`.
+    const sig_has_own = try ti.internSignature(&[_]TypeId{ any_t, any_t }, boolean_t, false);
+    // `Object.groupBy(items, callbackFn): Record<string, T[]>` (es2024).
+    // Modeled `(any, any) => any` until typed records land.
+    const sig_group_by = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
     const prototype_members = [_]types.ObjectMember{
         .{ .name = try sint.intern("hasOwnProperty"), .type = sig_has_own_property, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -528,6 +534,8 @@ pub fn objectGlobal(
         .{ .name = try sint.intern("preventExtensions"), .type = sig_identity, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("isExtensible"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("is"), .type = sig_is, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("hasOwn"), .type = sig_has_own, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("groupBy"), .type = sig_group_by, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.object_global = try ti.internObjectType(&m);
     return cache.object_global;
