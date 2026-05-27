@@ -604,7 +604,11 @@ comptime {
 }
 
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
-    @memcpy(dest[0..src.len], src);
+    // Overlap-safe, matching Bun's memmove-based `bun.copy`. The real TS
+    // parser/printer cone (e.g. `js_parser` parse_entry) calls this with
+    // aliasing slices, which `@memcpy` treats as UB (it panics
+    // "@memcpy arguments alias" in safe builds). `@memmove` handles overlap.
+    @memmove(dest[0..src.len], src);
 }
 
 pub fn concat(comptime T: type, dest: []T, src: []const []const T) void {
