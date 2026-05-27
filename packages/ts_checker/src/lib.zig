@@ -62,6 +62,59 @@ pub const LibCache = struct {
 /// Build (or fetch from cache) the `String.prototype` member shape.
 /// All methods are typed against the concrete `string` primitive —
 /// generics aren't needed here.
+/// Build a fixed-arity tuple type `[E0, E1, …]` using the same
+/// structural encoding the checker's `internTupleFromTypes` produces:
+/// an object type carrying numeric-named members (`"0"`, `"1"`, …),
+/// a `readonly length` number-literal, and a `number`-key index
+/// signature whose value is the union of the element types. Keeping
+/// the encoding identical means tuples built here are
+/// indistinguishable (for assignability / element access) from tuples
+/// the checker synthesizes for tuple literals, and `substituteType`
+/// rewrites a `U` appearing inside an element through the object-type
+/// path it already walks. Used to give `Object.entries` its precise
+/// `[string, T][]` element shape.
+pub fn internTuple(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    elems: []const TypeId,
+) !TypeId {
+    // Our use sites build small (2-element) tuples; cap the stack
+    // buffer at 16 elements + the trailing `length` member.
+    std.debug.assert(elems.len <= 16);
+    var all: [17]types.ObjectMember = undefined;
+    for (elems, 0..) |t, i| {
+        var nbuf: [12]u8 = undefined;
+        const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch unreachable;
+        const name = try sint.intern(name_str);
+        all[i] = .{
+            .name = name,
+            .type = t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        };
+    }
+    const length_id = try sint.intern("length");
+    const length_t = ti.internNumberLiteral(@floatFromInt(elems.len)) catch types.Primitive.number_t;
+    all[elems.len] = .{
+        .name = length_id,
+        .type = length_t,
+        .is_optional = false,
+        .is_readonly = true,
+        .is_method = false,
+    };
+    const elem_union: TypeId = if (elems.len == 0)
+        types.Primitive.never
+    else if (elems.len == 1)
+        elems[0]
+    else
+        ti.internUnion(elems) catch types.Primitive.any;
+    return ti.internObjectTypeWithIndex(all[0 .. elems.len + 1], types.Primitive.none, elem_union);
+}
+
+/// Build (or fetch from cache) the `String.prototype` member shape.
+/// All methods are typed against the concrete `string` primitive —
+/// generics aren't needed here.
 pub fn stringProto(
     cache: *LibCache,
     ti: *interner_mod.Interner,
@@ -441,9 +494,16 @@ pub fn objectGlobal(
     const sig_keys = try ti.internSignature(&[_]TypeId{any_t}, string_arr, false);
     // `Object.values(o: any): any[]`
     const sig_values = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
-    // `Object.entries(o: any): [string, any][]` — modeled loosely as
-    // `any[]` (tuple-typed entries land later).
-    const sig_entries = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
+    // `Object.entries(o: {}): [string, any][]` — precise tuple-typed
+    // result (es2017). The generic overload `entries<T>(o: { [s: string]: T }
+    // | ArrayLike<T>): [string, T][]` would bind `T` from a typed
+    // argument, but the loose `(o: any)` arg means `T` collapses to
+    // `any`, so the faithful concrete result is `[string, any][]`.
+    // We build the `[string, any]` tuple structurally (matching the
+    // checker's tuple encoding) and wrap it in an array.
+    const string_any_tuple = try internTuple(ti, sint, &[_]TypeId{ string_t, any_t });
+    const string_any_tuple_arr = try ti.internArrayType(sint, string_any_tuple);
+    const sig_entries = try ti.internSignature(&[_]TypeId{any_t}, string_any_tuple_arr, false);
     // `Object.assign(...)` is variadic in lib.d.ts. Model the common
     // overload arities used by conformance while leaving the return
     // loose (`any`) until generic intersection returns are wired here.
@@ -877,6 +937,46 @@ test "lib: objectGlobal exposes freeze/getOwnPropertyNames/fromEntries/is" {
     try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(names_ret));
     // A genuinely-missing static still resolves to null.
     try T.expect(ti.objectMember(og, try sint.intern("notARealObjectStatic")) == null);
+}
+
+test "lib: Object.entries returns [string, any][] (tuple-typed elements)" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const og = try objectGlobal(&cache, &ti, &sint);
+    const entries_sig = ti.objectMember(og, try sint.intern("entries")).?;
+    const ret = ti.signatureReturn(entries_sig).?;
+    // Return is an array — its number-index value is the tuple element.
+    const tuple_t = ti.objectNumberIndex(ret);
+    try T.expect(tuple_t != types.Primitive.none);
+    try T.expect(tuple_t != types.Primitive.any);
+    // The tuple's element 0 is `string`, element 1 is `any`, and it has
+    // a literal `length` of 2 — i.e. the precise `[string, any]` shape.
+    try T.expectEqual(types.Primitive.string_t, ti.objectMember(tuple_t, try sint.intern("0")).?);
+    try T.expectEqual(types.Primitive.any, ti.objectMember(tuple_t, try sint.intern("1")).?);
+    const length_t = ti.objectMember(tuple_t, try sint.intern("length")).?;
+    try T.expect(length_t != types.Primitive.number_t); // a 2-literal, not plain number
+}
+
+test "lib: internTuple builds [string, number] with numeric members + length literal" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+
+    const tup = try internTuple(&ti, &sint, &[_]TypeId{ types.Primitive.string_t, types.Primitive.number_t });
+    try T.expectEqual(types.Primitive.string_t, ti.objectMember(tup, try sint.intern("0")).?);
+    try T.expectEqual(types.Primitive.number_t, ti.objectMember(tup, try sint.intern("1")).?);
+    // No phantom element 2.
+    try T.expect(ti.objectMember(tup, try sint.intern("2")) == null);
+    // `length` present (literal 2) and the number index is `string | number`.
+    try T.expect(ti.objectMember(tup, try sint.intern("length")) != null);
+    const idx = ti.objectNumberIndex(tup);
+    try T.expect(idx != types.Primitive.none);
 }
 
 test "lib: objectGlobal exposes prototype helpers" {
