@@ -55,10 +55,13 @@ Honest interpretation:
 - The last audited integrated baseline is still **552 / 1193 (~46.3%)**:
   Home-import-rewritten, Zig 0.17-clean, build-wired, and tested. Do not
   raise that number without a fresh integration audit.
-- The runtime is not JS-callable end-to-end yet. Phase 12.2 JSC bring-up
-  has real milestones, including native eval smoke coverage, but the
-  full `home run app.ts` path still waits on the JS-callable bridge and
-  loader/test-runner wiring.
+- The runtime is now JS-callable for **eval** (2026-05-27, `7084d12d`):
+  `home eval "1 + 2"` executes through Home's own JavaScriptCore
+  (`home_rt.jsc`), not by delegating to system Bun. The full
+  `home run app.ts` path still delegates to pantry `bun` (Phase-2 work):
+  it must be re-routed through the same JSC eval path + the real-parser TS
+  transform + minimal globals. See Phase 1 (done) and the
+  `home run`-delegation guardrail.
 - Pantry is intentionally the package manager. `bun install` source
   parity is not a goal; Bun package-management behavior maps to Pantry
   gates instead.
@@ -144,13 +147,36 @@ Goal: make Home execute JavaScript through the native runtime path.
 
 Done when:
 
-- `home eval "1 + 2"` runs through JavaScriptCore without delegating to
-  system Bun.
-- JSC exception values map into Home runtime errors with stable
-  diagnostics.
-- The bridge has focused tests for primitive values, strings, promises,
-  thrown exceptions, and retained callbacks.
-- JSC bridge tests pass with `-Denable_jsc=true` on macOS.
+- [x] `home eval "1 + 2"` runs through JavaScriptCore without delegating to
+  system Bun. **DONE 2026-05-27 (`7084d12d`).** `home eval <code> [--print|-p]`
+  evaluates through `home_rt.jsc.engine`/`evaluate` (Home's own JSC), proven
+  non-delegating because `typeof Bun`/`typeof navigator` are `undefined` in
+  the eval global (system-Bun delegation surfaces `Bun/1.3.14`). Faithful to
+  `bun eval`/`bun -e` (no auto-print) with `--print`/`-p` for the result value.
+- [x] JSC exception values map into Home runtime errors with stable
+  diagnostics. **DONE** — a thrown value is rendered via `JSValueToStringCopy`
+  (`evaluate.exception_message`) to stderr as `error: <message>` with exit 1.
+- [~] The bridge has focused tests for primitive values, strings, promises,
+  thrown exceptions, and retained callbacks. **PARTIAL** — `jsc/evaluate.zig`
+  covers number eval, string eval (`valueToUtf8`), thrown-exception text, and
+  promise-microtask draining; **retained callbacks (host functions exposed to
+  JS) are NOT yet covered by a focused Phase-1 test** (the corpus harness
+  registers native callbacks, but the standalone bridge has no callback test).
+- [x] JSC bridge tests pass with `-Denable_jsc=true` on macOS. **DONE** —
+  `zig build test -Dfilter=home_rt -Denable_jsc=true` = 1432/1432; the
+  `-Denable_jsc=false` build compiles (comptime-gated) at 1428/1432 (4 JSC
+  tests skip).
+
+**Phase 1 is now substantially met for eval** (the first real, non-shim,
+non-delegation runtime parity increment). The remaining Phase-1 gap is a
+focused retained-callback test. **Next (Phase 2): `home run file.{js,ts}`
+must stop delegating to pantry `bun` and instead route through this same JSC
+path** — i.e. read the file, transpile TS via the already-faithful real
+parser (`transpileSourceWithBunParser`), evaluate through
+`home_rt.jsc.evaluate`, and expose the minimal globals (`console`, `process`,
+module loader) the script needs. That is the next bounded increment and the
+real lever for the subprocess corpus (so `Bun.spawn` of `home run` exercises
+Home's runtime, not Bun — see the CRITICAL GUARDRAIL below).
 
 ### Phase 2 - Loader And CLI Runtime Path
 
