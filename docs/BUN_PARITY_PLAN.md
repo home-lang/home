@@ -344,6 +344,46 @@ is to replace that body with the real parser-to-printer path
 (`Parser.init`, `parse`, `js_printer.printAst`), including `define`,
 scan/scanImports, and decorator lowering.
 
+Parallel-agent probe finding on 2026-05-26 (two independent agents, TS-enum
+and decorator): **the parser/lexer/decorator code itself is already a
+faithful, byte-identical port of pinned Bun and needs no fixes.** The
+decorator agent verified the `@` lexer token (`js_parser/lexer.zig:1225`),
+`parseTypeScriptDecorators`/`parseStandardDecorator`, `visitTSDecorators`,
+`lowerClass` (legacy TS `__legacyDecorate*` + metadata), and
+`lowerStandardDecoratorsStmt/Expr` are all diff-clean against Bun.
+
+The real gate for switching on `use_bun_parser_probe` is therefore **not**
+the parser — it is that enabling the real path statically pulls the
+resolver + JSON-parser + package-manager + tsconfig/package_json cone into
+compilation, via `parse() -> e_template visit -> MacroContext.call ->
+Resolver.resolve -> getPackageManager` (the macro reference is gated by
+`comptime allow_macros = FeatureFlags.is_macro_enabled`, true on macOS, so
+the cone is mandatory at compile time even though `no_macros = true`
+disables it at runtime). With the flag `false` that cone is dead-code
+eliminated, which is why `main` stays green.
+
+Foundational leaves for that cone landed in
+`feat(runtime): advance real-parser transpile resolver-cone leaves`:
+`sys.File.from/read/readAll/getEndPos/stat`, `sys.read/readAll/fstat/getFileSize`,
+`getThreadCount`, an un-parked `threading.ThreadPool`, `strings.BOM`, the
+`mimalloc`/`Global` thread-pool no-ops, and `install.PackageInstall`. The
+remaining cone-compile checklist (the actual next milestone, consistent with
+the Pantry divergence — compile with parked install stubs, not real
+installer behavior):
+
+- Port `parsers/json.zig` to the Zig-0.17 reflection API (`@Type` field
+  names) and add `bun.deprecated.SinglyLinkedList`; then wire `bun.json`.
+- Add `strings.NewGlobLengthSorter`, `home_rt.StringBuilder`, and fix
+  `resolver/package_json.zig` `asArray()` shape (`items`).
+- Migrate the `install/*` cone off pre-0.17 `std.fs.Dir`/`std.fs.File`
+  (→ `std.Io.Dir`), add `Output.err`, `Progress`, and the ~30 missing
+  `install.*` aggregator exports; fix `HashMap.values` (0.17 API) in the
+  resolver.
+
+Once that cone compiles, `use_bun_parser_probe` can flip on and decorators
++ TS enums transpile through the already-faithful parser with no further
+parser changes.
+
 Parser hot-path probe on 2026-05-26 after the FD/sys shim batch: the
 temporarily enabled `transpileSourceWithBunParser` no longer stops at
 `bun.FD`, `RuntimeTranspilerCache`, `MacroContext`, or missing
