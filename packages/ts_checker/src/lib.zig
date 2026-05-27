@@ -49,6 +49,9 @@ pub const LibCache = struct {
     /// `Number` global — `MAX_VALUE`, `isInteger`, etc. Built once
     /// on first access.
     number_global: TypeId = types.Primitive.none,
+    /// `JSON` global — `parse(text, reviver?)` / `stringify(value,
+    /// replacer?, space?)`. Built once on first access.
+    json_global: TypeId = types.Primitive.none,
     /// Element-type → `Array<T>.prototype` shape mapping. Cached so a
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
@@ -66,6 +69,8 @@ pub fn stringProto(
     cache: *LibCache,
     ti: *interner_mod.Interner,
     sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
 ) !TypeId {
     if (cache.string_proto != types.Primitive.none) return cache.string_proto;
 
@@ -81,19 +86,29 @@ pub fn stringProto(
     var number_or_undefined_members = [_]TypeId{ number_t, types.Primitive.undefined_t };
     const optional_number_t = try ti.internUnion(&number_or_undefined_members);
 
-    // `(s: string): boolean`
+    // `(s: string, position?: number): boolean` — used by `includes`,
+    // `startsWith`, `endsWith`. Upstream signatures all take an
+    // optional second-arg position offset; we declared just `(s)`,
+    // tripping TS2554 on `s.startsWith("x", 0)` etc.
+    const sig_str_pos_bool = try ti.internSignature(&[_]TypeId{ string_t, optional_number_t }, boolean_t, false);
+    // `(s: string): boolean` — legacy single-arg form, kept for
+    // tests that only need the simple shape.
     const sig_str_bool = try ti.internSignature(&[_]TypeId{string_t}, boolean_t, false);
-    // `(s: string): number`
-    const sig_str_num = try ti.internSignature(&[_]TypeId{string_t}, number_t, false);
+    _ = sig_str_bool;
+    // `(s: string, fromIndex?: number): number` — used by `indexOf`.
+    // Optional fromIndex matches upstream and our `lastIndexOf`.
+    const sig_str_num = try ti.internSignature(&[_]TypeId{ string_t, optional_number_t }, number_t, false);
     // `(i: number): string`
     const sig_num_string = try ti.internSignature(&[_]TypeId{number_t}, string_t, false);
     // `(sep: string): string[]`
     const sig_split = try ti.internSignature(&[_]TypeId{string_t}, string_arr, false);
     // `(start: number, end?: number): string`.
     const sig_slice = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t }, string_t, false);
-    // `(s: string): string` — used by `concat` (modeled as the
-    // common single-arg form until rest params land in lib).
-    const sig_str_string = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
+    // `concat(...strs: string[]): string` — rest accepting any number
+    // of additional strings. Registered in `rest_set` so call sites
+    // expand to 0+ string args.
+    const sig_str_string = try ti.internSignature(&[_]TypeId{string_arr}, string_t, false);
+    try rest_set.put(gpa, sig_str_string, {});
 
     // `(pos: number): number` — used by `charCodeAt` (returns the
     // UTF-16 code unit at the given index, NaN if out of range).
@@ -147,9 +162,9 @@ pub fn stringProto(
         // TS2339. Pins `spreadObjectOrFalsy.ts:44`.
         .{ .name = try sint.intern("toLocaleUpperCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toLocaleLowerCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("startsWith"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("endsWith"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("includes"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("startsWith"), .type = sig_str_pos_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("endsWith"), .type = sig_str_pos_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("includes"), .type = sig_str_pos_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("split"), .type = sig_split, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("indexOf"), .type = sig_str_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("slice"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -197,13 +212,18 @@ pub fn numberProto(
     const string_t = types.Primitive.string_t;
 
     const sig_void_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
+    _ = sig_void_string;
     var number_or_undefined_members = [_]TypeId{ number_t, types.Primitive.undefined_t };
     const optional_number_t = try ti.internUnion(&number_or_undefined_members);
     const sig_num_string = try ti.internSignature(&[_]TypeId{optional_number_t}, string_t, false);
     const sig_void_number = try ti.internSignature(&[_]TypeId{}, number_t, false);
+    // `toString(radix?: number): string` — optional radix lets
+    // `(255).toString(16)` round-trip without TS2554. Upstream lib
+    // declares the same shape on `Number.prototype`.
+    const sig_to_string = sig_num_string;
 
     const m = [_]types.ObjectMember{
-        .{ .name = try sint.intern("toString"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toFixed"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toExponential"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toPrecision"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -479,6 +499,12 @@ pub fn objectGlobal(
     const sig_is = try ti.internSignature(&[_]TypeId{ any_t, any_t }, boolean_t, false);
     // `Object.getOwnPropertyDescriptors(o): any` (es2017).
     const sig_own_descriptors = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    // `Object.hasOwn(o, key): boolean` (es2022) — replacement for
+    // `Object.prototype.hasOwnProperty.call(o, key)`.
+    const sig_has_own = try ti.internSignature(&[_]TypeId{ any_t, any_t }, boolean_t, false);
+    // `Object.groupBy(items, callbackFn): Record<string, T[]>` (es2024).
+    // Modeled `(any, any) => any` until typed records land.
+    const sig_group_by = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
     const prototype_members = [_]types.ObjectMember{
         .{ .name = try sint.intern("hasOwnProperty"), .type = sig_has_own_property, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -508,6 +534,8 @@ pub fn objectGlobal(
         .{ .name = try sint.intern("preventExtensions"), .type = sig_identity, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("isExtensible"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("is"), .type = sig_is, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("hasOwn"), .type = sig_has_own, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("groupBy"), .type = sig_group_by, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.object_global = try ti.internObjectType(&m);
     return cache.object_global;
@@ -578,8 +606,16 @@ pub fn mathGlobal(
     try rest_set.put(gpa, sig_rest_num, {});
 
     const m = [_]types.ObjectMember{
+        // Numeric constants (read-only).
         .{ .name = try sint.intern("PI"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("E"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("LN2"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("LN10"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("LOG2E"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("LOG10E"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("SQRT2"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("SQRT1_2"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        // Existing methods.
         .{ .name = try sint.intern("abs"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("floor"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("ceil"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -589,9 +625,78 @@ pub fn mathGlobal(
         .{ .name = try sint.intern("max"), .type = sig_rest_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("min"), .type = sig_rest_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("random"), .type = sig_ret_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        // ES2015+ method additions — all `(x: number): number` or
+        // `(x: number, y: number): number` shape, except `hypot`
+        // which is variadic like `max` / `min`.
+        .{ .name = try sint.intern("log"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("log2"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("log10"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("log1p"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("exp"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("expm1"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sin"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("cos"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("tan"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("asin"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("acos"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("atan"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("atan2"), .type = sig_num2_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sinh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("cosh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("tanh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("asinh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("acosh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("atanh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sign"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("trunc"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("cbrt"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fround"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("clz32"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("imul"), .type = sig_num2_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        // `hypot(...values: number[]): number` — variadic like max/min.
+        .{ .name = try sint.intern("hypot"), .type = sig_rest_num, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.math_global = try ti.internObjectType(&m);
     return cache.math_global;
+}
+
+/// Build (or fetch from cache) the `JSON` global namespace.
+/// Models `JSON.parse(text, reviver?)` and `JSON.stringify(value,
+/// replacer?, space?)`. Return / argument types are loose (`any` /
+/// `string`) — exact JSON-value typing requires recursive type
+/// machinery; the modeled shape unblocks the most common call
+/// sites that previously fired TS2339.
+pub fn jsonGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.json_global != types.Primitive.none) return cache.json_global;
+
+    const string_t = types.Primitive.string_t;
+    const any_t = types.Primitive.any;
+    const number_t = types.Primitive.number_t;
+    const undef_t = types.Primitive.undefined_t;
+
+    const optional_any = try ti.internUnion(&[_]TypeId{ any_t, undef_t });
+    // The third arg to `JSON.stringify` is `string | number | undefined`.
+    const string_or_number = try ti.internUnion(&[_]TypeId{ string_t, number_t });
+    const optional_string_or_number = try ti.internUnion(&[_]TypeId{ string_or_number, undef_t });
+
+    // `parse(text: string, reviver?: any): any`
+    const sig_parse = try ti.internSignature(&[_]TypeId{ string_t, optional_any }, any_t, false);
+    // `stringify(value: any, replacer?: any, space?: string | number): string`
+    // Upstream has 4 overloads; the most-used 3-arg shape covers the
+    // common cases. `replacer` is unioned with `undefined` so the
+    // single-arg form (`JSON.stringify(x)`) still typechecks.
+    const sig_stringify = try ti.internSignature(&[_]TypeId{ any_t, optional_any, optional_string_or_number }, string_t, false);
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("parse"), .type = sig_parse, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("stringify"), .type = sig_stringify, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.json_global = try ti.internObjectType(&m);
+    return cache.json_global;
 }
 
 /// Build (or fetch from cache) the `console` global. All four members
@@ -615,11 +720,45 @@ pub fn consoleGlobal(
     const sig_log = try ti.internSignature(&[_]TypeId{any_arr}, void_t, false);
     try rest_set.put(gpa, sig_log, {});
 
+    // `(): void` — no-arg helpers used by `console.groupEnd`,
+    // `console.time*`, `console.dir` (with no args), `console.clear`.
+    const sig_void_void = try ti.internSignature(&[_]TypeId{}, void_t, false);
+    // `(label?: string): void` — used by `time` / `timeEnd` /
+    // `timeLog` / `count` / `countReset` / `group` / `groupCollapsed`.
+    const string_t = types.Primitive.string_t;
+    const undef_t = types.Primitive.undefined_t;
+    const optional_string = try ti.internUnion(&[_]TypeId{ string_t, undef_t });
+    const sig_optional_label = try ti.internSignature(&[_]TypeId{optional_string}, void_t, false);
+
     const m = [_]types.ObjectMember{
+        // Standard logging surface.
         .{ .name = try sint.intern("log"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("error"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("warn"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("info"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Debug / trace — same variadic shape.
+        .{ .name = try sint.intern("debug"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("trace"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("dir"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("table"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("assert"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("dirxml"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Grouping (label?: string).
+        .{ .name = try sint.intern("group"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("groupCollapsed"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("groupEnd"), .type = sig_void_void, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Timing.
+        .{ .name = try sint.intern("time"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("timeEnd"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("timeLog"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("timeStamp"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Counting.
+        .{ .name = try sint.intern("count"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("countReset"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Misc.
+        .{ .name = try sint.intern("clear"), .type = sig_void_void, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("profile"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("profileEnd"), .type = sig_optional_label, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.console_global = try ti.internObjectType(&m);
     return cache.console_global;
@@ -645,14 +784,31 @@ pub fn numberGlobal(
     const sig_number_call = try ti.internSignature(&[_]TypeId{any_t}, number_t, false);
     const sig_number_construct = try ti.internSignature(&[_]TypeId{any_t}, number_t, true);
 
+    const string_t = types.Primitive.string_t;
+    // `Number.parseInt(s, radix?): number`.
+    const undef_t = types.Primitive.undefined_t;
+    const opt_num = try ti.internUnion(&[_]TypeId{ number_t, undef_t });
+    const sig_parse_int = try ti.internSignature(&[_]TypeId{ string_t, opt_num }, number_t, false);
+    // `Number.parseFloat(s): number`.
+    const sig_parse_float = try ti.internSignature(&[_]TypeId{string_t}, number_t, false);
+
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("__call"), .type = sig_number_call, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("__construct"), .type = sig_number_construct, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("MAX_VALUE"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("MIN_VALUE"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("MAX_SAFE_INTEGER"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("MIN_SAFE_INTEGER"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("EPSILON"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("POSITIVE_INFINITY"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("NEGATIVE_INFINITY"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("NaN"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("isInteger"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("isFinite"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("isNaN"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("isSafeInteger"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("parseInt"), .type = sig_parse_int, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("parseFloat"), .type = sig_parse_float, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.number_global = try ti.internObjectType(&m);
     return cache.number_global;
@@ -672,7 +828,9 @@ test "lib: stringProto exposes length/charAt/toUpperCase" {
     var cache: LibCache = .{};
     defer cache.deinit(T.allocator);
 
-    const proto = try stringProto(&cache, &ti, &sint);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+    const proto = try stringProto(&cache, &ti, &sint, T.allocator, &rest_set);
     const length_id = try sint.intern("length");
     const charAt_id = try sint.intern("charAt");
     const upper_id = try sint.intern("toUpperCase");
@@ -690,7 +848,9 @@ test "lib: stringProto exposes replace/padStart/at/matchAll and friends" {
     var cache: LibCache = .{};
     defer cache.deinit(T.allocator);
 
-    const proto = try stringProto(&cache, &ti, &sint);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+    const proto = try stringProto(&cache, &ti, &sint, T.allocator, &rest_set);
     for ([_][]const u8{
         "replace",   "replaceAll", "match",         "matchAll", "search",
         "padStart",  "padEnd",     "trimStart",     "trimEnd",  "at",
