@@ -888,6 +888,12 @@ pub const IndexSignaturePayload = struct {
     /// `static [k: string]: T` inside a class declares an indexer
     /// on the constructor side, not on instances.
     is_static: bool = false,
+    /// The declared index parameter name (`key` in `[key: string]: T`),
+    /// preserved so diagnostic prose can render the user's chosen
+    /// name instead of the synthetic `x`. `0` (unset) means the name
+    /// was not captured; renderers then fall back to tsc's default
+    /// `x`. Mirrors upstream `getNameFromIndexInfo`.
+    key_name: StringId = 0,
 };
 
 /// `T extends U ? X : Y`.
@@ -2698,6 +2704,7 @@ pub const Builder = struct {
         value_type: NodeId,
         is_readonly: bool,
         is_static: bool,
+        key_name: StringId,
     ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.index_signature_payloads.items.len);
         try self.hir.index_signature_payloads.append(self.hir.gpa, .{
@@ -2705,6 +2712,7 @@ pub const Builder = struct {
             .value_type = value_type,
             .is_readonly = is_readonly,
             .is_static = is_static,
+            .key_name = key_name,
         });
         const id = try self.newNode(.index_signature, span, payload_idx);
         if (key_type != none_node_id) self.hir.setParent(key_type, id);
