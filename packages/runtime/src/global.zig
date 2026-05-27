@@ -14,6 +14,15 @@ pub fn crash() noreturn {
     @panic("home_rt: crash() called");
 }
 
+/// Mirrors Bun's `Global.mimalloc_cleanup` (upstream `bun_core/Global.rs`
+/// line 778), which calls `mi_collect(force)` only when mimalloc is the
+/// active allocator. Home links the libc-backed mimalloc shim, which has no
+/// heap to collect, so this is a faithful no-op until the vendored
+/// allocator re-attaches.
+pub fn mimalloc_cleanup(force: bool) void {
+    _ = force;
+}
+
 /// Mirrors Bun's `bun.OOM` — an alias for `error{OutOfMemory}`. Many
 /// copied files spell their fallible return type as `bun.OOM!T`.
 pub const OOM = error{OutOfMemory};

@@ -43,6 +43,12 @@ pub export fn mi_free(p: ?*anyopaque) callconv(.c) void {
     std.c.free(p);
 }
 
+// Thread-pool hint. Upstream `mimalloc_sys/mimalloc.zig` declares this as an
+// `extern fn` that marks the calling thread as a pool worker so mimalloc can
+// tune its heaps. With the libc-backed shim there is no mimalloc heap to tune,
+// so it is a faithful no-op until the vendored allocator re-attaches.
+pub export fn mi_thread_set_in_threadpool() callconv(.c) void {}
+
 test "mimalloc shim libc fallback symbols compile" {
     _ = @typeName(@TypeOf(mi_malloc));
     _ = @typeName(@TypeOf(mi_calloc));

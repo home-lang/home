@@ -257,6 +257,95 @@ pub fn eqlComptimeIgnoreLen(a: anytype, comptime b: []const u8) bool {
     return true;
 }
 
+/// Faithful port of upstream `BOM` (`src/bun_core/string/immutable/unicode.zig`
+/// line 978). Byte-order-mark detection + stripping used by the resolver's
+/// file reader. Home uses `std.mem` copy primitives in place of upstream's
+/// `bun.c.memmove` and keeps the same "only utf8/utf16_le actually convert"
+/// behavior.
+pub const BOM = enum {
+    utf8,
+    utf16_le,
+    utf16_be,
+    utf32_le,
+    utf32_be,
+
+    pub const utf8_bytes = [_]u8{ 0xef, 0xbb, 0xbf };
+    pub const utf16_le_bytes = [_]u8{ 0xff, 0xfe };
+    pub const utf16_be_bytes = [_]u8{ 0xfe, 0xff };
+    pub const utf32_le_bytes = [_]u8{ 0xff, 0xfe, 0x00, 0x00 };
+    pub const utf32_be_bytes = [_]u8{ 0x00, 0x00, 0xfe, 0xff };
+
+    pub fn detect(bytes: []const u8) ?BOM {
+        if (bytes.len < 3) return null;
+        if (std.mem.startsWith(u8, bytes, &utf8_bytes)) return .utf8;
+        if (std.mem.startsWith(u8, bytes, &utf16_le_bytes)) return .utf16_le;
+        return null;
+    }
+
+    pub fn getHeader(bom: BOM) []const u8 {
+        return switch (bom) {
+            inline else => |t| comptime &@field(BOM, @tagName(t) ++ "_bytes"),
+        };
+    }
+
+    pub fn length(bom: BOM) usize {
+        return switch (bom) {
+            inline else => |t| comptime (&@field(BOM, @tagName(t) ++ "_bytes")).len,
+        };
+    }
+
+    /// If an allocation is needed, free the input and the caller will
+    /// replace it with the new return.
+    pub fn removeAndConvertToUTF8AndFree(bom: BOM, allocator: std.mem.Allocator, bytes: []u8) std.mem.Allocator.Error![]u8 {
+        switch (bom) {
+            .utf8 => {
+                std.mem.copyForwards(u8, bytes[0 .. bytes.len - utf8_bytes.len], bytes[utf8_bytes.len..]);
+                return bytes[0 .. bytes.len - utf8_bytes.len];
+            },
+            .utf16_le => {
+                const trimmed_bytes = bytes[utf16_le_bytes.len..];
+                const trimmed_bytes_u16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, trimmed_bytes));
+                const out = try toUTF8Alloc(allocator, trimmed_bytes_u16);
+                allocator.free(bytes);
+                return out;
+            },
+            else => {
+                const bom_bytes = bom.getHeader();
+                std.mem.copyForwards(u8, bytes[0 .. bytes.len - bom_bytes.len], bytes[bom_bytes.len..]);
+                return bytes[0 .. bytes.len - bom_bytes.len];
+            },
+        }
+    }
+
+    /// Required for fs.zig's `use_shared_buffer` flag; cannot free the input.
+    /// The returned slice always points to the base of the input.
+    pub fn removeAndConvertToUTF8WithoutDealloc(bom: BOM, allocator: std.mem.Allocator, list: *std.ArrayListUnmanaged(u8)) ![]u8 {
+        const bytes = list.items;
+        switch (bom) {
+            .utf8 => {
+                std.mem.copyForwards(u8, bytes[0 .. bytes.len - utf8_bytes.len], bytes[utf8_bytes.len..]);
+                return bytes[0 .. bytes.len - utf8_bytes.len];
+            },
+            .utf16_le => {
+                const trimmed_bytes = bytes[utf16_le_bytes.len..];
+                const trimmed_bytes_u16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, trimmed_bytes));
+                const out = try toUTF8Alloc(allocator, trimmed_bytes_u16);
+                if (list.capacity < out.len) {
+                    try list.ensureTotalCapacity(allocator, out.len);
+                }
+                list.items.len = out.len;
+                @memcpy(list.items, out);
+                return out;
+            },
+            else => {
+                const bom_bytes = bom.getHeader();
+                std.mem.copyForwards(u8, bytes[0 .. bytes.len - bom_bytes.len], bytes[bom_bytes.len..]);
+                return bytes[0 .. bytes.len - bom_bytes.len];
+            },
+        }
+    }
+};
+
 pub fn eqlCaseInsensitiveASCIIICheckLength(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |left, right| {
@@ -686,4 +775,37 @@ test "eqlComptimeIgnoreLen is case-insensitive" {
 test "eqlCaseInsensitiveASCIIICheckLength requires matching length" {
     try std.testing.expect(eqlCaseInsensitiveASCIIICheckLength("BROWSER", "browser"));
     try std.testing.expect(!eqlCaseInsensitiveASCIIICheckLength("bun", "bunny"));
+}
+
+test "BOM.detect recognizes UTF-8 and UTF-16-LE markers" {
+    try std.testing.expectEqual(@as(?BOM, .utf8), BOM.detect(&[_]u8{ 0xef, 0xbb, 0xbf, 'a' }));
+    try std.testing.expectEqual(@as(?BOM, .utf16_le), BOM.detect(&[_]u8{ 0xff, 0xfe, 'a', 0 }));
+    try std.testing.expectEqual(@as(?BOM, null), BOM.detect("hello"));
+    // Fewer than 3 bytes can never carry a BOM.
+    try std.testing.expectEqual(@as(?BOM, null), BOM.detect(&[_]u8{ 0xef, 0xbb }));
+}
+
+test "BOM length and getHeader match the marker bytes" {
+    try std.testing.expectEqual(@as(usize, 3), BOM.length(.utf8));
+    try std.testing.expectEqual(@as(usize, 2), BOM.length(.utf16_le));
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xef, 0xbb, 0xbf }, BOM.getHeader(.utf8));
+}
+
+test "BOM.removeAndConvertToUTF8AndFree strips a UTF-8 marker in place" {
+    const allocator = std.testing.allocator;
+    const bytes = try allocator.dupe(u8, &[_]u8{ 0xef, 0xbb, 0xbf, 'h', 'i' });
+    defer allocator.free(bytes);
+    const out = try BOM.removeAndConvertToUTF8AndFree(.utf8, allocator, bytes);
+    try std.testing.expectEqualStrings("hi", out);
+}
+
+test "BOM.removeAndConvertToUTF8WithoutDealloc keeps the base pointer for UTF-8" {
+    const allocator = std.testing.allocator;
+    var list: std.ArrayListUnmanaged(u8) = .empty;
+    defer list.deinit(allocator);
+    try list.appendSlice(allocator, &[_]u8{ 0xef, 0xbb, 0xbf, 'o', 'k' });
+    const base = list.items.ptr;
+    const out = try BOM.removeAndConvertToUTF8WithoutDealloc(.utf8, allocator, &list);
+    try std.testing.expectEqualStrings("ok", out);
+    try std.testing.expectEqual(base, out.ptr);
 }

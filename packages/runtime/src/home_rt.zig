@@ -991,6 +991,16 @@ pub const jsc = struct {
         _ = eval_mode;
     }
 
+    // Minimal `WTF` namespace mirroring upstream `src/jsc/WTF.zig`. Only the
+    // `releaseFastMallocFreeMemoryForThisThread` hint is needed today (the
+    // ThreadPool idle path calls it after a long timeout). Upstream forwards
+    // to the C++ `WTF__releaseFastMallocFreeMemoryForThisThread` shim; Home
+    // links the libc-backed allocator shim where WTF FastMalloc is not the
+    // active heap, so this is a faithful no-op until the C++ binding lands.
+    pub const wtf = struct {
+        pub fn releaseFastMallocFreeMemoryForThisThread() void {}
+    };
+
     /// Calling convention used by Bun JSC host functions.
     pub const conv: std.builtin.CallingConvention = if (Environment.isWindows and Environment.isX64)
         .{ .x86_64_sysv = .{} }
@@ -2009,6 +2019,7 @@ pub const install = struct {
     pub const ConfigVersion = @import("install/ConfigVersion.zig").ConfigVersion;
     pub const PackageManager = @import("install/PackageManager.zig");
     pub const Task = @import("install/PackageManagerTask.zig");
+    pub const PackageInstall = @import("install/PackageInstall.zig").PackageInstall;
     pub const LifecycleScriptSubprocess = struct {
         pub fn onProcessExit(this: *LifecycleScriptSubprocess, process: anytype, status: anytype, rusage: anytype) void {
             _ = this;
@@ -3400,6 +3411,36 @@ pub const safety = struct {
 };
 pub const asan = safety.asan;
 
+// Faithful port of upstream `bun.getThreadCount` (`src/bun.zig` line 3597):
+// honors `UV_THREADPOOL_SIZE` / `GOMAXPROCS`, otherwise falls back to the
+// detected CPU count, clamped to [2, 1024]. Home substitutes
+// `std.Thread.getCpuCount` for upstream's `jsc.wtf.numberOfProcessorCores`.
+pub fn getThreadCount() u16 {
+    const max_threads = 1024;
+    const min_threads = 2;
+    const ThreadCount = struct {
+        var cached_thread_count: u16 = 0;
+        var cached_thread_count_once = once(getThreadCountOnce);
+        fn getThreadCountFromUser() ?u16 {
+            inline for (.{ "UV_THREADPOOL_SIZE", "GOMAXPROCS" }) |envname| {
+                if (std.c.getenv(envname)) |env_ptr| {
+                    const env = std.mem.span(env_ptr);
+                    if (std.fmt.parseInt(u16, env, 10) catch null) |parsed| {
+                        if (parsed >= min_threads) return @min(parsed, max_threads);
+                    }
+                }
+            }
+            return null;
+        }
+        fn getThreadCountOnce() void {
+            const detected: u16 = @intCast(@max(1, std.Thread.getCpuCount() catch 1));
+            cached_thread_count = @min(max_threads, @max(min_threads, getThreadCountFromUser() orelse detected));
+        }
+    };
+    ThreadCount.cached_thread_count_once.call(.{});
+    return ThreadCount.cached_thread_count;
+}
+
 // ---- src/threading/ ----------------------------------------------------
 // Fifth-wave port batch (2026-05-18). Mutex/Condition/Futex + WaitGroup
 // + an unbounded mpsc queue + Guarded smart pointers. Channel /
@@ -3415,8 +3456,13 @@ pub const threading = struct {
     pub const GuardedBy = guarded.GuardedBy;
     pub const DebugGuarded = guarded.Debug;
     pub const UnboundedQueue = @import("threading/unbounded_queue.zig").UnboundedQueue;
+    // ThreadPool re-lands: its mimalloc + jsc.wtf idle-path deps now have
+    // faithful libc-shim no-ops, so the kprotty-derived pool type-checks for
+    // the transpiler resolver cone (PackageManagerTask embeds `ThreadPool.Task`).
+    pub const ThreadPool = @import("threading/ThreadPool.zig");
 };
 pub const UnboundedQueue = threading.UnboundedQueue;
+pub const ThreadPool = threading.ThreadPool;
 pub const DotEnv = @import("dotenv/env_loader.zig");
 
 // ---- src/sys/ ----------------------------------------------------------
@@ -3543,6 +3589,48 @@ pub const sys = struct {
         if (std.c.errno(std.c.renameat(from_dir.native(), filename.ptr, to_dir.native(), destination.ptr)) != .SUCCESS) return error.Unexpected;
     }
 
+    // Minimal faithful read helpers mirroring upstream `src/sys/sys.zig`
+    // (`read` line 2129, `readAll` line 2189, `getFileSize` line 4208).
+    // Home keeps the POSIX-only implementation the rest of this namespace
+    // uses; downstream `sys.File` read paths (resolver/fs.zig) want these.
+    pub fn read(fd: FD, buf: []u8) Maybe(usize) {
+        const rc = std.posix.read(fd.native(), buf) catch |err| {
+            return .{ .err = errnoFromPosix(.read, err).withFd(fd) };
+        };
+        return .{ .result = rc };
+    }
+
+    pub fn readAll(fd: FD, buf: []u8) Maybe(usize) {
+        var rest = buf;
+        var total_read: usize = 0;
+        while (rest.len > 0) {
+            switch (read(fd, rest)) {
+                .result => |len| {
+                    if (len == 0) break;
+                    rest = rest[len..];
+                    total_read += len;
+                },
+                .err => |err| return .{ .err = err },
+            }
+        }
+        return .{ .result = total_read };
+    }
+
+    pub fn fstat(fd: FD) Maybe(std.c.Stat) {
+        var stat_: std.c.Stat = std.mem.zeroes(std.c.Stat);
+        if (std.c.errno(std.c.fstat(fd.native(), &stat_)) != .SUCCESS) {
+            return .{ .err = unexpected(.fstat).withFd(fd) };
+        }
+        return .{ .result = stat_ };
+    }
+
+    pub fn getFileSize(fd: FD) Maybe(usize) {
+        return switch (fstat(fd)) {
+            .result => |stat_| .{ .result = @intCast(@max(stat_.size, 0)) },
+            .err => |err| .{ .err = err },
+        };
+    }
+
     pub const File = struct {
         handle: FD,
 
@@ -3551,6 +3639,35 @@ pub const sys = struct {
                 .result => |fd| .{ .result = .{ .handle = fd } },
                 .err => |err| .{ .err = err },
             };
+        }
+
+        // Faithful port of `src/sys/File.zig` `from` (line 54). Home only
+        // needs the std-file / FD / native-fd shapes the transpiler resolver
+        // cone passes; unsupported types fail at comptime like upstream.
+        pub fn from(other: anytype) File {
+            const T = @TypeOf(other);
+            if (T == File) return other;
+            if (T == FD) return .{ .handle = other };
+            if (T == fd_t) return .{ .handle = .fromNative(other) };
+            if (T == std.Io.File) return .{ .handle = .fromStdFile(other) };
+            if (T == std.Io.Dir) return .{ .handle = .fromStdDir(other) };
+            @compileError("Unsupported home_rt.sys.File.from type " ++ @typeName(T));
+        }
+
+        pub fn read(this: File, buf: []u8) Maybe(usize) {
+            return Sys.read(this.handle, buf);
+        }
+
+        pub fn readAll(this: File, buf: []u8) Maybe(usize) {
+            return Sys.readAll(this.handle, buf);
+        }
+
+        pub fn getEndPos(this: File) Maybe(usize) {
+            return Sys.getFileSize(this.handle);
+        }
+
+        pub fn stat(this: File) Maybe(std.c.Stat) {
+            return Sys.fstat(this.handle);
         }
 
         pub fn close(this: File) void {
@@ -4152,6 +4269,49 @@ test "home_rt: substrate compiles" {
         "fd0b6f1a271fca0b8124b69f230b100f4d636af6",
         upstream_sha,
     );
+}
+
+test "home_rt: getThreadCount clamps to the [2, 1024] range" {
+    const count = getThreadCount();
+    try std.testing.expect(count >= 2);
+    try std.testing.expect(count <= 1024);
+    // Cached `once` must keep returning the same value.
+    try std.testing.expectEqual(count, getThreadCount());
+}
+
+test "home_rt: sys.File read helpers round-trip a temp file" {
+    const payload = "home-rt-sys-file";
+
+    // Create a temp file via the POSIX layer that sys.File wraps, so the test
+    // stays independent of the churning std.Io.Dir API.
+    var name_buf: [64]u8 = undefined;
+    const tmp_path = try std.fmt.bufPrintZ(&name_buf, "/tmp/home_rt_sys_file_{d}.txt", .{std.c.getpid()});
+    const wfd = std.c.open(tmp_path, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(wfd >= 0);
+    {
+        defer _ = std.c.close(wfd);
+        const w = std.c.write(wfd, payload.ptr, payload.len);
+        try std.testing.expectEqual(@as(isize, @intCast(payload.len)), w);
+    }
+    defer _ = std.c.unlink(tmp_path);
+
+    const rfd = std.c.open(tmp_path, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    try std.testing.expect(rfd >= 0);
+    const file = sys.File.from(FD.fromNative(rfd));
+    defer file.close();
+
+    const size = switch (file.getEndPos()) {
+        .result => |s| s,
+        .err => return error.UnexpectedSysError,
+    };
+    try std.testing.expectEqual(@as(usize, payload.len), size);
+
+    var buf: [64]u8 = undefined;
+    const read_len = switch (file.readAll(buf[0..])) {
+        .result => |n| n,
+        .err => return error.UnexpectedSysError,
+    };
+    try std.testing.expectEqualStrings(payload, buf[0..read_len]);
 }
 
 test "home_rt: cli.which_npm_client surface is exported" {
