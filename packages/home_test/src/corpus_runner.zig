@@ -3239,7 +3239,7 @@ const harness_prelude =
     \\}
     \\function __home_format_snapshot(value) {
     \\  if (value && value.__home_error_event === true) return __home_format_error_event_snapshot(value);
-    \\  if (typeof value === "string") return value.startsWith("\"") && value.endsWith("\"") ? value : "\"" + value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"";
+    \\  if (typeof value === "string") return value.startsWith("\"") && value.endsWith("\"") ? value : "\"" + value.replace(/\\/g, "\\\\") + "\"";
     \\  if (value && typeof value === "object" && !Array.isArray(value)) {
     \\    const keys = Object.keys(value);
     \\    const lines = ["{"];
@@ -4145,7 +4145,7 @@ const harness_prelude =
     \\      if (arguments.length < 1) __home_fail("toMatchInlineSnapshot() requires 1 argument");
     \\      const actual = __home_format_snapshot(value);
     \\      const snapshot = __home_dedent_snapshot(expected);
-    \\      __home_assert(actual === snapshot, isNot, "Expected inline snapshot" + (isNot ? " not" : "") + " to match");
+    \\      __home_assert(actual === snapshot, isNot, "Expected inline snapshot" + (isNot ? " not" : "") + " to match\nactual:\n" + actual + "\nexpected:\n" + snapshot);
     \\    },
     \\    toMatchSnapshot(name) {
     \\      __home_assert(true, isNot, "Expected snapshot" + (isNot ? " not" : "") + " to match");
