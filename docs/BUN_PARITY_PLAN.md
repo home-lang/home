@@ -241,7 +241,7 @@ classified by next faithful work batch:
 |---|---|---|
 | A. Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` | Top-level legacy decorator lowering; latest probe reaches the real parser blocker, `SyntaxError: Invalid character: '@'` |
 | B. Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, loader validation, transform APIs, and callback behavior |
-| C. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
+| C. Native plugin final | `bundler/native-plugin.test.ts` | Promoted on 2026-05-26: real node-gyp build, `.node` dlopen/N-API registration, `onBeforeParse`, and external counters pass the copied file |
 
 Fresh single-file probes on 2026-05-26 in
 `/private/tmp/home-bun-parity-main`:
@@ -250,7 +250,14 @@ Fresh single-file probes on 2026-05-26 in
 |---|---|---|
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | Fails before promotion: 0 passed, 1 failed | Enters `Bun.Transpiler.transformSync`; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is the malformed-enum parse-error section |
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | Fails before promotion: 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, async lifecycle hooks, node-gyp addon build, and `.node` metadata probing now run; current blocker is the real N-API registration / `JSBundlerPlugin.onBeforeParse` bridge |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | **Passes: 6 passed, 0 failed, 0 unsupported** | Home now dlopens the built `.node` addon, runs Node-API registration callbacks, exposes N-API externals/functions, calls the Bun native `onBeforeParse` ABI, and routes the generated `bun run dist/index.js` output through the build artifact |
+
+Native plugin promotion update on 2026-05-26: the JSC corpus adapter now
+keeps real addon handles alive, exports the small Node-API surface needed
+by Bun's copied native-plugin fixture, and calls `plugin_impl*` through
+Home's Bun-compatible `NativePluginABI`. The harness no longer counts a
+corpus-only module mock here; the copied `bundler/native-plugin.test.ts`
+file passes through `home-debug` with the real node-gyp build products.
 
 Decorator helper follow-through on 2026-05-26: the native corpus harness
 now exposes Bun's `bun:wrap` runtime helper surface for transformed output:

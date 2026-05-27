@@ -66,7 +66,7 @@ tranche is:
 |---|---|---|
 | Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` | Top-level legacy decorator lowering; next observed blocker is `SyntaxError: Invalid character: '@'` after import/type erasure |
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler` and broader transpiler API behavior |
-| Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
+| Native plugin final | `bundler/native-plugin.test.ts` | Promoted on 2026-05-26: real node-gyp build, `.node` dlopen/N-API registration, `onBeforeParse`, and external counters pass |
 
 Fresh single-file probes on 2026-05-26 in
 `/private/tmp/home-bun-parity-main`:
@@ -75,7 +75,7 @@ Fresh single-file probes on 2026-05-26 in
 |---|---|---|
 | `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler.transformSync` is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
 | `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
-| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, async lifecycle hooks, node-gyp addon build, and `.node` metadata probing now run; current blocker is real N-API registration / `JSBundlerPlugin.onBeforeParse` |
+| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` passes with 6 passed, 0 failed, 0 unsupported | Home now dlopens the built addon, runs the fixture's Node-API registration, exposes N-API externals/functions, calls Bun's native `onBeforeParse` ABI, and routes `bun run dist/index.js` through the generated build artifact |
 
 Decorator helper groundwork (2026-05-26): the corpus harness now provides
 Bun's `bun:wrap` helper module for native-transpiled decorator output,
@@ -181,6 +181,16 @@ past the previous hard loader error and fails the basic case with
 `Build failed`. The remaining blocker is still the real N-API
 registration plus `JSBundlerPlugin.onBeforeParse` bridge, not a
 corpus-only module simulation.
+
+Native plugin promotion update on 2026-05-26: the adapter now crosses
+that bridge for the copied fixture. It exports the small Node-API surface
+used by `native_plugin.cc`, keeps loaded addon handles and external cells
+alive for the test runtime, calls `plugin_impl*` through Home's
+Bun-compatible `NativePluginABI`, and preserves build inputs while routing
+the generated `bun run dist/index.js` output through the recorded build
+artifact. `./zig-out/bin/home-debug test
+packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` passes
+with 6 passed, 0 failed, 0 unsupported.
 
 Next source-module work for bundler should replace the
 `__home_expect_bundled` bootstrap stub with a real `itBundled` adapter

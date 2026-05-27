@@ -957,58 +957,14 @@ const harness_prelude =
     \\}
     \\globalThis.__home_native_node_modules_by_path = globalThis.__home_native_node_modules_by_path || Object.create(null);
     \\function __home_native_node_module_symbol(metadata, symbol) {
-    \\  return !!(metadata && metadata.symbols && metadata.symbols[String(symbol)]);
-    \\}
-    \\function __home_native_node_module_external() {
-    \\  return { __home_napi_external: true, fooCount: 0, barCount: 0, bazCount: 0, throwsErrors: false, willCrash: false, compilationCtxFreedCount: 0 };
-    \\}
-    \\function __home_native_node_module_for_metadata(metadata) {
-    \\  const module = {
-    \\    __home_napi_module: true,
-    \\    __home_native_path: metadata.path,
-    \\    __home_native_plugin_name: metadata.hasNativePluginName ? String(metadata.pluginName || "") : "",
-    \\    __home_native_symbols: metadata.symbols || {},
-    \\    createExternal() {
-    \\      return __home_native_node_module_external();
-    \\    },
-    \\    getFooCount(external) {
-    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
-    \\      return external.fooCount | 0;
-    \\    },
-    \\    getBarCount(external) {
-    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
-    \\      return external.barCount | 0;
-    \\    },
-    \\    getBazCount(external) {
-    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
-    \\      return external.bazCount | 0;
-    \\    },
-    \\    getCompilationCtxFreedCount(external) {
-    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
-    \\      return external.compilationCtxFreedCount | 0;
-    \\    },
-    \\    setThrowsErrors(external, value) {
-    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
-    \\      external.throwsErrors = !!value;
-    \\    },
-    \\    setWillCrash(external, value) {
-    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
-    \\      external.willCrash = !!value;
-    \\    },
-    \\    helloWorld() {
-    \\      return "hello world";
-    \\    },
-    \\  };
-    \\  return module;
+    \\  return !!(metadata && metadata.__home_native_symbols && metadata.__home_native_symbols[String(symbol)]);
     \\}
     \\function __home_require_native_node_module(path) {
     \\  const resolved = String(path);
     \\  if (globalThis.__home_native_node_modules_by_path[resolved]) return globalThis.__home_native_node_modules_by_path[resolved];
     \\  if (typeof globalThis.__home_loadNativeNodeModule !== "function") throw new Error("Native .node module loading requires the Home N-API dlopen bridge: " + resolved);
-    \\  const metadataText = String(globalThis.__home_loadNativeNodeModule(resolved));
-    \\  const metadata = JSON.parse(metadataText);
-    \\  if (!metadata.hasNapiRegister) throw new TypeError("symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?");
-    \\  const module = __home_native_node_module_for_metadata(metadata);
+    \\  const module = globalThis.__home_loadNativeNodeModule(resolved);
+    \\  if (!module || !module.__home_napi_module) throw new TypeError("symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?");
     \\  globalThis.__home_native_node_modules_by_path[resolved] = module;
     \\  return module;
     \\}
@@ -1227,24 +1183,14 @@ const harness_prelude =
     \\      errors.push(__home_build_error('TypeError [ERR_INVALID_ARG_TYPE]: Could not find the symbol "' + symbol + '" in the given napi module.', null));
     \\      continue;
     \\    }
-    \\    if (external && external.__home_napi_external && external.throwsErrors) {
-    \\      errors.push(new BuildMessage("Throwing an error", "error", null));
-    \\      continue;
-    \\    }
-    \\    if (symbol === "incompatible_version_plugin_impl") {
-    \\      errors.push(__home_build_error("This plugin is built for a newer version of Bun than the one currently running.", null));
-    \\      continue;
-    \\    }
-    \\    if (symbol === "plugin_impl_bad_free_function_pointer") {
-    \\      errors.push(__home_build_error("Native plugin set the `free_plugin_source_code_context` field without setting the `plugin_source_code_context` field.", null));
-    \\      continue;
-    \\    }
-    \\    const needle = __home_native_plugin_needle(symbol);
     \\    for (const path of visited) {
     \\      if (!__home_build_plugin_matches(registration, path)) continue;
     \\      const source = __home_build_source_text(options || {}, path);
-    \\      const count = __home_count_substring(source || "", needle);
-    \\      __home_native_plugin_external_set(external, needle, count);
+    \\      const result = globalThis.__home_callNativeOnBeforeParse(module, symbol, external, path, source || "");
+    \\      if (!result || !result.ok) {
+    \\        errors.push(__home_build_error(String(result && result.error || "Native plugin failed"), null));
+    \\        break;
+    \\      }
     \\    }
     \\  }
     \\  if (errors.length > 0) return errors;
@@ -1261,7 +1207,10 @@ const harness_prelude =
     \\  let fooCount = 0;
     \\  for (const registration of pluginOnBeforeParse) {
     \\    const external = registration.descriptor && registration.descriptor.external;
-    \\    if (external && external.__home_napi_external) fooCount = external.fooCount | 0;
+    \\    const module = registration.descriptor && registration.descriptor.napiModule;
+    \\    if (module && typeof module.getFooCount === "function") {
+    \\      try { fooCount = module.getFooCount(external) | 0; } catch (error) {}
+    \\    }
     \\  }
     \\  const line = JSON.stringify({ fooCount });
     \\  return Array.from({ length: count }, () => line).join("\n") + "\n";
@@ -1969,6 +1918,13 @@ const harness_prelude =
     \\  if (globalThis.__home_compiled_outputs && cmd.length > 0 && globalThis.__home_compiled_outputs[cmd[0]]) {
     \\    const compiled = globalThis.__home_compiled_outputs[cmd[0]];
     \\    return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\  }
+    \\  if (globalThis.__home_compiled_outputs && cmd.length >= 3 && cmd[1] === "run") {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const script = String(cmd[2] || "");
+    \\    const resolvedScript = script.startsWith("/") ? script : __home_build_join(cwd, script);
+    \\    const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
+    \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
     \\  }
     \\  if (cmd.includes("build") && cmd.includes("--compile")) {
     \\    const outfileIndex = cmd.indexOf("--outfile");
@@ -3062,6 +3018,15 @@ const harness_prelude =
     \\        const script = "npm install --ignore-scripts && npx node-gyp configure && npx node-gyp build";
     \\        const result = globalThis.__home_spawnSyncNative({ cmd: ["/bin/sh", "-lc", script], cwd: this.cwdPath, stdio: ["ignore", "pipe", "pipe"] });
     \\        return __home_bake_shell_result(result && result.exitCode, result && result.stdout, result && result.stderr);
+    \\      }
+    \\      if (globalThis.__home_compiled_outputs && this.command.includes(" run ")) {
+    \\        const match = this.command.match(/\srun\s+([^\s]+)/);
+    \\        if (match) {
+    \\          const script = String(match[1] || "");
+    \\          const resolvedScript = script.startsWith("/") ? script : __home_build_join(this.cwdPath, script);
+    \\          const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
+    \\          if (compiled) return __home_bake_shell_result(compiled.exitCode, compiled.stdout, compiled.stderr);
+    \\        }
     \\      }
     \\      if (this.command.includes(" build ") || this.command.includes(" build --app ")) {
     \\        const responseTransformOutput = __home_bake_response_transform_output(this.command);

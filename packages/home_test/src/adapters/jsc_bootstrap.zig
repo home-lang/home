@@ -3,6 +3,81 @@ const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
 
 const Io = std.Io;
+const NativePluginABI = home_rt.bundler.NativePluginABI;
+const NapiStatus = enum(c_uint) {
+    ok = 0,
+    invalid_arg = 1,
+    object_expected = 2,
+    string_expected = 3,
+    name_expected = 4,
+    function_expected = 5,
+    number_expected = 6,
+    boolean_expected = 7,
+    array_expected = 8,
+    generic_failure = 9,
+    pending_exception = 10,
+};
+const NAPI_AUTO_LENGTH = std.math.maxInt(usize);
+const napi_env = ?*NativeNapiEnv;
+const napi_value = ?*JSValue;
+const napi_callback_info = ?*NativeCallbackFrame;
+const napi_status = c_uint;
+const napi_callback = ?*const fn (napi_env, napi_callback_info) callconv(.c) napi_value;
+const napi_finalize = ?*const fn (napi_env, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+
+const NativeNapiEnv = struct {
+    ctx: *JSContextRef,
+    exception: extern_fns.ExceptionRef,
+    last_error: NapiStatus = .ok,
+};
+
+const NativeCallback = struct {
+    env: *NativeNapiEnv,
+    callback: napi_callback,
+    data: ?*anyopaque,
+};
+
+const NativeNapiModule = extern struct {
+    nm_version: c_int,
+    nm_flags: c_uint,
+    nm_filename: [*c]const u8,
+    nm_register_func: *const fn (napi_env, napi_value) callconv(.c) napi_value,
+    nm_modname: [*c]const u8,
+    nm_priv: ?*anyopaque,
+    reserved: [4]?*anyopaque,
+};
+
+const NativeCallbackFrame = struct {
+    ctx: *JSContextRef,
+    this_value: ?*JSObject,
+    args: [*c]const ?*JSValue,
+    arg_count: usize,
+    data: ?*anyopaque,
+};
+
+const NativeExternal = struct {
+    env: *NativeNapiEnv,
+    data: ?*anyopaque,
+    finalize: napi_finalize,
+    hint: ?*anyopaque,
+};
+
+const NativeModuleMeta = struct {
+    lib_index: usize,
+    plugin_name: []const u8,
+};
+
+const NativeBeforeParseContext = struct {
+    ctx: *JSContextRef,
+    exception: extern_fns.ExceptionRef,
+    source: []const u8,
+    logs: std.ArrayList([]const u8) = .empty,
+};
+
+const NativeBeforeParseArgs = NativePluginABI.OnBeforeParseArguments(NativeBeforeParseContext);
+const NativeBeforeParseResult = NativePluginABI.OnBeforeParseResult(NativeBeforeParseArgs);
+const NativeBeforeParseFn = *const fn (*const NativeBeforeParseArgs, *NativeBeforeParseResult) callconv(.c) void;
+
 var home_eval_counter: usize = 0;
 
 pub const Runtime = struct {
@@ -22,6 +97,7 @@ pub const Runtime = struct {
     pub fn deinit(self: *Runtime) void {
         cleanupTranspilerHandles();
         cleanupServeHandles();
+        cleanupNativeBridge();
         self.engine.deinit();
     }
 
@@ -185,11 +261,18 @@ pub const Runtime = struct {
             "__home_loadNativeNodeModule",
             loadNativeNodeModule,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_callNativeOnBeforeParse",
+            callNativeOnBeforeParse,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
         cleanupTranspilerHandles();
         cleanupServeHandles();
+        cleanupNativeBridge();
         home_rt.runtime.bake.resetDevServerDeinitCountForTesting();
 
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
@@ -333,6 +416,10 @@ const BakeHtmlServeShape = struct {
 var next_serve_id: usize = 1;
 var serve_handles: std.AutoHashMapUnmanaged(usize, *ServeHandle) = .empty;
 var loaded_native_node_modules: std.ArrayList(std.DynLib) = .empty;
+var native_callbacks: std.AutoHashMapUnmanaged(usize, NativeCallback) = .empty;
+var native_externals: std.AutoHashMapUnmanaged(usize, NativeExternal) = .empty;
+var native_module_meta: std.AutoHashMapUnmanaged(usize, NativeModuleMeta) = .empty;
+var pending_napi_modules: std.ArrayList(NativeNapiModule) = .empty;
 
 const TranspilerHandle = struct {
     loader: TranspilerLoader = .jsx,
@@ -1559,6 +1646,7 @@ fn loadNativeNodeModule(
     _ = this;
     const actual_ctx = ctx.?;
     const allocator = std.heap.smp_allocator;
+    const NapiRegisterFn = *const fn (napi_env, napi_value) callconv(.c) napi_value;
 
     if (argument_count < 1 or arguments[0] == null) {
         setException(actual_ctx, exception, "require(.node) requires a native module path");
@@ -1571,6 +1659,7 @@ fn loadNativeNodeModule(
     };
     defer allocator.free(path);
 
+    const pending_start = pending_napi_modules.items.len;
     var lib = std.DynLib.open(path) catch |err| {
         setExceptionFmt(actual_ctx, exception, "ERR_DLOPEN_FAILED: {s}", .{@errorName(err)});
         return null;
@@ -1585,44 +1674,438 @@ fn loadNativeNodeModule(
     const has_incompatible_version = lib.lookup(*const anyopaque, "incompatible_version_plugin_impl") != null;
     const has_bad_free_pointer = lib.lookup(*const anyopaque, "plugin_impl_bad_free_function_pointer") != null;
     const plugin_name = readNativePluginName(&lib);
+    const napi_register = lib.lookup(NapiRegisterFn, "napi_register_module_v1");
+    const registered_module = if (pending_napi_modules.items.len > pending_start)
+        pending_napi_modules.items[pending_start]
+    else
+        null;
+
+    if (napi_register == null and registered_module == null) {
+        lib.close();
+        setException(actual_ctx, exception, "symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?");
+        return null;
+    }
+
+    const exports_object = extern_fns.JSObjectMake(actual_ctx, null, null) orelse {
+        setException(actual_ctx, exception, "require(.node) failed to create exports object");
+        return null;
+    };
+    const env = allocator.create(NativeNapiEnv) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "require(.node) env allocation failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    env.* = .{ .ctx = actual_ctx, .exception = exception };
+
+    const registration_result = if (registered_module) |module|
+        module.nm_register_func(env, @ptrCast(exports_object))
+    else
+        napi_register.?(env, @ptrCast(exports_object));
+    if (exception.* != null or env.last_error == .pending_exception) return null;
+    const module_value = registration_result orelse @as(*JSValue, @ptrCast(exports_object));
+    if (!extern_fns.JSValueIsObject(actual_ctx, module_value)) {
+        setException(actual_ctx, exception, "Expected Node-API module to return an exports object");
+        return null;
+    }
+    const module_object = extern_fns.JSValueToObject(actual_ctx, module_value, exception) orelse return null;
 
     loaded_native_node_modules.append(allocator, lib) catch |err| {
         setExceptionFmt(actual_ctx, exception, "require(.node) handle retention failed: {s}", .{@errorName(err)});
         return null;
     };
     errdefer _ = loaded_native_node_modules.pop();
+    const lib_index = loaded_native_node_modules.items.len - 1;
 
-    var json_writer: std.Io.Writer.Allocating = .init(allocator);
-    defer json_writer.deinit();
-    std.json.Stringify.value(.{
-        .path = path,
-        .hasNapiRegister = has_napi_register,
-        .hasNodeApiVersion = has_node_api_version,
-        .pluginName = plugin_name orelse "",
-        .hasNativePluginName = plugin_name != null,
-        .symbols = .{
-            .plugin_impl = has_plugin_impl,
-            .plugin_impl_bar = has_plugin_impl_bar,
-            .plugin_impl_baz = has_plugin_impl_baz,
-            .incompatible_version_plugin_impl = has_incompatible_version,
-            .plugin_impl_bad_free_function_pointer = has_bad_free_pointer,
-        },
-    }, .{}, &json_writer.writer) catch |err| {
+    setBoolProperty(actual_ctx, module_object, "__home_napi_module", true);
+    setStringProperty(actual_ctx, module_object, "__home_native_path", path) catch {};
+    setStringProperty(actual_ctx, module_object, "__home_native_plugin_name", plugin_name orelse "") catch {};
+    setBoolProperty(actual_ctx, module_object, "__home_has_napi_register", has_napi_register);
+    setBoolProperty(actual_ctx, module_object, "__home_has_node_api_version", has_node_api_version);
+    const symbols = makeNativeSymbolObject(actual_ctx, .{
+        .plugin_impl = has_plugin_impl,
+        .plugin_impl_bar = has_plugin_impl_bar,
+        .plugin_impl_baz = has_plugin_impl_baz,
+        .incompatible_version_plugin_impl = has_incompatible_version,
+        .plugin_impl_bad_free_function_pointer = has_bad_free_pointer,
+    }) catch |err| {
         setExceptionFmt(actual_ctx, exception, "require(.node) metadata failed: {s}", .{@errorName(err)});
         return null;
     };
-    const json = json_writer.written();
+    setProperty(actual_ctx, module_object, "__home_native_symbols", @ptrCast(symbols));
 
-    return makeStringValue(actual_ctx, json) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "require(.node) metadata result failed: {s}", .{@errorName(err)});
+    native_module_meta.put(allocator, @intFromPtr(module_object), .{
+        .lib_index = lib_index,
+        .plugin_name = plugin_name orelse "",
+    }) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "require(.node) private metadata failed: {s}", .{@errorName(err)});
         return null;
     };
+
+    return @ptrCast(module_object);
 }
 
 fn readNativePluginName(lib: *std.DynLib) ?[]const u8 {
     const symbol = lib.lookup(*const ?[*:0]const u8, "BUN_PLUGIN_NAME") orelse return null;
     const name = symbol.* orelse return null;
     return std.mem.span(name);
+}
+
+fn makeNativeSymbolObject(ctx: *JSContextRef, symbols: anytype) !*JSObject {
+    const object = extern_fns.JSObjectMake(ctx, null, null) orelse return error.MakeObjectFailed;
+    setBoolProperty(ctx, object, "plugin_impl", symbols.plugin_impl);
+    setBoolProperty(ctx, object, "plugin_impl_bar", symbols.plugin_impl_bar);
+    setBoolProperty(ctx, object, "plugin_impl_baz", symbols.plugin_impl_baz);
+    setBoolProperty(ctx, object, "incompatible_version_plugin_impl", symbols.incompatible_version_plugin_impl);
+    setBoolProperty(ctx, object, "plugin_impl_bad_free_function_pointer", symbols.plugin_impl_bad_free_function_pointer);
+    return object;
+}
+
+fn callNativeOnBeforeParse(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 5 or arguments[0] == null or arguments[1] == null or arguments[3] == null or arguments[4] == null) {
+        setException(actual_ctx, exception, "onBeforeParse native bridge requires module, symbol, external, path, and source");
+        return null;
+    }
+
+    const module_object = extern_fns.JSValueToObject(actual_ctx, arguments[0], exception) orelse return null;
+    const meta = native_module_meta.get(@intFromPtr(module_object)) orelse {
+        setException(actual_ctx, exception, "onBeforeParse `napiModule` is missing native dlopen metadata");
+        return null;
+    };
+    if (meta.lib_index >= loaded_native_node_modules.items.len) {
+        setException(actual_ctx, exception, "onBeforeParse native dlopen handle is no longer retained");
+        return null;
+    }
+
+    const symbol = valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "onBeforeParse symbol failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(symbol);
+    const symbol_z = allocator.dupeZ(u8, symbol) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "onBeforeParse symbol allocation failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(symbol_z);
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[3].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "onBeforeParse path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    const source = valueToOwnedString(allocator, actual_ctx, arguments[4].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "onBeforeParse source failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(source);
+
+    var lib = &loaded_native_node_modules.items[meta.lib_index];
+    const plugin = lib.lookup(NativeBeforeParseFn, symbol_z) orelse {
+        return makeNativeBeforeParseError(actual_ctx, "Could not find native plugin symbol") catch null;
+    };
+
+    var native_external: ?*anyopaque = null;
+    if (arguments[2]) |external_value| {
+        if (!extern_fns.JSValueIsUndefined(actual_ctx, external_value) and !extern_fns.JSValueIsNull(actual_ctx, external_value)) {
+            const external_object = extern_fns.JSValueToObject(actual_ctx, external_value, exception) orelse return null;
+            if (native_externals.get(@intFromPtr(external_object))) |external| {
+                native_external = external.data;
+            } else {
+                return makeNativeBeforeParseError(actual_ctx, "Failed to get external") catch null;
+            }
+        }
+    }
+
+    var bridge_context = NativeBeforeParseContext{
+        .ctx = actual_ctx,
+        .exception = exception,
+        .source = source,
+    };
+    defer {
+        for (bridge_context.logs.items) |message| allocator.free(message);
+        bridge_context.logs.deinit(allocator);
+    }
+
+    var args = NativeBeforeParseArgs{
+        .context = &bridge_context,
+        .path_ptr = path.ptr,
+        .path_len = path.len,
+        .namespace_ptr = "file".ptr,
+        .namespace_len = "file".len,
+        .default_loader = .ts,
+        .external = native_external,
+    };
+    var result = NativeBeforeParseResult{
+        .loader = .ts,
+        .fetch_source_code_fn = nativeFetchSourceCode,
+        .log = nativeBeforeParseLog,
+    };
+
+    plugin(&args, &result);
+
+    if (result.free_user_context != null and result.user_context == null) {
+        return makeNativeBeforeParseError(actual_ctx, "Native plugin set the `free_plugin_source_code_context` field without setting the `plugin_source_code_context` field.") catch null;
+    }
+
+    const first_error = if (bridge_context.logs.items.len > 0) bridge_context.logs.items[0] else null;
+    if (first_error) |message| {
+        if (result.free_user_context) |free_fn| free_fn(result.user_context);
+        return makeNativeBeforeParseError(actual_ctx, message) catch null;
+    }
+
+    const out = extern_fns.JSObjectMake(actual_ctx, null, null) orelse return null;
+    setBoolProperty(actual_ctx, out, "ok", true);
+    if (result.source_ptr) |ptr| {
+        if (result.source_len > 0) {
+            const transformed = ptr[0..result.source_len];
+            setStringProperty(actual_ctx, out, "source", transformed) catch {};
+        }
+    }
+    setStringProperty(actual_ctx, out, "loader", loaderName(result.loader)) catch {};
+    if (result.free_user_context) |free_fn| free_fn(result.user_context);
+    return @ptrCast(out);
+}
+
+fn makeNativeBeforeParseError(ctx: *JSContextRef, message: []const u8) !*JSValue {
+    const object = extern_fns.JSObjectMake(ctx, null, null) orelse return error.MakeObjectFailed;
+    setBoolProperty(ctx, object, "ok", false);
+    try setStringProperty(ctx, object, "error", message);
+    return @ptrCast(object);
+}
+
+fn loaderName(loader: NativePluginABI.Loader) []const u8 {
+    return switch (loader) {
+        .jsx => "jsx",
+        .js => "js",
+        .ts => "ts",
+        .tsx => "tsx",
+        .css => "css",
+        .file => "file",
+        .json => "json",
+        .toml => "toml",
+        .wasm => "wasm",
+        .napi => "napi",
+        .base64 => "base64",
+        .dataurl => "dataurl",
+        .text => "text",
+        .html => "html",
+        .yaml => "yaml",
+        _ => "file",
+    };
+}
+
+fn nativeFetchSourceCode(args: *NativeBeforeParseArgs, result: *NativeBeforeParseResult) callconv(.c) i32 {
+    const bridge_context = args.context;
+    result.source_ptr = bridge_context.source.ptr;
+    result.source_len = bridge_context.source.len;
+    return 0;
+}
+
+fn nativeBeforeParseLog(args: ?*NativeBeforeParseArgs, options: ?*NativePluginABI.BunLogOptions) callconv(.c) void {
+    const actual_args = args orelse return;
+    const actual_options = options orelse return;
+    if (actual_options.message_ptr == null or actual_options.message_len == 0) return;
+    const allocator = std.heap.smp_allocator;
+    const message = actual_options.message_ptr.?[0..actual_options.message_len];
+    const owned = allocator.dupe(u8, message) catch return;
+    actual_args.context.logs.append(allocator, owned) catch allocator.free(owned);
+}
+
+fn nativeNapiFunctionCallback(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    const callback = native_callbacks.get(@intFromPtr(function orelse return null)) orelse return null;
+    const cb = callback.callback orelse return null;
+    const env = callback.env;
+    const previous_ctx = env.ctx;
+    const previous_exception = env.exception;
+    env.ctx = ctx.?;
+    env.exception = exception;
+    defer {
+        env.ctx = previous_ctx;
+        env.exception = previous_exception;
+    }
+    var frame = NativeCallbackFrame{
+        .ctx = ctx.?,
+        .this_value = this,
+        .args = arguments,
+        .arg_count = argument_count,
+        .data = callback.data,
+    };
+    return cb(env, &frame);
+}
+
+pub export fn napi_module_register(module: ?*NativeNapiModule) void {
+    const actual = module orelse return;
+    pending_napi_modules.append(std.heap.smp_allocator, actual.*) catch {};
+}
+
+pub export fn napi_create_function(
+    env_: napi_env,
+    utf8name: ?[*:0]const u8,
+    length: usize,
+    cb: napi_callback,
+    data: ?*anyopaque,
+    result: ?*napi_value,
+) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const out = result orelse return setNapiLastError(env, .invalid_arg);
+    const callback = cb orelse return setNapiLastError(env, .invalid_arg);
+    const name = if (utf8name) |ptr|
+        if (length == NAPI_AUTO_LENGTH) std.mem.span(ptr) else ptr[0..length]
+    else
+        "native";
+    const name_string = makeJSString(name) catch return setNapiLastError(env, .generic_failure);
+    defer extern_fns.JSStringRelease(name_string);
+    const object = extern_fns.JSObjectMakeFunctionWithCallback(env.ctx, name_string, nativeNapiFunctionCallback) orelse
+        return setNapiLastError(env, .generic_failure);
+    native_callbacks.put(std.heap.smp_allocator, @intFromPtr(object), .{
+        .env = env,
+        .callback = callback,
+        .data = data,
+    }) catch return setNapiLastError(env, .generic_failure);
+    out.* = @ptrCast(object);
+    return setNapiLastError(env, .ok);
+}
+
+pub export fn napi_get_cb_info(
+    env_: napi_env,
+    info: napi_callback_info,
+    argc: ?*usize,
+    argv: [*c]napi_value,
+    this_arg: ?*napi_value,
+    data: ?*?*anyopaque,
+) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const frame = info orelse return setNapiLastError(env, .invalid_arg);
+    if (argc) |argc_ptr| {
+        const wanted = @min(argc_ptr.*, frame.arg_count);
+        if (argv != null) {
+            for (0..wanted) |index| argv[index] = frame.args[index];
+        }
+        argc_ptr.* = frame.arg_count;
+    }
+    if (this_arg) |out| out.* = if (frame.this_value) |value| @ptrCast(value) else null;
+    if (data) |out| out.* = frame.data;
+    return setNapiLastError(env, .ok);
+}
+
+pub export fn napi_set_named_property(env_: napi_env, object: napi_value, utf8name: ?[*:0]const u8, value: napi_value) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const name = utf8name orelse return setNapiLastError(env, .invalid_arg);
+    const object_value = object orelse return setNapiLastError(env, .invalid_arg);
+    const property_value = value orelse return setNapiLastError(env, .invalid_arg);
+    const target = extern_fns.JSValueToObject(env.ctx, object_value, env.exception) orelse return setNapiLastError(env, .object_expected);
+    setProperty(env.ctx, target, std.mem.span(name), property_value);
+    return setNapiLastError(env, .ok);
+}
+
+pub export fn napi_create_external(
+    env_: napi_env,
+    data: ?*anyopaque,
+    finalize_cb: napi_finalize,
+    finalize_hint: ?*anyopaque,
+    result: ?*napi_value,
+) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const out = result orelse return setNapiLastError(env, .invalid_arg);
+    const object = extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure);
+    setBoolProperty(env.ctx, object, "__home_napi_external", true);
+    native_externals.put(std.heap.smp_allocator, @intFromPtr(object), .{
+        .env = env,
+        .data = data,
+        .finalize = finalize_cb,
+        .hint = finalize_hint,
+    }) catch return setNapiLastError(env, .generic_failure);
+    out.* = @ptrCast(object);
+    return setNapiLastError(env, .ok);
+}
+
+pub export fn napi_get_value_external(env_: napi_env, value: napi_value, result: ?*?*anyopaque) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const out = result orelse return setNapiLastError(env, .invalid_arg);
+    const object_value = value orelse return setNapiLastError(env, .invalid_arg);
+    const object = extern_fns.JSValueToObject(env.ctx, object_value, env.exception) orelse return setNapiLastError(env, .invalid_arg);
+    const external = native_externals.get(@intFromPtr(object)) orelse return setNapiLastError(env, .invalid_arg);
+    out.* = external.data;
+    return setNapiLastError(env, .ok);
+}
+
+pub export fn napi_create_int32(env_: napi_env, value: i32, result: ?*napi_value) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const out = result orelse return setNapiLastError(env, .invalid_arg);
+    out.* = extern_fns.JSValueMakeNumber(env.ctx, @floatFromInt(value));
+    return setNapiLastError(env, .ok);
+}
+
+pub export fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, result: ?*napi_value) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const out = result orelse return setNapiLastError(env, .invalid_arg);
+    const ptr = str orelse return setNapiLastError(env, .invalid_arg);
+    const text = if (length == NAPI_AUTO_LENGTH) std.mem.span(@as([*:0]const u8, @ptrCast(ptr))) else ptr[0..length];
+    out.* = makeStringValue(env.ctx, text) catch return setNapiLastError(env, .generic_failure);
+    return setNapiLastError(env, .ok);
+}
+
+pub export fn napi_get_value_bool(env_: napi_env, value: napi_value, result: ?*bool) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const out = result orelse return setNapiLastError(env, .invalid_arg);
+    const js_value = value orelse return setNapiLastError(env, .invalid_arg);
+    out.* = extern_fns.JSValueToBoolean(env.ctx, js_value);
+    return setNapiLastError(env, .ok);
+}
+
+pub export fn napi_throw_error(env_: napi_env, _: ?[*:0]const u8, message: ?[*:0]const u8) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    setException(env.ctx, env.exception, if (message) |ptr| std.mem.span(ptr) else "napi error");
+    return setNapiLastError(env, .pending_exception);
+}
+
+pub export fn napi_create_object(env_: napi_env, result: ?*napi_value) napi_status {
+    const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
+    const out = result orelse return setNapiLastError(env, .invalid_arg);
+    out.* = @ptrCast(extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure));
+    return setNapiLastError(env, .ok);
+}
+
+fn setNapiLastError(env: *NativeNapiEnv, status: NapiStatus) napi_status {
+    env.last_error = status;
+    return @intFromEnum(status);
+}
+
+fn cleanupNativeBridge() void {
+    const allocator = std.heap.smp_allocator;
+    var external_it = native_externals.valueIterator();
+    while (external_it.next()) |external| {
+        if (external.finalize) |finalize| finalize(external.env, external.data, external.hint);
+    }
+    native_externals.deinit(allocator);
+    native_externals = .empty;
+    native_callbacks.deinit(allocator);
+    native_callbacks = .empty;
+    native_module_meta.deinit(allocator);
+    native_module_meta = .empty;
+    for (loaded_native_node_modules.items) |*lib| lib.close();
+    loaded_native_node_modules.deinit(allocator);
+    loaded_native_node_modules = .empty;
+    pending_napi_modules.deinit(allocator);
+    pending_napi_modules = .empty;
 }
 
 fn writeFileSyncNative(
