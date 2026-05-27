@@ -14498,6 +14498,24 @@ pub const Parser = struct {
             },
             .private_identifier => {
                 _ = self.advance();
+                // TS1451: a private identifier in primary-expression
+                // position is only legal as the left-hand-side of an
+                // `in` expression (`#name in obj`). The class-body
+                // declaration site, property access (`obj.#name`),
+                // and `#name in obj` LHS go through dedicated parser
+                // paths and never reach here. Member-access via
+                // `.#name` is handled before the dot consumes the
+                // following private-identifier token, so we can
+                // discriminate on the immediately-following token:
+                // `in` -> allowed, anything else -> TS1451.
+                if (self.peek().kind != .kw_in) {
+                    try self.reportCodeAt(
+                        t.span.start,
+                        t.line,
+                        1451,
+                        "Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression.",
+                    );
+                }
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
@@ -19670,6 +19688,52 @@ test "parser: TS1337 does NOT fire for the canonical string/number/symbol index 
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1337);
+    }
+}
+
+test "parser: TS1451 fires for private identifier in invalid expression position" {
+    // `#name` as a primary expression (standalone, function arg,
+    // assignment RHS) is illegal; the only legal expression usage
+    // is `#name in obj`.
+    var s = try newTestSetup(
+        \\let bad = #bad;
+        \\f(#arg);
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts1451: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1451) {
+            ts1451 += 1;
+            try T.expectEqualStrings(
+                "Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression.",
+                d.message,
+            );
+        }
+    }
+    try T.expectEqual(@as(usize, 2), ts1451);
+}
+
+test "parser: TS1451 does NOT fire for legitimate private-identifier usages" {
+    // Legitimate forms: class body declaration, property access
+    // (`obj.#name`), and LHS of an `in` expression (`#name in obj`).
+    var s = try newTestSetup(
+        \\class C {
+        \\    #name = 1;
+        \\    test(obj: any) {
+        \\        return this.#name + obj.#name;
+        \\    }
+        \\    has(obj: any) {
+        \\        return #name in obj;
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1451);
     }
 }
 
