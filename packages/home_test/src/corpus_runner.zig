@@ -8324,7 +8324,7 @@ const harness_prelude =
     \\  if (builtin) return builtin;
     \\  const factory = globalThis.__home_cjs_factories[resolved];
     \\  if (!factory && /\.node$/i.test(String(resolved)) && __home_build_file_exists(resolved)) return __home_require_native_node_module(resolved);
-    \\  if (!factory) throw new Error("Cannot find module: " + String(specifier));
+    \\  if (!factory && __home_build_read_text(resolved) === null) throw new Error("Cannot find module: " + String(specifier));
     \\  if (globalThis.require.cache[resolved]) return globalThis.require.cache[resolved].exports;
     \\  const module = { exports: {} };
     \\  globalThis.require.cache[resolved] = module;
