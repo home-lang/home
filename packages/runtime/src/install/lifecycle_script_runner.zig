@@ -594,7 +594,7 @@ const string = []const u8;
 const Lockfile = @import("./lockfile.zig");
 const std = @import("std");
 const PackageManager = @import("./install.zig").PackageManager;
-const Timer = std.time.Timer;
+const Timer = bun.Timer;
 
 const bun = @import("bun");
 const Environment = bun.Environment;

@@ -49,8 +49,8 @@ pub fn init(body: HTTPRequestBody, body_out_str: *MutableString) InternalState {
     return .{
         .original_request_body = body,
         .request_body = if (body == .bytes) body.bytes else "",
-        .compressed_body = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
-        .response_message_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
+        .compressed_body = MutableString{ .allocator = HTTPClient.default_allocator, .list = .{} },
+        .response_message_buffer = MutableString{ .allocator = HTTPClient.default_allocator, .list = .{} },
         .body_out_str = body_out_str,
         .stage = Stage.pending,
         .pending_response = null,
@@ -84,8 +84,8 @@ pub fn reset(this: *InternalState, allocator: std.mem.Allocator) void {
     this.original_request_body.deinit();
     this.* = .{
         .body_out_str = body_msg,
-        .compressed_body = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
-        .response_message_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
+        .compressed_body = MutableString{ .allocator = HTTPClient.default_allocator, .list = .{} },
+        .response_message_buffer = MutableString{ .allocator = HTTPClient.default_allocator, .list = .{} },
         .original_request_body = .{ .bytes = "" },
         .request_body = "",
         .certificate_info = null,
@@ -119,7 +119,7 @@ pub fn decompressBytes(this: *InternalState, buffer: []const u8, body_out_str: *
     defer this.compressed_body.reset();
     var gzip_timer: std.time.Timer = undefined;
 
-    if (bun.http.extremely_verbose)
+    if (HTTPClient.extremely_verbose)
         gzip_timer = std.time.Timer.start() catch @panic("Timer failure");
 
     var still_needs_to_decompress = true;
@@ -130,7 +130,7 @@ pub fn decompressBytes(this: *InternalState, buffer: []const u8, body_out_str: *
             this.flags.is_libdeflate_fast_path_disabled = true;
 
             log("Decompressing {d} bytes with libdeflate\n", .{buffer.len});
-            var deflater = bun.http.http_thread.deflater();
+            var deflater = HTTPClient.http_thread.deflater();
 
             // gzip stores the size of the uncompressed data in the last 4 bytes of the stream
             // But it's only valid if the stream is less than 4.7 GB, since it's 4 bytes.
@@ -186,7 +186,7 @@ pub fn decompressBytes(this: *InternalState, buffer: []const u8, body_out_str: *
         };
     }
 
-    if (bun.http.extremely_verbose)
+    if (HTTPClient.extremely_verbose)
         this.gzip_elapsed = gzip_timer.read();
 }
 
@@ -250,7 +250,12 @@ const MutableString = bun.MutableString;
 const Output = bun.Output;
 const picohttp = bun.picohttp;
 
-const HTTPClient = bun.http;
+// Faithful to upstream `bun.http` = the `src/http/http.zig` file-as-struct,
+// which carries these client-internal types as `pub const`s. Home's
+// `home_rt.http` is only a re-export namespace, so the type aliases reference
+// the client file directly (the `HTTPClient.*` value accesses below stay on the
+// namespace, which re-exports the matching values).
+const HTTPClient = @import("http.zig");
 const CertificateInfo = HTTPClient.CertificateInfo;
 const Decompressor = HTTPClient.Decompressor;
 const Encoding = HTTPClient.Encoding;

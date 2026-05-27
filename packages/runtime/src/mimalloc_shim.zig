@@ -43,6 +43,23 @@ pub export fn mi_free(p: ?*anyopaque) callconv(.c) void {
     std.c.free(p);
 }
 
+// Usable-size query. Upstream `mi_usable_size` reports the actual allocation
+// size mimalloc reserved for a pointer. With the libc-backed shim we route to
+// the platform's libc equivalent (`malloc_size` on Darwin, `malloc_usable_size`
+// elsewhere). `boringssl/boringssl.zig`'s `OPENSSL_memory_*` exports use it to
+// zero freed blocks and report sizes.
+const builtin = @import("builtin");
+extern fn malloc_size(ptr: ?*const anyopaque) usize;
+extern fn malloc_usable_size(ptr: ?*anyopaque) usize;
+
+pub export fn mi_usable_size(p: ?*const anyopaque) callconv(.c) usize {
+    if (p == null) return 0;
+    if (builtin.os.tag.isDarwin()) {
+        return malloc_size(p);
+    }
+    return malloc_usable_size(@constCast(p));
+}
+
 // Thread-pool hint. Upstream `mimalloc_sys/mimalloc.zig` declares this as an
 // `extern fn` that marks the calling thread as a pool worker so mimalloc can
 // tune its heaps. With the libc-backed shim there is no mimalloc heap to tune,

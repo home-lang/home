@@ -97,10 +97,13 @@ pub const HostedGitInfo = struct {
         input: []const u8,
     ) error{ OutOfMemory, InvalidURL }![]const u8 {
         const writable = sb.writable();
-        var stream = std.io.fixedBufferStream(writable);
+        // Zig-0.17 compat: `std.io.fixedBufferStream` was removed; route through
+        // url.zig's `FixedBufferWriter` (the same writer `PercentEncoding.decodeAlloc`
+        // uses), which exposes the `writeByte`/`writeAll` surface `decode` needs.
+        var writer = FixedBufferWriter{ .buffer = writable };
         const decoded_len = PercentEncoding.decode(
-            @TypeOf(stream.writer()),
-            stream.writer(),
+            *FixedBufferWriter,
+            &writer,
             input,
         ) catch {
             return error.InvalidURL;
@@ -542,7 +545,7 @@ pub const UrlProtocolPair = struct {
         // statistical distribution of URL lengths and found nothing.
         const long_url_thresh = 2048;
 
-        var alloc = std.heap.stackFallback(long_url_thresh, allocator);
+        var alloc = bun.stackFallback(long_url_thresh, allocator);
 
         var protocol_buf: WellDefinedProtocol.StringWithColonBuffer = undefined;
 
@@ -1379,10 +1382,10 @@ const HostProvider = enum {
 
                     const user_slice = blk: {
                         const writable = sb.writable();
-                        var stream = std.io.fixedBufferStream(writable);
+                        var writer = FixedBufferWriter{ .buffer = writable };
                         const decoded_len = PercentEncoding.decode(
-                            @TypeOf(stream.writer()),
-                            stream.writer(),
+                            *FixedBufferWriter,
+                            &writer,
                             user_part,
                         ) catch return null;
                         sb.len += decoded_len;
@@ -1390,10 +1393,10 @@ const HostProvider = enum {
                     };
                     const project_slice = blk: {
                         const writable = sb.writable();
-                        var stream = std.io.fixedBufferStream(writable);
+                        var writer = FixedBufferWriter{ .buffer = writable };
                         const decoded_len = PercentEncoding.decode(
-                            @TypeOf(stream.writer()),
-                            stream.writer(),
+                            *FixedBufferWriter,
+                            &writer,
                             project,
                         ) catch return null;
                         sb.len += decoded_len;
@@ -1401,10 +1404,10 @@ const HostProvider = enum {
                     };
                     const committish_slice = if (committish) |c| blk: {
                         const writable = sb.writable();
-                        var stream = std.io.fixedBufferStream(writable);
+                        var writer = FixedBufferWriter{ .buffer = writable };
                         const decoded_len = PercentEncoding.decode(
-                            @TypeOf(stream.writer()),
-                            stream.writer(),
+                            *FixedBufferWriter,
+                            &writer,
                             c,
                         ) catch return null;
                         sb.len += decoded_len;
@@ -1647,6 +1650,7 @@ pub const TestingAPIs = struct {
 
 const std = @import("std");
 const PercentEncoding = @import("../url/url.zig").PercentEncoding;
+const FixedBufferWriter = @import("../url/url.zig").FixedBufferWriter;
 
 const bun = @import("bun");
 const jsc = bun.jsc;

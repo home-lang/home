@@ -9,14 +9,12 @@
 //   1. `@import("bun")` collapses to `@import("home_rt")`; `Zlib` resolves
 //      to `../zlib/zlib.zig` (this batch's port — same path the upstream
 //      file uses, just via the home_rt tree).
-//   2. `bun.MutableString` is parked. We reuse the local
-//      `Decompressor.MutableStringStub` since this file decompresses
-//      into the same shape (`{ allocator, list }`). Re-attaches to a
-//      real `home_rt.MutableString` once that lands.
+//   2. `bun.MutableString` routes through `home_rt.MutableString`
+//      (`string/MutableString.zig`), the real `{ allocator, list }` buffer.
 //   3. `bun.ObjectPool` routes through `home_rt.ObjectPool`.
 
 fn initMutableString(allocator: std.mem.Allocator) anyerror!MutableString {
-    return .{ .allocator = allocator };
+    return .{ .allocator = allocator, .list = .empty };
 }
 
 const BufferPool = home_rt.ObjectPool(MutableString, initMutableString, false, 4);
@@ -25,7 +23,7 @@ pub fn get(allocator: std.mem.Allocator) *MutableString {
 }
 
 pub fn put(mutable: *MutableString) void {
-    mutable.* = .{ .allocator = mutable.allocator };
+    mutable.* = .{ .allocator = mutable.allocator, .list = .empty };
     var node: *BufferPool.Node = @fieldParentPtr("data", mutable);
     node.release();
 }
@@ -45,8 +43,7 @@ pub fn decompress(compressed_data: []const u8, output: *MutableString, allocator
 }
 
 const Zlib = @import("../zlib/zlib.zig");
-const Decompressor = @import("./Decompressor.zig");
-const MutableString = Decompressor.MutableStringStub;
+const MutableString = home_rt.MutableString;
 
 const std = @import("std");
 

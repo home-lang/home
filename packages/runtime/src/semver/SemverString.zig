@@ -129,11 +129,10 @@ pub const String = extern struct {
         }
     };
 
-    // Faithful port of upstream `Semver.String.Builder`
-    // (bun/src/install_types/SemverString.zig). Two-pass string interner:
-    // `count`/`countWithHash` size the backing buffer, `allocate` reserves
-    // it, then the `append*` family copies non-inline strings in and hands
-    // back `String`/`ExternalString` handles into that buffer.
+    /// Faithful port of upstream `bun.Semver.String.Builder`
+    /// (`src/install_types/SemverString.zig`). Counts then bump-allocates a
+    /// single backing buffer, interning long (> `max_inline_len`) strings
+    /// through a `u64`-hash-keyed pool so identical slices share storage.
     pub const Builder = struct {
         len: usize = 0,
         cap: usize = 0,
@@ -189,7 +188,7 @@ pub const String = extern struct {
                 }
             }
 
-            if (comptime Environment.allow_assert) {
+            if (Environment.allow_assert) {
                 assert(this.len <= this.cap); // didn't count everything
                 assert(this.ptr != null); // must call allocate first
             }
@@ -198,7 +197,7 @@ pub const String = extern struct {
             const final_slice = this.ptr.?[this.len..this.cap][0..slice_.len];
             this.len += slice_.len;
 
-            if (comptime Environment.allow_assert) assert(this.len <= this.cap);
+            if (Environment.allow_assert) assert(this.len <= this.cap);
 
             switch (Type) {
                 String => {
@@ -224,7 +223,7 @@ pub const String = extern struct {
                     else => @compileError("Invalid type passed to StringBuilder"),
                 }
             }
-            if (comptime Environment.allow_assert) {
+            if (Environment.allow_assert) {
                 assert(this.len <= this.cap); // didn't count everything
                 assert(this.ptr != null); // must call allocate first
             }
@@ -233,7 +232,7 @@ pub const String = extern struct {
             const final_slice = this.ptr.?[this.len..this.cap][0..slice_.len];
             this.len += slice_.len;
 
-            if (comptime Environment.allow_assert) assert(this.len <= this.cap);
+            if (Environment.allow_assert) assert(this.len <= this.cap);
 
             switch (Type) {
                 String => {
@@ -259,7 +258,7 @@ pub const String = extern struct {
                 }
             }
 
-            if (comptime Environment.allow_assert) {
+            if (Environment.allow_assert) {
                 assert(this.len <= this.cap); // didn't count everything
                 assert(this.ptr != null); // must call allocate first
             }
@@ -273,7 +272,7 @@ pub const String = extern struct {
                 string_entry.value_ptr.* = String.init(this.allocatedSlice(), final_slice);
             }
 
-            if (comptime Environment.allow_assert) assert(this.len <= this.cap);
+            if (Environment.allow_assert) assert(this.len <= this.cap);
 
             switch (Type) {
                 String => {
@@ -356,12 +355,58 @@ const string = []const u8;
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Environment = @import("shim.zig").Environment;
-const assert = @import("shim.zig").assert;
-const copy = @import("shim.zig").copy;
+const Wyhash11 = std.hash.Wyhash;
+const shim = @import("shim.zig");
+const Environment = shim.Environment;
+const assert = shim.assert;
+const copy = shim.copy;
+const IdentityContext = shim.IdentityContext;
+const strings = shim.strings;
 const ExternalString = @import("ExternalString.zig").ExternalString;
-const IdentityContext = @import("../collections/identity_context.zig").IdentityContext;
-const Wyhash11 = @import("../wyhash/wyhash.zig").Wyhash11;
-const strings = struct {
-    pub const isAllASCII = @import("../strings.zig").isAllASCII;
-};
+
+test "Semver String.Builder.stringHash matches Wyhash11 seed 0" {
+    try std.testing.expectEqual(
+        Wyhash11.hash(0, "left-pad"),
+        String.Builder.stringHash("left-pad"),
+    );
+}
+
+test "Semver String.Builder counts, allocates, and interns long strings" {
+    const long_a = "a-fairly-long-package-name-over-eight-bytes";
+    const long_b = "another-distinct-long-package-name-here";
+
+    var builder = String.Builder{
+        .string_pool = String.Builder.StringPool.init(std.testing.allocator),
+    };
+    defer builder.string_pool.deinit();
+
+    // Count the two distinct long strings; the buffer must reserve exactly
+    // their combined length (long strings are not inlined).
+    builder.count(long_a);
+    builder.count(long_b);
+    try std.testing.expectEqual(@as(usize, long_a.len + long_b.len), builder.cap);
+
+    try builder.allocate(std.testing.allocator);
+    defer std.testing.allocator.free(builder.ptr.?[0..builder.cap]);
+
+    const sa = builder.append(String, long_a);
+    const sb = builder.append(String, long_b);
+    // Appending a duplicate of long_a reuses the interned pool entry rather
+    // than copying again — the returned String points at the same storage.
+    const sa_again = builder.append(String, long_a);
+
+    const buf = builder.allocatedSlice();
+    try std.testing.expectEqualStrings(long_a, (&sa).slice(buf));
+    try std.testing.expectEqualStrings(long_b, (&sb).slice(buf));
+    try std.testing.expectEqual(@as(u64, @bitCast(sa.bytes)), @as(u64, @bitCast(sa_again.bytes)));
+}
+
+test "Semver String.Builder inlines short strings without buffer growth" {
+    var builder = String.Builder{};
+    builder.count("npm"); // <= max_inline_len, no allocation needed
+    try std.testing.expectEqual(@as(usize, 0), builder.cap);
+
+    const s = builder.appendWithoutPool(String, "npm", String.Builder.stringHash("npm"));
+    try std.testing.expect(s.isInline());
+    try std.testing.expectEqualStrings("npm", (&s).slice(""));
+}

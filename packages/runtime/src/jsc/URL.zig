@@ -28,25 +28,11 @@ const JSGlobalObject = opaque {
 };
 const JSValue = enum(i64) { zero = 0, _ };
 
-/// `bun.String` C ABI stub. Real layout `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
-/// Only the tag is meaningful here (callers compare against `.Dead`); the
-/// `borrowUTF8` builder routes through the JSC bridge in Phase 12.2.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const Tag = enum(u8) {
-        Dead = 0,
-        _,
-    };
-
-    /// Stub for `bun.String.borrowUTF8` — real impl returns a wrapped slice
-    /// reference. Until the JSC bridge ports, return a Dead-tagged sentinel.
-    pub fn borrowUTF8(_: []const u8) String {
-        return .{};
-    }
-};
+// The real `bun.String` (`BunString`, `string/string.zig`) is now ported, so
+// the URL extern shims return / accept it directly — matching upstream, where
+// every `URL__*` returns `bun.String`. (Previously stubbed as a layout-only
+// placeholder while `bun.String` was unported.)
+const String = home_rt.String;
 
 const JSError = error{JSError};
 
@@ -215,8 +201,11 @@ test "URL exposes the expected entrypoints" {
     try std.testing.expect(@hasDecl(URL, "fragmentIdentifier"));
 }
 
-test "URL stub String layout matches the bun.String C ABI" {
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(String));
+test "URL String aliases the real home_rt.String (BunString)" {
+    // The URL extern shims now return/accept the real `bun.String`
+    // (`home_rt.String`, the WTF-backed `BunString`) instead of a layout-only
+    // stub, matching upstream where every `URL__*` returns `bun.String`.
+    try std.testing.expectEqual(String, home_rt.String);
 }
 
 comptime {

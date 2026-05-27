@@ -42,7 +42,7 @@ queued_response_body_drains_lock: bun.Mutex = .{},
 queued_threadlocal_proxy_derefs: std.ArrayListUnmanaged(*ProxyTunnel) = std.ArrayListUnmanaged(*ProxyTunnel){},
 
 has_awoken: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-timer: std.time.Timer,
+timer: bun.Timer,
 lazy_libdeflater: ?*LibdeflateState = null,
 lazy_request_body_buffer: ?*HeapRequestBodyBuffer = null,
 
@@ -62,9 +62,9 @@ pub const HeapRequestBodyBuffer = struct {
     }
 
     pub fn put(this: *@This()) void {
-        if (bun.http.http_thread.lazy_request_body_buffer == null) {
+        if (HTTPClient.http_thread.lazy_request_body_buffer == null) {
             this.fixed_buffer_allocator.reset();
-            bun.http.http_thread.lazy_request_body_buffer = this;
+            HTTPClient.http_thread.lazy_request_body_buffer = this;
         } else {
             // This case hypothetically should never happen
             this.deinit();
@@ -192,7 +192,7 @@ pub const InitOpts = struct {
 };
 
 fn initOnce(opts: *const InitOpts) void {
-    bun.http.http_thread = .{
+    HTTPClient.http_thread = .{
         .loop = undefined,
         .http_context = .{
             .ref_count = .init(),
@@ -202,7 +202,7 @@ fn initOnce(opts: *const InitOpts) void {
             .ref_count = .init(),
             .pending_sockets = NewHTTPContext(true).PooledSocketHiveAllocator.empty,
         },
-        .timer = std.time.Timer.start() catch unreachable,
+        .timer = bun.Timer.start() catch unreachable,
     };
     bun.libdeflate.load();
     const thread = std.Thread.spawn(
@@ -222,8 +222,8 @@ pub fn init(opts: *const InitOpts) void {
 
 pub fn onStart(opts: InitOpts) void {
     Output.Source.configureNamedThread("HTTP Client");
-    bun.http.default_arena = Arena.init();
-    bun.http.default_allocator = bun.http.default_arena.allocator();
+    HTTPClient.default_arena = Arena.init();
+    HTTPClient.default_allocator = HTTPClient.default_arena.allocator();
 
     // uSockets' long-timeout counter is `% 240` minutes (see
     // `us_socket_long_timeout` in packages/bun-usockets/src/socket.c), so
@@ -235,7 +235,7 @@ pub fn onStart(opts: InitOpts) void {
     // (`ClientSession.rearmTimeout`) paths identical without duplicating the
     // math at each call site.
     const raw: u64 = @min(bun.env_var.BUN_CONFIG_HTTP_IDLE_TIMEOUT.get(), 239 * 60);
-    bun.http.idle_timeout_seconds = @intCast(if (raw > 240) ((raw + 59) / 60) * 60 else raw);
+    HTTPClient.idle_timeout_seconds = @intCast(if (raw > 240) ((raw + 59) / 60) * 60 else raw);
 
     const loop = bun.jsc.MiniEventLoop.initGlobal(null, null);
 
@@ -246,11 +246,11 @@ pub fn onStart(opts: InitOpts) void {
         };
     }
 
-    bun.http.http_thread.loop = loop;
-    bun.http.http_thread.http_context.init();
-    bun.http.http_thread.https_context.initWithThreadOpts(&opts) catch |err| opts.onInitError(err, opts);
-    bun.http.http_thread.has_awoken.store(true, .monotonic);
-    bun.http.http_thread.processEvents();
+    HTTPClient.http_thread.loop = loop;
+    HTTPClient.http_thread.http_context.init();
+    HTTPClient.http_thread.https_context.initWithThreadOpts(&opts) catch |err| opts.onInitError(err, opts);
+    HTTPClient.http_thread.has_awoken.store(true, .monotonic);
+    HTTPClient.http_thread.processEvents();
 }
 
 pub fn connect(this: *@This(), client: *HTTPClient, comptime is_ssl: bool) !?NewHTTPContext(is_ssl).HTTPSocket {
@@ -391,7 +391,7 @@ fn drainQueuedShutdowns(this: *@This()) void {
         defer queued_shutdowns.deinit(bun.default_allocator);
 
         for (queued_shutdowns.items) |http| {
-            if (bun.http.socket_async_http_abort_tracker.fetchSwapRemove(http.async_http_id)) |socket_ptr| {
+            if (HTTPClient.socket_async_http_abort_tracker.fetchSwapRemove(http.async_http_id)) |socket_ptr| {
                 switch (socket_ptr.value) {
                     inline .SocketTLS, .SocketTCP => |socket, tag| {
                         const is_tls = tag == .SocketTLS;
@@ -405,7 +405,7 @@ fn drainQueuedShutdowns(this: *@This()) void {
                             client.closeAndAbort(comptime is_tls, socket);
                             continue;
                         }
-                        if (tagged.get(bun.http.H2.ClientSession)) |session| {
+                        if (tagged.get(HTTPClient.H2.ClientSession)) |session| {
                             session.abortByHttpId(http.async_http_id);
                             continue;
                         }
@@ -420,7 +420,7 @@ fn drainQueuedShutdowns(this: *@This()) void {
                 if (this.abortPendingH2Waiter(http.async_http_id)) continue;
                 // Or it's on an HTTP/3 session, which has no TCP socket to
                 // register in the tracker.
-                if (bun.http.H3.ClientContext.abortByHttpId(http.async_http_id)) continue;
+                if (HTTPClient.H3.ClientContext.abortByHttpId(http.async_http_id)) continue;
                 // Otherwise the request either hasn't started yet (still in
                 // `queued_tasks`/`deferred_tasks`) or has already completed.
                 // Flag it so `drainEvents` knows to scan the queue for
@@ -450,7 +450,7 @@ fn drainQueuedWrites(this: *@This()) void {
             const message = write.message_type;
             const ended = message == .end;
 
-            if (bun.http.socket_async_http_abort_tracker.get(write.async_http_id)) |socket_ptr| {
+            if (HTTPClient.socket_async_http_abort_tracker.get(write.async_http_id)) |socket_ptr| {
                 switch (socket_ptr) {
                     inline .SocketTLS, .SocketTCP => |socket, tag| {
                         const is_tls = tag == .SocketTLS;
@@ -466,13 +466,13 @@ fn drainQueuedWrites(this: *@This()) void {
                                 client.flushStream(is_tls, socket);
                             }
                         }
-                        if (tagged.get(bun.http.H2.ClientSession)) |session| {
+                        if (tagged.get(HTTPClient.H2.ClientSession)) |session| {
                             session.streamBodyByHttpId(write.async_http_id, ended);
                         }
                     },
                 }
             } else {
-                bun.http.H3.ClientContext.streamBodyByHttpId(write.async_http_id, ended);
+                HTTPClient.H3.ClientContext.streamBodyByHttpId(write.async_http_id, ended);
             }
         }
         if (queued_writes.items.len == 0) {
@@ -496,7 +496,7 @@ fn drainQueuedHTTPResponseBodyDrains(this: *@This()) void {
         defer queued_response_body_drains.deinit(bun.default_allocator);
 
         for (queued_response_body_drains.items) |drain| {
-            if (bun.http.socket_async_http_abort_tracker.get(drain.async_http_id)) |socket_ptr| {
+            if (HTTPClient.socket_async_http_abort_tracker.get(drain.async_http_id)) |socket_ptr| {
                 switch (socket_ptr) {
                     inline .SocketTLS, .SocketTCP => |socket, tag| {
                         const is_tls = tag == .SocketTLS;
@@ -505,7 +505,7 @@ fn drainQueuedHTTPResponseBodyDrains(this: *@This()) void {
                         if (tagged.get(HTTPClient)) |client| {
                             client.drainResponseBody(comptime is_tls, socket);
                         }
-                        if (tagged.get(bun.http.H2.ClientSession)) |session| {
+                        if (tagged.get(HTTPClient.H2.ClientSession)) |session| {
                             session.drainResponseBodyByHttpId(drain.async_http_id);
                         }
                     },
@@ -524,7 +524,7 @@ fn drainEvents(this: *@This()) void {
     this.drainQueuedHTTPResponseBodyDrains();
     this.drainQueuedWrites();
     this.drainQueuedShutdowns();
-    bun.http.H3.PendingConnect.drainResolved();
+    HTTPClient.H3.PendingConnect.drainResolved();
 
     for (this.queued_threadlocal_proxy_derefs.items) |http| {
         http.deref();
@@ -600,7 +600,7 @@ fn drainEvents(this: *@This()) void {
 }
 
 fn startQueuedTask(http: *AsyncHTTP) void {
-    var cloned = bun.http.ThreadlocalAsyncHTTP.new(.{
+    var cloned = HTTPClient.ThreadlocalAsyncHTTP.new(.{
         .async_http = http.*,
     });
     cloned.async_http.real = http;
@@ -625,7 +625,7 @@ fn processEvents(this: *@This()) noreturn {
     while (true) {
         this.drainEvents();
         if (comptime Environment.isDebug and bun.asan.enabled) {
-            for (bun.http.socket_async_http_abort_tracker.keys(), bun.http.socket_async_http_abort_tracker.values()) |http_id, socket| {
+            for (HTTPClient.socket_async_http_abort_tracker.keys(), HTTPClient.socket_async_http_abort_tracker.values()) |http_id, socket| {
                 if (socket.socket().get()) |usocket| {
                     _ = http_id;
                     bun.asan.assertUnpoisoned(usocket);
@@ -644,7 +644,7 @@ fn processEvents(this: *@This()) noreturn {
         this.loop.loop.dec();
 
         if (comptime Environment.isDebug and bun.asan.enabled) {
-            for (bun.http.socket_async_http_abort_tracker.keys(), bun.http.socket_async_http_abort_tracker.values()) |http_id, socket| {
+            for (HTTPClient.socket_async_http_abort_tracker.keys(), HTTPClient.socket_async_http_abort_tracker.values()) |http_id, socket| {
                 if (socket.socket().get()) |usocket| {
                     _ = http_id;
                     bun.asan.assertUnpoisoned(usocket);
@@ -747,7 +747,10 @@ const Batch = bun.ThreadPool.Batch;
 const UnboundedQueue = bun.threading.UnboundedQueue;
 const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
 
-const HTTPClient = bun.http;
-const AsyncHTTP = bun.http.AsyncHTTP;
+// Faithful to upstream `bun.http` = the `src/http/http.zig` file-as-struct.
+// Home's `home_rt.http` is only a re-export namespace, so reference the client
+// file directly for its `pub var`/`pub const`/`pub fn` surface.
+const HTTPClient = @import("http.zig");
+const AsyncHTTP = HTTPClient.AsyncHTTP;
 const InitError = HTTPClient.InitError;
-const NewHTTPContext = bun.http.NewHTTPContext;
+const NewHTTPContext = HTTPClient.NewHTTPContext;

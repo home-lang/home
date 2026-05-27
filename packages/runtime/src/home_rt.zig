@@ -73,6 +73,152 @@ pub const JSOOM = OOM || JSError;
 pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 pub const StackOverflow = error{StackOverflow};
+// Faithful to upstream `bun.zig:16`: `pub const DefaultAllocator = allocators.Default;`.
+// The default allocator *type* used by `bun.ptr.shared` / `bun.ptr.OwnedIn`.
+pub const DefaultAllocator = allocators.Default;
+
+/// Faithful re-implementation of the (now-removed in Zig 0.17.0-dev.263)
+/// `std.time.Timer`: a monotonic, anti-rollback nanosecond stopwatch. Backed by
+/// `clock_gettime(CLOCK_MONOTONIC)`. Exposes the same `start`/`read`/`lap`/`reset`
+/// surface upstream callers (`bun.http`'s `HTTPThread.timer`) rely on.
+pub const Timer = struct {
+    started: u64,
+    previous: u64,
+
+    pub const Error = error{TimerUnsupported};
+
+    fn clockNanos() u64 {
+        var ts: std.posix.timespec = undefined;
+        // CLOCK.MONOTONIC is always available on the posix targets Home builds.
+        _ = std.c.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+        return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+    }
+
+    pub fn start() Timer.Error!Timer {
+        const now = clockNanos();
+        return .{ .started = now, .previous = now };
+    }
+
+    /// Reads the timer value since start or the last reset in nanoseconds.
+    pub fn read(self: *Timer) u64 {
+        const current = clockNanos();
+        return current -| self.started;
+    }
+
+    /// Resets the timer value to 0/now.
+    pub fn reset(self: *Timer) void {
+        const current = clockNanos();
+        self.started = current;
+        self.previous = current;
+    }
+
+    /// Returns the current value of the timer in nanoseconds, then resets it.
+    pub fn lap(self: *Timer) u64 {
+        const current = clockNanos();
+        defer self.previous = current;
+        return current -| self.previous;
+    }
+};
+
+// Faithful port of upstream `bun.LazyBoolValue` / `bun.LazyBool`
+// (`src/bun.zig:2226`). A lazily-computed boolean memoized in-place via
+// `@fieldParentPtr`; the install/PackageManager cone uses it for `ci_mode`.
+pub const LazyBoolValue = enum {
+    unknown,
+    no,
+    yes,
+};
+/// Create a lazily computed boolean value.
+/// Getter must be a function that takes a pointer to the parent struct and returns a boolean.
+/// Parent must be a type which contains the field we are getting.
+pub fn LazyBool(
+    comptime Getter: anytype,
+    comptime Parent: type,
+    comptime field: []const u8,
+) type {
+    return struct {
+        value: LazyBoolValue = .unknown,
+
+        pub fn get(self: *@This()) bool {
+            if (self.value == .unknown) {
+                const parent: *Parent = @alignCast(@fieldParentPtr(field, self));
+                self.value = switch (Getter(parent)) {
+                    true => .yes,
+                    false => .no,
+                };
+            }
+
+            return self.value == .yes;
+        }
+    };
+}
+
+/// Faithful re-implementation of the (now-removed) `std.heap.StackFallbackAllocator`:
+/// a comptime-sized inline buffer that falls back to a runtime allocator once the
+/// inline buffer is exhausted. Upstream Bun (and pre-0.17 Zig) exposed this via
+/// `std.heap.stackFallback(size, allocator)`; that API was dropped from the Zig
+/// stdlib, so vendored `@import("bun")` callers route through `bun.stackFallback`.
+pub fn StackFallbackAllocator(comptime size: usize) type {
+    return struct {
+        const Self = @This();
+
+        buffer: [size]u8 = undefined,
+        fixed: std.heap.FixedBufferAllocator = undefined,
+        fallback_allocator: std.mem.Allocator,
+
+        /// Initialize the inner `FixedBufferAllocator` over the inline buffer and
+        /// return an `Allocator` interface bound to this (addressable) value.
+        pub fn get(self: *Self) std.mem.Allocator {
+            self.fixed = std.heap.FixedBufferAllocator.init(self.buffer[0..]);
+            return .{
+                .ptr = self,
+                .vtable = &.{
+                    .alloc = sfaAlloc,
+                    .resize = sfaResize,
+                    .remap = sfaRemap,
+                    .free = sfaFree,
+                },
+            };
+        }
+
+        fn sfaAlloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return std.heap.FixedBufferAllocator.alloc(&self.fixed, n, alignment, ra) orelse
+                self.fallback_allocator.rawAlloc(n, alignment, ra);
+        }
+
+        fn sfaResize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (self.fixed.ownsPtr(buf.ptr)) {
+                return std.heap.FixedBufferAllocator.resize(&self.fixed, buf, alignment, new_len, ra);
+            }
+            return self.fallback_allocator.rawResize(buf, alignment, new_len, ra);
+        }
+
+        fn sfaRemap(ctx: *anyopaque, mem: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (self.fixed.ownsPtr(mem.ptr)) {
+                return std.heap.FixedBufferAllocator.remap(&self.fixed, mem, alignment, new_len, ra);
+            }
+            return self.fallback_allocator.rawRemap(mem, alignment, new_len, ra);
+        }
+
+        fn sfaFree(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (self.fixed.ownsPtr(buf.ptr)) {
+                return std.heap.FixedBufferAllocator.free(&self.fixed, buf, alignment, ra);
+            }
+            return self.fallback_allocator.rawFree(buf, alignment, ra);
+        }
+    };
+}
+
+/// Drop-in replacement for the removed `std.heap.stackFallback(size, fallback)`.
+/// Returns a value owning a comptime-sized inline buffer; call `.get()` on the
+/// (addressable) returned value to obtain an `Allocator`.
+pub fn stackFallback(comptime size: usize, fallback: std.mem.Allocator) StackFallbackAllocator(size) {
+    return .{ .fallback_allocator = fallback };
+}
 
 pub noinline fn outOfMemory() noreturn {
     @branchHint(.cold);
@@ -767,8 +913,8 @@ pub const StringHashMapContext = struct {
         pub fn hash(this: @This(), s: []const u8) u64 {
             if (s.ptr == this.input.ptr and s.len == this.input.len) return this.value;
             var hasher = std.hash.Wyhash.init(0);
-            for (s) |c| {
-                const lower = std.ascii.toLower(c);
+            for (s) |ch| {
+                const lower = std.ascii.toLower(ch);
                 hasher.update((&lower)[0..1]);
             }
             return hasher.final();
@@ -1549,6 +1695,9 @@ pub const jsc = struct {
     pub const event_loop_handle = @import("jsc/EventLoopHandle.zig");
     pub const EventLoop = event_loop_handle.EventLoop;
     pub const MiniEventLoop = event_loop_handle.MiniEventLoop;
+    // Faithful to upstream `jsc.AnyEventLoop` (`jsc.zig:133`):
+    // the `union(EventLoopKind)` over js/mini event loops.
+    pub const AnyEventLoop = @import("event_loop/AnyEventLoop.zig").AnyEventLoop;
     pub const EventLoopHandle = event_loop_handle.EventLoopHandle;
     pub const EventLoopKind = event_loop_handle.EventLoopKind;
     pub const EventLoopTask = event_loop_handle.EventLoopTask;
@@ -1616,6 +1765,24 @@ pub const jsc = struct {
         pub const BuildArtifact = struct {
             blob: WebCore.Blob = .{},
 
+            // Faithful to upstream `jsc.API.BuildArtifact.OutputKind`
+            // (`runtime/api/JSBundler.zig:1799`). The bundler's `OutputFile`
+            // tags each emitted artifact with this kind.
+            pub const OutputKind = enum {
+                chunk,
+                asset,
+                @"entry-point",
+                sourcemap,
+                bytecode,
+                module_info,
+                @"metafile-json",
+                @"metafile-markdown",
+
+                pub fn isFileInStandaloneMode(this: OutputKind) bool {
+                    return this != .sourcemap and this != .bytecode and this != .module_info and this != .@"metafile-json" and this != .@"metafile-markdown";
+                }
+            };
+
             pub fn fromJS(value: JSValue) ?*BuildArtifact {
                 _ = value;
                 return null;
@@ -1659,6 +1826,9 @@ pub const jsc = struct {
 // are kept so callers can spell their function signatures; full impls
 // land in Phase 12.3.
 pub const io = struct {
+    // Faithful to upstream `bun.io.heap` (`src/io/io.zig`): the intrusive
+    // binary-heap used by the install/PM lifecycle-script scheduler.
+    pub const heap = @import("io/heap.zig");
     pub const Loop = @import("io/stub_event_loop.zig").Loop;
     pub const KeepAlive = @import("io/stub_event_loop.zig").KeepAlive;
     pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
@@ -1866,6 +2036,9 @@ pub const http = struct {
     pub const CertificateInfo = @import("http/CertificateInfo.zig");
     pub const HeaderValueIterator = @import("http/HeaderValueIterator.zig");
     pub const MimeType = @import("http_types/MimeType.zig");
+    // Faithful to upstream `bun.http` (`src/http/http.zig:3263`):
+    // `pub const Method = @import("../http_types/Method.zig").Method;`
+    pub const Method = @import("http_types/Method.zig").Method;
     pub const Signals = @import("http/Signals.zig");
     pub const H2FrameParser = @import("http/H2FrameParser.zig");
     // Fourth-wave port batch (2026-05-17):
@@ -1886,12 +2059,8 @@ pub const http = struct {
     pub const AsyncHTTP = @import("http/AsyncHTTP.zig");
     pub const HeaderBuilder = @import("http/HeaderBuilder.zig");
     pub const HTTPClientResult = @import("http/http.zig").HTTPClientResult;
-    pub const FetchRedirect = @import("http_types/FetchRedirect.zig").FetchRedirect;
-    // Upstream `bun.http` is `src/http/http.zig`, which re-exports the
-    // request `Method` enum and the client `HTTPVerboseLevel`. Copied files
-    // (AsyncHTTP) reach them through `bun.http.Method` / `.HTTPVerboseLevel`.
-    pub const Method = @import("http/http.zig").Method;
     pub const HTTPVerboseLevel = @import("http/http.zig").HTTPVerboseLevel;
+    pub const FetchRedirect = @import("http_types/FetchRedirect.zig").FetchRedirect;
     // Sixth-wave port batch (2026-05-18):
     pub const h3_client = struct {
         pub const AltSvc = @import("http/h3_client/AltSvc.zig");
@@ -2087,14 +2256,10 @@ pub const install = struct {
 
     pub const patch = @import("install/patch_install.zig");
     pub const PatchTask = patch.PatchTask;
-    pub const LifecycleScriptSubprocess = struct {
-        pub fn onProcessExit(this: *LifecycleScriptSubprocess, process: anytype, status: anytype, rusage: anytype) void {
-            _ = this;
-            _ = process;
-            _ = status;
-            _ = rusage;
-        }
-    };
+    // Faithful to upstream `bun.install.LifecycleScriptSubprocess`
+    // (`install/install.zig:256`): the real runner with its intrusive-heap
+    // `List`. Lazy import — only analysed when the PM cone touches it.
+    pub const LifecycleScriptSubprocess = @import("install/lifecycle_script_runner.zig").LifecycleScriptSubprocess;
     pub const SecurityScanSubprocess = struct {
         pub fn onProcessExit(this: *SecurityScanSubprocess, process: anytype, status: anytype, rusage: anytype) void {
             _ = this;
@@ -2104,6 +2269,11 @@ pub const install = struct {
         }
     };
 };
+
+// Faithful to upstream `bun.zig:1182`: `pub const PackageManager = install.PackageManager;`
+pub const PackageManager = install.PackageManager;
+// Faithful to upstream `bun.ConfigVersion` (`bun.zig:3819`).
+pub const ConfigVersion = install.ConfigVersion;
 
 // ---- src/ptr/ ----------------------------------------------------------
 // Smart-pointer helpers — Cow + meta. The full RefCount / Owned /
@@ -2116,6 +2286,13 @@ pub const ptr = struct {
     pub const CowString = CowSlice(u8);
     pub const RefCount = @import("ptr/ref_count.zig").RefCount;
     pub const ThreadSafeRefCount = @import("ptr/ref_count.zig").ThreadSafeRefCount;
+    // Faithful to upstream `bun.ptr.RefPtr` (`src/ptr/ptr.zig:24`):
+    // `pub const RefPtr = ref_count.RefPtr;`.
+    pub const RefPtr = @import("ptr/ref_count.zig").RefPtr;
+    // Faithful to upstream `bun.ptr.shared` (`src/ptr/ptr.zig:13`):
+    // `pub const shared = @import("./shared.zig");`. Provides the
+    // `WithOptions(*T, .{...})` shared-pointer factory used by `SSLConfig`.
+    pub const shared = @import("ptr/shared.zig");
     pub const TaggedPointer = @import("ptr/tagged_pointer.zig").TaggedPointer;
     pub const TaggedPointerUnion = @import("ptr/tagged_pointer.zig").TaggedPointerUnion;
     // Wave-15 Tier-1 grinder (2026-05-18):
@@ -2601,6 +2778,14 @@ pub const runtime = struct {
         pub const bun = struct {
             pub const x509 = @import("runtime/api/bun/x509.zig");
         };
+        // Faithful to upstream `bun.api.server` (`src/runtime/server/`): the
+        // `ServerConfig` file-as-struct plus its `SSLConfig` sub-type. The HTTP
+        // client cone (`http/http.zig`) consumes `ServerConfig.SSLConfig` for
+        // its `tls_props` interned-TLS surface. The full server JSC surface
+        // re-lands behind Phase 12.2.
+        pub const server = struct {
+            pub const ServerConfig = @import("runtime/server/ServerConfig.zig").ServerConfig;
+        };
     };
     // Wave-15 Tier-1 grinder (2026-05-18). Pure-Zig shell helpers; full
     // shell surface lands once `bun.Output.scoped` + the shell parser port.
@@ -2652,8 +2837,16 @@ pub const Home = struct {
 };
 pub const spawn = Home.spawn.PosixSpawn;
 
+// Faithful to upstream `bun.BoringSSL` (`bun.zig:813`):
+// `@import("./boringssl/boringssl.zig")`. `.c` is the raw bindings namespace
+// the HTTP/TLS cone (`HTTPContext`) uses.
+pub const BoringSSL = @import("boringssl/boringssl.zig");
+
 pub const fd_t = std.posix.fd_t;
 pub const Mode = std.posix.mode_t;
+// Faithful to upstream `bun.Stat` (`bun.zig:2005`): the platform stat struct.
+// Home targets posix; `std.c.Stat` matches what `sys.stat`/`sys.fstat` return.
+pub const Stat = std.c.Stat;
 
 pub const FD = packed struct(fd_t) {
     value: fd_t,
@@ -3542,12 +3735,30 @@ pub const UnboundedQueue = threading.UnboundedQueue;
 pub const ThreadPool = threading.ThreadPool;
 pub const DotEnv = @import("dotenv/env_loader.zig");
 
+// Faithful to upstream `bun.c` (`bun.zig:193` → `@import("translated-c-headers")`):
+// the translated libc/system header surface. Home has no generated header bundle
+// yet, so this exposes the individual libc symbols vendored Bun source needs.
+// `workaround_missing_symbols.zig` routes `memmem` through here on posix.
+pub const c = struct {
+    pub extern fn memmem(
+        haystack: ?[*]const u8,
+        haystacklen: usize,
+        needle: ?[*]const u8,
+        needlelen: usize,
+    ) ?[*]const u8;
+};
+
 // ---- src/sys/ ----------------------------------------------------------
 // Fifth-wave port batch (2026-05-18). Pure-data sys leaves; the
 // big sys.zig substrate (4703 lines) is a future port. Lots of files
 // blocked on `bun.sys.SystemErrno` + `bun.sys.Maybe` until that lands.
 pub const sys = struct {
     const Sys = @This();
+
+    // Faithful to upstream `bun.sys.workaround_symbols`
+    // (`src/sys/sys.zig:20`): the platform-selected stat/memmem shims from
+    // `workaround_missing_symbols.zig`. `strings.memmem` routes through this.
+    pub const workaround_symbols = @import("workaround_missing_symbols.zig").current;
 
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const Error = @import("sys/Error.zig");
@@ -3701,6 +3912,19 @@ pub const sys = struct {
         return .{ .result = stat_ };
     }
 
+    /// Faithful to upstream `sys.stat` (`src/sys/sys.zig:522`): path-based stat.
+    /// Routes through `workaround_symbols.stat` (libc `stat`/`stat64`) on posix,
+    /// preserving the real errno so callers can branch on `.NOENT` etc.
+    pub fn stat(path_: [:0]const u8) Maybe(std.c.Stat) {
+        var stat_: std.c.Stat = std.mem.zeroes(std.c.Stat);
+        const rc = workaround_symbols.stat(path_.ptr, &stat_);
+        const err = std.posix.errno(rc);
+        if (err != .SUCCESS) {
+            return .{ .err = Error.fromCode(err, .stat) };
+        }
+        return .{ .result = stat_ };
+    }
+
     pub fn getFileSize(fd: FD) Maybe(usize) {
         return switch (fstat(fd)) {
             .result => |stat_| .{ .result = @intCast(@max(stat_.size, 0)) },
@@ -3761,6 +3985,43 @@ pub const sys = struct {
                 remaining = remaining[written..];
             }
             return .success;
+        }
+
+        /// Faithful to upstream `sys.File.readFrom` (`src/sys/File.zig:422`):
+        /// open `path` relative to `dir_fd` for reading, read the whole file into
+        /// an allocator-owned buffer, close, and return the bytes. The inline
+        /// `home_rt.sys.File` subset re-implements it with its own primitives
+        /// (`openat` RDONLY + `getEndPos` + `readAll`) rather than the full
+        /// `readFileFrom`/`readToEnd` chain, which pulls unported leaves.
+        pub fn readFrom(dir_fd: anytype, path_: [:0]const u8, allocator: std.mem.Allocator) Maybe([]u8) {
+            const this = switch (File.openat(File.from(dir_fd).handle, path_, O.CLOEXEC | O.RDONLY, 0)) {
+                .err => |err| return .{ .err = err },
+                .result => |f| f,
+            };
+            defer this.close();
+
+            const size = switch (this.getEndPos()) {
+                .err => |err| return .{ .err = err },
+                .result => |s| s,
+            };
+
+            if (size == 0) {
+                // Don't allocate an empty string; an empty slice is fine.
+                return .{ .result = @constCast("") };
+            }
+
+            const buf = allocator.alloc(u8, size) catch return .{ .err = unexpected(.read).withFd(this.handle) };
+            errdefer allocator.free(buf);
+
+            const read_len = switch (this.readAll(buf)) {
+                .err => |err| {
+                    allocator.free(buf);
+                    return .{ .err = err };
+                },
+                .result => |n| n,
+            };
+
+            return .{ .result = buf[0..read_len] };
         }
     };
 };
@@ -4045,6 +4306,13 @@ pub const zlib_sys = struct {
     // Windows-LLP64 shape; routes through shared.zig at compile time.
     pub const win32 = @import("zlib_sys/win32.zig");
 };
+
+// Faithful to upstream `bun.mimalloc` (`bun.zig`): the mimalloc bindings.
+// Home links against the `mimalloc_shim` (std.c.malloc-backed) until the
+// vendored mimalloc-bun build lands; it exposes `mi_malloc`/`mi_free`/
+// `mi_usable_size`, which `boringssl/boringssl.zig` routes its allocator
+// exports through.
+pub const mimalloc = mimalloc_sys.mimalloc;
 
 // ---- src/md/ -----------------------------------------------------------
 // Sixteenth-wave port batch (2026-05-18). Pure-data markdown tables:
@@ -4396,11 +4664,79 @@ test "home_rt: sys.File read helpers round-trip a temp file" {
     try std.testing.expectEqualStrings(payload, buf[0..read_len]);
 }
 
+test "home_rt: Timer is monotonic and resets" {
+    var timer = try Timer.start();
+    // read() never goes backwards and stays small immediately after start.
+    const a = timer.read();
+    const b = timer.read();
+    try std.testing.expect(b >= a);
+    // reset() rebases to ~0.
+    timer.reset();
+    try std.testing.expect(timer.read() < std.time.ns_per_s);
+    // lap() returns time since the previous lap and never underflows.
+    const first = timer.lap();
+    _ = first;
+    const second = timer.lap();
+    try std.testing.expect(second < std.time.ns_per_s);
+}
+
+test "home_rt: stackFallback serves from the inline buffer then falls back" {
+    var sfb = stackFallback(16, std.testing.allocator);
+    const sfb_alloc = sfb.get();
+
+    // Small allocation fits in the 16-byte inline buffer.
+    const small = try sfb_alloc.alloc(u8, 8);
+    @memset(small, 0xAB);
+    try std.testing.expectEqual(@as(u8, 0xAB), small[0]);
+    sfb_alloc.free(small);
+
+    // Larger-than-buffer allocation spills to the fallback allocator and must
+    // still be freeable through the same interface.
+    const big = try sfb_alloc.alloc(u8, 4096);
+    @memset(big, 0x5C);
+    try std.testing.expectEqual(@as(u8, 0x5C), big[4095]);
+    sfb_alloc.free(big);
+}
+
+test "home_rt: sys.stat + File.readFrom round-trip a temp file" {
+    const payload = "home-rt-sys-stat-readfrom";
+
+    var name_buf: [80]u8 = undefined;
+    const tmp_path = try std.fmt.bufPrintZ(&name_buf, "/tmp/home_rt_sys_stat_{d}.txt", .{std.c.getpid()});
+    const wfd = std.c.open(tmp_path, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o600));
+    try std.testing.expect(wfd >= 0);
+    {
+        defer _ = std.c.close(wfd);
+        const w = std.c.write(wfd, payload.ptr, payload.len);
+        try std.testing.expectEqual(@as(isize, @intCast(payload.len)), w);
+    }
+    defer _ = std.c.unlink(tmp_path);
+
+    // sys.stat reports the size and is errno-accurate for a missing path.
+    const st = switch (sys.stat(tmp_path)) {
+        .result => |s| s,
+        .err => return error.UnexpectedSysError,
+    };
+    try std.testing.expectEqual(@as(i64, @intCast(payload.len)), @as(i64, @intCast(st.size)));
+
+    const missing = sys.stat("/tmp/home_rt_definitely_missing_xyz.txt");
+    try std.testing.expect(missing == .err);
+    try std.testing.expect(missing.err.getErrno() == .NOENT);
+
+    // File.readFrom opens + reads + closes, returning the full contents.
+    const bytes = switch (sys.File.readFrom(FD.cwd(), tmp_path, std.testing.allocator)) {
+        .result => |b| b,
+        .err => return error.UnexpectedSysError,
+    };
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqualStrings(payload, bytes);
+}
+
 test "home_rt: cli.which_npm_client surface is exported" {
     const NPMClient = cli.which_npm_client.NPMClient;
-    const c: NPMClient = .{ .bin = "home", .tag = .home };
-    try std.testing.expectEqualStrings("home", c.bin);
-    try std.testing.expect(c.tag == .home);
+    const npm_client: NPMClient = .{ .bin = "home", .tag = .home };
+    try std.testing.expectEqualStrings("home", npm_client.bin);
+    try std.testing.expect(npm_client.tag == .home);
 }
 
 test "home_rt: cli.yarn_commands recognises canonical yarn verbs" {
@@ -4948,9 +5284,9 @@ test "home_rt.sql.postgres.protocol.PortalOrPreparedStatement tags correctly" {
 }
 
 test "home_rt.sql.postgres.protocol.Close composes a portal target" {
-    const c: sql.postgres.protocol.Close = .{ .p = .{ .portal = "x" } };
-    try std.testing.expectEqualStrings("x", c.p.slice());
-    try std.testing.expectEqual(@as(u8, 'P'), c.p.tag());
+    const close_msg: sql.postgres.protocol.Close = .{ .p = .{ .portal = "x" } };
+    try std.testing.expectEqualStrings("x", close_msg.p.slice());
+    try std.testing.expectEqual(@as(u8, 'P'), close_msg.p.tag());
 }
 
 test "home_rt.sql.postgres.protocol.Execute defaults max_rows to 0" {

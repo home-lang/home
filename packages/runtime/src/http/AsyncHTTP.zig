@@ -139,7 +139,7 @@ pub fn preconnect(
 
     var this = Preconnect.new(.{
         .async_http = undefined,
-        .response_buffer = MutableString{ .allocator = bun.http.default_allocator, .list = .{} },
+        .response_buffer = MutableString{ .allocator = HTTPClient.default_allocator, .list = .{} },
         .url = url,
         .is_url_owned = is_url_owned,
     });
@@ -147,7 +147,7 @@ pub fn preconnect(
     this.async_http = AsyncHTTP.init(bun.default_allocator, .GET, url, .{}, "", &this.response_buffer, "", HTTPClientResult.Callback.New(*Preconnect, Preconnect.onResult).init(this), .manual, .{});
     this.async_http.client.flags.is_preconnect_only = true;
 
-    bun.http.http_thread.schedule(Batch.from(&this.async_http.task));
+    HTTPClient.http_thread.schedule(Batch.from(&this.async_http.task));
 }
 
 pub fn init(
@@ -173,7 +173,7 @@ pub fn init(
         .result_callback = callback,
         .http_proxy = options.http_proxy,
         .signals = options.signals orelse .{},
-        .async_http_id = if (options.signals != null and options.signals.?.aborted != null) bun.http.async_http_id_monotonic.fetchAdd(1, .monotonic) else 0,
+        .async_http_id = if (options.signals != null and options.signals.?.aborted != null) HTTPClient.async_http_id_monotonic.fetchAdd(1, .monotonic) else 0,
     };
 
     this.client = .{
@@ -215,7 +215,7 @@ pub fn init(
     if (options.http_proxy) |proxy| {
         if (proxy.username.len > 0) {
             // Use stack fallback allocator - stack for small credentials, heap for large ones
-            var username_sfb = std.heap.stackFallback(4096, allocator);
+            var username_sfb = bun.stackFallback(4096, allocator);
             const username_alloc = username_sfb.get();
             const username = PercentEncoding.decodeAlloc(username_alloc, proxy.username) catch |err| {
                 log("failed to decode proxy username: {}", .{err});
@@ -224,7 +224,7 @@ pub fn init(
             defer username_alloc.free(username);
 
             if (proxy.password.len > 0) {
-                var password_sfb = std.heap.stackFallback(4096, allocator);
+                var password_sfb = bun.stackFallback(4096, allocator);
                 const password_alloc = password_sfb.get();
                 const password = PercentEncoding.decodeAlloc(password_alloc, proxy.password) catch |err| {
                     log("failed to decode proxy password: {}", .{err});
@@ -292,7 +292,7 @@ fn reset(this: *AsyncHTTP) !void {
         this.client.flags.disable_keepalive = this.url.isHTTPS();
         if (proxy.username.len > 0) {
             // Use stack fallback allocator - stack for small credentials, heap for large ones
-            var username_sfb = std.heap.stackFallback(4096, this.allocator);
+            var username_sfb = bun.stackFallback(4096, this.allocator);
             const username_alloc = username_sfb.get();
             const username = PercentEncoding.decodeAlloc(username_alloc, proxy.username) catch |err| {
                 log("failed to decode proxy username: {}", .{err});
@@ -301,7 +301,7 @@ fn reset(this: *AsyncHTTP) !void {
             defer username_alloc.free(username);
 
             if (proxy.password.len > 0) {
-                var password_sfb = std.heap.stackFallback(4096, this.allocator);
+                var password_sfb = bun.stackFallback(4096, this.allocator);
                 const password_alloc = password_sfb.get();
                 const password = PercentEncoding.decodeAlloc(password_alloc, proxy.password) catch |err| {
                     log("failed to decode proxy password: {}", .{err});
@@ -352,7 +352,7 @@ pub fn sendSync(this: *AsyncHTTP) anyerror!picohttp.Response {
 
     var batch = bun.ThreadPool.Batch{};
     this.schedule(bun.default_allocator, &batch);
-    bun.http.http_thread.schedule(batch);
+    HTTPClient.http_thread.schedule(batch);
 
     const result = ctx.channel.readItem() catch unreachable;
     if (result.fail) |err| {
@@ -366,7 +366,7 @@ pub fn onAsyncHTTPCallback(this: *AsyncHTTP, async_http: *AsyncHTTP, result: HTT
     assert(this.real != null);
 
     var callback = this.result_callback;
-    this.elapsed = bun.http.http_thread.timer.read() -| this.elapsed;
+    this.elapsed = HTTPClient.http_thread.timer.read() -| this.elapsed;
 
     // TODO: this condition seems wrong: if we started with a non-default value, we might
     // report a redirect even if none happened
@@ -384,13 +384,13 @@ pub fn onAsyncHTTPCallback(this: *AsyncHTTP, async_http: *AsyncHTTP, result: HTT
     }
 
     if (comptime Environment.enable_logs) {
-        if (bun.http.socket_async_http_abort_tracker.count() > 0) {
-            log("bun.http.socket_async_http_abort_tracker count: {d}", .{bun.http.socket_async_http_abort_tracker.count()});
+        if (HTTPClient.socket_async_http_abort_tracker.count() > 0) {
+            log("HTTPClient.socket_async_http_abort_tracker count: {d}", .{HTTPClient.socket_async_http_abort_tracker.count()});
         }
     }
 
-    if (bun.http.socket_async_http_abort_tracker.capacity() > 10_000 and bun.http.socket_async_http_abort_tracker.count() < 100) {
-        bun.http.socket_async_http_abort_tracker.shrinkAndFree(bun.http.socket_async_http_abort_tracker.count());
+    if (HTTPClient.socket_async_http_abort_tracker.capacity() > 10_000 and HTTPClient.socket_async_http_abort_tracker.count() < 100) {
+        HTTPClient.socket_async_http_abort_tracker.shrinkAndFree(HTTPClient.socket_async_http_abort_tracker.count());
     }
 
     if (result.has_more) {
@@ -398,7 +398,7 @@ pub fn onAsyncHTTPCallback(this: *AsyncHTTP, async_http: *AsyncHTTP, result: HTT
     } else {
         {
             this.client.deinit();
-            var threadlocal_http: *bun.http.ThreadlocalAsyncHTTP = @fieldParentPtr("async_http", async_http);
+            var threadlocal_http: *HTTPClient.ThreadlocalAsyncHTTP = @fieldParentPtr("async_http", async_http);
             defer threadlocal_http.deinit();
             log("onAsyncHTTPCallback: {D}", .{this.elapsed});
             callback.function(callback.ctx, async_http, result);
@@ -408,8 +408,8 @@ pub fn onAsyncHTTPCallback(this: *AsyncHTTP, async_http: *AsyncHTTP, result: HTT
         assert(active_requests > 0);
     }
 
-    if ((!bun.http.http_thread.queued_tasks.isEmpty() or bun.http.http_thread.deferred_tasks.items.len > 0) and AsyncHTTP.active_requests_count.load(.monotonic) < AsyncHTTP.max_simultaneous_requests.load(.monotonic)) {
-        bun.http.http_thread.loop.loop.wakeup();
+    if ((!HTTPClient.http_thread.queued_tasks.isEmpty() or HTTPClient.http_thread.deferred_tasks.items.len > 0) and AsyncHTTP.active_requests_count.load(.monotonic) < AsyncHTTP.max_simultaneous_requests.load(.monotonic)) {
+        HTTPClient.http_thread.loop.loop.wakeup();
     }
 }
 
@@ -426,9 +426,9 @@ pub fn onStart(this: *AsyncHTTP) void {
         this,
     );
 
-    this.elapsed = bun.http.http_thread.timer.read();
+    this.elapsed = HTTPClient.http_thread.timer.read();
     if (this.response_buffer.list.capacity == 0) {
-        this.response_buffer.allocator = bun.http.default_allocator;
+        this.response_buffer.allocator = HTTPClient.default_allocator;
     }
     this.client.start(this.request_body, this.response_buffer);
 }
@@ -482,7 +482,11 @@ const ThreadPool = bun.ThreadPool;
 const Batch = bun.ThreadPool.Batch;
 const Task = ThreadPool.Task;
 
-const HTTPClient = bun.http;
+// Faithful to upstream `bun.http` = the `src/http/http.zig` file-as-struct
+// (the HTTP client itself, carrying `result_callback`/`url`/... fields plus
+// the `pub const` sub-types). Home's `home_rt.http` is only a re-export
+// namespace, so reference the client struct file directly.
+const HTTPClient = @import("http.zig");
 const FetchRedirect = HTTPClient.FetchRedirect;
 const HTTPClientResult = HTTPClient.HTTPClientResult;
 const HTTPRequestBody = HTTPClient.HTTPRequestBody;

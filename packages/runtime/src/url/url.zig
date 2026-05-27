@@ -1237,7 +1237,7 @@ const ManagedU8Writer = struct {
     }
 };
 
-const FixedBufferWriter = struct {
+pub const FixedBufferWriter = struct {
     buffer: []u8,
     pos: usize = 0,
 

@@ -79,6 +79,10 @@ pub const ServerConfig = struct {
     had_routes_object: bool = false,
     bake: ?bake.UserOptions = null,
 
+    // Faithful to upstream `ServerConfig.zig:383`:
+    // `pub const SSLConfig = @import("../socket/SSLConfig.zig");`
+    pub const SSLConfig = @import("../socket/SSLConfig.zig");
+
     pub fn init(allocator: std.mem.Allocator) ServerConfig {
         return .{ .allocator = allocator };
     }

@@ -106,9 +106,9 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
 
         pub fn context() *@This() {
             if (comptime ssl) {
-                return &bun.http.http_thread.https_context;
+                return &HTTPClient.http_thread.https_context;
             } else {
-                return &bun.http.http_thread.http_context;
+                return &HTTPClient.http_thread.http_context;
             }
         }
 
@@ -245,7 +245,7 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                 else => error.FailedToOpenSocket,
             };
             this.sslCtx().setup();
-            this.group.init(bun.http.http_thread.loop.loop, null, this);
+            this.group.init(HTTPClient.http_thread.loop.loop, null, this);
         }
 
         pub fn initWithThreadOpts(this: *@This(), init_opts: *const HTTPThread.InitOpts) InitError!void {
@@ -260,7 +260,7 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
         }
 
         pub fn init(this: *@This()) void {
-            this.group.init(bun.http.http_thread.loop.loop, null, this);
+            this.group.init(HTTPClient.http_thread.loop.loop, null, this);
             if (comptime ssl) {
                 var err: uws.create_bun_socket_error_t = .none;
                 this.secure = (uws.SocketContext.BunSocketContextOptions{
@@ -517,7 +517,7 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                     }
 
                     // trailing zero is fine to ignore
-                    if (strings.eqlComptime(buf, bun.http.end_of_chunked_http1_1_encoding_response_body)) {
+                    if (strings.eqlComptime(buf, HTTPClient.end_of_chunked_http1_1_encoding_response_body)) {
                         return;
                     }
 
@@ -863,6 +863,9 @@ const uws = bun.uws;
 const BoringSSL = bun.BoringSSL.c;
 const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
 
-const HTTPClient = bun.http;
-const H2 = bun.http.H2;
+// Faithful to upstream `bun.http` = the `src/http/http.zig` file-as-struct.
+// Home's `home_rt.http` is only a re-export namespace, so reference the client
+// file directly for its `pub var`/`pub const`/`pub fn` surface.
+const HTTPClient = @import("http.zig");
+const H2 = HTTPClient.H2;
 const InitError = HTTPClient.InitError;

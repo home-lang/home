@@ -28,8 +28,29 @@ pub fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
 }
 
+/// Faithful to `bun.IdentityContext(u64)`: a HashMap context whose `hash`
+/// is the identity function over a `u64` key (the key is already a hash).
+pub fn IdentityContext(comptime Key: type) type {
+    return struct {
+        pub fn hash(_: @This(), key: Key) u64 {
+            return key;
+        }
+
+        pub fn eql(_: @This(), a: Key, b: Key) bool {
+            return a == b;
+        }
+    };
+}
+
 pub const strings = struct {
     pub const whitespace_chars = [_]u8{ ' ', '\t', '\n', '\r', std.ascii.control_code.vt, std.ascii.control_code.ff };
+
+    pub fn isAllASCII(input: []const u8) bool {
+        for (input) |c| {
+            if (c > 127) return false;
+        }
+        return true;
+    }
 
     pub inline fn trim(input: []const u8, values: []const u8) []const u8 {
         return std.mem.trim(u8, input, values);

@@ -94,6 +94,14 @@ pub const ZigString = extern struct {
         return out;
     }
 
+    pub fn fromBytes(slice_: []const u8) ZigString {
+        if (!home_rt.strings.isAllASCII(slice_)) {
+            return initUTF8(slice_);
+        }
+
+        return init(slice_);
+    }
+
     pub fn initUTF16(items: []const u16) ZigString {
         var out = ZigString{ ._unsafe_ptr_do_not_use = @ptrCast(items.ptr), .len = items.len };
         out.markUTF16();
