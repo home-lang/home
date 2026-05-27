@@ -269,12 +269,25 @@ pub const SignaturePayload = struct {
     has_this_type: bool,
 };
 
+/// Member accessibility, mirroring TS's legacy `public`/`protected`/
+/// `private` modifiers (NOT JS `#private` fields). Default `.public`
+/// so the many synthetic `ObjectMember` construction sites compile
+/// unchanged; only class field/method lowering populates the non-public
+/// variants. The relater consults this to emit TS2325 when a property's
+/// visibility differs across two related types.
+pub const MemberVisibility = enum(u2) {
+    public,
+    protected,
+    private,
+};
+
 pub const ObjectMember = struct {
     name: StringId,
     type: TypeId,
     is_optional: bool,
     is_readonly: bool,
     is_method: bool,
+    visibility: MemberVisibility = .public,
 };
 
 pub const ObjectTypePayload = struct {
