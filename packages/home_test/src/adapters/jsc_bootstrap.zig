@@ -3,7 +3,12 @@ const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
 
 const Io = std.Io;
-const use_bun_parser_probe = false;
+// The real Bun parser cone only compiles when macros are disabled
+// (`-Denable_macros=false`). Couple the `Bun.Transpiler` API probe to that:
+// default macros-on builds keep the heuristic transpiler (faithful default,
+// stays green), and macros-off builds route `Bun.Transpiler` through the real
+// parser. This gates ONLY the `transpileSource` API path, not the module loader.
+const use_bun_parser_probe = !@import("build_options").enable_macros;
 const NativePluginABI = home_rt.bundler.NativePluginABI;
 const NapiStatus = enum(c_uint) {
     ok = 0,
