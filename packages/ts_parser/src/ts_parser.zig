@@ -10507,7 +10507,13 @@ pub const Parser = struct {
         // Mirrors upstream behaviour for fixtures like
         // `genericTypeReferenceWithoutTypeArgument.ts(12,14)`.
         const sp: Span = .{ .start = start_tok.span.start, .end = self.tokens[self.cursor - 1].span.end };
-        const node = try self.builder.addIndexSignature(sp, key_type, value_type, is_readonly, is_static);
+        // Capture the declared index-parameter name (`key` in
+        // `[key: string]: T`) so diagnostic prose can render the
+        // user's chosen name instead of the synthetic `x`. Mirrors
+        // upstream `getNameFromIndexInfo` which reads the parameter
+        // identifier from the index-signature declaration.
+        const key_name = try self.internToken(id1);
+        const node = try self.builder.addIndexSignature(sp, key_type, value_type, is_readonly, is_static, key_name);
         try out.append(self.gpa, node);
         return true;
     }
