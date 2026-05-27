@@ -408,6 +408,19 @@ pub const cpp = struct {
     // stubs until the JSC bridge lands the real C++ entrypoints.
     pub fn JSC__JSPromise__resolve(_: anytype, _: anytype, _: anytype) JSError!void {}
     pub fn JSC__JSPromise__reject(_: anytype, _: anytype, _: anytype) JSError!void {}
+    pub fn JSC__JSPromise__rejectAsHandled(_: anytype, _: anytype, _: anytype) JSError!void {}
+    // Promise introspection bindings — parked stubs reporting a pending,
+    // unhandled promise until the JSC bridge lands the real C++ entrypoints.
+    pub fn JSC__JSPromise__status(_: anytype) u32 {
+        return 0; // .pending
+    }
+    pub fn JSC__JSPromise__result(_: anytype, _: anytype) jsc.JSValue {
+        return .zero;
+    }
+    pub fn JSC__JSPromise__isHandled(_: anytype) bool {
+        return false;
+    }
+    pub fn JSC__JSPromise__setHandled(_: anytype) void {}
 };
 
 /// Wall-clock milliseconds since the Unix epoch. `std.time.milliTimestamp`

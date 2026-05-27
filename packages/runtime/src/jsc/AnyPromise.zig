@@ -19,83 +19,21 @@
 const std = @import("std");
 const home_rt = @import("home_rt");
 
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
+// The canonical JSC types now carry the promise method surface AnyPromise
+// dispatches into — `JSPromise` exposes unwrap/status/result/isHandled/
+// setHandled/resolve/reject/rejectAsHandled/asValue plus the Status/UnwrapMode/
+// Unwrapped types, and `JSValue.attachAsyncStackFromPromise` is wired against
+// `*jsc.JSPromise`. So `Promise`/`InternalPromise` alias the real types rather
+// than carrying a divergent local stub.
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+const JSValue = home_rt.jsc.JSValue;
+const VM = home_rt.jsc.VM;
 
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-pub const JSValue = enum(i64) {
-    zero = 0,
-    _,
-
-    pub fn attachAsyncStackFromPromise(self: JSValue, _: *JSGlobalObject, _: *Promise) void {
-        _ = self;
-    }
-};
-
-// JSC bridge VM stubbed — re-attaches in Phase 12.2.
-const VM = opaque {};
-
-/// Phase 12.2 re-attaches the real bridge methods. Until then,
 /// `bun.JSTerminated` is `error{JSTerminated}` — matches upstream's alias.
 pub const JSTerminated = error{JSTerminated};
 
-/// JSC-bridge stubs for the JSPromise method surface AnyPromise dispatches
-/// into. Re-attaches to `home_rt.jsc.JSPromise` in Phase 12.2 once those
-/// methods land on the canonical opaque.
-pub const Promise = opaque {
-    pub const Status = enum(u32) { pending = 0, fulfilled = 1, rejected = 2 };
-    pub const UnwrapMode = enum { mark_handled, leave_unhandled };
-    pub const Unwrapped = union(enum) {
-        pending: void,
-        fulfilled: JSValue,
-        rejected: JSValue,
-        rejected_handled: JSValue,
-    };
-
-    pub fn unwrap(_: *Promise, _: *VM, _: UnwrapMode) Unwrapped {
-        return .{ .pending = {} };
-    }
-    pub fn status(_: *Promise) Status {
-        return .pending;
-    }
-    pub fn result(_: *Promise, _: *VM) JSValue {
-        return .zero;
-    }
-    pub fn isHandled(_: *Promise) bool {
-        return false;
-    }
-    pub fn setHandled(_: *Promise) void {}
-    pub fn resolve(_: *Promise, _: *JSGlobalObject, _: JSValue) JSTerminated!void {}
-    pub fn reject(_: *Promise, _: *JSGlobalObject, _: JSValue) JSTerminated!void {}
-    pub fn rejectAsHandled(_: *Promise, _: *JSGlobalObject, _: JSValue) JSTerminated!void {}
-    pub fn toJS(_: *Promise) JSValue {
-        return .zero;
-    }
-};
-
-/// JSInternalPromise subclasses JSPromise in C++; both stubs match that
-/// shape (every Promise method also resolves through an InternalPromise).
-pub const InternalPromise = opaque {
-    pub fn unwrap(_: *InternalPromise, _: *VM, _: Promise.UnwrapMode) Promise.Unwrapped {
-        return .{ .pending = {} };
-    }
-    pub fn status(_: *InternalPromise) Promise.Status {
-        return .pending;
-    }
-    pub fn result(_: *InternalPromise, _: *VM) JSValue {
-        return .zero;
-    }
-    pub fn isHandled(_: *InternalPromise) bool {
-        return false;
-    }
-    pub fn setHandled(_: *InternalPromise) void {}
-    pub fn resolve(_: *InternalPromise, _: *JSGlobalObject, _: JSValue) JSTerminated!void {}
-    pub fn reject(_: *InternalPromise, _: *JSGlobalObject, _: JSValue) JSTerminated!void {}
-    pub fn rejectAsHandled(_: *InternalPromise, _: *JSGlobalObject, _: JSValue) JSTerminated!void {}
-    pub fn toJS(_: *InternalPromise) JSValue {
-        return .zero;
-    }
-};
+pub const Promise = home_rt.jsc.JSPromise;
+pub const InternalPromise = home_rt.jsc.JSInternalPromise;
 
 pub const AnyPromise = union(enum) {
     normal: *Promise,

@@ -45,11 +45,11 @@ pub const S3Error = struct {
     // upstream `webcore/s3/error_jsc.zig`, not yet ported. The bridge returns
     // `undefined` so the S3 reject path type-checks; it does not yet build the
     // structured S3 error object with an async stack.
-    pub fn toJSWithAsyncStack(_: *const S3Error, _: anytype, _: []const u8, _: anytype) @import("home_rt").jsc.JSValue {
+    pub fn toJSWithAsyncStack(_: *const S3Error, _: anytype, _: anytype, _: anytype) @import("home_rt").jsc.JSValue {
         return .js_undefined;
     }
 
-    pub fn toJS(_: *const S3Error, _: anytype, _: []const u8) @import("home_rt").jsc.JSValue {
+    pub fn toJS(_: *const S3Error, _: anytype, _: anytype) @import("home_rt").jsc.JSValue {
         return .js_undefined;
     }
 };
