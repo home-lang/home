@@ -263,10 +263,17 @@ pub fn arrayProto(
     const u_arr = try ti.internArrayType(sint, u_tp);
 
     // Callback signatures.
-    // `(value: T) => U` — used by map / flatMap. The callback's return
+    // `(value: T) => U` — used by map. The callback's return
     // type drives inference of `U`: a string-returning callback makes
     // `arr.map(...)` resolve to `string[]` instead of `any[]`.
     const cb_t_u = try ti.internSignature(&[_]TypeId{elem}, u_tp, false);
+    // `(value: T) => U | U[]` — used by flatMap. The callback can
+    // return either a single value or an array of values; flatMap
+    // flattens the result by one level. Upstream signature is
+    // `(value: T) => U | readonly U[]`; we accept the non-readonly
+    // form which subsumes most call sites.
+    const u_or_u_arr = try ti.internUnion(&[_]TypeId{ u_tp, u_arr });
+    const cb_t_u_or_arr = try ti.internSignature(&[_]TypeId{elem}, u_or_u_arr, false);
     // `(x: T) => boolean` — used by every / some.
     const cb_t_bool = try ti.internSignature(&[_]TypeId{elem}, boolean_t, false);
     // `(x: T) => unknown` — used by filter / find, matching lib.d.ts
@@ -288,10 +295,11 @@ pub fn arrayProto(
     const sig_pop = try ti.internSignature(&[_]TypeId{}, t_or_undef, false);
     // `map<U>(cb: (value: T) => U): U[]`.
     const sig_map = try ti.internSignature(&[_]TypeId{cb_t_u}, u_arr, false);
-    // `flatMap<U>(cb: (value: T) => U): U[]` — modeled like map; the
-    // real signature flattens one nesting level, but U[] is faithful
-    // when the callback returns a non-array U.
-    const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_u}, u_arr, false);
+    // `flatMap<U>(cb: (value: T) => U | U[]): U[]` — the callback
+    // may return either a single value or an array; flatMap flattens
+    // one level so the result is always `U[]`. Without the union the
+    // common `arr.flatMap(x => [a, b])` shape tripped TS2322.
+    const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_u_or_arr}, u_arr, false);
     const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_unknown}, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
     const sig_every = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
