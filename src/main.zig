@@ -1642,6 +1642,8 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
         defer engine.deinit();
 
         const ctx = engine.currentContext();
+        // Expose a minimal `console` so eval'd code can print (Bun realms have one).
+        home_rt.jsc.console_global.install(allocator, ctx, engine.currentGlobalObject());
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, code, "home:eval", 1);
         defer evaluation.deinit(allocator);
 
