@@ -28,6 +28,15 @@ pub const Primitive = types.Primitive;
 pub const Pool = types.Pool;
 pub const Interner = interner.Interner;
 
+/// Maximum `computeAssignable` nesting before the relation engine
+/// treats the in-flight comparison as related and unwinds, guarding
+/// against unbounded recursion on self-referential generic aliases
+/// whose instantiations intern to fresh type ids each level. Chosen to
+/// comfortably exceed any realistic hand-written nesting depth while
+/// staying well under the native stack budget; mirrors the spirit of
+/// tsc's `recursiveTypeRelatedTo` stack-depth==100 overflow cutoff.
+const max_relate_depth: u32 = 200;
+
 pub const Relation = enum(u8) {
     identity,
     assignable,
@@ -317,6 +326,16 @@ pub const Engine = struct {
     /// to a reference of `Checker.rest_signatures` so the engine sees
     /// real-time updates.
     rest_signatures: ?*const std.AutoHashMapUnmanaged(TypeId, void) = null,
+    /// Current nesting depth of `computeAssignable`. Recursive generic
+    /// aliases such as `type Foo<T> = T | { x: Foo<T> }` can produce a
+    /// fresh `TypeId` at each instantiation level, so the
+    /// pending-result cycle cache (keyed on `(rel, src, tgt)`) never
+    /// fires and the structural walk could recurse without bound.
+    /// Mirrors tsc's `sourceStack`/`targetStack == 100 ⇒ overflow`
+    /// guard (relater.go `recursiveTypeRelatedTo`): once we exceed the
+    /// limit we treat the in-flight comparison as related (optimistic,
+    /// same as a detected cycle) rather than overflowing the stack.
+    relate_depth: u32 = 0,
 
     pub fn init(gpa: std.mem.Allocator, ti: *Interner) !Engine {
         return .{
@@ -506,8 +525,23 @@ pub const Engine = struct {
             .pending => return true, // cycle: optimistic
             .miss => {},
         }
+        // Overflow guard for recursive generic aliases whose
+        // per-level instantiations intern to fresh ids (so the
+        // pending-cache cycle check above never triggers). Treat an
+        // over-deep comparison as related — the optimistic answer that
+        // tsc's `recursiveTypeRelatedTo` overflow path effectively
+        // produces for assignability — instead of overflowing the
+        // native stack. The limit is generous so genuine (finite)
+        // deep object graphs still get a real structural answer.
+        if (self.relate_depth >= max_relate_depth) return true;
+
         try self.cache.put(.assignable, source, target, .pending);
-        const result = try self.computeAssignable(source, target);
+        self.relate_depth += 1;
+        const result = self.computeAssignable(source, target) catch |err| {
+            self.relate_depth -= 1;
+            return err;
+        };
+        self.relate_depth -= 1;
         try self.cache.put(.assignable, source, target, if (result) .yes else .no);
         return result;
     }
@@ -542,6 +576,19 @@ pub const Engine = struct {
                     continue;
                 }
                 if (try self.isAssignableTo(source, m)) return true;
+            }
+            // Discriminated-union fallback: if S is an object (or
+            // intersection of objects) and T is a union with a common
+            // discriminant property, S may still be related to T even
+            // though no single constituent accepts S, provided that for
+            // every combination of S's discriminant values there is a
+            // matching constituent whose non-discriminant properties S
+            // also satisfies. Mirrors tsc's `typeRelatedToDiscriminatedType`
+            // (relater.go). Only the object/intersection source case
+            // enters this path — primitives, type parameters, etc. fall
+            // through to the plain rejection below.
+            if (sf.is_object_type or sf.is_intersection) {
+                if (try self.typeRelatedToDiscriminatedType(source, target)) return true;
             }
             return false;
         }
@@ -1347,6 +1394,248 @@ pub const Engine = struct {
         // even though `T` and `U` intern to distinct ids.
         const t_ret = try self.substituteTpDeep(t_ret_raw, tp_map_buf[0..tp_map_len]);
         return self.isAssignableTo(s_ret, t_ret);
+    }
+
+    /// Collect the property names + types that `source` exposes as an
+    /// object. For an intersection source we merge members from every
+    /// object constituent (later constituents win on name collision,
+    /// matching tsc's `getPropertiesOfType` last-wins for intersections
+    /// well enough for discriminant matching). Returns owned slices the
+    /// caller must free.
+    const SourceProp = struct { name: types.StringId, type: TypeId };
+
+    fn collectSourceProps(self: *Engine, source: TypeId) anyerror![]SourceProp {
+        var list: std.ArrayListUnmanaged(SourceProp) = .empty;
+        errdefer list.deinit(self.gpa);
+        const sf = self.pool().flagsOf(source);
+        if (sf.is_object_type) {
+            for (self.interner.objectMembers(source)) |m| {
+                try list.append(self.gpa, .{ .name = m.name, .type = m.type });
+            }
+        } else if (sf.is_intersection) {
+            for (self.interner.intersectionMembers(source)) |member_t| {
+                if (member_t >= self.pool().typeCount()) continue;
+                if (!self.pool().flagsOf(member_t).is_object_type) continue;
+                for (self.interner.objectMembers(member_t)) |m| {
+                    var replaced = false;
+                    for (list.items) |*existing| {
+                        if (existing.name == m.name) {
+                            existing.type = m.type;
+                            replaced = true;
+                            break;
+                        }
+                    }
+                    if (!replaced) try list.append(self.gpa, .{ .name = m.name, .type = m.type });
+                }
+            }
+        }
+        return list.toOwnedSlice(self.gpa);
+    }
+
+    /// True when `name` is a discriminant property of the union `target`:
+    /// every constituent that is an object type declares `name`, the
+    /// per-constituent types are not all identical (non-uniform), and
+    /// each is a unit/literal type (literal, enum literal, or the
+    /// `null`/`undefined`/`true`/`false`/`void` unit primitives).
+    /// Mirrors tsc's `isDiscriminantProperty` /
+    /// `CheckFlagsNonUniformAndLiteral` gate (relater.go:1085).
+    fn isDiscriminantProperty(self: *Engine, target_union: TypeId, name: types.StringId) bool {
+        const members = self.interner.unionMembers(target_union);
+        var first_type: TypeId = Primitive.none;
+        var saw_any = false;
+        var non_uniform = false;
+        for (members) |constituent| {
+            if (constituent >= self.pool().typeCount()) return false;
+            const cf = self.pool().flagsOf(constituent);
+            if (!cf.is_object_type) return false;
+            const pt = self.interner.objectMember(constituent, name) orelse return false;
+            if (!self.isUnitType(pt)) return false;
+            if (!saw_any) {
+                first_type = pt;
+                saw_any = true;
+            } else if (pt != first_type) {
+                non_uniform = true;
+            }
+        }
+        return saw_any and non_uniform;
+    }
+
+    /// A "unit" type in tsc's sense: a single concrete value type. We
+    /// accept literal/enum-literal types plus the unit primitives that
+    /// participate in discriminants (`true`, `false`, `null`,
+    /// `undefined`, `void`). Bare `boolean`/`string`/`number` are NOT
+    /// unit types.
+    fn isUnitType(self: *Engine, t: TypeId) bool {
+        if (t == Primitive.true_lit or t == Primitive.false_lit or
+            t == Primitive.null_t or t == Primitive.undefined_t or
+            t == Primitive.void_t) return true;
+        if (t >= self.pool().typeCount()) return false;
+        const f = self.pool().flagsOf(t);
+        return f.is_literal or f.is_enum_literal;
+    }
+
+    /// Distribute a type over its union members for the discriminant
+    /// cartesian product. A non-union type distributes to a single
+    /// element. Returns an owned slice.
+    fn distributeType(self: *Engine, t: TypeId) anyerror![]TypeId {
+        // `boolean` is the union `true | false` in tsc; distribute it so
+        // a `done: boolean` source discriminant matches `true`/`false`
+        // constituents (IteratorResult pattern).
+        if (t == Primitive.boolean_t) {
+            const pair = try self.gpa.alloc(TypeId, 2);
+            pair[0] = Primitive.true_lit;
+            pair[1] = Primitive.false_lit;
+            return pair;
+        }
+        if (t < self.pool().typeCount() and self.pool().flagsOf(t).is_union) {
+            return self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+        }
+        const one = try self.gpa.alloc(TypeId, 1);
+        one[0] = t;
+        return one;
+    }
+
+    /// Port of tsc's `typeRelatedToDiscriminatedType` (relater.go:3962).
+    /// Source is an object/intersection, target is a union. Returns true
+    /// when, for every combination of source's discriminant property
+    /// values, there is a matching target constituent, and the
+    /// non-discriminant properties of every matched constituent are
+    /// satisfied by source.
+    fn typeRelatedToDiscriminatedType(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        const source_props = try self.collectSourceProps(source);
+        defer self.gpa.free(source_props);
+        if (source_props.len == 0) return false;
+
+        // 1. Filter to source props that are discriminants of target.
+        var disc: std.ArrayListUnmanaged(SourceProp) = .empty;
+        defer disc.deinit(self.gpa);
+        for (source_props) |sp| {
+            if (self.isDiscriminantProperty(target, sp.name)) {
+                try disc.append(self.gpa, sp);
+            }
+        }
+        if (disc.items.len == 0) return false;
+
+        // 2. Compute discriminant value sets + combination count (cap 25).
+        var num_combinations: usize = 1;
+        var disc_types = try self.gpa.alloc([]TypeId, disc.items.len);
+        var built: usize = 0;
+        defer {
+            var i: usize = 0;
+            while (i < built) : (i += 1) self.gpa.free(disc_types[i]);
+            self.gpa.free(disc_types);
+        }
+        for (disc.items, 0..) |sp, i| {
+            const dist = try self.distributeType(sp.type);
+            disc_types[i] = dist;
+            built += 1;
+            if (dist.len == 0) return false;
+            num_combinations *= dist.len;
+            if (num_combinations > 25) return false;
+        }
+
+        const target_members = self.interner.unionMembers(target);
+        const target_snapshot = try self.gpa.dupe(TypeId, target_members);
+        defer self.gpa.free(target_snapshot);
+
+        // 3. Build the cartesian product; for each combination find at
+        //    least one matching target constituent. Track all matches.
+        var matching: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer matching.deinit(self.gpa);
+
+        var combination = try self.gpa.alloc(TypeId, disc.items.len);
+        defer self.gpa.free(combination);
+
+        var c: usize = 0;
+        while (c < num_combinations) : (c += 1) {
+            // Decode combination index into per-discriminant choices.
+            var n = c;
+            var j: usize = disc.items.len;
+            while (j > 0) {
+                j -= 1;
+                const len = disc_types[j].len;
+                combination[j] = disc_types[j][n % len];
+                n /= len;
+            }
+            var has_match = false;
+            for (target_snapshot) |t| {
+                if (t >= self.pool().typeCount()) continue;
+                if (!self.pool().flagsOf(t).is_object_type) continue;
+                var all_disc_ok = true;
+                for (disc.items, 0..) |sp, i| {
+                    const tp = self.interner.objectMember(t, sp.name) orelse {
+                        all_disc_ok = false;
+                        break;
+                    };
+                    // Compare the chosen combination value (a unit type)
+                    // to the target's discriminant property type.
+                    if (!try self.isAssignableTo(combination[i], tp)) {
+                        all_disc_ok = false;
+                        break;
+                    }
+                }
+                if (all_disc_ok) {
+                    var already = false;
+                    for (matching.items) |existing| {
+                        if (existing == t) {
+                            already = true;
+                            break;
+                        }
+                    }
+                    if (!already) try matching.append(self.gpa, t);
+                    has_match = true;
+                }
+            }
+            if (!has_match) return false;
+        }
+
+        // 4. For every matched constituent, the non-discriminant
+        //    properties must relate (source ⊑ constituent, skipping the
+        //    discriminant props which were handled per-combination).
+        for (matching.items) |t| {
+            if (!try self.nonDiscriminantPropertiesRelated(source, t, disc.items)) return false;
+        }
+        return true;
+    }
+
+    /// Check that source satisfies all of target constituent `t`'s
+    /// properties except the discriminant ones (which were validated
+    /// per-combination). Excess source props are fine.
+    fn nonDiscriminantPropertiesRelated(
+        self: *Engine,
+        source: TypeId,
+        t: TypeId,
+        disc: []const SourceProp,
+    ) anyerror!bool {
+        const source_props = try self.collectSourceProps(source);
+        defer self.gpa.free(source_props);
+        const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(t));
+        defer self.gpa.free(target_members);
+        for (target_members) |tm| {
+            var is_disc = false;
+            for (disc) |d| {
+                if (d.name == tm.name) {
+                    is_disc = true;
+                    break;
+                }
+            }
+            if (is_disc) continue;
+            // Find source property of the same name.
+            var found_type: ?TypeId = null;
+            for (source_props) |sp| {
+                if (sp.name == tm.name) {
+                    found_type = sp.type;
+                    break;
+                }
+            }
+            if (found_type) |st| {
+                if (!try self.isAssignableTo(st, tm.type)) return false;
+            } else {
+                // Missing on source: fine only if optional.
+                if (!tm.is_optional) return false;
+            }
+        }
+        return true;
     }
 
     /// Structural object-type assignability per TypeScript's
@@ -2169,4 +2458,294 @@ test "TwoLevelCache: pending markers are not promoted to L2" {
     var i: u32 = 0;
     while (i < 16) : (i += 1) try c.put(.identity, i, i + 1, .pending);
     try T.expectEqual(@as(u32, 0), c.l2.count());
+}
+
+// --- Discriminated-union assignability (typeRelatedToDiscriminatedType) ---
+
+fn mkMember(name: types.StringId, ty: TypeId, optional: bool) types.ObjectMember {
+    return .{ .name = name, .type = ty, .is_optional = optional, .is_readonly = false, .is_method = false };
+}
+
+test "Engine: discriminated union — IteratorResult (Example1)" {
+    // type S = { done: boolean, value: number }
+    // type T = { done: true, value: number } | { done: false, value: number }
+    // S is assignable to T even though neither constituent alone accepts S.
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const done = try sint.intern("done");
+    const value = try sint.intern("value");
+
+    const s = try ti.internObjectType(&.{
+        mkMember(done, Primitive.boolean_t, false),
+        mkMember(value, Primitive.number_t, false),
+    });
+    const t0 = try ti.internObjectType(&.{
+        mkMember(done, Primitive.true_lit, false),
+        mkMember(value, Primitive.number_t, false),
+    });
+    const t1 = try ti.internObjectType(&.{
+        mkMember(done, Primitive.false_lit, false),
+        mkMember(value, Primitive.number_t, false),
+    });
+    const t = try ti.internUnion(&.{ t0, t1 });
+    try T.expect(try e.isAssignableTo(s, t));
+}
+
+test "Engine: discriminated union — dropping constituents (Example2)" {
+    // type S = { a: 0 | 2, b: 4 }
+    // type T = { a: 0, b: 1|4 } | { a: 1, b: 2 } | { a: 2, b: 3|4 }
+    // S relates: a=0 matches T0 (b:4 ⊑ 1|4), a=2 matches T2 (b:4 ⊑ 3|4).
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const a = try sint.intern("a");
+    const b = try sint.intern("b");
+    const n0 = try ti.internNumberLiteral(0);
+    const n1 = try ti.internNumberLiteral(1);
+    const n2 = try ti.internNumberLiteral(2);
+    const n3 = try ti.internNumberLiteral(3);
+    const n4 = try ti.internNumberLiteral(4);
+
+    const s = try ti.internObjectType(&.{
+        mkMember(a, try ti.internUnion(&.{ n0, n2 }), false),
+        mkMember(b, n4, false),
+    });
+    const t0 = try ti.internObjectType(&.{
+        mkMember(a, n0, false),
+        mkMember(b, try ti.internUnion(&.{ n1, n4 }), false),
+    });
+    const t1 = try ti.internObjectType(&.{
+        mkMember(a, n1, false),
+        mkMember(b, n2, false),
+    });
+    const t2 = try ti.internObjectType(&.{
+        mkMember(a, n2, false),
+        mkMember(b, try ti.internUnion(&.{ n3, n4 }), false),
+    });
+    const t = try ti.internUnion(&.{ t0, t1, t2 });
+    try T.expect(try e.isAssignableTo(s, t));
+}
+
+test "Engine: discriminated union — unmatched discriminant still errors (Example3)" {
+    // type S = { a: 0 | 2, b: 4 }
+    // type T = { a: 0, b: 1|4 } | { a: 1, b: 2|4 } | { a: 2, b: 3 }
+    // a=2 forces T2 but b:4 is NOT ⊑ 3 ⇒ S is NOT assignable.
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const a = try sint.intern("a");
+    const b = try sint.intern("b");
+    const n0 = try ti.internNumberLiteral(0);
+    const n1 = try ti.internNumberLiteral(1);
+    const n2 = try ti.internNumberLiteral(2);
+    const n3 = try ti.internNumberLiteral(3);
+    const n4 = try ti.internNumberLiteral(4);
+
+    const s = try ti.internObjectType(&.{
+        mkMember(a, try ti.internUnion(&.{ n0, n2 }), false),
+        mkMember(b, n4, false),
+    });
+    const t0 = try ti.internObjectType(&.{
+        mkMember(a, n0, false),
+        mkMember(b, try ti.internUnion(&.{ n1, n4 }), false),
+    });
+    const t1 = try ti.internObjectType(&.{
+        mkMember(a, n1, false),
+        mkMember(b, try ti.internUnion(&.{ n2, n4 }), false),
+    });
+    const t2 = try ti.internObjectType(&.{
+        mkMember(a, n2, false),
+        mkMember(b, n3, false),
+    });
+    const t = try ti.internUnion(&.{ t0, t1, t2 });
+    try T.expect(!try e.isAssignableTo(s, t));
+}
+
+test "Engine: discriminated union — missing non-discriminant prop still errors (Example4)" {
+    // type S = { a: 0 | 2, b: 4 }
+    // type T = { a:0, b:1|4 } | { a:1, b:2 } | { a:2, b:3|4, c:string }
+    // a=2 forces T2 but S lacks required `c` ⇒ NOT assignable.
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const a = try sint.intern("a");
+    const b = try sint.intern("b");
+    const c = try sint.intern("c");
+    const n0 = try ti.internNumberLiteral(0);
+    const n1 = try ti.internNumberLiteral(1);
+    const n2 = try ti.internNumberLiteral(2);
+    const n3 = try ti.internNumberLiteral(3);
+    const n4 = try ti.internNumberLiteral(4);
+
+    const s = try ti.internObjectType(&.{
+        mkMember(a, try ti.internUnion(&.{ n0, n2 }), false),
+        mkMember(b, n4, false),
+    });
+    const t0 = try ti.internObjectType(&.{
+        mkMember(a, n0, false),
+        mkMember(b, try ti.internUnion(&.{ n1, n4 }), false),
+    });
+    const t1 = try ti.internObjectType(&.{
+        mkMember(a, n1, false),
+        mkMember(b, n2, false),
+    });
+    const t2 = try ti.internObjectType(&.{
+        mkMember(a, n2, false),
+        mkMember(b, try ti.internUnion(&.{ n3, n4 }), false),
+        mkMember(c, Primitive.string_t, false),
+    });
+    const t = try ti.internUnion(&.{ t0, t1, t2 });
+    try T.expect(!try e.isAssignableTo(s, t));
+}
+
+test "Engine: discriminated union — genuine type mismatch on non-discriminant still errors" {
+    // S = { kind: "a"|"b", val: string }
+    // T = { kind:"a", val:number } | { kind:"b", val:number }
+    // Discriminant `kind` matches both, but `val: string` is NOT ⊑ number.
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const kind = try sint.intern("kind");
+    const val = try sint.intern("val");
+    const lit_a = try ti.internStringLiteral(try sint.intern("a"));
+    const lit_b = try ti.internStringLiteral(try sint.intern("b"));
+
+    const s = try ti.internObjectType(&.{
+        mkMember(kind, try ti.internUnion(&.{ lit_a, lit_b }), false),
+        mkMember(val, Primitive.string_t, false),
+    });
+    const t0 = try ti.internObjectType(&.{
+        mkMember(kind, lit_a, false),
+        mkMember(val, Primitive.number_t, false),
+    });
+    const t1 = try ti.internObjectType(&.{
+        mkMember(kind, lit_b, false),
+        mkMember(val, Primitive.number_t, false),
+    });
+    const t = try ti.internUnion(&.{ t0, t1 });
+    try T.expect(!try e.isAssignableTo(s, t));
+}
+
+test "Engine: non-discriminant union still rejects unrelated object" {
+    // Target union with a uniform `kind` (not a discriminant) must not
+    // be tricked into accepting a structurally-incompatible source.
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const x = try sint.intern("x");
+    const y = try sint.intern("y");
+
+    // S = { x: number } ; T = { y: string } | { y: number }
+    // No common discriminant; S has no `y` ⇒ not assignable.
+    const s = try ti.internObjectType(&.{mkMember(x, Primitive.number_t, false)});
+    const t0 = try ti.internObjectType(&.{mkMember(y, Primitive.string_t, false)});
+    const t1 = try ti.internObjectType(&.{mkMember(y, Primitive.number_t, false)});
+    const t = try ti.internUnion(&.{ t0, t1 });
+    try T.expect(!try e.isAssignableTo(s, t));
+}
+
+// --- Recursive / deeply-nested structural relation (depth guard) ---
+
+/// Build a left-nested object chain `{ x: { x: { x: ... leaf } } }`
+/// of the requested depth, each level a *distinct* interned object id
+/// so the relation engine must walk all the way down (no `src==tgt`
+/// short-circuit collapses the recursion).
+fn buildNestedChain(ti: *Interner, x: types.StringId, leaf: TypeId, depth: usize, tag: TypeId) !TypeId {
+    var cur = leaf;
+    var i: usize = 0;
+    while (i < depth) : (i += 1) {
+        // Mix in a per-level marker member so successive chains intern
+        // to fresh ids rather than collapsing to one cached object.
+        cur = try ti.internObjectType(&.{
+            mkMember(x, cur, false),
+            mkMember(tag, Primitive.number_t, false),
+        });
+    }
+    return cur;
+}
+
+test "Engine: deeply-nested finite chain relates structurally (no false negative)" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const x = try sint.intern("x");
+    const tag = try sint.intern("tag");
+
+    // A 40-deep chain over `number` should assign to a 40-deep chain
+    // over `number` — well within the depth budget, so the engine must
+    // give the real structural answer (true), not the overflow default.
+    const src = try buildNestedChain(&ti, x, Primitive.number_t, 40, tag);
+    const tgt = try buildNestedChain(&ti, x, Primitive.number_t, 40, tag);
+    try T.expect(try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: deeply-nested finite chain rejects genuine leaf mismatch" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const x = try sint.intern("x");
+    const tag = try sint.intern("tag");
+
+    // Same shape, incompatible leaf (`string` source vs `number`
+    // target). Within depth budget the engine must still report the
+    // real mismatch (false). A short depth keeps the leaf reachable
+    // before any overflow cutoff.
+    const src = try buildNestedChain(&ti, x, Primitive.string_t, 20, tag);
+    const tgt = try buildNestedChain(&ti, x, Primitive.number_t, 20, tag);
+    try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: over-deep comparison unwinds via depth guard without overflow" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+    const x = try sint.intern("x");
+    const tag = try sint.intern("tag");
+
+    // Chains far deeper than `max_relate_depth`. The engine must NOT
+    // overflow the native stack; it returns the optimistic
+    // (related/true) answer once the guard trips — matching tsc's
+    // overflow-as-related behaviour for assignability. The key
+    // assertion is that this terminates and produces a boolean at all.
+    const deep = max_relate_depth + 50;
+    const src = try buildNestedChain(&ti, x, Primitive.number_t, deep, tag);
+    const tgt = try buildNestedChain(&ti, x, Primitive.number_t, deep, tag);
+    try T.expect(try e.isAssignableTo(src, tgt));
 }
