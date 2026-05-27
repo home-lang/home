@@ -473,6 +473,31 @@ integration after the cone compiles. Sequencing:
 3. Route the corpus module loader through the real parser → decorators and the
    broad transpiler/bundler corpus transpile through the faithful parser.
 
+**MILESTONE — THE REAL BUN PARSER LINKS AND RUNS OVER THE CORPUS
+(2026-05-26, `474a9b0f`).** With macros comptime-disabled
+(`-Denable_macros=false`), scalar Highway (`a3869510`), the JSC-bridge
+gate (`c5688ed4`), and parked JSC module-record panic-stubs (`474a9b0f`,
+dead on the transpile/corpus path), `zig build debug -Denable_macros=false`
+with `use_bun_parser_probe = true` **links into a runnable `home-debug`**
+that transpiles through the real `Parser.init → parse → js_printer.printAst`
+path. First real-parser corpus results:
+- `bundler/transpiler/property.test.ts`: **PASS (1/0)** — a real transpiler
+  corpus file transpiled correctly by the faithful parser.
+- `bundler/transpiler/transpiler.test.js`: FAIL (0/1) — first real divergence
+  is the `malformed enums` case: `enum Foo { [2]: 'hi' }` must throw
+  `Expected identifier but found "["`, but the real parser silently accepts a
+  bracketed/computed enum member name. (NB: an earlier *static* read called
+  the enum path faithful; the *runtime* shows it is not — the bracketed-key
+  rejection is missing.)
+
+To reproduce/iterate: set `use_bun_parser_probe = true`, `zig build debug
+-Denable_macros=false`, then `./zig-out/bin/home-debug test <corpus-file>`.
+The probe flag stays `false` on `main` (DCE keeps it green) until enough of
+the transpiler corpus passes to flip it. Next: fix the malformed-enum
+rejection, then sweep more `bundler/transpiler/*` files, then route the
+corpus module loader through the real parser (step 3 above) for decorators +
+broad coverage.
+
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
 debug` now bottoms out at a *large parked subsystem set*, NOT more leaf fixes.
