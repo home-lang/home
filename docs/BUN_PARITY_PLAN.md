@@ -493,10 +493,41 @@ path. First real-parser corpus results:
 To reproduce/iterate: set `use_bun_parser_probe = true`, `zig build debug
 -Denable_macros=false`, then `./zig-out/bin/home-debug test <corpus-file>`.
 The probe flag stays `false` on `main` (DCE keeps it green) until enough of
-the transpiler corpus passes to flip it. Next: fix the malformed-enum
-rejection, then sweep more `bundler/transpiler/*` files, then route the
-corpus module loader through the real parser (step 3 above) for decorators +
-broad coverage.
+the transpiler corpus passes to flip it.
+
+**REAL-PARSER TRANSPILER-CORPUS FRONTIER MAP (recon 2026-05-26, probe on,
+`-Denable_macros=false`, base `67169cce`):** of 16 `bundler/transpiler/*`
+files, **14 PASS** through the real parser — `property` (1), `template-literal`
+(1), `preserve-use-strict-cjs` (2), `function-tostring-require` (1),
+`export-default` (1), `bun-pragma` (7), `jsx-production` (32),
+`runtime-transpiler` (13), `scope-mismatch-panic` (3),
+`transpiler-stack-overflow` (1), `es-decorators` (27), `es-decorators-esbuild`
+(147), `decorator-metadata` (5), `macro-test` (10). Only **2 genuine failures
+remain**, and the enum one is NOT a parser bug:
+1. `transpiler.test.js` — the parser DOES reject `enum Foo { [2]: 'hi' }`
+   (the standalone `home-debug run` path surfaces `Expected identifier but
+   found "["`), but the corpus shim `transpileSourceWithBunParser`
+   (`jsc_bootstrap.zig:816-817`) collapses every parse failure to a generic
+   `return error.ParseError`, discarding `log.errors[0]`, so
+   `transpilerTransformSyncNative` throws `"...failed: ParseError"` instead of
+   the real message and `expectParseError` mismatches. FIX = propagate
+   `log.errors[0]`'s message through the JS exception (shim, not parser).
+2. `decorators.test.ts` — fails at module LOAD (`SyntaxError: Invalid
+   character: '@'`): the corpus loader's transpile path doesn't lower legacy
+   decorators (the reframe). NB `decorator-metadata.test.ts` PASSES despite
+   inline decorators (locally-defined vs the imported decorated default-export
+   fixture) — worth diffing.
+
+Infra note: spawn-based corpus tests (`template-literal`, `es-decorators*`)
+call `bunExe()` = hardcoded `zig-out/bin/home` (`jsc_bootstrap.zig:2884`), but
+the debug build only produces `home-debug`. They PASS once `home ->
+home-debug` is symlinked (or a release `home` is built). Not a parser gap.
+
+Net: the real parser is essentially faithful across the transpiler corpus.
+Next: (a) shim parse-error message propagation → `transpiler.test.js` passes;
+(b) the spawn `home`-binary path; then flip `use_bun_parser_probe` on for the
+Bun.Transpiler API path; then route the module loader through the real parser
+(decorators + broad sweep).
 
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
