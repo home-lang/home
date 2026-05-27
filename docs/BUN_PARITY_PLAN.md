@@ -380,9 +380,38 @@ installer behavior):
   `install.*` aggregator exports; fix `HashMap.values` (0.17 API) in the
   resolver.
 
-Once that cone compiles, `use_bun_parser_probe` can flip on and decorators
-+ TS enums transpile through the already-faithful parser with no further
-parser changes.
+**Cone-compile progress — iteration 2 landed on `main` (2026-05-26).** All
+three checklist bullets above are now done (3 parallel agents, all green,
+no corpus regression):
+- `parsers/json.zig` ported to Zig-0.17 reflection; faithful
+  `bun.deprecated.SinglyLinkedList` (new `bun_core/singly_linked_list.zig`);
+  `bun.json` wired to the real parser.
+- `strings.NewGlobLengthSorter`/`NewLengthSorter` re-exported from the
+  faithful `string/immutable.zig`; top-level `bun.StringBuilder` =
+  `core/string/StringBuilder.zig` (the pure-Zig builder, not the WTF wrapper).
+- 13 `install/*` files migrated to `std.Io.Dir`/`File`; `Output.err`+helpers;
+  `bun_core/Progress.zig` migrated; ~30 `install.*` exports; resolver
+  `valueIterator`; `**` array-repeat → `@splat`.
+
+**Two cone gates remain before the real parser can switch on:**
+1. **`home_rt.ast` is a stub.** It exposes only a placeholder `Expr` (no
+   `E`, `asArray`, `ArrayIterator`), so `resolver/package_json.zig`,
+   `tsconfig_json.zig`, and `bundler/cache.zig` (all `js_ast = bun.ast`)
+   cannot compile. The faithful AST copies exist (`ast/e.zig`, `ast/expr.zig`)
+   but reference `bun.ast.E`, a circular dep that must be wired together as
+   one unit. This is the next foundational unlock.
+2. **`install/NetworkTask.zig` needs the HTTP client cone**
+   (`bun.http.{AsyncHTTP, HeaderBuilder, HTTPClientResult}`), parked at
+   Phase 12.5. Per the Pantry divergence it only needs to *compile* (parked
+   stubs), not perform real network installs.
+
+Note: `use_bun_parser_probe` / `transpileSourceWithBunParser` are NOT on
+canonical `main` — a ts-parity merge (`6e67f7dd`) appears to have landed an
+older `jsc_bootstrap.zig` that predates that scaffold. Re-add the real-parser
+transform body (or re-derive it) once the two cone gates above compile.
+
+Once the cone compiles, the real-parser body flips on and decorators + TS
+enums transpile through the already-faithful parser with no parser changes.
 
 Parser hot-path probe on 2026-05-26 after the FD/sys shim batch: the
 temporarily enabled `transpileSourceWithBunParser` no longer stops at
