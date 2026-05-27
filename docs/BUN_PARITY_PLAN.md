@@ -713,8 +713,41 @@ tractable win this pass: `ERR_INVALID_THIS` for `Request` body methods (faithful
 
 Operational note: the "canonical main sync" automation occasionally leaves
 foreign uncommitted edits in the shared working tree (e.g. reverted
-parser-probe experiments with `CORPUS_PREP_SENTINEL`/`ZZSENTINELZZ` markers);
-agents should `git reset --hard origin/main` and scope commits with `--only`.
+parser-probe experiments with `CORPUS_PREP_SENTINEL`/`ZZSENTINELZZ` markers,
+or in-flight `ts_checker/lib.zig` work like the `internTuple`/`Object.entries`
+helper seen on 2026-05-27); agents should `git reset --hard origin/main`,
+scope commits with `--only`, and back up + preserve (don't destroy or
+silently commit) any foreign edit they didn't author.
+
+**ITER-16 OUTCOME + HARNESS-SHIM EXHAUSTION FINDING (2026-05-27, `ac03588d`).**
+Landed the faithful conditional test-modifier family in the corpus bootstrap
+harness, mirroring Bun's `src/runtime/test_runner/ScopeFunctions.zig`:
+`it.{if,skipIf,todoIf,failingIf}`, `test.{todoIf,failingIf}`,
+`describe.todoIf` (describe has no failing mode upstream, so no `failingIf`).
+~72 copied corpus files reference these. **Measured pass delta: ZERO** —
+minimal-js stays 3340/2; the files that use these modifiers
+(`zlib`, `bun-jsc`, `atomics-waitasync-*`, …) are all gated *deeper* (parked
+`Atomics.waitAsync`, TS-stripping `Unexpected token ':'`, unsupported module
+syntax), so adding the modifier only changes *which* line fails, not whether
+the file passes. This is the empirical confirmation of the earlier thesis:
+**the corpus-harness-shim ratchet is now exhausted.** Adding more pure-JS
+harness shims yields ~0 corpus pass delta because every remaining failing
+file bottoms out in a parked RUNTIME subsystem, not a missing harness global.
+The increment is still worth keeping (faithful API surface, removes a latent
+load-time `ReferenceError` for when the subsystems land, unit-tested) but it
+is NOT progress toward corpus parity.
+
+**CONSEQUENCE FOR THE LOOP:** stop spending iterations on harness-shim
+pure-JS wins. The only remaining lever for the corpus pass-rate is a
+real parked-subsystem port (Phase 12.2/12.3/12.5), in the dependency order
+already mapped above: (1) subprocess/`spawn` (~39% of `js/`, biggest single
+bucket; needs real `Bun.spawn`/`spawnSync` + a runnable `home` binary tests
+can exec), (2) JSC JS-visible API internals, (3) WebCore, (4) `node:*`,
+(5) real bundler. Each is a multi-session port; there is no bounded
+single-session corpus-parity win left. The honest distinction stands: the
+bootstrap harness ratchets a *test pass-count* against JS shims; true
+JS-visible parity requires the Phase-1 JS-callable bridge so the corpus runs
+against the real `home_rt` runtime, not the harness.
 
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
