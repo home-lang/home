@@ -3812,6 +3812,11 @@ pub const picohttp_sys = struct {
     pub const picohttpparser = @import("picohttp_sys/picohttpparser.zig");
 };
 
+// `bun.picohttp` — the HTTP/1 request/response parser wrapper over
+// picohttpparser (matches Bun's `bun.picohttp = @import("./picohttp/picohttp.zig")`).
+// Used by the http client (`AsyncHTTP`) in the resolver/install cone.
+pub const picohttp = @import("picohttp/picohttp.zig");
+
 // ---- src/wyhash/ -------------------------------------------------------
 // Fifth-wave port batch (2026-05-18). Fast non-cryptographic 64-bit
 // hash (Zig stdlib v0.11 vintage forked here so it doesn't move
