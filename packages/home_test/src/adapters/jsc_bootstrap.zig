@@ -619,13 +619,21 @@ fn transpilerTransformSyncNative(
         };
     }
 
+    native_parse_error_len = 0;
     const output = transpileSource(
         allocator,
         &base_handle,
         source,
         loader,
     ) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.transformSync() failed: {s}", .{@errorName(err)});
+        // Surface the real parser diagnostic (e.g. `Expected identifier but
+        // found "["`) as the `.message` of a thrown Error so harness helpers
+        // like `expectParseError` observe the faithful Bun text.
+        if (takeNativeParseError()) |parse_message| {
+            setErrorLikeException(actual_ctx, exception, parse_message);
+        } else {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.transformSync() failed: {s}", .{@errorName(err)});
+        }
         return null;
     };
     defer allocator.free(output);
@@ -813,8 +821,14 @@ fn transpileSourceWithBunParser(
         ast_allocator,
     );
 
-    const parse_result = parser.parse() catch return error.ParseError;
-    if (parse_result != .ast or log.errors > 0) return error.ParseError;
+    const parse_result = parser.parse() catch {
+        recordNativeParseError(&log);
+        return error.ParseError;
+    };
+    if (parse_result != .ast or log.errors > 0) {
+        recordNativeParseError(&log);
+        return error.ParseError;
+    }
     const ast = parse_result.ast;
 
     const buffer_writer = home_rt.js_printer.BufferWriter.init(allocator);
@@ -2881,6 +2895,29 @@ fn firstLogErrorMessage(log: *const home_rt.logger.Log) ?[]const u8 {
     return null;
 }
 
+// Stores the first diagnostic produced by the real Bun parser when
+// `transpileSourceWithBunParser` fails, so the native `transformSync`
+// callback can surface the faithful Bun message (e.g.
+// `Expected identifier but found "["`) on the thrown Error instead of a
+// generic "ParseError" placeholder.
+var native_parse_error_buf: [512]u8 = undefined;
+var native_parse_error_len: usize = 0;
+
+fn recordNativeParseError(log: *const home_rt.logger.Log) void {
+    native_parse_error_len = 0;
+    const text = firstLogErrorMessage(log) orelse return;
+    const len = @min(text.len, native_parse_error_buf.len);
+    @memcpy(native_parse_error_buf[0..len], text[0..len]);
+    native_parse_error_len = len;
+}
+
+fn takeNativeParseError() ?[]const u8 {
+    if (native_parse_error_len == 0) return null;
+    const slice = native_parse_error_buf[0..native_parse_error_len];
+    native_parse_error_len = 0;
+    return slice;
+}
+
 fn selfExePathAlloc(allocator: std.mem.Allocator) ![]u8 {
     const cwd = try currentWorkingDirectoryAlloc(allocator);
     defer allocator.free(cwd);
@@ -2975,4 +3012,27 @@ test "adapter inserts home run for Bun-style direct script invocations" {
     try std.testing.expect(shouldInsertHomeRunForScript(&direct));
     try std.testing.expect(!shouldInsertHomeRunForScript(&test_command));
     try std.testing.expect(!shouldInsertHomeRunForScript(&flag));
+}
+
+test "adapter surfaces the real parser's first error for the native transpile path" {
+    // The real Bun parser rejects bracketed/computed TS enum member keys with
+    // `Expected identifier but found "["`. The native transformSync callback
+    // relies on recordNativeParseError/takeNativeParseError to thread that
+    // exact diagnostic onto the thrown Error so `expectParseError` sees it.
+    var log = home_rt.logger.Log.init(std.testing.allocator);
+    defer log.deinit();
+    var source = home_rt.logger.Source.initPathString("enum.ts", "enum Foo { [2]: 'hi' }");
+    try log.addError(&source, home_rt.logger.Loc{ .start = 11 }, "Expected identifier but found \"[\"");
+
+    recordNativeParseError(&log);
+    try std.testing.expectEqualStrings("Expected identifier but found \"[\"", takeNativeParseError().?);
+    // The recorded message is consumed exactly once.
+    try std.testing.expect(takeNativeParseError() == null);
+
+    // An empty log yields nothing to surface, so the caller falls back to the
+    // generic placeholder instead of throwing a stale message.
+    var empty_log = home_rt.logger.Log.init(std.testing.allocator);
+    defer empty_log.deinit();
+    recordNativeParseError(&empty_log);
+    try std.testing.expect(takeNativeParseError() == null);
 }
