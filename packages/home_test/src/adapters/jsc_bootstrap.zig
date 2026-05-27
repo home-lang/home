@@ -138,18 +138,6 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
-            "__home_getpidNative",
-            getProcessIdNative,
-        );
-        home_rt.jsc.callback.registerCallback(
-            self.engine.currentContext(),
-            self.engine.currentGlobalObject(),
-            "__home_getppidNative",
-            getParentProcessIdNative,
-        );
-        home_rt.jsc.callback.registerCallback(
-            self.engine.currentContext(),
-            self.engine.currentGlobalObject(),
             "__home_serveNative",
             serveNative,
         );
@@ -1664,38 +1652,6 @@ fn getDevServerDeinitCountNative(
         ctx.?,
         @floatFromInt(home_rt.runtime.bake.getDevServerDeinitCountForTesting()),
     );
-}
-
-fn getProcessIdNative(
-    ctx: ?*JSContextRef,
-    function: ?*JSObject,
-    this: ?*JSObject,
-    argument_count: usize,
-    arguments: [*c]const ?*JSValue,
-    exception: extern_fns.ExceptionRef,
-) callconv(.c) ?*JSValue {
-    _ = function;
-    _ = this;
-    _ = argument_count;
-    _ = arguments;
-    _ = exception;
-    return extern_fns.JSValueMakeNumber(ctx.?, @floatFromInt(std.c.getpid()));
-}
-
-fn getParentProcessIdNative(
-    ctx: ?*JSContextRef,
-    function: ?*JSObject,
-    this: ?*JSObject,
-    argument_count: usize,
-    arguments: [*c]const ?*JSValue,
-    exception: extern_fns.ExceptionRef,
-) callconv(.c) ?*JSValue {
-    _ = function;
-    _ = this;
-    _ = argument_count;
-    _ = arguments;
-    _ = exception;
-    return extern_fns.JSValueMakeNumber(ctx.?, @floatFromInt(std.c.getppid()));
 }
 
 fn loadNativeNodeModule(
