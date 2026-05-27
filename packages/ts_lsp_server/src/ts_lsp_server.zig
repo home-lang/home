@@ -3510,6 +3510,102 @@ fn lspSeverityCode(s: ts_lsp.LspDiagnostic.Severity) u8 {
     };
 }
 
+/// Encode a server-to-client `workspace/<kind>/refresh` request body.
+/// Per LSP 3.17+, these are requests (not notifications) — they
+/// carry an integer id and the client responds with `result: null`.
+/// The body has no params. Used by the server to invalidate cached
+/// state on the client side after a workspace change.
+///
+/// `kind` must be one of `inlayHint`, `codeLens`, `diagnostic`,
+/// `semanticTokens`, `inlineValue`, or `foldingRange` (LSP 3.18).
+/// Caller owns the returned slice.
+pub fn encodeWorkspaceRefreshRequest(
+    gpa: std.mem.Allocator,
+    request_id: i64,
+    kind: []const u8,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
+    var nbuf: [32]u8 = undefined;
+    const id_str = try std.fmt.bufPrint(&nbuf, "{d}", .{request_id});
+    try buf.appendSlice(gpa, id_str);
+    try buf.appendSlice(gpa, ",\"method\":\"workspace/");
+    try writeJsonStringContents(&buf, gpa, kind);
+    try buf.appendSlice(gpa, "/refresh\",\"params\":null}");
+    return buf.toOwnedSlice(gpa);
+}
+
+/// Convenience wrappers around `encodeWorkspaceRefreshRequest` for
+/// each well-known refresh kind. The kind string isn't a free-form
+/// extension point, so naming the call sites lets callers compile-
+/// check their choice.
+pub fn encodeWorkspaceInlayHintRefresh(gpa: std.mem.Allocator, request_id: i64) ![]u8 {
+    return encodeWorkspaceRefreshRequest(gpa, request_id, "inlayHint");
+}
+
+pub fn encodeWorkspaceCodeLensRefresh(gpa: std.mem.Allocator, request_id: i64) ![]u8 {
+    return encodeWorkspaceRefreshRequest(gpa, request_id, "codeLens");
+}
+
+pub fn encodeWorkspaceDiagnosticRefresh(gpa: std.mem.Allocator, request_id: i64) ![]u8 {
+    return encodeWorkspaceRefreshRequest(gpa, request_id, "diagnostic");
+}
+
+pub fn encodeWorkspaceSemanticTokensRefresh(gpa: std.mem.Allocator, request_id: i64) ![]u8 {
+    return encodeWorkspaceRefreshRequest(gpa, request_id, "semanticTokens");
+}
+
+pub fn encodeWorkspaceInlineValueRefresh(gpa: std.mem.Allocator, request_id: i64) ![]u8 {
+    return encodeWorkspaceRefreshRequest(gpa, request_id, "inlineValue");
+}
+
+pub fn encodeWorkspaceFoldingRangeRefresh(gpa: std.mem.Allocator, request_id: i64) ![]u8 {
+    return encodeWorkspaceRefreshRequest(gpa, request_id, "foldingRange");
+}
+
+/// Encode a server-to-client `window/showMessage` notification body.
+/// The client surfaces the message in its UI (toast, status bar, etc.)
+/// according to the severity level. Severity is the LSP `MessageType`
+/// enum: 1 = Error, 2 = Warning, 3 = Info, 4 = Log, 5 = Debug.
+/// Caller owns the returned slice.
+pub fn encodeShowMessageNotification(
+    gpa: std.mem.Allocator,
+    severity: u8,
+    message: []const u8,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"window/showMessage\",\"params\":{\"type\":");
+    var nbuf: [16]u8 = undefined;
+    const sev_str = try std.fmt.bufPrint(&nbuf, "{d}", .{severity});
+    try buf.appendSlice(gpa, sev_str);
+    try buf.appendSlice(gpa, ",\"message\":\"");
+    try writeJsonStringContents(&buf, gpa, message);
+    try buf.appendSlice(gpa, "\"}}");
+    return buf.toOwnedSlice(gpa);
+}
+
+/// Encode a server-to-client `window/logMessage` notification body.
+/// Semantically a quieter sibling of `window/showMessage`: the
+/// client routes it to a log channel rather than a UI surface.
+pub fn encodeLogMessageNotification(
+    gpa: std.mem.Allocator,
+    severity: u8,
+    message: []const u8,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"window/logMessage\",\"params\":{\"type\":");
+    var nbuf: [16]u8 = undefined;
+    const sev_str = try std.fmt.bufPrint(&nbuf, "{d}", .{severity});
+    try buf.appendSlice(gpa, sev_str);
+    try buf.appendSlice(gpa, ",\"message\":\"");
+    try writeJsonStringContents(&buf, gpa, message);
+    try buf.appendSlice(gpa, "\"}}");
+    return buf.toOwnedSlice(gpa);
+}
+
 /// Encode a `textDocument/publishDiagnostics` JSON-RPC notification
 /// body from structured `[]LspDiagnostic`. Each entry is rendered
 /// as an LSP `Diagnostic` object with the spec-required shape:
@@ -4949,6 +5045,61 @@ test "encodePublishDiagnostics: empty rendered -> empty array" {
     const r = try encodePublishDiagnostics(T.allocator, "file:///x.ts", "");
     defer T.allocator.free(r);
     try T.expect(std.mem.indexOf(u8, r, "\"diagnostics\":[]") != null);
+}
+
+test "encodeWorkspaceInlayHintRefresh: emits id + method + null params" {
+    const r = try encodeWorkspaceInlayHintRefresh(T.allocator, 42);
+    defer T.allocator.free(r);
+    try T.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"workspace/inlayHint/refresh\",\"params\":null}",
+        r,
+    );
+}
+
+test "encodeWorkspaceCodeLensRefresh: emits codeLens method" {
+    const r = try encodeWorkspaceCodeLensRefresh(T.allocator, 17);
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"method\":\"workspace/codeLens/refresh\"") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"id\":17") != null);
+}
+
+test "encodeWorkspaceDiagnosticRefresh: emits diagnostic method" {
+    const r = try encodeWorkspaceDiagnosticRefresh(T.allocator, 3);
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"method\":\"workspace/diagnostic/refresh\"") != null);
+}
+
+test "encodeWorkspaceSemanticTokensRefresh: emits semanticTokens method" {
+    const r = try encodeWorkspaceSemanticTokensRefresh(T.allocator, 8);
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"method\":\"workspace/semanticTokens/refresh\"") != null);
+}
+
+test "encodeWorkspaceInlineValueRefresh: emits inlineValue method" {
+    const r = try encodeWorkspaceInlineValueRefresh(T.allocator, 99);
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"method\":\"workspace/inlineValue/refresh\"") != null);
+}
+
+test "encodeWorkspaceFoldingRangeRefresh: emits foldingRange method (LSP 3.18)" {
+    const r = try encodeWorkspaceFoldingRangeRefresh(T.allocator, 100);
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"method\":\"workspace/foldingRange/refresh\"") != null);
+}
+
+test "encodeShowMessageNotification: emits severity + message" {
+    const r = try encodeShowMessageNotification(T.allocator, 2, "Recompile pending");
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"method\":\"window/showMessage\"") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"type\":2") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"message\":\"Recompile pending\"") != null);
+}
+
+test "encodeLogMessageNotification: emits log channel route" {
+    const r = try encodeLogMessageNotification(T.allocator, 3, "Workspace indexed");
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"method\":\"window/logMessage\"") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"type\":3") != null);
 }
 
 test "handleCompletion: routes request and returns CompletionList response" {
