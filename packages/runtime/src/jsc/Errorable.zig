@@ -9,8 +9,9 @@
 const std = @import("std");
 const ErrorCode = @import("./ErrorCode.zig").ErrorCode;
 
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-pub const JSValue = enum(i64) { zero = 0, _ };
+// Use the canonical JSValue so `ErrorableT(...).err`/`.ok` accept the real
+// values that resolver/module-loader paths produce (e.g. ResolveMessage.create).
+pub const JSValue = @import("home_rt").jsc.JSValue;
 
 /// Inlined from upstream `ZigErrorType.zig` (5-line file) so Errorable can be
 /// a leaf port. Phase 12.2 promotes this to its own file alongside JSValue.

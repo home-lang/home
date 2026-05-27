@@ -6,24 +6,26 @@
 // in Phase 12.2.
 
 const std = @import("std");
+const home_rt = @import("home_rt");
 
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-const JSValue = opaque {};
+// Use the canonical JSGlobalObject/JSValue so callers (VirtualMachine's
+// uncaught-exception path) pass and receive the real types. `asJSValue`
+// returns `JSValue` by value (it is an i64-backed enum), matching upstream.
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+const JSValue = home_rt.jsc.JSValue;
 // JSC bridge ZigStackTrace stubbed — re-attaches in Phase 12.2.
 const ZigStackTrace = opaque {};
 
 /// Opaque representation of a JavaScript exception
 pub const Exception = opaque {
     extern fn JSC__Exception__getStackTrace(this: *Exception, global: *JSGlobalObject, stack: *ZigStackTrace) void;
-    extern fn JSC__Exception__asJSValue(this: *Exception) *JSValue;
+    extern fn JSC__Exception__asJSValue(this: *Exception) JSValue;
 
     pub fn getStackTrace(this: *Exception, global: *JSGlobalObject, stack: *ZigStackTrace) void {
         JSC__Exception__getStackTrace(this, global, stack);
     }
 
-    pub fn value(this: *Exception) *JSValue {
+    pub fn value(this: *Exception) JSValue {
         return JSC__Exception__asJSValue(this);
     }
 };

@@ -241,7 +241,10 @@ pub fn freeArgv(allocator: std.mem.Allocator, argv: [][]const u8) void {
     allocator.free(argv);
 }
 
-pub fn exit(code: u8) noreturn {
+// Matches the JS-facing `node_process.zig` binding signature
+// `exit(globalObject, code)`. The worker/exit_handler bookkeeping is parked;
+// this drives the process exit directly. globalObject is accepted but unused.
+pub fn exit(_: anytype, code: u8) void {
     home_rt.Global.exit(code);
 }
 

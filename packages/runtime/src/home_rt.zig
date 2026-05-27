@@ -755,6 +755,12 @@ pub const jsc = struct {
             path: struct { text: []const u8 = "" } = .{},
         };
 
+        // Builtin-module alias table (node:* / bun:* specifiers). The faithful
+        // copy lives in resolve_builtins/HardcodedModule.zig and is
+        // self-contained, so the resolver's HardcodedModule.Alias.get path is
+        // real behavior, not a stub.
+        pub const HardcodedModule = @import("resolve_builtins/HardcodedModule.zig").HardcodedModule;
+
         eval_source: ?*EvalSource = null,
     };
     pub const Errorable = @import("jsc/Errorable.zig").Errorable;
