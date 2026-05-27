@@ -591,6 +591,40 @@ not compile under Zig 0.17 — `js_printer.zig:6380` stale `std.heap.stackFallba
 and `:5225` `runtime_imports.__export.?.ref` (should be `.?`); fix only if
 `printCommonJS` is ever wired up.)
 
+**CURRENT STATE & NEXT FRONTIER (2026-05-27).** Real-parser corpus build
+(`zig build debug -Denable_macros=false`, probe auto-on via
+`!build_options.enable_macros`): `minimal-js` subset = **3340 pass / 2 fail**.
+The 2 remaining failures (`bundler/bun-build-api.test.ts`,
+`bundler/bundler_edgecase.test.ts`) both require the **parked real bundler**
+(`Bun.build()` executing bundle_v2/LinkerContext/OutputFile) — the harness
+`itBundled`/`Bun.build` stub can't emit real artifacts. The transpiler corpus
+is conquered by the real parser (14/16 files; the 2 non-passing are the
+`transpiler.test.js` minify-fidelity case and `decorators.test.ts` which fails
+at module-load because the string-rewrite loader can't lower `@`).
+
+Remaining frontiers, in dependency order (all genuine multi-session subsystem
+ports, mapped above):
+1. **Real bundler** (`packages/bundler/`: `bundle_v2`, `LinkerContext`,
+   `OutputFile`, the `itBundled`/`Bun.build` execution path) — unblocks the 2
+   minimal-js bundler files and the whole `bundler/` corpus (89 files).
+2. **Broad runtime corpus** (`js/` 998, `regression/` 384, `node/`, etc.) —
+   these are runtime *behavior* tests; they load fine via the string-rewrite,
+   but need the faithful **runtime**: the JSC JS-callable bridge, webcore
+   (fetch/Request/Response/streams/Blob), `node:*` modules, the event loop, and
+   timers. This is the Phase 12.2/12.3/12.5 substrate, much of it source-present
+   but parked (HTTP transport uws/H2/H3/TLS, event loop, bake, JSC C++ glue).
+3. **Decorator loader** + transpiler minify-fidelity — narrow real-parser
+   follow-ups (extend the string-rewrite to lower `@`, or a targeted real-parser
+   pass for decorator-bearing test files; chase `transpiler.test.js` minify
+   cases).
+
+Session arc landed on `main` (2026-05-26→27): stale-branch frontier 38→9 →
+pivot to canonical `main` → resolver/AST/http/install cone compiles →
+macro-gate (`enable_macros`) + scalar Highway + JSC module-record panic-stubs →
+**real Bun parser links, runs, and is the default `Bun.Transpiler` path in the
+macros-off corpus build** → minimal-js 3340/2. ~22 green, faithful, pushed
+increments.
+
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
 debug` now bottoms out at a *large parked subsystem set*, NOT more leaf fixes.
