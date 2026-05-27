@@ -5124,7 +5124,7 @@ const harness_prelude =
     \\  __home_write_temp_files(String(root), files || {});
     \\  return Promise.resolve(undefined);
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -10158,6 +10158,51 @@ const harness_prelude =
     \\  function __home_request_clone_headers(headers) {
     \\    return new Headers(headers && headers.__home_headers ? headers.__home_headers : headers);
     \\  }
+    \\  function __home_determine_specific_type(value) {
+    \\    if (value === null) return "null";
+    \\    if (value === undefined) return "undefined";
+    \\    const t = typeof value;
+    \\    if (t === "number") {
+    \\      if (value !== value) return "type number (NaN)";
+    \\      if (value === Infinity) return "type number (Infinity)";
+    \\      if (value === -Infinity) return "type number (-Infinity)";
+    \\      return "type number (" + value + ")";
+    \\    }
+    \\    if (t === "boolean") return value ? "type boolean (true)" : "type boolean (false)";
+    \\    if (t === "bigint") return "type bigint (" + value + "n)";
+    \\    if (t === "symbol") { return "type symbol (" + value.toString() + ")"; }
+    \\    if (t === "function") { const n = value.name; return "function" + (n ? " " + n : ""); }
+    \\    if (t === "string") {
+    \\      const needsEllipsis = value.length > 28;
+    \\      const needsEscape = value.indexOf("'") !== -1;
+    \\      let view = needsEllipsis ? value.slice(0, 25) : value;
+    \\      let out = "type string (";
+    \\      if (needsEscape) { out += '"' + view.replace(/"/g, '\\"'); } else { out += "'" + view; }
+    \\      if (needsEllipsis) out += "...";
+    \\      out += needsEscape ? '"' : "'";
+    \\      out += ")";
+    \\      return out;
+    \\    }
+    \\    if (t === "object") {
+    \\      const ctor = value.constructor;
+    \\      if (ctor) { const name = ctor.name; return "an instance of " + String(name); }
+    \\    }
+    \\    return String(value);
+    \\  }
+    \\  function __home_request_invalid_this(thisValue) {
+    \\    let message;
+    \\    if (thisValue === undefined) {
+    \\      message = "Expected this to be instanceof Request";
+    \\    } else {
+    \\      message = "Expected this to be instanceof Request, but received " + __home_determine_specific_type(thisValue);
+    \\    }
+    \\    const error = new TypeError(message);
+    \\    error.code = "ERR_INVALID_THIS";
+    \\    return error;
+    \\  }
+    \\  function __home_request_check_this(thisValue) {
+    \\    if (!(thisValue instanceof Request)) throw __home_request_invalid_this(thisValue);
+    \\  }
     \\  var Request = function(input, init) {
     \\    if (init === undefined && input && typeof input === "object" && !(input instanceof Request) && typeof input.href !== "string" && Object.prototype.hasOwnProperty.call(input, "url")) {
     \\      init = input;
@@ -10208,15 +10253,23 @@ const harness_prelude =
     \\    }
     \\  };
     \\  Request.prototype.text = function() {
+    \\    "use strict";
+    \\    __home_request_check_this(this);
     \\    return __home_consume_body(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  };
     \\  Request.prototype.arrayBuffer = function() {
+    \\    "use strict";
+    \\    __home_request_check_this(this);
     \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes).buffer);
     \\  };
     \\  Request.prototype.bytes = function() {
+    \\    "use strict";
+    \\    __home_request_check_this(this);
     \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes));
     \\  };
     \\  Request.prototype.blob = function() {
+    \\    "use strict";
+    \\    __home_request_check_this(this);
     \\    const type = this.headers.get("content-type") || "";
     \\    return __home_consume_body(this).then(bytes => {
     \\      const blob = new Blob([new Uint8Array(bytes)], { type });
@@ -10225,9 +10278,13 @@ const harness_prelude =
     \\    });
     \\  };
     \\  Request.prototype.formData = function() {
+    \\    "use strict";
+    \\    __home_request_check_this(this);
     \\    return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\  };
     \\  Request.prototype.clone = function() {
+    \\    "use strict";
+    \\    __home_request_check_this(this);
     \\    if (__home_stream_chunks_replayable(this.body)) {
     \\      const chunks = this.body.__home_chunks.slice();
     \\      return new Request(this, { body: new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }) });
@@ -14468,6 +14525,34 @@ test "subset flag parser recognizes the bootstrap subset" {
     try std.testing.expectEqual(Subset.bundler_core_itbundled, parseSubsetFlagValue("bundler-core-itbundled").?);
     try std.testing.expectEqual(Subset.bundler_transpiler_bootstrap, parseSubsetFlagValue("bundler-transpiler-bootstrap").?);
     try std.testing.expect(parseSubsetFlagValue("all") == null);
+}
+
+test "harness prelude surfaces ERR_INVALID_THIS from Request body methods" {
+    // The fallback Request polyfill must validate `this` before consuming the
+    // body so that `Request.prototype.formData.call(undefined)` faithfully
+    // throws a TypeError tagged with code ERR_INVALID_THIS, matching Bun's
+    // createInvalidThisError binding.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_request_check_this(thisValue) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!(thisValue instanceof Request)) throw __home_request_invalid_this(thisValue);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_THIS\";") != null);
+    // The body methods opt into strict mode so a `.call(undefined)` keeps `this`
+    // as undefined instead of coercing it to the global object.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.formData = function() {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "\"use strict\";\n    __home_request_check_this(this);") != null);
+}
+
+test "harness prelude formats the ERR_INVALID_THIS specific-type suffix faithfully" {
+    // determineSpecificType-style suffixes used in the invalid-this message.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "\"Expected this to be instanceof Request\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "\"Expected this to be instanceof Request, but received \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return \"an instance of \" + String(name);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "let out = \"type string (\";") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (value !== value) return \"type number (NaN)\";") != null);
+}
+
+test "harness module exports a faithful gcTick helper" {
+    // Bun's test harness exports gcTick = () => { gc(); return Bun.sleep(0); }.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gcTick(trace) { if (trace) console.trace(\"\"); Bun.gc(true); return Bun.sleep(0); }") != null);
 }
 
 test "bundler core itBundled subset names the first tranche" {
