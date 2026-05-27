@@ -330,37 +330,54 @@ Verification target:
 Runtime compile frontier: the current non-JSC runtime gate is red but
 sharply narrowed. `./pantry/.bin/zig build test -Dfilter=home_rt
 -Denable_jsc=false --summary failures` now fails at compile time with
-**12 errors** on 2026-05-26, down from **38** earlier the same day after
-the EventLoop bring-up. The parked `EventLoopHandle.EventLoop` opaque is
-now a sized struct (with `debug`, `deferred_tasks`, `drainMicrotasks`,
-plus enter/exit/waker surface), so `VirtualMachine.zig` embeds it by
-value and the bulk of the VM/webcore body now type-checks. That bring-up
-exposed the next, more granular layer; the closed batch this pass was
-mostly faithful Bun substrate (`strings.copyLowercase` /
-`lastIndexOfChar` / `whitespace_chars` / `startsWithChar` / `eqlLong` /
-`utf16EqlString` / `firstNonASCII16` re-exports from the faithful
-`string/immutable.zig` copy, `bun.clone`, `bun.feature_flag`,
-`bun.options.defaultLoaders`, `bun.unsafeAssert`, `cpp.BunString__toThreadSafe`
-/ `JSC__JSValue__isAnyInt`, the `Async.KeepAlive` ref/unref/disable
-surface, and `ManagedTask`/`AnyTask.Task` unification) plus three Zig
-0.17 stdlib-drift fixes (`std.time.milliTimestamp` →
-`bun.milliTimestamp` via `std.c.clock_gettime`, the `Bun__parseDate`
-error-union-on-C-ABI signature, and a runtime-indexed `@Vector` in
-`firstNonASCII16`'s debug scan). The default macOS JSC-enabled command
-still needs a fresh pass after the non-JSC frontier closes.
+**9 errors** on 2026-05-26, down from **38** earlier the same day. The
+progression: the parked `EventLoopHandle.EventLoop` opaque became a sized
+struct (so `VirtualMachine.zig` embeds it by value), then successive
+faithful-port passes closed the granular layers it exposed.
 
-The remaining 12 errors are six/seven distinct subsystem-port clusters,
-each needing a dedicated port rather than a shallow alias:
+Closed this run (all faithful, not shallow fakes):
 
-| Cluster | Representative errors | Port needed |
+- **strings/immutable substrate** — `copyLowercase`/`lastIndexOfChar`/
+  `whitespace_chars`/`startsWithChar`/`eqlLong`/`utf16EqlString`/
+  `firstNonASCII16` re-exports, `bun.clone`/`feature_flag`/
+  `options.defaultLoaders`/`unsafeAssert`, `cpp.BunString__toThreadSafe`/
+  `JSC__JSValue__isAnyInt`, `Async.KeepAlive` ref/unref/disable, and
+  `ManagedTask`/`AnyTask.Task` unification.
+- **node Buffer identity** — `bun.api.node.Buffer` re-pointed at
+  `jsc.MarkedArrayBuffer` (was the pure-Zig `node/buffer.zig`); restored the
+  faithful `buffer.slice()` calls in `runtime/node/types.zig`.
+- **AnyPromise unification** — `AnyPromise`'s divergent local
+  `Promise`/`InternalPromise`/`JSValue`/`VM`/`JSGlobalObject` stubs aliased
+  to the canonical `jsc.JSPromise`/`JSInternalPromise`/etc. (the canonical
+  types now carry the full promise method surface), plus the parked
+  `JSC__JSPromise__status`/`result`/`isHandled`/`setHandled`/`rejectAsHandled`
+  cpp stubs.
+- **JSC value-type unification** — `Errorable.JSValue` and `Exception`'s
+  `JSValue`/`JSGlobalObject` pointed at the canonical jsc types
+  (`Exception.value()` now returns `JSValue` by value).
+- **VM resolver path** — wired `jsc.ModuleLoader.HardcodedModule` to the
+  self-contained `resolve_builtins/HardcodedModule.zig` builtin-alias table,
+  and gave `node/process.zig`'s `exit` the Bun-faithful
+  `exit(globalObject, code)` signature.
+
+Zig 0.17 stdlib-drift fixes folded in: `std.time.milliTimestamp` →
+`bun.milliTimestamp` (`std.c.clock_gettime`), the C-ABI `Bun__parseDate`
+error-union signature, and a runtime-indexed `@Vector` in `firstNonASCII16`.
+The default macOS JSC-enabled command still needs a fresh pass after the
+non-JSC frontier closes.
+
+The remaining **9 errors** are deep subsystem-port clusters; several have
+hard prerequisites discovered this run and are no longer shallow stub
+additions:
+
+| Cluster | Representative errors | Real blocker discovered |
 |---|---|---|
-| `Output.Source` streaming | `output.Source` / `output.errorWriterBuffered` in ConsoleObject/VirtualMachine | Real Bun `output.zig` `Source`/buffered-writer machinery |
-| JSC value-type unification | `Errorable.JSValue` vs `JSValue`, `Exception.value()` returning `*Exception.JSValue`, `AnyPromise.normal` vs `*JSPromise` | Point the parked stub files at the canonical `jsc.JSValue`/`JSPromise` |
-| SavedSourceMap | `jsc.SavedSourceMap` missing `lock`/`unlock`/`last_path_hash`/`last_ism`/`getValueLocked`/`putMappings`/`putValue`/`resolveMapping` | Port `jsc/SavedSourceMap.zig` storage + mutex |
-| RareData S3/IPC | `RareData.awsCache`, `RareData.spawnIPCGroup` | AWS signature cache + `uws.SocketGroup` IPC wiring |
-| Codegen Cached accessors | `DisabledTypedClass(...).ipcCallbackSetCached` | Generate `<field>GetCached`/`SetCached` pairs in `codegen_disabled.zig` |
-| node Buffer identity | `node.buffer.Buffer` has no `buffer` field | `runtime/node/types.zig` should reference the JSC-binding Buffer, not the pure-Zig one |
-| BoringSSL TLS surface | `BoringSSL.c.SSL_get_error`, `BoringSSL.c.SSL.getVerifyError` | Expand the parked `BoringSSL.c` stub for the socket ssl_wrapper path |
+| `Output.Source` streaming | `output.Source` / `output.errorWriterBuffered` | **Blocked on a `sys/File.zig` writer migration**: `Source` instantiates `File.QuietWriter`, which uses `std.Io.GenericWriter` — removed in this Zig. The old→new `adaptToNewApi` bridge assumes a GenericWriter that no longer exists; File's Writer/QuietWriter must move to the new `std.Io.Writer` interface first. Also pulls `home_rt.take`, `jsc.ZigException`, more `Exception.value`. |
+| `install/PackageManager` | `install/PackageManager.zig` `std.fs.Dir` (→ `std.Io.Dir`) drift, blocking the rest of the file | **Not a parity goal** — Pantry is the intentional package-manager divergence. Pulled into the graph because copied VM code references `resolver.package_manager`. The right move is a Pantry-backed/stub `package_manager` type for the resolver, not porting Bun's installer. |
+| SavedSourceMap | `jsc.SavedSourceMap` missing `lock`/`unlock`/`last_path_hash`/`last_ism`/`getValueLocked`/`putMappings`/`putValue`/`resolveMapping` | Adding `lock` cascades the whole `resolveSourceMapping` body; needs the real `jsc/SavedSourceMap.zig` storage + mutex port. |
+| RareData S3/IPC | `RareData.awsCache`, `RareData.spawnIPCGroup` | `AWSSignatureCache` uses the pre-0.17 managed `StringArrayHashMap.init(allocator)` (now an allocator-per-method `ArrayHashMap` taking 3 args); needs a Zig-0.17 refactor first, plus `uws.SocketGroup` for IPC. |
+| Codegen Cached accessors | `DisabledTypedClass(...).ipcCallbackSetCached` | Zig can't synthesize named decls from strings, so the codegen pipeline (or explicit per-class accessors) must generate `<field>GetCached`/`SetCached`; also risks a subprocess.zig cascade. |
+| BoringSSL TLS surface | `BoringSSL.c.SSL_get_error`, `BoringSSL.c.SSL.getVerifyError` | ~40-symbol OpenSSL surface for `ssl_wrapper`; extern decls also need a link provider, so this is real BoringSSL wiring, not a stub. |
 
 Bundler tranche exit criteria:
 

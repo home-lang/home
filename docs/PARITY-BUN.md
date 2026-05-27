@@ -225,8 +225,10 @@ Invalid character: '@'`.
 
 Non-JSC runtime build frontier on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails with **12 compile errors**, down from **38**
-earlier the same day. The parked `EventLoopHandle.EventLoop` is now a
+--summary failures` fails with **9 compile errors**, down from **38**
+earlier the same day (node Buffer identity, AnyPromise, and
+Errorable/Exception/HardcodedModule clusters closed since the 12-error
+mark). The parked `EventLoopHandle.EventLoop` is now a
 sized struct (with `debug` / `deferred_tasks` / `drainMicrotasks` and the
 enter/exit/waker surface) so `jsc/VirtualMachine.zig` embeds it by value
 and the VM/webcore body type-checks. Closing that opened a more granular
