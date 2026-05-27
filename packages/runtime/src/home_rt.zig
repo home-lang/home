@@ -34,14 +34,10 @@ pub const fmt = @import("fmt.zig");
 pub const Generation = u16;
 pub const Wyhash11 = std.hash.Wyhash;
 pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
-pub const json = struct {
-    pub fn parseForMacro(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !ast.Expr {
-        _ = source;
-        _ = log;
-        _ = allocator;
-        return error.MacroFailed;
-    }
-};
+/// Mirrors Bun's `bun.json` (`interchange.json` → `parsers/json.zig`): the
+/// JSON / package.json / tsconfig parser leaf of the resolver/macro/PM cone.
+/// Dead-code-eliminated while the cone's parser probe stays off.
+pub const json = @import("parsers/json.zig");
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -107,6 +103,14 @@ pub const deprecated = struct {
     pub fn jsErrorToWriteError(_: anyerror) std.Io.Writer.Error {
         return error.WriteFailed;
     }
+
+    /// Mirrors Bun's `bun.deprecated.SinglyLinkedList`. The stdlib dropped the
+    /// pre-0.17 `std.SinglyLinkedList(T)` (node-embedding) shape, so the JSON
+    /// parser's `HashMapPool` node cache needs the historical API. Pulled from
+    /// a dedicated module rather than `bun_core/deprecated.zig` (whose RapidHash
+    /// test body still trips the pinned Zig 0.17.0-dev.263 `**` tokenizer bug,
+    /// so importing it would eagerly parse that file).
+    pub const SinglyLinkedList = @import("bun_core/singly_linked_list.zig").SinglyLinkedList;
 };
 
 pub fn DebugOnlyDisabler(comptime Type: type) type {
@@ -4341,6 +4345,7 @@ test {
     // Pull nested module tests into the home_rt test runner so a single
     // `zig build test -Dfilter=home_rt` exercises the whole substrate.
     _ = strings;
+    _ = @import("bun_core/singly_linked_list.zig");
     _ = Output;
     _ = Global;
     _ = Environment;
