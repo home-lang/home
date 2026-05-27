@@ -698,6 +698,27 @@ pub const Engine = struct {
             return self.computeSignatureAssignable(source, target);
         }
 
+        // Source type-parameter against a non-type-parameter target:
+        // a type parameter is assignable to `T` when its constraint is
+        // assignable to `T` (tsc's `getConstraintOfType` on the source).
+        // This is the polymorphic-`this` case — inside `class A2`, the
+        // `this` type is a type parameter constrained to `A2`, so
+        // `let a: A2 = this;` must NOT report TS2322. The earlier
+        // `tf.is_type_parameter => return true` short-circuit handles a
+        // type-parameter *target*; this handles a type-parameter *source*
+        // flowing into the concrete class/object it is constrained to.
+        // Guarded to a non-self constraint so unconstrained `T` (whose
+        // constraint resolves to `unknown`/none) still fails against a
+        // concrete target.
+        if (sf.is_type_parameter and !tf.is_type_parameter) {
+            if (self.typeParameterConstraint(source)) |constraint| {
+                if (constraint != source and constraint != target) {
+                    return self.isAssignableTo(constraint, target) catch false;
+                }
+                if (constraint == target) return true;
+            }
+        }
+
         // Primitive-vs-primitive: only identity matches at this layer.
         return false;
     }
