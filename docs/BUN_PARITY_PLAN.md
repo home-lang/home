@@ -690,6 +690,32 @@ measured prototypes all reverted, each revealing the next layer:
 Each is source-present-but-parked and is a multi-session port; pick one, port it
 against its corpus slice, ratchet the pass count, repeat.
 
+**CORPUS-GAP BACKLOG (2026-05-27, recon-mapped to exact files).** Banked
+tractable win this pass: `ERR_INVALID_THIS` for `Request` body methods (faithful
+`createInvalidThisError`/`determineSpecificType` port) + harness `gcTick`
+(`6a3667b9`). The remaining sampled gaps, tagged by tractability:
+- **Borderline-tractable (pure-JS-portable, good next tractable-wins targets):**
+  - `node:fs` `Stats`/`BigIntStats` classes (DEP0180 14-arg ctor, shared
+    prototype; `statSync` returns real instances) → `node/fs/fs-stats-constructor.test.ts`
+  - `Bun.inspect.table` snapshot-exact formatter → `bun/console/bun-inspect-table.test.ts`
+  - `TextEncoderStream`/`TextDecoderStream` transform-stream globals →
+    `web/encoding/encode-bad-chunks.test.ts`
+  - `process.setgroups` → `node/process/process-array-accessor-crash.test.ts`
+- **Needs native bindings / parked subsystems:**
+  - native `SharedArrayBuffer` on the corpus JSContextRef global →
+    `web/atomics.test.ts`
+  - `bun:jsc` `heapStats().objectTypeCounts.string` → `web/request/request-method-getter.test.ts`
+  - native `Bun.hash` family (wyhash/adler32/crc32/cityHash) → `bun/util/hash.test.js`
+  - `bun:ffi` `Bun.FFI.viewSource` → `bun/ffi/ffi-viewSource-non-object.test.ts`
+  - webcore body/stream store-detachment (`Response.body` stream,
+    `ERR_BODY_ALREADY_USED`) → `web/streams/readable-stream-blob-consumed.test.ts`
+  - `CloseEvent` global + `Bun.spawnSync` (parked subprocess) → `js/...globals`
+
+Operational note: the "canonical main sync" automation occasionally leaves
+foreign uncommitted edits in the shared working tree (e.g. reverted
+parser-probe experiments with `CORPUS_PREP_SENTINEL`/`ZZSENTINELZZ` markers);
+agents should `git reset --hard origin/main` and scope commits with `--only`.
+
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
 debug` now bottoms out at a *large parked subsystem set*, NOT more leaf fixes.
