@@ -693,6 +693,7 @@ pub const jsc = struct {
     pub const JSValue = @import("jsc/JSValue.zig").JSValue;
     pub const array_buffer = @import("jsc/array_buffer.zig");
     pub const ArrayBuffer = array_buffer.ArrayBuffer;
+    pub const MarkedArrayBuffer = array_buffer.MarkedArrayBuffer;
     pub const CallFrame = @import("jsc/CallFrame.zig").CallFrame;
     pub const JSGlobalObject = @import("jsc/JSGlobalObject.zig").JSGlobalObject;
     pub const ConsoleObject = @import("jsc/ConsoleObject.zig");
@@ -1811,7 +1812,11 @@ pub const node = struct {
     // ReadStream/WriteStream JS wrappers.
     pub const tty = @import("node/tty.zig");
     pub const validators = @import("runtime/node/util/validators.zig");
-    pub const Buffer = @import("node/buffer.zig").Buffer;
+    // Upstream `bun.api.node.Buffer` is `jsc.MarkedArrayBuffer` (a JSC-backed
+    // buffer carrying `.buffer.value`), not the pure-Zig `node/buffer.zig`
+    // ops type. All consumers (node fs/zlib bindings, bundler output writer,
+    // node types protect/unprotect) expect the JSC binding.
+    pub const Buffer = @import("jsc/array_buffer.zig").MarkedArrayBuffer;
     pub const Encoding = @import("node/types.zig").Encoding;
     pub const PathLike = @import("runtime/node/types.zig").PathLike;
     pub const PathOrFileDescriptor = @import("runtime/node/types.zig").PathOrFileDescriptor;
