@@ -43,6 +43,14 @@ pub const withoutLeadingPathSeparator = @import("string/immutable.zig").withoutL
 pub const isNPMPackageName = @import("string/immutable.zig").isNPMPackageName;
 pub const isNPMPackageNameIgnoreLength = @import("string/immutable.zig").isNPMPackageNameIgnoreLength;
 pub const endsWithAnyComptime = @import("string/immutable.zig").endsWithAnyComptime;
+// Comparator factories for `std.sort.*`. `NewLengthSorter` orders by raw
+// field length; `NewGlobLengthSorter` orders glob `exports`/`imports` keys by
+// their pre-`*` base length (then full length), matching the Node module
+// resolution `PATTERN_KEY_COMPARE`. The resolver cone spells the latter as
+// `strings.NewGlobLengthSorter(Entry.Data.Map.MapEntry, "key")`
+// (`resolver/package_json.zig`).
+pub const NewLengthSorter = @import("string/immutable.zig").NewLengthSorter;
+pub const NewGlobLengthSorter = @import("string/immutable.zig").NewGlobLengthSorter;
 
 pub fn indexOfChar(slice: []const u8, char: u8) ?usize {
     return std.mem.indexOfScalar(u8, slice, char);
@@ -808,4 +816,103 @@ test "BOM.removeAndConvertToUTF8WithoutDealloc keeps the base pointer for UTF-8"
     const out = try BOM.removeAndConvertToUTF8WithoutDealloc(.utf8, allocator, &list);
     try std.testing.expectEqualStrings("ok", out);
     try std.testing.expectEqual(base, out.ptr);
+}
+
+// ---- NewLengthSorter / NewGlobLengthSorter ----------------------------
+// Comparator factories used by `std.sort.*`. `lessThan(lhs, rhs)` is true
+// when `lhs` is *more specific* than `rhs`, so a `pdq`/`sort` orders keys
+// from most-specific to least-specific (Bun's `PATTERN_KEY_COMPARE`).
+//
+// The real factories instantiate against the native `string/immutable.zig`
+// `indexOfChar`, which dispatches to the `highway` SIMD C entrypoint
+// (`highway_index_of_char`). That C library is not linked into the pure-Zig
+// `home_rt` test target, so calling `lessThan` here would fail to link. We
+// therefore split coverage in two:
+//
+//   1. A comptime instantiation check that the exported generics type-check
+//      against a `{ key }` entry and expose the `lessThan` comparator with
+//      the expected signature — this exercises the re-export wiring.
+//   2. A byte-identical mirror of the glob comparator (only swapping the
+//      `highway`-backed `indexOfChar` for `std.mem.indexOfScalar`) so the
+//      ordering semantics are pinned with executable assertions.
+
+const GlobKeyTestEntry = struct { key: []const u8 };
+
+// Mirror of `NewGlobLengthSorter(GlobKeyTestEntry, "key").lessThan` using the
+// std `indexOfChar` so it can run without linking the highway C lib. Kept
+// line-for-line aligned with `string/immutable.zig`'s `NewGlobLengthSorter`.
+fn globLessThanMirror(lhs: GlobKeyTestEntry, rhs: GlobKeyTestEntry) bool {
+    const key_a = lhs.key;
+    const key_b = rhs.key;
+    const star_a = std.mem.indexOfScalar(u8, key_a, '*');
+    const star_b = std.mem.indexOfScalar(u8, key_b, '*');
+    const base_length_a = star_a orelse key_a.len;
+    const base_length_b = star_b orelse key_b.len;
+    if (base_length_a > base_length_b) return true;
+    if (base_length_b > base_length_a) return false;
+    if (star_a == null) return false;
+    if (star_b == null) return true;
+    if (key_a.len > key_b.len) return true;
+    if (key_b.len > key_a.len) return false;
+    return false;
+}
+
+test "NewLengthSorter / NewGlobLengthSorter export + instantiate" {
+    // Re-export wiring: the generics resolve and expose `lessThan` with the
+    // upstream `fn (Sorter, T, T) bool` signature. Evaluated at comptime so we
+    // never emit a runtime call into the unlinked highway entrypoint.
+    comptime {
+        const LenSorter = NewLengthSorter(GlobKeyTestEntry, "key");
+        const GlobSorter = NewGlobLengthSorter(GlobKeyTestEntry, "key");
+        const LenFn = @TypeOf(LenSorter.lessThan);
+        const GlobFn = @TypeOf(GlobSorter.lessThan);
+        std.debug.assert(@typeInfo(LenFn).@"fn".return_type.? == bool);
+        std.debug.assert(@typeInfo(GlobFn).@"fn".return_type.? == bool);
+        std.debug.assert(@typeInfo(LenFn).@"fn".params.len == 3);
+        std.debug.assert(@typeInfo(GlobFn).@"fn".params.len == 3);
+    }
+}
+
+test "glob sorter: longer pre-star base length is more specific" {
+    // base length = chars before '*'. "./foo/*" (base 6) is more specific
+    // than "./*" (base 2), so it sorts first (lessThan == true).
+    try std.testing.expect(globLessThanMirror(.{ .key = "./foo/*" }, .{ .key = "./*" }));
+    try std.testing.expect(!globLessThanMirror(.{ .key = "./*" }, .{ .key = "./foo/*" }));
+}
+
+test "glob sorter: a literal key (no star) loses the base-length tie to a glob" {
+    // Upstream: when keyA has no '*' it returns "1" (sorts after) -> false;
+    // when keyB has no '*' the glob keyA sorts before -> true.
+    try std.testing.expect(!globLessThanMirror(.{ .key = "./foo" }, .{ .key = "./foo*" }));
+    try std.testing.expect(globLessThanMirror(.{ .key = "./foo*" }, .{ .key = "./foo" }));
+}
+
+test "glob sorter: equal base length, both globs, longer total wins" {
+    // Both base length 6 ("./foo/"). The longer total "./foo/*.js" is more
+    // specific than "./foo/*", so it sorts first.
+    try std.testing.expect(globLessThanMirror(.{ .key = "./foo/*.js" }, .{ .key = "./foo/*" }));
+    try std.testing.expect(!globLessThanMirror(.{ .key = "./foo/*" }, .{ .key = "./foo/*.js" }));
+}
+
+test "glob sorter: identical keys are not strictly less" {
+    try std.testing.expect(!globLessThanMirror(.{ .key = "./foo/*" }, .{ .key = "./foo/*" }));
+}
+
+test "glob sorter: pdq sort yields most-specific-first ordering" {
+    var entries = [_]GlobKeyTestEntry{
+        .{ .key = "./*" },
+        .{ .key = "./foo/*.js" },
+        .{ .key = "./foo/*" },
+        .{ .key = "./foo/bar/*" },
+    };
+    std.sort.pdq(GlobKeyTestEntry, &entries, {}, struct {
+        fn lt(_: void, a: GlobKeyTestEntry, b: GlobKeyTestEntry) bool {
+            return globLessThanMirror(a, b);
+        }
+    }.lt);
+    // Descending specificity: deepest base length first, then longer total.
+    try std.testing.expectEqualStrings("./foo/bar/*", entries[0].key); // base 10
+    try std.testing.expectEqualStrings("./foo/*.js", entries[1].key); // base 6, total 10
+    try std.testing.expectEqualStrings("./foo/*", entries[2].key); // base 6, total 7
+    try std.testing.expectEqualStrings("./*", entries[3].key); // base 2
 }

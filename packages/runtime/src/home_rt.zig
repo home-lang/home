@@ -2565,6 +2565,16 @@ pub const string = struct {
     pub const escapeRegExpForPackageNameMatching = @import("string/escapeRegExp.zig").escapeRegExpForPackageNameMatching;
 };
 
+// Upstream `bun.StringBuilder` aliases `string.StringBuilder` — the pure-Zig
+// `{len, cap, ptr}` two-phase buffer builder (`count`/`countZ` → `allocate`
+// → `append`/`appendZ`), NOT the WTF C++ wrapper at `jsc.StringBuilder`. The
+// resolver cone (`resolver/tsconfig_json.zig`, `logger/logger.zig`,
+// `http.HeaderBuilder`, install/PM) spells it as the top-level
+// `home_rt.StringBuilder`. The leaf is `core/string/StringBuilder.zig`, whose
+// root type is the builder itself (`const StringBuilder = @This()`), so the
+// module is aliased directly.
+pub const StringBuilder = @import("core/string/StringBuilder.zig");
+
 // ---- Home.* — JS-facing globals (formerly Bun.*) ----------------------
 // Thirteenth-wave port batch (2026-05-18). Bun's `Bun.*` JavaScript
 // surface lands here as Home's `Home.*` so callers can spell upstream's
