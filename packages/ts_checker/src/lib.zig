@@ -784,14 +784,31 @@ pub fn numberGlobal(
     const sig_number_call = try ti.internSignature(&[_]TypeId{any_t}, number_t, false);
     const sig_number_construct = try ti.internSignature(&[_]TypeId{any_t}, number_t, true);
 
+    const string_t = types.Primitive.string_t;
+    // `Number.parseInt(s, radix?): number`.
+    const undef_t = types.Primitive.undefined_t;
+    const opt_num = try ti.internUnion(&[_]TypeId{ number_t, undef_t });
+    const sig_parse_int = try ti.internSignature(&[_]TypeId{ string_t, opt_num }, number_t, false);
+    // `Number.parseFloat(s): number`.
+    const sig_parse_float = try ti.internSignature(&[_]TypeId{string_t}, number_t, false);
+
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("__call"), .type = sig_number_call, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("__construct"), .type = sig_number_construct, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("MAX_VALUE"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("MIN_VALUE"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("MAX_SAFE_INTEGER"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("MIN_SAFE_INTEGER"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("EPSILON"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("POSITIVE_INFINITY"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("NEGATIVE_INFINITY"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("NaN"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("isInteger"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("isFinite"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("isNaN"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("isSafeInteger"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("parseInt"), .type = sig_parse_int, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("parseFloat"), .type = sig_parse_float, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.number_global = try ti.internObjectType(&m);
     return cache.number_global;
