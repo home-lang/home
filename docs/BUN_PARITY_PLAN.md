@@ -183,14 +183,27 @@ carries no host `std.Io`). `home eval "console.log('hello', 1 + 2)"` prints
 `hello 3` through Home's own JSC. Object inspect-formatting (`{ a: 1 }` vs
 `[object Object]`) is a deliberate later refinement.
 
+**Second Phase-2 global landed (2026-05-27, `97cf14df`): `process`.**
+`jsc/process.zig` (`home_rt.jsc.process_global.install`) exposes the core
+surface real scripts use: `argv` (from the CLI), `env` (libc `environ`),
+`platform`/`arch`/`version`/`versions.node`/`pid` (Node-compat `24.0.0`,
+matching Bun's `BUN_REPORTED_NODEJS_VERSION` default), `cwd()` (libc
+`getcwd`), `exit(code)`, `nextTick` (microtask), and `stdout`/`stderr`
+`.write`. `home eval "console.log(process.platform, process.version)"` prints
+`darwin v24.0.0`; `process.exit(7)` exits 7. Same register-natives-then-JS-glue
+pattern as `console`; comptime-gated on `enable_jsc`; 3 focused tests.
+
 **Next (Phase 2): `home run file.{js,ts}` must stop delegating to pantry
 `bun`** and instead route through the JSC path: read the file, transpile TS
 via the already-faithful real parser (`transpileSourceWithBunParser`),
-evaluate through `home_rt.jsc.evaluate`, install `console` (done) + `process`
-(argv/env/exit; also fixes the `main.zig:3593` trailing-arg drop) + a basic
-module loader. That is the real lever for the subprocess corpus (so
-`Bun.spawn` of `home run` exercises Home's runtime, not Bun — see the
-CRITICAL GUARDRAIL below).
+evaluate through `home_rt.jsc.evaluate` with `console` (done) + `process`
+(done) installed, plus a basic module loader for `import`/`require`. The
+bounded first cut is **plain `.js` with no imports** (just install the globals
++ evaluate the file); then add the TS transform; then the module loader. That
+is the real lever for the subprocess corpus (so `Bun.spawn` of `home run`
+exercises Home's runtime, not Bun — see the CRITICAL GUARDRAIL below). When
+rerouting, also thread the real CLI argv (fixes the `main.zig:3593`
+trailing-arg drop) into `process_global.install`.
 
 ### Phase 2 - Loader And CLI Runtime Path
 
