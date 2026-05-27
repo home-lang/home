@@ -734,6 +734,31 @@ pub const Parser = struct {
         return self.interner.intern(inner) catch error.OutOfMemory;
     }
 
+    /// TS2439: an import/export-from declaration inside an ambient
+    /// external module body cannot reference its target through a
+    /// relative module name. Mirrors upstream tsc's grammar check on
+    /// `ExternalModuleReferenceInModuleDeclaration`. The check fires
+    /// only when we're inside a string-named ambient module
+    /// (`in_string_named_module`) and the specifier starts with
+    /// `./` / `../` (or is the bare `.` / `..`). Anchored at the
+    /// string-literal specifier token. Silently no-ops on synthesized
+    /// recovery tokens (zero-length span).
+    fn reportAmbientRelativeModuleIfNeeded(self: *Parser, mod_tok: Token) ParseError!void {
+        if (!self.in_string_named_module) return;
+        if (mod_tok.kind != .string_literal) return;
+        if (mod_tok.span.end <= mod_tok.span.start) return;
+        const lit = self.source[mod_tok.span.start..mod_tok.span.end];
+        if (lit.len < 3) return;
+        const inner = lit[1 .. lit.len - 1];
+        if (std.mem.startsWith(u8, inner, "./") or
+            std.mem.startsWith(u8, inner, "../") or
+            std.mem.eql(u8, inner, ".") or
+            std.mem.eql(u8, inner, ".."))
+        {
+            try self.reportCodeAt(mod_tok.span.start, mod_tok.line, 2439, "Import or export declaration in an ambient module declaration cannot reference module through relative module name.");
+        }
+    }
+
     fn internPropertyName(self: *Parser, tok: Token, span_: Span) ParseError!hir_mod.StringId {
         if (tok.kind == .string_literal) return self.internStringLiteral(tok);
         const slice = self.source[span_.start..span_.end];
@@ -6577,6 +6602,7 @@ pub const Parser = struct {
                         "Import declarations in a namespace cannot reference a module.",
                     );
                 }
+                try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
                 _ = try self.expect(.close_paren, "')' after require module specifier");
                 try self.consumeStatementTerminator();
             } else if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren) {
@@ -6604,6 +6630,7 @@ pub const Parser = struct {
         if (self.peek().kind == .string_literal) {
             // bare side-effect import: `import "module";`
             const mod_tok = self.advance();
+            try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
             // Optional import attributes: `with { type: "json" }` (TS 5.3+)
             // or legacy `assert { type: "json" }` — parsed and discarded.
             try self.skipImportAttributesClause();
@@ -6795,6 +6822,7 @@ pub const Parser = struct {
         // or legacy `assert { type: "json" }` — parsed and discarded.
         try self.skipImportAttributesClause();
         try self.consumeStatementTerminator();
+        try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
         const mod_id = if (mod_tok.span.start == mod_tok.span.end)
             (self.interner.intern("") catch return error.OutOfMemory)
         else
@@ -7317,6 +7345,7 @@ pub const Parser = struct {
                 module_tok_start = mod_tok.span.start;
                 module_tok_line = mod_tok.line;
                 has_module_specifier = true;
+                try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
                 try self.skipImportAttributesClause();
             }
             try self.consumeStatementTerminator();
@@ -7371,6 +7400,7 @@ pub const Parser = struct {
             }
             _ = try self.expect(.kw_from, "'from' after 'export *'");
             const mod_tok = try self.expect(.string_literal, "module specifier");
+            try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
             try self.skipImportAttributesClause();
             try self.consumeStatementTerminator();
             const mod_id = try self.internStringLiteral(mod_tok);
@@ -19536,6 +19566,58 @@ test "parser: TS2435 not reported for top-level ambient modules" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 2435);
+    }
+}
+
+test "parser: TS2439 import/export with relative path in ambient module" {
+    // Imports and exports inside `declare module "name" { ... }`
+    // cannot reference their target via a relative specifier.
+    // Covers: import-from, side-effect import, import-equals-require,
+    // named export-from, and export-* re-export.
+    var s = try newTestSetup(
+        \\declare module "outer" {
+        \\    import { a } from "./rel-import";
+        \\    import "./rel-side-effect";
+        \\    import req = require("../rel-require");
+        \\    export { b } from "./rel-named-export";
+        \\    export * from "./rel-star-export";
+        \\    import { ok } from "non-relative";
+        \\    export { c } from "fine";
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts2439_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2439) {
+            ts2439_count += 1;
+            try T.expectEqualStrings(
+                "Import or export declaration in an ambient module declaration cannot reference module through relative module name.",
+                d.message,
+            );
+        }
+    }
+    // 5 relative specifiers trip the diagnostic; the two "fine" /
+    // "non-relative" specifiers stay clean.
+    try T.expectEqual(@as(usize, 5), ts2439_count);
+}
+
+test "parser: TS2439 not reported outside ambient string-named modules" {
+    // Identifier-named ambient namespaces and top-level files allow
+    // relative specifiers; the diagnostic is scoped to external
+    // ambient (string-named) modules.
+    var s = try newTestSetup(
+        \\import { a } from "./top-level-rel";
+        \\declare namespace N {
+        \\    import { b } from "./ns-rel";
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2439);
     }
 }
 
