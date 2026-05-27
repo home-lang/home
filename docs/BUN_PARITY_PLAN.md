@@ -441,9 +441,37 @@ parity, not compile blockers), probed via `home-debug test`:**
    `bundler/transpiler/transpiler.test.js`: `enum Foo { [2]: 'hi' }` is not
    rejected; Bun emits `Expected identifier but found "["`.
 
-(Independent, pre-existing, flag-agnostic: `bundler/resolver/cache-runtime.test.ts`
-fails on module-cache invalidation after a dir delete+recreate — outside the
-parser/transpile path.)
+(Pre-existing, flag-agnostic `bundler/resolver/cache-runtime.test.ts` was
+fixed in `04049051` — the corpus `require()` now falls through to a disk read
+so delete+recreate invalidation works; 3/3 pass.)
+
+**CRITICAL REFRAME (2026-05-26) — there are TWO transpile paths, and the
+probe only governs one of them.** The corpus harness loads `*.test.ts`/`.js`
+FILES through `corpus_runner.zig`'s hand-written string-rewrite transpiler
+(`prepareCorpusModule` → `rewriteBunTestImport` → `rewriteBootstrapTypeScript`),
+which does NOT lower decorators or run the real parser. `use_bun_parser_probe`
+only gates `transpileSource`, which is reached EXCLUSIVELY by the
+`Bun.Transpiler.transformSync` *API*. Consequences:
+- `decorators.test.ts` fails at module-LOAD with `Invalid character '@'`
+  regardless of the probe — its own source uses decorators and the
+  string-rewrite loader can't lower them. The decorator lower/visit/print code
+  in `js_parser` is byte-faithful to Bun; it simply isn't on the loader path.
+- `transpiler.test.js` exercises the `Bun.Transpiler` API, so it IS governed
+  by the probe — once the cone compiles and the probe flips, the
+  already-faithful enum/parse behavior applies there.
+
+So the real corpus-wide unlock is bigger than "flip the flag": **route the
+corpus module LOADER through the real parser** (replace/augment
+`rewriteBootstrapTypeScript` with the real `Parser.init`→`parse`→`printAst`
+path, same as `transpileSourceWithBunParser`). That is the next major
+integration after the cone compiles. Sequencing:
+1. Finish the cone compile (small Zig-0.17 leaf cascade; `semver String.Builder`,
+   `http.Method`, `ast` cast, `strings.startsWithWindowsDriveLetter` landed in
+   `58ff0993`; remaining leaves being ground out).
+2. Flip `use_bun_parser_probe` on for the `Bun.Transpiler` API path (land
+   `transpiler.test.js` etc.) once the bootstrap subset stays green.
+3. Route the corpus module loader through the real parser → decorators and the
+   broad transpiler/bundler corpus transpile through the faithful parser.
 
 Parser hot-path probe on 2026-05-26 after the FD/sys shim batch: the
 temporarily enabled `transpileSourceWithBunParser` no longer stops at
