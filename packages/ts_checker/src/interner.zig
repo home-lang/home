@@ -108,6 +108,18 @@ pub const TypeKey = union(Kind) {
     number_lit: u64,
     bigint_lit: StringId,
     boolean_lit: bool,
+    /// Enum-member literal (`Choice.Yes`). Keyed on the owning
+    /// enum + member names *and* the underlying value so that two
+    /// distinct members collapse only when they truly name the same
+    /// member, and never collide with the bare literal sharing the
+    /// value. `value` is the regular `LiteralData` written into the
+    /// literal payload column. Mirrors tsc's `enumLiteralTypes`
+    /// keyed by `(enumSymbol, value)`.
+    enum_lit: struct {
+        enum_name: StringId,
+        member_name: StringId,
+        value: types.LiteralData,
+    },
     /// Union: members must be sorted by TypeId (interner sorts before
     /// keying so `A | B` and `B | A` collapse).
     union_t: []const TypeId,
@@ -142,6 +154,7 @@ pub const TypeKey = union(Kind) {
         number_lit,
         bigint_lit,
         boolean_lit,
+        enum_lit,
         union_t,
         intersection,
         conditional,
@@ -164,6 +177,17 @@ pub const TypeKey = union(Kind) {
             .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
             .bigint_lit => |id| hasher.update(std.mem.asBytes(&id)),
             .boolean_lit => |b| hasher.update(std.mem.asBytes(&b)),
+            .enum_lit => |e| {
+                hasher.update(std.mem.asBytes(&e.enum_name));
+                hasher.update(std.mem.asBytes(&e.member_name));
+                hasher.update(&[_]u8{@intFromEnum(@as(types.LiteralTag, e.value))});
+                switch (e.value) {
+                    .string_lit => |sid| hasher.update(std.mem.asBytes(&sid)),
+                    .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
+                    .bigint_lit => |sid| hasher.update(std.mem.asBytes(&sid)),
+                    .boolean_lit => |b| hasher.update(std.mem.asBytes(&b)),
+                }
+            },
             .union_t, .intersection => |members| {
                 for (members) |m| hasher.update(std.mem.asBytes(&m));
             },
@@ -229,6 +253,17 @@ pub const TypeKey = union(Kind) {
             .number_lit => |a| a == other.number_lit,
             .bigint_lit => |a| a == other.bigint_lit,
             .boolean_lit => |a| a == other.boolean_lit,
+            .enum_lit => |a| blk: {
+                const b = other.enum_lit;
+                if (a.enum_name != b.enum_name or a.member_name != b.member_name) break :blk false;
+                if (@as(types.LiteralTag, a.value) != @as(types.LiteralTag, b.value)) break :blk false;
+                break :blk switch (a.value) {
+                    .string_lit => |sid| sid == b.value.string_lit,
+                    .number_lit => |bits| bits == b.value.number_lit,
+                    .bigint_lit => |sid| sid == b.value.bigint_lit,
+                    .boolean_lit => |bv| bv == b.value.boolean_lit,
+                };
+            },
             .union_t => |a| std.mem.eql(TypeId, a, other.union_t),
             .intersection => |a| std.mem.eql(TypeId, a, other.intersection),
             .conditional => |a| {
@@ -357,6 +392,14 @@ pub const Interner = struct {
     /// never reallocates during normal operation.
     pool_mu: SpinMutex = .{},
 
+    /// `TypeId` → enum-member identity for enum-literal types
+    /// (`Choice.Yes`). Populated only when an enum member is accessed,
+    /// so it stays small. Written under `pool_mu` alongside the header
+    /// append; readers consult it lock-free after the writer has
+    /// published the entry (the `is_enum_literal` header flag gates
+    /// every lookup).
+    enum_literal_info: std.AutoHashMapUnmanaged(TypeId, types.EnumLiteralInfo) = .empty,
+
     pub fn init(gpa: std.mem.Allocator) !Interner {
         var self: Interner = .{
             .gpa = gpa,
@@ -378,6 +421,7 @@ pub const Interner = struct {
         while (i < N_SHARDS) : (i += 1) {
             self.shards[i].deinit(self.gpa);
         }
+        self.enum_literal_info.deinit(self.gpa);
         self.pool.deinit();
     }
 
@@ -401,6 +445,47 @@ pub const Interner = struct {
     pub fn internBooleanLiteral(_: *Interner, value: bool) TypeId {
         // Reuse the pre-interned primitives.
         return if (value) Primitive.true_lit else Primitive.false_lit;
+    }
+
+    /// Intern an enum-member literal type (`Choice.Yes`). The result is
+    /// a fresh unit type carrying both the literal value (number or
+    /// string) and the owning enum/member identity, so it is distinct
+    /// from the bare literal sharing its value and from another enum's
+    /// member with the same value. Mirrors tsc's `getEnumLiteralType`,
+    /// which keys a fresh `EnumLiteral | (String|Number)Literal` type
+    /// on `(enumSymbol, value)`. Two accesses of the same member return
+    /// the same `TypeId`.
+    pub fn internEnumNumberLiteral(self: *Interner, value: f64, enum_name: StringId, member_name: StringId) !TypeId {
+        const bits: u64 = @bitCast(value);
+        const key: TypeKey = .{ .enum_lit = .{
+            .enum_name = enum_name,
+            .member_name = member_name,
+            .value = .{ .number_lit = bits },
+        } };
+        return try self.internKey(key, .{ .is_number = true, .is_literal = true, .is_enum_literal = true });
+    }
+
+    pub fn internEnumStringLiteral(self: *Interner, value: StringId, enum_name: StringId, member_name: StringId) !TypeId {
+        const key: TypeKey = .{ .enum_lit = .{
+            .enum_name = enum_name,
+            .member_name = member_name,
+            .value = .{ .string_lit = value },
+        } };
+        return try self.internKey(key, .{ .is_string = true, .is_literal = true, .is_enum_literal = true });
+    }
+
+    /// Enum/member identity for an enum-literal type, or null when `id`
+    /// is not an enum-literal. Gated by the `is_enum_literal` flag so
+    /// the side-table lookup only fires for genuine enum literals.
+    pub fn enumLiteralInfo(self: *const Interner, id: TypeId) ?types.EnumLiteralInfo {
+        if (id >= self.pool.typeCount()) return null;
+        if (!self.pool.flagsOf(id).is_enum_literal) return null;
+        return self.enum_literal_info.get(id);
+    }
+
+    pub fn isEnumLiteral(self: *const Interner, id: TypeId) bool {
+        if (id >= self.pool.typeCount()) return false;
+        return self.pool.flagsOf(id).is_enum_literal;
     }
 
     /// Intern a union of `members`. The caller's slice is consumed and
@@ -991,6 +1076,15 @@ pub const Interner = struct {
                 try self.pool.literal_payloads.append(self.gpa, .{ .boolean_lit = b });
                 break :blk idx;
             },
+            .enum_lit => |e| blk: {
+                // The literal *value* shares the regular literal payload
+                // column, so `literalOf` resolves it transparently. The
+                // enum/member identity is recorded in the side-table once
+                // the header id is known (below).
+                const idx: u32 = @intCast(self.pool.literal_payloads.items.len);
+                try self.pool.literal_payloads.append(self.gpa, e.value);
+                break :blk idx;
+            },
             .union_t => |members| blk: {
                 const start: u32 = @intCast(self.pool.member_pool.items.len);
                 try self.pool.member_pool.appendSlice(self.gpa, members);
@@ -1099,6 +1193,12 @@ pub const Interner = struct {
             .symbol = 0,
             .payload = payload_idx,
         });
+        if (key == .enum_lit) {
+            try self.enum_literal_info.put(self.gpa, id, .{
+                .enum_name = key.enum_lit.enum_name,
+                .member_name = key.enum_lit.member_name,
+            });
+        }
         try shard.table.putNoClobberContext(self.gpa, key, id, KeyHashCtx{});
         return id;
     }
