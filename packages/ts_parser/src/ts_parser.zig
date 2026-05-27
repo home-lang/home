@@ -6419,6 +6419,20 @@ pub const Parser = struct {
                 }
             }
         }
+        // TS2435: `declare module "outer" { declare module "inner" {}}`
+        // (or any ambient external module declared inside another
+        // namespace/module body) is rejected by upstream tsc —
+        // ambient modules must appear at the top level of a file.
+        // `namespace_depth > 0` signals we're inside another
+        // namespace/module body at this point. Only applies to the
+        // string-literal (external module) form; identifier-named
+        // namespaces nest freely.
+        if (name_tok.kind == .string_literal and
+            self.namespace_depth > 0 and
+            (self.ambient_depth > 0 or self.isAmbientContextAt(start.span.start)))
+        {
+            try self.reportCodeAt(name_tok.span.start, name_tok.line, 2435, "Ambient modules cannot be nested in other modules or namespaces.");
+        }
         var name_end = name_tok.span.end;
         while (self.peek().kind == .dot) {
             _ = self.advance();
@@ -19480,6 +19494,48 @@ test "parser: TS2436 not reported for non-ambient module declarations" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 2436);
+    }
+}
+
+test "parser: TS2435 ambient modules cannot be nested" {
+    // `declare module "outer" { declare module "inner" { } }` is
+    // rejected: the inner ambient external module is nested inside
+    // another namespace body. Same applies when nested inside an
+    // identifier-named ambient namespace.
+    var s = try newTestSetup(
+        \\declare module "outer" {
+        \\    declare module "inner" { }
+        \\}
+        \\declare namespace N {
+        \\    declare module "inside-namespace" { }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts2435_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2435) {
+            ts2435_count += 1;
+            try T.expectEqualStrings("Ambient modules cannot be nested in other modules or namespaces.", d.message);
+        }
+    }
+    // Both inner string-named ambient modules trip the diagnostic.
+    try T.expectEqual(@as(usize, 2), ts2435_count);
+}
+
+test "parser: TS2435 not reported for top-level ambient modules" {
+    // Sibling top-level ambient modules in the same file are legal
+    // and must NOT fire TS2435.
+    var s = try newTestSetup(
+        \\declare module "first" { }
+        \\declare module "second" { }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2435);
     }
 }
 
