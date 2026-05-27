@@ -169,14 +169,28 @@ Done when:
 
 **Phase 1 is now substantially met for eval** (the first real, non-shim,
 non-delegation runtime parity increment). The remaining Phase-1 gap is a
-focused retained-callback test. **Next (Phase 2): `home run file.{js,ts}`
-must stop delegating to pantry `bun` and instead route through this same JSC
-path** — i.e. read the file, transpile TS via the already-faithful real
-parser (`transpileSourceWithBunParser`), evaluate through
-`home_rt.jsc.evaluate`, and expose the minimal globals (`console`, `process`,
-module loader) the script needs. That is the next bounded increment and the
-real lever for the subprocess corpus (so `Bun.spawn` of `home run` exercises
-Home's runtime, not Bun — see the CRITICAL GUARDRAIL below).
+focused retained-callback test — though `jsc/console.zig` (below) now
+exercises `registerCallback` end-to-end, so this is largely covered too.
+
+**First Phase-2 global landed (2026-05-27, `46b671a8`): `console`.** The bare
+`JSGlobalContextCreate` eval realm had no host globals, so eval'd code could
+not print. `jsc/console.zig` (`home_rt.jsc.console_global.install`) registers
+two host callbacks (`registerCallback`) and assembles
+`globalThis.console.{log,info,debug,trace,dir}` → stdout /
+`console.{error,warn}` → stderr, each arg rendered via `JSValueToString`,
+space-joined, newline-terminated (libc `write(2)` — the JSC C-ABI callback
+carries no host `std.Io`). `home eval "console.log('hello', 1 + 2)"` prints
+`hello 3` through Home's own JSC. Object inspect-formatting (`{ a: 1 }` vs
+`[object Object]`) is a deliberate later refinement.
+
+**Next (Phase 2): `home run file.{js,ts}` must stop delegating to pantry
+`bun`** and instead route through the JSC path: read the file, transpile TS
+via the already-faithful real parser (`transpileSourceWithBunParser`),
+evaluate through `home_rt.jsc.evaluate`, install `console` (done) + `process`
+(argv/env/exit; also fixes the `main.zig:3593` trailing-arg drop) + a basic
+module loader. That is the real lever for the subprocess corpus (so
+`Bun.spawn` of `home run` exercises Home's runtime, not Bun — see the
+CRITICAL GUARDRAIL below).
 
 ### Phase 2 - Loader And CLI Runtime Path
 
