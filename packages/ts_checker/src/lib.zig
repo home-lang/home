@@ -99,6 +99,39 @@ pub fn stringProto(
     // UTF-16 code unit at the given index, NaN if out of range).
     const sig_num_num = try ti.internSignature(&[_]TypeId{number_t}, number_t, false);
 
+    const any_t = types.Primitive.any;
+    const undef_t = types.Primitive.undefined_t;
+    const string_or_undefined_t = try ti.internUnion(&[_]TypeId{ string_t, undef_t });
+    const number_or_undefined_t = optional_number_t;
+
+    // `replace(pattern: string | RegExp, replacement): string`. The
+    // pattern accepts both `string` and `RegExp`; modeled as `any` so
+    // `s.replace(/re/, "x")` and `s.replace("a", "b")` both resolve.
+    // Replacement may be a string or a replacer function — modeled `any`.
+    const sig_replace = try ti.internSignature(&[_]TypeId{ any_t, any_t }, string_t, false);
+    // `match(pattern): RegExpMatchArray | null` / `matchAll(...)` —
+    // modeled loosely as returning `any` (the precise match-array type
+    // isn't wired). `search(pattern): number`.
+    const sig_match = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    const sig_search = try ti.internSignature(&[_]TypeId{any_t}, number_t, false);
+    // `padStart(maxLength: number, fillString?: string): string` /
+    // `padEnd(...)`.
+    const sig_pad = try ti.internSignature(&[_]TypeId{ number_t, string_or_undefined_t }, string_t, false);
+    // `at(index: number): string | undefined` (es2022).
+    const sig_at = try ti.internSignature(&[_]TypeId{number_t}, string_or_undefined_t, false);
+    // `codePointAt(pos: number): number | undefined` (es2015).
+    const sig_code_point_at = try ti.internSignature(&[_]TypeId{number_t}, number_or_undefined_t, false);
+    // `normalize(form?: string): string` (es2015).
+    const sig_normalize = try ti.internSignature(&[_]TypeId{string_or_undefined_t}, string_t, false);
+    // `localeCompare(that: string): number`.
+    const sig_locale_compare = try ti.internSignature(&[_]TypeId{string_t}, number_t, false);
+    // `lastIndexOf(searchString: string, position?: number): number`.
+    const sig_last_index_of = try ti.internSignature(&[_]TypeId{ string_t, number_or_undefined_t }, number_t, false);
+    // `substr(from: number, length?: number): string`.
+    const sig_substr = try ti.internSignature(&[_]TypeId{ number_t, number_or_undefined_t }, string_t, false);
+    // `padStart` etc. plus `valueOf(): string` / `toString(): string`.
+    const sig_to_string = sig_void_string;
+
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("charAt"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -127,6 +160,23 @@ pub fn stringProto(
         // params land in lib types.
         .{ .name = try sint.intern("concat"), .type = sig_str_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("repeat"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("replace"), .type = sig_replace, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("replaceAll"), .type = sig_replace, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("match"), .type = sig_match, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("matchAll"), .type = sig_match, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("search"), .type = sig_search, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("padStart"), .type = sig_pad, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("padEnd"), .type = sig_pad, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("trimStart"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("trimEnd"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("at"), .type = sig_at, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("codePointAt"), .type = sig_code_point_at, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("normalize"), .type = sig_normalize, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("localeCompare"), .type = sig_locale_compare, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("lastIndexOf"), .type = sig_last_index_of, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("substr"), .type = sig_substr, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("valueOf"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     // (concat is actually `(...strs: string[]): string`; we model the
     // common single-arg form. Will be replaced once rest params land
@@ -178,6 +228,7 @@ pub fn arrayProto(
     sint: *string_interner.Interner,
     gpa: std.mem.Allocator,
     elem: TypeId,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
 ) !TypeId {
     if (cache.array_proto_by_elem.get(elem)) |cached| return cached;
 
@@ -210,6 +261,12 @@ pub fn arrayProto(
     const cb_t_void = try ti.internSignature(&[_]TypeId{elem}, void_t, false);
     // `(a: T, b: T) => number` — used by sort.
     const cb_tt_num = try ti.internSignature(&[_]TypeId{ elem, elem }, number_t, false);
+    // `(prev: any, cur: T) => any` — reducer callback for reduce /
+    // reduceRight. lib.d.ts declares 4 params (prev, cur, idx, arr); we
+    // model the loose 2-param head — callbacks with more params remain
+    // assignable (contravariant), matching how map / filter callbacks
+    // are modeled here.
+    const cb_reduce = try ti.internSignature(&[_]TypeId{ any_t, elem }, any_t, false);
 
     // Method signatures.
     const sig_push = try ti.internSignature(&[_]TypeId{elem}, number_t, false);
@@ -237,6 +294,39 @@ pub fn arrayProto(
     const sig_values = try ti.internSignature(&[_]TypeId{}, arr_t, false);
     const sig_iterator = sig_values;
 
+    // `reduce(cb, init?): any` / `reduceRight(cb, init?): any`. The real
+    // overloads are generic over the accumulator `<U>`; without
+    // argument-driven `U` inference the accumulator/return is modeled as
+    // `any` (mirrors `map`'s `any[]`). `init?` is optional.
+    const any_or_undef = try ti.internUnion(&[_]TypeId{ any_t, undef_t });
+    const sig_reduce = try ti.internSignature(&[_]TypeId{ cb_reduce, any_or_undef }, any_t, false);
+    // `findIndex(pred): number` / `findLastIndex(pred): number`.
+    const sig_find_index = try ti.internSignature(&[_]TypeId{cb_t_unknown}, number_t, false);
+    // `findLast(pred): T | undefined` (es2023).
+    const sig_find_last = try ti.internSignature(&[_]TypeId{cb_t_unknown}, t_or_undef, false);
+    // `lastIndexOf(searchElement: T, fromIndex?: number): number`.
+    const sig_last_index_of = try ti.internSignature(&[_]TypeId{ elem, optional_number_t }, number_t, false);
+    // `at(index: number): T | undefined` (es2022).
+    const sig_at = try ti.internSignature(&[_]TypeId{number_t}, t_or_undef, false);
+    // `flat(depth?: number): any[]` — exact depth-driven element type
+    // needs recursive type machinery; `any[]` avoids the false positive.
+    const sig_flat = try ti.internSignature(&[_]TypeId{optional_number_t}, any_arr, false);
+    // `fill(value: T, start?: number, end?: number): T[]`.
+    const sig_fill = try ti.internSignature(&[_]TypeId{ elem, optional_number_t, optional_number_t }, arr_t, false);
+    // `copyWithin(target: number, start: number, end?: number): T[]`.
+    const sig_copy_within = try ti.internSignature(&[_]TypeId{ number_t, number_t, optional_number_t }, arr_t, false);
+    // `shift(): T | undefined`.
+    const sig_shift = try ti.internSignature(&[_]TypeId{}, t_or_undef, false);
+    // `unshift(...items: T[]): number` — the trailing `T[]` param is
+    // registered in `rest_set` so call-site arity expands it to 0+ `T`
+    // args (mirrors how `Math.max` is modeled).
+    const sig_unshift = try ti.internSignature(&[_]TypeId{arr_t}, number_t, false);
+    try rest_set.put(gpa, sig_unshift, {});
+    // `splice(start: number, deleteCount?: number, ...items: T[]): T[]`.
+    // The trailing `any[]` param is the rest binder.
+    const sig_splice = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t, any_arr }, arr_t, false);
+    try rest_set.put(gpa, sig_splice, {});
+
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = false, .is_method = false },
         .{ .name = try sint.intern("push"), .type = sig_push, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -260,6 +350,19 @@ pub fn arrayProto(
         .{ .name = try sint.intern("entries"), .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("Symbol.iterator"), .type = sig_iterator, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toArray"), .type = sig_to_array, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("reduce"), .type = sig_reduce, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("reduceRight"), .type = sig_reduce, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("findIndex"), .type = sig_find_index, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("findLast"), .type = sig_find_last, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("findLastIndex"), .type = sig_find_index, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("lastIndexOf"), .type = sig_last_index_of, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("at"), .type = sig_at, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("flat"), .type = sig_flat, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fill"), .type = sig_fill, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("copyWithin"), .type = sig_copy_within, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("shift"), .type = sig_shift, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("unshift"), .type = sig_unshift, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("splice"), .type = sig_splice, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     const proto = try ti.internObjectType(&m);
     try cache.array_proto_by_elem.put(gpa, elem, proto);
@@ -304,6 +407,28 @@ pub fn objectGlobal(
     const sig_create = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
     const sig_has_own_property = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
     const sig_to_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
+    // `Object.getOwnPropertyNames(o): string[]`.
+    const sig_own_names = try ti.internSignature(&[_]TypeId{any_t}, string_arr, false);
+    // `Object.getOwnPropertySymbols(o): symbol[]` — modeled `any[]`.
+    const sig_own_symbols = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
+    // `Object.freeze(o): T` / `seal` / `preventExtensions` — return the
+    // argument; modeled `(o: any): any`.
+    const sig_identity = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    // `Object.isFrozen(o): boolean` / `isSealed` / `isExtensible`.
+    const sig_any_bool = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
+    // `Object.getOwnPropertyDescriptor(o, key): PropertyDescriptor | undefined`.
+    const sig_own_descriptor = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
+    // `Object.getPrototypeOf(o): any` / `setPrototypeOf(o, proto): any`.
+    const sig_get_proto = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    const sig_set_proto = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
+    // `Object.fromEntries(entries): any` (es2019).
+    const sig_from_entries = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    // `Object.defineProperties(o, descriptors): any`.
+    const sig_define_properties = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
+    // `Object.is(a, b): boolean` (es2015).
+    const sig_is = try ti.internSignature(&[_]TypeId{ any_t, any_t }, boolean_t, false);
+    // `Object.getOwnPropertyDescriptors(o): any` (es2017).
+    const sig_own_descriptors = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
     const prototype_members = [_]types.ObjectMember{
         .{ .name = try sint.intern("hasOwnProperty"), .type = sig_has_own_property, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -318,6 +443,21 @@ pub fn objectGlobal(
         .{ .name = try sint.intern("assign"), .type = sig_assign, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("create"), .type = sig_create, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("defineProperty"), .type = sig_define_property, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("defineProperties"), .type = sig_define_properties, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("getOwnPropertyNames"), .type = sig_own_names, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("getOwnPropertySymbols"), .type = sig_own_symbols, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("getOwnPropertyDescriptor"), .type = sig_own_descriptor, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("getOwnPropertyDescriptors"), .type = sig_own_descriptors, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("getPrototypeOf"), .type = sig_get_proto, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("setPrototypeOf"), .type = sig_set_proto, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fromEntries"), .type = sig_from_entries, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("freeze"), .type = sig_identity, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("isFrozen"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("seal"), .type = sig_identity, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("isSealed"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("preventExtensions"), .type = sig_identity, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("isExtensible"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("is"), .type = sig_is, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.object_global = try ti.internObjectType(&m);
     return cache.object_global;
@@ -492,6 +632,31 @@ test "lib: stringProto exposes length/charAt/toUpperCase" {
     try T.expectEqual(types.Primitive.number_t, ti.objectMember(proto, length_id).?);
 }
 
+test "lib: stringProto exposes replace/padStart/at/matchAll and friends" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const proto = try stringProto(&cache, &ti, &sint);
+    for ([_][]const u8{
+        "replace",   "replaceAll", "match",         "matchAll", "search",
+        "padStart",  "padEnd",     "trimStart",     "trimEnd",  "at",
+        "codePointAt", "normalize", "localeCompare", "lastIndexOf",
+        "substr",    "valueOf",    "toString",
+    }) |name| {
+        try T.expect(ti.objectMember(proto, try sint.intern(name)) != null);
+    }
+    // `replace` returns `string`.
+    try T.expectEqual(types.Primitive.string_t, ti.signatureReturn(ti.objectMember(proto, try sint.intern("replace")).?).?);
+    // `search` returns `number`.
+    try T.expectEqual(types.Primitive.number_t, ti.signatureReturn(ti.objectMember(proto, try sint.intern("search")).?).?);
+    // A genuinely-missing member still resolves to null.
+    try T.expect(ti.objectMember(proto, try sint.intern("notARealStringMethod")) == null);
+}
+
 test "lib: numberProto exposes formatting methods" {
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
@@ -517,8 +682,10 @@ test "lib: arrayProto exposes length/push/map/flatMap" {
     defer ti.deinit();
     var cache: LibCache = .{};
     defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
 
-    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, &rest_set);
     const length_id = try sint.intern("length");
     const push_id = try sint.intern("push");
     const map_id = try sint.intern("map");
@@ -536,10 +703,43 @@ test "lib: arrayProto exposes iterator helper toArray" {
     defer ti.deinit();
     var cache: LibCache = .{};
     defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
 
-    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t);
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, &rest_set);
     const to_array_id = try sint.intern("toArray");
     try T.expect(ti.objectMember(proto, to_array_id) != null);
+}
+
+test "lib: arrayProto exposes reduce/flat/findLast/at and rest methods" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, &rest_set);
+    // es5/es2015/es2019/es2022/es2023 members that previously tripped TS2339.
+    for ([_][]const u8{
+        "reduce",      "reduceRight", "findIndex", "findLast", "findLastIndex",
+        "lastIndexOf", "at",          "flat",      "fill",     "copyWithin",
+        "shift",       "unshift",     "splice",
+    }) |name| {
+        try T.expect(ti.objectMember(proto, try sint.intern(name)) != null);
+    }
+    // `at` returns `T | undefined`.
+    const at_sig = ti.objectMember(proto, try sint.intern("at")).?;
+    const at_ret = ti.signatureReturn(at_sig).?;
+    try T.expect(at_ret >= ti.pool.typeCount() or ti.pool.flagsOf(at_ret).is_union);
+    // Variadic `unshift` / `splice` must be registered in the rest set so
+    // call-site arity expands the trailing `T[]` into 0+ args.
+    try T.expect(rest_set.contains(ti.objectMember(proto, try sint.intern("unshift")).?));
+    try T.expect(rest_set.contains(ti.objectMember(proto, try sint.intern("splice")).?));
+    // A genuinely-missing member still resolves to null (no false member).
+    try T.expect(ti.objectMember(proto, try sint.intern("definitelyNotAMethod")) == null);
 }
 
 test "lib: objectGlobal exposes keys/values/entries/assign" {
@@ -555,6 +755,33 @@ test "lib: objectGlobal exposes keys/values/entries/assign" {
     try T.expect(ti.objectMember(og, try sint.intern("values")) != null);
     try T.expect(ti.objectMember(og, try sint.intern("entries")) != null);
     try T.expect(ti.objectMember(og, try sint.intern("assign")) != null);
+}
+
+test "lib: objectGlobal exposes freeze/getOwnPropertyNames/fromEntries/is" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const og = try objectGlobal(&cache, &ti, &sint);
+    for ([_][]const u8{
+        "freeze",                "isFrozen",          "seal",
+        "isSealed",              "preventExtensions", "isExtensible",
+        "getOwnPropertyNames",   "getOwnPropertySymbols",
+        "getOwnPropertyDescriptor", "getOwnPropertyDescriptors",
+        "getPrototypeOf",        "setPrototypeOf",    "fromEntries",
+        "defineProperties",      "is",
+    }) |name| {
+        try T.expect(ti.objectMember(og, try sint.intern(name)) != null);
+    }
+    // `getOwnPropertyNames` returns `string[]`.
+    const names_sig = ti.objectMember(og, try sint.intern("getOwnPropertyNames")).?;
+    const names_ret = ti.signatureReturn(names_sig).?;
+    try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(names_ret));
+    // A genuinely-missing static still resolves to null.
+    try T.expect(ti.objectMember(og, try sint.intern("notARealObjectStatic")) == null);
 }
 
 test "lib: objectGlobal exposes prototype helpers" {

@@ -897,7 +897,26 @@ pub const Engine = struct {
             std.mem.eql(u8, name, "substring") or
             std.mem.eql(u8, name, "trim") or
             std.mem.eql(u8, name, "concat") or
-            std.mem.eql(u8, name, "repeat")))
+            std.mem.eql(u8, name, "repeat") or
+            // Members added to `lib.stringProto`. The wrapper `String`
+            // type reuses the same proto object, so any string member we
+            // expose must be acknowledged here or `var x: String = s`
+            // wrongly trips TS2322. Keep in sync with `lib.zig:stringProto`.
+            std.mem.eql(u8, name, "replace") or
+            std.mem.eql(u8, name, "replaceAll") or
+            std.mem.eql(u8, name, "match") or
+            std.mem.eql(u8, name, "matchAll") or
+            std.mem.eql(u8, name, "search") or
+            std.mem.eql(u8, name, "padStart") or
+            std.mem.eql(u8, name, "padEnd") or
+            std.mem.eql(u8, name, "trimStart") or
+            std.mem.eql(u8, name, "trimEnd") or
+            std.mem.eql(u8, name, "at") or
+            std.mem.eql(u8, name, "codePointAt") or
+            std.mem.eql(u8, name, "normalize") or
+            std.mem.eql(u8, name, "localeCompare") or
+            std.mem.eql(u8, name, "lastIndexOf") or
+            std.mem.eql(u8, name, "substr")))
         {
             return true;
         }
