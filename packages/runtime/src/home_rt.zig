@@ -1879,6 +1879,14 @@ pub const http = struct {
     pub const ThreadSafeStreamBuffer = @import("http/ThreadSafeStreamBuffer.zig");
     pub const websocket = @import("http/websocket.zig");
     pub const lshpack = @import("http/lshpack.zig");
+    // HTTP client surface required by the install/PM `NetworkTask` cone.
+    // Faithful to upstream `bun.http` = `src/http.zig`: the async client
+    // (`AsyncHTTP`), its completion result (`HTTPClientResult`), and the
+    // header builder live in `http/http.zig` / `http/HeaderBuilder.zig`.
+    pub const AsyncHTTP = @import("http/AsyncHTTP.zig");
+    pub const HeaderBuilder = @import("http/HeaderBuilder.zig");
+    pub const HTTPClientResult = @import("http/http.zig").HTTPClientResult;
+    pub const FetchRedirect = @import("http_types/FetchRedirect.zig").FetchRedirect;
     // Sixth-wave port batch (2026-05-18):
     pub const h3_client = struct {
         pub const AltSvc = @import("http/h3_client/AltSvc.zig");
