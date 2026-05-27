@@ -97,6 +97,13 @@ pub extern "c" fn JSObjectCallAsConstructor(ctx: ?*JSContextRef, constructor: ?*
 pub extern "c" fn JSObjectIsFunction(ctx: ?*JSContextRef, object: ?*JSObject) bool;
 pub extern "c" fn JSObjectIsConstructor(ctx: ?*JSContextRef, object: ?*JSObject) bool;
 
+// ---- Typed arrays (TextEncoder/TextDecoder etc.) -----------------------
+// Mirrors <JavaScriptCore/JSTypedArray.h>.
+pub extern "c" fn JSObjectMakeTypedArray(ctx: ?*JSContextRef, array_type: JSTypedArrayType, length: usize, exception: ExceptionRef) ?*JSObject;
+pub extern "c" fn JSObjectGetTypedArrayBytesPtr(ctx: ?*JSContextRef, object: ?*JSObject, exception: ExceptionRef) ?*anyopaque;
+pub extern "c" fn JSObjectGetTypedArrayLength(ctx: ?*JSContextRef, object: ?*JSObject, exception: ExceptionRef) usize;
+pub extern "c" fn JSValueGetTypedArrayType(ctx: ?*JSContextRef, value: ?*JSValue, exception: ExceptionRef) JSTypedArrayType;
+
 // ---- JSString lifecycle ----------------------------------------------
 
 pub extern "c" fn JSStringCreateWithUTF8CString(utf8: [*:0]const u8) ?*JSString;

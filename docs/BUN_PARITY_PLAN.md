@@ -193,6 +193,17 @@ matching Bun's `BUN_REPORTED_NODEJS_VERSION` default), `cwd()` (libc
 `darwin v24.0.0`; `process.exit(7)` exits 7. Same register-natives-then-JS-glue
 pattern as `console`; comptime-gated on `enable_jsc`; 3 focused tests.
 
+**Web globals batch landed (2026-05-27, `eeb46b52`): `jsc/web_globals.zig`.**
+`TextEncoder`/`TextDecoder` (UTF-8, native via the JSC typed-array C API —
+4 new externs in `extern_fns.zig`), `queueMicrotask`, and `btoa`/`atob`
+(Latin1 base64 in JS). `home eval` round-trips `'héllo ✓'` (10 UTF-8 bytes)
+and the standard base64 vectors. The native eval realm now has
+`console` + `process` + these web globals; remaining synchronous gaps are
+`URL`/`URLSearchParams`, `structuredClone`, `crypto.getRandomValues`. The
+next *foundational* gap is an **event loop** — `setTimeout`/`setInterval`/
+`queueMicrotask`-beyond-microtasks and async I/O need a loop to drain after
+script eval (JSC's `JSGlobalContext` drains microtasks but not timers).
+
 **Next (Phase 2): `home run file.{js,ts}` must stop delegating to pantry
 `bun`** and instead route through the JSC path: read the file, transpile TS
 via the already-faithful real parser (`transpileSourceWithBunParser`),
