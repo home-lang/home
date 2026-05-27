@@ -282,6 +282,15 @@ is to replace that body with the real parser-to-printer path
 (`Parser.init`, `parse`, `js_printer.printAst`), including `define`,
 scan/scanImports, and decorator lowering.
 
+Parser hot-path probe on 2026-05-26 after the FD/sys shim batch: the
+temporarily enabled `transpileSourceWithBunParser` no longer stops at
+`bun.FD`, `RuntimeTranspilerCache`, `MacroContext`, or missing
+uninitialized BunString symbols. The next compile frontier is now the
+printer/analyze cone: `ArrayHashMap` context return widths, remaining
+`std.AutoArrayHashMap` usage, stale printer `.{} -> .empty` sites,
+missing `bun.strings` WTF-8 helpers, `commonjs_named_exports` iteration,
+`std.Io.GenericWriter`, and `bun.ArenaAllocator`.
+
 Next-work ledger for the three-file frontier:
 
 | Work item | Faithful implementation target | Promotion evidence required |

@@ -628,7 +628,7 @@ fn NewPrinter(
 
         symbol_counter: u32 = 0,
 
-        temporary_bindings: std.ArrayListUnmanaged(B.Property) = .{},
+        temporary_bindings: std.ArrayListUnmanaged(B.Property) = .empty,
 
         binary_expression_stack: std.array_list.Managed(BinaryExpressionVisitor) = undefined,
 
@@ -6045,8 +6045,9 @@ pub fn printAst(
     if (PrinterType.may_have_module_info) {
         printer.module_info = opts.module_info;
     }
-    var bin_stack_heap = std.heap.stackFallback(1024, bun.default_allocator);
-    printer.binary_expression_stack = std.array_list.Managed(PrinterType.BinaryExpressionVisitor).init(bin_stack_heap.get());
+    var bin_stack_buf: [1024]u8 = undefined;
+    var bin_stack_heap = std.heap.BufferFirstAllocator.init(&bin_stack_buf, bun.default_allocator);
+    printer.binary_expression_stack = std.array_list.Managed(PrinterType.BinaryExpressionVisitor).init(bin_stack_heap.allocator());
     defer printer.binary_expression_stack.clearAndFree();
 
     if (!opts.bundling and
