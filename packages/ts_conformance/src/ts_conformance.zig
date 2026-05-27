@@ -84,10 +84,16 @@ const CheckerResolverAdapter = struct {
         defer self.resolver.gpa.free(src);
         const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
         const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
+        // `cannot be named`: not a direct top-level export, but reachable
+        // only as a nested member of an exported namespace (no importable
+        // alias). Only queried when it is not a top-level export.
+        const cannot_be_named = !exported and
+            ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
         const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
         return .{
             .module_name = module_name,
             .exported_type = exported,
+            .cannot_be_named = cannot_be_named,
         };
     }
 };

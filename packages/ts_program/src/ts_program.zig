@@ -21,6 +21,7 @@ const ts_driver = @import("ts_driver");
 const ts_resolver = @import("ts_resolver");
 const ts_cache = @import("ts_cache");
 const hir_mod_ns = @import("hir");
+const binder = @import("binder");
 
 pub const FileId = u32;
 
@@ -1008,8 +1009,20 @@ pub const Program = struct {
 // We deliberately scope this to a faithful subset: a top-level
 // `export`ed declaration in type space (`interface` / `type` / `class` /
 // `enum`). This mirrors the `from private module` case of
-// `selectDiagnosticBasedOnModuleName`. The harder alias-chain and
-// `cannot be named` cases are left for a future symbol-graph merge.
+// `selectDiagnosticBasedOnModuleName`.
+//
+// `moduleExportNestedTypeSpaceName` supplies the second fact upstream's
+// `isSymbolAccessibleWorker` needs to reach `Accessibility ==
+// CannotBeNamed`: a name that is reachable in the resolved module as a
+// type-space member NESTED inside an exported namespace (e.g.
+// `Widgets.SpecializedWidget.Widget2`) but is NOT itself a direct
+// top-level export. Such a symbol has no direct import alias the
+// importing file can write into the `.d.ts`, so its accessible-symbol
+// chain from the importing scope is empty while it still originates in a
+// different external module — exactly the `CannotBeNamed` branch of
+// `isSymbolAccessibleWorker` (`symbolExternalModule != enclosing`). The
+// emit then selects the `... but cannot be named` message via
+// `selectDiagnosticBasedOnModuleName(... moduleNotNameable ...)`.
 
 /// True when `module_source` declares `name` as an exported type-space
 /// symbol at module scope. Parses + binds the source through the same
@@ -1039,6 +1052,85 @@ pub fn moduleExportsTypeSpaceName(
     const id = compilation.interner.lookup(name) orelse return false;
     const sym = compilation.module.root.types.get(id) orelse return false;
     return sym.flags.is_type and sym.flags.is_export;
+}
+
+/// True when `name` is NOT a direct top-level type-space export of
+/// `module_source` (so `moduleExportsTypeSpaceName` returned false) but
+/// IS reachable as a type-space member nested inside one of the module's
+/// exported namespaces — e.g. `Widget2` inside `export namespace
+/// SpecializedWidget { export class Widget2 {} }`. Such a name has no
+/// importable top-level alias, so it "cannot be named" in a `.d.ts` that
+/// only sees the importing file's aliases. Mirrors the fall-through in
+/// upstream `isSymbolAccessibleWorker`: no accessible chain, but the
+/// symbol's external-module container differs from the enclosing one.
+///
+/// Faithful subset: we recurse only through `export`ed namespaces and
+/// look for a type-space binding of `name` (interface / type alias /
+/// class / enum / nested namespace). A name found only in value space,
+/// or only inside a non-exported namespace, is not reported (it is not
+/// reachable from the importing module at all, so upstream would emit
+/// `NotAccessible` / nothing rather than `CannotBeNamed`).
+pub fn moduleExportNestedTypeSpaceName(
+    gpa: std.mem.Allocator,
+    module_source: []const u8,
+    name: []const u8,
+    is_tsx: bool,
+) bool {
+    var compilation = ts_driver.compileSource(gpa, module_source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return false;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    const id = compilation.interner.lookup(name) orelse return false;
+    // A direct top-level type-space export is the `from private module`
+    // case, NOT `cannot be named`; exclude it here.
+    if (compilation.module.root.types.get(id)) |sym| {
+        if (sym.flags.is_type and sym.flags.is_export) return false;
+    }
+    // Scan every namespace scope in the module. The binder does not link
+    // `Symbol.members` to its body scope, but it records all scopes in
+    // `module.scopes` with a `parent` back-pointer and an
+    // `introducing_node`. A namespace scope is reachable cross-module
+    // when its introducing `namespace N` is exported AND every enclosing
+    // namespace up to the module root is likewise exported. If such a
+    // scope binds `id` in type space, the name is reachable only via
+    // qualification — it cannot be named by a top-level import alias.
+    for (compilation.module.scopes.items) |scope| {
+        if (scope.kind != .namespace) continue;
+        const member = scope.types.get(id) orelse continue;
+        if (!member.flags.is_type) continue;
+        if (namespaceScopeIsExportReachable(compilation, scope)) return true;
+    }
+    return false;
+}
+
+/// True when `scope` (a namespace body) and every enclosing namespace up
+/// to the module root are `export`ed, so the namespace chain is reachable
+/// from an importing module. The binder tags `export namespace N` on the
+/// value-space symbol of `N` in the *parent* scope, so we resolve the
+/// scope's introducing-decl name in its parent's value table and check
+/// `is_export`.
+fn namespaceScopeIsExportReachable(compilation: *ts_driver.Compilation, scope: *const binder.Scope) bool {
+    var cur: ?*const binder.Scope = scope;
+    while (cur) |sc| {
+        if (sc.kind == .module) return true; // reached the module root
+        if (sc.kind != .namespace) return false;
+        const parent = sc.parent orelse return false;
+        // Resolve the namespace name from its introducing decl.
+        const node = sc.introducing_node;
+        if (compilation.hir.kindOf(node) != .namespace_decl) return false;
+        const ns = hir_mod_ns.namespaceOf(&compilation.hir, node);
+        if (compilation.hir.kindOf(ns.name) != .identifier) return false;
+        const name_id = hir_mod_ns.identifierOf(&compilation.hir, ns.name).name;
+        const sym = parent.values.get(name_id) orelse parent.namespaces.get(name_id) orelse return false;
+        if (!sym.flags.is_export) return false;
+        cur = parent;
+    }
+    return false;
 }
 
 /// Render the `{2}` module-name slot for the declaration-emit privacy
@@ -1527,4 +1619,47 @@ test "moduleExportsTypeSpaceName: nested declarations do not leak as top-level e
     try T.expect(!moduleExportsTypeSpaceName(T.allocator, src, "Inner", false));
     // The namespace itself is a namespace-space export, not type-space.
     try T.expect(!moduleExportsTypeSpaceName(T.allocator, src, "N", false));
+}
+
+test "moduleExportNestedTypeSpaceName: type-space member of an exported namespace cannot be named" {
+    // `Inner` is reachable only as `N.Inner` — no top-level import alias
+    // can name it, so it is the `cannot be named` (CannotBeNamed) case.
+    const src =
+        \\export namespace N {
+        \\    export interface Inner {}
+        \\}
+    ;
+    try T.expect(moduleExportNestedTypeSpaceName(T.allocator, src, "Inner", false));
+    // Deeper nesting is also reachable only via qualification.
+    const deep =
+        \\export namespace Outer {
+        \\    export namespace Mid {
+        \\        export class Deep {}
+        \\    }
+        \\}
+    ;
+    try T.expect(moduleExportNestedTypeSpaceName(T.allocator, deep, "Deep", false));
+}
+
+test "moduleExportNestedTypeSpaceName: top-level exports and value-only members are NOT cannot-be-named" {
+    // A direct top-level type-space export is the `from private module`
+    // case, not `cannot be named` — must return false here.
+    try T.expect(!moduleExportNestedTypeSpaceName(T.allocator, "export interface I {}", "I", false));
+    try T.expect(!moduleExportNestedTypeSpaceName(T.allocator, "export class C {}", "C", false));
+    // A value-only nested member (function) is not a type-space symbol.
+    const value_only =
+        \\export namespace N {
+        \\    export function f() {}
+        \\}
+    ;
+    try T.expect(!moduleExportNestedTypeSpaceName(T.allocator, value_only, "f", false));
+    // A member of a NON-exported namespace is not reachable cross-module.
+    const private_ns =
+        \\namespace N {
+        \\    export interface Inner {}
+        \\}
+    ;
+    try T.expect(!moduleExportNestedTypeSpaceName(T.allocator, private_ns, "Inner", false));
+    // Absent name.
+    try T.expect(!moduleExportNestedTypeSpaceName(T.allocator, "export namespace N { export interface I {} }", "Missing", false));
 }
