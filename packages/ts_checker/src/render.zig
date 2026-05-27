@@ -158,8 +158,32 @@ fn renderTypeIntoCtx(
         try buf.appendSlice(gpa, "{ ");
         for (members, 0..) |m, i| {
             if (i > 0) try buf.appendSlice(gpa, "; ");
+            const member_name = sint.get(m.name);
+            // `__call` / `__construct` are the internal member names used
+            // for an object type's call/construct signatures. tsc renders
+            // them as anonymous signatures (`(x: number): number`,
+            // `new (x: number): C`) with no member name. Without this the
+            // internal `__call` token leaks into TS2322/TS2345 prose.
+            const is_call_sig = std.mem.eql(u8, member_name, "__call");
+            const is_construct_sig = std.mem.eql(u8, member_name, "__construct");
+            if ((is_call_sig or is_construct_sig) and ti.isSignature(m.type)) {
+                if (is_construct_sig) try buf.appendSlice(gpa, "new ");
+                try buf.append(gpa, '(');
+                const sig_params = ti.signatureParams(m.type);
+                for (sig_params, 0..) |p, pi| {
+                    if (pi > 0) try buf.appendSlice(gpa, ", ");
+                    try renderTypeIntoCtx(buf, gpa, ti, sint, p, depth + 1, ctx);
+                }
+                try buf.appendSlice(gpa, "): ");
+                if (ti.signatureReturn(m.type)) |ret| {
+                    try renderTypeIntoCtx(buf, gpa, ti, sint, ret, depth + 1, ctx);
+                } else {
+                    try buf.appendSlice(gpa, "void");
+                }
+                continue;
+            }
             if (m.is_readonly) try buf.appendSlice(gpa, "readonly ");
-            try buf.appendSlice(gpa, sint.get(m.name));
+            try buf.appendSlice(gpa, member_name);
             if (m.is_optional) try buf.append(gpa, '?');
             // Render method-shorthand members as `name(params): ret`
             // so error messages mirror upstream tsc — `{ f(): void }`
@@ -317,6 +341,34 @@ test "renderType: object with method-shorthand member" {
     const out = try renderType(T.allocator, &ti, &sint, obj);
     defer T.allocator.free(out);
     try T.expectEqualStrings("{ f(): void }", out);
+}
+
+test "renderType: __call/__construct members render as anonymous signatures" {
+    // The internal `__call` / `__construct` member names must not leak
+    // into user-facing prose; tsc renders them as `(params): ret` and
+    // `new (params): ret`. Mirrors functionLiterals.ts where the
+    // overloaded call-signature object type appears in TS2322 prose.
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const call_sig = try ti.internSignature(&.{types.Primitive.number_t}, types.Primitive.number_t, false);
+    const call_name = try sint.intern("__call");
+    const obj = try ti.internObjectType(&.{
+        .{ .name = call_name, .type = call_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    const out = try renderType(T.allocator, &ti, &sint, obj);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("{ (number): number }", out);
+
+    const ctor_sig = try ti.internSignature(&.{}, types.Primitive.void_t, false);
+    const ctor_name = try sint.intern("__construct");
+    const ctor_obj = try ti.internObjectType(&.{
+        .{ .name = ctor_name, .type = ctor_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    const out2 = try renderType(T.allocator, &ti, &sint, ctor_obj);
+    defer T.allocator.free(out2);
+    try T.expectEqualStrings("{ new (): void }", out2);
 }
 
 test "renderType: object with property-form function member stays arrow" {
