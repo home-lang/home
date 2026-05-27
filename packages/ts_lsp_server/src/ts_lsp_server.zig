@@ -58,15 +58,34 @@
 //!     codeLens/resolve                        [1dca066]
 //!     documentLink/resolve                    [a85694b]
 //!     inlayHint/resolve                       [stub: echoes hint back]
+//!     codeAction/resolve                      [stub: echoes action back, LSP 3.16+]
+//!     workspaceSymbol/resolve                 [LSP 3.17+]
 //!   Workspace:
 //!     workspace/symbol                        [c9dc339]
 //!     workspace/diagnostic (pull-mode)        [LSP 3.17]
+//!     workspace/executeCommand                [wire handler; service returns []]
+//!     workspace/didChangeConfiguration        [notification]
+//!     workspace/didChangeWatchedFiles         [notification]
+//!     workspace/didChangeWorkspaceFolders     [notification]
+//!     workspace/{will,did}{Rename,Create,Delete}Files
+//!     workspace/textDocumentContent           [stub: returns "", LSP 3.18+]
 //!   Call hierarchy:
 //!     callHierarchy/incomingCalls             [025b52e]
 //!     callHierarchy/outgoingCalls             [025b52e]
+//!   Type hierarchy:
+//!     textDocument/prepareTypeHierarchy
+//!     typeHierarchy/supertypes
+//!     typeHierarchy/subtypes
+//!   Notebook (LSP 3.17+):
+//!     notebookDocument/{didOpen,didChange,didSave,didClose}
+//!   Meta:
+//!     $/cancelRequest, $/setTrace, $/progress, window/workDoneProgress/cancel
 //!   Misc:
+//!     textDocument/rangeFormatting            [wire handler]
+//!     textDocument/willSave, willSaveWaitUntil, didSave
 //!     textDocument/linkedEditingRange         [wire handler; service returns null]
-//!     workspace/willRenameFiles               [wire handler; service returns []]
+//!     textDocument/moniker                    [wire handler; service returns null]
+//!     textDocument/inlineValue, inlineCompletion
 //!     textDocument/documentColor              [wire handler; service returns []]
 //!     textDocument/colorPresentation          [wire handler; service returns []]
 //!
@@ -78,11 +97,7 @@
 //! ----------------------------------------------------------------------------
 //! NOT WIRED  (no `Method` variant, no handler — reserved for future work)
 //! ----------------------------------------------------------------------------
-//!   textDocument/rangeFormatting
-//!   textDocument/moniker
-//!   workspace/executeCommand
-//!   workspace/didChangeConfiguration
-//!   workspace/didChangeWatchedFiles
+//!   (none — every method in SUPPORTED_METHODS is dispatch-wired)
 //!
 //! See `SUPPORTED_METHODS` below for the canonical list of wire method names
 //! advertised by `initialize`.
@@ -134,6 +149,7 @@ pub const Method = enum {
     text_document_document_symbol,
     workspace_symbol,
     text_document_code_action,
+    code_action_resolve,
     text_document_semantic_tokens_full,
     text_document_semantic_tokens_full_delta,
     text_document_semantic_tokens_range,
@@ -161,6 +177,7 @@ pub const Method = enum {
     workspace_execute_command,
     workspace_did_change_configuration,
     workspace_did_change_workspace_folders,
+    workspace_text_document_content,
     cancel_request,
     set_trace,
     work_done_progress_cancel,
@@ -211,6 +228,7 @@ pub const Method = enum {
             .{ "textDocument/documentSymbol", Method.text_document_document_symbol },
             .{ "workspace/symbol", Method.workspace_symbol },
             .{ "textDocument/codeAction", Method.text_document_code_action },
+            .{ "codeAction/resolve", Method.code_action_resolve },
             .{ "textDocument/semanticTokens/full", Method.text_document_semantic_tokens_full },
             .{ "textDocument/semanticTokens/full/delta", Method.text_document_semantic_tokens_full_delta },
             .{ "textDocument/semanticTokens/range", Method.text_document_semantic_tokens_range },
@@ -238,6 +256,7 @@ pub const Method = enum {
             .{ "workspace/executeCommand", Method.workspace_execute_command },
             .{ "workspace/didChangeConfiguration", Method.workspace_did_change_configuration },
             .{ "workspace/didChangeWorkspaceFolders", Method.workspace_did_change_workspace_folders },
+            .{ "workspace/textDocumentContent", Method.workspace_text_document_content },
             .{ "$/cancelRequest", Method.cancel_request },
             .{ "$/setTrace", Method.set_trace },
             .{ "window/workDoneProgress/cancel", Method.work_done_progress_cancel },
@@ -320,6 +339,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "codeLens/resolve",
     "documentLink/resolve",
     "inlayHint/resolve",
+    "codeAction/resolve",
     "textDocument/willSaveWaitUntil",
     "textDocument/willSave",
     "textDocument/didSave",
@@ -336,6 +356,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "workspace/executeCommand",
     "workspace/didChangeConfiguration",
     "workspace/didChangeWorkspaceFolders",
+    "workspace/textDocumentContent",
     "$/cancelRequest",
     "$/setTrace",
     "window/workDoneProgress/cancel",
@@ -3445,6 +3466,39 @@ pub fn handleCodeLensResolve(
     return encodeResponse(gpa, request_id, params_json);
 }
 
+/// Handle a `codeAction/resolve` JSON-RPC request (LSP 3.16+). Stub:
+/// echoes the input `CodeAction` back unchanged. The editor uses
+/// `codeAction/resolve` when an action's `edit` or `command` were
+/// omitted in the initial response and need lazy resolution; our
+/// `codeAction` handler always emits resolved actions eagerly, so
+/// resolve is a no-op here. Caller owns the returned slice.
+pub fn handleCodeActionResolve(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    return encodeResponse(gpa, request_id, params_json);
+}
+
+/// Handle a `workspace/textDocumentContent` JSON-RPC request (LSP
+/// 3.18+). The client sends a `{uri}` for a document under a custom
+/// URI scheme the server registered, and expects `{text}` back. We
+/// don't currently register any custom scheme, so the safe parity
+/// response is an empty text body — clients fall back to their own
+/// fetch logic. Caller owns the returned slice.
+pub fn handleWorkspaceTextDocumentContent(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    _ = params_json;
+    return encodeResponse(gpa, request_id, "{\"text\":\"\"}");
+}
+
 /// Map `LspDiagnostic.Severity` to the LSP-wire severity number
 /// (1 = Error, 2 = Warning, 3 = Information, 4 = Hint).
 fn lspSeverityCode(s: ts_lsp.LspDiagnostic.Severity) u8 {
@@ -3914,6 +3968,10 @@ pub fn dispatchRequest(
             if (is_notification) return &.{};
             return try handleCodeAction(service, gpa, id, params);
         },
+        .code_action_resolve => {
+            if (is_notification) return &.{};
+            return try handleCodeActionResolve(service, gpa, id, params);
+        },
         .text_document_semantic_tokens_full => {
             if (is_notification) return &.{};
             return try handleSemanticTokensFull(service, gpa, id, params);
@@ -4025,6 +4083,10 @@ pub fn dispatchRequest(
         .workspace_did_change_workspace_folders => {
             try handleDidChangeWorkspaceFolders(service, gpa, params);
             return &.{};
+        },
+        .workspace_text_document_content => {
+            if (is_notification) return &.{};
+            return try handleWorkspaceTextDocumentContent(service, gpa, id, params);
         },
         .set_trace => {
             try handleSetTrace(service, gpa, params);
@@ -6041,6 +6103,47 @@ test "handleCodeLensResolve: stub echoes input params" {
     try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"id\":152") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"title\":\"2 references\"") != null);
+}
+
+test "handleCodeActionResolve: stub echoes input params" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const params =
+        \\{"title":"Add missing import","kind":"quickfix","data":{"fileId":1,"action":"import-foo"}}
+    ;
+    const out = try handleCodeActionResolve(&svc, T.allocator, .{ .integer = 173 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":173") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"title\":\"Add missing import\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"quickfix\"") != null);
+}
+
+test "handleWorkspaceTextDocumentContent: returns empty text body" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const params =
+        \\{"uri":"home-virtual:///snippet/42"}
+    ;
+    const out = try handleWorkspaceTextDocumentContent(&svc, T.allocator, .{ .integer = 174 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":174") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":{\"text\":\"\"}") != null);
 }
 
 test "handleLinkedEditingRange: returns null off JSX (service stub)" {
