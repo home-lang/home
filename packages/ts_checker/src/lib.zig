@@ -52,6 +52,8 @@ pub const LibCache = struct {
     /// `JSON` global — `parse(text, reviver?)` / `stringify(value,
     /// replacer?, space?)`. Built once on first access.
     json_global: TypeId = types.Primitive.none,
+    /// `String` global — `fromCharCode`, `fromCodePoint`, `raw`.
+    string_global: TypeId = types.Primitive.none,
     /// Element-type → `Array<T>.prototype` shape mapping. Cached so a
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
@@ -812,6 +814,53 @@ pub fn numberGlobal(
     };
     cache.number_global = try ti.internObjectType(&m);
     return cache.number_global;
+}
+
+/// Build (or fetch from cache) the `String` global — the constructor
+/// side of the primitive carrying `fromCharCode` / `fromCodePoint` /
+/// `raw`. Modeled with loose `any`-typed args because the real
+/// signatures are variadic and overloaded; the goal is to make
+/// `String.fromCharCode(...)` typecheck without spurious TS2339.
+pub fn stringGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
+) !TypeId {
+    if (cache.string_global != types.Primitive.none) return cache.string_global;
+
+    const string_t = types.Primitive.string_t;
+    const number_t = types.Primitive.number_t;
+    const any_t = types.Primitive.any;
+
+    // `String(value): string` / `new String(value): String` modeled
+    // loosely so call/construct sites typecheck. The construct return
+    // intentionally points at the primitive (no `String` wrapper type
+    // distinction in the checker today).
+    const sig_call = try ti.internSignature(&[_]TypeId{any_t}, string_t, false);
+    const sig_construct = try ti.internSignature(&[_]TypeId{any_t}, string_t, true);
+    // `String.fromCharCode(...codes: number[]): string` (variadic).
+    const num_arr = try ti.internArrayType(sint, number_t);
+    const sig_from_char_code = try ti.internSignature(&[_]TypeId{num_arr}, string_t, false);
+    try rest_set.put(gpa, sig_from_char_code, {});
+    // `String.fromCodePoint(...codes: number[]): string` (ES2015).
+    const sig_from_code_point = try ti.internSignature(&[_]TypeId{num_arr}, string_t, false);
+    try rest_set.put(gpa, sig_from_code_point, {});
+    // `String.raw(template, ...substitutions: any[]): string` (ES2015).
+    const any_arr = try ti.internArrayType(sint, any_t);
+    const sig_raw = try ti.internSignature(&[_]TypeId{ any_t, any_arr }, string_t, false);
+    try rest_set.put(gpa, sig_raw, {});
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("__call"), .type = sig_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("__construct"), .type = sig_construct, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fromCharCode"), .type = sig_from_char_code, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fromCodePoint"), .type = sig_from_code_point, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("raw"), .type = sig_raw, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.string_global = try ti.internObjectType(&m);
+    return cache.string_global;
 }
 
 // =============================================================================
