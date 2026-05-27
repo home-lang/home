@@ -71,6 +71,86 @@ pub const LibCache = struct {
 /// Build (or fetch from cache) the `String.prototype` member shape.
 /// All methods are typed against the concrete `string` primitive —
 /// generics aren't needed here.
+/// Build a fixed-arity tuple type `[E0, E1, …]` using the same
+/// structural encoding the checker's `internTupleFromTypes` produces:
+/// an object type carrying numeric-named members (`"0"`, `"1"`, …),
+/// a `readonly length` number-literal, and a `number`-key index
+/// signature whose value is the union of the element types. Keeping
+/// the encoding identical means tuples built here are
+/// indistinguishable (for assignability / element access) from tuples
+/// the checker synthesizes for tuple literals, and `substituteType`
+/// rewrites a `U` appearing inside an element through the object-type
+/// path it already walks. Used to give `Object.entries` its precise
+/// `[string, T][]` element shape.
+pub fn internTuple(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    elems: []const TypeId,
+) !TypeId {
+    // Our use sites build small (2-element) tuples; cap the stack
+    // buffer at 16 elements + the trailing `length` member.
+    std.debug.assert(elems.len <= 16);
+    var all: [17]types.ObjectMember = undefined;
+    for (elems, 0..) |t, i| {
+        var nbuf: [12]u8 = undefined;
+        const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch unreachable;
+        const name = try sint.intern(name_str);
+        all[i] = .{
+            .name = name,
+            .type = t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        };
+    }
+    const length_id = try sint.intern("length");
+    const length_t = ti.internNumberLiteral(@floatFromInt(elems.len)) catch types.Primitive.number_t;
+    all[elems.len] = .{
+        .name = length_id,
+        .type = length_t,
+        .is_optional = false,
+        .is_readonly = true,
+        .is_method = false,
+    };
+    const elem_union: TypeId = if (elems.len == 0)
+        types.Primitive.never
+    else if (elems.len == 1)
+        elems[0]
+    else
+        ti.internUnion(elems) catch types.Primitive.any;
+    return ti.internObjectTypeWithIndex(all[0 .. elems.len + 1], types.Primitive.none, elem_union);
+}
+
+/// Build the `RegExpMatchArray` shape — upstream
+/// `interface RegExpMatchArray extends Array<string>` with the extra
+/// `index?: number`, `input?: string`, and a guaranteed `0: string`
+/// member (the whole match). Encoded as a `string[]`-shaped object
+/// (number-key index → `string`, `length: number`) augmented with the
+/// three extra members, so it remains assignable where `string[]` is
+/// expected while also exposing `m.index` / `m.input` / `m[0]`. Used by
+/// `String.prototype.match`'s precise `RegExpMatchArray | null` return.
+pub fn internRegExpMatchArray(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    const string_t = types.Primitive.string_t;
+    const number_t = types.Primitive.number_t;
+    const members = [_]types.ObjectMember{
+        .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        // `index?: number` — start offset of the match in the input.
+        .{ .name = try sint.intern("index"), .type = number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+        // `input?: string` — copy of the searched string.
+        .{ .name = try sint.intern("input"), .type = string_t, .is_optional = true, .is_readonly = false, .is_method = false },
+        // `0: string` — the whole-match capture, always present.
+        .{ .name = try sint.intern("0"), .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    };
+    // Number-key index → `string` mirrors `extends Array<string>`.
+    return ti.internObjectTypeWithIndex(&members, types.Primitive.none, string_t);
+}
+
+/// Build (or fetch from cache) the `String.prototype` member shape.
+/// All methods are typed against the concrete `string` primitive —
+/// generics aren't needed here.
 pub fn stringProto(
     cache: *LibCache,
     ti: *interner_mod.Interner,
@@ -130,10 +210,30 @@ pub fn stringProto(
     // `s.replace(/re/, "x")` and `s.replace("a", "b")` both resolve.
     // Replacement may be a string or a replacer function — modeled `any`.
     const sig_replace = try ti.internSignature(&[_]TypeId{ any_t, any_t }, string_t, false);
-    // `match(pattern): RegExpMatchArray | null` / `matchAll(...)` —
-    // modeled loosely as returning `any` (the precise match-array type
-    // isn't wired). `search(pattern): number`.
-    const sig_match = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    // `match(regexp: string | RegExp): RegExpMatchArray | null` — precise
+    // match-array result unioned with `null` (es5). The pattern accepts
+    // both `string` and `RegExp`, modeled `any`.
+    //
+    // NOTE: the faithful upstream return is `RegExpMatchArray | null`, but
+    // Home's flow engine has a pre-existing gap narrowing a CALL-RESULT
+    // union of `Obj | null` — `const m = s.match(re); if (m) { m.index }`
+    // fails to strip `null` (the same gap reproduces for a hand-written
+    // `declare function g(): Foo | null; const f = g(); if (f) f.bar`,
+    // i.e. it is orthogonal to lib typing). Unioning with `null` here
+    // would therefore turn the dominant `if (m)` idiom into a false
+    // positive. We return the precise NON-NULL `RegExpMatchArray` instead
+    // (a strict improvement over the old bare `any`: `m.index` / `m[0]` /
+    // `m.length` resolve), and defer the `| null` until the call-result
+    // narrowing gap is fixed in the flow engine.
+    const regexp_match_array = try internRegExpMatchArray(ti, sint);
+    const sig_match = try ti.internSignature(&[_]TypeId{any_t}, regexp_match_array, false);
+    // `matchAll(regexp): IterableIterator<RegExpMatchArray>` — Home models
+    // iterables as arrays on the iteration path, so `RegExpMatchArray[]`
+    // is the closest faithful approximation (each yielded match has the
+    // precise shape). Better than `any` for `for (const m of s.matchAll(...))`.
+    const match_array_arr = try ti.internArrayType(sint, regexp_match_array);
+    const sig_match_all = try ti.internSignature(&[_]TypeId{any_t}, match_array_arr, false);
+    // `search(pattern): number`.
     const sig_search = try ti.internSignature(&[_]TypeId{any_t}, number_t, false);
     // `padStart(maxLength: number, fillString?: string): string` /
     // `padEnd(...)`.
@@ -184,7 +284,7 @@ pub fn stringProto(
         .{ .name = try sint.intern("replace"), .type = sig_replace, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("replaceAll"), .type = sig_replace, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("match"), .type = sig_match, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("matchAll"), .type = sig_match, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("matchAll"), .type = sig_match_all, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("search"), .type = sig_search, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("padStart"), .type = sig_pad, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("padEnd"), .type = sig_pad, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -382,9 +482,32 @@ pub fn arrayProto(
     const sig_last_index_of = try ti.internSignature(&[_]TypeId{ elem, optional_number_t }, number_t, false);
     // `at(index: number): T | undefined` (es2022).
     const sig_at = try ti.internSignature(&[_]TypeId{number_t}, t_or_undef, false);
-    // `flat(depth?: number): any[]` — exact depth-driven element type
-    // needs recursive type machinery; `any[]` avoids the false positive.
-    const sig_flat = try ti.internSignature(&[_]TypeId{optional_number_t}, any_arr, false);
+    // `flat(depth?: number): FlatArray<A, D>[]` — the upstream type is a
+    // recursive conditional (`FlatArray`) that decrements the depth via a
+    // tuple-index lookup; Home has no conditional/mapped-type machinery to
+    // compute it for an arbitrary runtime `depth`. We faithfully model the
+    // DEFAULT depth-1 behavior (the dominant `arr.flat()` call), which is a
+    // single, precise one-level unwrap: when the element type `T` is itself
+    // an array `E[]`, `flat()` returns `E[]`; otherwise the array is already
+    // flat and `flat()` returns `T[]` unchanged. Element-array detection
+    // reuses the standard array idiom (`objectNumberIndex(elem) != none`).
+    // Only a plain (non-union) element array is unwrapped; a union element
+    // falls back to `any[]` (no false positive) since one-level flattening
+    // of a union-of-arrays needs the distributive conditional we lack.
+    // Explicit `depth > 1` arguments still under-flatten relative to this
+    // model, but the result is never less precise than the old blanket
+    // `any[]`.
+    const flat_inner = ti.objectNumberIndex(elem);
+    const flat_ret = if (ti.pool.flagsOf(elem).is_union)
+        // Union element → loose (distributive flattening unmodeled).
+        any_arr
+    else if (flat_inner != types.Primitive.none)
+        // `elem` is `E[]` → one level of flattening yields `E[]`.
+        try ti.internArrayType(sint, flat_inner)
+    else
+        // `elem` is already flat → `flat()` returns `T[]` unchanged.
+        arr_t;
+    const sig_flat = try ti.internSignature(&[_]TypeId{optional_number_t}, flat_ret, false);
     // `fill(value: T, start?: number, end?: number): T[]`.
     const sig_fill = try ti.internSignature(&[_]TypeId{ elem, optional_number_t, optional_number_t }, arr_t, false);
     // `copyWithin(target: number, start: number, end?: number): T[]`.
@@ -467,9 +590,16 @@ pub fn objectGlobal(
     const sig_keys = try ti.internSignature(&[_]TypeId{any_t}, string_arr, false);
     // `Object.values(o: any): any[]`
     const sig_values = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
-    // `Object.entries(o: any): [string, any][]` — modeled loosely as
-    // `any[]` (tuple-typed entries land later).
-    const sig_entries = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
+    // `Object.entries(o: {}): [string, any][]` — precise tuple-typed
+    // result (es2017). The generic overload `entries<T>(o: { [s: string]: T }
+    // | ArrayLike<T>): [string, T][]` would bind `T` from a typed
+    // argument, but the loose `(o: any)` arg means `T` collapses to
+    // `any`, so the faithful concrete result is `[string, any][]`.
+    // We build the `[string, any]` tuple structurally (matching the
+    // checker's tuple encoding) and wrap it in an array.
+    const string_any_tuple = try internTuple(ti, sint, &[_]TypeId{ string_t, any_t });
+    const string_any_tuple_arr = try ti.internArrayType(sint, string_any_tuple);
+    const sig_entries = try ti.internSignature(&[_]TypeId{any_t}, string_any_tuple_arr, false);
     // `Object.assign(...)` is variadic in lib.d.ts. Model the common
     // overload arities used by conformance while leaving the return
     // loose (`any`) until generic intersection returns are wired here.
@@ -497,8 +627,16 @@ pub fn objectGlobal(
     // `Object.getPrototypeOf(o): any` / `setPrototypeOf(o, proto): any`.
     const sig_get_proto = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
     const sig_set_proto = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
-    // `Object.fromEntries(entries): any` (es2019).
-    const sig_from_entries = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    // `Object.fromEntries<T = any>(entries: Iterable<readonly [PropertyKey, T]>):
+    // { [k: string]: T }` (es2019). The generic overload would bind `T`
+    // from the entry tuples' value position, but the loose `(entries: any)`
+    // arg collapses `T` to `any`, so the faithful concrete result is the
+    // string-indexed record `{ [k: string]: any }`. Modeled as an object
+    // with a `string`-key index signature of `any` (better than plain
+    // `any`: `Object.fromEntries(...).foo` resolves through the indexer
+    // instead of returning a bare `any` with no shape).
+    const from_entries_record = try ti.internObjectTypeWithIndex(&[_]types.ObjectMember{}, any_t, types.Primitive.none);
+    const sig_from_entries = try ti.internSignature(&[_]TypeId{any_t}, from_entries_record, false);
     // `Object.defineProperties(o, descriptors): any`.
     const sig_define_properties = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
     // `Object.is(a, b): boolean` (es2015).
@@ -962,6 +1100,16 @@ test "lib: stringProto exposes replace/padStart/at/matchAll and friends" {
     try T.expectEqual(types.Primitive.string_t, ti.signatureReturn(ti.objectMember(proto, try sint.intern("replace")).?).?);
     // `search` returns `number`.
     try T.expectEqual(types.Primitive.number_t, ti.signatureReturn(ti.objectMember(proto, try sint.intern("search")).?).?);
+    // `match` returns the precise `RegExpMatchArray` (not bare `any`):
+    // it exposes `index?`, `input?`, `0` and a string number-index (it
+    // `extends Array<string>`). The `| null` is deferred pending the
+    // call-result narrowing fix (see the signature comment).
+    const match_ret = ti.signatureReturn(ti.objectMember(proto, try sint.intern("match")).?).?;
+    try T.expect(match_ret != types.Primitive.any);
+    const rma = match_ret;
+    try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(rma));
+    try T.expectEqual(types.Primitive.number_t, ti.objectMember(rma, try sint.intern("index")).?);
+    try T.expectEqual(types.Primitive.string_t, ti.objectMember(rma, try sint.intern("0")).?);
     // A genuinely-missing member still resolves to null.
     try T.expect(ti.objectMember(proto, try sint.intern("notARealStringMethod")) == null);
 }
@@ -1096,6 +1244,31 @@ test "lib: arrayProto exposes reduce/flat/findLast/at and rest methods" {
     try T.expect(ti.objectMember(proto, try sint.intern("definitelyNotAMethod")) == null);
 }
 
+test "lib: arrayProto flat() unwraps one level for nested element arrays" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+
+    // `number[][]` → element type is `number[]`; `flat()` yields `number[]`
+    // (one level unwrapped), so the flat return's number-index is `number`.
+    const number_arr = try ti.internArrayType(&sint, types.Primitive.number_t);
+    const nested = try arrayProto(&cache, &ti, &sint, T.allocator, number_arr, &rest_set);
+    const flat_ret_nested = ti.signatureReturn(ti.objectMember(nested, try sint.intern("flat")).?).?;
+    try T.expect(flat_ret_nested != types.Primitive.none);
+    try T.expectEqual(types.Primitive.number_t, ti.objectNumberIndex(flat_ret_nested));
+
+    // `string[]` (already flat) → `flat()` returns `string[]` unchanged,
+    // NOT `any[]`; the flat return's number-index is `string`.
+    const flat_proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.string_t, &rest_set);
+    const flat_ret_flat = ti.signatureReturn(ti.objectMember(flat_proto, try sint.intern("flat")).?).?;
+    try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(flat_ret_flat));
+}
+
 test "lib: objectGlobal exposes keys/values/entries/assign" {
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
@@ -1136,6 +1309,63 @@ test "lib: objectGlobal exposes freeze/getOwnPropertyNames/fromEntries/is" {
     try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(names_ret));
     // A genuinely-missing static still resolves to null.
     try T.expect(ti.objectMember(og, try sint.intern("notARealObjectStatic")) == null);
+}
+
+test "lib: Object.entries returns [string, any][] (tuple-typed elements)" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const og = try objectGlobal(&cache, &ti, &sint);
+    const entries_sig = ti.objectMember(og, try sint.intern("entries")).?;
+    const ret = ti.signatureReturn(entries_sig).?;
+    // Return is an array — its number-index value is the tuple element.
+    const tuple_t = ti.objectNumberIndex(ret);
+    try T.expect(tuple_t != types.Primitive.none);
+    try T.expect(tuple_t != types.Primitive.any);
+    // The tuple's element 0 is `string`, element 1 is `any`, and it has
+    // a literal `length` of 2 — i.e. the precise `[string, any]` shape.
+    try T.expectEqual(types.Primitive.string_t, ti.objectMember(tuple_t, try sint.intern("0")).?);
+    try T.expectEqual(types.Primitive.any, ti.objectMember(tuple_t, try sint.intern("1")).?);
+    const length_t = ti.objectMember(tuple_t, try sint.intern("length")).?;
+    try T.expect(length_t != types.Primitive.number_t); // a 2-literal, not plain number
+}
+
+test "lib: internTuple builds [string, number] with numeric members + length literal" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+
+    const tup = try internTuple(&ti, &sint, &[_]TypeId{ types.Primitive.string_t, types.Primitive.number_t });
+    try T.expectEqual(types.Primitive.string_t, ti.objectMember(tup, try sint.intern("0")).?);
+    try T.expectEqual(types.Primitive.number_t, ti.objectMember(tup, try sint.intern("1")).?);
+    // No phantom element 2.
+    try T.expect(ti.objectMember(tup, try sint.intern("2")) == null);
+    // `length` present (literal 2) and the number index is `string | number`.
+    try T.expect(ti.objectMember(tup, try sint.intern("length")) != null);
+    const idx = ti.objectNumberIndex(tup);
+    try T.expect(idx != types.Primitive.none);
+}
+
+test "lib: Object.fromEntries returns a string-indexed record { [k: string]: any }" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const og = try objectGlobal(&cache, &ti, &sint);
+    const fe_sig = ti.objectMember(og, try sint.intern("fromEntries")).?;
+    const ret = ti.signatureReturn(fe_sig).?;
+    // The result carries a `string`-key index signature of `any`, not a
+    // bare `any` — arbitrary property access resolves through the indexer.
+    try T.expectEqual(types.Primitive.any, ti.objectStringIndex(ret));
+    try T.expect(ret != types.Primitive.any);
 }
 
 test "lib: objectGlobal exposes prototype helpers" {
