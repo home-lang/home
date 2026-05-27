@@ -2269,8 +2269,21 @@ fn statPathNative(
     defer threaded.deinit();
     const io = threaded.io();
 
-    const stat = Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "node:fs.statSync() failed: {s}", .{@errorName(err)});
+    const stat = Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch |first_err| blk: {
+        // Corpus test files are referenced by paths relative to the corpus root
+        // (e.g. import.meta.path === "js/node/fs/foo.test.ts"). Resolve those the
+        // same way spawn cwd resolution does before giving up.
+        if (!std.fs.path.isAbsolute(path)) {
+            const corpus_path = absoluteCorpusPathAlloc(allocator, path) catch {
+                setExceptionFmt(actual_ctx, exception, "node:fs.statSync() failed: {s}", .{@errorName(first_err)});
+                return null;
+            };
+            defer allocator.free(corpus_path);
+            if (Io.Dir.cwd().statFile(io, corpus_path, .{ .follow_symlinks = true })) |resolved| {
+                break :blk resolved;
+            } else |_| {}
+        }
+        setExceptionFmt(actual_ctx, exception, "node:fs.statSync() failed: {s}", .{@errorName(first_err)});
         return null;
     };
 
@@ -2999,6 +3012,16 @@ fn unsupportedExceptionReason(message: ?[]const u8) ?[]const u8 {
 
 test "adapter label is stable" {
     try std.testing.expectEqualStrings("jsc-bootstrap", runner.Adapter.jsc_bootstrap.label());
+}
+
+test "absoluteCorpusPathAlloc joins corpus-relative stat paths under the corpus root" {
+    // statPathNative falls back to this when given a corpus-relative path such as
+    // import.meta.path === "js/node/fs/foo.test.ts".
+    const allocator = std.testing.allocator;
+    const resolved = try absoluteCorpusPathAlloc(allocator, "js/node/fs/fs-stats-constructor.test.ts");
+    defer allocator.free(resolved);
+    try std.testing.expect(std.fs.path.isAbsolute(resolved));
+    try std.testing.expect(std.mem.indexOf(u8, resolved, "packages/runtime/test/bun-corpus/js/node/fs/fs-stats-constructor.test.ts") != null);
 }
 
 test "adapter recognizes HomeUnsupported exceptions" {

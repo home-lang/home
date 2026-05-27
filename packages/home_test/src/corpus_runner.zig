@@ -2854,24 +2854,31 @@ const harness_prelude =
     \\      lines.push("}");
     \\      return "\"" + lines.join("\n") + "\"";
     \\    }
+    \\    function inspectKey(key) {
+    \\      // Bun quotes object keys that aren't valid identifier names.
+    \\      return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);
+    \\    }
     \\    function inspectSimple(item) {
     \\      if (item === null) return "null";
     \\      if (typeof item === "string") return JSON.stringify(item);
-    \\      if (typeof item === "number" || typeof item === "boolean" || typeof item === "bigint") return String(item);
+    \\      if (typeof item === "number" || typeof item === "boolean") return String(item);
+    \\      if (typeof item === "bigint") return String(item) + "n";
     \\      if (item === undefined) return "undefined";
-    \\      if (Array.isArray(item)) return "[ " + item.map(inspectSimple).join(", ") + " ]";
-    \\      if (item instanceof Set) return "Set(" + item.size + ") { " + Array.from(item).map(inspectSimple).join(", ") + " }";
+    \\      if (item instanceof RegExp) return String(item);
+    \\      if (Array.isArray(item)) return item.length === 0 ? "[]" : "[ " + item.map(inspectSimple).join(", ") + " ]";
+    \\      if (item instanceof Map) return "Map(" + item.size + ") {" + (item.size === 0 ? "}" : " " + Array.from(item.entries()).map(entry => inspectSimple(entry[0]) + ": " + inspectSimple(entry[1])).join(", ") + " }");
+    \\      if (item instanceof Set) return "Set(" + item.size + ") {" + (item.size === 0 ? "}" : " " + Array.from(item).map(inspectSimple).join(", ") + " }");
     \\      if (typeof Headers === "function" && item instanceof Headers) return Bun.inspect(item);
     \\      if (typeof URL === "function" && item instanceof URL) return item.href;
     \\      if (typeof item === "object") {
     \\        const objectKeys = Object.keys(item);
-    \\        return "{ " + objectKeys.map(key => key + ": " + inspectSimple(item[key])).join(", ") + " }";
+    \\        return objectKeys.length === 0 ? "{}" : "{ " + objectKeys.map(key => inspectKey(key) + ": " + inspectSimple(item[key])).join(", ") + " }";
     \\      }
     \\      return String(item);
     \\    }
-    \\    if (value === null || typeof value !== "object" || Array.isArray(value)) return inspectSimple(value);
+    \\    if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Map || value instanceof Set || value instanceof RegExp) return inspectSimple(value);
     \\    const keys = Object.keys(value);
-    \\    if (!keys.every(key => value[key] instanceof Set)) return inspectSimple(value);
+    \\    if (keys.length === 0 || !keys.every(key => value[key] instanceof Set)) return inspectSimple(value);
     \\    const lines = ["{"];
     \\    for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
     \\      const key = keys[keyIndex];
@@ -2890,6 +2897,171 @@ const harness_prelude =
     \\  },
     \\};
     \\Bun.$ = Bun.$.bind(Bun);
+    \\// Faithful port of Bun's ConsoleObject.TablePrinter (src/jsc/ConsoleObject.zig)
+    \\// used by Bun.inspect.table. The value formatter is single-line, depth 5,
+    \\// quote_strings only for non-string tags.
+    \\const __home_TABLE_PADDING = 1;
+    \\function __home_table_visible_width(text) {
+    \\  // Strip ANSI escape sequences, count visible UTF-16 code points.
+    \\  return String(text).replace(/\x1b\[[0-9;]*m/g, "").length;
+    \\}
+    \\function __home_table_is_map(value) { return value instanceof Map; }
+    \\function __home_table_is_set(value) { return value instanceof Set; }
+    \\function __home_table_is_iterable(value) {
+    \\  if (Array.isArray(value)) return true;
+    \\  if (__home_table_is_map(value) || __home_table_is_set(value)) return true;
+    \\  return value != null && typeof value[Symbol.iterator] === "function" && typeof value !== "string";
+    \\}
+    \\function __home_table_format_value(value, enableColors) {
+    \\  // Mirror ConsoleObject.Formatter for the value types the table can hold.
+    \\  if (typeof value === "string") return value;
+    \\  if (value instanceof RegExp) return "";
+    \\  if (typeof value === "number") {
+    \\    if (enableColors) return "\x1b[0m\x1b[33m" + String(value) + "\x1b[0m";
+    \\    return String(value);
+    \\  }
+    \\  if (typeof value === "bigint") {
+    \\    if (enableColors) return "\x1b[0m\x1b[33m" + String(value) + "n\x1b[0m";
+    \\    return String(value) + "n";
+    \\  }
+    \\  if (typeof value === "boolean") {
+    \\    if (enableColors) return "\x1b[0m\x1b[33m" + String(value) + "\x1b[0m";
+    \\    return String(value);
+    \\  }
+    \\  if (value === null) return enableColors ? "\x1b[1mnull\x1b[0m" : "null";
+    \\  if (value === undefined) return enableColors ? "\x1b[2mundefined\x1b[0m" : "undefined";
+    \\  return String(value);
+    \\}
+    \\function __home_table_header_cell(name, colWidth, enableColors) {
+    \\  const len = __home_table_visible_width(name);
+    \\  const needed = Math.max(0, colWidth - len);
+    \\  let out = " ".repeat(__home_TABLE_PADDING);
+    \\  if (enableColors) out += "\x1b[0m\x1b[1m";
+    \\  out += name;
+    \\  if (enableColors) out += "\x1b[0m";
+    \\  out += " ".repeat(needed + __home_TABLE_PADDING);
+    \\  return out;
+    \\}
+    \\function __home_inspect_table(tabularData, properties, options) {
+    \\  if (tabularData === undefined || tabularData === null || typeof tabularData !== "object" && typeof tabularData !== "function") return "";
+    \\  // Argument shifting: if properties isn't an array, treat it as options.
+    \\  if (!Array.isArray(properties)) {
+    \\    options = properties;
+    \\    properties = undefined;
+    \\  }
+    \\  const enableColors = !!(options && typeof options === "object" && options.colors);
+    \\  const hasProperties = Array.isArray(properties);
+    \\  const isMap = __home_table_is_map(tabularData);
+    \\  const isIterable = __home_table_is_iterable(tabularData);
+    \\  // columns[0] is the index column " ".
+    \\  const columns = [{ name: " ", width: 1 }];
+    \\  if (isMap) columns.push({ name: "Key", width: 1 });
+    \\  if (hasProperties) for (const prop of properties) columns.push({ name: String(prop), width: 1 });
+    \\  let valuesColWidth = null;
+    \\  let valuesColIdx = -1;
+    \\  // Build the list of (rowKey, rowValue) pairs.
+    \\  const rows = [];
+    \\  if (isIterable) {
+    \\    let idx = 0;
+    \\    for (const value of tabularData) { rows.push({ key: String(idx), keyIsNum: true, value }); idx++; }
+    \\  } else {
+    \\    for (const key of Object.keys(tabularData)) rows.push({ key, keyIsNum: false, value: tabularData[key] });
+    \\  }
+    \\  function findOrCreateColumn(name) {
+    \\    for (let c = 1; c < columns.length; c++) if (columns[c].name === name) return columns[c];
+    \\    const col = { name, width: 1 };
+    \\    columns.push(col);
+    \\    return col;
+    \\  }
+    \\  // First pass: compute column widths.
+    \\  for (const row of rows) {
+    \\    columns[0].width = Math.max(columns[0].width, __home_table_visible_width(row.key));
+    \\    if (isMap) {
+    \\      const entryKey = row.value[0];
+    \\      const entryValue = row.value[1];
+    \\      columns[1].width = Math.max(columns[1].width, __home_table_visible_width(__home_table_format_value(entryKey, enableColors)));
+    \\      valuesColWidth = Math.max(valuesColWidth === null ? 0 : valuesColWidth, __home_table_visible_width(__home_table_format_value(entryValue, enableColors)));
+    \\      continue;
+    \\    }
+    \\    const rv = row.value;
+    \\    const isObj = rv !== null && (typeof rv === "object" || typeof rv === "function");
+    \\    if (isObj) {
+    \\      if (hasProperties) {
+    \\        for (let c = 1; c < columns.length; c++) {
+    \\          const col = columns[c];
+    \\          if (Object.prototype.hasOwnProperty.call(rv, col.name)) col.width = Math.max(col.width, __home_table_visible_width(__home_table_format_value(rv[col.name], enableColors)));
+    \\        }
+    \\      } else {
+    \\        for (const k of Object.keys(rv)) {
+    \\          const col = findOrCreateColumn(k);
+    \\          col.width = Math.max(col.width, __home_table_visible_width(__home_table_format_value(rv[k], enableColors)));
+    \\        }
+    \\      }
+    \\    } else if (!hasProperties) {
+    \\      valuesColWidth = Math.max(valuesColWidth === null ? 1 : valuesColWidth, __home_table_visible_width(__home_table_format_value(rv, enableColors)));
+    \\    }
+    \\  }
+    \\  if (valuesColWidth !== null) {
+    \\    valuesColIdx = columns.length;
+    \\    columns.push({ name: "Values", width: valuesColWidth });
+    \\  }
+    \\  // Update widths with header name widths.
+    \\  for (const col of columns) col.width = Math.max(col.width, __home_table_visible_width(col.name));
+    \\  // Header borders + header row.
+    \\  let out = "┌";
+    \\  for (let i = 0; i < columns.length; i++) {
+    \\    if (i > 0) out += "┬";
+    \\    out += "─".repeat(columns[i].width + __home_TABLE_PADDING * 2);
+    \\  }
+    \\  out += "┐\n│";
+    \\  for (let i = 0; i < columns.length; i++) {
+    \\    if (i > 0) out += "│";
+    \\    out += __home_table_header_cell(columns[i].name, columns[i].width, enableColors);
+    \\  }
+    \\  out += "│\n├";
+    \\  for (let i = 0; i < columns.length; i++) {
+    \\    if (i > 0) out += "┼";
+    \\    out += "─".repeat(columns[i].width + __home_TABLE_PADDING * 2);
+    \\  }
+    \\  out += "┤\n";
+    \\  // Data rows.
+    \\  for (const row of rows) {
+    \\    out += "│";
+    \\    const keyLen = __home_table_visible_width(row.key);
+    \\    const keyNeeded = Math.max(0, columns[0].width - keyLen);
+    \\    out += " ".repeat(keyNeeded + __home_TABLE_PADDING) + row.key + " ".repeat(__home_TABLE_PADDING);
+    \\    for (let c = 1; c < columns.length; c++) {
+    \\      const col = columns[c];
+    \\      out += "│";
+    \\      let hasValue = false;
+    \\      let value;
+    \\      if (c === 1 && isMap) { value = row.value[0]; hasValue = true; }
+    \\      else if (c === valuesColIdx) {
+    \\        if (isMap) { value = row.value[1]; hasValue = true; }
+    \\        else if (!(row.value !== null && (typeof row.value === "object" || typeof row.value === "function"))) { value = row.value; hasValue = true; }
+    \\      } else if (row.value !== null && (typeof row.value === "object" || typeof row.value === "function")) {
+    \\        if (Object.prototype.hasOwnProperty.call(row.value, col.name)) { value = row.value[col.name]; hasValue = true; }
+    \\      }
+    \\      if (!hasValue) {
+    \\        out += " ".repeat(col.width + __home_TABLE_PADDING * 2);
+    \\      } else {
+    \\        const formatted = __home_table_format_value(value, enableColors);
+    \\        const len = __home_table_visible_width(formatted);
+    \\        const needed = Math.max(0, col.width - len);
+    \\        out += " ".repeat(__home_TABLE_PADDING) + formatted + " ".repeat(needed + __home_TABLE_PADDING);
+    \\      }
+    \\    }
+    \\    out += "│\n";
+    \\  }
+    \\  // Bottom border.
+    \\  out += "└" + "─".repeat(columns[0].width + __home_TABLE_PADDING * 2);
+    \\  for (let c = 1; c < columns.length; c++) out += "┴" + "─".repeat(columns[c].width + __home_TABLE_PADDING * 2);
+    \\  out += "┘\n";
+    \\  return out;
+    \\}
+    \\Bun.inspect.table = function table(tabularData, properties, options) {
+    \\  return __home_inspect_table(tabularData, properties, options);
+    \\};
     \\const __home_bake_virtual_dirs = Object.create(null);
     \\function __home_bake_virtual_normalize(path) {
     \\  return String(path || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
@@ -3134,6 +3306,46 @@ const harness_prelude =
     \\};
     \\process.hrtime.bigint = function() {
     \\  return BigInt(__home_fake_timers_active ? Math.trunc(__home_fake_performance_now * 1000000) : Math.trunc(Date.now() * 1000000));
+    \\};
+    \\function __home_process_invalid_arg_type(name, expected, actual) {
+    \\  const received = actual === null ? "null" : (typeof actual === "object" ? "an instance of " + ((actual && actual.constructor && actual.constructor.name) || "Object") : "type " + typeof actual);
+    \\  const error = new TypeError('The "' + name + '" argument must be ' + expected + ". Received " + received);
+    \\  error.code = "ERR_INVALID_ARG_TYPE";
+    \\  return error;
+    \\}
+    \\function __home_process_validate_uint32(value, name) {
+    \\  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 4294967295) {
+    \\    const error = new TypeError('The "' + name + '" argument must be a uint32. Received ' + String(value));
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  return value >>> 0;
+    \\}
+    \\process.setgroups = function setgroups(groups) {
+    \\  // Faithful port of Process_functionsetgroups (src/jsc/bindings/BunProcess.cpp).
+    \\  if (!Array.isArray(groups)) throw __home_process_invalid_arg_type("groups", "an instance of Array", groups);
+    \\  const count = groups.length;
+    \\  if (count > 64) {
+    \\    const error = new RangeError('The value of "groups.length" is out of range. It must be >= 0 && <= 64. Received ' + String(count));
+    \\    error.code = "ERR_OUT_OF_RANGE";
+    \\    throw error;
+    \\  }
+    \\  for (let i = 0; i < count; i++) {
+    \\    // Reading the index triggers any accessor getter; exceptions propagate.
+    \\    const item = groups[i];
+    \\    const name = "groups[" + i + "]";
+    \\    if (typeof item === "number") { __home_process_validate_uint32(item, name); continue; }
+    \\    if (typeof item === "string") {
+    \\      const error = new Error("Group identifier does not exist: " + item);
+    \\      error.code = "ERR_UNKNOWN_CREDENTIAL";
+    \\      throw error;
+    \\    }
+    \\    throw __home_process_invalid_arg_type(name, "one of type number or string", item);
+    \\  }
+    \\  return undefined;
+    \\};
+    \\process.getgroups = function getgroups() {
+    \\  return [];
     \\};
     \\process.binding = function(name) {
     \\  const key = String(name);
@@ -4902,7 +5114,7 @@ const harness_prelude =
     \\  __publicField: __home_wrap_public_field,
     \\  __runInitializers: __home_wrap_run_initializers,
     \\};
-    \\globalThis.__home_modules["bun"] = { $: Bun.$, ArrayBufferSink: __home_array_buffer_sink, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: Bun.$, ArrayBufferSink: __home_array_buffer_sink, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
@@ -7869,14 +8081,85 @@ const harness_prelude =
     \\    return { problems: { exceptions: [{ message }] } };
     \\  },
     \\};
+    \\const __home_S_IFMT = 0o170000;
+    \\const __home_S_IFDIR = 0o040000;
+    \\const __home_S_IFCHR = 0o020000;
+    \\const __home_S_IFBLK = 0o060000;
+    \\const __home_S_IFREG = 0o100000;
+    \\const __home_S_IFIFO = 0o010000;
+    \\const __home_S_IFLNK = 0o120000;
+    \\const __home_S_IFSOCK = 0o140000;
+    \\function __home_stats_mode_check(mode, mask) {
+    \\  if (typeof mode === "bigint") return (mode & BigInt(__home_S_IFMT)) === BigInt(mask);
+    \\  return (Number(mode) & __home_S_IFMT) === mask;
+    \\}
+    \\function __home_define_stats_prototype(prototype, isBigInt) {
+    \\  prototype.isBlockDevice = function isBlockDevice() { return __home_stats_mode_check(this.mode, __home_S_IFBLK); };
+    \\  prototype.isCharacterDevice = function isCharacterDevice() { return __home_stats_mode_check(this.mode, __home_S_IFCHR); };
+    \\  prototype.isDirectory = function isDirectory() { return __home_stats_mode_check(this.mode, __home_S_IFDIR); };
+    \\  prototype.isFIFO = function isFIFO() { return __home_stats_mode_check(this.mode, __home_S_IFIFO); };
+    \\  prototype.isFile = function isFile() { return __home_stats_mode_check(this.mode, __home_S_IFREG); };
+    \\  prototype.isSocket = function isSocket() { return __home_stats_mode_check(this.mode, __home_S_IFSOCK); };
+    \\  prototype.isSymbolicLink = function isSymbolicLink() { return __home_stats_mode_check(this.mode, __home_S_IFLNK); };
+    \\}
+    \\function __home_stats_assign(target, dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeNs, mtimeNs, ctimeNs, birthtimeNs, isBigInt) {
+    \\  // Match Node/Bun's DEP0180 constructor field-assignment order exactly so
+    \\  // that enumeration order (and { ...stats }) matches Node's Stats.
+    \\  let atimeMs = atimeNs, mtimeMs = mtimeNs, ctimeMs = ctimeNs, birthtimeMs = birthtimeNs;
+    \\  if (isBigInt) {
+    \\    const kNsPerMsBigInt = 1000000;
+    \\    atimeMs = Number(BigInt(atimeNs) / BigInt(kNsPerMsBigInt));
+    \\    mtimeMs = Number(BigInt(mtimeNs) / BigInt(kNsPerMsBigInt));
+    \\    ctimeMs = Number(BigInt(ctimeNs) / BigInt(kNsPerMsBigInt));
+    \\    birthtimeMs = Number(BigInt(birthtimeNs) / BigInt(kNsPerMsBigInt));
+    \\  }
+    \\  target.dev = dev;
+    \\  target.mode = mode;
+    \\  target.nlink = nlink;
+    \\  target.uid = uid;
+    \\  target.gid = gid;
+    \\  target.rdev = rdev;
+    \\  target.blksize = blksize;
+    \\  target.ino = ino;
+    \\  target.size = size;
+    \\  target.blocks = blocks;
+    \\  target.atimeMs = atimeMs;
+    \\  target.mtimeMs = mtimeMs;
+    \\  target.ctimeMs = ctimeMs;
+    \\  target.birthtimeMs = birthtimeMs;
+    \\  if (isBigInt) {
+    \\    target.atimeNs = atimeNs;
+    \\    target.mtimeNs = mtimeNs;
+    \\    target.ctimeNs = ctimeNs;
+    \\    target.birthtimeNs = birthtimeNs;
+    \\  }
+    \\}
+    \\function Stats(dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs) {
+    \\  const target = (this instanceof Stats) ? this : Object.create(Stats.prototype);
+    \\  __home_stats_assign(target, dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs, false);
+    \\  return target;
+    \\}
+    \\__home_define_stats_prototype(Stats.prototype, false);
+    \\function BigIntStats(dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeNs, mtimeNs, ctimeNs, birthtimeNs) {
+    \\  const target = (this instanceof BigIntStats) ? this : Object.create(BigIntStats.prototype);
+    \\  __home_stats_assign(target, dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeNs, mtimeNs, ctimeNs, birthtimeNs, true);
+    \\  return target;
+    \\}
+    \\__home_define_stats_prototype(BigIntStats.prototype, true);
     \\const __home_node_fs = {
-    \\  __home_make_stats(nativeStats) {
-    \\    return {
-    \\      size: Number(nativeStats && nativeStats.size) || 0,
-    \\      isFile() { return !!(nativeStats && nativeStats.isFile); },
-    \\      isDirectory() { return !!(nativeStats && nativeStats.isDirectory); },
-    \\      isSymbolicLink() { return !!(nativeStats && nativeStats.isSymbolicLink); },
-    \\    };
+    \\  Stats: Stats,
+    \\  __home_stats_mode_from_native(nativeStats) {
+    \\    if (nativeStats && nativeStats.isDirectory) return __home_S_IFDIR;
+    \\    if (nativeStats && nativeStats.isSymbolicLink) return __home_S_IFLNK;
+    \\    return __home_S_IFREG;
+    \\  },
+    \\  __home_make_stats(nativeStats, bigint) {
+    \\    const size = Number(nativeStats && nativeStats.size) || 0;
+    \\    const mode = __home_node_fs.__home_stats_mode_from_native(nativeStats);
+    \\    if (bigint) {
+    \\      return new BigIntStats(0n, BigInt(mode), 1n, 0n, 0n, 0n, 4096n, 0n, BigInt(size), BigInt(Math.ceil(size / 512)), 0n, 0n, 0n, 0n);
+    \\    }
+    \\    return new Stats(0, mode, 1, 0, 0, 0, 4096, 0, size, Math.ceil(size / 512), 0, 0, 0, 0);
     \\  },
     \\  writeFileSync(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
@@ -7933,17 +8216,18 @@ const harness_prelude =
     \\  chmodSync(path, mode) {
     \\    return undefined;
     \\  },
-    \\  statSync(path) {
+    \\  statSync(path, options) {
     \\    if (__home_fs_is_deleted(path)) throw new Error("ENOENT: no such file or directory, stat '" + String(path) + "'");
     \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
-    \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(String(path)));
+    \\    const bigint = !!(options && typeof options === "object" && options.bigint);
+    \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(String(path)), bigint);
     \\  },
     \\  promises: {
     \\    exists(path) {
     \\      return Promise.resolve(__home_node_fs.existsSync(path));
     \\    },
-    \\    stat(path) {
-    \\      return Promise.resolve(__home_node_fs.statSync(path));
+    \\    stat(path, options) {
+    \\      return Promise.resolve(__home_node_fs.statSync(path, options));
     \\    },
     \\    mkdtemp(prefix) {
     \\      const root = String(prefix || "") + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + String(++__home_temp_dir_counter);
@@ -11526,6 +11810,225 @@ const harness_prelude =
     \\    if (typeof __home_readable_stream_pipe_to === "function") return __home_readable_stream_pipe_to.call(this, destination, options);
     \\    return Promise.reject(new TypeError("ReadableStream.pipeTo is unavailable"));
     \\  };
+    \\  if (typeof ReadableStream.prototype.pipeThrough !== "function" || !ReadableStream.prototype.__home_pipe_through_shim) {
+    \\    const __home_existing_pipe_through = ReadableStream.prototype.pipeThrough;
+    \\    Object.defineProperty(ReadableStream.prototype, "__home_pipe_through_shim", { value: true });
+    \\    ReadableStream.prototype.pipeThrough = function(transform, options) {
+    \\      const writable = transform && transform.writable;
+    \\      const readable = transform && transform.readable;
+    \\      // Only handle the corpus transform-stream shape here; defer to native otherwise.
+    \\      if (!writable || typeof writable.getWriter !== "function" || !readable) {
+    \\        if (typeof __home_existing_pipe_through === "function") return __home_existing_pipe_through.call(this, transform, options);
+    \\        throw new TypeError("ReadableStream.pipeThrough requires a TransformStream");
+    \\      }
+    \\      const reader = typeof this.getReader === "function" ? this.getReader() : null;
+    \\      const writer = writable.getWriter();
+    \\      if (!reader || typeof reader.read !== "function") throw new TypeError("ReadableStream reader is unavailable");
+    \\      function pump() {
+    \\        return reader.read().then(result => {
+    \\          if (result.done) return writer.close();
+    \\          return Promise.resolve(writer.write(result.value)).then(pump);
+    \\        });
+    \\      }
+    \\      pump().then(undefined, error => {
+    \\        try { if (typeof writer.abort === "function") writer.abort(error); } catch (e) {}
+    \\        try { if (typeof reader.cancel === "function") reader.cancel(error); } catch (e) {}
+    \\      });
+    \\      return readable;
+    \\    };
+    \\  }
+    \\}
+    \\// Faithful WHATWG TransformStream + TextEncoderStream/TextDecoderStream.
+    \\// Ported from Bun's TextEncoderStream.ts / TextDecoderStream.ts which build
+    \\// on a transform stream: a transformAlgorithm runs per chunk, enqueuing into
+    \\// the readable side, and any thrown error errors both sides of the stream.
+    \\if (typeof globalThis.TransformStream !== "function" || !globalThis.TransformStream.__home_corpus_transform) {
+    \\  function __home_transform_state() {
+    \\    return {
+    \\      queue: [],
+    \\      readWaiters: [],
+    \\      closeWaiters: [],
+    \\      errored: false,
+    \\      errorReason: undefined,
+    \\      closed: false,
+    \\      readableClosedResolvers: [],
+    \\      writableClosedResolvers: [],
+    \\    };
+    \\  }
+    \\  function __home_transform_settle_closed(resolvers, state) {
+    \\    const list = resolvers.splice(0, resolvers.length);
+    \\    for (const r of list) {
+    \\      if (state.errored) r.reject(state.errorReason);
+    \\      else r.resolve(undefined);
+    \\    }
+    \\  }
+    \\  function __home_transform_flush_read_waiters(state) {
+    \\    while (state.readWaiters.length > 0) {
+    \\      const waiter = state.readWaiters[0];
+    \\      if (state.errored) { state.readWaiters.shift(); waiter.reject(state.errorReason); continue; }
+    \\      if (state.queue.length > 0) { state.readWaiters.shift(); waiter.resolve({ done: false, value: state.queue.shift() }); continue; }
+    \\      if (state.closed) { state.readWaiters.shift(); waiter.resolve({ done: true, value: undefined }); continue; }
+    \\      break;
+    \\    }
+    \\  }
+    \\  function __home_transform_error(state, reason) {
+    \\    if (state.errored || state.closed) return;
+    \\    state.errored = true;
+    \\    state.errorReason = reason;
+    \\    __home_transform_flush_read_waiters(state);
+    \\    __home_transform_settle_closed(state.readableClosedResolvers, state);
+    \\    __home_transform_settle_closed(state.writableClosedResolvers, state);
+    \\  }
+    \\  function __home_transform_enqueue(state, chunk) {
+    \\    if (state.errored || state.closed) return;
+    \\    state.queue.push(chunk);
+    \\    __home_transform_flush_read_waiters(state);
+    \\  }
+    \\  function __home_transform_close(state) {
+    \\    if (state.errored || state.closed) return;
+    \\    state.closed = true;
+    \\    __home_transform_flush_read_waiters(state);
+    \\    __home_transform_settle_closed(state.readableClosedResolvers, state);
+    \\    __home_transform_settle_closed(state.writableClosedResolvers, state);
+    \\  }
+    \\  function __home_make_transform_readable(state) {
+    \\    const readable = new ReadableStream({});
+    \\    readable.__home_transform_state = state;
+    \\    readable.getReader = function() {
+    \\      return {
+    \\        read() {
+    \\          if (state.errored) return Promise.reject(state.errorReason);
+    \\          if (state.queue.length > 0) return Promise.resolve({ done: false, value: state.queue.shift() });
+    \\          if (state.closed) return Promise.resolve({ done: true, value: undefined });
+    \\          return new Promise((resolve, reject) => state.readWaiters.push({ resolve, reject }));
+    \\        },
+    \\        get closed() {
+    \\          if (state.errored) return Promise.reject(state.errorReason);
+    \\          if (state.closed) return Promise.resolve(undefined);
+    \\          return new Promise((resolve, reject) => state.readableClosedResolvers.push({ resolve, reject }));
+    \\        },
+    \\        cancel(reason) { __home_transform_close(state); return Promise.resolve(undefined); },
+    \\        releaseLock() {},
+    \\      };
+    \\    };
+    \\    return readable;
+    \\  }
+    \\  function __home_make_transform_writable(state, transformAlgorithm, flushAlgorithm) {
+    \\    const writable = {
+    \\      __home_writable_sink: {
+    \\        write(chunk) {
+    \\          return Promise.resolve().then(() => transformAlgorithm(chunk)).then(
+    \\            () => undefined,
+    \\            error => { __home_transform_error(state, error); throw error; },
+    \\          );
+    \\        },
+    \\        close() {
+    \\          return Promise.resolve().then(() => (flushAlgorithm ? flushAlgorithm() : undefined)).then(
+    \\            () => { __home_transform_close(state); },
+    \\            error => { __home_transform_error(state, error); throw error; },
+    \\          );
+    \\        },
+    \\        abort(reason) { __home_transform_error(state, reason); return Promise.resolve(undefined); },
+    \\      },
+    \\      getWriter() {
+    \\        const sink = this.__home_writable_sink;
+    \\        return {
+    \\          write(chunk) {
+    \\            if (state.errored) return Promise.reject(state.errorReason);
+    \\            return sink.write(chunk);
+    \\          },
+    \\          close() { return sink.close(); },
+    \\          abort(reason) { return sink.abort(reason); },
+    \\          get closed() {
+    \\            if (state.errored) return Promise.reject(state.errorReason);
+    \\            if (state.closed) return Promise.resolve(undefined);
+    \\            return new Promise((resolve, reject) => state.writableClosedResolvers.push({ resolve, reject }));
+    \\          },
+    \\          get ready() { return Promise.resolve(undefined); },
+    \\          releaseLock() {},
+    \\        };
+    \\      },
+    \\    };
+    \\    return writable;
+    \\  }
+    \\  globalThis.__home_make_transform = function(transformAlgorithm, flushAlgorithm) {
+    \\    const state = __home_transform_state();
+    \\    return {
+    \\      state,
+    \\      enqueue(chunk) { __home_transform_enqueue(state, chunk); },
+    \\      error(reason) { __home_transform_error(state, reason); },
+    \\      readable: __home_make_transform_readable(state),
+    \\      writable: __home_make_transform_writable(state, transformAlgorithm, flushAlgorithm),
+    \\    };
+    \\  };
+    \\  globalThis.TransformStream = function TransformStream(transformer) {
+    \\    transformer = transformer || {};
+    \\    const self = this;
+    \\    const handle = globalThis.__home_make_transform(
+    \\      function(chunk) {
+    \\        if (typeof transformer.transform === "function") {
+    \\          return transformer.transform(chunk, { enqueue(c) { handle.enqueue(c); }, error(e) { handle.error(e); }, terminate() {} });
+    \\        }
+    \\        handle.enqueue(chunk);
+    \\        return undefined;
+    \\      },
+    \\      function() {
+    \\        if (typeof transformer.flush === "function") return transformer.flush({ enqueue(c) { handle.enqueue(c); }, error(e) { handle.error(e); }, terminate() {} });
+    \\        return undefined;
+    \\      },
+    \\    );
+    \\    self.readable = handle.readable;
+    \\    self.writable = handle.writable;
+    \\  };
+    \\  globalThis.TransformStream.__home_corpus_transform = true;
+    \\}
+    \\if (typeof globalThis.TextEncoderStream !== "function" || !globalThis.TextEncoderStream.__home_corpus_transform) {
+    \\  globalThis.TextEncoderStream = function TextEncoderStream() {
+    \\    const encoder = new TextEncoder();
+    \\    let leadingSurrogate = "";
+    \\    const handle = globalThis.__home_make_transform(
+    \\      function transformAlgorithm(chunk) {
+    \\        // WHATWG: convert chunk to a USVString (ToString), then UTF-8 encode.
+    \\        const text = String(chunk);
+    \\        const buffer = encoder.encode(text);
+    \\        if (buffer.length) handle.enqueue(buffer);
+    \\        return undefined;
+    \\      },
+    \\      function flushAlgorithm() { return undefined; },
+    \\    );
+    \\    this.__home_text_encoder_stream = true;
+    \\    this.readable = handle.readable;
+    \\    this.writable = handle.writable;
+    \\    Object.defineProperty(this, "encoding", { configurable: true, enumerable: true, get() { return "utf-8"; } });
+    \\  };
+    \\  globalThis.TextEncoderStream.__home_corpus_transform = true;
+    \\}
+    \\if (typeof globalThis.TextDecoderStream !== "function" || !globalThis.TextDecoderStream.__home_corpus_transform) {
+    \\  globalThis.TextDecoderStream = function TextDecoderStream(label, options) {
+    \\    options = options || {};
+    \\    const fatal = !!options.fatal;
+    \\    const ignoreBOM = !!options.ignoreBOM;
+    \\    const decoder = new TextDecoder(label === undefined ? "utf-8" : label, { fatal, ignoreBOM });
+    \\    const handle = globalThis.__home_make_transform(
+    \\      function transformAlgorithm(chunk) {
+    \\        const text = decoder.decode(chunk, { stream: true });
+    \\        if (text) handle.enqueue(text);
+    \\        return undefined;
+    \\      },
+    \\      function flushAlgorithm() {
+    \\        const text = decoder.decode(undefined, { stream: false });
+    \\        if (text) handle.enqueue(text);
+    \\        return undefined;
+    \\      },
+    \\    );
+    \\    this.__home_text_decoder_stream = true;
+    \\    this.readable = handle.readable;
+    \\    this.writable = handle.writable;
+    \\    Object.defineProperty(this, "encoding", { configurable: true, enumerable: true, get() { return decoder.encoding; } });
+    \\    Object.defineProperty(this, "fatal", { configurable: true, enumerable: true, get() { return fatal; } });
+    \\    Object.defineProperty(this, "ignoreBOM", { configurable: true, enumerable: true, get() { return ignoreBOM; } });
+    \\  };
+    \\  globalThis.TextDecoderStream.__home_corpus_transform = true;
     \\}
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
@@ -14553,6 +15056,71 @@ test "harness prelude formats the ERR_INVALID_THIS specific-type suffix faithful
 test "harness module exports a faithful gcTick helper" {
     // Bun's test harness exports gcTick = () => { gc(); return Bun.sleep(0); }.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gcTick(trace) { if (trace) console.trace(\"\"); Bun.gc(true); return Bun.sleep(0); }") != null);
+}
+
+test "harness prelude defines node:fs Stats and BigIntStats classes" {
+    // DEP0180 14-arg constructors share their prototype and are exported from node:fs.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function Stats(dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function BigIntStats(dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeNs, mtimeNs, ctimeNs, birthtimeNs) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_define_stats_prototype(Stats.prototype, false);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_define_stats_prototype(BigIntStats.prototype, true);") != null);
+    // node:fs exports Stats and statSync honours the { bigint: true } option.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Stats: Stats,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const bigint = !!(options && typeof options === \"object\" && options.bigint);") != null);
+}
+
+test "Stats prototype assigns fields in Node's DEP0180 order" {
+    // The constructor must enumerate fields in arg order (dev..birthtimeMs) so
+    // that { ...new Stats(...) } matches Node, and the accessor methods read mode.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "target.dev = dev;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "target.blksize = blksize;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "target.ino = ino;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "target.birthtimeMs = birthtimeMs;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "prototype.isFile = function isFile() { return __home_stats_mode_check(this.mode, __home_S_IFREG); };") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "prototype.isDirectory = function isDirectory() { return __home_stats_mode_check(this.mode, __home_S_IFDIR); };") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "prototype.isSymbolicLink = function isSymbolicLink() { return __home_stats_mode_check(this.mode, __home_S_IFLNK); };") != null);
+}
+
+test "harness prelude defines Bun.inspect.table faithfully" {
+    // Bad inputs (non-object) return empty string; argument shifting matches Bun.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.inspect.table = function table(tabularData, properties, options) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (tabularData === undefined || tabularData === null || typeof tabularData !== \"object\" && typeof tabularData !== \"function\") return \"\";") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!Array.isArray(properties)) {") != null);
+    // The special "Values" column and the bold/colored cells mirror ConsoleObject.zig.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "columns.push({ name: \"Values\", width: valuesColWidth });") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return \"\\x1b[0m\\x1b[33m\" + String(value) + \"\\x1b[0m\";") != null);
+    // inspect is exported from the "bun" module so `import { inspect } from "bun"` works.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect: Bun.inspect,") != null);
+}
+
+test "Bun.inspect formats Map, Set, and non-identifier object keys faithfully" {
+    // Map(2) { ... }, Set(3) { ... }, and quoted numeric keys match Bun's output.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (item instanceof Map) return \"Map(\" + item.size + \") {\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "value instanceof Map || value instanceof Set || value instanceof RegExp) return inspectSimple(value);") != null);
+}
+
+test "harness prelude defines TransformStream and Text{Encoder,Decoder}Stream" {
+    // Faithful WHATWG transform-stream wrappers over TextEncoder/TextDecoder.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.TransformStream = function TransformStream(transformer) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.TextEncoderStream = function TextEncoderStream() {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.TextDecoderStream = function TextDecoderStream(label, options) {") != null);
+    // A transform error must reject reads, writes, and both closed promises.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_transform_error(state, reason) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const text = String(chunk);") != null);
+    // pipeThrough connects a source readable to the transform's writable.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream.prototype.pipeThrough = function(transform, options) {") != null);
+}
+
+test "harness prelude defines process.setgroups with faithful validation" {
+    // Ported from Process_functionsetgroups in BunProcess.cpp.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.setgroups = function setgroups(groups) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!Array.isArray(groups)) throw __home_process_invalid_arg_type(\"groups\", \"an instance of Array\", groups);") != null);
+    // Reading each index triggers accessor getters, whose exceptions propagate.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const item = groups[i];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (typeof item === \"number\") { __home_process_validate_uint32(item, name); continue; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "throw __home_process_invalid_arg_type(name, \"one of type number or string\", item);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.getgroups = function getgroups() {") != null);
 }
 
 test "bundler core itBundled subset names the first tranche" {
