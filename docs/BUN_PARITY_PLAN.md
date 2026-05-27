@@ -413,6 +413,38 @@ transform body (or re-derive it) once the two cone gates above compile.
 Once the cone compiles, the real-parser body flips on and decorators + TS
 enums transpile through the already-faithful parser with no parser changes.
 
+**MILESTONE — iterations 3-4 landed on `main` (2026-05-26): the full
+real-parser cone compiles end-to-end.** The HTTP cone closed (`dcd351b9`:
+`NetworkTask` compiles via Home's already-present 3300-line http client
+port — just needed `home_rt.http` re-exports of `AsyncHTTP`/`HeaderBuilder`/
+`HTTPClientResult`/`FetchRedirect`). The AST keystone was already wired
+(`home_rt.ast = js_parser/js_parser.zig`, the real aggregator with
+`E`/`Expr`/`asArray`/`ArrayIterator`; `package_json`/`tsconfig`/`cache`
+compile — verified by error-injection). The `transpileSourceWithBunParser`
+scaffold + `use_bun_parser_probe` flag are present on `main`. With the flag
+ON, `zig build debug` (the `home-debug` exe pulling the whole real-parser →
+resolver/macro/AST/printer/http cone) compiles **green end-to-end**, and the
+bootstrap corpus subset is **identical ON vs OFF — zero regressions**. The
+flag stays `false` (dead-code-eliminated, `main` green) until the real path
+clears the last behavioral gaps.
+
+**Remaining behavioral gaps (the real parser runs; these are exact-output
+parity, not compile blockers), probed via `home-debug test`:**
+1. **Legacy decorator lowering not engaging** —
+   `bundler/transpiler/decorators.test.ts`: transpiled output still contains
+   `@` (JSC throws `SyntaxError: Invalid character: '@'`). The decorator
+   lower/visit/print code is byte-identical-faithful to Bun, so the fix is
+   wiring: ensure `transpileSourceWithBunParser`'s `parser_options.features`
+   engage legacy/standard decorator lowering and the printer emits the
+   `__legacyDecorateClassTS`/`__decorateClass` runtime-helper form.
+2. **TS enum member-key validation** —
+   `bundler/transpiler/transpiler.test.js`: `enum Foo { [2]: 'hi' }` is not
+   rejected; Bun emits `Expected identifier but found "["`.
+
+(Independent, pre-existing, flag-agnostic: `bundler/resolver/cache-runtime.test.ts`
+fails on module-cache invalidation after a dir delete+recreate — outside the
+parser/transpile path.)
+
 Parser hot-path probe on 2026-05-26 after the FD/sys shim batch: the
 temporarily enabled `transpileSourceWithBunParser` no longer stops at
 `bun.FD`, `RuntimeTranspilerCache`, `MacroContext`, or missing
