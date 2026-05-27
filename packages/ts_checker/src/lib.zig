@@ -531,8 +531,16 @@ pub fn objectGlobal(
     // `Object.getPrototypeOf(o): any` / `setPrototypeOf(o, proto): any`.
     const sig_get_proto = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
     const sig_set_proto = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
-    // `Object.fromEntries(entries): any` (es2019).
-    const sig_from_entries = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    // `Object.fromEntries<T = any>(entries: Iterable<readonly [PropertyKey, T]>):
+    // { [k: string]: T }` (es2019). The generic overload would bind `T`
+    // from the entry tuples' value position, but the loose `(entries: any)`
+    // arg collapses `T` to `any`, so the faithful concrete result is the
+    // string-indexed record `{ [k: string]: any }`. Modeled as an object
+    // with a `string`-key index signature of `any` (better than plain
+    // `any`: `Object.fromEntries(...).foo` resolves through the indexer
+    // instead of returning a bare `any` with no shape).
+    const from_entries_record = try ti.internObjectTypeWithIndex(&[_]types.ObjectMember{}, any_t, types.Primitive.none);
+    const sig_from_entries = try ti.internSignature(&[_]TypeId{any_t}, from_entries_record, false);
     // `Object.defineProperties(o, descriptors): any`.
     const sig_define_properties = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
     // `Object.is(a, b): boolean` (es2015).
@@ -977,6 +985,23 @@ test "lib: internTuple builds [string, number] with numeric members + length lit
     try T.expect(ti.objectMember(tup, try sint.intern("length")) != null);
     const idx = ti.objectNumberIndex(tup);
     try T.expect(idx != types.Primitive.none);
+}
+
+test "lib: Object.fromEntries returns a string-indexed record { [k: string]: any }" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const og = try objectGlobal(&cache, &ti, &sint);
+    const fe_sig = ti.objectMember(og, try sint.intern("fromEntries")).?;
+    const ret = ti.signatureReturn(fe_sig).?;
+    // The result carries a `string`-key index signature of `any`, not a
+    // bare `any` — arbitrary property access resolves through the indexer.
+    try T.expectEqual(types.Primitive.any, ti.objectStringIndex(ret));
+    try T.expect(ret != types.Primitive.any);
 }
 
 test "lib: objectGlobal exposes prototype helpers" {
