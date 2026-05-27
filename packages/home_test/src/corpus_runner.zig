@@ -3257,6 +3257,21 @@ const harness_prelude =
     \\if (!process.arch) process.arch = globalThis.__home_process_arch || "unknown";
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
+    \\try {
+    \\  Object.defineProperty(process, "pid", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return typeof globalThis.__home_getpidNative === "function" ? globalThis.__home_getpidNative() : 1; },
+    \\  });
+    \\  Object.defineProperty(process, "ppid", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return typeof globalThis.__home_getppidNative === "function" ? globalThis.__home_getppidNative() : 1; },
+    \\  });
+    \\} catch (error) {
+    \\  if (process.pid == null) process.pid = 1;
+    \\  if (process.ppid == null) process.ppid = 1;
+    \\}
     \\let __home_crypto_random_counter = 0;
     \\function __home_crypto_get_random_values(array) {
     \\  if (!ArrayBuffer.isView(array)) throw new TypeError("Expected an integer typed array");
@@ -22850,6 +22865,35 @@ test "bootstrap runner exposes node fs Dirent and constants" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/fs/fs-dirent-bootstrap-smoke.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner exposes process.pid and live process.ppid accessor" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("process.ppid is a live accessor", () => {
+        \\  const descriptor = Object.getOwnPropertyDescriptor(process, "ppid");
+        \\  expect(descriptor).toBeDefined();
+        \\  expect(typeof descriptor.get).toBe("function");
+        \\  expect(process.ppid).toBeGreaterThan(0);
+        \\  expect(process.ppid).toBe(process.ppid);
+        \\  const pidDescriptor = Object.getOwnPropertyDescriptor(process, "pid");
+        \\  expect(typeof pidDescriptor.get).toBe("function");
+        \\  expect(process.pid).toBeGreaterThan(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/process/process-ppid-bootstrap-smoke.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
