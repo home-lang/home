@@ -10503,6 +10503,18 @@ pub const Parser = struct {
             self.cursor = checkpoint;
             return false;
         }
+        // TS1337: an index-signature key may not be a literal type
+        // (`["specific"]: V`, `[42]: V`, `[true]: V`, or a negative
+        // numeric literal type). Anchored at the parameter name to
+        // mirror tsc's `checkGrammarIndexSignatureParameterType`.
+        // Generic-type-param rejection (the second half of the
+        // upstream message) needs checker context to know which
+        // type-refs resolve to params; deferred.
+        if (key_type != hir_mod.none_node_id and
+            self.hir.kindOf(key_type) == .type_literal)
+        {
+            try self.reportCodeAt(id1.span.start, id1.line, 1337, "An index signature parameter type cannot be a literal type or generic type. Consider using a mapped object type instead.");
+        }
         // TS1020: an index-signature parameter may not carry a default
         // initializer (`[a: number = 1]`). tsc anchors the diagnostic at
         // the parameter name and recovers by consuming the initializer
@@ -19618,6 +19630,46 @@ test "parser: TS2439 not reported outside ambient string-named modules" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 2439);
+    }
+}
+
+test "parser: TS1337 fires for literal-type index signature keys" {
+    // String, numeric, and boolean literal types are rejected as
+    // index-signature keys.
+    var s = try newTestSetup(
+        \\interface IA { [k: "specific"]: number; }
+        \\interface IB { [k: 42]: number; }
+        \\interface IC { [k: true]: number; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts1337: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1337) {
+            ts1337 += 1;
+            try T.expectEqualStrings(
+                "An index signature parameter type cannot be a literal type or generic type. Consider using a mapped object type instead.",
+                d.message,
+            );
+        }
+    }
+    try T.expectEqual(@as(usize, 3), ts1337);
+}
+
+test "parser: TS1337 does NOT fire for the canonical string/number/symbol index keys" {
+    var s = try newTestSetup(
+        \\interface I {
+        \\    [k: string]: number;
+        \\    [n: number]: string;
+        \\    [s: symbol]: boolean;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1337);
     }
 }
 
