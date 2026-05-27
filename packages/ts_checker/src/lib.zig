@@ -209,13 +209,18 @@ pub fn numberProto(
     const string_t = types.Primitive.string_t;
 
     const sig_void_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
+    _ = sig_void_string;
     var number_or_undefined_members = [_]TypeId{ number_t, types.Primitive.undefined_t };
     const optional_number_t = try ti.internUnion(&number_or_undefined_members);
     const sig_num_string = try ti.internSignature(&[_]TypeId{optional_number_t}, string_t, false);
     const sig_void_number = try ti.internSignature(&[_]TypeId{}, number_t, false);
+    // `toString(radix?: number): string` — optional radix lets
+    // `(255).toString(16)` round-trip without TS2554. Upstream lib
+    // declares the same shape on `Number.prototype`.
+    const sig_to_string = sig_num_string;
 
     const m = [_]types.ObjectMember{
-        .{ .name = try sint.intern("toString"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toFixed"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toExponential"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toPrecision"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -590,8 +595,16 @@ pub fn mathGlobal(
     try rest_set.put(gpa, sig_rest_num, {});
 
     const m = [_]types.ObjectMember{
+        // Numeric constants (read-only).
         .{ .name = try sint.intern("PI"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("E"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("LN2"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("LN10"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("LOG2E"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("LOG10E"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("SQRT2"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("SQRT1_2"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        // Existing methods.
         .{ .name = try sint.intern("abs"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("floor"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("ceil"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -601,6 +614,36 @@ pub fn mathGlobal(
         .{ .name = try sint.intern("max"), .type = sig_rest_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("min"), .type = sig_rest_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("random"), .type = sig_ret_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        // ES2015+ method additions — all `(x: number): number` or
+        // `(x: number, y: number): number` shape, except `hypot`
+        // which is variadic like `max` / `min`.
+        .{ .name = try sint.intern("log"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("log2"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("log10"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("log1p"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("exp"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("expm1"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sin"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("cos"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("tan"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("asin"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("acos"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("atan"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("atan2"), .type = sig_num2_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sinh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("cosh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("tanh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("asinh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("acosh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("atanh"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sign"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("trunc"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("cbrt"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fround"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("clz32"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("imul"), .type = sig_num2_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        // `hypot(...values: number[]): number` — variadic like max/min.
+        .{ .name = try sint.intern("hypot"), .type = sig_rest_num, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.math_global = try ti.internObjectType(&m);
     return cache.math_global;
