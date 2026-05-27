@@ -524,10 +524,35 @@ the debug build only produces `home-debug`. They PASS once `home ->
 home-debug` is symlinked (or a release `home` is built). Not a parser gap.
 
 Net: the real parser is essentially faithful across the transpiler corpus.
-Next: (a) shim parse-error message propagation → `transpiler.test.js` passes;
-(b) the spawn `home`-binary path; then flip `use_bun_parser_probe` on for the
-Bun.Transpiler API path; then route the module loader through the real parser
-(decorators + broad sweep).
+Next: (a) shim parse-error message propagation → `transpiler.test.js` passes
+(DONE, `18b21489`); (b) the spawn `home`-binary path; then flip
+`use_bun_parser_probe` on for the Bun.Transpiler API path; then route the
+module loader through the real parser (decorators + broad sweep).
+
+**STEP-3 BLOCKER REFINED (2026-05-26, measured prototype — net-negative,
+NOT committed):** routing the corpus module loader through
+`transpileSourceWithBunParser` as-is regresses the `minimal-js` subset
+**399→310 files** (89 regressions, 0 new passes). Root cause: the real parser
+in `transform_only` mode emits **ESM** — it injects its own `bun:wrap` helper
+imports (`import { __using, __callDispose } from "bun:wrap"`) AND preserves the
+source's top-level `import`/`export` statements — but the corpus bootstrap
+evaluates each module as a plain SCRIPT via `JSEvaluateScript`, and
+`hasUnsupportedModuleSyntax()` flags any top-level `import `/`export `, so 86
+files flip to "unsupported." The existing `rewriteBootstrapModuleImports`
+string-rewrite specifically lowers `bun:test`/harness/relative imports to
+harness calls — which the real-parser path bypasses. (3 other files fail on
+genuine dynamic-import/referrer-url behavior.)
+
+So step 3 is NOT a blind loader swap. It requires the real parser to emit
+**CommonJS** (no top-level import/export) for the corpus loader — i.e. set the
+CJS-lowering options (`rewrite_esm_to_cjs` / a `target=.bun` CJS print path,
+mirroring how Bun lowers ESM→CJS for script eval), and make the bootstrap
+`require`/`__home_import` shims consume the resulting `require("bun:test")` /
+relative requires (the harness already has `require` shims). Then re-measure
+`minimal-js` and keep only if net-positive; iterate the residual divergences
+(dynamic import specifier resolution, referrer url) file-by-file. This is the
+correct, incremental "route the module loader" path — to be done before any
+loader flip.
 
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
