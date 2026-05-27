@@ -657,6 +657,39 @@ genuinely-parked **subprocess/spawn subsystem** (~39% of `js/`) as the next
 frontier after that. (Corpus-wide `js/*` shape: 51% import `harness`, 39%
 spawn the binary, 21% use `as`-casts, 18% have return-type annotations.)
 
+**CONCLUSION AFTER 3 LOADER-ROUTING ATTEMPTS (2026-05-27) — STOP re-chasing the
+loader; the bottleneck is the parked RUNTIME, not the transpiler.** Three
+measured prototypes all reverted, each revealing the next layer:
+- iter 9: real parser emits ESM → top-level `import`/`export` trip
+  `hasUnsupportedModuleSyntax` (399→310).
+- iter 12: routing crashed on `@memcpy arguments alias` in `home_rt.copy`
+  (now FIXED, `b86e3548` → `@memmove`; routing is crash-safe).
+- iter 13: TS-stripping works (`peek` advances past `Unexpected token '<'`), but
+  the real transpiler preserves `import.meta` which the IIFE harness rejects
+  (3340→2671). To route, the real-transpiler output must ALSO get the harness's
+  FULL ESM/`import.meta` neutralization (not just `rewriteBunTestImport`).
+- Decisive insight: even with perfect TS-stripping, the affected files then fail
+  on **parked runtime APIs** (e.g. `peek is not a function` — needs JSC promise
+  internals). So loader routing changes the failure REASON (syntax → runtime
+  API) without making files pass. The broad-corpus pass-rate is gated on the
+  RUNTIME, not the corpus transpiler. Do NOT spend more iterations on loader
+  routing for pass-rate; if ever revisited, it's only to compose the real
+  transpiler with the full harness neutralization, and the gain is small.
+
+**REAL BROAD-CORPUS FRONTIER = the parked runtime subsystems** (Phase 12.2/12.3/
+12.5), to port subsystem-by-subsystem against the corpus that exercises each:
+1. **Subprocess/`spawn`** — gates ~39% of `js/` (`bunExe()`/`.toRun()`); the
+   biggest single bucket. Needs real `Bun.spawn`/`spawnSync` + a runnable `home`
+   binary the tests can exec.
+2. **JSC JS-visible API internals** — `Bun.peek` (promise status), and the rest
+   of the `Bun.*`/`bun:jsc` surface backed by real JSC promise/value internals.
+3. **WebCore** — `fetch`/`Request`/`Response`/streams/`Blob` for `js/web/*`.
+4. **`node:*` modules** — the Tier-A set (`fs`/`stream`/`crypto`/`net`/...).
+5. **Real bundler** (`bundle_v2`/`LinkerContext`) — for `bundler/` + the 2
+   remaining minimal-js files.
+Each is source-present-but-parked and is a multi-session port; pick one, port it
+against its corpus slice, ratchet the pass count, repeat.
+
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
 debug` now bottoms out at a *large parked subsystem set*, NOT more leaf fixes.
