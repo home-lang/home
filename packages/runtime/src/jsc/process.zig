@@ -1,0 +1,373 @@
+// Phase 2 — a minimal `process` global for the native JSC eval/run realm.
+//
+// Like `console` (see `console.zig`), the bare `JSGlobalContextCreate` realm
+// used by `home eval`/`home run` has no host globals. Bun's realms expose a
+// rich `process`; this installs the core surface real scripts reach for:
+// `argv`, `env`, `platform`, `arch`, `version`, `versions.node`, `pid`,
+// `cwd()`, `exit()`, `nextTick()`, and `stdout.write`/`stderr.write`.
+//
+// The pattern mirrors `console.zig`: a handful of host callbacks are
+// registered on the global under temporary names, then a static JS glue
+// snippet (run inside an IIFE so the temporaries are captured as locals and
+// then deleted from the global) assembles `globalThis.process`.
+//
+// `version`/`versions.node` report Bun's pinned Node-compat version
+// (`BUN_REPORTED_NODEJS_VERSION` default `24.0.0`, per
+// `~/Code/bun/src/bun_core/lib.rs`). It is a literal here rather than the
+// runtime's `bun_core/env.reported_nodejs_version` because that decl is
+// gated on a `build_options.reported_nodejs_version` the CLI build does not
+// define. Object inspect-formatting and the full stream surface are
+// deliberate later refinements.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const build_options = @import("build_options");
+const evaluate = @import("evaluate.zig");
+const callback = @import("callback.zig");
+const extern_fns = @import("extern_fns.zig");
+const opaques = @import("opaques.zig");
+
+const JSValue = opaques.JSValue;
+const JSContextRef = opaques.JSContextRef;
+const JSObject = opaques.JSObject;
+const JSGlobalObject = opaques.JSGlobalObject;
+
+/// Process argv backing the `process.argv` native. The CLI is single-threaded
+/// and the slice outlives the eval, so a module-level reference is safe.
+var g_argv: []const []const u8 = &.{};
+
+const platform_name = switch (builtin.os.tag) {
+    .macos => "darwin",
+    .windows => "win32",
+    else => "linux",
+};
+const arch_name = switch (builtin.cpu.arch) {
+    .aarch64 => "arm64",
+    .x86_64 => "x64",
+    else => @tagName(builtin.cpu.arch),
+};
+const node_version = "24.0.0";
+
+const stdout_fd: c_int = 1;
+const stderr_fd: c_int = 2;
+
+fn writeAll(fd: c_int, bytes: []const u8) void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const rc = std.c.write(fd, bytes.ptr + offset, bytes.len - offset);
+        if (rc <= 0) return;
+        offset += @intCast(rc);
+    }
+}
+
+/// Build a JS string value from a Zig slice (page allocator: the C-ABI
+/// callback carries no host allocator).
+fn jsStringValue(ctx: *JSContextRef, text: []const u8) ?*JSValue {
+    const allocator = std.heap.page_allocator;
+    const text_z = allocator.dupeZ(u8, text) catch return null;
+    defer allocator.free(text_z);
+    const string = extern_fns.JSStringCreateWithUTF8CString(text_z.ptr) orelse return null;
+    defer extern_fns.JSStringRelease(string);
+    return extern_fns.JSValueMakeString(ctx, string);
+}
+
+/// Set `object[key] = value` (no-op on allocation/JSC failure).
+fn setProp(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: ?*JSValue) void {
+    const allocator = std.heap.page_allocator;
+    const key_z = allocator.dupeZ(u8, key) catch return;
+    defer allocator.free(key_z);
+    const name = extern_fns.JSStringCreateWithUTF8CString(key_z.ptr) orelse return;
+    defer extern_fns.JSStringRelease(name);
+    extern_fns.JSObjectSetProperty(ctx, object, name, value, 0, null);
+}
+
+/// Write a single JS string argument to `fd` verbatim (no trailing newline,
+/// matching `stream.write`).
+fn writeArg(ctx: *JSContextRef, fd: c_int, value: *JSValue) void {
+    const allocator = std.heap.page_allocator;
+    const string = extern_fns.JSValueToStringCopy(ctx, value, null) orelse return;
+    defer extern_fns.JSStringRelease(string);
+    const capacity = extern_fns.JSStringGetLength(string) * 4 + 1;
+    if (capacity == 1) return;
+    const buf = allocator.alloc(u8, capacity) catch return;
+    defer allocator.free(buf);
+    const written = extern_fns.JSStringGetUTF8CString(string, buf.ptr, buf.len);
+    const end = if (written > 0) written - 1 else 0;
+    writeAll(fd, buf[0..end]);
+}
+
+fn argvNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+    const c = ctx orelse return null;
+    const allocator = std.heap.page_allocator;
+    const items = allocator.alloc(?*JSValue, g_argv.len) catch
+        return @ptrCast(extern_fns.JSObjectMakeArray(c, 0, null, null) orelse return extern_fns.JSValueMakeUndefined(c));
+    defer allocator.free(items);
+    var n: usize = 0;
+    for (g_argv) |arg| {
+        items[n] = jsStringValue(c, arg) orelse continue;
+        n += 1;
+    }
+    const array = extern_fns.JSObjectMakeArray(c, n, items.ptr, null) orelse return extern_fns.JSValueMakeUndefined(c);
+    return @ptrCast(array);
+}
+
+fn envNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+    const c = ctx orelse return null;
+    const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeUndefined(c);
+    var i: usize = 0;
+    while (std.c.environ[i]) |entry| : (i += 1) {
+        const pair = std.mem.span(entry);
+        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        const value = jsStringValue(c, pair[eq + 1 ..]) orelse continue;
+        setProp(c, object, pair[0..eq], value);
+    }
+    return @ptrCast(object);
+}
+
+fn staticInfoNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+    const c = ctx orelse return null;
+    const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeUndefined(c);
+    setProp(c, object, "platform", jsStringValue(c, platform_name));
+    setProp(c, object, "arch", jsStringValue(c, arch_name));
+    setProp(c, object, "version", jsStringValue(c, "v" ++ node_version));
+    setProp(c, object, "node", jsStringValue(c, node_version));
+    setProp(c, object, "pid", extern_fns.JSValueMakeNumber(c, @floatFromInt(std.c.getpid())));
+    return @ptrCast(object);
+}
+
+fn cwdNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+    const c = ctx orelse return null;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_ptr = std.c.getcwd(&buf, buf.len) orelse return jsStringValue(c, "") orelse extern_fns.JSValueMakeUndefined(c);
+    const cwd = std.mem.span(@as([*:0]u8, @ptrCast(cwd_ptr)));
+    return jsStringValue(c, cwd) orelse extern_fns.JSValueMakeUndefined(c);
+}
+
+fn exitNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    var code: u8 = 0;
+    if (argument_count >= 1) {
+        if (arguments[0]) |value| {
+            const n = extern_fns.JSValueToNumber(ctx, value, null);
+            if (!std.math.isNan(n)) code = @intFromFloat(@max(0, @min(255, n)));
+        }
+    }
+    std.process.exit(code);
+}
+
+fn stdoutWriteNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    if (ctx) |c| {
+        if (argument_count >= 1) {
+            if (arguments[0]) |value| writeArg(c, stdout_fd, value);
+        }
+    }
+    return extern_fns.JSValueMakeBoolean(ctx, true);
+}
+
+fn stderrWriteNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    if (ctx) |c| {
+        if (argument_count >= 1) {
+            if (arguments[0]) |value| writeArg(c, stderr_fd, value);
+        }
+    }
+    return extern_fns.JSValueMakeBoolean(ctx, true);
+}
+
+const install_glue =
+    \\(function() {
+    \\  var argvFn = globalThis.__home_process_argv;
+    \\  var envFn = globalThis.__home_process_env;
+    \\  var infoFn = globalThis.__home_process_static_info;
+    \\  var cwdFn = globalThis.__home_process_cwd;
+    \\  var exitFn = globalThis.__home_process_exit;
+    \\  var outWriteFn = globalThis.__home_process_stdout_write;
+    \\  var errWriteFn = globalThis.__home_process_stderr_write;
+    \\  var info = infoFn();
+    \\  globalThis.process = {
+    \\    argv: argvFn(),
+    \\    env: envFn(),
+    \\    platform: info.platform,
+    \\    arch: info.arch,
+    \\    version: info.version,
+    \\    versions: { node: info.node },
+    \\    pid: info.pid,
+    \\    cwd: function() { return cwdFn(); },
+    \\    exit: function(code) { return exitFn(code); },
+    \\    nextTick: function(cb) {
+    \\      var args = Array.prototype.slice.call(arguments, 1);
+    \\      Promise.resolve().then(function() { cb.apply(null, args); });
+    \\    },
+    \\    stdout: { write: function(s) { return outWriteFn(String(s)); }, isTTY: false },
+    \\    stderr: { write: function(s) { return errWriteFn(String(s)); }, isTTY: false },
+    \\  };
+    \\  delete globalThis.__home_process_argv;
+    \\  delete globalThis.__home_process_env;
+    \\  delete globalThis.__home_process_static_info;
+    \\  delete globalThis.__home_process_cwd;
+    \\  delete globalThis.__home_process_exit;
+    \\  delete globalThis.__home_process_stdout_write;
+    \\  delete globalThis.__home_process_stderr_write;
+    \\})();
+;
+
+/// Install a minimal `process` global into `ctx`'s realm. `argv` becomes
+/// `process.argv` (the slice must outlive the realm). No-op when JSC is not
+/// linked.
+pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject, argv: []const []const u8) void {
+    if (comptime !build_options.enable_jsc) return;
+
+    g_argv = argv;
+    callback.registerCallback(ctx, global, "__home_process_argv", argvNative);
+    callback.registerCallback(ctx, global, "__home_process_env", envNative);
+    callback.registerCallback(ctx, global, "__home_process_static_info", staticInfoNative);
+    callback.registerCallback(ctx, global, "__home_process_cwd", cwdNative);
+    callback.registerCallback(ctx, global, "__home_process_exit", exitNative);
+    callback.registerCallback(ctx, global, "__home_process_stdout_write", stdoutWriteNative);
+    callback.registerCallback(ctx, global, "__home_process_stderr_write", stderrWriteNative);
+
+    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:process-install", 1) catch return;
+    result.deinit(allocator);
+}
+
+fn evalBool(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const u8) !bool {
+    const value = (try evaluate.evaluateUtf8(allocator, ctx, source, "home:process-probe", 1, null)) orelse
+        return error.JSEvaluateReturnedNull;
+    return extern_fns.JSValueToBoolean(ctx, value);
+}
+
+test "process install exposes the core surface" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{ "home", "script.js", "a" };
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    // Shape: process is an object with the expected primitive/array/object members.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "typeof process === 'object' && " ++
+        "Array.isArray(process.argv) && process.argv.length === 3 && process.argv[0] === 'home' && " ++
+        "typeof process.env === 'object' && " ++
+        "typeof process.platform === 'string' && typeof process.arch === 'string' && " ++
+        "process.version[0] === 'v' && typeof process.versions.node === 'string' && " ++
+        "typeof process.pid === 'number' && " ++
+        "typeof process.cwd === 'function' && typeof process.exit === 'function' && " ++
+        "typeof process.nextTick === 'function' && " ++
+        "typeof process.stdout.write === 'function' && typeof process.stderr.write === 'function'"));
+
+    // The temporary registration globals were cleaned up.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "typeof globalThis.__home_process_argv === 'undefined' && " ++
+        "typeof globalThis.__home_process_static_info === 'undefined'"));
+}
+
+test "process.cwd returns a non-empty absolute path" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{"home"};
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "typeof process.cwd() === 'string' && process.cwd().length > 0 && process.cwd()[0] === '/'"));
+}
+
+test "process.nextTick runs the callback after the current job" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{"home"};
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    // Synchronously the tick has not run; after microtasks drain it has.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx, "globalThis.__t = 0; process.nextTick(function() { globalThis.__t = 1; });", "home:nexttick-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__t === 1"));
+}

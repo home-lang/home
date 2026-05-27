@@ -1757,6 +1757,8 @@ pub const jsc = struct {
     // (Phase 2 prep). Named `console_global` to avoid colliding with the
     // existing `ConsoleObject`/`messageWithTypeAndLevel` console machinery.
     pub const console_global = @import("jsc/console.zig");
+    // Minimal `process` global installer for the native eval/run realm.
+    pub const process_global = @import("jsc/process.zig");
     // Phase 12.2 M6 (2026-05-19) — final scaffold milestone:
     // JSON + Promise + Iterator + Global helpers. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands. After M6
@@ -5177,6 +5179,7 @@ test {
     _ = @import("jsc/engine.zig");
     _ = @import("jsc/evaluate.zig");
     _ = @import("jsc/console.zig");
+    _ = @import("jsc/process.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
