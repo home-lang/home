@@ -4089,12 +4089,30 @@ const harness_prelude =
     \\};
     \\it.skip = it.todo;
     \\it.concurrent = it;
+    \\it.skipIf = function(condition) {
+    \\  return condition ? it.skip : it;
+    \\};
+    \\it.todoIf = function(condition) {
+    \\  return condition ? it.todo : it;
+    \\};
+    \\it.failingIf = function(condition) {
+    \\  return condition ? it.failing : it;
+    \\};
+    \\it.if = function(condition) {
+    \\  return condition ? it : it.skip;
+    \\};
     \\function test(name, first, second) { return it(name, first, second); }
     \\test.only = __home_test_only;
     \\test.todo = it.todo;
     \\test.skip = it.todo;
     \\test.skipIf = function(condition) {
     \\  return condition ? test.skip : test;
+    \\};
+    \\test.todoIf = function(condition) {
+    \\  return condition ? test.todo : test;
+    \\};
+    \\test.failingIf = function(condition) {
+    \\  return condition ? test.failing : test;
     \\};
     \\test.if = function(condition) {
     \\  return condition ? test : test.skip;
@@ -4154,6 +4172,9 @@ const harness_prelude =
     \\describe.skip.concurrent = describe.skip;
     \\describe.skipIf = function(condition) {
     \\  return condition ? describe.skip : describe;
+    \\};
+    \\describe.todoIf = function(condition) {
+    \\  return condition ? describe.todo : describe;
     \\};
     \\describe.if = function(condition) {
     \\  return condition ? describe : describe.skip;
@@ -8146,8 +8167,30 @@ const harness_prelude =
     \\  return target;
     \\}
     \\__home_define_stats_prototype(BigIntStats.prototype, true);
+    \\const __home_node_fs_constants = {
+    \\  UV_DIRENT_UNKNOWN: 0, UV_DIRENT_FILE: 1, UV_DIRENT_DIR: 2, UV_DIRENT_LINK: 3, UV_DIRENT_FIFO: 4, UV_DIRENT_SOCKET: 5, UV_DIRENT_CHAR: 6, UV_DIRENT_BLOCK: 7,
+    \\  UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1, UV_FS_COPYFILE_FICLONE: 2, COPYFILE_FICLONE: 2, UV_FS_COPYFILE_FICLONE_FORCE: 4, COPYFILE_FICLONE_FORCE: 4,
+    \\  F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
+    \\  S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192, S_IFBLK: 24576, S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152,
+    \\};
+    \\function __home_node_fs_Dirent(name, type, path) {
+    \\  if (!new.target) { const error = new TypeError("Class constructor Dirent cannot be invoked without 'new'"); error.code = "ERR_ILLEGAL_CONSTRUCTOR"; throw error; }
+    \\  this.name = name;
+    \\  this.parentPath = path;
+    \\  this.path = path;
+    \\  this.__home_dirent_type = type;
+    \\}
+    \\__home_node_fs_Dirent.prototype.isFile = function isFile() { return this.__home_dirent_type === 1; };
+    \\__home_node_fs_Dirent.prototype.isDirectory = function isDirectory() { return this.__home_dirent_type === 2; };
+    \\__home_node_fs_Dirent.prototype.isSymbolicLink = function isSymbolicLink() { return this.__home_dirent_type === 3; };
+    \\__home_node_fs_Dirent.prototype.isFIFO = function isFIFO() { return this.__home_dirent_type === 4; };
+    \\__home_node_fs_Dirent.prototype.isSocket = function isSocket() { return this.__home_dirent_type === 5; };
+    \\__home_node_fs_Dirent.prototype.isCharacterDevice = function isCharacterDevice() { return this.__home_dirent_type === 6; };
+    \\__home_node_fs_Dirent.prototype.isBlockDevice = function isBlockDevice() { return this.__home_dirent_type === 7; };
     \\const __home_node_fs = {
     \\  Stats: Stats,
+    \\  Dirent: __home_node_fs_Dirent,
+    \\  constants: __home_node_fs_constants,
     \\  __home_stats_mode_from_native(nativeStats) {
     \\    if (nativeStats && nativeStats.isDirectory) return __home_S_IFDIR;
     \\    if (nativeStats && nativeStats.isSymbolicLink) return __home_S_IFLNK;
@@ -22774,6 +22817,78 @@ test "bootstrap runner supports node fs rename and unlink sync methods" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner exposes node fs Dirent and constants" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import fs from "node:fs";
+        \\test("fs.constants UV_DIRENT and Dirent type checks", () => {
+        \\  expect(fs.constants.UV_DIRENT_UNKNOWN).toBe(0);
+        \\  expect(fs.constants.UV_DIRENT_FILE).toBe(1);
+        \\  expect(fs.constants.UV_DIRENT_DIR).toBe(2);
+        \\  expect(fs.constants.UV_DIRENT_LINK).toBe(3);
+        \\  expect(fs.constants.UV_DIRENT_FIFO).toBe(4);
+        \\  expect(fs.constants.UV_DIRENT_SOCKET).toBe(5);
+        \\  expect(fs.constants.UV_DIRENT_CHAR).toBe(6);
+        \\  expect(fs.constants.UV_DIRENT_BLOCK).toBe(7);
+        \\  const unknown = new fs.Dirent("u", fs.constants.UV_DIRENT_UNKNOWN);
+        \\  expect(unknown.isFile()).toBe(false);
+        \\  expect(unknown.isDirectory()).toBe(false);
+        \\  expect(unknown.isSymbolicLink()).toBe(false);
+        \\  expect(unknown.isSocket()).toBe(false);
+        \\  expect(unknown.isBlockDevice()).toBe(false);
+        \\  expect(unknown.isCharacterDevice()).toBe(false);
+        \\  expect(unknown.isFIFO()).toBe(false);
+        \\  const fifo = new fs.Dirent("p", fs.constants.UV_DIRENT_FIFO, "/dir");
+        \\  expect(fifo.isFIFO()).toBe(true);
+        \\  expect(fifo.isFile()).toBe(false);
+        \\  expect(fifo.name).toBe("p");
+        \\  expect(fifo.parentPath).toBe("/dir");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/fs/fs-dirent-bootstrap-smoke.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner exposes conditional test modifiers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it, test } from "bun:test";
+        \\it.skipIf(true)("skipped via it.skipIf", () => { expect(1).toBe(2); });
+        \\it.todoIf(true)("todo via it.todoIf", () => { expect(1).toBe(2); });
+        \\it.if(false)("disabled via it.if", () => { expect(1).toBe(2); });
+        \\test.todoIf(true)("todo via test.todoIf", () => { expect(1).toBe(2); });
+        \\describe.todoIf(true)("todo describe", () => {
+        \\  it("inner", () => { expect(1).toBe(2); });
+        \\});
+        \\it.skipIf(false)("runs via it.skipIf(false)", () => { expect(1).toBe(1); });
+        \\it.if(true)("runs via it.if(true)", () => { expect(2).toBe(2); });
+        \\test.todoIf(false)("runs via test.todoIf(false)", () => { expect(3).toBe(3); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/conditional-modifiers-bootstrap-smoke.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "Bun test import rewrite lowers import.meta metadata" {
