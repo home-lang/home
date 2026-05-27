@@ -540,6 +540,19 @@ const harness_prelude =
     "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
     "globalThis.__home_process_arch = \"" ++ js_process_arch ++ "\";\n" ++
     \\const __home_real_Date = globalThis.Date;
+    \\if (typeof Symbol.dispose === "undefined") { try { Object.defineProperty(Symbol, "dispose", { value: Symbol("Symbol.dispose"), configurable: false, enumerable: false, writable: false }); } catch (error) { Symbol.dispose = Symbol("Symbol.dispose"); } }
+    \\if (typeof Symbol.asyncDispose === "undefined") { try { Object.defineProperty(Symbol, "asyncDispose", { value: Symbol("Symbol.asyncDispose"), configurable: false, enumerable: false, writable: false }); } catch (error) { Symbol.asyncDispose = Symbol("Symbol.asyncDispose"); } }
+    \\if (typeof globalThis.SuppressedError !== "function") {
+    \\  globalThis.SuppressedError = function SuppressedError(error, suppressed, message) {
+    \\    const instance = new Error(message);
+    \\    Object.setPrototypeOf(instance, globalThis.SuppressedError.prototype);
+    \\    instance.name = "SuppressedError";
+    \\    instance.error = error;
+    \\    instance.suppressed = suppressed;
+    \\    return instance;
+    \\  };
+    \\  globalThis.SuppressedError.prototype = Object.create(Error.prototype, { constructor: { value: globalThis.SuppressedError, writable: true, configurable: true }, name: { value: "SuppressedError", writable: true, configurable: true } });
+    \\}
     \\let __home_fake_timers_active = false;
     \\let __home_fake_timers_now = 0;
     \\let __home_fake_timer_date_origin = 0;
@@ -4644,6 +4657,9 @@ const harness_prelude =
     \\    toBeFunction() {
     \\      __home_assert(typeof value === "function", isNot, "Expected value" + (isNot ? " not" : "") + " to be a function");
     \\    },
+    \\    toBeSymbol() {
+    \\      __home_assert(typeof value === "symbol", isNot, "Expected value" + (isNot ? " not" : "") + " to be a symbol");
+    \\    },
     \\    toBeArray() {
     \\      __home_assert(Array.isArray(value), isNot, "Expected value" + (isNot ? " not" : "") + " to be an array");
     \\    },
@@ -4981,6 +4997,7 @@ const harness_prelude =
     \\    toBeNumber() { return chain; },
     \\    toBeString() { return chain; },
     \\    toBeFunction() { return chain; },
+    \\    toBeSymbol() { return chain; },
     \\  };
     \\  Object.defineProperty(chain, "parameters", { get() { return chain; } });
     \\  Object.defineProperty(chain, "returns", { get() { return chain; } });
@@ -22865,6 +22882,38 @@ test "bootstrap runner exposes node fs Dirent and constants" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/fs/fs-dirent-bootstrap-smoke.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner polyfills dispose symbols and SuppressedError" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("dispose symbols and SuppressedError", () => {
+        \\  expect(Symbol.dispose).toBeSymbol();
+        \\  expect(Symbol.asyncDispose).toBeSymbol();
+        \\  expect(Symbol.dispose).not.toBe(Symbol.asyncDispose);
+        \\  const a = { [Symbol.dispose]() { return "d"; } };
+        \\  expect(typeof a[Symbol.dispose]).toBe("function");
+        \\  const e = new SuppressedError(new Error("inner"), new Error("suppressed"), "msg");
+        \\  expect(e.message).toBe("msg");
+        \\  expect(e.name).toBe("SuppressedError");
+        \\  expect(e.error.message).toBe("inner");
+        \\  expect(e.suppressed.message).toBe("suppressed");
+        \\  expect(e).toBeInstanceOf(Error);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/dispose-symbols-bootstrap-smoke.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
