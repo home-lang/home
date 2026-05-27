@@ -192,9 +192,20 @@ pub fn stringProto(
     // `match(regexp: string | RegExp): RegExpMatchArray | null` — precise
     // match-array result unioned with `null` (es5). The pattern accepts
     // both `string` and `RegExp`, modeled `any`.
+    //
+    // NOTE: the faithful upstream return is `RegExpMatchArray | null`, but
+    // Home's flow engine has a pre-existing gap narrowing a CALL-RESULT
+    // union of `Obj | null` — `const m = s.match(re); if (m) { m.index }`
+    // fails to strip `null` (the same gap reproduces for a hand-written
+    // `declare function g(): Foo | null; const f = g(); if (f) f.bar`,
+    // i.e. it is orthogonal to lib typing). Unioning with `null` here
+    // would therefore turn the dominant `if (m)` idiom into a false
+    // positive. We return the precise NON-NULL `RegExpMatchArray` instead
+    // (a strict improvement over the old bare `any`: `m.index` / `m[0]` /
+    // `m.length` resolve), and defer the `| null` until the call-result
+    // narrowing gap is fixed in the flow engine.
     const regexp_match_array = try internRegExpMatchArray(ti, sint);
-    const match_or_null = try ti.internUnion(&[_]TypeId{ regexp_match_array, types.Primitive.null_t });
-    const sig_match = try ti.internSignature(&[_]TypeId{any_t}, match_or_null, false);
+    const sig_match = try ti.internSignature(&[_]TypeId{any_t}, regexp_match_array, false);
     // `matchAll(regexp): IterableIterator<RegExpMatchArray>` — Home models
     // iterables as arrays on the iteration path, so `RegExpMatchArray[]`
     // is the closest faithful approximation (each yielded match has the
@@ -830,18 +841,13 @@ test "lib: stringProto exposes replace/padStart/at/matchAll and friends" {
     try T.expectEqual(types.Primitive.string_t, ti.signatureReturn(ti.objectMember(proto, try sint.intern("replace")).?).?);
     // `search` returns `number`.
     try T.expectEqual(types.Primitive.number_t, ti.signatureReturn(ti.objectMember(proto, try sint.intern("search")).?).?);
-    // `match` returns `RegExpMatchArray | null` — a union (not bare `any`)
-    // whose non-null member exposes `index?`, `input?`, `0` and a string
-    // number-index (it `extends Array<string>`).
+    // `match` returns the precise `RegExpMatchArray` (not bare `any`):
+    // it exposes `index?`, `input?`, `0` and a string number-index (it
+    // `extends Array<string>`). The `| null` is deferred pending the
+    // call-result narrowing fix (see the signature comment).
     const match_ret = ti.signatureReturn(ti.objectMember(proto, try sint.intern("match")).?).?;
     try T.expect(match_ret != types.Primitive.any);
-    try T.expect(ti.pool.flagsOf(match_ret).is_union);
-    var rma: TypeId = types.Primitive.none;
-    for (ti.unionMembers(match_ret)) |m| {
-        if (m == types.Primitive.null_t) continue;
-        rma = m;
-    }
-    try T.expect(rma != types.Primitive.none);
+    const rma = match_ret;
     try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(rma));
     try T.expectEqual(types.Primitive.number_t, ti.objectMember(rma, try sint.intern("index")).?);
     try T.expectEqual(types.Primitive.string_t, ti.objectMember(rma, try sint.intern("0")).?);
