@@ -25,7 +25,7 @@ upstream source that produces it.
 > are regression-gated on every PR; Bun port % is file-count progress
 > over integrated Home ports, while raw source presence is reported
 > separately now that the full Bun source backlog has been staged.
-> TS diagnostic-code coverage (889 / 2,076 emitted) tracks the catalog-
+> TS diagnostic-code coverage (890 / 2,076 emitted) tracks the catalog-
 > only → emitted ratchet; each `feat(ts-parity): implement TSxxxx`
 > commit moves this row by 1.
 
@@ -50,7 +50,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — exact (byte-for-byte)** | **~4,060 / 5,907 — ~68.7%** | `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1` |
 | **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture `.errors.txt` byte comparison |
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
-| **TypeScript — diagnostic codes emitted** | **889 / 2,076 — ~42.8%** | `docs/TS_DIAGNOSTIC_CODE_STATUS.md` — codes referenced from production source; 1,183 catalog-only remain |
+| **TypeScript — diagnostic codes emitted** | **890 / 2,076 — ~42.9%** | `docs/TS_DIAGNOSTIC_CODE_STATUS.md` — codes referenced from production source; 1,182 catalog-only remain |
 | **LSP wire methods** | **75 / ~80 — ~94%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/`; LSP 3.17 sync/lifecycle complete, notebook + window meta wired, workspaceSymbol/resolve + $/progress + codeAction/resolve + workspace/textDocumentContent (LSP 3.18) |
 | **Bun runtime — source files present** | **1,289 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
 | **Bun runtime — files integrated** | **552 / 1,193 — ~46.3%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
@@ -75,7 +75,7 @@ the same *families* of diagnostics.
 | Baseline-aware exact categories (19 folders, 586 cases) | 586 / 586 — 100% | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
 | Named-category exact survey (4 folders, 86 cases) | 86 / 86 — 100% | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
 | Smoke (3 folders, 16 cases) | 16 / 16 — 100% | Per-PR fast path. |
-| TS diagnostic-code catalogue | **889 / 2,076 emitted — ~42.8%** | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. 1,183 catalog-only entries remain (see `docs/TS_DIAGNOSTIC_CODE_STATUS.md`). |
+| TS diagnostic-code catalogue | **890 / 2,076 emitted — ~42.9%** | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. 1,182 catalog-only entries remain (see `docs/TS_DIAGNOSTIC_CODE_STATUS.md`). |
 
 **Exact mode by 1,000-case slice (latest):**
 
