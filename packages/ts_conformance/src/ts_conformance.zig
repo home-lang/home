@@ -50393,7 +50393,12 @@ fn runOptInTsSuiteFamily(
         .{ label, stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
     );
 
-    const fail_cap: u32 = if (want_exact) 200 else 20;
+    // `<PREFIX>_DUMP=1` uncaps the per-failure listing so a full-corpus
+    // frontier sweep can be pattern-mined (which TS codes / mismatch
+    // classes recur) without re-running the suite in slices. Default
+    // off — the capped listing keeps normal opt-in runs readable.
+    const dump_all = envBoolOne(env_prefix ++ "_DUMP");
+    const fail_cap: u32 = if (dump_all) std.math.maxInt(u32) else if (want_exact) 200 else 20;
     var printed: u32 = 0;
     for (results.items) |r| {
         if (r.outcome != .failed) continue;
