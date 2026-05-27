@@ -3118,7 +3118,8 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
     }
 
     const tests_observed = summary.passed + summary.failed + summary.todo;
-    const failed = summary.failed != 0 or summary.files == 0 or tests_observed == 0;
+    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
+    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Subset: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -3135,7 +3136,7 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
         std.debug.print("first failure: {s}\n", .{summary.first_failure_file});
         std.debug.print("message: {s}\n\n", .{summary.first_failure_message});
     }
-    if (tests_observed == 0) {
+    if (no_tests) {
         std.debug.print("reason: no-tests-observed\n\n", .{});
     }
 
@@ -3174,7 +3175,8 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     }
 
     const tests_observed = summary.passed + summary.failed + summary.todo;
-    const failed = summary.failed != 0 or summary.files == 0 or tests_observed == 0;
+    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
+    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Gate: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -3195,7 +3197,7 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
         std.debug.print("first failure: {s}\n", .{summary.first_failure_file});
         std.debug.print("message: {s}\n\n", .{summary.first_failure_message});
     }
-    if (tests_observed == 0) {
+    if (no_tests) {
         std.debug.print("reason: no-tests-observed\n\n", .{});
     }
     std.debug.print("A delegated `bun test` result is not accepted as Home runtime parity.\n\n", .{});
@@ -3219,7 +3221,8 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
     }
 
     const tests_observed = summary.passed + summary.failed + summary.todo;
-    const failed = summary.failed != 0 or summary.files == 0 or tests_observed == 0;
+    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
+    const failed = summary.failed != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native File: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -3238,7 +3241,7 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
         std.debug.print("first failure: {s}\n", .{summary.first_failure_file});
         std.debug.print("message: {s}\n\n", .{summary.first_failure_message});
     }
-    if (tests_observed == 0) {
+    if (no_tests) {
         std.debug.print("reason: no-tests-observed\n\n", .{});
     }
 

@@ -51,6 +51,10 @@ pub const Summary = struct {
     failed: usize = 0,
     todo: usize = 0,
     unsupported: usize = 0,
+    // Files that legitimately register zero tests (e.g. Bun's empty-file.test.ts
+    // regression fixture, which is only a comment). These must not be treated as a
+    // `no-tests-observed` failure even though they contribute no passed/failed/todo.
+    allowed_empty_files: usize = 0,
     blocked: bool = false,
     reason: []const u8 = "",
     first_failure_file: []const u8 = "",
@@ -3240,13 +3244,65 @@ const harness_prelude =
     \\  if (!Number.isFinite(indent)) indent = 0;
     \\  return lines.map(line => line.slice(indent)).join("\n");
     \\}
+    \\function __home_parse_snapshot_template(source, start) {
+    \\  // Parse a backtick template literal beginning at source[start] === "`".
+    \\  // Returns { value, end } where value is the cooked string (escapes resolved,
+    \\  // line endings normalized like a real template literal) and end is the index
+    \\  // just past the closing backtick.
+    \\  let i = start + 1;
+    \\  let out = "";
+    \\  while (i < source.length) {
+    \\    const ch = source[i];
+    \\    if (ch === "`") return { value: out, end: i + 1 };
+    \\    if (ch === "\\") {
+    \\      const next = source[i + 1];
+    \\      switch (next) {
+    \\        case "`": out += "`"; i += 2; continue;
+    \\        case "\\": out += "\\"; i += 2; continue;
+    \\        case "$": out += "$"; i += 2; continue;
+    \\        case "n": out += "\n"; i += 2; continue;
+    \\        case "r": out += "\r"; i += 2; continue;
+    \\        case "t": out += "\t"; i += 2; continue;
+    \\        case "b": out += "\b"; i += 2; continue;
+    \\        case "f": out += "\f"; i += 2; continue;
+    \\        case "v": out += "\v"; i += 2; continue;
+    \\        case "0": out += "\0"; i += 2; continue;
+    \\        case "\r":
+    \\          // line continuation: backslash followed by CR or CRLF is removed
+    \\          i += (source[i + 2] === "\n") ? 3 : 2;
+    \\          continue;
+    \\        case "\n": i += 2; continue;
+    \\        default: out += next === undefined ? "" : next; i += 2; continue;
+    \\      }
+    \\    }
+    \\    // Template literals normalize CRLF and lone CR to LF.
+    \\    if (ch === "\r") {
+    \\      out += "\n";
+    \\      i += (source[i + 1] === "\n") ? 2 : 1;
+    \\      continue;
+    \\    }
+    \\    out += ch;
+    \\    i += 1;
+    \\  }
+    \\  return { value: out, end: i };
+    \\}
     \\function __home_load_snapshots(source) {
     \\  const values = Object.create(null);
     \\  if (!source) return values;
-    \\  const pattern = /exports\[`([^`]+)`\]\s*=\s*`([\s\S]*?)`\s*;/g;
-    \\  let match;
-    \\  while ((match = pattern.exec(String(source))) !== null) {
-    \\    values[match[1]] = __home_dedent_snapshot(match[2]);
+    \\  const text = String(source);
+    \\  const marker = "exports[";
+    \\  let idx = 0;
+    \\  while ((idx = text.indexOf(marker, idx)) !== -1) {
+    \\    let i = idx + marker.length;
+    \\    if (text[i] !== "`") { idx = i; continue; }
+    \\    const keyParsed = __home_parse_snapshot_template(text, i);
+    \\    i = keyParsed.end;
+    \\    while (i < text.length && (text[i] === " " || text[i] === "\t" || text[i] === "]")) i += 1;
+    \\    while (i < text.length && (text[i] === " " || text[i] === "\t" || text[i] === "=")) i += 1;
+    \\    if (text[i] !== "`") { idx = i; continue; }
+    \\    const valueParsed = __home_parse_snapshot_template(text, i);
+    \\    values[keyParsed.value] = valueParsed.value;
+    \\    idx = valueParsed.end;
     \\  }
     \\  return values;
     \\}
@@ -3269,6 +3325,111 @@ const harness_prelude =
     \\    return lines.join("\n");
     \\  }
     \\  return __home_format(value);
+    \\}
+    \\function __home_snapshot_string(str) {
+    \\  // Mirror Bun's pretty_format.zig string serialization: empty -> "", values
+    \\  // containing a newline get a leading + trailing newline, CRLF/CR normalize to
+    \\  // LF, and backslashes are left as-is (the .snap writer/reader handles escaping).
+    \\  if (str.length === 0) return "\"\"";
+    \\  const hasNewline = str.indexOf("\n") !== -1 || str.indexOf("\r") !== -1;
+    \\  let body = "";
+    \\  for (let i = 0; i < str.length; i++) {
+    \\    const ch = str[i];
+    \\    if (ch === "\r") {
+    \\      body += "\n";
+    \\      if (str[i + 1] === "\n") i += 1;
+    \\    } else {
+    \\      body += ch;
+    \\    }
+    \\  }
+    \\  const quoted = "\"" + body + "\"";
+    \\  return hasNewline ? "\n" + quoted + "\n" : quoted;
+    \\}
+    \\function __home_snapshot_matcher_label(value) {
+    \\  if (value && value.__home_expect_any) {
+    \\    const ctor = value.ctor;
+    \\    let name = (ctor && ctor.name) ? ctor.name : "Object";
+    \\    // The harness shadows some globals (e.g. Date) with __home_-prefixed wrappers;
+    \\    // report the canonical constructor name like Bun does.
+    \\    if (name.indexOf("__home_") === 0) name = name.slice("__home_".length);
+    \\    return "Any<" + name + ">";
+    \\  }
+    \\  if (value && value.__home_expect_string_matching) return "StringMatching<" + String(value.pattern) + ">";
+    \\  return null;
+    \\}
+    \\function __home_snapshot_matcher_validate(value, matcher) {
+    \\  // Asymmetric matcher (expect.any / expect.stringMatching): validate the value.
+    \\  if (matcher && matcher.__home_expect_any) return __home_expect_any_matches(value, matcher.ctor);
+    \\  if (matcher && matcher.__home_expect_string_matching) return __home_expect_string_matching_matches(value, matcher.pattern);
+    \\  if (matcher && typeof matcher.asymmetricMatch === "function") return !!matcher.asymmetricMatch(value);
+    \\  if (matcher !== null && typeof matcher === "object") {
+    \\    if (value === null || typeof value !== "object") return false;
+    \\    for (const key of Object.keys(matcher)) {
+    \\      if (!__home_snapshot_matcher_validate(value[key], matcher[key])) return false;
+    \\    }
+    \\    return true;
+    \\  }
+    \\  return __home_deep_equal(value, matcher, false, new Map());
+    \\}
+    \\function __home_snapshot_apply_matchers(value, matchers) {
+    \\  // Produce a copy of value where keys covered by an asymmetric matcher are
+    \\  // replaced with the matcher itself, mirroring Bun's replaceProps behavior so
+    \\  // the formatted snapshot renders Any<...> in those positions.
+    \\  if (matchers === null || typeof matchers !== "object") return value;
+    \\  if (value === null || typeof value !== "object") return value;
+    \\  const out = Array.isArray(value) ? value.slice() : Object.assign(Object.create(Object.getPrototypeOf(value)), value);
+    \\  for (const key of Object.keys(matchers)) {
+    \\    const m = matchers[key];
+    \\    if (m && (m.__home_expect_any || m.__home_expect_string_matching || typeof m.asymmetricMatch === "function")) {
+    \\      out[key] = m;
+    \\    } else if (m !== null && typeof m === "object") {
+    \\      out[key] = __home_snapshot_apply_matchers(value[key], m);
+    \\    }
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_format_file_snapshot(value, indent) {
+    \\  if (indent === undefined) indent = 0;
+    \\  const matcher = __home_snapshot_matcher_label(value);
+    \\  if (matcher !== null) return matcher;
+    \\  if (value === null) return "null";
+    \\  if (value === undefined) return "undefined";
+    \\  const t = typeof value;
+    \\  if (t === "string") return __home_snapshot_string(value);
+    \\  if (t === "number") return String(value);
+    \\  if (t === "bigint") return String(value) + "n";
+    \\  if (t === "boolean") return String(value);
+    \\  if (value instanceof String) {
+    \\    const s = value.valueOf();
+    \\    if (s.length === 0) return "String {}";
+    \\    return __home_format_snapshot(value);
+    \\  }
+    \\  if (value instanceof Date) return value.toISOString();
+    \\  if (value instanceof RegExp) return String(value);
+    \\  if (Array.isArray(value)) {
+    \\    if (value.length === 0) return "[]";
+    \\    const pad = "  ".repeat(indent + 1);
+    \\    const closePad = "  ".repeat(indent);
+    \\    let out = "[\n";
+    \\    for (let i = 0; i < value.length; i++) {
+    \\      out += pad + __home_format_file_snapshot(value[i], indent + 1) + ",\n";
+    \\    }
+    \\    out += closePad + "]";
+    \\    return indent === 0 ? "\n" + out + "\n" : out;
+    \\  }
+    \\  if (t === "object") {
+    \\    const keys = Object.keys(value).sort();
+    \\    if (keys.length === 0) return "{}";
+    \\    const pad = "  ".repeat(indent + 1);
+    \\    const closePad = "  ".repeat(indent);
+    \\    let out = "{\n";
+    \\    for (const key of keys) {
+    \\      out += pad + "\"" + key + "\": " + __home_format_file_snapshot(value[key], indent + 1) + ",\n";
+    \\    }
+    \\    out += closePad + "}";
+    \\    return indent === 0 ? "\n" + out + "\n" : out;
+    \\  }
+    \\  return String(value);
     \\}
     \\function __home_error_event_error_text(error) {
     \\  return error === null || error === undefined ? "null" : "[Error: " + String(error.message || error) + "]";
@@ -4172,19 +4333,42 @@ const harness_prelude =
     \\      const snapshot = __home_dedent_snapshot(expected);
     \\      __home_assert(actual === snapshot, isNot, "Expected inline snapshot" + (isNot ? " not" : "") + " to match\nactual:\n" + actual + "\nexpected:\n" + snapshot);
     \\    },
-    \\    toMatchSnapshot(name) {
+    \\    toMatchSnapshot() {
+    \\      if (isNot) __home_fail("Matcher error: Snapshot matchers cannot be used with not");
+    \\      // Bun signature: toMatchSnapshot(propertyMatchers?, hint?). One object arg is
+    \\      // property matchers, one string arg is a hint, two args are (matchers, hint).
+    \\      let propertyMatchers = null;
+    \\      let hint = "";
+    \\      if (arguments.length === 1) {
+    \\        const first = arguments[0];
+    \\        if (typeof first === "string") hint = first;
+    \\        else if (first !== null && typeof first === "object") propertyMatchers = first;
+    \\        else if (first !== undefined && first !== null) __home_fail("Matcher error: Expected first argument to be a string or object");
+    \\      } else if (arguments.length >= 2) {
+    \\        const first = arguments[0];
+    \\        if (first === null || typeof first !== "object") __home_fail("Matcher error: Expected properties must be an object");
+    \\        propertyMatchers = first;
+    \\        if (typeof arguments[1] !== "string") __home_fail("Matcher error: Expected second argument to be a string");
+    \\        hint = arguments[1];
+    \\      }
     \\      const baseName = String(globalThis.__home_current_snapshot_name || "");
-    \\      const snapshotName = arguments.length > 0 && name !== undefined && name !== null ? baseName + " " + String(name) : baseName;
+    \\      const snapshotName = hint ? baseName + ": " + hint : baseName;
     \\      if (!snapshotName) __home_fail("toMatchSnapshot() must be called while a test is running");
+    \\      let formatValue = value;
+    \\      if (propertyMatchers !== null) {
+    \\        if (value === null || typeof value !== "object") __home_fail("Matcher error: received values must be an object when the matcher has properties");
+    \\        if (!__home_snapshot_matcher_validate(value, propertyMatchers)) __home_fail("Expected propertyMatchers to match properties from received object");
+    \\        formatValue = __home_snapshot_apply_matchers(value, propertyMatchers);
+    \\      }
     \\      const counts = globalThis.__home_snapshot_counts || (globalThis.__home_snapshot_counts = Object.create(null));
     \\      const count = (counts[snapshotName] || 0) + 1;
     \\      counts[snapshotName] = count;
     \\      const key = snapshotName + " " + String(count);
     \\      const snapshots = globalThis.__home_snapshot_values || Object.create(null);
     \\      if (!Object.prototype.hasOwnProperty.call(snapshots, key)) __home_fail("Missing snapshot: " + key);
-    \\      const actual = __home_format_snapshot(value);
+    \\      const actual = __home_format_file_snapshot(formatValue);
     \\      const snapshot = snapshots[key];
-    \\      __home_assert(actual === snapshot, isNot, "Expected snapshot" + (isNot ? " not" : "") + " to match\nkey:\n" + key + "\nactual:\n" + actual + "\nexpected:\n" + snapshot);
+    \\      __home_assert(actual === snapshot, false, "Expected snapshot to match\nkey:\n" + key + "\nactual:\n" + actual + "\nexpected:\n" + snapshot);
     \\    },
     \\    toEqualIgnoringWhitespace(expected) {
     \\      if (arguments.length < 1) __home_fail("toEqualIgnoringWhitespace() requires 1 argument");
@@ -14249,8 +14433,12 @@ fn runRelativeFile(
     var file_run = try runtime.runFile(allocator, prepared.fileSpec());
     defer file_run.deinit(allocator);
 
-    summary.addFileResult(file_run.result);
-    switch (file_run.result.status()) {
+    const r = file_run.result;
+    summary.addFileResult(r);
+    if (prepared.allow_no_tests and r.passed + r.failed + r.todo + r.unsupported == 0) {
+        summary.allowed_empty_files += 1;
+    }
+    switch (r.status()) {
         .failed, .unsupported => try recordFailure(allocator, summary, relative, file_run.result.first_failure_message),
         .passed, .todo => {},
     }
@@ -17016,6 +17204,81 @@ test "bootstrap runner covers inline snapshot unicode object formatting" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner matches file snapshots with property matchers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    // Mirror Bun's toMatchSnapshot(propertyMatchers, hint?) semantics: an object
+    // first argument is property matchers (not a name), asymmetric matchers are
+    // validated and rendered as Any<Ctor>, object keys are sorted, and the value is
+    // compared against a snapshot loaded from a .snap-style template literal.
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\globalThis.__home_snapshot_values = __home_load_snapshots(
+        \\  "// Bun Snapshot v1\n" +
+        \\  "\nexports[`matches with matchers 1`] = `\n{\n  \"a\": {\n    \"b\": {\n      \"c\": Any<Boolean>,\n    },\n  },\n  \"c\": 2,\n}\n`;\n" +
+        \\  "\nexports[`matches with matchers: hinted 1`] = `\n{\n  \"a\": \"any\",\n  \"b\": Any<String>,\n  \"j\": Any<Number>,\n}\n`;\n"
+        \\);
+        \\globalThis.__home_snapshot_counts = Object.create(null);
+        \\test("matches with matchers", () => {
+        \\  expect({ a: { b: { c: false } }, c: 2 }).toMatchSnapshot({ a: { b: { c: expect.any(Boolean) } } });
+        \\  expect({ j: 2, a: "any", b: "any2" }).toMatchSnapshot({ j: expect.any(Number), a: "any", b: expect.any(String) }, "hinted");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/snapshot-tests/property-matchers.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner normalizes carriage returns in file snapshot strings" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    // Bun's snapshot string serialization normalizes CR/CRLF to LF and wraps
+    // multi-line values with a leading and trailing newline; backslashes and other
+    // control bytes pass through unchanged.
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\globalThis.__home_snapshot_values = __home_load_snapshots(
+        \\  "\nexports[`cr normalization 1`] = `\n\"a\nb\nc\"\n`;\n"
+        \\);
+        \\globalThis.__home_snapshot_counts = Object.create(null);
+        \\test("cr normalization", () => {
+        \\  expect("a\r\nb\rc").toMatchSnapshot();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/snapshot-tests/cr.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "summary marks allowed empty files without flagging no-tests" {
+    var summary = Summary{};
+    summary.addFileResult(.{ .path = "js/bun/empty-file.test.ts" });
+    summary.allowed_empty_files += 1;
+
+    const tests_observed = summary.passed + summary.failed + summary.todo;
+    try std.testing.expectEqual(@as(usize, 0), tests_observed);
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+    // A run consisting solely of allowed empty files must not be a no-tests failure.
+    try std.testing.expect(!(tests_observed == 0 and summary.allowed_empty_files == 0));
 }
 
 test "bootstrap runner covers Bun internal regexp escaping helpers" {
