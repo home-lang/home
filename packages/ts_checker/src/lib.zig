@@ -54,6 +54,10 @@ pub const LibCache = struct {
     json_global: TypeId = types.Primitive.none,
     /// `String` global — `fromCharCode`, `fromCodePoint`, `raw`.
     string_global: TypeId = types.Primitive.none,
+    /// `Boolean` global — call/construct coercion shape.
+    boolean_global: TypeId = types.Primitive.none,
+    /// `BigInt` global — call coercion + `asIntN` / `asUintN`.
+    bigint_global: TypeId = types.Primitive.none,
     /// Element-type → `Array<T>.prototype` shape mapping. Cached so a
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
@@ -861,6 +865,52 @@ pub fn stringGlobal(
     };
     cache.string_global = try ti.internObjectType(&m);
     return cache.string_global;
+}
+
+/// Build (or fetch from cache) the `Boolean` global — call/construct
+/// coercion. Conformance fixtures probe `Boolean(value)` which trips
+/// TS2348 without an explicit `__call` slot.
+pub fn booleanGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.boolean_global != types.Primitive.none) return cache.boolean_global;
+
+    const boolean_t = types.Primitive.boolean_t;
+    const any_t = types.Primitive.any;
+    const sig_call = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
+    const sig_construct = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, true);
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("__call"), .type = sig_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("__construct"), .type = sig_construct, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.boolean_global = try ti.internObjectType(&m);
+    return cache.boolean_global;
+}
+
+/// Build (or fetch from cache) the `BigInt` global — call coercion
+/// plus the `asIntN(bits, value)` / `asUintN(bits, value)` static
+/// helpers. Modeled with loose `any`-typed args since the checker
+/// doesn't yet distinguish a `bigint` literal type.
+pub fn bigintGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.bigint_global != types.Primitive.none) return cache.bigint_global;
+
+    const bigint_t = types.Primitive.bigint_t;
+    const any_t = types.Primitive.any;
+    const sig_call = try ti.internSignature(&[_]TypeId{any_t}, bigint_t, false);
+    const sig_as_n = try ti.internSignature(&[_]TypeId{ any_t, any_t }, bigint_t, false);
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("__call"), .type = sig_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("asIntN"), .type = sig_as_n, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("asUintN"), .type = sig_as_n, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.bigint_global = try ti.internObjectType(&m);
+    return cache.bigint_global;
 }
 
 // =============================================================================
