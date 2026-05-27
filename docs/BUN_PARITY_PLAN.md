@@ -625,6 +625,38 @@ macro-gate (`enable_macros`) + scalar Highway + JSC module-record panic-stubs �
 macros-off corpus build** → minimal-js 3340/2. ~22 green, faithful, pushed
 increments.
 
+**BROAD-CORPUS REFRAME (2026-05-27 recon — pivotal, positive).** There are
+TWO test execution paths and the bun-corpus gate uses the *weaker* one:
+- The bun-corpus gate (`home test packages/runtime/test/bun-corpus`) routes
+  every file through the curated `jsc_bootstrap` adapter
+  (`packages/home_test/src/adapters/jsc_bootstrap.zig`), which feeds raw `.ts`
+  to JSC via **hand-written per-exact-string TS rewrites + import shims** in
+  `corpus_runner.zig` (e.g. the needle/replacement table ~12143-12250). This
+  stripper has no general handling for generic functions, return-type
+  annotations, or generic type-args, and curates imports per-string — so it
+  fails on TS-syntax it hasn't been hand-taught and on uncurated imports.
+- The **real `runtime/test_runner`** (`packages/runtime/src/runtime/test_runner/`,
+  full transpiler + JSC) is MORE capable. PROVEN: `peek.test.ts`,
+  `explicit-resource-management.test.ts` (4/4), `atomics.test.ts` (28/28) PASS
+  via the real runner but FAIL in the bootstrap. So most broad-corpus
+  "failures" are bootstrap-harness gaps, NOT runtime/API gaps.
+
+Sampled 35 files (js/util, js/web, js/node, regression): 17 pass / 18 fail.
+Failure histogram: bootstrap TS-stripping divergence (generic fns / return
+types) ~3; import-curation "unsupported module syntax" ~5; parked
+subprocess (`bunExe()`/`spawn`/`.toRun()` — 39% of the 811 `js/*` files) ~3;
+module nationalization 1; bootstrap API-shim behavior gaps ~4. No easy
+standalone wins (each is a parked subsystem or a fragile per-string rewrite).
+
+**HIGHEST-LEVERAGE NEXT MOVE: route the bun-corpus gate through the real
+`runtime/test_runner` instead of the `jsc_bootstrap` textual-rewrite adapter.**
+The real runner already passes the TS-syntax/dynamic-import files unmodified, so
+this eliminates the two largest failure classes (TS-stripping + import-curation,
+the bulk of the ~20%+ TS-syntax `js/*` files) in one move, leaving the
+genuinely-parked **subprocess/spawn subsystem** (~39% of `js/`) as the next
+frontier after that. (Corpus-wide `js/*` shape: 51% import `harness`, 39%
+spawn the binary, 21% use `as`-casts, 18% have return-type annotations.)
+
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
 debug` now bottoms out at a *large parked subsystem set*, NOT more leaf fixes.
