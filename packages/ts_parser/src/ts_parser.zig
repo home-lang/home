@@ -5071,7 +5071,7 @@ pub const Parser = struct {
                 }
                 continue;
             }
-            if (self.peek().kind == .kw_var and self.peekAt(1).kind != .open_paren and self.peekAt(1).kind != .less_than and self.peekAt(1).kind != .colon and self.peekAt(1).kind != .semicolon and self.peekAt(1).kind != .open_brace) {
+            if (self.peek().kind == .kw_var and !self.peekAt(1).flags.preceded_by_newline and self.peekAt(1).kind != .open_paren and self.peekAt(1).kind != .less_than and self.peekAt(1).kind != .colon and self.peekAt(1).kind != .semicolon and self.peekAt(1).kind != .equal and self.peekAt(1).kind != .open_brace) {
                 const bad = self.advance();
                 try self.reportCodeAt(bad.span.start, bad.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
                 try self.skipUntilTypeMemberSeparator();
@@ -6107,6 +6107,23 @@ pub const Parser = struct {
             std.mem.endsWith(u8, filename, ".jsx") or
             std.mem.endsWith(u8, filename, ".mjs") or
             std.mem.endsWith(u8, filename, ".cjs");
+    }
+
+    fn sourceHasJsxDirective(self: *const Parser) bool {
+        return std.mem.indexOf(u8, self.source, "@jsx:") != null or
+            std.mem.indexOf(u8, self.source, "@jsx ") != null;
+    }
+
+    fn isJsxSyntaxAt(self: *const Parser, pos: u32) bool {
+        if (self.virtualSectionFilenameAt(pos)) |filename| {
+            if (std.mem.endsWith(u8, filename, ".tsx") or
+                std.mem.endsWith(u8, filename, ".jsx"))
+            {
+                return true;
+            }
+            return isJavaScriptFilename(filename) and self.sourceHasJsxDirective();
+        }
+        return self.is_tsx;
     }
 
     fn reportTypeArgumentsOnlyInTsIfNeeded(self: *Parser, args: []const NodeId) ParseError!void {
@@ -14320,7 +14337,7 @@ pub const Parser = struct {
             // `<Foo/> < <Bar/>;` which then trips downstream parsers
             // when the second JSX expression doesn't fit the binary
             // RHS slot.
-            if (self.is_tsx and t.kind == .less_than and t.flags.preceded_by_newline) {
+            if (self.isJsxSyntaxAt(t.span.start) and t.kind == .less_than and t.flags.preceded_by_newline) {
                 const next = self.peekAt(1).kind;
                 if (next == .identifier or
                     next == .greater_than or
@@ -14420,7 +14437,7 @@ pub const Parser = struct {
                     t.kind == .greater_than_equal or t.kind == .less_than_equal) and
                 (self.peek().kind == .greater_than or self.peek().kind == .less_than or
                     self.peek().kind == .greater_than_equal or self.peek().kind == .less_than_equal) and
-                !(!self.is_tsx and self.peek().kind == .less_than);
+                !(!self.isJsxSyntaxAt(self.peek().span.start) and self.peek().kind == .less_than);
             if (peek_is_chained_comparison) {
                 const at = self.peek();
                 try self.reportCodeAt(at.span.start, at.line, 1109, "Expression expected.");
@@ -14462,8 +14479,8 @@ pub const Parser = struct {
     }
 
     fn lessThanStartsTypeAssertionExpression(self: *Parser, start: u32) bool {
-        if (self.is_tsx) return false;
         if (start >= self.tokens.len or self.tokens[start].kind != .less_than) return false;
+        if (self.isJsxSyntaxAt(self.tokens[start].span.start)) return false;
         if (start + 1 >= self.tokens.len or !tokenCanStartTypeAssertionType(self.tokens[start + 1].kind)) return false;
 
         var depth: i32 = 1;
@@ -15613,7 +15630,7 @@ pub const Parser = struct {
                 return e;
             },
             .less_than => {
-                if (self.is_tsx) return try self.parseJsx();
+                if (self.isJsxSyntaxAt(t.span.start)) return try self.parseJsx();
                 // In .ts files `<T>expr` is a type assertion. Parse
                 // the full type node so forms like `<T[]>null` and
                 // `<Array<T>>null` consume nested `>` tokens through
@@ -18122,6 +18139,30 @@ test "parser: parenthesized private identifier expression reports TS1451 in clas
     _ = try s.parser.parseSourceFile();
     const d = findFirstDiagnosticOfCode(&s.parser, 1451) orelse return error.TestExpectedEqual;
     try T.expectEqualStrings("Private identifiers are only allowed in class bodies and may only be used as part of a class member declaration, property access, or on the left-hand-side of an 'in' expression", d.message);
+}
+
+test "parser: var keyword is a class property name and respects ASI" {
+    var s = try newTestSetup(
+        \\class Foo {
+        \\    var;
+        \\    x = 1;
+        \\}
+        \\class Foo2 {
+        \\    var
+        \\    x = 1;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1068));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1128));
+
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(@as(usize, 2), hir_mod.classMembers(&s.hir, stmts[0]).len);
+    try T.expectEqual(@as(usize, 2), hir_mod.classMembers(&s.hir, stmts[1]).len);
 }
 
 test "parser: optional chain rejects tagged templates" {
@@ -21586,6 +21627,24 @@ test "parser: jsx self-close after expression-value attribute does not glom into
     }
 }
 
+test "parser: jsx preserve parses JSX in virtual JS and TSX sections" {
+    var s = try newTestSetup(
+        \\// @jsx: preserve
+        \\// @allowJs: true
+        \\
+        \\// @filename: a.js
+        \\var elemA = <a>{1}</a>;
+        \\
+        \\// @filename: b.tsx
+        \\var elemB = <b>{true}</b>;
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1161));
+}
+
 test "parser: jsx element with attribute" {
     var s = try newTsxTestSetup("let v = <Foo bar=\"baz\" />;");
     defer destroyTestSetup(s);
@@ -24755,6 +24814,26 @@ test "parser: object shorthand semicolon before close reports comma expected" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: shorthand defaults in destructuring assignment lower to assignment targets" {
+    var s = try newTestSetup(
+        \\({ y = 5 } = { y: 1 });
+        \\for ({ s0 = 5 } of [{ s0: 1 }]) {
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const assignment = hir_mod.assignmentOf(&s.hir, stmts[0]);
+    const props = hir_mod.objectLiteralProps(&s.hir, assignment.target);
+    const op = hir_mod.objectPropertyOf(&s.hir, props[0]);
+    try T.expect(op.is_shorthand);
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(op.value));
+    const default_assignment = hir_mod.assignmentOf(&s.hir, op.value);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(default_assignment.target));
 }
 
 test "parser: missing-comma recovery preserves preceding class duplicate members" {

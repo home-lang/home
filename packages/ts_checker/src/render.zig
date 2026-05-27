@@ -153,16 +153,21 @@ fn renderTypeIntoCtx(
         const payload = ti.pool.object_type_payloads.items[ti.pool.payloadOf(id)];
         const members = ti.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
         try buf.appendSlice(gpa, "{ ");
+        var rendered_call_signature = false;
         for (members, 0..) |m, i| {
             if (i > 0) try buf.appendSlice(gpa, "; ");
-            if (m.is_readonly) try buf.appendSlice(gpa, "readonly ");
-            try buf.appendSlice(gpa, sint.get(m.name));
-            if (m.is_optional) try buf.append(gpa, '?');
+            const member_name = sint.get(m.name);
+            const is_call_signature = std.mem.eql(u8, member_name, "__call") and ti.isSignature(m.type);
+            if (m.is_readonly and !is_call_signature) try buf.appendSlice(gpa, "readonly ");
+            if (!is_call_signature) {
+                try buf.appendSlice(gpa, member_name);
+                if (m.is_optional) try buf.append(gpa, '?');
+            }
             // Render method-shorthand members as `name(params): ret`
             // so error messages mirror upstream tsc — `{ f(): void }`
             // stays in that shape instead of widening to property
             // form `{ f: () => void }`.
-            if (m.is_method and ti.isSignature(m.type)) {
+            if ((m.is_method or is_call_signature) and ti.isSignature(m.type)) {
                 try buf.append(gpa, '(');
                 const sig_params = ti.signatureParams(m.type);
                 for (sig_params, 0..) |p, pi| {
@@ -175,11 +180,13 @@ fn renderTypeIntoCtx(
                 } else {
                     try buf.appendSlice(gpa, "void");
                 }
+                if (is_call_signature) rendered_call_signature = true;
             } else {
                 try buf.appendSlice(gpa, ": ");
                 try renderTypeIntoCtx(buf, gpa, ti, sint, m.type, depth + 1, ctx);
             }
         }
+        if (rendered_call_signature and members.len > 0) try buf.append(gpa, ';');
         try buf.appendSlice(gpa, " }");
         return;
     }
@@ -329,6 +336,23 @@ test "renderType: object with property-form function member stays arrow" {
     const out = try renderType(T.allocator, &ti, &sint, obj);
     defer T.allocator.free(out);
     try T.expectEqualStrings("{ f: () => void }", out);
+}
+
+test "renderType: object call signature member hides internal name" {
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const sig = try ti.internSignature(&.{}, types.Primitive.string_t, false);
+    const call_name = try sint.intern("__call");
+    const prop_name = try sint.intern("prop");
+    const obj = try ti.internObjectType(&.{
+        .{ .name = call_name, .type = sig, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = prop_name, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const out = try renderType(T.allocator, &ti, &sint, obj);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("{ (): string; prop: number; }", out);
 }
 
 test "renderType: cyclic anonymous object reports TS5088-class failure" {

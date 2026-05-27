@@ -513,6 +513,7 @@ const ActualDiagnosticLine = struct {
     file: []const u8,
     line: u32,
     col: u32,
+    code: u32,
     order: usize,
     text: []u8,
 
@@ -520,7 +521,9 @@ const ActualDiagnosticLine = struct {
         const file_order = std.mem.order(u8, a.file, b.file);
         if (file_order != .eq) return file_order == .lt;
         if (a.line != b.line) return a.line < b.line;
+        if ((a.code == 2300 and b.code == 2393) or (a.code == 2393 and b.code == 2300)) return a.code < b.code;
         if (a.col != b.col) return a.col < b.col;
+        if (a.code != b.code) return a.code < b.code;
         return a.order < b.order;
     }
 };
@@ -1213,10 +1216,63 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .file = if (d.is_global) "" else pf.diag_path,
                 .line = diag_line,
                 .col = diag_col,
+                .code = code,
                 .order = actual_lines.items.len,
                 .text = formatted,
             });
             actual_count += 1;
+        }
+    }
+    if (exact_mode and sourceRequestsDeclarationEmit(resolver_config_source)) {
+        for (program_files.items, 0..) |pf, i| {
+            if (i >= program.files.items.len) break;
+            const file = program.fileById(@intCast(i));
+            const compilation = file.compilation orelse continue;
+            var dts = ts_emit.DtsEmitter.initWithTypes(
+                gpa,
+                &compilation.hir,
+                &compilation.interner,
+                &compilation.type_interner,
+                .{},
+            );
+            defer dts.deinit();
+            try dts.emitSourceFile(compilation.root);
+            for (dts.diagnostics.items) |d| {
+                const diag_pos = compilation.hir.spanOf(d.node).start;
+                const pos = ts_diagnostics.positionToLineCol(file.source, diag_pos);
+                const diag_line: u32 = if (pos.line > pf.extra_strip)
+                    pos.line - pf.extra_strip
+                else
+                    1;
+                const fdiag: ts_diagnostics.Diagnostic = .{
+                    .file = pf.diag_path,
+                    .line = diag_line,
+                    .col = pos.col,
+                    .code = d.code,
+                    .code_prefix = .TS,
+                    .severity = .err,
+                    .message = d.message,
+                    .span_len = conformanceDiagnosticSpanLen(&compilation.hir, d.node, diag_pos),
+                };
+                const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
+                if (exact_mode) {
+                    const gop = try seen_keys.getOrPut(gpa, formatted);
+                    if (gop.found_existing) {
+                        gpa.free(formatted);
+                        continue;
+                    }
+                    gop.key_ptr.* = try gpa.dupe(u8, formatted);
+                }
+                try actual_lines.append(gpa, .{
+                    .file = pf.diag_path,
+                    .line = diag_line,
+                    .col = pos.col,
+                    .code = d.code,
+                    .order = actual_lines.items.len,
+                    .text = formatted,
+                });
+                actual_count += 1;
+            }
         }
     }
     actual_count += try appendTsconfigPathsValidationDiagnostics(gpa, virtual_files.items, &actual_lines);
@@ -2217,6 +2273,7 @@ fn appendOneTsconfigPathsValidationDiagnostics(
                 .file = diag_path,
                 .line = pos.line,
                 .col = pos.col,
+                .code = 5063,
                 .order = actual_lines.items.len,
                 .text = formatted,
             });

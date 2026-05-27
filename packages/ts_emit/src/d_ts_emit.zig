@@ -160,7 +160,7 @@ pub const Emitter = struct {
             .type_alias_decl => try self.emitTypeAlias(node),
             .enum_decl => try self.emitEnum(node),
             .namespace_decl => try self.emitNamespace(node),
-            .var_decl, .let_decl, .const_decl => try self.emitVarDecl(node),
+            .var_decl, .let_decl, .const_decl => try self.emitVarDecl(node, true),
             .import_decl => try self.emitImport(node),
             .export_decl => try self.emitExport(node),
             else => {},
@@ -337,6 +337,61 @@ pub const Emitter = struct {
         });
     }
 
+    fn reportUnportableInferredVarType(self: *Emitter, node: NodeId, name_node: NodeId) !void {
+        const ti = self.type_interner orelse return;
+        const inferred = self.hir.typeOf(node);
+        if (inferred == 0 or inferred == ts_checker.Primitive.none) return;
+        const rendered = ts_checker.renderType(self.gpa, ti, self.interner, inferred) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.CyclicStructure => return,
+        };
+        defer self.gpa.free(rendered);
+        const portability = unportableImportReference(rendered) orelse return;
+        const name = if (name_node != hir_mod.none_node_id and self.hir.kindOf(name_node) == .identifier)
+            self.interner.get(hir_mod.identifierOf(self.hir, name_node).name)
+        else
+            "(Missing)";
+        const message = try std.fmt.allocPrint(
+            self.gpa,
+            "The inferred type of '{s}' cannot be named without a reference to '{s}' from '{s}'. This is likely not portable. A type annotation is necessary.",
+            .{ name, portability.symbol, portability.module },
+        );
+        errdefer self.gpa.free(message);
+        try self.diagnostics.append(self.gpa, .{
+            .node = if (name_node != hir_mod.none_node_id) name_node else node,
+            .code = 2883,
+            .message = message,
+        });
+    }
+
+    const ImportReference = struct {
+        module: []const u8,
+        symbol: []const u8,
+    };
+
+    fn unportableImportReference(rendered: []const u8) ?ImportReference {
+        var search_at: usize = 0;
+        while (std.mem.indexOfPos(u8, rendered, search_at, "import(\"")) |start| {
+            const module_start = start + "import(\"".len;
+            const module_end = std.mem.indexOfPos(u8, rendered, module_start, "\")") orelse return null;
+            const module = rendered[module_start..module_end];
+            search_at = module_end + 2;
+            if (std.mem.indexOf(u8, module, "/node_modules/") == null) continue;
+            var symbol_start = search_at;
+            if (symbol_start < rendered.len and rendered[symbol_start] == '.') symbol_start += 1;
+            var symbol_end = symbol_start;
+            while (symbol_end < rendered.len and
+                (std.ascii.isAlphanumeric(rendered[symbol_end]) or rendered[symbol_end] == '_' or rendered[symbol_end] == '$')) : (symbol_end += 1)
+            {}
+            if (symbol_end == symbol_start) continue;
+            return .{
+                .module = module,
+                .symbol = rendered[symbol_start..symbol_end],
+            };
+        }
+        return null;
+    }
+
     fn emitParameter(self: *Emitter, node: NodeId) !void {
         const p = hir_mod.parameterOf(self.hir, node);
         if (p.flags.is_computed_binding_key) return;
@@ -483,8 +538,11 @@ pub const Emitter = struct {
         try self.write("}");
     }
 
-    fn emitVarDecl(self: *Emitter, node: NodeId) !void {
+    fn emitVarDecl(self: *Emitter, node: NodeId, public_surface: bool) !void {
         const v = hir_mod.varDeclOf(self.hir, node);
+        if (public_surface and v.type_annotation == hir_mod.none_node_id) {
+            try self.reportUnportableInferredVarType(node, v.name);
+        }
         const kw: []const u8 = switch (self.hir.kindOf(node)) {
             .var_decl => "declare var ",
             .let_decl => "declare let ",
@@ -578,7 +636,7 @@ pub const Emitter = struct {
             .interface_decl => try self.emitInterface(node),
             .type_alias_decl => try self.emitTypeAlias(node),
             .enum_decl => try self.emitEnum(node),
-            .var_decl, .let_decl, .const_decl => try self.emitVarDecl(node),
+            .var_decl, .let_decl, .const_decl => try self.emitVarDecl(node, true),
             else => {},
         }
     }
@@ -945,6 +1003,13 @@ test "d.ts: inferred generic conditional alias return reports TS5088" {
     try T.expectEqual(@as(usize, 1), em.diagnostics.items.len);
     try T.expectEqual(@as(u32, 5088), em.diagnostics.items[0].code);
     try T.expect(std.mem.indexOf(u8, em.diagnostics.items[0].message, "The inferred type of 'foo'") != null);
+}
+
+test "d.ts: detects unportable nested node_modules import references" {
+    const rendered = "[import(\"foo\").SomeProps, import(\"foo/node_modules/nested\").NestedProps]";
+    const ref = Emitter.unportableImportReference(rendered) orelse return error.ExpectedUnportableReference;
+    try T.expectEqualStrings("foo/node_modules/nested", ref.module);
+    try T.expectEqualStrings("NestedProps", ref.symbol);
 }
 
 test "d.ts: inferred void return for body without returns" {
