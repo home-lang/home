@@ -1,4 +1,4 @@
-cache_directory_: ?std.fs.Dir = null,
+cache_directory_: ?std.Io.Dir = null,
 cache_directory_path: stringZ = "",
 root_dir: *Fs.FileSystem.DirEntry,
 allocator: std.mem.Allocator,
@@ -91,8 +91,8 @@ options: Options,
 preinstall_state: std.ArrayListUnmanaged(PreinstallState) = .{},
 postinstall_optimizer: PostinstallOptimizer.List = .{},
 
-global_link_dir: ?std.fs.Dir = null,
-global_dir: ?std.fs.Dir = null,
+global_link_dir: ?std.Io.Dir = null,
+global_dir: ?std.Io.Dir = null,
 global_link_dir_path: string = "",
 
 onWake: WakeHandler = .{},

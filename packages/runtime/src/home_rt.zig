@@ -1976,6 +1976,9 @@ pub const threading = struct {
     pub const UnboundedQueue = @import("threading/unbounded_queue.zig").UnboundedQueue;
 };
 
+/// Top-level alias matching `bun.UnboundedQueue` (= `threading.UnboundedQueue`).
+pub const UnboundedQueue = threading.UnboundedQueue;
+
 // ---- src/sys/ ----------------------------------------------------------
 // Fifth-wave port batch (2026-05-18). Pure-data sys leaves; the
 // big sys.zig substrate (4703 lines) is a future port. Lots of files
