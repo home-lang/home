@@ -1,4 +1,4 @@
-# Codex Guidelines
+# AI Agents Guidelines
 
 ## About
 
