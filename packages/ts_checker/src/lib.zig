@@ -218,10 +218,12 @@ pub fn numberProto(
 /// already produces (`length: number`, `[i: number]: T`) plus the
 /// common mutation / iteration / search methods.
 ///
-/// For v0 the higher-order callbacks have loose return-type approxi-
-/// mations: `map` returns `any[]` (since we'd need argument-driven
-/// inference of `U` from the callback's return type); `filter` /
-/// `slice` / `concat` / `reverse` / `sort` correctly preserve `T[]`.
+/// Generic callback methods are inferred at the call site: `map<U>` /
+/// `flatMap<U>` carry a fresh result type-parameter `U` (bound from the
+/// callback's return type), and `reduce<U>` infers `U` from its
+/// initial-value argument. `filter` / `slice` / `concat` / `reverse` /
+/// `sort` preserve `T[]`; `flat` / `splice` / `entries` stay loose
+/// (`any[]`) pending depth-typed / tuple machinery.
 pub fn arrayProto(
     cache: *LibCache,
     ti: *interner_mod.Interner,
@@ -249,9 +251,22 @@ pub fn arrayProto(
     // `T | undefined` — return for `pop`, `find`.
     const t_or_undef = try ti.internUnion(&[_]TypeId{ elem, undef_t });
 
+    // A fresh result type-parameter `U` for the generic callback
+    // methods (`map<U>`, `flatMap<U>`, `reduce<U>`). Unconstrained with
+    // no default, so call-site inference (inferFromPair on the callback
+    // return for map/flatMap, or on `reduce`'s initial-value argument)
+    // is what binds it. Built fresh per element type, which is fine
+    // because the array-proto shape is cached per element type so `U`
+    // never escapes a single arrayProto build.
+    const u_tp = try ti.internTypeParameter(try sint.intern("U"), types.Primitive.none, types.Primitive.none);
+    // `U[]` — return type for the generic `map` / `flatMap`.
+    const u_arr = try ti.internArrayType(sint, u_tp);
+
     // Callback signatures.
-    // `(x: T) => any`  — used by map.
-    const cb_t_any = try ti.internSignature(&[_]TypeId{elem}, any_t, false);
+    // `(value: T) => U` — used by map / flatMap. The callback's return
+    // type drives inference of `U`: a string-returning callback makes
+    // `arr.map(...)` resolve to `string[]` instead of `any[]`.
+    const cb_t_u = try ti.internSignature(&[_]TypeId{elem}, u_tp, false);
     // `(x: T) => boolean` — used by every / some.
     const cb_t_bool = try ti.internSignature(&[_]TypeId{elem}, boolean_t, false);
     // `(x: T) => unknown` — used by filter / find, matching lib.d.ts
@@ -266,13 +281,17 @@ pub fn arrayProto(
     // model the loose 2-param head — callbacks with more params remain
     // assignable (contravariant), matching how map / filter callbacks
     // are modeled here.
-    const cb_reduce = try ti.internSignature(&[_]TypeId{ any_t, elem }, any_t, false);
+    const cb_reduce = try ti.internSignature(&[_]TypeId{ u_tp, elem }, u_tp, false);
 
     // Method signatures.
     const sig_push = try ti.internSignature(&[_]TypeId{elem}, number_t, false);
     const sig_pop = try ti.internSignature(&[_]TypeId{}, t_or_undef, false);
-    const sig_map = try ti.internSignature(&[_]TypeId{cb_t_any}, any_arr, false);
-    const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_any}, any_arr, false);
+    // `map<U>(cb: (value: T) => U): U[]`.
+    const sig_map = try ti.internSignature(&[_]TypeId{cb_t_u}, u_arr, false);
+    // `flatMap<U>(cb: (value: T) => U): U[]` — modeled like map; the
+    // real signature flattens one nesting level, but U[] is faithful
+    // when the callback returns a non-array U.
+    const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_u}, u_arr, false);
     const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_unknown}, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
     const sig_every = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
@@ -294,12 +313,13 @@ pub fn arrayProto(
     const sig_values = try ti.internSignature(&[_]TypeId{}, arr_t, false);
     const sig_iterator = sig_values;
 
-    // `reduce(cb, init?): any` / `reduceRight(cb, init?): any`. The real
-    // overloads are generic over the accumulator `<U>`; without
-    // argument-driven `U` inference the accumulator/return is modeled as
-    // `any` (mirrors `map`'s `any[]`). `init?` is optional.
-    const any_or_undef = try ti.internUnion(&[_]TypeId{ any_t, undef_t });
-    const sig_reduce = try ti.internSignature(&[_]TypeId{ cb_reduce, any_or_undef }, any_t, false);
+    // `reduce<U>(cb: (acc: U, cur: T) => U, init: U): U` (and
+    // reduceRight). Single generic signature: U is inferred from the
+    // initial-value argument and reinforced by the callback's
+    // accumulator/return positions. The no-initial-value overload that
+    // returns T (and throws on an empty array) is intentionally not
+    // modeled; the two-arg form is the common, precisely-inferable one.
+    const sig_reduce = try ti.internSignature(&[_]TypeId{ cb_reduce, u_tp }, u_tp, false);
     // `findIndex(pred): number` / `findLastIndex(pred): number`.
     const sig_find_index = try ti.internSignature(&[_]TypeId{cb_t_unknown}, number_t, false);
     // `findLast(pred): T | undefined` (es2023).
@@ -694,6 +714,51 @@ test "lib: arrayProto exposes length/push/map/flatMap" {
     try T.expect(ti.objectMember(proto, push_id) != null);
     try T.expect(ti.objectMember(proto, map_id) != null);
     try T.expect(ti.objectMember(proto, flat_map_id) != null);
+}
+
+test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t, &rest_set);
+
+    // `map<U>`: callback param is `(value: number) => U` and the return
+    // is `U[]`, where `U` is a (free) type parameter. The element type
+    // of the returned array must itself be a type parameter so call-site
+    // inference can bind it from the callback's return type.
+    const map_sig = ti.objectMember(proto, try sint.intern("map")).?;
+    const map_ret = ti.signatureReturn(map_sig).?;
+    const map_ret_elem = ti.objectNumberIndex(map_ret);
+    try T.expect(map_ret_elem != types.Primitive.none);
+    try T.expect(ti.pool.flagsOf(map_ret_elem).is_type_parameter);
+    // The callback parameter's return type is the same free `U`.
+    const map_params = ti.signatureParams(map_sig);
+    try T.expectEqual(@as(usize, 1), map_params.len);
+    const map_cb_ret = ti.signatureReturn(map_params[0]).?;
+    try T.expectEqual(map_ret_elem, map_cb_ret);
+
+    // `flatMap<U>` mirrors `map<U>`.
+    const fm_sig = ti.objectMember(proto, try sint.intern("flatMap")).?;
+    const fm_ret = ti.signatureReturn(fm_sig).?;
+    try T.expect(ti.pool.flagsOf(ti.objectNumberIndex(fm_ret)).is_type_parameter);
+
+    // `reduce<U>(cb, init: U): U`: the return is a free `U`, equal to the
+    // second parameter (initial value) type, so init-value inference
+    // resolves the result precisely.
+    const red_sig = ti.objectMember(proto, try sint.intern("reduce")).?;
+    const red_ret = ti.signatureReturn(red_sig).?;
+    try T.expect(ti.pool.flagsOf(red_ret).is_type_parameter);
+    const red_params = ti.signatureParams(red_sig);
+    try T.expectEqual(@as(usize, 2), red_params.len);
+    try T.expectEqual(red_ret, red_params[1]);
+    // The reducer callback returns the same `U`.
+    try T.expectEqual(red_ret, ti.signatureReturn(red_params[0]).?);
 }
 
 test "lib: arrayProto exposes iterator helper toArray" {
