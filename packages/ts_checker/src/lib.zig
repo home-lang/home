@@ -49,6 +49,9 @@ pub const LibCache = struct {
     /// `Number` global — `MAX_VALUE`, `isInteger`, etc. Built once
     /// on first access.
     number_global: TypeId = types.Primitive.none,
+    /// `JSON` global — `parse(text, reviver?)` / `stringify(value,
+    /// replacer?, space?)`. Built once on first access.
+    json_global: TypeId = types.Primitive.none,
     /// Element-type → `Array<T>.prototype` shape mapping. Cached so a
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
@@ -647,6 +650,45 @@ pub fn mathGlobal(
     };
     cache.math_global = try ti.internObjectType(&m);
     return cache.math_global;
+}
+
+/// Build (or fetch from cache) the `JSON` global namespace.
+/// Models `JSON.parse(text, reviver?)` and `JSON.stringify(value,
+/// replacer?, space?)`. Return / argument types are loose (`any` /
+/// `string`) — exact JSON-value typing requires recursive type
+/// machinery; the modeled shape unblocks the most common call
+/// sites that previously fired TS2339.
+pub fn jsonGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.json_global != types.Primitive.none) return cache.json_global;
+
+    const string_t = types.Primitive.string_t;
+    const any_t = types.Primitive.any;
+    const number_t = types.Primitive.number_t;
+    const undef_t = types.Primitive.undefined_t;
+
+    const optional_any = try ti.internUnion(&[_]TypeId{ any_t, undef_t });
+    // The third arg to `JSON.stringify` is `string | number | undefined`.
+    const string_or_number = try ti.internUnion(&[_]TypeId{ string_t, number_t });
+    const optional_string_or_number = try ti.internUnion(&[_]TypeId{ string_or_number, undef_t });
+
+    // `parse(text: string, reviver?: any): any`
+    const sig_parse = try ti.internSignature(&[_]TypeId{ string_t, optional_any }, any_t, false);
+    // `stringify(value: any, replacer?: any, space?: string | number): string`
+    // Upstream has 4 overloads; the most-used 3-arg shape covers the
+    // common cases. `replacer` is unioned with `undefined` so the
+    // single-arg form (`JSON.stringify(x)`) still typechecks.
+    const sig_stringify = try ti.internSignature(&[_]TypeId{ any_t, optional_any, optional_string_or_number }, string_t, false);
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("parse"), .type = sig_parse, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("stringify"), .type = sig_stringify, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.json_global = try ti.internObjectType(&m);
+    return cache.json_global;
 }
 
 /// Build (or fetch from cache) the `console` global. All four members
