@@ -1054,13 +1054,7 @@ pub const jsc = struct {
         }
     };
     pub const ModuleLoader = struct {
-        pub const HardcodedModule = struct {
-            pub const Alias = struct {
-                pub fn has(_: []const u8, _: anytype, _: anytype) bool {
-                    return false;
-                }
-            };
-        };
+        pub const HardcodedModule = @import("resolve_builtins/HardcodedModule.zig").HardcodedModule;
     };
     pub const URL = @import("jsc/URL.zig").URL;
     pub const DOMFormData = @import("jsc/DOMFormData.zig").DOMFormData;
@@ -2026,8 +2020,225 @@ pub const Home = struct {
     pub const Glob = @import("runtime/api/glob.zig");
 };
 pub const spawn = Home.spawn.PosixSpawn;
-pub const FD = std.posix.fd_t;
-pub const invalid_fd: FD = -1;
+
+pub const fd_t = std.posix.fd_t;
+pub const Mode = std.posix.mode_t;
+
+pub const FD = packed struct(fd_t) {
+    value: fd_t,
+    kind: Kind = .system,
+
+    pub const Kind = enum(u0) { system };
+
+    pub const invalid: FD = .{ .value = -1 };
+
+    pub fn fromNative(value: fd_t) FD {
+        return .{ .value = value };
+    }
+
+    pub const fromSystem = fromNative;
+
+    pub fn fromUV(value: fd_t) FD {
+        return .{ .value = value };
+    }
+
+    pub fn fromStdFile(file: std.fs.File) FD {
+        return .fromNative(file.handle);
+    }
+
+    pub fn fromStdDir(dir: std.fs.Dir) FD {
+        return .fromNative(dir.fd);
+    }
+
+    pub fn cwd() FD {
+        return .fromStdDir(std.fs.cwd());
+    }
+
+    pub fn stdin() FD {
+        return .fromNative(0);
+    }
+
+    pub fn stdout() FD {
+        return .fromNative(1);
+    }
+
+    pub fn stderr() FD {
+        return .fromNative(2);
+    }
+
+    pub fn native(fd: FD) fd_t {
+        return fd.value;
+    }
+
+    pub const cast = native;
+    pub const uv = native;
+
+    pub fn stdFile(fd: FD) std.fs.File {
+        return .{ .handle = fd.native() };
+    }
+
+    pub fn stdDir(fd: FD) std.fs.Dir {
+        return .{ .fd = fd.native() };
+    }
+
+    pub fn isValid(fd: FD) bool {
+        return fd.value >= 0;
+    }
+
+    pub fn unwrapValid(fd: FD) ?FD {
+        return if (fd.isValid()) fd else null;
+    }
+
+    pub fn close(fd: FD) void {
+        _ = fd.closeAllowingBadFileDescriptor(@returnAddress());
+    }
+
+    pub fn closeAllowingBadFileDescriptor(fd: FD, _: ?usize) ?sys.Error {
+        if (!fd.isValid() or fd.value <= 2) return null;
+        std.posix.close(fd.native());
+        return null;
+    }
+
+    pub fn closeAllowingStandardIo(fd: FD, return_address: ?usize) ?sys.Error {
+        _ = return_address;
+        if (!fd.isValid()) return null;
+        std.posix.close(fd.native());
+        return null;
+    }
+
+    pub fn makeLibUVOwned(fd: FD) !FD {
+        return fd;
+    }
+
+    pub fn makeLibUVOwnedForSyscall(
+        fd: FD,
+        comptime _: sys.Tag,
+        comptime _: enum { close_on_fail, leak_fd_on_fail },
+    ) sys.Maybe(FD) {
+        return .{ .result = fd };
+    }
+
+    pub fn toOptional(fd: FD) Optional {
+        return @enumFromInt(fd.value);
+    }
+
+    pub const Optional = enum(fd_t) {
+        none = -1,
+        _,
+
+        pub fn init(maybe: ?FD) Optional {
+            return if (maybe) |fd| fd.toOptional() else .none;
+        }
+
+        pub fn unwrap(optional: Optional) ?FD {
+            return if (optional == .none) null else .fromNative(@intFromEnum(optional));
+        }
+
+        pub fn take(optional: *Optional) ?FD {
+            defer optional.* = .none;
+            return optional.unwrap();
+        }
+
+        pub fn close(optional: Optional) void {
+            if (optional.unwrap()) |fd| fd.close();
+        }
+    };
+
+    pub fn format(fd: FD, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (!fd.isValid()) return writer.writeAll("[invalid_fd]");
+        return writer.print("{d}", .{fd.native()});
+    }
+};
+
+pub const invalid_fd: FD = .invalid;
+
+fn toPackedO(number: anytype) std.posix.O {
+    return @bitCast(number);
+}
+
+pub const O = switch (Environment.os) {
+    .mac => struct {
+        pub const PATH = 0x0000;
+        pub const RDONLY = 0x0000;
+        pub const WRONLY = 0x0001;
+        pub const RDWR = 0x0002;
+        pub const NONBLOCK = 0x0004;
+        pub const APPEND = 0x0008;
+        pub const CREAT = 0x0200;
+        pub const TRUNC = 0x0400;
+        pub const EXCL = 0x0800;
+        pub const NOFOLLOW = 0x0100;
+        pub const DIRECTORY = 0x00100000;
+        pub const CLOEXEC = 0x01000000;
+        pub const TMPFILE = 0x0000;
+        pub const toPacked = toPackedO;
+    },
+    .linux, .wasm => struct {
+        pub const RDONLY = 0x0000;
+        pub const WRONLY = 0x0001;
+        pub const RDWR = 0x0002;
+        pub const CREAT = 0o100;
+        pub const EXCL = 0o200;
+        pub const NOCTTY = 0o400;
+        pub const TRUNC = 0o1000;
+        pub const APPEND = 0o2000;
+        pub const NONBLOCK = 0o4000;
+        pub const DIRECTORY = 0o200000;
+        pub const NOFOLLOW = 0o400000;
+        pub const CLOEXEC = 0o2000000;
+        pub const TMPFILE = 0o20200000;
+        pub const PATH = 0o10000000;
+        pub const toPacked = toPackedO;
+    },
+    else => struct {
+        pub const PATH = 0;
+        pub const RDONLY = 0;
+        pub const WRONLY = 1;
+        pub const RDWR = 2;
+        pub const NONBLOCK = 0;
+        pub const APPEND = 0;
+        pub const CREAT = 0;
+        pub const TRUNC = 0;
+        pub const EXCL = 0;
+        pub const NOFOLLOW = 0;
+        pub const DIRECTORY = 0;
+        pub const CLOEXEC = 0;
+        pub const TMPFILE = 0;
+        pub const toPacked = toPackedO;
+    },
+};
+
+pub const PlatformIOVecConst = std.posix.iovec_const;
+
+pub fn platformIOVecConstCreate(input: []const u8) PlatformIOVecConst {
+    return .{ .base = input.ptr, .len = input.len };
+}
+
+pub const Tmpfile = struct {
+    destination_dir: FD = invalid_fd,
+    tmpfilename: [:0]const u8 = "",
+    fd: FD = invalid_fd,
+    using_tmpfile: bool = false,
+
+    pub fn create(destination_dir: FD, tmpfilename: [:0]const u8) sys.Maybe(Tmpfile) {
+        const opened = switch (sys.openat(destination_dir, tmpfilename, O.CREAT | O.CLOEXEC | O.WRONLY | O.TRUNC, 0o644)) {
+            .result => |fd| fd,
+            .err => |err| return .{ .err = err },
+        };
+
+        return .{ .result = .{
+            .destination_dir = destination_dir,
+            .tmpfilename = tmpfilename,
+            .fd = opened,
+            .using_tmpfile = false,
+        } };
+    }
+
+    pub fn finish(this: *Tmpfile, destname: [:0]const u8) !void {
+        try sys.moveFileZWithHandle(this.fd, this.destination_dir, this.tmpfilename, this.destination_dir, destname);
+    }
+};
+
 pub const webcore = runtime.webcore;
 
 // ---- src/node/ ---------------------------------------------------------
@@ -2484,6 +2695,8 @@ pub const threading = struct {
 // big sys.zig substrate (4703 lines) is a future port. Lots of files
 // blocked on `bun.sys.SystemErrno` + `bun.sys.Maybe` until that lands.
 pub const sys = struct {
+    const Sys = @This();
+
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const Error = @import("sys/Error.zig");
     pub const SignalCode = @import("sys/SignalCode.zig").SignalCode;
@@ -2506,8 +2719,79 @@ pub const sys = struct {
     // off `SystemErrno`; they cover Node.js's `uv_strerror` table and
     // coreutils' `strerror` table respectively.
     pub const SystemErrno = @import("errno/errno.zig").SystemErrno;
+    pub const E = @import("errno/errno.zig").E;
     pub const libuv_error_map = @import("sys/libuv_error_map.zig").libuv_error_map;
     pub const coreutils_error_map = @import("sys/coreutils_error_map.zig").coreutils_error_map;
+
+    fn unexpected(comptime tag: Tag) Error {
+        return .{ .errno = @intFromEnum(E.INVAL), .syscall = tag };
+    }
+
+    fn errnoFromPosix(comptime tag: Tag, err: anyerror) Error {
+        _ = err;
+        return unexpected(tag);
+    }
+
+    pub fn openat(dir: FD, path_: [:0]const u8, flags: i32, mode: Mode) Maybe(FD) {
+        const fd = std.posix.openatZ(dir.native(), path_, O.toPacked(flags), mode) catch |err| {
+            return .{ .err = errnoFromPosix(.open, err).withFd(dir) };
+        };
+        return .{ .result = .fromNative(fd) };
+    }
+
+    pub fn pwritev(fd: FD, buffers: []const PlatformIOVecConst, position: isize) Maybe(usize) {
+        var total: usize = 0;
+        var offset = position;
+        for (buffers) |buffer| {
+            const bytes = buffer.base[0..buffer.len];
+            const written = if (offset >= 0)
+                std.posix.pwrite(fd.native(), bytes, @intCast(offset)) catch |err| {
+                    return .{ .err = errnoFromPosix(.pwritev, err).withFd(fd) };
+                }
+            else
+                std.posix.write(fd.native(), bytes) catch |err| {
+                    return .{ .err = errnoFromPosix(.pwritev, err).withFd(fd) };
+                };
+            total += written;
+            if (offset >= 0) offset += @intCast(written);
+            if (written != bytes.len) break;
+        }
+        return .{ .result = total };
+    }
+
+    pub fn unlinkat(dir: FD, path_: anytype) Maybe(void) {
+        dir.stdDir().deleteFileZ(path_) catch |err| {
+            return .{ .err = errnoFromPosix(.unlink, err).withFd(dir) };
+        };
+        return .success;
+    }
+
+    pub fn moveFileZWithHandle(fd: FD, from_dir: FD, filename: [:0]const u8, to_dir: FD, destination: [:0]const u8) !void {
+        _ = fd;
+        try std.posix.renameatZ(from_dir.native(), filename, to_dir.native(), destination);
+    }
+
+    pub const File = struct {
+        handle: FD,
+
+        pub fn openat(dir: FD, path_: [:0]const u8, flags: i32, mode: Mode) Maybe(File) {
+            return switch (Sys.openat(dir, path_, flags, mode)) {
+                .result => |fd| .{ .result = .{ .handle = fd } },
+                .err => |err| .{ .err = err },
+            };
+        }
+
+        pub fn close(this: File) void {
+            this.handle.close();
+        }
+
+        pub fn writeAll(this: File, bytes: []const u8) Maybe(void) {
+            this.handle.stdFile().writeAll(bytes) catch |err| {
+                return .{ .err = errnoFromPosix(.write, err).withFd(this.handle) };
+            };
+            return .success;
+        }
+    };
 };
 
 // ---- src/paths/ --------------------------------------------------------
