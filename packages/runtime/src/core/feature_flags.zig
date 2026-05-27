@@ -19,6 +19,7 @@
 
 const home_rt = @import("home_rt");
 const std = @import("std");
+const build_options = @import("build_options");
 const env = home_rt.Environment;
 
 /// Enable breaking changes for the next major release of Bun
@@ -43,7 +44,11 @@ pub const watch_directories = true;
 // This feature flag exists so when you have defines inside package.json, you can use single quotes in nested strings.
 pub const allow_json_single_quotes = true;
 
-pub const is_macro_enabled = !env.isWasi;
+// Faithful default is `!env.isWasi` (true on native targets). The
+// `enable_macros` build option (default true) additionally lets the
+// transpile path comptime-eliminate the macro -> resolver -> package
+// manager -> network -> event-loop -> bake cone via `-Denable_macros=false`.
+pub const is_macro_enabled = build_options.enable_macros and !env.isWasi;
 
 pub const disable_compression_in_http_client = false;
 

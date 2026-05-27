@@ -103,6 +103,12 @@ pub fn build(b: *std.Build) void {
     // Keep the option override for constrained hosts and cross targets.
     const enable_jsc = b.option(bool, "enable_jsc", "Link JavaScriptCore into home_rt/home_test tests (default true on macOS)") orelse (target.result.os.tag == .macos);
 
+    // Faithful macro support. Defaults to the upstream-faithful `true`.
+    // Setting `-Denable_macros=false` gates `FeatureFlags.is_macro_enabled`
+    // so the transpile path can comptime-eliminate the macro -> resolver ->
+    // package-manager -> network -> event-loop -> bake cone.
+    const enable_macros = b.option(bool, "enable_macros", "Enable JS/TS macro support (default true; the faithful default)") orelse true;
+
     // Create package modules using helper function (with zig-test-framework)
     const lexer_pkg = createPackage(b, "packages/lexer/src/lexer.zig", target, optimize, zig_test_framework);
     const ast_pkg = createPackage(b, "packages/ast/src/ast.zig", target, optimize, zig_test_framework);
@@ -577,6 +583,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_sanitize_undefined", enable_sanitize_undefined);
     build_options.addOption(bool, "enable_sanitize_thread", enable_sanitize_thread);
     build_options.addOption(bool, "enable_jsc", enable_jsc);
+    build_options.addOption(bool, "enable_macros", enable_macros);
     const build_options_module = build_options.createModule();
 
     // Add build options to executable
