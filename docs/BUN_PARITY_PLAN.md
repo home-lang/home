@@ -473,6 +473,35 @@ integration after the cone compiles. Sequencing:
 3. Route the corpus module loader through the real parser → decorators and the
    broad transpiler/bundler corpus transpile through the faithful parser.
 
+**CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
+the resolver/install/http leaf cascade is done, but the probe-ON `zig build
+debug` now bottoms out at a *large parked subsystem set*, NOT more leaf fixes.
+The real parser pulls: `parse() → e_template visit → MacroContext.call →
+Resolver.resolve → getPackageManager → NetworkTask → bun.http.AsyncHTTP →` the
+**full HTTP transport** (uws sockets + H2/H3-QUIC `lsquic` + TLS), the **JSC/Mini
+event loop** (`AnyEventLoop` embeds an `opaque MiniEventLoop`), and **bake**
+(`OutputFile` → `bake.Side`, parked `opaque`). ~13 remaining probe-ON errors all
+live in those parked subsystems.
+
+Decision fork:
+- **(A) Comptime-eliminate the macro cone (CHOSEN).** The macro reference is
+  `comptime allow_macros = FeatureFlags.is_macro_enabled` (true on macOS), and
+  the transpiler runs `no_macros=true` — macros are never executed in transpile.
+  Making `allow_macros` comptime-false for the transpile/`home-debug` build (a
+  build option gating `is_macro_enabled`) dead-code-eliminates the entire
+  `MacroContext.call → resolver → PM → network → event-loop → bake` cone, so the
+  real parser compiles WITHOUT porting QUIC/bake/event-loop. Macro support in
+  `Bun.Transpiler` becomes a separate, later milestone that re-enables the cone.
+- (B) Port the parked HTTP-transport/event-loop/bake stack. Rejected for now:
+  huge, and includes non-parity-goals (QUIC/H3, bake DevServer) just to compile
+  code that's runtime-dead under `no_macros`.
+
+So the immediate path is (A): add an `enable_macros` build flag (default the
+faithful `true`), gate `FeatureFlags.is_macro_enabled`, build the corpus
+`home-debug` with it off, confirm the real-parser cone compiles, then proceed to
+steps 2-3 above (flip the probe / route the module loader). When macro support
+is later wanted, that milestone ports the macro→resolver→network cone properly.
+
 Parser hot-path probe on 2026-05-26 after the FD/sys shim batch: the
 temporarily enabled `transpileSourceWithBunParser` no longer stops at
 `bun.FD`, `RuntimeTranspilerCache`, `MacroContext`, or missing
