@@ -445,9 +445,32 @@ pub fn arrayProto(
     const sig_last_index_of = try ti.internSignature(&[_]TypeId{ elem, optional_number_t }, number_t, false);
     // `at(index: number): T | undefined` (es2022).
     const sig_at = try ti.internSignature(&[_]TypeId{number_t}, t_or_undef, false);
-    // `flat(depth?: number): any[]` — exact depth-driven element type
-    // needs recursive type machinery; `any[]` avoids the false positive.
-    const sig_flat = try ti.internSignature(&[_]TypeId{optional_number_t}, any_arr, false);
+    // `flat(depth?: number): FlatArray<A, D>[]` — the upstream type is a
+    // recursive conditional (`FlatArray`) that decrements the depth via a
+    // tuple-index lookup; Home has no conditional/mapped-type machinery to
+    // compute it for an arbitrary runtime `depth`. We faithfully model the
+    // DEFAULT depth-1 behavior (the dominant `arr.flat()` call), which is a
+    // single, precise one-level unwrap: when the element type `T` is itself
+    // an array `E[]`, `flat()` returns `E[]`; otherwise the array is already
+    // flat and `flat()` returns `T[]` unchanged. Element-array detection
+    // reuses the standard array idiom (`objectNumberIndex(elem) != none`).
+    // Only a plain (non-union) element array is unwrapped; a union element
+    // falls back to `any[]` (no false positive) since one-level flattening
+    // of a union-of-arrays needs the distributive conditional we lack.
+    // Explicit `depth > 1` arguments still under-flatten relative to this
+    // model, but the result is never less precise than the old blanket
+    // `any[]`.
+    const flat_inner = ti.objectNumberIndex(elem);
+    const flat_ret = if (ti.pool.flagsOf(elem).is_union)
+        // Union element → loose (distributive flattening unmodeled).
+        any_arr
+    else if (flat_inner != types.Primitive.none)
+        // `elem` is `E[]` → one level of flattening yields `E[]`.
+        try ti.internArrayType(sint, flat_inner)
+    else
+        // `elem` is already flat → `flat()` returns `T[]` unchanged.
+        arr_t;
+    const sig_flat = try ti.internSignature(&[_]TypeId{optional_number_t}, flat_ret, false);
     // `fill(value: T, start?: number, end?: number): T[]`.
     const sig_fill = try ti.internSignature(&[_]TypeId{ elem, optional_number_t, optional_number_t }, arr_t, false);
     // `copyWithin(target: number, start: number, end?: number): T[]`.
@@ -954,6 +977,31 @@ test "lib: arrayProto exposes reduce/flat/findLast/at and rest methods" {
     try T.expect(rest_set.contains(ti.objectMember(proto, try sint.intern("splice")).?));
     // A genuinely-missing member still resolves to null (no false member).
     try T.expect(ti.objectMember(proto, try sint.intern("definitelyNotAMethod")) == null);
+}
+
+test "lib: arrayProto flat() unwraps one level for nested element arrays" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+
+    // `number[][]` → element type is `number[]`; `flat()` yields `number[]`
+    // (one level unwrapped), so the flat return's number-index is `number`.
+    const number_arr = try ti.internArrayType(&sint, types.Primitive.number_t);
+    const nested = try arrayProto(&cache, &ti, &sint, T.allocator, number_arr, &rest_set);
+    const flat_ret_nested = ti.signatureReturn(ti.objectMember(nested, try sint.intern("flat")).?).?;
+    try T.expect(flat_ret_nested != types.Primitive.none);
+    try T.expectEqual(types.Primitive.number_t, ti.objectNumberIndex(flat_ret_nested));
+
+    // `string[]` (already flat) → `flat()` returns `string[]` unchanged,
+    // NOT `any[]`; the flat return's number-index is `string`.
+    const flat_proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.string_t, &rest_set);
+    const flat_ret_flat = ti.signatureReturn(ti.objectMember(flat_proto, try sint.intern("flat")).?).?;
+    try T.expectEqual(types.Primitive.string_t, ti.objectNumberIndex(flat_ret_flat));
 }
 
 test "lib: objectGlobal exposes keys/values/entries/assign" {
