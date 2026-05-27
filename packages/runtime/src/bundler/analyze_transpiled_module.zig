@@ -377,9 +377,15 @@ pub const StringID = enum(u32) {
 };
 
 // zig__renderDiff, zig__ModuleInfoDeserialized__toJSModuleRecord, and the
-// JSModuleRecord/IdentifierArray opaques: see src/bundler_jsc/analyze_jsc.zig
+// JSModuleRecord/IdentifierArray opaques: see src/bundler_jsc/analyze_jsc.zig.
+// Only force the JSC module-record bridge exports when JSC is actually linked;
+// otherwise their JSC_JSModuleRecord__*/JSC__IdentifierArray__*/
+// JSC__VariableEnvironment__* extern deps become undefined symbols in non-JSC
+// binaries (e.g. the corpus `home-debug`) that never call them.
 comptime {
-    _ = @import("../bundler_jsc/analyze_jsc.zig");
+    if (@import("build_options").enable_jsc) {
+        _ = @import("../bundler_jsc/analyze_jsc.zig");
+    }
 }
 
 export fn zig__ModuleInfo__destroy(info: *ModuleInfo) void {
