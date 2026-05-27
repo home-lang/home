@@ -4089,6 +4089,18 @@ const harness_prelude =
     \\};
     \\it.skip = it.todo;
     \\it.concurrent = it;
+    \\it.skipIf = function(condition) {
+    \\  return condition ? it.skip : it;
+    \\};
+    \\it.todoIf = function(condition) {
+    \\  return condition ? it.todo : it;
+    \\};
+    \\it.failingIf = function(condition) {
+    \\  return condition ? it.failing : it;
+    \\};
+    \\it.if = function(condition) {
+    \\  return condition ? it : it.skip;
+    \\};
     \\function test(name, first, second) { return it(name, first, second); }
     \\test.only = __home_test_only;
     \\test.todo = it.todo;
@@ -4100,6 +4112,12 @@ const harness_prelude =
     \\  return condition ? test : test.skip;
     \\};
     \\test.failing = it.failing;
+    \\test.todoIf = function(condition) {
+    \\  return condition ? test.todo : test;
+    \\};
+    \\test.failingIf = function(condition) {
+    \\  return condition ? test.failing : test;
+    \\};
     \\test.concurrent = test;
     \\const xit = it.skip;
     \\const xtest = test.skip;
@@ -4157,6 +4175,9 @@ const harness_prelude =
     \\};
     \\describe.if = function(condition) {
     \\  return condition ? describe : describe.skip;
+    \\};
+    \\describe.todoIf = function(condition) {
+    \\  return condition ? describe.todo : describe;
     \\};
     \\const xdescribe = describe.skip;
     \\describe.each = function(rows) {
@@ -15042,6 +15063,37 @@ test "harness prelude surfaces ERR_INVALID_THIS from Request body methods" {
     // as undefined instead of coercing it to the global object.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.formData = function() {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "\"use strict\";\n    __home_request_check_this(this);") != null);
+}
+
+test "harness prelude exposes Bun's conditional test modifiers" {
+    // Bun's test runner (src/runtime/test_runner/ScopeFunctions.zig) exposes the
+    // conditional modifier family on `test`/`it`/`describe`: `.if(cond)`,
+    // `.skipIf(cond)`, `.todoIf(cond)`, and (test/it only) `.failingIf(cond)`.
+    // `describe` has no failing mode, so it must NOT gain `failingIf`. The
+    // bootstrap harness mirrors these faithfully so the ~72 corpus files that
+    // reference them stop ReferenceError-ing at module load.
+    //
+    // Faithful semantics: skipIf/todoIf/failingIf select the named mode when
+    // the condition is true (else the plain runner); `if` is the inverse of
+    // skipIf — it runs when the condition is true.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.skipIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.todoIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.failingIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.if = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? it.skip : it;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? it.todo : it;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? it.failing : it;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? it : it.skip;") != null);
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.todoIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.failingIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? test.todo : test;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? test.failing : test;") != null);
+
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todoIf = function(condition) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "  return condition ? describe.todo : describe;") != null);
+    // describe has no failing mode upstream, so it must not gain failingIf.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.failingIf") == null);
 }
 
 test "harness prelude formats the ERR_INVALID_THIS specific-type suffix faithfully" {
