@@ -66,6 +66,8 @@ pub fn stringProto(
     cache: *LibCache,
     ti: *interner_mod.Interner,
     sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
 ) !TypeId {
     if (cache.string_proto != types.Primitive.none) return cache.string_proto;
 
@@ -81,19 +83,29 @@ pub fn stringProto(
     var number_or_undefined_members = [_]TypeId{ number_t, types.Primitive.undefined_t };
     const optional_number_t = try ti.internUnion(&number_or_undefined_members);
 
-    // `(s: string): boolean`
+    // `(s: string, position?: number): boolean` — used by `includes`,
+    // `startsWith`, `endsWith`. Upstream signatures all take an
+    // optional second-arg position offset; we declared just `(s)`,
+    // tripping TS2554 on `s.startsWith("x", 0)` etc.
+    const sig_str_pos_bool = try ti.internSignature(&[_]TypeId{ string_t, optional_number_t }, boolean_t, false);
+    // `(s: string): boolean` — legacy single-arg form, kept for
+    // tests that only need the simple shape.
     const sig_str_bool = try ti.internSignature(&[_]TypeId{string_t}, boolean_t, false);
-    // `(s: string): number`
-    const sig_str_num = try ti.internSignature(&[_]TypeId{string_t}, number_t, false);
+    _ = sig_str_bool;
+    // `(s: string, fromIndex?: number): number` — used by `indexOf`.
+    // Optional fromIndex matches upstream and our `lastIndexOf`.
+    const sig_str_num = try ti.internSignature(&[_]TypeId{ string_t, optional_number_t }, number_t, false);
     // `(i: number): string`
     const sig_num_string = try ti.internSignature(&[_]TypeId{number_t}, string_t, false);
     // `(sep: string): string[]`
     const sig_split = try ti.internSignature(&[_]TypeId{string_t}, string_arr, false);
     // `(start: number, end?: number): string`.
     const sig_slice = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t }, string_t, false);
-    // `(s: string): string` — used by `concat` (modeled as the
-    // common single-arg form until rest params land in lib).
-    const sig_str_string = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
+    // `concat(...strs: string[]): string` — rest accepting any number
+    // of additional strings. Registered in `rest_set` so call sites
+    // expand to 0+ string args.
+    const sig_str_string = try ti.internSignature(&[_]TypeId{string_arr}, string_t, false);
+    try rest_set.put(gpa, sig_str_string, {});
 
     // `(pos: number): number` — used by `charCodeAt` (returns the
     // UTF-16 code unit at the given index, NaN if out of range).
@@ -147,9 +159,9 @@ pub fn stringProto(
         // TS2339. Pins `spreadObjectOrFalsy.ts:44`.
         .{ .name = try sint.intern("toLocaleUpperCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toLocaleLowerCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("startsWith"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("endsWith"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },
-        .{ .name = try sint.intern("includes"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("startsWith"), .type = sig_str_pos_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("endsWith"), .type = sig_str_pos_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("includes"), .type = sig_str_pos_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("split"), .type = sig_split, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("indexOf"), .type = sig_str_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("slice"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -672,7 +684,9 @@ test "lib: stringProto exposes length/charAt/toUpperCase" {
     var cache: LibCache = .{};
     defer cache.deinit(T.allocator);
 
-    const proto = try stringProto(&cache, &ti, &sint);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+    const proto = try stringProto(&cache, &ti, &sint, T.allocator, &rest_set);
     const length_id = try sint.intern("length");
     const charAt_id = try sint.intern("charAt");
     const upper_id = try sint.intern("toUpperCase");
@@ -690,7 +704,9 @@ test "lib: stringProto exposes replace/padStart/at/matchAll and friends" {
     var cache: LibCache = .{};
     defer cache.deinit(T.allocator);
 
-    const proto = try stringProto(&cache, &ti, &sint);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+    const proto = try stringProto(&cache, &ti, &sint, T.allocator, &rest_set);
     for ([_][]const u8{
         "replace",   "replaceAll", "match",         "matchAll", "search",
         "padStart",  "padEnd",     "trimStart",     "trimEnd",  "at",
