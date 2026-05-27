@@ -36,6 +36,7 @@ const repl = @import("repl.zig");
 const lint_cmd = @import("lint_command.zig");
 const package_cmd = @import("package_command.zig");
 const home_test = @import("home_test");
+const home_rt = @import("home_rt");
 
 const Io = std.Io;
 var g_io: Io = undefined;
@@ -1619,6 +1620,47 @@ fn execPantryCommand(allocator: std.mem.Allocator, pantry_subcommand: []const u8
     for (extra_args) |a| try argv.append(allocator, a);
 
     try spawnInteractive(argv.items);
+}
+
+/// `home eval <code> [--print|-p]` — execute a JavaScript source string
+/// through Home's OWN JavaScriptCore runtime (`home_rt.jsc`), NOT by
+/// delegating to the system `bun` binary like `home run` currently does.
+/// This is the Phase-1 JS-callable bridge surface.
+///
+/// Faithful to `bun eval` / `bun -e`: the result is not auto-printed. Pass
+/// `--print`/`-p` (mirroring `bun --print`) to render the last value. A thrown
+/// exception is reported to stderr and produces a non-zero exit code.
+fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: bool) !void {
+    if (comptime !build_options.enable_jsc) {
+        std.debug.print("{s}error:{s} 'eval' requires a JSC-enabled build (build with -Denable_jsc=true)\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.process.exit(1);
+    } else {
+        var engine = home_rt.jsc.engine.Engine.init(allocator) catch |err| {
+            std.debug.print("{s}error:{s} failed to start JavaScriptCore: {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+            std.process.exit(1);
+        };
+        defer engine.deinit();
+
+        const ctx = engine.currentContext();
+        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, code, "home:eval", 1);
+        defer evaluation.deinit(allocator);
+
+        if (evaluation.exception != null) {
+            const message = evaluation.exception_message orelse "uncaught exception";
+            std.debug.print("{s}error:{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), message });
+            std.process.exit(1);
+        }
+
+        if (print_result) {
+            if (evaluation.value) |value| {
+                const text = home_rt.jsc.evaluate.valueToUtf8(allocator, ctx, value) catch return;
+                defer allocator.free(text);
+                const stdout_file = std.Io.File.stdout();
+                try stdout_file.writeStreamingAll(g_io, text);
+                try stdout_file.writeStreamingAll(g_io, "\n");
+            }
+        }
+    }
 }
 
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
@@ -3580,6 +3622,27 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "size")) {
         const target = if (args.len >= 3) args[2] else ".";
         try sizeCommand(allocator, target);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "eval")) {
+        // Collect the code argument plus an optional --print/-p flag.
+        var code: ?[]const u8 = null;
+        var print_result = false;
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--print") or std.mem.eql(u8, args[i], "-p")) {
+                print_result = true;
+            } else if (code == null) {
+                code = args[i];
+            }
+        }
+        if (code == null) {
+            std.debug.print("{s}error:{s} 'eval' requires a code argument\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.debug.print("usage: home eval <code> [--print|-p]\n", .{});
+            std.process.exit(1);
+        }
+        try evalCommand(allocator, code.?, print_result);
         return;
     }
 

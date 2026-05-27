@@ -82,6 +82,31 @@ pub fn evaluateUtf8Detailed(
     };
 }
 
+/// Render a JSValue as its UTF-8 string form via `JSValueToStringCopy`, the
+/// same conversion `exceptionMessageUtf8` applies to a thrown value. Used by
+/// the `home eval --print` CLI surface to print a result value (mirroring
+/// Bun's `--print`). Returns an empty string when JSC is not linked or the
+/// conversion fails so callers never have to special-case the disabled build.
+pub fn valueToUtf8(allocator: std.mem.Allocator, ctx: *JSContextRef, value: *JSValue) ![]u8 {
+    if (comptime !build_options.enable_jsc) {
+        return allocator.dupe(u8, "");
+    }
+
+    const string = extern_fns.JSValueToStringCopy(ctx, value, null) orelse
+        return allocator.dupe(u8, "");
+    defer extern_fns.JSStringRelease(string);
+
+    const capacity = extern_fns.JSStringGetLength(string) * 4 + 1;
+    if (capacity == 1) return allocator.dupe(u8, "");
+
+    const buf = try allocator.alloc(u8, capacity);
+    defer allocator.free(buf);
+
+    const written = extern_fns.JSStringGetUTF8CString(string, buf.ptr, buf.len);
+    const end = if (written > 0) written - 1 else 0;
+    return allocator.dupe(u8, buf[0..end]);
+}
+
 fn exceptionMessageUtf8(allocator: std.mem.Allocator, ctx: *JSContextRef, value: *JSValue) ![]u8 {
     if (comptime !build_options.enable_jsc) {
         return allocator.dupe(u8, "JSC exception unavailable in default build");
@@ -178,6 +203,42 @@ test "evaluate helper exposes whether JSC drains promise microtasks after script
 
     const number = extern_fns.JSValueToNumber(engine.currentContext(), value, null);
     try std.testing.expectEqual(@as(f64, 1), number);
+}
+
+test "valueToUtf8 renders a result value as its string form when JSC is enabled" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+
+    // String concatenation result renders without surrounding quotes, matching
+    // JSValueToString semantics (the same path `home eval --print` prints).
+    const str_value = (try evaluateUtf8(
+        std.testing.allocator,
+        ctx,
+        "'hello' + 'world'",
+        "home:value-to-utf8-string",
+        1,
+        null,
+    )) orelse return error.JSEvaluateReturnedNull;
+    const str_text = try valueToUtf8(std.testing.allocator, ctx, str_value);
+    defer std.testing.allocator.free(str_text);
+    try std.testing.expectEqualStrings("helloworld", str_text);
+
+    // Numeric result renders as its decimal string.
+    const num_value = (try evaluateUtf8(
+        std.testing.allocator,
+        ctx,
+        "1 + 2",
+        "home:value-to-utf8-number",
+        1,
+        null,
+    )) orelse return error.JSEvaluateReturnedNull;
+    const num_text = try valueToUtf8(std.testing.allocator, ctx, num_value);
+    defer std.testing.allocator.free(num_text);
+    try std.testing.expectEqualStrings("3", num_text);
 }
 
 comptime {
