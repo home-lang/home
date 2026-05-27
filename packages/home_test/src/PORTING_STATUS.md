@@ -64,13 +64,57 @@ frontier is:
 | CLI build surface | `bundler/cli.test.ts` | `bun build` subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
 | Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Read-only corpus inventory on 2026-05-26, counted from
+`packages/runtime/test/bun-corpus` using `*.test.{ts,js,mjs,cjs}` and
+`*.spec.{ts,js}` patterns:
+
+| Bucket | Files | Next ownership note |
+|---|---:|---|
+| `js/` | 998 | General runtime/API surface after the JS-callable bridge matures |
+| `regression/` | 384 | Bug-regression ratchet after core API ladders are stable |
+| `cli/` | 150 | Subprocess matrix; Pantry/package-manager divergences must stay explicit |
+| `bundler/` | 89 | Active ratchet: 79 unique green, 10-file frontier left |
+| `napi/` | 59 | Native addon/libuv/N-API tranche after native plugin gate |
+| `bake/` | 24 | Server-heavy tranche after bundler completion |
+| `integration/` | 20 | Cross-surface follow-up tranche |
+| Small buckets | 11 | `internal` 7 plus one each for `config`, `package-json-lint`, `snippets`, and `v8` |
+| Total audited by these file patterns | 1735 | Separate from the broader 4013-file Bun-style discovery denominator |
+
+Large-agent handoff for the current bundler frontier:
+
+1. Decorator semantics: promote the three decorator transpiler files
+   together after parser/transpiler decorator lowering is faithful.
+2. Transpiler and macro API: promote `macro-test.test.ts` and
+   `transpiler.test.js` together after `Bun.Transpiler` and macro import
+   behavior exist in Home.
+3. Resolver cache behavior: promote all three resolver cache files as
+   one in-process state and filesystem-mutation tranche.
+4. CLI build surface: keep `bundler/cli.test.ts` as its own subprocess
+   matrix tranche.
+5. Native plugin final: close `native-plugin.test.ts` last with real
+   `.node` loading, plugin symbol registration, `onBeforeParse`, and
+   crash-name evidence.
+
+Native plugin bridge update on 2026-05-26: the JSC corpus adapter now
+builds `binding.gyp` fixtures through the native spawn bridge, `dlopen`s
+`.node` addons through a Home-owned metadata callback, retains loaded
+handles, inspects Bun plugin symbols (`BUN_PLUGIN_NAME`,
+`plugin_impl*`), and exposes the native plugin fixture through
+`require(.node)`/`build.onBeforeParse()` enough to exercise the Bun
+native-plugin ABI path in the harness. Remaining blocker for end-to-end
+file execution in this worktree is unrelated compile drift in
+`packages/runtime/src/js_printer/js_printer.zig` before the refreshed
+`home-debug` binary can run the corpus file.
+
 Runtime build audit on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails with 1 compile error after the runtime bridge
-peel. The remaining frontier is the parked `jsc.EventLoopHandle.EventLoop`
-bridge: `jsc/VirtualMachine.zig` still embeds the opaque event loop by
-value. The previous Zig 0.17 `std.fs.Dir` bundler-options drift and
-router AST-store blockers are now wired far enough for the next frontier.
+--summary failures` fails with 12 compile errors, down from 38 earlier the
+same day. The parked `jsc.EventLoopHandle.EventLoop` opaque is now a sized
+struct so `jsc/VirtualMachine.zig` embeds it by value and the VM/webcore
+body type-checks. The remaining 12 are distinct subsystem-port clusters
+(Output.Source streaming, JSC value-type unification, SavedSourceMap,
+RareData AWS/IPC, codegen Cached accessors, node Buffer identity, BoringSSL
+TLS) itemized in `docs/BUN_PARITY_PLAN.md`.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:
