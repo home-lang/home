@@ -131,6 +131,18 @@ fn renderTypeIntoCtx(
         if (flags.is_undefined) return buf.appendSlice(gpa, "undefined");
     }
     if (flags.is_literal) {
+        // Enum-member literals (`Choice.Yes`) display by their
+        // qualified name, not their underlying value — matching tsc's
+        // node-builder which renders an enum-literal type as
+        // `Enum.Member`.
+        if (flags.is_enum_literal) {
+            if (ti.enumLiteralInfo(id)) |info| {
+                try buf.appendSlice(gpa, sint.get(info.enum_name));
+                try buf.append(gpa, '.');
+                try buf.appendSlice(gpa, sint.get(info.member_name));
+                return;
+            }
+        }
         const lit = ti.literalOf(id);
         switch (lit) {
             .string_lit => |sid| {
@@ -310,6 +322,53 @@ test "renderType: union" {
     try T.expect(std.mem.indexOf(u8, out, "number") != null);
     try T.expect(std.mem.indexOf(u8, out, "string") != null);
     try T.expect(std.mem.indexOf(u8, out, " | ") != null);
+}
+
+test "renderType: enum-member literal renders as Enum.Member" {
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const choice = try sint.intern("Choice");
+    const yes = try sint.intern("Yes");
+    const t = try ti.internEnumNumberLiteral(0, choice, yes);
+    const out = try renderType(T.allocator, &ti, &sint, t);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("Choice.Yes", out);
+
+    // A string-valued enum member renders the same qualified way,
+    // never the raw string value.
+    const dir = try sint.intern("Direction");
+    const up = try sint.intern("Up");
+    const up_val = try sint.intern("UP");
+    const st = try ti.internEnumStringLiteral(up_val, dir, up);
+    const out2 = try renderType(T.allocator, &ti, &sint, st);
+    defer T.allocator.free(out2);
+    try T.expectEqualStrings("Direction.Up", out2);
+}
+
+test "renderType: enum-member literal is distinct from its bare literal" {
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const choice = try sint.intern("Choice");
+    const yes = try sint.intern("Yes");
+    const no = try sint.intern("No");
+    const bare0 = try ti.internNumberLiteral(0);
+    const choice_yes = try ti.internEnumNumberLiteral(0, choice, yes);
+    const choice_no = try ti.internEnumNumberLiteral(0, choice, no);
+    // `Choice.Yes` is not the same interned type as the bare `0`, even
+    // though they share the underlying value, and a sibling member with
+    // the same value (`Choice.No = 0`) is also distinct.
+    try T.expect(choice_yes != bare0);
+    try T.expect(choice_yes != choice_no);
+    try T.expect(ti.isEnumLiteral(choice_yes));
+    try T.expect(!ti.isEnumLiteral(bare0));
+    // The same member accessed twice collapses to one id (tsc's
+    // `enumLiteralTypes` cache keyed on enum + value).
+    const choice_yes_again = try ti.internEnumNumberLiteral(0, choice, yes);
+    try T.expectEqual(choice_yes, choice_yes_again);
 }
 
 test "renderType: union renders undefined and null after non-nullish members" {

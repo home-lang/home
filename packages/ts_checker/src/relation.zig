@@ -559,6 +559,23 @@ pub const Engine = struct {
             return false;
         }
 
+        // A numeric enum-member literal is assignable to its *own*
+        // enum's nominal type (`E1.X` → `E1`), but not to a foreign
+        // enum's nominal (`E2.X` → `E1` fails). The whole-enum nominal
+        // brands the owning enum name in its `__enum:` member, which we
+        // match against the literal's recorded enum identity.
+        if (tf.is_intersection and sf.is_enum_literal and self.isNumericEnumNominal(target)) {
+            if (self.string_interner) |si| {
+                if (self.interner.enumLiteralInfo(source)) |info| {
+                    if (self.numericEnumNominalName(target)) |target_enum| {
+                        const src_enum = si.getOptional(info.enum_name) orelse "";
+                        if (std.mem.eql(u8, target_enum, src_enum)) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         // Numeric enum types are represented as branded
         // intersections (`number & { __enum:E: never }`), while TS
         // still allows plain numbers to flow into numeric enum
@@ -593,6 +610,40 @@ pub const Engine = struct {
                 if (try self.isAssignableTo(m, target)) return true;
             }
             return false;
+        }
+
+        // Enum-member literals (`Choice.Yes`). Mirrors tsc's relater
+        // rules (`isRelatedToWorker`):
+        //   * identical enum literals collapse to one `TypeId`, so the
+        //     `source == target` short-circuit at the top already
+        //     accepts member↔same-member.
+        //   * an enum literal IS assignable to its base primitive
+        //     (`number`/`string`) — handled by the literal-reduction
+        //     block below since enum literals carry `is_number`/`is_string`.
+        //   * a *bare* literal (non-enum) IS assignable to an enum-literal
+        //     target with a matching value (so `0`/`"UP"` flow into a
+        //     `Choice.Yes` slot), but a *different* enum literal or a
+        //     value mismatch is rejected.
+        //   * an enum literal is assignable to a bare literal target with
+        //     the same value (tsc 222/228).
+        if (tf.is_enum_literal) {
+            // Target is an enum literal. Already handled `source == target`.
+            if (sf.is_enum_literal) {
+                // Different enum literal: accept only when the owning
+                // enum matches *and* values match (covers merged-enum /
+                // re-interned cases that didn't unify to one id).
+                return self.enumLiteralsRelated(source, target);
+            }
+            // Bare literal (or primitive) source into an enum-literal
+            // target: tsc accepts a literal whose value matches and
+            // `number` into a numeric enum literal.
+            if (sf.is_literal and self.literalValuesEqual(source, target)) return true;
+            if (source == Primitive.number_t and tf.is_number) return true;
+            return false;
+        }
+        if (sf.is_enum_literal and tf.is_literal and !tf.is_enum_literal) {
+            // Enum literal into a bare literal target: same value only.
+            return self.literalValuesEqual(source, target);
         }
 
         // Literal types reduce to their primitive when target is the
@@ -726,8 +777,47 @@ pub const Engine = struct {
     fn isNumberLikeForEnumAssign(self: *Engine, source: TypeId) bool {
         if (source == Primitive.number_t) return true;
         const sf = self.pool().flagsOf(source);
+        // A bare numeric literal flows into a numeric enum for the
+        // historical bit-flag rule, but an *enum* literal must not —
+        // `E2.X` is not assignable to `E1` just because both are
+        // number-backed. Foreign enum literals are routed through the
+        // strict enum-relatedness check instead. Mirrors tsc's
+        // `s&TypeFlagsEnumLiteral == 0` guard on the number-literal rule.
+        if (sf.is_enum_literal) return false;
         if (sf.is_literal and sf.is_number) return true;
         return false;
+    }
+
+    /// Compare the underlying literal values of two literal types,
+    /// ignoring any enum branding. Used so a bare `0` and `Choice.Yes`
+    /// (value 0), or a `Choice.Yes`/`Choice.No` swap, relate strictly
+    /// by value. Both ids must be literal types.
+    fn literalValuesEqual(self: *Engine, a: TypeId, b: TypeId) bool {
+        const af = self.pool().flagsOf(a);
+        const bf = self.pool().flagsOf(b);
+        if (!af.is_literal or !bf.is_literal) return false;
+        const la = self.interner.literalOf(a);
+        const lb = self.interner.literalOf(b);
+        if (@as(types.LiteralTag, la) != @as(types.LiteralTag, lb)) return false;
+        return switch (la) {
+            .string_lit => |sid| sid == lb.string_lit,
+            .number_lit => |bits| bits == lb.number_lit,
+            .bigint_lit => |sid| sid == lb.bigint_lit,
+            .boolean_lit => |v| v == lb.boolean_lit,
+        };
+    }
+
+    /// Two distinct enum-literal types relate only when they name the
+    /// same owning enum and carry the same value — i.e. they are the
+    /// same member that, for some reason (merged decls, re-intern), did
+    /// not collapse to a single `TypeId`. A member of one enum is never
+    /// assignable to a member of another, nor to a sibling member.
+    /// Mirrors tsc's `isEnumTypeRelatedTo` + value check (relater 247).
+    fn enumLiteralsRelated(self: *Engine, source: TypeId, target: TypeId) bool {
+        const si = self.interner.enumLiteralInfo(source) orelse return false;
+        const ti_info = self.interner.enumLiteralInfo(target) orelse return false;
+        if (si.enum_name != ti_info.enum_name) return false;
+        return self.literalValuesEqual(source, target);
     }
 
     fn isNumericEnumNominal(self: *Engine, t: TypeId) bool {
@@ -754,6 +844,27 @@ pub const Engine = struct {
             }
         }
         return saw_number and saw_enum_brand;
+    }
+
+    /// Extract the owning enum's name (as a string slice) from a
+    /// numeric enum nominal intersection's `__enum:NAME` brand member,
+    /// or null when `t` is not such a nominal. Used to match an
+    /// enum-member literal against its own enum's nominal type.
+    fn numericEnumNominalName(self: *Engine, t: TypeId) ?[]const u8 {
+        const si = self.string_interner orelse return null;
+        if (t >= self.pool().typeCount()) return null;
+        if (!self.pool().flagsOf(t).is_intersection) return null;
+        for (self.interner.intersectionMembers(t)) |member| {
+            if (member >= self.pool().typeCount()) continue;
+            if (!self.pool().flagsOf(member).is_object_type) continue;
+            for (self.interner.objectMembers(member)) |om| {
+                const name = si.getOptional(om.name) orelse continue;
+                if (std.mem.startsWith(u8, name, "__enum:")) {
+                    return name["__enum:".len..];
+                }
+            }
+        }
+        return null;
     }
 
     /// Mirrors tsc's `isWeakType`: an object type is "weak" when it has

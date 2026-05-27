@@ -97,7 +97,17 @@ pub const TypeFlags = packed struct(u32) {
     /// Class/interface object type with declared members.
     is_object_type: bool = false,
 
-    _padding: u4 = 0,
+    /// Enum-member literal type (`Choice.Yes`). Always combined with
+    /// `is_literal` + (`is_number` | `is_string`). Distinguishes an
+    /// enum member's fresh literal type from the bare numeric/string
+    /// literal that shares its value: `Choice.Yes` is a distinct unit
+    /// type that displays as `Choice.Yes`, while plain `1` is not. The
+    /// owning enum/member identity is held in the interner's
+    /// `enum_literal_info` side-table, keyed by `TypeId`. Mirrors tsc's
+    /// `TypeFlagsEnumLiteral` (always paired with String/Number literal).
+    is_enum_literal: bool = false,
+
+    _padding: u3 = 0,
 };
 
 /// A union literal-type tag. Lives in the `LiteralData` payload of
@@ -114,6 +124,18 @@ pub const LiteralData = union(LiteralTag) {
     number_lit: u64, // bit pattern of f64
     bigint_lit: StringId,
     boolean_lit: bool,
+};
+
+/// Identity of an enum-member literal type (`Choice.Yes`). Stored in
+/// the interner's `enum_literal_info` side-table keyed by the literal
+/// `TypeId`. `enum_name` + `member_name` drive the `Enum.Member`
+/// display form and the nominal enum-relatedness check; the literal
+/// value itself lives in the regular `LiteralData` payload so all
+/// existing literal logic (value equality, widening, narrowing)
+/// keeps working unchanged.
+pub const EnumLiteralInfo = struct {
+    enum_name: StringId,
+    member_name: StringId,
 };
 
 /// Header for every interned type. Side payload is in a separate column
