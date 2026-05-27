@@ -18,15 +18,8 @@
 const std = @import("std");
 const home_rt = @import("home_rt");
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {
-    // Real upstream has `hasException(): bool` which checks the VM. The
-    // local fromJS/hrefFromJS paths defer the check to the JSC bridge.
-    pub fn hasException(_: *JSGlobalObject) bool {
-        return false;
-    }
-};
-const JSValue = enum(i64) { zero = 0, _ };
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+const JSValue = home_rt.jsc.JSValue;
 
 const String = home_rt.String;
 

@@ -6,11 +6,26 @@
 // Bun-specific helpers as we hit them.
 
 const std = @import("std");
+const resolve_path = @import("paths/resolve_path.zig");
 
 pub const basename = std.fs.path.basename;
 pub const dirname = std.fs.path.dirname;
 pub const extension = std.fs.path.extension;
 pub const stem = std.fs.path.stem;
+
+pub const Platform = resolve_path.Platform;
+pub const joinAbsStringBuf = resolve_path.joinAbsStringBuf;
+pub const joinAbsStringBufChecked = resolve_path.joinAbsStringBufChecked;
+pub const joinAbsStringBufZ = resolve_path.joinAbsStringBufZ;
+pub const joinAbsStringBufZNT = resolve_path.joinAbsStringBufZNT;
+pub const joinAbsStringBufZTrailingSlash = resolve_path.joinAbsStringBufZTrailingSlash;
+pub const joinStringBuf = resolve_path.joinStringBuf;
+pub const joinStringBufZ = resolve_path.joinStringBufZ;
+pub const isSepAny = resolve_path.isSepAny;
+pub const isSepAnyT = resolve_path.isSepAnyT;
+pub const lastIndexOfSep = resolve_path.lastIndexOfSep;
+pub const lastIndexOfSepT = resolve_path.lastIndexOfSepT;
+pub const windowsFilesystemRoot = resolve_path.windowsFilesystemRoot;
 
 pub fn join(parts: []const []const u8, sep: std.fs.path.Style) []const u8 {
     _ = sep;

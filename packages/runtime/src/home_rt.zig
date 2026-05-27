@@ -84,6 +84,18 @@ pub const PathString = @import("string/PathString.zig").PathString;
 pub const UUID = @import("jsc/uuid.zig");
 pub const spawn = @import("runtime/api/bun/spawn.zig").PosixSpawn;
 pub const Async = struct {
+    pub const Waker = struct {
+        pub fn init() !Waker {
+            return .{};
+        }
+
+        pub fn wake(_: *Waker) void {}
+
+        pub fn getFd(_: *const Waker) FD {
+            return .invalid;
+        }
+    };
+
     pub const Loop = io.Loop;
     pub const KeepAlive = io.KeepAlive;
     pub const FilePoll = struct {
@@ -145,6 +157,8 @@ pub const Mutex = threading.Mutex;
 pub const SourceMap = @import("sourcemap/sourcemap.zig");
 pub const Transpiler = @import("bundler/transpiler.zig").Transpiler;
 pub const transpiler = @import("bundler/transpiler.zig");
+pub const bundle_v2 = @import("bundler/bundle_v2.zig");
+pub const BundleV2 = bundle_v2.BundleV2;
 pub const SignalCode = sys.SignalCode;
 pub const fs = @import("resolver/fs.zig");
 pub const windows = @import("sys/windows/windows.zig");
@@ -289,6 +303,67 @@ pub inline fn assertf(condition: bool, comptime _: []const u8, _: anytype) void 
     assert(condition);
 }
 
+/// Mirrors `bun.unsafeAssert`: asserts unconditionally and lowers to
+/// `unreachable` so the optimizer may assume the condition holds even in
+/// release builds. Used on hot paths where a regular `assert` is too costly.
+pub inline fn unsafeAssert(condition: bool) void {
+    if (!condition) unreachable;
+}
+
+/// Deep-clone helper mirroring `bun.clone`. Dispatches to `item.clone(allocator)`
+/// when available, clones each element of a slice whose child defines `clone()`,
+/// and otherwise `dupe`s the slice. Upstream uses `trait.isContainer`; we inline
+/// the container check on the slice child's type info.
+pub fn clone(item: anytype, allocator: std.mem.Allocator) !@TypeOf(item) {
+    const T = @TypeOf(item);
+
+    if (std.meta.hasFn(T, "clone")) {
+        return try item.clone(allocator);
+    }
+
+    const Child = std.meta.Child(T);
+    const child_is_container = switch (@typeInfo(Child)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => true,
+        else => false,
+    };
+    if (comptime child_is_container) {
+        if (std.meta.hasFn(Child, "clone")) {
+            const slice = try allocator.alloc(Child, item.len);
+            for (slice, 0..) |*val, i| {
+                val.* = try item[i].clone(allocator);
+            }
+            return slice;
+        }
+
+        @compileError("Expected clone() to exist for slice child: " ++ @typeName(Child));
+    }
+
+    return try allocator.dupe(Child, item);
+}
+
+/// Runtime env-var feature flags (`bun.feature_flag`). The full upstream
+/// registry lives in `env_var.zig`; this carries the minimal set the parked
+/// non-JSC runtime references. Each flag exposes `get()` reading the process
+/// environment, defaulting to false when unset.
+pub const feature_flag = struct {
+    fn BoolFlag(comptime env_name: [:0]const u8, comptime default_value: bool) type {
+        return struct {
+            pub const default = default_value;
+
+            pub fn get() bool {
+                const raw = std.c.getenv(env_name.ptr) orelse return default_value;
+                const value = std.mem.span(raw);
+                if (value.len == 0) return default_value;
+                // Match Bun's boolean parse: "0"/"false" are off, anything else on.
+                if (std.mem.eql(u8, value, "0") or std.mem.eql(u8, value, "false")) return false;
+                return true;
+            }
+        };
+    }
+
+    pub const BUN_FEATURE_FLAG_DISABLE_ISOLATION_SOURCE_CACHE = BoolFlag("BUN_FEATURE_FLAG_DISABLE_ISOLATION_SOURCE_CACHE", false);
+};
+
 pub const cpp = struct {
     const WTFStringImplStruct = @import("string/wtf.zig").WTFStringImplStruct;
 
@@ -318,8 +393,31 @@ pub const cpp = struct {
     }
     pub extern fn ReadableStream__empty(*jsc.JSGlobalObject) jsc.JSValue;
     pub extern fn ReadableStream__used(*jsc.JSGlobalObject) jsc.JSValue;
-    pub extern fn Bun__parseDate(*jsc.JSGlobalObject, *String) JSError!f64;
+    // Upstream `Bun__parseDate` is a C ABI symbol returning f64 with the
+    // exception surfaced separately. The error-union signature can't ride the
+    // C calling convention, so this is a parked Home stub until the JSC bridge
+    // lands the real binding.
+    pub fn Bun__parseDate(_: *jsc.JSGlobalObject, _: *String) JSError!f64 {
+        return 0;
+    }
+    // `String.toThreadSafe()` transfers ownership through this C++ binding.
+    pub extern fn BunString__toThreadSafe(*String) void;
+    pub extern fn JSC__JSValue__isAnyInt(jsc.JSValue) bool;
+    // Promise settle bindings throw on a terminated VM, so they carry an error
+    // union and can't ride the C calling convention as `extern`. Parked Home
+    // stubs until the JSC bridge lands the real C++ entrypoints.
+    pub fn JSC__JSPromise__resolve(_: anytype, _: anytype, _: anytype) JSError!void {}
+    pub fn JSC__JSPromise__reject(_: anytype, _: anytype, _: anytype) JSError!void {}
 };
+
+/// Wall-clock milliseconds since the Unix epoch. `std.time.milliTimestamp`
+/// was removed in Zig 0.17; this restores the helper for copied Bun source
+/// that still expects a `milliTimestamp()` on the `bun` namespace.
+pub fn milliTimestamp() i64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(std.posix.CLOCK.REALTIME, &ts) != 0) return 0;
+    return @as(i64, @intCast(ts.sec)) * std.time.ms_per_s + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
+}
 
 pub fn GenericIndex(comptime backing_int: type, comptime uid: anytype) type {
     const null_value = std.math.maxInt(backing_int);
@@ -635,6 +733,15 @@ pub const jsc = struct {
                 return .{};
             }
         };
+
+        /// Parked carrier for the `--eval` entry point source. The real loader
+        /// sets this when `home eval`/`-e` runs; the field stays null in the
+        /// non-JSC bridge so `specifierIsEvalEntryPoint` reports false.
+        pub const EvalSource = struct {
+            path: struct { text: []const u8 = "" } = .{},
+        };
+
+        eval_source: ?*EvalSource = null,
     };
     pub const Errorable = @import("jsc/Errorable.zig").Errorable;
     pub const ErrorableString = Errorable(String);
@@ -678,6 +785,23 @@ pub const jsc = struct {
     pub const GarbageCollectionController = struct {};
     pub const RareData = struct {
         pub const ProxyEnvStorage = struct {};
+
+        // Parked subset of `jsc.RareData`'s lazily-built per-VM caches. The
+        // full implementation lives in `jsc/rare_data.zig`; these bridge the
+        // non-JSC callers until that file is build-wired:
+        //  - nextUUID: returns a zeroed UUID (ObjectURL registry keying).
+        //  - mimeTypeFromString: no cached MIME table yet, so reports unknown.
+        // NOTE: awsCache() and spawnIPCGroup() stay unported — the real
+        // `AWSSignatureCache` uses the pre-0.17 managed `StringArrayHashMap`
+        // init (now an allocator-per-method `ArrayHashMap`), so it needs a
+        // dedicated Zig-0.17 refactor in rare_data.zig first.
+        pub fn nextUUID(_: *RareData) UUID {
+            return .{ .bytes = std.mem.zeroes([16]u8) };
+        }
+
+        pub fn mimeTypeFromString(_: *RareData, _: std.mem.Allocator, _: []const u8) ?http.MimeType {
+            return null;
+        }
     };
     pub const Debugger = struct {
         pub const AsyncTaskTracker = struct {
@@ -712,6 +836,11 @@ pub const jsc = struct {
     pub const URL = @import("jsc/URL.zig").URL;
     pub const SavedSourceMap = struct {
         pub const HashTable = struct {};
+        // NOTE: source-map storage stays a minimal placeholder. Adding the
+        // lock()/unlock() surface unlocks the full resolveSourceMapping body
+        // (last_path_hash, last_ism, getValueLocked, putMappings, putValue,
+        // resolveMapping, find_cache), which needs the real SavedSourceMap port
+        // from `jsc/SavedSourceMap.zig`. Kept parked as one frontier item.
     };
     pub const DOMFormData = @import("jsc/DOMFormData.zig").DOMFormData;
     pub const TopExceptionScope = @import("jsc/TopExceptionScope.zig").TopExceptionScope;
@@ -790,6 +919,8 @@ pub const jsc = struct {
         @import("jsc/codegen_disabled.zig");
     pub const PlatformEventLoop = @import("io/stub_event_loop.zig").Loop;
     pub const Task = @import("event_loop/AnyTask.zig").Task;
+    pub const RuntimeTranspilerCache = @import("jsc/RuntimeTranspilerCache.zig").RuntimeTranspilerCache;
+    pub const OpaqueWrap = @import("jsc/jsc.zig").OpaqueWrap;
     pub const host_fn = @import("jsc/host_fn.zig");
     pub const JSHostFn = host_fn.JSHostFn;
     pub const JSHostFnZig = host_fn.JSHostFnZig;
@@ -804,12 +935,25 @@ pub const jsc = struct {
 
     const log = Output.scoped(.JSC, .hidden);
     pub const hot_reloader = struct {
-        pub const HotReloader = opaque {};
+        pub const HotReloader = struct {
+            pub const Task = struct {
+                pub fn deinit(_: *@This()) void {}
+                pub fn run(_: *@This()) void {}
+            };
+        };
         pub const ImportWatcher = union(enum) {
             none: void,
         };
     };
     pub const EventLoop = @import("jsc/EventLoopHandle.zig").EventLoop;
+    pub const AnyTask = event_loop.AnyTask;
+    pub const AnyTaskWithExtraContext = event_loop.AnyTaskWithExtraContext;
+    pub const ManagedTask = event_loop.ManagedTask;
+    pub const PosixSignalTask = @import("jsc/PosixSignalHandle.zig").PosixSignalTask;
+    pub const EventLoopKind = @import("jsc/EventLoopHandle.zig").EventLoopKind;
+    pub const EventLoopTask = @import("jsc/EventLoopHandle.zig").EventLoopTask;
+    pub const EventLoopTaskPtr = @import("jsc/EventLoopHandle.zig").EventLoopTaskPtr;
+    pub const DeferredTaskQueue = event_loop.DeferredTaskQueue;
     pub const EventLoopHandle = @import("jsc/EventLoopHandle.zig").EventLoopHandle;
     pub const Subprocess = opaque {};
     pub const JSTimeType = u52;
@@ -878,6 +1022,7 @@ pub const http = struct {
     // Fourth-wave port batch (2026-05-17):
     pub const HTTPRequestBody = @import("http/HTTPRequestBody.zig").HTTPRequestBody;
     pub const SendFile = @import("http/HTTPRequestBody.zig").SendFile;
+    pub const Headers = @import("http/Headers.zig");
     // Eighth-wave port (2026-05-18). Real `ThreadSafeStreamBuffer` landed —
     // wraps `home_rt.threading.Mutex` + a local 2-thread refcount + a
     // minimal `StreamBuffer` subset. Supersedes the in-file stub
@@ -918,6 +1063,10 @@ pub const http_types = struct {
 };
 pub const options_types = struct {
     pub const Loader = @import("bundler/options.zig").Loader;
+    // Extension → Loader map (`bun.options.defaultLoaders`). Used by the
+    // node:module require-extension path to tell built-in loaders from custom
+    // ones. Lives in `bundler/options.zig` upstream, same as `Loader`.
+    pub const defaultLoaders = @import("bundler/options.zig").defaultLoaders;
     pub const OfflineMode = @import("options_types/OfflineMode.zig").OfflineMode;
     pub const OfflineModePrefer = @import("options_types/OfflineMode.zig").Prefer;
     // Third-wave port batch (2026-05-17):
@@ -1136,7 +1285,13 @@ pub const runtime = struct {
         pub const Request = @import("runtime/webcore/Request.zig");
         pub const Response = @import("runtime/webcore/Response.zig");
         pub const FileSink = @import("runtime/webcore/FileSink.zig");
+        pub const FetchTasklet = struct {
+            pub fn runFromJSThread(_: *FetchTasklet) JSError!void {}
+            pub fn onProgressUpdate(_: *FetchTasklet) JSError!void {}
+        };
         pub const ByteBlobLoader = @import("runtime/webcore/ByteBlobLoader.zig");
+        pub const ResumableFetchSink = @import("runtime/webcore/ResumableSink.zig").ResumableFetchSink;
+        pub const ResumableSinkBackpressure = @import("runtime/webcore/ResumableSink.zig").ResumableSinkBackpressure;
         pub const ReadableStream = @import("runtime/webcore/ReadableStream.zig").ReadableStream;
         pub const PathOrFileDescriptor = union(enum) {
             path: jsc.ZigString.Slice,
@@ -1157,7 +1312,14 @@ pub const runtime = struct {
         };
         pub const AutoFlusher = event_loop.AutoFlusher;
         pub const Lifetime = enum { temporary, transfer, clone, share };
-        pub const WebWorker = opaque {};
+        pub const WebWorker = opaque {
+            // Parked: the real worker tracks a requested-terminate flag set by
+            // `worker.terminate()`. The bridge reports false so a VM with a
+            // worker handle is not treated as already stopping.
+            pub fn hasRequestedTerminate(_: *WebWorker) bool {
+                return false;
+            }
+        };
         pub const FileReader = struct {
             pub const Source = SourceFor(FileReader);
             pub const Lazy = union(enum) {
@@ -1185,6 +1347,8 @@ pub const runtime = struct {
                 .capacity = 0,
                 .allocator = default_allocator,
             },
+            cancel_handler: ?*const anyopaque = null,
+            cancel_ctx: ?*anyopaque = null,
 
             pub fn parent(_: *@This()) *@This() {
                 unreachable;
@@ -1193,6 +1357,12 @@ pub const runtime = struct {
             pub fn cancel(_: *@This()) void {}
 
             pub fn setup(_: *@This()) void {}
+
+            // Parked: the real ByteStream pushes a StreamResult into the
+            // readable's queue. The bridge accepts the result/allocator and
+            // drops it until the WebCore streaming path is wired. Returns the
+            // caller's `JSTerminated` set so `try`-propagation type-checks.
+            pub fn onData(_: *@This(), _: anytype, _: std.mem.Allocator) JSTerminated!void {}
 
             pub fn toAnyBlob(_: *@This()) ?Blob.Any {
                 return null;
@@ -1306,7 +1476,76 @@ pub const runtime = struct {
         pub const Subprocess = @import("runtime/api/bun/subprocess.zig");
         pub const Timer = struct {
             pub const EventLoopTimer = @import("event_loop/EventLoopTimer.zig");
+            pub const WTFTimer = struct {};
+            pub const ImmediateObject = struct {};
+            pub const TimeoutObject = struct {};
             pub const All = struct {};
+        };
+        pub const Archive = struct {
+            pub const BlobTask = struct {
+                pub fn runFromJS(_: *BlobTask) JSError!void {}
+            };
+            pub const ExtractTask = struct {
+                pub fn runFromJS(_: *ExtractTask) JSError!void {}
+            };
+            pub const FilesTask = struct {
+                pub fn runFromJS(_: *FilesTask) JSError!void {}
+            };
+            pub const WriteTask = struct {
+                pub fn runFromJS(_: *WriteTask) JSError!void {}
+            };
+        };
+        pub const Glob = struct {
+            pub const WalkTask = struct {
+                pub const AsyncGlobWalkTask = struct {
+                    pub fn deinit(_: *AsyncGlobWalkTask) void {}
+                    pub fn runFromJS(_: *AsyncGlobWalkTask) JSError!void {}
+                };
+            };
+        };
+        pub const Image = struct {
+            pub const AsyncImageTask = struct {
+                pub fn deinit(_: *AsyncImageTask) void {}
+                pub fn runFromJS(_: *AsyncImageTask) JSError!void {}
+            };
+        };
+        pub const JSTranspiler = struct {
+            pub const TransformTask = struct {
+                pub const AsyncTransformTask = struct {
+                    pub fn deinit(_: *AsyncTransformTask) void {}
+                    pub fn runFromJS(_: *AsyncTransformTask) JSError!void {}
+                };
+            };
+        };
+        pub const NativePromiseContext = struct {
+            pub const DeferredDerefTask = struct {
+                pub fn runFromJSThread(_: usize) void {}
+            };
+        };
+        pub const NativeBrotli = struct {
+            pub fn runFromJSThread(_: *NativeBrotli) void {}
+        };
+        pub const NativeZlib = struct {
+            pub fn runFromJSThread(_: *NativeZlib) void {}
+        };
+        pub const NativeZstd = struct {
+            pub fn runFromJSThread(_: *NativeZstd) void {}
+        };
+        pub const napi = struct {
+            pub const napi_async_work = struct {
+                pub fn runFromJS(_: *napi_async_work, _: *jsc.VirtualMachine, _: *jsc.JSGlobalObject) void {}
+            };
+            pub const ThreadSafeFunction = struct {
+                pub fn onDispatch(_: *ThreadSafeFunction) void {}
+            };
+            pub const NapiFinalizerTask = struct {
+                pub fn runOnJSThread(_: *NapiFinalizerTask) void {}
+            };
+        };
+        pub const server = struct {
+            pub const ServerAllConnectionsClosedTask = struct {
+                pub fn runFromJSThread(_: *ServerAllConnectionsClosedTask, _: *jsc.VirtualMachine) JSTerminated!void {}
+            };
         };
         pub const BuildArtifact = @import("runtime/api/JSBundler.zig").BuildArtifact;
         pub const AnyRequestContext = @import("runtime/server/AnyRequestContext.zig");
@@ -1331,6 +1570,12 @@ pub const runtime = struct {
         };
         pub const dns = struct {
             pub const Resolver = DNSResolver;
+            pub const GetAddrInfoRequest = struct {
+                pub const Task = struct {
+                    pub fn deinit(_: *Task) void {}
+                    pub fn runFromJS(_: *Task) JSError!void {}
+                };
+            };
         };
         pub const node = @import("home_rt").node;
         pub const lolhtml_jsc = @import("runtime/api/lolhtml_jsc.zig");
@@ -1342,8 +1587,74 @@ pub const runtime = struct {
     // Wave-15 Tier-1 grinder (2026-05-18). Pure-Zig shell helpers; full
     // shell surface lands once `bun.Output.scoped` + the shell parser port.
     pub const shell = struct {
+        const MainThreadTask = struct {
+            pub fn runFromMainThread(_: *@This()) void {}
+        };
+
         pub const RefCountedStr = @import("runtime/shell/RefCountedStr.zig");
         pub const ShellSubprocess = opaque {};
+        pub const Interpreter = struct {
+            pub const Async = MainThreadTask;
+            pub const AsyncDeinitReader = MainThreadTask;
+            pub const AsyncDeinitWriter = MainThreadTask;
+            pub const IOWriter = MainThreadTask;
+            pub const Cmd = struct {
+                pub const ShellAsyncSubprocessDone = MainThreadTask;
+            };
+            pub const CondExpr = struct {
+                pub const ShellCondExprStatTask = struct {
+                    task: MainThreadTask = .{},
+                };
+            };
+            pub const Expansion = struct {
+                pub const ShellGlobTask = struct {
+                    pub fn runFromMainThread(_: *ShellGlobTask) void {}
+                    pub fn deinit(_: *ShellGlobTask) void {}
+                };
+            };
+            pub const Builtin = struct {
+                pub const Yes = struct {
+                    pub const YesTask = MainThreadTask;
+                };
+                pub const Cp = struct {
+                    pub const ShellCpTask = MainThreadTask;
+                };
+                pub const Ls = struct {
+                    pub const ShellLsTask = MainThreadTask;
+                };
+                pub const Mkdir = struct {
+                    pub const ShellMkdirTask = MainThreadTask;
+                };
+                pub const Touch = struct {
+                    pub const ShellTouchTask = MainThreadTask;
+                };
+                pub const Mv = struct {
+                    pub const ShellMvBatchedTask = struct {
+                        task: MainThreadTask = .{},
+                    };
+                    pub const ShellMvCheckTargetTask = struct {
+                        task: MainThreadTask = .{},
+                    };
+                };
+                pub const Rm = struct {
+                    pub const ShellRmTask = struct {
+                        pub const DirTask = MainThreadTask;
+
+                        pub fn runFromMainThread(_: *ShellRmTask) void {}
+                    };
+                };
+            };
+        };
+        pub const interpret = struct {
+            pub const Interpreter = struct {
+                pub const Expansion = struct {
+                    pub const ShellGlobTask = struct {
+                        pub fn runFromMainThread(_: *ShellGlobTask) void {}
+                        pub fn deinit(_: *ShellGlobTask) void {}
+                    };
+                };
+            };
+        };
     };
 };
 pub const bake = runtime.bake;
@@ -1853,6 +2164,9 @@ pub const BoringSSL = struct {
         pub const EVP_MAX_MD_SIZE = 64;
         pub const SSL_CTX = opaque {};
         pub const SSL = opaque {};
+        // `int SSL_shutdown(SSL *ssl)` — shuts down an active TLS/SSL
+        // connection. Declared here for the socket ssl_wrapper shutdown path.
+        pub extern fn SSL_shutdown(*SSL) c_int;
     };
 };
 pub const hmac = @import("sha_hmac/hmac.zig");

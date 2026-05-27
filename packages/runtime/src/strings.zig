@@ -11,6 +11,25 @@ pub const u3_fast = u3;
 pub const unicode_replacement: u21 = 0xFFFD;
 pub const StringOrTinyString = @import("string/immutable.zig").StringOrTinyString;
 
+// Re-exports from the faithful Bun `string/immutable.zig` copy. These keep the
+// `strings.*` namespace surface in sync with upstream Bun for copied runtime
+// callers (resolver, dotenv, S3/Blob lowercasing) without duplicating logic.
+pub const lastIndexOfChar = @import("string/immutable.zig").lastIndexOfChar;
+pub const lastIndexOfCharT = @import("string/immutable.zig").lastIndexOfCharT;
+pub const startsWithChar = @import("string/immutable.zig").startsWithChar;
+pub const eqlLong = @import("string/immutable.zig").eqlLong;
+pub const eqlLongT = @import("string/immutable.zig").eqlLongT;
+pub const utf16EqlString = @import("string/immutable.zig").utf16EqlString;
+pub const firstNonASCII16 = @import("string/immutable.zig").firstNonASCII16;
+pub const indexOfAny16 = @import("string/immutable.zig").indexOfAny16;
+pub const cmpStringsAsc = @import("string/immutable.zig").cmpStringsAsc;
+pub const cmpStringsDesc = @import("string/immutable.zig").cmpStringsDesc;
+pub const cloneNormalizingSeparators = @import("string/immutable.zig").cloneNormalizingSeparators;
+pub const OptionalUsize = @import("string/immutable.zig").OptionalUsize;
+pub const copyLowercase = @import("string/immutable.zig").copyLowercase;
+pub const copyLowercaseIfNeeded = @import("string/immutable.zig").copyLowercaseIfNeeded;
+pub const whitespace_chars = @import("string/immutable.zig").whitespace_chars;
+
 pub const AsciiStatus = enum {
     unknown,
     all_ascii,

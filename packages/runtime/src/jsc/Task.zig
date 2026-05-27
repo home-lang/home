@@ -217,7 +217,7 @@ pub fn tickQueueWithCount(this: *EventLoop, virtual_machine: *VirtualMachine, co
                 shell_glob_task.deinit();
             },
             @field(Task.Tag, @typeName(FetchTasklet)) => {
-                var fetch_task: *Fetch.FetchTasklet = task.get(Fetch.FetchTasklet).?;
+                var fetch_task: *FetchTasklet = task.get(FetchTasklet).?;
                 try fetch_task.onProgressUpdate();
             },
             @field(Task.Tag, @typeName(S3HttpSimpleTask)) => {
@@ -559,8 +559,7 @@ const ProcessWaiterThreadTask = if (Environment.isPosix) bun.spawn.process.Waite
 
 const log = bun.Output.scoped(.Task, .hidden);
 
-const Fetch = @import("../runtime/webcore/fetch.zig");
-const FetchTasklet = Fetch.FetchTasklet;
+const FetchTasklet = bun.webcore.FetchTasklet;
 
 const JSCScheduler = @import("./JSCScheduler.zig");
 const JSCDeferredWorkTask = JSCScheduler.JSCDeferredWorkTask;

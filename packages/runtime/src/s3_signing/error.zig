@@ -41,7 +41,17 @@ pub fn getSignErrorCodeAndMessage(err: anyerror) ErrorCodeAndMessage {
 pub const S3Error = struct {
     code: []const u8,
     message: []const u8,
-    // toJS / toJSWithAsyncStack stripped — pending webcore/s3/error_jsc port.
+    // toJS / toJSWithAsyncStack: real JS error construction lives in the
+    // upstream `webcore/s3/error_jsc.zig`, not yet ported. The bridge returns
+    // `undefined` so the S3 reject path type-checks; it does not yet build the
+    // structured S3 error object with an async stack.
+    pub fn toJSWithAsyncStack(_: *const S3Error, _: anytype, _: []const u8, _: anytype) @import("home_rt").jsc.JSValue {
+        return .js_undefined;
+    }
+
+    pub fn toJS(_: *const S3Error, _: anytype, _: []const u8) @import("home_rt").jsc.JSValue {
+        return .js_undefined;
+    }
 };
 
 test "getSignErrorMessage maps known errors" {

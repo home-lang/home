@@ -25,10 +25,66 @@ pub const EventLoopKind = enum(u8) {
     mini,
 };
 
-/// Opaque placeholder for the JS event loop (`jsc.EventLoop`). Upstream the
-/// real type carries `virtual_machine`, `global`, `signal_handler`, and the
-/// uSockets loop — all of which re-attach with `VirtualMachine` in 12.2.
-pub const EventLoop = opaque {};
+/// Sized placeholder for the JS event loop (`jsc.EventLoop`). It carries the
+/// small field/method surface initialized by the copied `VirtualMachine` while
+/// the real event-loop implementation stays parked.
+pub const EventLoop = struct {
+    pub const Queue = struct {
+        count: usize = 0,
+
+        pub fn init(_: std.mem.Allocator) Queue {
+            return .{};
+        }
+
+        pub fn ensureTotalCapacity(_: *Queue, _: usize) !void {}
+        pub fn ensureUnusedCapacity(_: *Queue, _: usize) !void {}
+    };
+
+    /// Mirrors `jsc.EventLoop.Debug`. Only carries fields in Debug builds; the
+    /// call sites (`JSPromise.resolve`/`reject`) gate access behind
+    /// `comptime Environment.isDebug`, so release builds keep this empty.
+    pub const Debug = if (home_rt.Environment.isDebug) struct {
+        is_inside_tick_queue: bool = false,
+        js_call_count_outside_tick_queue: usize = 0,
+        _prev_is_inside_tick_queue: bool = false,
+        last_fn_name: home_rt.String = home_rt.String.empty,
+        track_last_fn_name: bool = false,
+    } else struct {};
+
+    /// Parked placeholder for `event_loop.DeferredTaskQueue`. The real queue
+    /// tracks auto-flush registrations; the stub keeps `AutoFlusher`'s
+    /// register/unregister asserts honest (fresh post is "not already present",
+    /// unregister of a tracked task "was present") without owning state.
+    pub const DeferredTaskQueue = struct {
+        pub fn postTask(_: *DeferredTaskQueue, _: ?*anyopaque, _: *const anyopaque) bool {
+            return false;
+        }
+
+        pub fn unregisterTask(_: *DeferredTaskQueue, _: ?*anyopaque) bool {
+            return true;
+        }
+    };
+
+    tasks: Queue = .{},
+    immediate_tasks: std.ArrayListUnmanaged(*anyopaque) = .empty,
+    next_immediate_tasks: std.ArrayListUnmanaged(*anyopaque) = .empty,
+    concurrent_tasks: ConcurrentTaskPlaceholder.Queue = .{},
+    deferred_tasks: DeferredTaskQueue = .{},
+    debug: Debug = .{},
+    global: ?*home_rt.jsc.JSGlobalObject = null,
+    virtual_machine: ?*home_rt.jsc.VirtualMachine = null,
+
+    pub fn hasPendingRefs(_: *EventLoop) bool {
+        return false;
+    }
+
+    pub fn enter(_: *EventLoop) void {}
+    pub fn exit(_: *EventLoop) void {}
+    pub fn ensureWaker(_: *EventLoop) void {}
+    pub fn drainMicrotasks(_: *EventLoop) !void {}
+    pub fn enqueueTask(_: *EventLoop, _: anytype) void {}
+    pub fn enqueueTaskConcurrent(_: *EventLoop, _: *ConcurrentTaskPlaceholder) void {}
+};
 
 /// Opaque placeholder for the headless mini event loop (`jsc.MiniEventLoop`).
 /// Used by build / install commands when no JS runtime is around.
@@ -38,6 +94,8 @@ pub const MiniEventLoop = opaque {};
 /// `Task.zig` once it lands; it's a tagged-pointer union, 8 bytes wide.
 pub const ConcurrentTaskPlaceholder = extern struct {
     raw: u64 = 0,
+
+    pub const Queue = struct {};
 };
 
 /// Plain-data placeholder for `jsc.AnyTaskWithExtraContext`.
@@ -78,6 +136,9 @@ pub const EventLoopHandle = union(EventLoopKind) {
     pub fn bunVM(_: EventLoopHandle) ?*home_rt.jsc.VirtualMachine {
         return null;
     }
+
+    pub fn enter(_: EventLoopHandle) void {}
+    pub fn exit(_: EventLoopHandle) void {}
 };
 
 pub const EventLoopTask = union(EventLoopKind) {
@@ -103,9 +164,10 @@ test "EventLoopKind tag values" {
 }
 
 test "EventLoopHandle.cast returns the right pointer" {
-    // We can't materialize an opaque on the stack, but a dangling `*EventLoop`
-    // is enough to prove the union round-trips and `cast()` dispatches.
-    const fake: *EventLoop = @ptrFromInt(0xdead_beef);
+    // A dangling but correctly aligned `*EventLoop` is enough to prove the
+    // union round-trips and `cast()` dispatches. `EventLoop` is now a sized
+    // struct, so the address must satisfy its alignment.
+    const fake: *EventLoop = @ptrFromInt(std.mem.alignBackward(usize, 0xdead_beef, @alignOf(EventLoop)));
     const h: EventLoopHandle = .{ .js = fake };
     try std.testing.expectEqual(fake, h.cast(.js));
 }

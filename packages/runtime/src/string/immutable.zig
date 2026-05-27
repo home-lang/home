@@ -1737,8 +1737,11 @@ pub fn firstNonASCII16(slice: []const u16) ?u32 {
                     const out: u32 = @intCast(offset_of_vector_in_input + index_of_first_nonascii_in_vector);
 
                     if (comptime Environment.isDebug) {
+                        // Zig 0.17 disallows indexing a @Vector with a runtime
+                        // index; materialize to an array for the debug scan.
+                        const vec_array: [ascii_u16_vector_size]u16 = vec;
                         for (0..index_of_first_nonascii_in_vector) |i| {
-                            if (vec[i] > 127) {
+                            if (vec_array[i] > 127) {
                                 bun.Output.panic("firstNonASCII16: found non-ASCII character in ASCII vector before the first non-ASCII character", .{});
                             }
                         }

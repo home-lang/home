@@ -57,6 +57,63 @@ const Dir = Io.Dir;
 const File = Io.File;
 const Allocator = std.mem.Allocator;
 
+fn AsyncTaskStub(comptime _: []const u8) type {
+    return struct {
+        pub fn runFromJSThread(_: *@This()) !void {}
+    };
+}
+
+pub const Async = struct {
+    pub const access = AsyncTaskStub("access");
+    pub const appendFile = AsyncTaskStub("appendFile");
+    pub const chmod = AsyncTaskStub("chmod");
+    pub const chown = AsyncTaskStub("chown");
+    pub const close = AsyncTaskStub("close");
+    pub const copyFile = AsyncTaskStub("copyFile");
+    pub const exists = AsyncTaskStub("exists");
+    pub const fchmod = AsyncTaskStub("fchmod");
+    pub const fchown = AsyncTaskStub("fchown");
+    pub const fdatasync = AsyncTaskStub("fdatasync");
+    pub const fstat = AsyncTaskStub("fstat");
+    pub const fsync = AsyncTaskStub("fsync");
+    pub const ftruncate = AsyncTaskStub("ftruncate");
+    pub const futimes = AsyncTaskStub("futimes");
+    pub const lchmod = AsyncTaskStub("lchmod");
+    pub const lchown = AsyncTaskStub("lchown");
+    pub const link = AsyncTaskStub("link");
+    pub const lstat = AsyncTaskStub("lstat");
+    pub const lutimes = AsyncTaskStub("lutimes");
+    pub const mkdir = AsyncTaskStub("mkdir");
+    pub const mkdtemp = AsyncTaskStub("mkdtemp");
+    pub const open = AsyncTaskStub("open");
+    pub const read = AsyncTaskStub("read");
+    pub const readFile = AsyncTaskStub("readFile");
+    pub const readdir = AsyncTaskStub("readdir");
+    pub const readdir_recursive = AsyncTaskStub("readdir_recursive");
+    pub const readlink = AsyncTaskStub("readlink");
+    pub const readv = AsyncTaskStub("readv");
+    pub const realpath = AsyncTaskStub("realpath");
+    pub const realpathNonNative = AsyncTaskStub("realpathNonNative");
+    pub const rename = AsyncTaskStub("rename");
+    pub const rm = AsyncTaskStub("rm");
+    pub const rmdir = AsyncTaskStub("rmdir");
+    pub const stat = AsyncTaskStub("stat");
+    pub const statfs = AsyncTaskStub("statfs");
+    pub const symlink = AsyncTaskStub("symlink");
+    pub const truncate = AsyncTaskStub("truncate");
+    pub const unlink = AsyncTaskStub("unlink");
+    pub const utimes = AsyncTaskStub("utimes");
+    pub const write = AsyncTaskStub("write");
+    pub const writeFile = AsyncTaskStub("writeFile");
+    pub const writev = AsyncTaskStub("writev");
+};
+
+pub const Watcher = struct {
+    pub const FSWatchTask = struct {
+        pub fn runFromJSThread(_: *FSWatchTask) !void {}
+    };
+};
+
 // ---------------------------------------------------------------- options
 
 pub const ReadFileOptions = struct {

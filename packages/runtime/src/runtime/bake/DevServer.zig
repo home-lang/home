@@ -140,6 +140,8 @@ pub fn getDeinitCountForTesting() usize {
 }
 
 pub const DevServer = struct {
+    pub const HotReloadEvent = @import("DevServer/HotReloadEvent.zig");
+
     pub const HotUpdate = struct {
         source_map_id: SourceMapStore.Key,
         source: []const u8,

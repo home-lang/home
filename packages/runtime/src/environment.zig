@@ -23,6 +23,9 @@ pub const isWasm = switch (builtin.cpu.arch) {
     .wasm32, .wasm64 => true,
     else => false,
 };
+/// True on native targets (i.e. not a WebAssembly build). Gates SIMD
+/// fast-paths in the string scanners that can't run under wasm.
+pub const isNative = !isWasm;
 pub const isBrowser = false;
 // Wave-19 unmined-corner port (2026-05-19). CPU-arch flags pulled in to
 // satisfy `bun/src/perf/hw_timer.zig`'s `Environment.isAarch64` /

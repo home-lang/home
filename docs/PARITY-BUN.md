@@ -25,6 +25,14 @@ workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 > Full audit:
 > [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md).
 
+Source policy: Home's Bun runtime parity tracks the pinned Zig source in
+`/Users/chrisbreuer/Code/bun` even as upstream Bun moves subsystems to
+Rust. Copied Zig stays in the source-presence ledger until it is
+Home-import-rewritten, Zig 0.17-clean, build-wired, and tested. Runtime
+API rows below move only when the behavior is callable through Home's JS
+runtime or a native Home corpus gate; dormant source copies and bootstrap
+harness shims do not count as JS-visible parity.
+
 Legend:
 
 - 🟢 **Fully implemented** — JS-callable today.
@@ -217,14 +225,24 @@ Invalid character: '@'`.
 
 Non-JSC runtime build frontier on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails with **1 compile error** after the runtime
-bridge peel. The remaining front is the parked EventLoop bridge:
-`jsc/VirtualMachine.zig` still embeds the opaque
-`jsc.EventLoopHandle.EventLoop` by value. The previous Zig 0.17
-`std.fs.Dir` drift and router AST-store blockers are now wired far enough
-for the next frontier, alongside the earlier shallow aliases for
-WebCore stream state, API shells, `StringSet`, `StringHashMap`, and
-runtime sys/io helpers.
+--summary failures` fails with **12 compile errors**, down from **38**
+earlier the same day. The parked `EventLoopHandle.EventLoop` is now a
+sized struct (with `debug` / `deferred_tasks` / `drainMicrotasks` and the
+enter/exit/waker surface) so `jsc/VirtualMachine.zig` embeds it by value
+and the VM/webcore body type-checks. Closing that opened a more granular
+layer; this pass closed faithful Bun substrate (`strings` immutable
+re-exports, `bun.clone` / `feature_flag` / `options.defaultLoaders` /
+`unsafeAssert`, `cpp.BunString__toThreadSafe` / `JSC__JSValue__isAnyInt`,
+the `Async.KeepAlive` ref/unref/disable surface, `ManagedTask`/`AnyTask`
+unification) plus three Zig 0.17 stdlib-drift fixes
+(`std.time.milliTimestamp` → `bun.milliTimestamp`, the C-ABI
+`Bun__parseDate` error-union signature, and a runtime-indexed `@Vector`
+in `firstNonASCII16`). The remaining 12 errors are distinct
+subsystem-port clusters — `Output.Source` streaming, JSC value-type
+unification (`Errorable`/`Exception`/`AnyPromise`), `SavedSourceMap`
+storage, `RareData` AWS/IPC caches, codegen Cached accessors, the node
+Buffer type identity, and the BoringSSL TLS surface — itemized in
+[`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md#phase-4---test-runner-and-corpus-ratchet).
 
 ## Pantry (package management)
 

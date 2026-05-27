@@ -54,13 +54,11 @@ pub fn New(comptime Type: type, comptime Callback: anytype) type {
 
 pub const JSError = error{ JSError, OutOfMemory };
 
-pub const Task = struct {
-    ptr: ?*anyopaque,
-
-    pub fn init(ctx: anytype) Task {
-        return .{ .ptr = @ptrCast(ctx) };
-    }
-};
+// Unified with the canonical `jsc.Task` (AnyTask.zig) instead of a second,
+// structurally-identical Task type. This lets ManagedTask-produced tasks
+// satisfy `?jsc.Task` fields (e.g. ipc `after_close_task`) and `enqueueTask`.
+// Re-attaches to the real JSC bridge in Phase 12.2.
+pub const Task = @import("AnyTask.zig").Task;
 
 const builtin = @import("builtin");
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;

@@ -76,7 +76,46 @@ cross the integration gates. Bun is refactoring parts of its runtime from
 Zig to Rust upstream; Home intentionally copies and maintains Bun's Zig
 source rather than treating the Rust rewrite as parity source.
 
+### Faithful Zig Source Policy
+
+The source of truth for copied runtime behavior is the pinned Zig tree in
+`/Users/chrisbreuer/Code/bun`, not Bun's newer Rust refactors. When Bun
+replaces a Zig subsystem with Rust upstream, Home keeps the last pinned
+Zig implementation as maintained Home source until a deliberate Home
+design decision replaces it.
+
+Porting rules for source agents:
+
+- Copy whole upstream Zig subsystems in large chunks before local
+  massage, keeping the original file layout, attribution, and upstream
+  comments unless they are mechanically invalid in Home.
+- Rewrite imports, allocator names, Zig 0.17 stdlib drift, and Home
+  subsystem boundaries as integration work; do not change semantics to
+  make a narrow fixture pass.
+- Record dormant copied files separately from integrated files. A copied
+  file gets no integrated-parity credit until it is Home-import-rewritten,
+  build-wired, and covered by a focused test or corpus gate.
+- Prefer upstream Bun behavior over Home convenience. Pantry is the
+  intentional package-manager divergence; everything else needs an
+  explicit documented compatibility decision before diverging.
+- For tests, port Bun's tests to run logically against Home. Rewriting a
+  test is allowed only to adapt harness plumbing, never to weaken the
+  behavioral assertion.
+
 ## Phase Goals
+
+### Process State
+
+**Last updated:** 2026-05-26. Bun source presence is complete for the
+pinned `/Users/chrisbreuer/Code/bun` Zig checkout, but integrated runtime
+parity remains at the last audited **552 / 1193 (~46.3%)** until a fresh
+integration audit moves it. The executable corpus ratchet is now focused
+on bundler completion after `minimal-js`, `bundler-core-itbundled`, and
+`bundler-transpiler-bootstrap` established green Home-run bootstrap
+slices. The next work is intentionally split across big independent
+agent chunks: parser/decorator semantics, `Bun.Transpiler` and macro
+surface, resolver cache behavior, CLI build behavior, native plugin ABI,
+then Bake/server-heavy corpus.
 
 ### Phase 0 - Measurement And Audit Hygiene
 
@@ -161,6 +200,15 @@ Current corpus scale for the next ratchet:
 
 | Bucket | Count | Notes |
 |---|---:|---|
+| Copied Bun-style test files in read-only corpus audit | 1735 | `*.test.{ts,js,mjs,cjs}` / `*.spec.{ts,js}` under `packages/runtime/test/bun-corpus` |
+| `js/` test files | 998 | Largest remaining general-runtime corpus bucket |
+| `regression/` test files | 384 | Broad bug/regression frontier after API ladders mature |
+| `cli/` test files | 150 | CLI/run/install/test subprocess behavior; Pantry divergence must be documented |
+| `bundler/` test files | 89 | Current active corpus ratchet; includes 85 ordinary bundler files plus 4 CSS WPT files |
+| `napi/` test files | 59 | Native addon / libuv / N-API gate after native plugin bridge |
+| `bake/` test files | 24 | Next server-heavy tranche after bundler |
+| `integration/` test files | 20 | Cross-surface integration frontier |
+| Small corpus buckets | 11 | `internal` 7, plus one each for `config`, `package-json-lint`, `snippets`, and `v8` |
 | Discovered Bun-style test files | 4013 | Full copied-corpus scale for Home's Bun-style test discovery |
 | Minimal-JS subset entries | ~418 | Bootstrap subset currently used for the smallest JS-capable corpus gate |
 | Minimal-JS unique files | 417 | One duplicate entry remains in the subset ledger |
@@ -204,6 +252,14 @@ Second agent-sized chunk: **bundler transpiler bootstrap tranche**.
 It runs thirteen additional bundler/transpiler files and passes:
 **132 passed, 0 failed, 0 todo** on 2026-05-26.
 
+Parser hot-path compatibility update on 2026-05-26: the local Bun-Zig
+adapter now exposes the parser-facing `bun.path.joinAbsStringBuf*` helpers,
+`bun.jsc.RuntimeTranspilerCache`, and `bun.jsc.OpaqueWrap`, and the
+Zig-0.17 filesystem drift in RuntimeTranspilerCache/resolver directory opens
+is bridged locally. The bootstrap subset still passes at **13 files / 132
+tests**. The remaining `home_rt` compile frontier is no longer these parser
+blockers; it is the broader JSC/webcore/event-loop/string substrate surface.
+
 Files in the tranche:
 
 - `bundler/bundler_feature_flag.test.ts`
@@ -230,6 +286,34 @@ Remaining bundler file frontier, classified by tranche:
 | D. CLI build surface | `bundler/cli.test.ts` | `bun build` CLI subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
 | E. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Agent handoff order for the remaining bundler work:
+
+1. **Decorator semantics agent:** copy/integrate the parser and
+   transpiler decorator lowering substrate needed by all three decorator
+   files, then promote the three files together.
+2. **Transpiler/macro agent:** wire `Bun.Transpiler`, macro import
+   resolution, macro execution, and the wider transpiler API enough to
+   promote both files as one slice.
+3. **Resolver-cache agent:** own all three resolver cache tests together,
+   including repeated `Bun.build()` state, file mutation, and Node-vs-Bun
+   comparison plumbing.
+4. **CLI build agent:** own `bundler/cli.test.ts` as a full subprocess
+   matrix, including compile/outfile/sourcemap/tsconfig override/package
+   install paths.
+5. **Native plugin agent:** keep `bundler/native-plugin.test.ts` last and
+   close it only with real native addon build, `.node` load, N-API/plugin
+   symbol registration, `onBeforeParse`, and crash-name evidence.
+
+Native plugin bridge update on 2026-05-26: `packages/home_test` now has
+a Home-owned `.node` bridge slice for this frontier. The adapter runs
+real `node-gyp` builds for `binding.gyp` temp projects, calls a Zig
+`dlopen` metadata callback for `require(.node)`, retains addon handles,
+inspects Bun plugin symbols, and maps the native-plugin fixture into
+`Bun.build().onBeforeParse()` error/count semantics. End-to-end corpus
+file execution still needs the unrelated current `js_printer` compile
+drift cleared so a fresh `home-debug` binary can run
+`bundler/native-plugin.test.ts`.
+
 After the file frontier is green, replace the `__home_expect_bundled`
 stub with a real `itBundled` adapter and wire the needed Bun bundler
 substrates in `packages/bundler/src/` (`options.zig`,
@@ -243,20 +327,40 @@ Verification target:
 ./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-transpiler-bootstrap
 ```
 
-Runtime compile frontier: the current non-JSC runtime gate is red.
-`./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails at compile time with **1 error** on 2026-05-26
-after the runtime bridge peel. The default macOS JSC-enabled command
+Runtime compile frontier: the current non-JSC runtime gate is red but
+sharply narrowed. `./pantry/.bin/zig build test -Dfilter=home_rt
+-Denable_jsc=false --summary failures` now fails at compile time with
+**12 errors** on 2026-05-26, down from **38** earlier the same day after
+the EventLoop bring-up. The parked `EventLoopHandle.EventLoop` opaque is
+now a sized struct (with `debug`, `deferred_tasks`, `drainMicrotasks`,
+plus enter/exit/waker surface), so `VirtualMachine.zig` embeds it by
+value and the bulk of the VM/webcore body now type-checks. That bring-up
+exposed the next, more granular layer; the closed batch this pass was
+mostly faithful Bun substrate (`strings.copyLowercase` /
+`lastIndexOfChar` / `whitespace_chars` / `startsWithChar` / `eqlLong` /
+`utf16EqlString` / `firstNonASCII16` re-exports from the faithful
+`string/immutable.zig` copy, `bun.clone`, `bun.feature_flag`,
+`bun.options.defaultLoaders`, `bun.unsafeAssert`, `cpp.BunString__toThreadSafe`
+/ `JSC__JSValue__isAnyInt`, the `Async.KeepAlive` ref/unref/disable
+surface, and `ManagedTask`/`AnyTask.Task` unification) plus three Zig
+0.17 stdlib-drift fixes (`std.time.milliTimestamp` →
+`bun.milliTimestamp` via `std.c.clock_gettime`, the `Bun__parseDate`
+error-union-on-C-ABI signature, and a runtime-indexed `@Vector` in
+`firstNonASCII16`'s debug scan). The default macOS JSC-enabled command
 still needs a fresh pass after the non-JSC frontier closes.
-Classify the current blocker before source work:
 
-| Bucket | Representative errors |
-|---|---|
-| Parked EventLoop bridge | `jsc/VirtualMachine.zig` embeds the opaque `jsc.EventLoopHandle.EventLoop` by value |
-| Recently closed Zig 0.17 std drift | `bundler/options.zig` now uses the `std.Io.Dir` surface |
-| Recently closed AST/router surface | `home_rt.ast.Expr`/`Stmt` store stubs and reduced router test constructors now keep the non-JSC build moving |
-| Recently closed shallow aliases | `sys.open`/`read`/`recvNonBlock`, `io.Poll`/`Action`/`Request`, `jsc.WorkTask`, WebCore stream state, `StringSet`, `StringHashMap`, `HashedString` |
-| Zig 0.17 stdlib drift | `std.io.fixedBufferStream`, `std.os.getFdPath` |
+The remaining 12 errors are six/seven distinct subsystem-port clusters,
+each needing a dedicated port rather than a shallow alias:
+
+| Cluster | Representative errors | Port needed |
+|---|---|---|
+| `Output.Source` streaming | `output.Source` / `output.errorWriterBuffered` in ConsoleObject/VirtualMachine | Real Bun `output.zig` `Source`/buffered-writer machinery |
+| JSC value-type unification | `Errorable.JSValue` vs `JSValue`, `Exception.value()` returning `*Exception.JSValue`, `AnyPromise.normal` vs `*JSPromise` | Point the parked stub files at the canonical `jsc.JSValue`/`JSPromise` |
+| SavedSourceMap | `jsc.SavedSourceMap` missing `lock`/`unlock`/`last_path_hash`/`last_ism`/`getValueLocked`/`putMappings`/`putValue`/`resolveMapping` | Port `jsc/SavedSourceMap.zig` storage + mutex |
+| RareData S3/IPC | `RareData.awsCache`, `RareData.spawnIPCGroup` | AWS signature cache + `uws.SocketGroup` IPC wiring |
+| Codegen Cached accessors | `DisabledTypedClass(...).ipcCallbackSetCached` | Generate `<field>GetCached`/`SetCached` pairs in `codegen_disabled.zig` |
+| node Buffer identity | `node.buffer.Buffer` has no `buffer` field | `runtime/node/types.zig` should reference the JSC-binding Buffer, not the pure-Zig one |
+| BoringSSL TLS surface | `BoringSSL.c.SSL_get_error`, `BoringSSL.c.SSL.getVerifyError` | Expand the parked `BoringSSL.c` stub for the socket ssl_wrapper path |
 
 Bundler tranche exit criteria:
 
@@ -368,9 +472,9 @@ dependency chain in the PR description before editing.
 
 ## Next Bulk Tranches
 
-1. **Bundler corpus completion.** Promote the remaining roughly 23
-   unallowlisted upstream Bun `bundler/` corpus files as the next large
-   test slice before moving into Bake/server-heavy tests. Keep
+1. **Bundler corpus completion.** Promote the remaining 10-file
+   upstream Bun `bundler/` frontier as the next large test slice before
+   moving into Bake/server-heavy tests. Keep
    `bundler/native-plugin.test.ts` last because upstream treats native
    plugins specially.
 2. **Parallel test-runner process pool.** Integrate the dormant
