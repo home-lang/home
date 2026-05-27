@@ -749,6 +749,34 @@ bootstrap harness ratchets a *test pass-count* against JS shims; true
 JS-visible parity requires the Phase-1 JS-callable bridge so the corpus runs
 against the real `home_rt` runtime, not the harness.
 
+**CRITICAL GUARDRAIL — `home run` STILL DELEGATES TO SYSTEM BUN (verified
+2026-05-27).** `./zig-out/bin/home-debug run file.{js,ts}` executes and prints
+correct output, which can *look* like Home's runtime is capable end-to-end —
+**it is not.** `navigator.userAgent` inside such a script returns
+`Bun/1.3.14`: the run path (`src/main.zig` `runJsLikeFile` →
+`spawnInteractive`) shells out to the pantry `bun` binary
+(`pantry/.bin/bun`, found by absolute path even with `PATH` stripped). This
+is exactly the Phase-2 "delegation scaffolding" slated for removal. **Two
+direct consequences for any subprocess/spawn work:**
+1. **Do NOT implement a "real" corpus `Bun.spawn`/`spawnSync` that execs
+   `home run <script>`.** That would launder *system Bun's* output as Home
+   corpus passes — fake parity, strictly worse than an honest shim, because it
+   hides that Home's runtime never ran the child. The subprocess lever is only
+   real once Home executes the child JS through its *own* runtime (Phase 1
+   JS-callable bridge → Phase 2 loader), which is the deep parked work.
+2. The trailing-arg drop is in the delegation itself: `src/main.zig:3593`
+   calls `runCommand(allocator, args[2])`, dropping `args[3..]`, and
+   `runJsLikeFile(..., &.{})` (lines ~1627) forwards no extra args, so
+   `process.argv.slice(2)` is empty under `home run file.js a b`. This is a
+   real correctness bug in the delegation path, but it is scaffolding slated
+   for removal, so it is low parity value — fix only if the delegation must
+   stay correct in the interim.
+
+Net: the home-run path is not a shortcut to subprocess parity; it is the
+delegation the parity effort must replace. The first genuinely real lever
+remains **Phase 1 — the JSC JS-callable bridge** (`home eval`/`home run`
+through `home_rt`'s JSC path, not pantry `bun`).
+
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
 debug` now bottoms out at a *large parked subsystem set*, NOT more leaf fixes.
