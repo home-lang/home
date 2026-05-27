@@ -52,6 +52,12 @@ pub const LibCache = struct {
     /// `JSON` global — `parse(text, reviver?)` / `stringify(value,
     /// replacer?, space?)`. Built once on first access.
     json_global: TypeId = types.Primitive.none,
+    /// `String` global — `fromCharCode`, `fromCodePoint`, `raw`.
+    string_global: TypeId = types.Primitive.none,
+    /// `Boolean` global — call/construct coercion shape.
+    boolean_global: TypeId = types.Primitive.none,
+    /// `BigInt` global — call coercion + `asIntN` / `asUintN`.
+    bigint_global: TypeId = types.Primitive.none,
     /// Element-type → `Array<T>.prototype` shape mapping. Cached so a
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
@@ -812,6 +818,99 @@ pub fn numberGlobal(
     };
     cache.number_global = try ti.internObjectType(&m);
     return cache.number_global;
+}
+
+/// Build (or fetch from cache) the `String` global — the constructor
+/// side of the primitive carrying `fromCharCode` / `fromCodePoint` /
+/// `raw`. Modeled with loose `any`-typed args because the real
+/// signatures are variadic and overloaded; the goal is to make
+/// `String.fromCharCode(...)` typecheck without spurious TS2339.
+pub fn stringGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
+) !TypeId {
+    if (cache.string_global != types.Primitive.none) return cache.string_global;
+
+    const string_t = types.Primitive.string_t;
+    const number_t = types.Primitive.number_t;
+    const any_t = types.Primitive.any;
+
+    // `String(value): string` / `new String(value): String` modeled
+    // loosely so call/construct sites typecheck. The construct return
+    // intentionally points at the primitive (no `String` wrapper type
+    // distinction in the checker today).
+    const sig_call = try ti.internSignature(&[_]TypeId{any_t}, string_t, false);
+    const sig_construct = try ti.internSignature(&[_]TypeId{any_t}, string_t, true);
+    // `String.fromCharCode(...codes: number[]): string` (variadic).
+    const num_arr = try ti.internArrayType(sint, number_t);
+    const sig_from_char_code = try ti.internSignature(&[_]TypeId{num_arr}, string_t, false);
+    try rest_set.put(gpa, sig_from_char_code, {});
+    // `String.fromCodePoint(...codes: number[]): string` (ES2015).
+    const sig_from_code_point = try ti.internSignature(&[_]TypeId{num_arr}, string_t, false);
+    try rest_set.put(gpa, sig_from_code_point, {});
+    // `String.raw(template, ...substitutions: any[]): string` (ES2015).
+    const any_arr = try ti.internArrayType(sint, any_t);
+    const sig_raw = try ti.internSignature(&[_]TypeId{ any_t, any_arr }, string_t, false);
+    try rest_set.put(gpa, sig_raw, {});
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("__call"), .type = sig_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("__construct"), .type = sig_construct, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fromCharCode"), .type = sig_from_char_code, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("fromCodePoint"), .type = sig_from_code_point, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("raw"), .type = sig_raw, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.string_global = try ti.internObjectType(&m);
+    return cache.string_global;
+}
+
+/// Build (or fetch from cache) the `Boolean` global — call/construct
+/// coercion. Conformance fixtures probe `Boolean(value)` which trips
+/// TS2348 without an explicit `__call` slot.
+pub fn booleanGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.boolean_global != types.Primitive.none) return cache.boolean_global;
+
+    const boolean_t = types.Primitive.boolean_t;
+    const any_t = types.Primitive.any;
+    const sig_call = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
+    const sig_construct = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, true);
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("__call"), .type = sig_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("__construct"), .type = sig_construct, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.boolean_global = try ti.internObjectType(&m);
+    return cache.boolean_global;
+}
+
+/// Build (or fetch from cache) the `BigInt` global — call coercion
+/// plus the `asIntN(bits, value)` / `asUintN(bits, value)` static
+/// helpers. Modeled with loose `any`-typed args since the checker
+/// doesn't yet distinguish a `bigint` literal type.
+pub fn bigintGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.bigint_global != types.Primitive.none) return cache.bigint_global;
+
+    const bigint_t = types.Primitive.bigint_t;
+    const any_t = types.Primitive.any;
+    const sig_call = try ti.internSignature(&[_]TypeId{any_t}, bigint_t, false);
+    const sig_as_n = try ti.internSignature(&[_]TypeId{ any_t, any_t }, bigint_t, false);
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("__call"), .type = sig_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("asIntN"), .type = sig_as_n, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("asUintN"), .type = sig_as_n, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.bigint_global = try ti.internObjectType(&m);
+    return cache.bigint_global;
 }
 
 // =============================================================================
