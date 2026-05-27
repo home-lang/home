@@ -545,14 +545,51 @@ genuine dynamic-import/referrer-url behavior.)
 
 So step 3 is NOT a blind loader swap. It requires the real parser to emit
 **CommonJS** (no top-level import/export) for the corpus loader — i.e. set the
-CJS-lowering options (`rewrite_esm_to_cjs` / a `target=.bun` CJS print path,
-mirroring how Bun lowers ESM→CJS for script eval), and make the bootstrap
-`require`/`__home_import` shims consume the resulting `require("bun:test")` /
-relative requires (the harness already has `require` shims). Then re-measure
-`minimal-js` and keep only if net-positive; iterate the residual divergences
-(dynamic import specifier resolution, referrer url) file-by-file. This is the
-correct, incremental "route the module loader" path — to be done before any
-loader flip.
+CJS-lowering options... **— CORRECTION (2026-05-26, second measured prototype):
+this CJS-flag approach is NOT achievable, proven empirically.** Bun has NO
+transform-mode mechanism that lowers top-level `import` into `require`:
+`src/js_parser/parse/parse_entry.zig:1144` classifies any file with top-level
+`import` statements as `exports_kind = .esm`, the `commonjs_at_runtime` /
+`bun_commonjs` wrap mode only engages for `.cjs`-classified modules, and the
+printer's `.s_import` case (`js_printer.zig:4590`) prints `import` verbatim even
+under `rewrite_esm_to_cjs` (which only rewrites `export`/CJS constructs). Bun
+loads ESM natively through JSC's module loader; it never needs import→require
+lowering for script eval. A `transpileSourceWithBunParserCJS` prove-out
+confirmed `printCommonJS` preserves the top-level `import`, reproducing the
+399→310 regression. So **routing the corpus loader through the real parser
+cannot eliminate top-level imports via any Bun flag.**
+
+Re-scoped reality:
+- The **transpiler corpus** (bundler/transpiler/*, which assert `Bun.Transpiler`
+  output) is already conquered by the real parser via the **API path** (14/16
+  files, hundreds of assertions). To make that the default, FLIP
+  `use_bun_parser_probe = true` — but note this is entangled with the macro
+  cone: probe-on pulls the macro→network→event-loop→bake cone, so the corpus
+  runner must build with `enable_macros=false`. The flip therefore needs the
+  corpus/`home-debug` build to default macros off (build-config decision).
+- The **broad corpus** (js/, regression/, node/ — runtime *behavior* tests) does
+  NOT need the real parser for loading; the existing string-rewrite loader
+  already loads them (399/418). What those tests need is the faithful **runtime**
+  (JSC bridge, webcore, node APIs, event loop) — the large parked Phase-12.2+
+  subsystems. Making the loader "faithful" is a non-goal for those; making the
+  runtime faithful is the real work.
+- Two genuine corpus loader gaps remain where the real parser WOULD help and the
+  string-rewrite can't: (1) `decorators.test.ts` (source has `@` the rewrite
+  can't lower) — fix by extending the string-rewrite to lower decorators, or a
+  targeted real-parser pass for decorator-bearing files; (2) the
+  `transpiler.test.js` minify case (`a as any ? … : c` → `a || c`), an API-path
+  real-parser minify-fidelity detail.
+
+If a true module-faithful loader is ever wanted, it requires either (a) a real
+JSC ESM module loader in the bootstrap (needs the parked `JSC_JSModuleRecord__*`
+C++ glue — currently panic-stubbed), or (b) a Home-specific AST `import →
+__home_import` lowering pass (a divergence, not a Bun flag). Neither is a quick
+flag.
+
+(Also: `home_rt`'s `js_printer.printCommonJS` is currently dead code that does
+not compile under Zig 0.17 — `js_printer.zig:6380` stale `std.heap.stackFallback`
+and `:5225` `runtime_imports.__export.?.ref` (should be `.?`); fix only if
+`printCommonJS` is ever wired up.)
 
 **CONE BOUNDARY FINDING (2026-05-26, after ~40 leaf fixes landed in `79d82ecc`):**
 the resolver/install/http leaf cascade is done, but the probe-ON `zig build
