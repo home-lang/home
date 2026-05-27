@@ -417,7 +417,9 @@ pub fn asPropertyStringMap(expr: *const Expr, name: string, allocator: std.mem.A
 
     if (count == 0) return null;
     var map = bun.StringArrayHashMap(string).init(allocator);
-    map.ensureUnusedCapacity(count) catch return null;
+    // Zig 0.17 ArrayHashMap.ensureUnusedCapacity takes u32 (upstream Bun's
+    // pinned Zig accepted usize); narrow the additional-capacity hint.
+    map.ensureUnusedCapacity(@intCast(count)) catch return null;
 
     for (obj.properties.slice()) |prop| {
         const key = prop.key.?.asString(allocator) orelse continue;

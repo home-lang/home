@@ -1887,6 +1887,11 @@ pub const http = struct {
     pub const HeaderBuilder = @import("http/HeaderBuilder.zig");
     pub const HTTPClientResult = @import("http/http.zig").HTTPClientResult;
     pub const FetchRedirect = @import("http_types/FetchRedirect.zig").FetchRedirect;
+    // Upstream `bun.http` is `src/http/http.zig`, which re-exports the
+    // request `Method` enum and the client `HTTPVerboseLevel`. Copied files
+    // (AsyncHTTP) reach them through `bun.http.Method` / `.HTTPVerboseLevel`.
+    pub const Method = @import("http/http.zig").Method;
+    pub const HTTPVerboseLevel = @import("http/http.zig").HTTPVerboseLevel;
     // Sixth-wave port batch (2026-05-18):
     pub const h3_client = struct {
         pub const AltSvc = @import("http/h3_client/AltSvc.zig");
