@@ -4264,7 +4264,8 @@ pub const Resolver = struct {
                             // deeper config doesn't leak. Each value is a []string slice
                             // that was separately heap-allocated in TSConfigJSON.parse()
                             // (tsconfig_json.zig), so free those before the map itself.
-                            for (merged_config.paths.values()) |v| bun.default_allocator.free(v);
+                            var paths_value_it = merged_config.paths.valueIterator();
+                            while (paths_value_it.next()) |v| bun.default_allocator.free(v.*);
                             merged_config.paths.deinit();
                             merged_config.paths = parent_config.paths;
                             merged_config.base_url_for_paths = parent_config.base_url_for_paths;

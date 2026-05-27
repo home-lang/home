@@ -3,7 +3,7 @@ const Options = @This();
 log_level: LogLevel = .default,
 global: bool = false,
 
-global_bin_dir: std.fs.Dir = bun.FD.invalid.stdDir(),
+global_bin_dir: std.Io.Dir = bun.FD.invalid.stdDir(),
 explicit_global_directory: string = "",
 /// destination directory to link bins into
 // must be a variable due to global installs and bunx
@@ -154,7 +154,7 @@ pub const Update = struct {
     peer: bool = false,
 };
 
-pub fn openGlobalDir(explicit_global_dir: string) !std.fs.Dir {
+pub fn openGlobalDir(explicit_global_dir: string) !std.Io.Dir {
     if (bun.env_var.BUN_INSTALL_GLOBAL_DIR.get()) |home_dir| {
         return try std.fs.cwd().makeOpenPath(home_dir, .{});
     }
@@ -180,7 +180,7 @@ pub fn openGlobalDir(explicit_global_dir: string) !std.fs.Dir {
     return error.@"No global directory found";
 }
 
-pub fn openGlobalBinDir(opts_: ?*const Api.BunInstall) !std.fs.Dir {
+pub fn openGlobalBinDir(opts_: ?*const Api.BunInstall) !std.Io.Dir {
     if (bun.env_var.BUN_INSTALL_BIN.get()) |home_dir| {
         return try std.fs.cwd().makeOpenPath(home_dir, .{});
     }

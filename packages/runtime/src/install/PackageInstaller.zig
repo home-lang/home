@@ -9,7 +9,7 @@ pub const PackageInstaller = struct {
     skip_verify_installed_version_number: bool,
     skip_delete: bool,
     force_install: bool,
-    root_node_modules_folder: std.fs.Dir,
+    root_node_modules_folder: std.Io.Dir,
     summary: *PackageInstall.Summary,
     options: *const PackageManager.Options,
     metas: []const Lockfile.Package.Meta,
@@ -55,13 +55,13 @@ pub const PackageInstaller = struct {
         }
 
         // Since the stack size of these functions are rather large, let's not let them be inlined.
-        noinline fn directoryExistsAtWithoutOpeningDirectories(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8) bool {
+        noinline fn directoryExistsAtWithoutOpeningDirectories(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8) bool {
             var path_buf: bun.PathBuffer = undefined;
             const parts: [2][]const u8 = .{ this.path.items, file_path };
             return bun.sys.directoryExistsAt(.fromStdDir(root_node_modules_dir), bun.path.joinZBuf(&path_buf, &parts, .auto)).unwrapOr(false);
         }
 
-        pub fn directoryExistsAt(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8) bool {
+        pub fn directoryExistsAt(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8) bool {
             if (file_path.len + this.path.items.len * 2 < bun.MAX_PATH_BYTES) {
                 return this.directoryExistsAtWithoutOpeningDirectories(root_node_modules_dir, file_path);
             }
@@ -72,25 +72,25 @@ pub const PackageInstaller = struct {
         }
 
         // Since the stack size of these functions are rather large, let's not let them be inlined.
-        noinline fn openFileWithoutOpeningDirectories(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8) bun.sys.Maybe(bun.sys.File) {
+        noinline fn openFileWithoutOpeningDirectories(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8) bun.sys.Maybe(bun.sys.File) {
             var path_buf: bun.PathBuffer = undefined;
             const parts: [2][]const u8 = .{ this.path.items, file_path };
             return bun.sys.File.openat(.fromStdDir(root_node_modules_dir), bun.path.joinZBuf(&path_buf, &parts, .auto), bun.O.RDONLY, 0);
         }
 
-        pub fn readFile(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8, allocator: std.mem.Allocator) !bun.sys.File.ReadToEndResult {
+        pub fn readFile(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8, allocator: std.mem.Allocator) !bun.sys.File.ReadToEndResult {
             const file = try this.openFile(root_node_modules_dir, file_path);
             defer file.close();
             return file.readToEnd(allocator);
         }
 
-        pub fn readSmallFile(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8, allocator: std.mem.Allocator) !bun.sys.File.ReadToEndResult {
+        pub fn readSmallFile(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8, allocator: std.mem.Allocator) !bun.sys.File.ReadToEndResult {
             const file = try this.openFile(root_node_modules_dir, file_path);
             defer file.close();
             return file.readToEndSmall(allocator);
         }
 
-        pub fn openFile(this: *const NodeModulesFolder, root_node_modules_dir: std.fs.Dir, file_path: [:0]const u8) !bun.sys.File {
+        pub fn openFile(this: *const NodeModulesFolder, root_node_modules_dir: std.Io.Dir, file_path: [:0]const u8) !bun.sys.File {
             if (this.path.items.len + file_path.len * 2 < bun.MAX_PATH_BYTES) {
                 // If we do not run the risk of ENAMETOOLONG, then let's just avoid opening the extra directories altogether.
                 switch (this.openFileWithoutOpeningDirectories(root_node_modules_dir, file_path)) {
@@ -113,7 +113,7 @@ pub const PackageInstaller = struct {
             return try bun.sys.File.openat(dir, file_path, bun.O.RDONLY, 0).unwrap();
         }
 
-        pub fn openDir(this: *const NodeModulesFolder, root: std.fs.Dir) !std.fs.Dir {
+        pub fn openDir(this: *const NodeModulesFolder, root: std.Io.Dir) !std.Io.Dir {
             if (comptime Environment.isPosix) {
                 return (try bun.sys.openat(.fromStdDir(root), &try std.posix.toPosixPath(this.path.items), bun.O.DIRECTORY, 0).unwrap()).stdDir();
             }
@@ -124,7 +124,7 @@ pub const PackageInstaller = struct {
             }).unwrap()).stdDir();
         }
 
-        pub fn makeAndOpenDir(this: *NodeModulesFolder, root: std.fs.Dir) !std.fs.Dir {
+        pub fn makeAndOpenDir(this: *NodeModulesFolder, root: std.Io.Dir) !std.Io.Dir {
             const out = brk: {
                 if (comptime Environment.isPosix) {
                     break :brk try root.makeOpenPath(this.path.items, .{ .iterate = true, .access_sub_paths = true });
@@ -165,14 +165,14 @@ pub const PackageInstaller = struct {
     };
 
     pub const LazyPackageDestinationDir = union(enum) {
-        dir: std.fs.Dir,
+        dir: std.Io.Dir,
         node_modules_path: struct {
             node_modules: *NodeModulesFolder,
-            root_node_modules_dir: std.fs.Dir,
+            root_node_modules_dir: std.Io.Dir,
         },
         closed: void,
 
-        pub fn getDir(this: *LazyPackageDestinationDir) !std.fs.Dir {
+        pub fn getDir(this: *LazyPackageDestinationDir) !std.Io.Dir {
             return switch (this.*) {
                 .dir => |dir| dir,
                 .node_modules_path => |lazy| brk: {

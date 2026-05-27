@@ -497,12 +497,12 @@ pub const Repository = extern struct {
         allocator: std.mem.Allocator,
         env: DotEnv.Map,
         log: *logger.Log,
-        cache_dir: std.fs.Dir,
+        cache_dir: std.Io.Dir,
         task_id: Install.Task.Id,
         name: string,
         url: string,
         attempt: u8,
-    ) !std.fs.Dir {
+    ) !std.Io.Dir {
         bun.analytics.Features.git_dependencies += 1;
         const folder_name = try std.fmt.bufPrintZ(&tl_bufs.get().folder_name_buf, "{f}.git", .{
             bun.fmt.hexIntLower(task_id.get()),
@@ -561,7 +561,7 @@ pub const Repository = extern struct {
         allocator: std.mem.Allocator,
         env: *DotEnv.Loader,
         log: *logger.Log,
-        repo_dir: std.fs.Dir,
+        repo_dir: std.Io.Dir,
         name: string,
         committish: string,
         task_id: Install.Task.Id,
@@ -595,8 +595,8 @@ pub const Repository = extern struct {
         allocator: std.mem.Allocator,
         env: DotEnv.Map,
         log: *logger.Log,
-        cache_dir: std.fs.Dir,
-        repo_dir: std.fs.Dir,
+        cache_dir: std.Io.Dir,
+        repo_dir: std.Io.Dir,
         name: string,
         url: string,
         resolved: string,

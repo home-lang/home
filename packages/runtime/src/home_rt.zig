@@ -28,6 +28,10 @@ pub const bun_cli_spawn_process_fs_file = @import("bun/cli_spawn_process_fs_file
 // upstream semantics — see file-level docs for divergences.
 pub const strings = @import("strings.zig");
 pub const Output = @import("output.zig");
+// Bun's `bun.Progress` is a snapshot of the pre-0.13 `std.Progress` API used
+// by `bun install`'s progress bar. The install / PackageManager cone consumes
+// it as `Progress{}` + `Progress.Node`; migrated to Zig 0.17 `std.Io.File`.
+pub const Progress = @import("bun_core/Progress.zig");
 pub const Global = @import("global.zig");
 pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
@@ -2024,6 +2028,52 @@ pub const install = struct {
     pub const PackageManager = @import("install/PackageManager.zig");
     pub const Task = @import("install/PackageManagerTask.zig");
     pub const PackageInstall = @import("install/PackageInstall.zig").PackageInstall;
+
+    // ---- Aggregated install/ leaves needed by the PackageManager cone ----
+    // Re-exports mirroring `install/install.zig`'s aggregator. The PM cone is
+    // dead-code-eliminated while the Bun-parser probe is off; these decls are
+    // lazy, so the unported tails behind them are only analysed when reached.
+    pub const aggregator = @import("install/install.zig");
+    pub const bun_hash_tag = aggregator.bun_hash_tag;
+    pub const BuntagHashBuf = aggregator.BuntagHashBuf;
+    pub const buntaghashbuf_make = aggregator.buntaghashbuf_make;
+    pub const alignment_bytes_to_repeat_buffer = aggregator.alignment_bytes_to_repeat_buffer;
+    pub const initializeStore = aggregator.initializeStore;
+    pub const Aligner = aggregator.Aligner;
+    pub const Features = aggregator.Features;
+    pub const PreinstallState = aggregator.PreinstallState;
+    pub const ExtractData = aggregator.ExtractData;
+    pub const DependencyInstallContext = aggregator.DependencyInstallContext;
+    pub const TaskCallbackContext = aggregator.TaskCallbackContext;
+    pub const PackageManifestError = aggregator.PackageManifestError;
+
+    pub const ExtractTarball = @import("install/extract_tarball.zig");
+    pub const NetworkTask = @import("install/NetworkTask.zig");
+    pub const TarballStream = @import("install/TarballStream.zig");
+    pub const Npm = @import("install/npm.zig");
+    pub const PackageManifestMap = @import("install/PackageManifestMap.zig");
+    pub const TextLockfile = @import("install/lockfile/bun.lock.zig");
+    pub const Bin = @import("install/bin.zig").Bin;
+    pub const FolderResolution = @import("install/resolvers/folder_resolver.zig").FolderResolution;
+    pub const Repository = @import("install/repository.zig").Repository;
+    pub const Resolution = @import("install/resolution.zig").Resolution;
+    pub const Store = @import("install/isolated_install/Store.zig").Store;
+    pub const FileCopier = @import("install/isolated_install/FileCopier.zig").FileCopier;
+    pub const PnpmMatcher = @import("install/PnpmMatcher.zig");
+    pub const PostinstallOptimizer = @import("install/postinstall_optimizer.zig").PostinstallOptimizer;
+
+    pub const ArrayIdentityContext = @import("collections/identity_context.zig").ArrayIdentityContext;
+    pub const IdentityContext = @import("collections/identity_context.zig").IdentityContext;
+
+    pub const Integrity = @import("install/integrity.zig").Integrity;
+    pub const Dependency = @import("install/dependency.zig");
+    pub const Behavior = @import("install/dependency.zig").Behavior;
+
+    pub const Lockfile = @import("install/lockfile.zig");
+    pub const PatchedDep = Lockfile.PatchedDep;
+
+    pub const patch = @import("install/patch_install.zig");
+    pub const PatchTask = patch.PatchTask;
     pub const LifecycleScriptSubprocess = struct {
         pub fn onProcessExit(this: *LifecycleScriptSubprocess, process: anytype, status: anytype, rusage: anytype) void {
             _ = this;

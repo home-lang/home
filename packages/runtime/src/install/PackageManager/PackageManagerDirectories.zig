@@ -1,4 +1,4 @@
-pub inline fn getCacheDirectory(this: *PackageManager) std.fs.Dir {
+pub inline fn getCacheDirectory(this: *PackageManager) std.Io.Dir {
     return this.cache_directory_ orelse brk: {
         this.cache_directory_ = ensureCacheDirectory(this);
         break :brk this.cache_directory_.?;
@@ -15,7 +15,7 @@ pub inline fn getTemporaryDirectory(this: *PackageManager) TemporaryDirectory {
 }
 
 const TemporaryDirectory = struct {
-    handle: std.fs.Dir,
+    handle: std.Io.Dir,
     path: [:0]const u8,
     name: []const u8,
 };
@@ -33,7 +33,7 @@ var getTemporaryDirectoryOnce = bun.once(struct {
         const temp_dir_name = Fs.FileSystem.RealFS.getDefaultTempDir();
 
         var tried_dot_tmp = false;
-        var tempdir: std.fs.Dir = bun.MakePath.makeOpenPath(std.fs.cwd(), temp_dir_name, .{}) catch brk: {
+        var tempdir: std.Io.Dir = bun.MakePath.makeOpenPath(std.fs.cwd(), temp_dir_name, .{}) catch brk: {
             tried_dot_tmp = true;
             break :brk bun.MakePath.makeOpenPath(cache_directory, bun.pathLiteral(".tmp"), .{}) catch |err| {
                 Output.prettyErrorln("<r><red>error<r>: bun is unable to access tempdir: {s}", .{@errorName(err)});
@@ -118,7 +118,7 @@ var getTemporaryDirectoryOnce = bun.once(struct {
     }
 }.run);
 
-noinline fn ensureCacheDirectory(this: *PackageManager) std.fs.Dir {
+noinline fn ensureCacheDirectory(this: *PackageManager) std.Io.Dir {
     loop: while (true) {
         if (this.options.enable.cache) {
             const cache_dir = fetchCacheDirectoryPath(this.env, &this.options);
@@ -373,7 +373,7 @@ pub fn setupGlobalDir(manager: *PackageManager, ctx: Command.Context) !void {
     manager.options.bin_path = path.ptr[0..path.len :0];
 }
 
-pub fn globalLinkDir(this: *PackageManager) std.fs.Dir {
+pub fn globalLinkDir(this: *PackageManager) std.Io.Dir {
     return this.global_link_dir orelse brk: {
         var global_dir = Options.openGlobalDir(this.options.explicit_global_directory) catch |err| switch (err) {
             error.@"No global directory found" => {
@@ -405,7 +405,7 @@ pub fn globalLinkDirPath(this: *PackageManager) []const u8 {
     return this.global_link_dir_path;
 }
 
-pub fn globalLinkDirAndPath(this: *PackageManager) struct { std.fs.Dir, []const u8 } {
+pub fn globalLinkDirAndPath(this: *PackageManager) struct { std.Io.Dir, []const u8 } {
     const dir = this.globalLinkDir();
     return .{ dir, this.global_link_dir_path };
 }
@@ -472,7 +472,7 @@ pub fn computeCacheDirAndSubpath(
     resolution: *const Resolution,
     folder_path_buf: *bun.PathBuffer,
     patch_hash: ?u64,
-) struct { cache_dir: std.fs.Dir, cache_dir_subpath: stringZ } {
+) struct { cache_dir: std.Io.Dir, cache_dir_subpath: stringZ } {
     const name = pkg_name;
     const buf = manager.lockfile.buffers.string_bytes.items;
     var cache_dir = std.fs.cwd();
@@ -563,7 +563,7 @@ pub fn computeCacheDirAndSubpath(
     };
 }
 
-pub fn attemptToCreatePackageJSONAndOpen() !std.fs.File {
+pub fn attemptToCreatePackageJSONAndOpen() !std.Io.File {
     const package_json_file = std.fs.cwd().createFileZ("package.json", .{ .read = true }) catch |err| {
         Output.prettyErrorln("<r><red>error:<r> {s} create package.json", .{@errorName(err)});
         Global.crash();

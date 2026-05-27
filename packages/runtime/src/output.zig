@@ -93,7 +93,7 @@ pub fn flush() void {
     // writer. `std.debug.print` is already line-buffered to stderr, so
     // flush is a no-op until Home routes through its own buffered
     // writer in a later sub-phase.
-    if (error_file_writer) |*writer| writer.interface.flush() catch {};
+    if (error_file_writer) |*w| w.interface.flush() catch {};
 }
 
 pub fn resetTerminal() void {}
@@ -125,6 +125,129 @@ pub fn scoped(comptime _: anytype, comptime _: Visibility) fn (comptime []const 
 pub fn panic(comptime fmt: []const u8, args: anytype) noreturn {
     std.debug.panic(fmt, args);
 }
+
+// ---------------------------------------------------------------------------
+// Error / warning shortcuts — narrowed ports of Bun's `Output.err`,
+// `Output.errGeneric`, `Output.warn`, `Output.note`, `Output.pretty`,
+// `Output.prettyError`, and `Output.command`. Home strips Bun's `<color>`
+// markup at copy time, so these render the message as plain text. The install
+// / package-manager cone (PackageManager.zig, lifecycle_script_runner.zig,
+// migration.zig, …) relies on this surface.
+// ---------------------------------------------------------------------------
+
+/// Faithful narrowing of Bun's `Output.err`. The upstream Zig switched on
+/// `@typeInfo(error_name)` to render an error-set value, an enum literal /
+/// `@tagName`, or a string tag; we keep that contract and prefix the rendered
+/// `fmt`/`args` body with `<name>:`.
+pub inline fn err(error_name: anytype, comptime fmt: []const u8, args: anytype) void {
+    const T = @TypeOf(error_name);
+    const info = @typeInfo(T);
+    const display_name: []const u8 = name: {
+        if (info == .error_set) break :name @errorName(error_name);
+        if (info == .enum_literal) break :name @tagName(error_name);
+        // Zig string literals are `*const [n:0]u8`; treat pointer-to-array-of-u8
+        // (and many-item/slice u8 pointers) as a dynamic error name/tag.
+        if (info == .pointer) {
+            const ptr = info.pointer;
+            if (ptr.child == u8) break :name error_name;
+            if (ptr.size == .one) {
+                const child = @typeInfo(ptr.child);
+                if (child == .array and child.array.child == u8) break :name error_name;
+            }
+        }
+        if (@hasDecl(T, "name")) break :name error_name.name();
+        break :name "error";
+    };
+    prettyErrorln("{s}: " ++ fmt, .{display_name} ++ args);
+}
+
+/// `Output.errGeneric` — `error:` prefix to stderr with the rendered template.
+pub fn errGeneric(comptime fmt: []const u8, args: anytype) void {
+    prettyErrorln("error: " ++ fmt, args);
+}
+
+pub fn warn(comptime fmt: []const u8, args: anytype) void {
+    prettyErrorln("warn: " ++ fmt, args);
+}
+
+pub fn note(comptime fmt: []const u8, args: anytype) void {
+    prettyErrorln("note: " ++ fmt, args);
+}
+
+pub fn pretty(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt, args);
+}
+
+pub fn prettyError(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt, args);
+}
+
+/// `Output.command` — echoes a command line before running it. Bun renders
+/// `<r><d>$<r> <cyan>{s}<r>`; Home emits the plain command text.
+pub fn command(cmd: []const u8) void {
+    std.debug.print("$ {s}\n", .{cmd});
+}
+
+pub fn debug(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt ++ "\n", args);
+}
+
+/// `Output.printStartEndStdout` — prints the elapsed `[Nms]` between two
+/// `std.time.nanoTimestamp()` samples. Narrowed port; renders to stdout.
+pub fn printStartEndStdout(start: i128, end: i128) void {
+    const elapsed_ms: f64 = @as(f64, @floatFromInt(end - start)) / std.time.ns_per_ms;
+    std.debug.print("[{d:.2}ms]", .{elapsed_ms});
+}
+
+pub fn enableBuffering() void {}
+pub fn disableBuffering() void {
+    flush();
+}
+
+pub fn writer() *std.Io.Writer {
+    return errorWriter();
+}
+
+pub fn writerBuffered() *std.Io.Writer {
+    return errorWriter();
+}
+
+pub fn isStdinTTY() bool {
+    return false;
+}
+
+pub var is_verbose: bool = false;
+
+pub fn isVerbose() bool {
+    return is_verbose;
+}
+
+/// `Output.stderr_descriptor_type` — Bun reports the stderr stream kind
+/// (file / terminal / pipe). Home returns `.pipe` until the TTY probe lands.
+pub const OutputStreamDescriptor = enum { file, terminal, pipe };
+pub var stderr_descriptor_type: OutputStreamDescriptor = .pipe;
+
+/// Narrowed `Output.DebugTimer` — measures elapsed time for `BUN_DEBUG`
+/// scoped logging. Faithful to Bun's `(comptime fmt)`-friendly formatter.
+pub const DebugTimer = struct {
+    timer: std.time.Timer,
+
+    pub fn start() DebugTimer {
+        return .{ .timer = std.time.Timer.start() catch unreachable };
+    }
+
+    pub fn format(self: DebugTimer, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try w.print("{d}ns", .{self.timer.read()});
+    }
+};
+
+/// Minimal stand-in for `Output.Source`. The full buffered-stream machinery
+/// is not ported yet; the install cone only calls `Source.configureThread()`,
+/// which is a no-op until Home routes through its own buffered writer.
+pub const Source = struct {
+    pub fn configureThread() void {}
+};
+
 
 test "prettyln formats without crashing" {
     prettyln("hello {s}", .{"world"});

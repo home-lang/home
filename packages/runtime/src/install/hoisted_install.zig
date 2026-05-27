@@ -54,7 +54,7 @@ pub fn installHoistedPackages(
     const node_modules_folder = brk: {
         // Attempt to open the existing node_modules folder
         switch (bun.sys.openatOSPath(cwd, bun.OSPathLiteral("node_modules"), bun.O.DIRECTORY | bun.O.RDONLY, 0o755)) {
-            .result => |fd| break :brk std.fs.Dir{ .fd = fd.cast() },
+            .result => |fd| break :brk std.Io.Dir{ .fd = fd.cast() },
             .err => {},
         }
 

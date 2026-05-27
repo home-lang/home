@@ -453,12 +453,12 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
             // This is where we clean dangling symlinks
             // This could be slow if there are a lot of symlinks
             if (bun.openDir(cwd, manager.options.bin_path)) |node_modules_bin_handle| {
-                var node_modules_bin: std.fs.Dir = node_modules_bin_handle;
+                var node_modules_bin: std.Io.Dir = node_modules_bin_handle;
                 defer node_modules_bin.close();
-                var iter: std.fs.Dir.Iterator = node_modules_bin.iterate();
+                var iter: std.Io.Dir.Iterator = node_modules_bin.iterate();
                 iterator: while (iter.next() catch null) |entry| {
                     switch (entry.kind) {
-                        std.fs.Dir.Entry.Kind.sym_link => {
+                        std.Io.Dir.Entry.Kind.sym_link => {
 
                             // any symlinks which we are unable to open are assumed to be dangling
                             // note that using access won't work here, because access doesn't resolve symlinks

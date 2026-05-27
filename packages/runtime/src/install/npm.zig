@@ -1004,8 +1004,8 @@ pub const PackageManifest = struct {
             this: *const PackageManifest,
             scope: *const Registry.Scope,
             tmp_path: [:0]const u8,
-            tmpdir: std.fs.Dir,
-            cache_dir_std: std.fs.Dir,
+            tmpdir: std.Io.Dir,
+            cache_dir_std: std.Io.Dir,
             outpath: [:0]const u8,
         ) !void {
             const cache_dir: bun.FD = .fromStdDir(cache_dir_std);
@@ -1157,12 +1157,12 @@ pub const PackageManifest = struct {
         /// Therefore, we choose to not increment the pending task count or wake up the main thread.
         ///
         /// This might leave temporary files in the temporary directory that will never be moved to the cache directory. We'll see if anyone asks about that.
-        pub fn saveAsync(this: *const PackageManifest, scope: *const Registry.Scope, tmpdir: std.fs.Dir, cache_dir: std.fs.Dir) void {
+        pub fn saveAsync(this: *const PackageManifest, scope: *const Registry.Scope, tmpdir: std.Io.Dir, cache_dir: std.Io.Dir) void {
             const SaveTask = struct {
                 manifest: PackageManifest,
                 scope: *const Registry.Scope,
-                tmpdir: std.fs.Dir,
-                cache_dir: std.fs.Dir,
+                tmpdir: std.Io.Dir,
+                cache_dir: std.Io.Dir,
 
                 task: bun.ThreadPool.Task = .{ .callback = &run },
                 pub const new = bun.TrivialNew(@This());
@@ -1202,7 +1202,7 @@ pub const PackageManifest = struct {
                 try std.fmt.bufPrintZ(buf, "{f}-{f}.npm", .{ file_id_hex_fmt, bun.fmt.hexIntLower(scope.url_hash) });
         }
 
-        pub fn save(this: *const PackageManifest, scope: *const Registry.Scope, tmpdir: std.fs.Dir, cache_dir: std.fs.Dir) !void {
+        pub fn save(this: *const PackageManifest, scope: *const Registry.Scope, tmpdir: std.Io.Dir, cache_dir: std.Io.Dir) !void {
             const file_id = bun.Wyhash11.hash(0, this.name());
             var dest_path_buf: [512 + 64]u8 = undefined;
             var out_path_buf: [("18446744073709551615".len * 2) + "_".len + ".npm".len + 1]u8 = undefined;
@@ -1218,7 +1218,7 @@ pub const PackageManifest = struct {
             try writeFile(this, scope, tmp_path, tmpdir, cache_dir, out_path);
         }
 
-        pub fn loadByFileID(allocator: std.mem.Allocator, scope: *const Registry.Scope, cache_dir: std.fs.Dir, file_id: u64) !?PackageManifest {
+        pub fn loadByFileID(allocator: std.mem.Allocator, scope: *const Registry.Scope, cache_dir: std.Io.Dir, file_id: u64) !?PackageManifest {
             var file_path_buf: [512 + 64]u8 = undefined;
             const file_name = try manifestFileName(&file_path_buf, file_id, scope);
             const cache_file = File.openat(.fromStdDir(cache_dir), file_name, bun.O.RDONLY, 0).unwrap() catch return null;

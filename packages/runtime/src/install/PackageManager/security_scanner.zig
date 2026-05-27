@@ -285,7 +285,7 @@ pub fn promptForWarnings() bool {
     Output.pretty("\n<yellow>Security warnings found.<r> Continue anyway? [y/N] ", .{});
     Output.flush();
 
-    var stdin = std.fs.File.stdin();
+    var stdin = std.Io.File.stdin();
     var reader_buffer: [1024]u8 = undefined;
     var buffered = stdin.readerStreaming(&reader_buffer);
     const reader = &buffered.interface;

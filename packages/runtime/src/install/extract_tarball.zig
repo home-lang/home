@@ -2,8 +2,8 @@ const ExtractTarball = @This();
 
 name: strings.StringOrTinyString,
 resolution: Resolution,
-cache_dir: std.fs.Dir,
-temp_dir: std.fs.Dir,
+cache_dir: std.Io.Dir,
+temp_dir: std.Io.Dir,
 dependency_id: DependencyID,
 skip_verify: bool = false,
 integrity: Integrity = .{},
