@@ -79,8 +79,26 @@ pub const ParseError = error{
     MissingValue,
 };
 
+/// Diagnostic context captured when `parseArgs` aborts. Lets the binary
+/// layer render the exact tsc message for the failure (e.g. TS6044 with
+/// the canonical option name) rather than a generic `error.MissingValue`
+/// string. `missing_value_option` names the flag whose argument was
+/// omitted (canonical tsc name, no leading dashes); it is only
+/// meaningful when `parseArgs` returns `error.MissingValue`.
+pub const ParseContext = struct {
+    missing_value_option: []const u8 = "",
+};
+
 /// Parse argv (excluding the program name) into a typed Options.
 pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Options {
+    var ctx: ParseContext = .{};
+    return parseArgsCtx(gpa, args, &ctx);
+}
+
+/// Like `parseArgs` but records failure context into `ctx`. On
+/// `error.MissingValue` the offending option's canonical name is left
+/// in `ctx.missing_value_option` so the caller can emit TS6044.
+pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *ParseContext) ParseError!Options {
     var opts: Options = .{};
     var files: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer files.deinit(gpa);
@@ -114,13 +132,19 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.strict = true;
         } else if (std.mem.eql(u8, a, "--project") or std.mem.eql(u8, a, "-p")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
+            if (i >= args.len) {
+                ctx.missing_value_option = "project";
+                return error.MissingValue;
+            }
             opts.project = args[i];
         } else if (parseEqFlag(a, "--project=")) |v| {
             opts.project = v;
         } else if (std.mem.eql(u8, a, "--target")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
+            if (i >= args.len) {
+                ctx.missing_value_option = "target";
+                return error.MissingValue;
+            }
             opts.target = args[i];
         } else if (parseEqFlag(a, "--target=")) |v| {
             opts.target = v;
@@ -128,19 +152,28 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.out_dir = v;
         } else if (std.mem.eql(u8, a, "--outDir")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
+            if (i >= args.len) {
+                ctx.missing_value_option = "outDir";
+                return error.MissingValue;
+            }
             opts.out_dir = args[i];
         } else if (parseEqFlag(a, "--module=")) |v| {
             opts.module = v;
         } else if (std.mem.eql(u8, a, "--module")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
+            if (i >= args.len) {
+                ctx.missing_value_option = "module";
+                return error.MissingValue;
+            }
             opts.module = args[i];
         } else if (parseEqFlag(a, "--jsx=")) |v| {
             opts.jsx = v;
         } else if (std.mem.eql(u8, a, "--jsx")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
+            if (i >= args.len) {
+                ctx.missing_value_option = "jsx";
+                return error.MissingValue;
+            }
             opts.jsx = args[i];
         } else if (std.mem.eql(u8, a, "--declaration") or std.mem.eql(u8, a, "-d")) {
             opts.declaration = true;
@@ -203,6 +236,19 @@ pub const helpText: []const u8 =
 ;
 
 pub const versionText: []const u8 = "home tsc 0.1.0 (TS-compat 5.x)";
+
+/// TS6044: a non-boolean compiler flag was given on the command line
+/// with no argument following it (e.g. a trailing `--outDir`). Mirrors
+/// the upstream `Compiler_option_0_expects_an_argument` message; `{0}`
+/// is the canonical option name (no leading dashes). Caller frees.
+pub fn compilerOptionExpectsArgumentDiagnostic(gpa: std.mem.Allocator, option: []const u8) ![]u8 {
+    const code: u32 = 6044;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Compiler option '{s}' expects an argument.",
+        .{ code, option },
+    );
+}
 
 pub const RunResult = struct {
     code: ExitCode,
@@ -385,6 +431,47 @@ test "parseArgs: --listFiles / --listFilesOnly / --showConfig / --init" {
     try T.expect(opts.list_files_only);
     try T.expect(opts.show_config);
     try T.expect(opts.init_config);
+}
+
+test "parseArgsCtx: trailing --outDir captures missing-value option for TS6044" {
+    var ctx: ParseContext = .{};
+    const argv = [_][]const u8{"--outDir"};
+    try T.expectError(error.MissingValue, parseArgsCtx(T.allocator, &argv, &ctx));
+    try T.expectEqualStrings("outDir", ctx.missing_value_option);
+}
+
+test "parseArgsCtx: trailing value-flags each report their canonical name" {
+    const cases = [_]struct { flag: []const u8, name: []const u8 }{
+        .{ .flag = "--project", .name = "project" },
+        .{ .flag = "-p", .name = "project" },
+        .{ .flag = "--target", .name = "target" },
+        .{ .flag = "--module", .name = "module" },
+        .{ .flag = "--jsx", .name = "jsx" },
+    };
+    for (cases) |c| {
+        var ctx: ParseContext = .{};
+        const argv = [_][]const u8{c.flag};
+        try T.expectError(error.MissingValue, parseArgsCtx(T.allocator, &argv, &ctx));
+        try T.expectEqualStrings(c.name, ctx.missing_value_option);
+    }
+}
+
+test "parseArgsCtx: flag with a value does not set missing-value option" {
+    var ctx: ParseContext = .{};
+    const argv = [_][]const u8{ "--outDir", "dist" };
+    const opts = try parseArgsCtx(T.allocator, &argv, &ctx);
+    defer T.allocator.free(opts.files);
+    try T.expectEqualStrings("dist", opts.out_dir.?);
+    try T.expectEqualStrings("", ctx.missing_value_option);
+}
+
+test "compilerOptionExpectsArgumentDiagnostic: TS6044 message text" {
+    const msg = try compilerOptionExpectsArgumentDiagnostic(T.allocator, "outDir");
+    defer T.allocator.free(msg);
+    try T.expectEqualStrings(
+        "error TS6044: Compiler option 'outDir' expects an argument.",
+        msg,
+    );
 }
 
 test "dispatch: --version returns versionText to stdout" {

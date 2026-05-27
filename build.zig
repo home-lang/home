@@ -279,6 +279,9 @@ pub fn build(b: *std.Build) void {
     ts_program_pkg.addImport("hir", hir_pkg);
     ts_program_pkg.addImport("ts_driver", ts_driver_pkg);
     ts_program_pkg.addImport("ts_resolver", ts_resolver_pkg);
+    // Cross-module declaration-emit privacy (`cannot be named`) needs to
+    // walk a resolved module's bound namespace member scopes.
+    ts_program_pkg.addImport("binder", binder_pkg);
 
     // TS-parity §5.A.1 — Salsa-style incremental wrapper around
     // ts_program. Demonstrates per-file content-hash caching so

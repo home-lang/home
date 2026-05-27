@@ -41,6 +41,17 @@ pub const Severity = enum(u8) {
     }
 };
 
+/// One nested elaboration entry under a parent diagnostic, mirroring
+/// tsc's `messageChain` (typescript-go `ast.Diagnostic.messageChain`).
+/// Each entry has its own message and may nest deeper `children`.
+/// Rendered as indented continuation lines beneath the parent header
+/// (`flattenDiagnosticMessageChain` in typescript-go), two spaces per
+/// nesting level.
+pub const ChainEntry = struct {
+    message: []const u8,
+    children: []const ChainEntry = &.{},
+};
+
 pub const Diagnostic = struct {
     /// File path the diagnostic relates to. Empty for whole-program
     /// diagnostics.
@@ -58,6 +69,11 @@ pub const Diagnostic = struct {
     /// Length of the source excerpt to underline (in source bytes).
     /// 0 means no specific extent.
     span_len: u32,
+    /// Optional nested elaboration chain. Empty by default so existing
+    /// single-message formatting is byte-identical. When non-empty,
+    /// `formatDefault`/`formatPretty` append each entry as an indented
+    /// continuation line (tsc `messageChain` render).
+    chain: []const ChainEntry = &.{},
 
     pub const CodePrefix = enum { TS, HM };
 };
@@ -79,7 +95,28 @@ pub fn formatDefault(gpa: std.mem.Allocator, d: Diagnostic) ![]u8 {
     try writeCode(&buf, gpa, d.code_prefix, d.code);
     try buf.appendSlice(gpa, ": ");
     try buf.appendSlice(gpa, d.message);
+    try writeMessageChain(&buf, gpa, d.chain, 1);
     return try buf.toOwnedSlice(gpa);
+}
+
+/// Append a diagnostic's nested elaboration chain in tsc's flattened
+/// format: each entry on its own line, indented `level * 2` spaces,
+/// recursing into `children` at `level + 1`. Mirrors typescript-go's
+/// `flattenDiagnosticMessageChain`. No-op for an empty chain, so flat
+/// diagnostics render byte-identically to before.
+fn writeMessageChain(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    chain: []const ChainEntry,
+    level: u32,
+) !void {
+    for (chain) |entry| {
+        try buf.append(gpa, '\n');
+        var i: u32 = 0;
+        while (i < level) : (i += 1) try buf.appendSlice(gpa, "  ");
+        try buf.appendSlice(gpa, entry.message);
+        try writeMessageChain(buf, gpa, entry.children, level + 1);
+    }
 }
 
 /// Pretty format with source excerpt and squiggly underline. Used
@@ -124,6 +161,7 @@ pub fn formatPretty(
     try writeCode(&buf, gpa, d.code_prefix, d.code);
     try buf.appendSlice(gpa, ": ");
     try buf.appendSlice(gpa, d.message);
+    try writeMessageChain(&buf, gpa, d.chain, 1);
     try buf.append(gpa, '\n');
 
     if (source) |src| {
@@ -276,6 +314,95 @@ test "formatDefault: HM prefix for Home-only codes" {
     const out = try formatDefault(T.allocator, d);
     defer T.allocator.free(out);
     try T.expectEqualStrings("x.ts(1,1): warning HM9001: Home-only warning.", out);
+}
+
+test "formatDefault: single-entry message chain renders one indented line" {
+    const d: Diagnostic = .{
+        .file = "iface.ts",
+        .line = 18,
+        .col = 11,
+        .code = 2430,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Interface 'I3' incorrectly extends interface 'I1'.",
+        .span_len = 2,
+        .chain = &.{
+            .{ .message = "Types of property 'item' are incompatible." },
+        },
+    };
+    const out = try formatDefault(T.allocator, d);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings(
+        "iface.ts(18,11): error TS2430: Interface 'I3' incorrectly extends interface 'I1'.\n" ++
+            "  Types of property 'item' are incompatible.",
+        out,
+    );
+}
+
+test "formatDefault: nested chain indents two spaces per level (tsc flatten)" {
+    const d: Diagnostic = .{
+        .file = "iface.ts",
+        .line = 18,
+        .col = 11,
+        .code = 2430,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Interface 'I3' incorrectly extends interface 'I1'.",
+        .span_len = 2,
+        .chain = &.{
+            .{
+                .message = "Types of property 'item' are incompatible.",
+                .children = &.{
+                    .{ .message = "Type 'number' is not assignable to type 'string'." },
+                },
+            },
+        },
+    };
+    const out = try formatDefault(T.allocator, d);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings(
+        "iface.ts(18,11): error TS2430: Interface 'I3' incorrectly extends interface 'I1'.\n" ++
+            "  Types of property 'item' are incompatible.\n" ++
+            "    Type 'number' is not assignable to type 'string'.",
+        out,
+    );
+}
+
+test "formatDefault: empty chain is byte-identical to flat output" {
+    const d: Diagnostic = .{
+        .file = "a.ts",
+        .line = 1,
+        .col = 1,
+        .code = 2304,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Cannot find name 'foo'.",
+        .span_len = 3,
+        // .chain defaults to empty
+    };
+    const out = try formatDefault(T.allocator, d);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("a.ts(1,1): error TS2304: Cannot find name 'foo'.", out);
+}
+
+test "formatPretty: message chain renders indented lines before the source excerpt" {
+    const src = "interface I3 extends I1 { item: number; }";
+    const d: Diagnostic = .{
+        .file = "iface.ts",
+        .line = 1,
+        .col = 11,
+        .code = 2430,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Interface 'I3' incorrectly extends interface 'I1'.",
+        .span_len = 2,
+        .chain = &.{
+            .{ .message = "Types of property 'item' are incompatible." },
+        },
+    };
+    const out = try formatPretty(T.allocator, d, src, false);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\n  Types of property 'item' are incompatible.\n") != null);
 }
 
 test "formatDefault: empty file path is omitted" {

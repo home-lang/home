@@ -96,6 +96,29 @@ const ResolverRealFs = struct {
     }
 };
 
+/// True if `path` names an existing regular file. Used by the explicit
+/// `--project` existence checks (TS5058 / TS5081).
+fn fileExistsOnDisk(gpa: std.mem.Allocator, path: []const u8) bool {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    var file = cwd.openFile(io, path, .{}) catch return false;
+    file.close(io);
+    return true;
+}
+
+/// True if `path` names an existing directory.
+fn directoryExistsOnDisk(gpa: std.mem.Allocator, path: []const u8) bool {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    var dir = cwd.openDir(io, path, .{}) catch return false;
+    dir.close(io);
+    return true;
+}
+
 const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
 
@@ -133,11 +156,38 @@ pub fn main(init: std.process.Init) !void {
         for (all_args[1..]) |a| try argv.append(gpa, a);
     }
 
-    var opts = ts_cli.parseArgs(gpa, argv.items) catch |err| {
-        std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
-        std.process.exit(2);
+    var parse_ctx: ts_cli.ParseContext = .{};
+    var opts = ts_cli.parseArgsCtx(gpa, argv.items, &parse_ctx) catch |err| {
+        switch (err) {
+            // TS6044: a non-boolean flag (e.g. `--outDir`) was the last
+            // argument with no value following it.
+            error.MissingValue => {
+                if (parse_ctx.missing_value_option.len > 0) {
+                    const msg = ts_cli.compilerOptionExpectsArgumentDiagnostic(gpa, parse_ctx.missing_value_option) catch {
+                        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                    };
+                    defer gpa.free(msg);
+                    std.debug.print("{s}\n", .{msg});
+                } else {
+                    std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
+                }
+            },
+            else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
+        }
+        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
     };
     defer gpa.free(opts.files);
+
+    // TS5042: `--project` (or `-p`) cannot be combined with positional
+    // source files. Mirrors upstream `internal/execute/tsc.go`.
+    if (opts.project != null and opts.files.len > 0) {
+        const msg = projectMixedWithSourceFilesDiagnostic(gpa) catch {
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        };
+        defer gpa.free(msg);
+        std.debug.print("{s}\n", .{msg});
+        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+    }
 
     // Resolve tsconfig BEFORE dispatch so a discovered tsconfig
     // counts as input for the "no files" check inside dispatch.
@@ -148,7 +198,32 @@ pub fn main(init: std.process.Init) !void {
     var cfg_path_buf: ?[]u8 = null;
     defer if (cfg_path_buf) |b| gpa.free(b);
     var loaded_cfg: ?tsconfig_mod.TsConfig = null;
+    const explicit_project = opts.project;
     const should_load_config = opts.project != null or opts.files.len == 0 or opts.show_config;
+
+    // For an explicit `--project`, validate existence the way upstream
+    // does before resolving the config path: a path that names an
+    // existing directory must contain a `tsconfig.json` (else TS5081);
+    // a non-directory path is treated as a file and must exist (else
+    // TS5058).
+    if (explicit_project) |proj| {
+        if (directoryExistsOnDisk(gpa, proj)) {
+            const candidate = try std.fmt.allocPrint(gpa, "{s}/tsconfig.json", .{proj});
+            defer gpa.free(candidate);
+            if (!fileExistsOnDisk(gpa, candidate)) {
+                const msg = try cannotFindTsConfigAtCurrentDirectoryDiagnostic(gpa, candidate);
+                defer gpa.free(msg);
+                std.debug.print("{s}\n", .{msg});
+                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            }
+        } else if (!fileExistsOnDisk(gpa, proj)) {
+            const msg = try specifiedPathDoesNotExistDiagnostic(gpa, proj);
+            defer gpa.free(msg);
+            std.debug.print("{s}\n", .{msg});
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        }
+    }
+
     if (should_load_config) {
         if (resolveTsConfigPath(gpa, opts.project) catch null) |path| {
             opts.project = path;
@@ -300,6 +375,38 @@ pub fn main(init: std.process.Init) !void {
 
     var program = ts_program.Program.init(gpa, &resolver);
     defer program.deinit();
+
+    // §file-add — extension gate. tsc rejects an input file whose
+    // extension it cannot process before it ever reads the file:
+    // a JavaScript file without `allowJs` is TS6504; any other
+    // unsupported extension is TS6054. (`allowNonTsExtensions` — the
+    // upstream escape hatch — has no CLI surface in Home yet, so the
+    // check always runs.)
+    const allow_js: bool = blk: {
+        if (loaded_cfg) |c| break :blk (c.compiler_options.allow_js orelse false);
+        break :blk false;
+    };
+    var extension_errors: bool = false;
+    for (input_files.items) |path| {
+        switch (classifyExtension(path)) {
+            .supported => {},
+            .javascript => {
+                if (!allow_js) {
+                    const msg = try javaScriptFileNeedsAllowJsDiagnostic(gpa, path);
+                    defer gpa.free(msg);
+                    std.debug.print("{s}\n", .{msg});
+                    extension_errors = true;
+                }
+            },
+            .unsupported => {
+                const msg = try unsupportedExtensionDiagnostic(gpa, path);
+                defer gpa.free(msg);
+                std.debug.print("{s}\n", .{msg});
+                extension_errors = true;
+            },
+        }
+    }
+    if (extension_errors) std.process.exit(1);
 
     for (input_files.items) |path| {
         const src = RealFs.read(gpa, path) catch |err| {
@@ -695,6 +802,13 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             .TS => .TS,
             .HM => .HM,
         };
+        // Map the driver's nested elaboration chain (tsc `messageChain`)
+        // into the renderer's chain so it surfaces as indented
+        // continuation lines under the header. Allocated in an arena tied
+        // to this diagnostic's render; freed right after.
+        var chain_arena = std.heap.ArenaAllocator.init(ctx.gpa);
+        defer chain_arena.deinit();
+        const rendered_chain = mapDriverChain(chain_arena.allocator(), d.chain) catch &.{};
         const fdiag: ts_diagnostics.Diagnostic = .{
             .file = f.path,
             .line = pos.line,
@@ -704,6 +818,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             .severity = .err,
             .message = d.message,
             .span_len = 0,
+            .chain = rendered_chain,
         };
         const formatted = if (ctx.use_pretty)
             ts_diagnostics.formatPretty(ctx.gpa, fdiag, f.source, ctx.use_color) catch continue
@@ -713,6 +828,25 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
         std.debug.print("{s}\n", .{formatted});
         if (d.phase != .emit) ctx.any_errors.* = true;
     }
+}
+
+/// Recursively map a driver elaboration chain into the renderer's
+/// `ChainEntry` shape (message + children only; the renderer flattens
+/// tsc-style without re-printing the per-entry code). Allocated in the
+/// caller's arena.
+fn mapDriverChain(
+    arena: std.mem.Allocator,
+    chain: []const ts_driver.DiagnosticChainEntry,
+) error{OutOfMemory}![]const ts_diagnostics.ChainEntry {
+    if (chain.len == 0) return &.{};
+    const out = try arena.alloc(ts_diagnostics.ChainEntry, chain.len);
+    for (chain, 0..) |entry, i| {
+        out[i] = .{
+            .message = entry.message,
+            .children = try mapDriverChain(arena, entry.children),
+        };
+    }
+    return out;
 }
 
 /// Walk `project_dir` recursively, collect every TypeScript-shaped
@@ -842,6 +976,40 @@ fn effectiveExcludeDiagnosticPatterns(
     return out.items;
 }
 
+/// TS5042: `--project` cannot be combined with positional source files.
+/// Faithful port of the check in upstream `internal/execute/tsc.go`.
+fn projectMixedWithSourceFilesDiagnostic(gpa: std.mem.Allocator) ![]u8 {
+    const code: u32 = 5042;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Option 'project' cannot be mixed with source files on a command line.",
+        .{code},
+    );
+}
+
+/// TS5058: an explicit `--project` path (treated as a file because it
+/// isn't an existing directory) does not exist on disk.
+fn specifiedPathDoesNotExistDiagnostic(gpa: std.mem.Allocator, file_or_directory: []const u8) ![]u8 {
+    const code: u32 = 5058;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: The specified path does not exist: '{s}'.",
+        .{ code, file_or_directory },
+    );
+}
+
+/// TS5081: `--project` named an existing directory but it has no
+/// `tsconfig.json`. (Upstream uses the "current directory" message here
+/// with the resolved `tsconfig.json` path as the argument.)
+fn cannotFindTsConfigAtCurrentDirectoryDiagnostic(gpa: std.mem.Allocator, config_file_name: []const u8) ![]u8 {
+    const code: u32 = 5081;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Cannot find a tsconfig.json file at the current directory: {s}.",
+        .{ code, config_file_name },
+    );
+}
+
 fn noInputsFoundInConfigDiagnostic(
     gpa: std.mem.Allocator,
     config_path: []const u8,
@@ -859,6 +1027,68 @@ fn noInputsFoundInConfigDiagnostic(
         gpa,
         "error TS{d}: No inputs were found in config file '{s}'. Specified 'include' paths were '{s}' and 'exclude' paths were '{s}'.",
         .{ code, config_path, include_json.items, exclude_json.items },
+    );
+}
+
+/// The TypeScript-supported source extensions, rendered in the exact
+/// order and quoting tsc uses for the TS6054 message (`SupportedTSExt-
+/// ensionsFlat`). Home additionally accepts its native `.hm`/`.home`
+/// shapes, but those are deliberately omitted from the *diagnostic*
+/// string so the message stays byte-identical to tsc.
+const ts_supported_extensions_display = "'.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'";
+
+/// Classification of an input file's extension for the file-add
+/// extension checks (TS6504 / TS6054).
+const ExtensionClass = enum {
+    /// A TS/Home source extension the compiler accepts — no diagnostic.
+    supported,
+    /// A JavaScript-family extension (`.js`/`.jsx`/`.mjs`/`.cjs`).
+    /// Reported as TS6504 when `allowJs` is off.
+    javascript,
+    /// Any other recognized-but-unsupported extension. Reported as
+    /// TS6054. Extension-less paths are treated as supported (tsc only
+    /// runs the check when the path `HasExtension`).
+    unsupported,
+};
+
+fn classifyExtension(path: []const u8) ExtensionClass {
+    // Home + TS source shapes the compiler can actually process.
+    if (isTsLikeExtension(path)) return .supported;
+    if (std.mem.endsWith(u8, path, ".js") or
+        std.mem.endsWith(u8, path, ".jsx") or
+        std.mem.endsWith(u8, path, ".mjs") or
+        std.mem.endsWith(u8, path, ".cjs"))
+    {
+        return .javascript;
+    }
+    // Mirror tsc: only files that actually carry an extension are
+    // candidates for the unsupported-extension diagnostic. A path with
+    // no `.` in its basename is left alone.
+    const base = std.fs.path.basename(path);
+    if (std.mem.indexOfScalar(u8, base, '.') == null) return .supported;
+    return .unsupported;
+}
+
+/// TS6504: an input file is a JavaScript file but `allowJs` is not set.
+/// `{0}` is the file path. Caller frees.
+fn javaScriptFileNeedsAllowJsDiagnostic(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const code: u32 = 6504;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: File '{s}' is a JavaScript file. Did you mean to enable the 'allowJs' option?",
+        .{ code, path },
+    );
+}
+
+/// TS6054: an input file has an extension the compiler does not support.
+/// `{0}` is the file path, `{1}` the supported-extension list. Caller
+/// frees.
+fn unsupportedExtensionDiagnostic(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const code: u32 = 6054;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: File '{s}' has an unsupported extension. The only supported extensions are {s}.",
+        .{ code, path, ts_supported_extensions_display },
     );
 }
 
@@ -955,6 +1185,33 @@ fn resolveTsConfigPath(gpa: std.mem.Allocator, project: ?[]const u8) !?[]u8 {
     return null;
 }
 
+test "tsc_main: TS5042 project mixed with source files diagnostic" {
+    const msg = try projectMixedWithSourceFilesDiagnostic(std.testing.allocator);
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS5042: Option 'project' cannot be mixed with source files on a command line.",
+        msg,
+    );
+}
+
+test "tsc_main: TS5058 specified path does not exist diagnostic" {
+    const msg = try specifiedPathDoesNotExistDiagnostic(std.testing.allocator, "./missing.json");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS5058: The specified path does not exist: './missing.json'.",
+        msg,
+    );
+}
+
+test "tsc_main: TS5081 cannot find tsconfig at current directory diagnostic" {
+    const msg = try cannotFindTsConfigAtCurrentDirectoryDiagnostic(std.testing.allocator, "/repo/sub/tsconfig.json");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS5081: Cannot find a tsconfig.json file at the current directory: /repo/sub/tsconfig.json.",
+        msg,
+    );
+}
+
 test "tsc_main: TS18003 no-input config diagnostic uses include and exclude specs" {
     const include = [_][]const u8{ "src/**/*.ts", "tests/**/*.ts" };
     const exclude = [_][]const u8{"dist"};
@@ -990,6 +1247,45 @@ test "tsc_main: TS18003 diagnostic uses implicit outDir exclude display" {
     const patterns = try effectiveExcludeDiagnosticPatterns(std.testing.allocator, "/repo", cfg, &out, &owned);
     try std.testing.expectEqual(@as(usize, 1), patterns.len);
     try std.testing.expectEqualStrings("/repo/dist", patterns[0]);
+}
+
+test "tsc_main: TS6504 JavaScript-file diagnostic text" {
+    const msg = try javaScriptFileNeedsAllowJsDiagnostic(std.testing.allocator, "src/app.js");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS6504: File 'src/app.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?",
+        msg,
+    );
+}
+
+test "tsc_main: TS6054 unsupported-extension diagnostic text" {
+    const msg = try unsupportedExtensionDiagnostic(std.testing.allocator, "data/notes.txt");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS6054: File 'data/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.",
+        msg,
+    );
+}
+
+test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes" {
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.ts"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.tsx"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.d.ts"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.mts"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.cts"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.hm"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.home"));
+    // JS family -> TS6504 candidate.
+    try std.testing.expectEqual(ExtensionClass.javascript, classifyExtension("a.js"));
+    try std.testing.expectEqual(ExtensionClass.javascript, classifyExtension("a.jsx"));
+    try std.testing.expectEqual(ExtensionClass.javascript, classifyExtension("a.mjs"));
+    try std.testing.expectEqual(ExtensionClass.javascript, classifyExtension("a.cjs"));
+    // Anything else with an extension -> TS6054 candidate.
+    try std.testing.expectEqual(ExtensionClass.unsupported, classifyExtension("a.txt"));
+    try std.testing.expectEqual(ExtensionClass.unsupported, classifyExtension("a.json"));
+    // No extension -> left alone (matches tsc's HasExtension gate).
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("Makefile"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("src/noext"));
 }
 
 test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
