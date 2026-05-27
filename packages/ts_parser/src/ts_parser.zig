@@ -6398,6 +6398,27 @@ pub const Parser = struct {
         {
             try self.reportCodeAt(name_tok.span.start, name_tok.line, 1035, "Only ambient modules can use quoted names.");
         }
+        // TS2436: `declare module "./foo"` / `declare module "../bar"`
+        // is rejected by upstream tsc — ambient module declarations
+        // must name non-relative external modules. The check applies
+        // only to string-literal ambient names (the dotted-identifier
+        // form `declare module Foo.Bar {}` is a namespace and has no
+        // relative-path concept). Anchored at the literal token.
+        if (name_tok.kind == .string_literal and
+            (self.ambient_depth > 0 or self.isAmbientContextAt(start.span.start)))
+        {
+            const lit = self.source[name_tok.span.start..name_tok.span.end];
+            if (lit.len >= 3) {
+                const inner = lit[1 .. lit.len - 1];
+                if (std.mem.startsWith(u8, inner, "./") or
+                    std.mem.startsWith(u8, inner, "../") or
+                    std.mem.eql(u8, inner, ".") or
+                    std.mem.eql(u8, inner, ".."))
+                {
+                    try self.reportCodeAt(name_tok.span.start, name_tok.line, 2436, "Ambient module declaration cannot specify relative module name.");
+                }
+            }
+        }
         var name_end = name_tok.span.end;
         while (self.peek().kind == .dot) {
             _ = self.advance();
@@ -19418,6 +19439,47 @@ test "parser: TS1234 not reported for top-level ambient module" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1234);
+    }
+}
+
+test "parser: TS2436 ambient module declaration with relative name" {
+    // `declare module "./foo"` / `declare module "../bar"` is
+    // rejected: ambient module declarations must name external (non-
+    // relative) modules. Anchored at the string-literal token.
+    var s = try newTestSetup(
+        \\declare module "./relative" { }
+        \\declare module "../sibling" { }
+        \\declare module "." { }
+        \\declare module ".." { }
+        \\declare module "fine" { }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts2436_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2436) {
+            ts2436_count += 1;
+            try T.expectEqualStrings("Ambient module declaration cannot specify relative module name.", d.message);
+        }
+    }
+    // 4 relative names ("./relative", "../sibling", ".", "..") trip
+    // the diagnostic; the bare "fine" name stays clean.
+    try T.expectEqual(@as(usize, 4), ts2436_count);
+}
+
+test "parser: TS2436 not reported for non-ambient module declarations" {
+    // Without `declare` (and outside a .d.ts), a quoted module name
+    // is already TS1035 territory — we should NOT also fire TS2436
+    // there, since the diagnostic is scoped to ambient declarations.
+    var s = try newTestSetup(
+        \\module "./not-ambient" { }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2436);
     }
 }
 
