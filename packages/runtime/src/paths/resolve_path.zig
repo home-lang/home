@@ -607,7 +607,7 @@ pub fn joinStringBufT(comptime T: type, buf: []T, parts: anytype, comptime platf
 }
 
 pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime platform: Platform) []const u8 {
-    const parts = _parts[0..];
+    const parts = partsSlice(_parts);
     if (parts.len == 0) return normalizeBuf(cwd, buf, platform);
 
     var absolute_index: ?usize = null;
@@ -627,6 +627,19 @@ pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime pl
         count += 1;
     }
     return joinStringBuf(buf, temp_parts_buf[0..count], platform);
+}
+
+fn partsSlice(_parts: anytype) []const []const u8 {
+    const Parts = @TypeOf(_parts);
+    const info = @typeInfo(Parts);
+    if (info == .pointer and info.pointer.size == .one and @typeInfo(info.pointer.child) == .array) {
+        const array_info = @typeInfo(info.pointer.child).array;
+        return _parts[0..array_info.len];
+    }
+    if (info == .pointer and info.pointer.size == .one) {
+        return @as([*]const []const u8, @ptrCast(_parts))[0..1];
+    }
+    return _parts[0..];
 }
 
 pub fn joinAbsStringBufChecked(cwd: []const u8, buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {

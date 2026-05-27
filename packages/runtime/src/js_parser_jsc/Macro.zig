@@ -241,7 +241,7 @@ pub const Runner = struct {
             const macro_callback = macro.vm.macros.get(id) orelse return caller;
 
             const result = js.JSObjectCallAsFunctionReturnValueHoldingAPILock(
-                macro.vm.global,
+                @ptrCast(macro.vm.global),
                 macro_callback,
                 null,
                 args.len,
@@ -263,7 +263,7 @@ pub const Runner = struct {
             defer runner.visited.deinit(allocator);
 
             return try runner.run(
-                result,
+                @enumFromInt(@intFromEnum(result)),
             );
         }
 

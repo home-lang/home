@@ -360,6 +360,21 @@ needs `std.fs.openDirAbsoluteZ` compatibility, and `bun.path.joinAbsStringBuf`
 must be exported through the Home path namespace. Keep the adapter gated
 until those are copied faithfully from Bun's Zig source.
 
+Parser probe follow-up in `/private/tmp/home-bun-parser-frontier` on
+2026-05-26: the temporary adapter switch was rebuilt and then removed before
+commit. The compile-safe compatibility batch now covers the path/fs/runtime
+pieces pulled in by that probe: `bun.path.Platform`,
+`joinAbsStringBuf` pointer-to-array/single-part handling, `bun.strings`
+`StringOrTinyString` and UTF-16 allocation, `RuntimeTranspilerCache` metadata
+buffer/`preallocate_file` shims, `FD`/`Tmpfile`/`Maybe` Zig 0.17 drift,
+resolver dirname/tmpname directory iteration shims, `ZigException`, and the
+minimal macro callback ABI cast. With the adapter still gated, `home_rt` and
+`home_test` remain green. The next gated-probe frontier is broader JSC macro
+and console substrate, not native plugin: `VirtualMachine.uncaughtException`,
+`Response.getBlobWithoutCallFrame`, JSValue/JSArrayIterator ABI alignment,
+`ConsoleObject` timer/VM fields, the JSC JSValue callability bridge,
+`jsc.AnyPromise`/`JSObject`, allocator `BSSList`, and `jsc.Node.Encoding`.
+
 Next-work ledger for the three-file frontier:
 
 | Work item | Faithful implementation target | Promotion evidence required |

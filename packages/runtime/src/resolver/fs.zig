@@ -48,11 +48,12 @@ pub const FileSystem = struct {
 
     var tmpname_id_number = std.atomic.Value(u32).init(0);
     pub fn tmpname(extname: string, buf: []u8, hash: u64) std.fmt.BufPrintError![:0]u8 {
-        const hex_value = @as(u64, @truncate(@as(u128, @intCast(hash)) | @as(u128, @intCast(std.time.nanoTimestamp()))));
+        const id = tmpname_id_number.fetchAdd(1, .monotonic);
+        const hex_value = hash ^ (@as(u64, id) << 32);
 
         return try std.fmt.bufPrintZ(buf, ".{f}-{f}.{s}", .{
             bun.fmt.hexIntLower(hex_value),
-            bun.fmt.hexIntUpper(tmpname_id_number.fetchAdd(1, .monotonic)),
+            bun.fmt.hexIntUpper(id),
             extname,
         });
     }
@@ -152,10 +153,8 @@ pub const FileSystem = struct {
 
             const stored = try brk: {
                 if (prev_map) |map| {
-                    var stack_fallback = std.heap.stackFallback(512, allocator);
-                    const stack = stack_fallback.get();
-                    const prehashed = bun.StringHashMapContext.PrehashedCaseInsensitive.init(stack, name_slice);
-                    defer prehashed.deinit(stack);
+                    const prehashed = bun.StringHashMapContext.PrehashedCaseInsensitive.init(allocator, name_slice);
+                    defer prehashed.deinit(allocator);
                     if (map.getAdapted(name_slice, prehashed)) |existing| {
                         existing.mutex.lock();
                         defer existing.mutex.unlock();

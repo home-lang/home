@@ -57,6 +57,7 @@ pub const env_var = @import("env_var.zig");
 // `home_rt.OOM` etc. directly (mirrors Bun's flat `bun.assert` /
 // `bun.OOM` namespace).
 pub const assert = Global.assert;
+pub const unsafeAssert = Global.assert;
 pub const OOM = Global.OOM;
 pub const JSError = error{ JSError, OutOfMemory, JSTerminated };
 pub const JSTerminated = error{JSTerminated};
@@ -656,6 +657,10 @@ pub const StringHashMapContext = struct {
         pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
             return strings.eqlCaseInsensitiveASCIIICheckLength(a, b);
         }
+
+        pub fn deinit(this: PrehashedCaseInsensitive, allocator: std.mem.Allocator) void {
+            allocator.free(this.input);
+        }
     };
 };
 
@@ -821,6 +826,7 @@ pub const jsc = struct {
     pub const SourceType = @import("jsc/SourceType.zig").SourceType;
     pub const sizes = @import("jsc/sizes.zig");
     pub const JSRuntimeType = @import("jsc/JSRuntimeType.zig").JSRuntimeType;
+    pub const ZigException = @import("jsc/ZigException.zig").ZigException;
     pub const GetterSetter = @import("jsc/GetterSetter.zig").GetterSetter;
     pub const StaticExport = @import("jsc/static_export.zig");
     pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
@@ -958,6 +964,7 @@ pub const jsc = struct {
     pub const WTF = @import("jsc/WTF.zig");
     pub const Weak = @import("jsc/Weak.zig");
     pub const javascript_core_c_api = @import("jsc/javascript_core_c_api.zig");
+    pub const C = javascript_core_c_api;
     pub const DOMURL = @import("jsc/DOMURL.zig").DOMURL;
     pub const JSArrayIterator = @import("jsc/JSArrayIterator.zig").JSArrayIterator;
     // Eighth-wave port batch (2026-05-18):
@@ -972,6 +979,7 @@ pub const jsc = struct {
         rare_data: RareData = .{},
         timer: TimerState = .{},
         transpiler: RuntimeTranspiler = .{},
+        macros: MacroMap = MacroMap.init(default_allocator),
         jsc_vm: *VirtualMachine = undefined,
         global: *JSGlobalObject = undefined,
         channel_ref: Ref = .{},
@@ -988,6 +996,7 @@ pub const jsc = struct {
                 _ = this;
             }
         };
+        pub const MacroMap = std.AutoHashMap(i32, javascript_core_c_api.JSObjectRef);
 
         pub fn isLoaded() bool {
             return false;
@@ -2138,12 +2147,12 @@ pub const FD = packed struct(fd_t) {
         return .fromNative(file.handle);
     }
 
-    pub fn fromStdDir(dir: std.fs.Dir) FD {
-        return .fromNative(dir.fd);
+    pub fn fromStdDir(dir: anytype) FD {
+        return .fromNative(if (@hasField(@TypeOf(dir), "fd")) dir.fd else dir.handle);
     }
 
     pub fn cwd() FD {
-        return .fromStdDir(std.fs.cwd());
+        return .fromStdDir(std.Io.Dir.cwd());
     }
 
     pub fn stdin() FD {
@@ -2169,8 +2178,8 @@ pub const FD = packed struct(fd_t) {
         return .{ .handle = fd.native() };
     }
 
-    pub fn stdDir(fd: FD) std.fs.Dir {
-        return .{ .fd = fd.native() };
+    pub fn stdDir(fd: FD) std.Io.Dir {
+        return .{ .handle = fd.native() };
     }
 
     pub fn isValid(fd: FD) bool {
@@ -2187,14 +2196,14 @@ pub const FD = packed struct(fd_t) {
 
     pub fn closeAllowingBadFileDescriptor(fd: FD, _: ?usize) ?sys.Error {
         if (!fd.isValid() or fd.value <= 2) return null;
-        std.posix.close(fd.native());
+        _ = std.c.close(fd.native());
         return null;
     }
 
     pub fn closeAllowingStandardIo(fd: FD, return_address: ?usize) ?sys.Error {
         _ = return_address;
         if (!fd.isValid()) return null;
-        std.posix.close(fd.native());
+        _ = std.c.close(fd.native());
         return null;
     }
 
@@ -2534,15 +2543,42 @@ pub const allocators = struct {
             }
 
             pub fn append(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
-                return try self.allocator.dupe(u8, value);
+                const parts = stringsSlice(value);
+                var len: usize = 0;
+                for (parts) |part| len += part.len;
+                const out = try self.allocator.alloc(u8, len);
+                var offset: usize = 0;
+                for (parts) |part| {
+                    @memcpy(out[offset..][0..part.len], part);
+                    offset += part.len;
+                }
+                return out;
             }
 
             pub fn appendMutable(self: *Self, comptime AppendType: type, value: AppendType) OOM![]u8 {
                 return @constCast(try self.append(AppendType, value));
             }
 
+            pub fn appendLowerCase(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
+                const out = try self.append(AppendType, value);
+                for (@constCast(out)) |*char| char.* = std.ascii.toLower(char.*);
+                return out;
+            }
+
             pub fn exists(_: *const Self, _: []const u8) bool {
                 return false;
+            }
+
+            fn stringsSlice(value: anytype) []const []const u8 {
+                const Value = @TypeOf(value);
+                const info = @typeInfo(Value);
+                if (info == .pointer and info.pointer.size == .one and @typeInfo(info.pointer.child) == .array) {
+                    const array_info = @typeInfo(info.pointer.child).array;
+                    return value[0..array_info.len];
+                }
+                if (info == .array and info.array.child == u8) return &[_][]const u8{value[0..]};
+                if (info == .pointer and info.pointer.size == .slice and info.pointer.child == u8) return &[_][]const u8{value};
+                return value[0..];
             }
         };
     }
@@ -2803,7 +2839,9 @@ pub const sys = struct {
     // every syscall wrapper. `kindFromMode` and a Zig-0.17-compat
     // `FileKind` enum tag along for the ride.
     pub const maybe = @import("sys/maybe.zig");
-    pub const Maybe = maybe.Maybe;
+    pub fn Maybe(comptime ReturnTypeT: type) type {
+        return maybe.Maybe(ReturnTypeT, Error);
+    }
     pub const FileKind = maybe.FileKind;
     pub const kindFromMode = maybe.kindFromMode;
     // Wave-20 Tier-2 substrate (2026-05-19). `SystemErrno` proxies the
@@ -2821,8 +2859,7 @@ pub const sys = struct {
         return .{ .errno = @intFromEnum(E.INVAL), .syscall = tag };
     }
 
-    fn errnoFromPosix(comptime tag: Tag, err: anyerror) Error {
-        _ = err;
+    fn errnoFromPosix(comptime tag: Tag, _: anyerror) Error {
         return unexpected(tag);
     }
 
@@ -2853,10 +2890,15 @@ pub const sys = struct {
         return .{ .result = total };
     }
 
+    pub fn preallocate_file(fd: fd_t, offset: u64, len: u64) !void {
+        _ = fd;
+        _ = offset;
+        _ = len;
+    }
+
     pub fn unlinkat(dir: FD, path_: anytype) Maybe(void) {
-        dir.stdDir().deleteFileZ(path_) catch |err| {
-            return .{ .err = errnoFromPosix(.unlink, err).withFd(dir) };
-        };
+        const rc = std.c.unlinkat(dir.native(), path_, 0);
+        if (rc != 0) return .{ .err = unexpected(.unlink).withFd(dir) };
         return .success;
     }
 
@@ -2887,6 +2929,32 @@ pub const sys = struct {
         }
     };
 };
+
+pub const DirIterator = struct {
+    pub const IteratorResult = struct {
+        name: PathString,
+        kind: std.Io.File.Kind,
+    };
+
+    pub const Iterator = struct {
+        inner: std.Io.Dir.Iterator,
+        io_threaded: std.Io.Threaded = std.Io.Threaded.init_single_threaded,
+
+        pub fn next(this: *Iterator) sys.Maybe(?IteratorResult) {
+            const entry = this.inner.next(this.io_threaded.io()) catch {
+                return .{ .err = sys.Error{ .errno = @intFromEnum(sys.E.IO), .syscall = .scandir } };
+            };
+            return .{ .result = if (entry) |value| .{
+                .name = PathString.init(value.name),
+                .kind = value.kind,
+            } else null };
+        }
+    };
+};
+
+pub fn iterateDir(dir: FD) DirIterator.Iterator {
+    return .{ .inner = dir.stdDir().iterate() };
+}
 
 // ---- src/paths/ --------------------------------------------------------
 // Fifth-wave port batch (2026-05-18). `home_rt.path` (singular) is

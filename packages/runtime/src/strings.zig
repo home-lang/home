@@ -12,6 +12,7 @@ pub const string = []const u8;
 pub const CodepointIterator = @import("string/immutable.zig").CodepointIterator;
 pub const Encoding = @import("string/immutable.zig").Encoding;
 pub const EncodingNonAscii = @import("string/immutable.zig").EncodingNonAscii;
+pub const StringOrTinyString = @import("string/immutable.zig").StringOrTinyString;
 pub const UnsignedCodepointIterator = @import("string/immutable.zig").UnsignedCodepointIterator;
 pub const decodeWTF8RuneTMultibyte = @import("string/immutable.zig").decodeWTF8RuneTMultibyte;
 pub const containsNonBmpCodePointOrIsInvalidIdentifier = @import("string/immutable.zig").containsNonBmpCodePointOrIsInvalidIdentifier;
@@ -417,6 +418,18 @@ pub fn toUTF16AllocForReal(
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+pub fn toUTF16Alloc(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    comptime fail_if_invalid: bool,
+    comptime sentinel: bool,
+) !?if (sentinel) [:0]u16 else []u16 {
+    for (bytes) |byte| {
+        if (byte >= 0x80) return try toUTF16AllocForReal(allocator, bytes, fail_if_invalid, sentinel);
+    }
+    return null;
 }
 
 const DecodedCodepoint = struct {
