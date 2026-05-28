@@ -290,15 +290,28 @@ stat/mkdir, native fs), and `node:os` (platform/arch/EOL/homedir/tmpdir/…).
 Unknown specifiers throw `ERR_MODULE_NOT_FOUND` (Node shape). Realm jsc test
 count ~1484.
 
-Remaining big subsystems (each multi-session), in rough order:
+**Phase-2 milestone landed (`e33e03ef`): native `home run`.** `home run` can
+now execute a file through Home's OWN JSC realm (`installRealmGlobals` — the
+full console/process/web/crypto/timers/misc/url/webcore/fetch/Bun/require
+surface — then evaluate + drain), **opt-in via `HOME_NATIVE_RUN=1`** for plain
+`.js`/`.cjs`. Gated so the DEFAULT `home run` still delegates to pantry `bun`
+(the bun-corpus spawn tests rely on that and keep passing — verified: default
+run exposes bun's `navigator`; the native run does not, i.e. it's Home's
+runtime). Also fixed the trailing-arg drop (`main.zig:3593`): `runCommand`
+threads `args[3..]` so `process.argv.slice(2)` is populated on both paths.
+`HOME_NATIVE_RUN=1 home run f.js` runs `require('node:path')`,
+`process.platform`, `setTimeout`, `fetch`, `console` through Home's JSC.
+
+Remaining (each multi-session), in rough order:
 1. **More `node:*` + `fetch` polish** — `node:{events,util,stream,buffer,
-   crypto,child_process}` behind the existing `require()`, plus fetch response
-   headers / binary bodies / async-on-loop.
-2. **Reroute `home run`** onto the realm (then route the corpus gate through
-   it). The realm is now broad enough (globals + timers + fetch + fs + require)
-   that this is the next high-leverage move — gated on the documented
-   spawn-corpus regression caveat (reroute only once it's net-positive, or
-   gate it).
+   crypto,child_process}` behind the existing `require()`; TS transpile on the
+   native run path (so `.ts` files run natively); fetch response headers /
+   binary bodies / async-on-loop.
+2. **Flip the native run default** (off bun delegation) once the realm carries
+   the spawn-corpus scripts, then **route the corpus gate** through the real
+   runtime so the pass-count finally measures real parity. This is the
+   convergence point; the opt-in path (`HOME_NATIVE_RUN`) is the safe staging
+   ground for getting there without regressions.
 2. **`fs`/`node:*` modules + a module loader** (`require`/`import`) — expose
    Home's native `sys`/file APIs (e.g. `Bun.file`, `node:fs` readFileSync) and
    resolve bare/`node:` specifiers.
