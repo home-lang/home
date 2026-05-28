@@ -1647,6 +1647,7 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
         home_rt.jsc.console_global.install(allocator, ctx, global);
         home_rt.jsc.process_global.install(allocator, ctx, global, &[_][]const u8{"home"});
         home_rt.jsc.web_globals.install(allocator, ctx, global);
+        home_rt.jsc.crypto_global.install(allocator, ctx, global);
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, code, "home:eval", 1);
         defer evaluation.deinit(allocator);
 

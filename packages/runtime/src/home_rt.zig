@@ -1762,6 +1762,8 @@ pub const jsc = struct {
     // Minimal Web Platform globals (TextEncoder/Decoder, queueMicrotask,
     // btoa/atob) for the native eval/run realm.
     pub const web_globals = @import("jsc/web_globals.zig");
+    // Minimal `crypto` global (getRandomValues + randomUUID) for the realm.
+    pub const crypto_global = @import("jsc/crypto_global.zig");
     // Phase 12.2 M6 (2026-05-19) — final scaffold milestone:
     // JSON + Promise + Iterator + Global helpers. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands. After M6
@@ -5184,6 +5186,7 @@ test {
     _ = @import("jsc/console.zig");
     _ = @import("jsc/process.zig");
     _ = @import("jsc/web_globals.zig");
+    _ = @import("jsc/crypto_global.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
