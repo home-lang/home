@@ -223,14 +223,39 @@ a JS call) and frees all GC roots + the registry (no DebugAllocator leak).
 Distinct from the parked full `jsc/event_loop.zig`. So the eval realm now has
 an async event loop — `home eval 'setTimeout(()=>console.log("hi"),5)'` works.
 
-The realm-globals foundation (console, process, web, crypto, timers) is now
-substantial enough that the **next milestone is routing `home run file.{js,ts}`
-through this realm** (off pantry `bun`). NOTE the corpus tension: the bun-corpus
-spawn tests use `home run` and currently pass *because* it delegates to real
-Bun; rerouting before Home's runtime is complete (fs, fetch, Bun.*, module
-loader) will **regress** those — so reroute only once the realm can carry the
-child scripts, or gate it. Keep building the realm via `home eval` (no corpus
-dependency) until then.
+**`performance`/`global`/`self`/`structuredClone` landed (`96a95a5a`,
+`jsc/misc_globals.zig`)** and **`URL`/`URLSearchParams` landed (`06fe70aa`,
+`jsc/url_global.zig`)** — the latter is a faithful native bridge to Home's
+pure-Zig `bun.URL` parser (`url/url.zig`), not a JS polyfill: `__home_url_parse`
+runs `URL.parse` and the JS classes wrap the components (`URLSearchParams`
+complete; `URL` for absolute + common relative-base forms).
+
+**The synchronous + timer-async realm is now broad:** `console`, `process`,
+`TextEncoder`/`TextDecoder`, `queueMicrotask`, `btoa`/`atob`, `crypto`,
+`setTimeout`/`setInterval` + event-loop `drain`, `performance`, `global`/`self`,
+`structuredClone`, `URL`/`URLSearchParams` — all through Home's own JSC
+(`home eval`), all unit-tested (realm jsc test count ~1467), comptime-gated on
+`enable_jsc`.
+
+The realm-globals foundation is now substantial enough that the **next
+milestone is routing `home run file.{js,ts}` through this realm** (off pantry
+`bun`). NOTE the corpus tension: the bun-corpus spawn tests use `home run` and
+currently pass *because* it delegates to real Bun; rerouting before Home's
+runtime is complete (the remaining big subsystems below) will **regress**
+those — so reroute only once the realm can carry the child scripts, or gate it.
+
+Remaining big subsystems (each multi-session), in rough order:
+1. **WebCore async I/O: `fetch`/`Request`/`Response`/`Headers`/`Blob`** — needs
+   the real HTTP client wired into the timer/event loop (the loop now exists,
+   so a `fetch` host-callback that resolves a JS Promise on completion is the
+   shape). `URL` (done) is the prerequisite.
+2. **`fs`/`node:*` modules + a module loader** (`require`/`import`) — expose
+   Home's native `sys`/file APIs (e.g. `Bun.file`, `node:fs` readFileSync) and
+   resolve bare/`node:` specifiers.
+3. **`home run` reroute** onto the realm, then **route the corpus gate** through
+   the real runtime so the pass-count measures real parity.
+Keep building the realm via `home eval` (no corpus dependency) until the
+reroute is net-positive.
 
 **Next (Phase 2): `home run file.{js,ts}` must stop delegating to pantry
 `bun`** and instead route through the JSC path: read the file, transpile TS
