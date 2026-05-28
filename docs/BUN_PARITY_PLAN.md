@@ -198,11 +198,22 @@ pattern as `console`; comptime-gated on `enable_jsc`; 3 focused tests.
 4 new externs in `extern_fns.zig`), `queueMicrotask`, and `btoa`/`atob`
 (Latin1 base64 in JS). `home eval` round-trips `'héllo ✓'` (10 UTF-8 bytes)
 and the standard base64 vectors. The native eval realm now has
-`console` + `process` + these web globals; remaining synchronous gaps are
-`URL`/`URLSearchParams`, `structuredClone`, `crypto.getRandomValues`. The
-next *foundational* gap is an **event loop** — `setTimeout`/`setInterval`/
-`queueMicrotask`-beyond-microtasks and async I/O need a loop to drain after
-script eval (JSC's `JSGlobalContext` drains microtasks but not timers).
+`console` + `process` + these web globals.
+
+**`crypto` global landed (2026-05-27, `ab50bdff`): `jsc/crypto_global.zig`.**
+`crypto.getRandomValues(view)` (libc `arc4random_buf` into integer typed
+arrays, 65536-byte quota) and `crypto.randomUUID()` (RFC 4122 v4).
+`home eval -p 'crypto.randomUUID()'` yields a valid v4 UUID. `crypto.subtle`
+(async) is a later step.
+
+So the native eval realm now exposes: `console`, `process`,
+`TextEncoder`/`TextDecoder`, `queueMicrotask`, `btoa`/`atob`,
+`crypto.getRandomValues`/`randomUUID`. Remaining synchronous gaps:
+`URL`/`URLSearchParams`, `structuredClone`, `performance.now`,
+`globalThis.global` alias. The next *foundational* gap is an **event loop** —
+`setTimeout`/`setInterval` and async I/O need a loop to drain after script
+eval (JSC's `JSGlobalContext` drains microtasks but not timers). The event
+loop is the gating piece before `home run` can carry real async scripts.
 
 **Next (Phase 2): `home run file.{js,ts}` must stop delegating to pantry
 `bun`** and instead route through the JSC path: read the file, transpile TS
