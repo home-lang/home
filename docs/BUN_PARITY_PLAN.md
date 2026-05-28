@@ -308,9 +308,16 @@ threads `args[3..]` so `process.argv.slice(2)` is populated on both paths.
 utf8/hex/base64/latin1 toString, equals/toJSON) + the global `Buffer`. So
 `require()` now serves path/fs/os/events/util/buffer. Realm jsc tests ~1487.
 
+**`node:assert`/`querystring`/`crypto` landed (`42c0c46b`):** assert
+(ok/equal/strict/deep/throws/rejects + AssertionError), querystring
+(parse/stringify/escape), crypto (`createHash` sha256/sha512/sha1/md5 via
+`std.crypto` — verified vectors; `randomBytes`; `randomUUID`). `require()` now
+serves **path/fs/os/events/util/buffer/assert/querystring/crypto** (9 modules).
+Realm jsc tests ~1490.
+
 Remaining (each multi-session), in rough order:
-1. **More `node:*` + `fetch` polish** — `node:{stream,crypto,child_process,
-   assert,querystring}` behind the existing `require()`; TS transpile on the
+1. **More `node:*` + `fetch` polish** — `node:{stream,child_process,timers,
+   string_decoder}` behind the existing `require()`; TS transpile on the
    native run path (so `.ts` files run natively); fetch response headers /
    binary bodies / async-on-loop.
 2. **Flip the native run default** (off bun delegation) once the realm carries
