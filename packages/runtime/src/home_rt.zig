@@ -1774,6 +1774,8 @@ pub const jsc = struct {
     pub const webcore_globals = @import("jsc/webcore_globals.zig");
     // fetch() for the realm (data:/file: now; network pending).
     pub const fetch_global = @import("jsc/fetch_global.zig");
+    // Minimal native `Bun` global (Bun.file/Bun.write) for the realm.
+    pub const bun_global = @import("jsc/bun_global.zig");
     // Phase 12.2 M6 (2026-05-19) — final scaffold milestone:
     // JSON + Promise + Iterator + Global helpers. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands. After M6
@@ -5202,6 +5204,7 @@ test {
     _ = @import("jsc/url_global.zig");
     _ = @import("jsc/webcore_globals.zig");
     _ = @import("jsc/fetch_global.zig");
+    _ = @import("jsc/bun_global.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
