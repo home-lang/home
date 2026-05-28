@@ -24,6 +24,121 @@ const JSContextRef = opaques.JSContextRef;
 const JSObject = opaques.JSObject;
 const JSGlobalObject = opaques.JSGlobalObject;
 
+fn io() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
+fn jsStringValue(ctx: *JSContextRef, text: []const u8) ?*JSValue {
+    const allocator = std.heap.page_allocator;
+    const text_z = allocator.dupeZ(u8, text) catch return null;
+    defer allocator.free(text_z);
+    const string = extern_fns.JSStringCreateWithUTF8CString(text_z.ptr) orelse return null;
+    defer extern_fns.JSStringRelease(string);
+    return extern_fns.JSValueMakeString(ctx, string);
+}
+
+fn setProp(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: ?*JSValue) void {
+    const allocator = std.heap.page_allocator;
+    const key_z = allocator.dupeZ(u8, key) catch return;
+    defer allocator.free(key_z);
+    const name = extern_fns.JSStringCreateWithUTF8CString(key_z.ptr) orelse return;
+    defer extern_fns.JSStringRelease(name);
+    extern_fns.JSObjectSetProperty(ctx, object, name, value, 0, null);
+}
+
+/// Read a JS string argument into an owned UTF-8 slice (caller frees).
+fn argToOwnedUtf8(ctx: *JSContextRef, value: *JSValue, allocator: std.mem.Allocator) ?[]u8 {
+    const string = extern_fns.JSValueToStringCopy(ctx, value, null) orelse return null;
+    defer extern_fns.JSStringRelease(string);
+    const capacity = extern_fns.JSStringGetLength(string) * 4 + 1;
+    const buf = allocator.alloc(u8, capacity) catch return null;
+    const written = extern_fns.JSStringGetUTF8CString(string, buf.ptr, buf.len);
+    return buf[0 .. if (written > 0) written - 1 else 0];
+}
+
+fn errorResult(ctx: *JSContextRef, message: []const u8) ?*JSValue {
+    const object = extern_fns.JSObjectMake(ctx, null, null) orelse return extern_fns.JSValueMakeNull(ctx);
+    setProp(ctx, object, "error", jsStringValue(ctx, message));
+    return @ptrCast(object);
+}
+
+/// `__home_fetch_http(method, url, bodyOrNull, [name, value, ...])` performs a
+/// real (blocking) HTTP/HTTPS request via std.http.Client and returns
+/// `{ status, body: Uint8Array }`, or `{ error }` on failure. Request headers
+/// come from the flat name/value array; response headers are not surfaced yet.
+fn httpFetchNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argc: usize,
+    argv: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argc < 2) return errorResult(c, "fetch: missing method/url");
+
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const method_str = (if (argv[0]) |v| argToOwnedUtf8(c, v, arena) else null) orelse return errorResult(c, "fetch: bad method");
+    const url = (if (argv[1]) |v| argToOwnedUtf8(c, v, arena) else null) orelse return errorResult(c, "fetch: bad url");
+
+    var payload: ?[]const u8 = null;
+    if (argc >= 3) {
+        if (argv[2]) |v| {
+            if (!extern_fns.JSValueIsNull(c, v) and !extern_fns.JSValueIsUndefined(c, v)) {
+                payload = argToOwnedUtf8(c, v, arena);
+            }
+        }
+    }
+
+    // Build request headers from the flat [name, value, ...] array.
+    var headers: std.ArrayListUnmanaged(std.http.Header) = .empty;
+    if (argc >= 4) {
+        if (argv[3]) |arr_v| {
+            if (extern_fns.JSValueToObject(c, arr_v, null)) |arr| {
+                const len_name = extern_fns.JSStringCreateWithUTF8CString("length");
+                const len_val = if (len_name) |ln| extern_fns.JSObjectGetProperty(c, arr, ln, null) else null;
+                if (len_name) |ln| extern_fns.JSStringRelease(ln);
+                const count: usize = if (len_val) |lv| @intFromFloat(extern_fns.JSValueToNumber(c, lv, null)) else 0;
+                var i: usize = 0;
+                while (i + 1 < count) : (i += 2) {
+                    const name_v = extern_fns.JSObjectGetPropertyAtIndex(c, arr, @intCast(i), null);
+                    const value_v = extern_fns.JSObjectGetPropertyAtIndex(c, arr, @intCast(i + 1), null);
+                    const name = (if (name_v) |nv| argToOwnedUtf8(c, nv, arena) else null) orelse continue;
+                    const value = (if (value_v) |vv| argToOwnedUtf8(c, vv, arena) else null) orelse continue;
+                    headers.append(arena, .{ .name = name, .value = value }) catch {};
+                }
+            }
+        }
+    }
+
+    const method = std.meta.stringToEnum(std.http.Method, method_str) orelse .GET;
+
+    var client: std.http.Client = .{ .allocator = arena, .io = io() };
+    defer client.deinit();
+
+    var body_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator);
+    defer body_writer.deinit();
+
+    const result = client.fetch(.{
+        .location = .{ .url = url },
+        .method = method,
+        .payload = payload,
+        .response_writer = &body_writer.writer,
+        .extra_headers = headers.items,
+    }) catch |err| return errorResult(c, @errorName(err));
+
+    const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeNull(c);
+    setProp(c, object, "status", extern_fns.JSValueMakeNumber(c, @floatFromInt(@intFromEnum(result.status))));
+    setProp(c, object, "body", makeUint8Array(c, body_writer.written()));
+    return @ptrCast(object);
+}
+
 fn makeUint8Array(ctx: *JSContextRef, bytes: []const u8) ?*JSValue {
     const array = extern_fns.JSObjectMakeTypedArray(ctx, .kJSTypedArrayTypeUint8Array, bytes.len, null) orelse
         return extern_fns.JSValueMakeNull(ctx);
@@ -54,17 +169,11 @@ fn readFileNative(
     const value = arguments[0] orelse return extern_fns.JSValueMakeNull(c);
 
     const allocator = std.heap.page_allocator;
-    const string = extern_fns.JSValueToStringCopy(c, value, null) orelse return extern_fns.JSValueMakeNull(c);
-    defer extern_fns.JSStringRelease(string);
-    const capacity = extern_fns.JSStringGetLength(string) * 4 + 1;
-    const path_buf = allocator.alloc(u8, capacity) catch return extern_fns.JSValueMakeNull(c);
-    defer allocator.free(path_buf);
-    const written = extern_fns.JSStringGetUTF8CString(string, path_buf.ptr, path_buf.len);
-    const path = path_buf[0 .. if (written > 0) written - 1 else 0];
+    const path = argToOwnedUtf8(c, value, allocator) orelse return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(path);
     if (path.len == 0) return extern_fns.JSValueMakeNull(c);
 
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(256 * 1024 * 1024)) catch
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io(), path, allocator, std.Io.Limit.limited(256 * 1024 * 1024)) catch
         return extern_fns.JSValueMakeNull(c);
     defer allocator.free(bytes);
     return makeUint8Array(c, bytes);
@@ -73,6 +182,7 @@ fn readFileNative(
 const install_glue =
     \\(function() {
     \\  var readFile = globalThis.__home_fetch_read_file;
+    \\  var httpFetch = globalThis.__home_fetch_http;
     \\
     \\  function parseDataUrl(url) {
     \\    var comma = url.indexOf(",");
@@ -129,14 +239,30 @@ const install_glue =
     \\        resp.url = url;
     \\        return Promise.resolve(resp);
     \\      }
-    \\      return Promise.reject(new TypeError(
-    \\        "fetch(): network requests are not yet implemented in Home's native runtime " +
-    \\        "(only data: and file: URLs are supported so far) — requested: " + url));
+    \\      var method = "GET";
+    \\      if (init && init.method) method = String(init.method).toUpperCase();
+    \\      else if (input && typeof input === "object" && input.method) method = String(input.method).toUpperCase();
+    \\      var bodyStr = null;
+    \\      var rawBody = (init && init.body !== undefined) ? init.body : (input && typeof input === "object" ? input._bodyBytes : undefined);
+    \\      if (rawBody !== undefined && rawBody !== null) {
+    \\        if (typeof rawBody === "string") bodyStr = rawBody;
+    \\        else if (rawBody instanceof Uint8Array) bodyStr = new TextDecoder().decode(rawBody);
+    \\        else bodyStr = String(rawBody);
+    \\      }
+    \\      var headerPairs = [];
+    \\      var hsrc = (init && init.headers) ? init.headers : (input && typeof input === "object" ? input.headers : undefined);
+    \\      if (hsrc) { new Headers(hsrc).forEach(function(v, k) { headerPairs.push(k); headerPairs.push(v); }); }
+    \\      var res = httpFetch(method, url, bodyStr, headerPairs);
+    \\      if (!res || res.error) return Promise.reject(new TypeError("fetch failed: " + (res ? res.error : "unknown") + " (" + url + ")"));
+    \\      var resp = new Response(res.body, { status: res.status });
+    \\      resp.url = url;
+    \\      return Promise.resolve(resp);
     \\    } catch (e) {
     \\      return Promise.reject(e);
     \\    }
     \\  };
     \\  delete globalThis.__home_fetch_read_file;
+    \\  delete globalThis.__home_fetch_http;
     \\})();
 ;
 
@@ -145,6 +271,7 @@ const install_glue =
 pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     if (comptime !build_options.enable_jsc) return;
     callback.registerCallback(ctx, global, "__home_fetch_read_file", readFileNative);
+    callback.registerCallback(ctx, global, "__home_fetch_http", httpFetchNative);
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:fetch-install", 1) catch return;
     result.deinit(allocator);
 }
@@ -187,10 +314,9 @@ test "fetch reads a file: URL natively into a Response" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     // Write a known temp file through the same shared Io the native read uses.
-    const io = std.Io.Threaded.global_single_threaded.io();
     const path = "/tmp/home_fetch_unit_test.txt";
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "file-body-123" });
-    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    try std.Io.Dir.cwd().writeFile(io(), .{ .sub_path = path, .data = "file-body-123" });
+    defer std.Io.Dir.cwd().deleteFile(io(), path) catch {};
 
     const Engine = @import("engine.zig").Engine;
     var engine = try Engine.init(std.testing.allocator);
@@ -218,7 +344,7 @@ test "fetch rejects a missing file: URL" {
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__m === 'TypeError'"));
 }
 
-test "fetch rejects an http: URL as not-yet-implemented" {
+test "fetch attempts http: and rejects on a refused connection" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
     const Engine = @import("engine.zig").Engine;
     var engine = try Engine.init(std.testing.allocator);
@@ -226,8 +352,11 @@ test "fetch rejects an http: URL as not-yet-implemented" {
     const ctx = engine.currentContext();
     installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
 
+    // Port 1 on loopback is reliably closed: the request is attempted (no
+    // "not implemented" stub) and rejects with a connection error. No external
+    // network is touched.
     _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__h = null; fetch('https://example.com').then(function() { globalThis.__h = 'resolved'; }, function(e) { globalThis.__h = e.name + ':' + /not yet implemented/.test(e.message); });",
+        "globalThis.__h = null; fetch('http://127.0.0.1:1/').then(function() { globalThis.__h = 'resolved'; }, function(e) { globalThis.__h = e.name; });",
         "home:fetch-http-setup", 1, null);
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__h === 'TypeError:true'"));
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__h === 'TypeError'"));
 }
