@@ -1563,12 +1563,17 @@ pub const Engine = struct {
                 if (!self.pool().flagsOf(t).is_object_type) continue;
                 var all_disc_ok = true;
                 for (disc.items, 0..) |sp, i| {
-                    const tp = self.interner.objectMember(t, sp.name) orelse {
+                    const tpi = self.interner.objectMemberInfo(t, sp.name) orelse {
                         all_disc_ok = false;
                         break;
                     };
                     // Compare the chosen combination value (a unit type)
-                    // to the target's discriminant property type.
+                    // to the target's discriminant property type. An
+                    // optional target discriminant accepts `undefined`
+                    // (its declared type implicitly includes it under
+                    // strictNullChecks) — mirrors tsc matching the
+                    // `undefined` combination of `{ color?: 'yellow' }`.
+                    const tp = try self.effectiveOptionalMemberType(tpi);
                     if (!try self.isAssignableTo(combination[i], tp)) {
                         all_disc_ok = false;
                         break;
@@ -1629,7 +1634,8 @@ pub const Engine = struct {
                 }
             }
             if (found_type) |st| {
-                if (!try self.isAssignableTo(st, tm.type)) return false;
+                const effective_target = try self.effectiveOptionalMemberType(tm);
+                if (!try self.isAssignableTo(st, effective_target)) return false;
             } else {
                 // Missing on source: fine only if optional.
                 if (!tm.is_optional) return false;
@@ -1922,6 +1928,7 @@ pub const Engine = struct {
         source_members: []const types.ObjectMember,
         target_member: types.ObjectMember,
     ) anyerror!bool {
+        const effective_target = try self.effectiveOptionalMemberType(target_member);
         for (source_members) |sm| {
             if (sm.name != target_member.name) continue;
             if (!target_member.is_optional and sm.is_optional) return false;
@@ -1929,9 +1936,29 @@ pub const Engine = struct {
             // (covariant). Mutable on target with readonly source is
             // still allowed for now to match the current default flag
             // surface.
-            if (try self.isAssignableTo(sm.type, target_member.type)) return true;
+            if (try self.isAssignableTo(sm.type, effective_target)) return true;
         }
         return false;
+    }
+
+    /// Effective type of a (possibly optional) object property for
+    /// assignability. Mirrors tsc: an optional property's declared
+    /// type already includes `undefined` under strictNullChecks (it is
+    /// added at declaration time by `addOptionalityEx`), so a source
+    /// value of `undefined` satisfies an optional target property. We
+    /// fold that in lazily here — appending `undefined` to the target
+    /// member's declared type when the member is optional and
+    /// strictNullChecks is on. Without strictNullChecks `undefined` is
+    /// already assignable to everything, so the augmentation is a no-op.
+    fn effectiveOptionalMemberType(self: *Engine, member: types.ObjectMember) anyerror!TypeId {
+        if (!member.is_optional or !self.strict_null_checks) return member.type;
+        if (member.type == Primitive.undefined_t) return member.type;
+        if (self.pool().flagsOf(member.type).is_union) {
+            for (self.interner.unionMembers(member.type)) |m| {
+                if (m == Primitive.undefined_t) return member.type;
+            }
+        }
+        return try self.interner.internUnion(&.{ member.type, Primitive.undefined_t });
     }
 
     /// True iff every byte of `s` is an ASCII digit (0-9). Mirrors
