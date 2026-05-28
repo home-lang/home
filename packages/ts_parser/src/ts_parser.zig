@@ -4248,6 +4248,28 @@ pub const Parser = struct {
                     try self.reportReservedBindingNameIfNeeded(key_tok);
                     const name_id = try self.internToken(key_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(key_tok), name_id);
+                } else if (is_object and flags.is_rest) blk: {
+                    // Object-pattern rest element. `{ ...rest }` is the
+                    // normal form (no property name); `{ ...a: b }` is a
+                    // rest element carrying a property name. Upstream
+                    // parses a property name first, then — when a `:`
+                    // follows — treats it as a rename whose binding name
+                    // is `node.Name()` and flags TS2566 anchored at that
+                    // binding name. Mirrors `checkGrammarBindingElement`.
+                    const first = try self.parseBindingTarget();
+                    if (self.peek().kind == .colon) {
+                        _ = self.advance(); // ':'
+                        const target_tok = self.peek();
+                        const target = try self.parseBindingTarget();
+                        try self.reportCodeAt(
+                            self.hir.spanOf(target).start,
+                            target_tok.line,
+                            2566,
+                            "A rest element cannot have a property name.",
+                        );
+                        break :blk target;
+                    }
+                    break :blk first;
                 } else try self.parseBindingTarget();
                 // `{ h? }` — TS doesn't accept `?` on object-binding
                 // shorthand elements (the binding-element grammar
@@ -18488,6 +18510,36 @@ test "parser: labeled tuple optional rest emits TS5085" {
     const diag = s.parser.diagnostics.items[0];
     try T.expectEqual(@as(u32, 5085), diag.code);
     try T.expectEqualStrings("A tuple member cannot be both optional and rest.", diag.message);
+}
+
+test "parser: object rest element with property name emits TS2566" {
+    // `{ ...a: b }` — the rest element `...a` carries a property
+    // name (`a`) and renames to `b`. Upstream flags TS2566 anchored
+    // at the binding name (`b`), col 15 → 0-indexed pos 14.
+    var s = try newTestSetup("const { ...a: b } = {};");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 2566) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("A rest element cannot have a property name.", d.message);
+    try T.expectEqual(@as(u32, 14), d.pos);
+}
+
+test "parser: object rest element without property name is accepted" {
+    // `{ ...rest }` is the normal object-rest form — no TS2566.
+    var s = try newTestSetup("const { a, ...rest } = {};");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 2566) == null);
+}
+
+test "parser: nested object rest with property name in rest param emits TS2566" {
+    // Mirrors upstream `restParameterWithBindingPattern3.ts` line 9:
+    // the destructured rest param `{ ...rest: rest }` flags TS2566.
+    var s = try newTestSetup("function e(...{ ...rest: rest }: [boolean]) { }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 2566) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("A rest element cannot have a property name.", d.message);
 }
 
 test "parser: tuple rest element cannot follow rest element emits TS1265" {
