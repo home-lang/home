@@ -124,6 +124,7 @@ const CheckerResolverAdapter = struct {
 
     pub const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolveImpl,
+        .moduleExport = moduleExportImpl,
     };
 
     fn resolveImpl(
@@ -137,6 +138,41 @@ const CheckerResolverAdapter = struct {
             .path = r.path,
             .is_declaration = r.is_declaration,
             .alternate_result = r.alternate_result,
+        };
+    }
+
+    /// Cross-module export query, backing the checker's
+    /// `crossModulePrivateNameInfo` (TS4023/TS4024/TS4026/TS4030/TS4034
+    /// "… from external/private module …" privacy diagnostics). Without
+    /// this the production CLI left those codes silent on real `home-tsc`
+    /// invocations even though the checker emission sites exist — only
+    /// the conformance harness wired it. Resolve the specifier, read +
+    /// bind the resolved module, and report whether `name` is a top-level
+    /// type-space export (`exported_type`) or reachable only as a nested
+    /// member of an exported namespace (`cannot_be_named`). Mirrors the
+    /// conformance harness's `CheckerResolverAdapter.moduleExportImpl`.
+    fn moduleExportImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+    ) ?ts_driver.ExternalResolver.ModuleExport {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const r = self.resolver.resolve(specifier, containing_file) catch return null;
+        // The resolver's arena outlives the checker calls, so the rendered
+        // module name borrowed by the checker stays valid.
+        const arena = self.resolver.arena.allocator();
+        const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
+        defer self.resolver.gpa.free(src);
+        const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+        const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
+        const cannot_be_named = !exported and
+            ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
+        const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
+        return .{
+            .module_name = module_name,
+            .exported_type = exported,
+            .cannot_be_named = cannot_be_named,
         };
     }
 };
