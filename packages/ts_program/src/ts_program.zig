@@ -1054,6 +1054,50 @@ pub fn moduleExportsTypeSpaceName(
     return sym.flags.is_type and sym.flags.is_export;
 }
 
+/// True when `name` is exported from `module_source` via a TYPE-ONLY
+/// export — `export type { name }` (or `export { type name }`), or a
+/// blanket `export type * from "…"` (which re-exports every name
+/// type-only, so any imported `name` came through it). Drives TS1379 /
+/// TS1362. A syntactic scan of the module's top-level export statements,
+/// mirroring how upstream's `getTypeOnlyExportStarDeclaration` /
+/// type-only export specifiers mark a name's exported-ness as type-only.
+pub fn moduleExportIsTypeOnly(
+    gpa: std.mem.Allocator,
+    module_source: []const u8,
+    name: []const u8,
+    is_tsx: bool,
+) bool {
+    var compilation = ts_driver.compileSource(gpa, module_source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return false;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    const root = compilation.root;
+    if (compilation.hir.kindOf(root) != .block_stmt) return false;
+    const name_id = compilation.interner.lookup(name);
+    for (hir_mod_ns.blockStmts(&compilation.hir, root)) |stmt| {
+        if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
+        if (!ex.is_type_only) continue;
+        // `export type * from "…"` re-exports every name type-only.
+        if (ex.is_namespace) return true;
+        // `export type { name }` / `export type { x as name }`.
+        if (name_id) |nid| {
+            for (hir_mod_ns.exportNamed(&compilation.hir, stmt)) |spec_node| {
+                if (compilation.hir.kindOf(spec_node) != .export_specifier and
+                    compilation.hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod_ns.importSpecifierOf(&compilation.hir, spec_node);
+                if (sp.local == nid or sp.imported == nid) return true;
+            }
+        }
+    }
+    return false;
+}
+
 /// True when `name` is NOT a direct top-level type-space export of
 /// `module_source` (so `moduleExportsTypeSpaceName` returned false) but
 /// IS reachable as a type-space member nested inside one of the module's

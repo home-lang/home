@@ -168,11 +168,13 @@ const CheckerResolverAdapter = struct {
         const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
         const cannot_be_named = !exported and
             ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
+        const type_only_export = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
         const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
         return .{
             .module_name = module_name,
             .exported_type = exported,
             .cannot_be_named = cannot_be_named,
+            .type_only_export = type_only_export,
         };
     }
 };
