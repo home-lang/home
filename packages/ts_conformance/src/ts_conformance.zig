@@ -89,13 +89,16 @@ const CheckerResolverAdapter = struct {
         // alias). Only queried when it is not a top-level export.
         const cannot_be_named = !exported and
             ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
-        const type_only_export = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
+        const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
         const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
+        const export_path = if (type_only_pos != null) (arena.dupe(u8, r.path) catch return null) else "";
         return .{
             .module_name = module_name,
             .exported_type = exported,
             .cannot_be_named = cannot_be_named,
-            .type_only_export = type_only_export,
+            .type_only_export = type_only_pos != null,
+            .export_path = export_path,
+            .export_pos = type_only_pos orelse 0,
         };
     }
 };

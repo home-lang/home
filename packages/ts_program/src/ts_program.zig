@@ -1066,36 +1066,36 @@ pub fn moduleExportIsTypeOnly(
     module_source: []const u8,
     name: []const u8,
     is_tsx: bool,
-) bool {
+) ?u32 {
     var compilation = ts_driver.compileSource(gpa, module_source, .{
         .is_tsx = is_tsx,
         .continue_on_error = true,
         .no_emit = true,
-    }) catch return false;
+    }) catch return null;
     defer {
         compilation.deinit();
         gpa.destroy(compilation);
     }
     const root = compilation.root;
-    if (compilation.hir.kindOf(root) != .block_stmt) return false;
+    if (compilation.hir.kindOf(root) != .block_stmt) return null;
     const name_id = compilation.interner.lookup(name);
     for (hir_mod_ns.blockStmts(&compilation.hir, root)) |stmt| {
         if (compilation.hir.kindOf(stmt) != .export_decl) continue;
         const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
         if (!ex.is_type_only) continue;
         // `export type * from "…"` re-exports every name type-only.
-        if (ex.is_namespace) return true;
+        if (ex.is_namespace) return compilation.hir.spanOf(stmt).start;
         // `export type { name }` / `export type { x as name }`.
         if (name_id) |nid| {
             for (hir_mod_ns.exportNamed(&compilation.hir, stmt)) |spec_node| {
                 if (compilation.hir.kindOf(spec_node) != .export_specifier and
                     compilation.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod_ns.importSpecifierOf(&compilation.hir, spec_node);
-                if (sp.local == nid or sp.imported == nid) return true;
+                if (sp.local == nid or sp.imported == nid) return compilation.hir.spanOf(spec_node).start;
             }
         }
     }
-    return false;
+    return null;
 }
 
 /// True when `name` is NOT a direct top-level type-space export of
