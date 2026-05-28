@@ -1574,6 +1574,16 @@ fn looksLikePackageScriptName(name: []const u8) bool {
 }
 
 fn runJsLikeFile(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    // Opt-in native path (Phase 2): `HOME_NATIVE_RUN=1 home run file.js` runs
+    // through Home's OWN JSC runtime for plain `.js`/`.cjs` (script-mode; ESM
+    // `.mjs` and TS still delegate). Gated so the default path is unchanged and
+    // the bun-corpus spawn tests (which use `home run`) keep passing.
+    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_RUN") and
+        (std.mem.endsWith(u8, file_path, ".js") or std.mem.endsWith(u8, file_path, ".cjs")))
+    {
+        return runFileNative(allocator, file_path, extra_args);
+    }
+
     // TODO(phase-12-2): Replace this delegation with the native Home runtime
     // once `packages/runtime/src/jsc/` is populated.
     const bun_path = findBunBinary() catch {
@@ -1622,6 +1632,71 @@ fn execPantryCommand(allocator: std.mem.Allocator, pantry_subcommand: []const u8
     try spawnInteractive(argv.items);
 }
 
+/// Install the full native realm surface (console/process/web/crypto/timers/
+/// misc/url/webcore/fetch/Bun/require) into `ctx`'s global. Shared by
+/// `home eval` and the native `home run` path. `argv` becomes `process.argv`.
+fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anytype, argv: []const []const u8) void {
+    home_rt.jsc.console_global.install(allocator, ctx, global);
+    home_rt.jsc.process_global.install(allocator, ctx, global, argv);
+    home_rt.jsc.web_globals.install(allocator, ctx, global);
+    home_rt.jsc.crypto_global.install(allocator, ctx, global);
+    home_rt.jsc.timers_global.install(allocator, ctx, global);
+    home_rt.jsc.misc_globals.install(allocator, ctx, global);
+    home_rt.jsc.url_global.install(allocator, ctx, global);
+    home_rt.jsc.webcore_globals.install(allocator, ctx, global);
+    home_rt.jsc.fetch_global.install(allocator, ctx, global);
+    home_rt.jsc.bun_global.install(allocator, ctx, global);
+    home_rt.jsc.node_modules.install(allocator, ctx, global);
+}
+
+/// True when env var `name` is set to a non-empty value.
+fn envFlagSet(name: [*:0]const u8) bool {
+    const value = std.c.getenv(name) orelse return false;
+    return value[0] != 0;
+}
+
+/// Execute a JS file through Home's OWN native JSC runtime (not bun delegation).
+/// Opt-in via `HOME_NATIVE_RUN=1` for plain `.js`/`.cjs` files; this is the
+/// Phase-2 `home run` milestone, gated so it cannot regress the bun-corpus
+/// spawn tests (which rely on the bun-delegation path).
+fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    if (comptime !build_options.enable_jsc) {
+        std.debug.print("{s}error:{s} native run requires a JSC-enabled build\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.process.exit(1);
+    } else {
+        const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
+            std.debug.print("{s}error:{s} cannot read '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
+            std.process.exit(1);
+        };
+        defer allocator.free(source);
+
+        // process.argv = [exe, file, ...extra_args]
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer argv.deinit(allocator);
+        argv.append(allocator, "home") catch {};
+        argv.append(allocator, file_path) catch {};
+        for (extra_args) |a| argv.append(allocator, a) catch {};
+
+        var engine = home_rt.jsc.engine.Engine.init(allocator) catch |err| {
+            std.debug.print("{s}error:{s} failed to start JavaScriptCore: {}\n", .{ Color.Red.code(), Color.Reset.code(), err });
+            std.process.exit(1);
+        };
+        defer engine.deinit();
+        const ctx = engine.currentContext();
+        const global = engine.currentGlobalObject();
+        installRealmGlobals(allocator, ctx, global, argv.items);
+
+        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, source, file_path, 1);
+        defer evaluation.deinit(allocator);
+        if (evaluation.exception != null) {
+            const message = evaluation.exception_message orelse "uncaught exception";
+            std.debug.print("{s}error:{s} {s}\n", .{ Color.Red.code(), Color.Reset.code(), message });
+            std.process.exit(1);
+        }
+        home_rt.jsc.timers_global.drain(ctx);
+    }
+}
+
 /// `home eval <code> [--print|-p]` — execute a JavaScript source string
 /// through Home's OWN JavaScriptCore runtime (`home_rt.jsc`), NOT by
 /// delegating to the system `bun` binary like `home run` currently does.
@@ -1642,19 +1717,8 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
         defer engine.deinit();
 
         const ctx = engine.currentContext();
-        // Expose minimal `console` + `process` globals (Bun realms have both).
         const global = engine.currentGlobalObject();
-        home_rt.jsc.console_global.install(allocator, ctx, global);
-        home_rt.jsc.process_global.install(allocator, ctx, global, &[_][]const u8{"home"});
-        home_rt.jsc.web_globals.install(allocator, ctx, global);
-        home_rt.jsc.crypto_global.install(allocator, ctx, global);
-        home_rt.jsc.timers_global.install(allocator, ctx, global);
-        home_rt.jsc.misc_globals.install(allocator, ctx, global);
-        home_rt.jsc.url_global.install(allocator, ctx, global);
-        home_rt.jsc.webcore_globals.install(allocator, ctx, global);
-        home_rt.jsc.fetch_global.install(allocator, ctx, global);
-        home_rt.jsc.bun_global.install(allocator, ctx, global);
-        home_rt.jsc.node_modules.install(allocator, ctx, global);
+        installRealmGlobals(allocator, ctx, global, &[_][]const u8{"home"});
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, code, "home:eval", 1);
         defer evaluation.deinit(allocator);
 
@@ -1680,10 +1744,10 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
     }
 }
 
-fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
     // Route JS / TS files through the runtime delegation shim (Phase 12).
     if (fileExtIsJsLike(file_path)) {
-        return runJsLikeFile(allocator, file_path, &.{});
+        return runJsLikeFile(allocator, file_path, extra_args);
     }
 
     // Bun-style `home run <script>` for package.json scripts: if the
@@ -1691,7 +1755,7 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     // try the JS runtime path so script lookup happens there.
     Io.Dir.cwd().access(g_io, file_path, .{}) catch |access_err| {
         if (access_err == error.FileNotFound and looksLikePackageScriptName(file_path)) {
-            return runJsLikeFile(allocator, file_path, &.{});
+            return runJsLikeFile(allocator, file_path, extra_args);
         }
         std.debug.print("{s}Error:{s} Failed to access '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, access_err });
         return access_err;
@@ -3670,7 +3734,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
 
-        try runCommand(allocator, args[2]);
+        try runCommand(allocator, args[2], args[3..]);
         return;
     }
 
