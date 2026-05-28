@@ -271,12 +271,20 @@ filesystem access from the realm. Realm jsc test count ~1479.
 `structuredClone`, `URL`/`URLSearchParams`, `Headers`/`Blob`/`Request`/`Response`,
 `fetch` (data:/file:), `Bun.file`/`Bun.write`.
 
+**Network `fetch()` landed (`f7e6251f`, in `jsc/fetch_global.zig`):** a native
+`__home_fetch_http(method, url, body, [name,value,…])` drives
+`std.http.Client` (`Client{ .allocator, .io }` over the shared `std.Io`) and
+returns `{ status, body }`/`{ error }`; the JS `fetch` routes `http(s):`
+through it with request headers + string body, resolving a real `Response`
+(follows redirects). Verified end-to-end against a localhost server
+(`STATUS 200` + real body) and a refused-connection rejection. v1 caveats:
+response headers not yet surfaced (high-level `fetch` exposes status+body;
+needs the lower-level `request`/`receiveHead` path), and the request blocks
+the thread (sync under a Promise) rather than running on the loop.
+
 Remaining big subsystems (each multi-session), in rough order:
-1. **Network `fetch()`** — the data types + the `data:`/`file:` paths are done;
-   what remains is wiring Home's ported HTTP client into the event loop: a host
-   callback that performs the request and resolves the `Response` Promise on
-   completion (the loop must also wait on in-flight network tasks, not just
-   timers/microtasks).
+1. **`fetch` polish** — surface response headers (lower-level request path),
+   binary request bodies, and move the request onto the event loop (async).
 2. **`node:*` modules + a module loader** — expand the native fs surface into
    `node:fs`/`node:path`/`node:os`/… behind a `require`/`import` resolver
    (`Bun.file`/`Bun.write` are the fs foundation).
