@@ -3832,6 +3832,32 @@ pub const Parser = struct {
                     if (self.peek().kind == .close_paren) break;
                     continue;
                 }
+                // TS1390 — a reserved keyword (`if`, `enum`, `class`,
+                // `for`, …) appears where a parameter name is expected.
+                // Upstream's `isStartOfParameter` rejects it, so
+                // `parsingContextErrors(PCParameters)` reports TS1390,
+                // anchored at the keyword and interpolating its text.
+                // Recover by skipping the offending keyword and resuming
+                // the list (mirroring the invalid-character branch above)
+                // so a following `)` / `,` is handled cleanly rather than
+                // hard-failing the parameter list. Mirrors `reservedWords3.ts`.
+                if (reservedWordInvalidAsParamName(self.peek().kind)) {
+                    const kw = self.advance();
+                    try self.reportCodeAtWithSpan(
+                        kw.span.start,
+                        kw.line,
+                        kw.span.end - kw.span.start,
+                        1390,
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "'{s}' is not allowed as a parameter name.",
+                            .{self.source[kw.span.start..kw.span.end]},
+                        ),
+                    );
+                    if (self.peek().kind == .close_paren) break;
+                    if (self.match(.comma)) continue;
+                    continue;
+                }
                 // Destructuring parameter: `function f({ a, b } : T)` or
                 // `function f([ x, y ] : T)`. The pattern stands in for
                 // the parameter's "name" — downstream the binder walks
@@ -5512,6 +5538,59 @@ pub const Parser = struct {
             .kw_protected,
             .kw_readonly,
             .kw_override,
+            => true,
+            else => false,
+        };
+    }
+
+    /// TS1390 — reserved keywords that may not be used as a parameter
+    /// name. These are exactly the keywords that upstream tsc's
+    /// `isStartOfParameter` rejects: a parameter may begin with `...`,
+    /// `@`, a modifier, a binding identifier/pattern, or a type start,
+    /// so any *other* keyword reaching the parameter-name position is
+    /// reported via `parsingContextErrors(PCParameters)` as
+    /// `'{0}' is not allowed as a parameter name`.
+    ///
+    /// Deliberately EXCLUDED (each is a valid parameter start upstream):
+    ///   * contextual keywords (`async`, `type`, `yield`, `await`, `of`,
+    ///     `as`, …) — these are binding identifiers in this position;
+    ///   * type-start keywords (`void`, `typeof`, `null`, `true`,
+    ///     `false`, `new`, `import`, `this`) — `isStartOfType` accepts
+    ///     them, so tsc parses them and errors elsewhere;
+    ///   * parameter-property / strict-reserved modifier keywords
+    ///     (`public`, `private`, `protected`, `static`, `readonly`,
+    ///     `let`, `interface`, …) — handled by their own diagnostics.
+    /// Mirrors `reservedWords3.ts`.
+    fn reservedWordInvalidAsParamName(kind: TokenKind) bool {
+        return switch (kind) {
+            .kw_break,
+            .kw_case,
+            .kw_catch,
+            .kw_class,
+            .kw_const,
+            .kw_continue,
+            .kw_debugger,
+            .kw_default,
+            .kw_delete,
+            .kw_do,
+            .kw_else,
+            .kw_enum,
+            .kw_export,
+            .kw_extends,
+            .kw_finally,
+            .kw_for,
+            .kw_function,
+            .kw_if,
+            .kw_in,
+            .kw_instanceof,
+            .kw_return,
+            .kw_super,
+            .kw_switch,
+            .kw_throw,
+            .kw_try,
+            .kw_var,
+            .kw_while,
+            .kw_with,
             => true,
             else => false,
         };
@@ -16922,6 +17001,50 @@ test "parser: TS1031 fires for `export` modifier on class member" {
         if (d.code == 1031) saw_1031 += 1;
     }
     try T.expect(saw_1031 >= 1);
+}
+
+test "parser: TS1390 fires for reserved keywords used as a parameter name" {
+    // `function f1(enum) {}` etc. — a reserved keyword in the
+    // parameter-name position is rejected with TS1390, anchored at the
+    // keyword and interpolating its text. Mirrors `reservedWords3.ts`.
+    var s = try newTestSetup(
+        \\function f1(enum) {}
+        \\function f4(while) {}
+        \\function f5(for) {}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_enum = false;
+    var saw_while = false;
+    var saw_for = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1390) continue;
+        if (std.mem.eql(u8, d.message, "'enum' is not allowed as a parameter name.") and
+            std.mem.eql(u8, s.parser.source[d.pos .. d.pos + 4], "enum")) saw_enum = true;
+        if (std.mem.eql(u8, d.message, "'while' is not allowed as a parameter name.") and
+            std.mem.eql(u8, s.parser.source[d.pos .. d.pos + 5], "while")) saw_while = true;
+        if (std.mem.eql(u8, d.message, "'for' is not allowed as a parameter name.") and
+            std.mem.eql(u8, s.parser.source[d.pos .. d.pos + 3], "for")) saw_for = true;
+    }
+    try T.expect(saw_enum);
+    try T.expect(saw_while);
+    try T.expect(saw_for);
+}
+
+test "parser: contextual and type keywords remain valid parameter names (no TS1390)" {
+    // `async`, `type`, `of`, `yield` are contextual identifiers and
+    // `void`/`null` are type starts — none should trigger TS1390.
+    var s = try newTestSetup(
+        \\function g(async) {}
+        \\function h(type) {}
+        \\function i(of) {}
+        \\const k = (yield) => yield;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1390);
+    }
 }
 
 test "parser: TS1248 fires for const keyword on class field" {
