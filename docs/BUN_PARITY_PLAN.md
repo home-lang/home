@@ -282,12 +282,23 @@ response headers not yet surfaced (high-level `fetch` exposes status+body;
 needs the lower-level `request`/`receiveHead` path), and the request blocks
 the thread (sync under a Promise) rather than running on the loop.
 
+**Module loader + first `node:*` modules landed (`7fecfdf5`,
+`jsc/node_modules.zig`):** a CommonJS `require()` (accepts `node:` prefix or
+bare name; ESM `import` stays on the parked JSC module loader) resolving
+`node:path` (full POSIX surface, pure JS), `node:fs` (sync read/write/exists/
+stat/mkdir, native fs), and `node:os` (platform/arch/EOL/homedir/tmpdir/…).
+Unknown specifiers throw `ERR_MODULE_NOT_FOUND` (Node shape). Realm jsc test
+count ~1484.
+
 Remaining big subsystems (each multi-session), in rough order:
-1. **`fetch` polish** — surface response headers (lower-level request path),
-   binary request bodies, and move the request onto the event loop (async).
-2. **`node:*` modules + a module loader** — expand the native fs surface into
-   `node:fs`/`node:path`/`node:os`/… behind a `require`/`import` resolver
-   (`Bun.file`/`Bun.write` are the fs foundation).
+1. **More `node:*` + `fetch` polish** — `node:{events,util,stream,buffer,
+   crypto,child_process}` behind the existing `require()`, plus fetch response
+   headers / binary bodies / async-on-loop.
+2. **Reroute `home run`** onto the realm (then route the corpus gate through
+   it). The realm is now broad enough (globals + timers + fetch + fs + require)
+   that this is the next high-leverage move — gated on the documented
+   spawn-corpus regression caveat (reroute only once it's net-positive, or
+   gate it).
 2. **`fs`/`node:*` modules + a module loader** (`require`/`import`) — expose
    Home's native `sys`/file APIs (e.g. `Bun.file`, `node:fs` readFileSync) and
    resolve bare/`node:` specifiers.
