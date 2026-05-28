@@ -1766,6 +1766,8 @@ pub const jsc = struct {
     pub const crypto_global = @import("jsc/crypto_global.zig");
     // Minimal timer event loop (setTimeout/Interval + drain) for the realm.
     pub const timers_global = @import("jsc/timers_global.zig");
+    // Remaining sync realm globals: performance, global/self, structuredClone.
+    pub const misc_globals = @import("jsc/misc_globals.zig");
     // Phase 12.2 M6 (2026-05-19) — final scaffold milestone:
     // JSON + Promise + Iterator + Global helpers. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands. After M6
@@ -5190,6 +5192,7 @@ test {
     _ = @import("jsc/web_globals.zig");
     _ = @import("jsc/crypto_global.zig");
     _ = @import("jsc/timers_global.zig");
+    _ = @import("jsc/misc_globals.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
