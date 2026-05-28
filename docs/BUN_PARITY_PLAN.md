@@ -252,15 +252,18 @@ event loop) + `bodyUsed` guard, behaviorally faithful to WHATWG Fetch. Usable
 without networking; the prerequisite for a real `fetch()`. Realm jsc test count
 ~1472.
 
+**`fetch()` first cut landed (`ad7f9bc0`, `jsc/fetch_global.zig`):** returns a
+`Promise<Response>` (drained by the event loop); supports `data:` URLs (parsed
+in JS) and `file:` URLs (read natively via the shared `std.Io`) into real
+`Response`s; `http(s):` rejects with an explicit not-yet-implemented
+`TypeError`. Realm jsc test count ~1476.
+
 Remaining big subsystems (each multi-session), in rough order:
-1. **Real `fetch()` (network)** — the data types (`Headers`/`Request`/
-   `Response`/`Blob`) are done; what remains is wiring Home's ported HTTP
-   client into the event loop: a `fetch` host-callback that performs the
-   request and resolves a JS `Response` Promise on completion (the loop's
-   `drain` already pumps timers/microtasks; fetch needs the loop to also wait
-   on in-flight network tasks). A bounded first cut: `data:` URLs (no network)
-   and `file:` URLs (native file read) resolving real `Response`s, then real
-   HTTP. `URL` (done) is the prerequisite.
+1. **Network `fetch()`** — the data types + the `data:`/`file:` paths are done;
+   what remains is wiring Home's ported HTTP client into the event loop: a host
+   callback that performs the request and resolves the `Response` Promise on
+   completion (the loop must also wait on in-flight network tasks, not just
+   timers/microtasks).
 2. **`fs`/`node:*` modules + a module loader** (`require`/`import`) — expose
    Home's native `sys`/file APIs (e.g. `Bun.file`, `node:fs` readFileSync) and
    resolve bare/`node:` specifiers.
