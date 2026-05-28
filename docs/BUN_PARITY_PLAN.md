@@ -244,11 +244,23 @@ currently pass *because* it delegates to real Bun; rerouting before Home's
 runtime is complete (the remaining big subsystems below) will **regress**
 those — so reroute only once the realm can carry the child scripts, or gate it.
 
+**WebCore data types landed (`3d83c99f`, `jsc/webcore_globals.zig`):**
+`Headers` (case-insensitive multimap), `Blob`, `Request`, `Response` — the
+constructible Fetch-spec types, with `Uint8Array` bodies and async
+`text`/`json`/`arrayBuffer`/`blob`/`bytes` accessors (Promises drained by the
+event loop) + `bodyUsed` guard, behaviorally faithful to WHATWG Fetch. Usable
+without networking; the prerequisite for a real `fetch()`. Realm jsc test count
+~1472.
+
 Remaining big subsystems (each multi-session), in rough order:
-1. **WebCore async I/O: `fetch`/`Request`/`Response`/`Headers`/`Blob`** — needs
-   the real HTTP client wired into the timer/event loop (the loop now exists,
-   so a `fetch` host-callback that resolves a JS Promise on completion is the
-   shape). `URL` (done) is the prerequisite.
+1. **Real `fetch()` (network)** — the data types (`Headers`/`Request`/
+   `Response`/`Blob`) are done; what remains is wiring Home's ported HTTP
+   client into the event loop: a `fetch` host-callback that performs the
+   request and resolves a JS `Response` Promise on completion (the loop's
+   `drain` already pumps timers/microtasks; fetch needs the loop to also wait
+   on in-flight network tasks). A bounded first cut: `data:` URLs (no network)
+   and `file:` URLs (native file read) resolving real `Response`s, then real
+   HTTP. `URL` (done) is the prerequisite.
 2. **`fs`/`node:*` modules + a module loader** (`require`/`import`) — expose
    Home's native `sys`/file APIs (e.g. `Bun.file`, `node:fs` readFileSync) and
    resolve bare/`node:` specifiers.
