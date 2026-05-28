@@ -210,10 +210,27 @@ So the native eval realm now exposes: `console`, `process`,
 `TextEncoder`/`TextDecoder`, `queueMicrotask`, `btoa`/`atob`,
 `crypto.getRandomValues`/`randomUUID`. Remaining synchronous gaps:
 `URL`/`URLSearchParams`, `structuredClone`, `performance.now`,
-`globalThis.global` alias. The next *foundational* gap is an **event loop** —
-`setTimeout`/`setInterval` and async I/O need a loop to drain after script
-eval (JSC's `JSGlobalContext` drains microtasks but not timers). The event
-loop is the gating piece before `home run` can carry real async scripts.
+`globalThis.global` alias.
+
+**Timer event loop landed (2026-05-27, `ee135e8e`): `jsc/timers_global.zig`.**
+`setTimeout`/`setInterval`/`clearTimeout`/`clearInterval` + `drain(ctx)` that
+the CLI runs after the main script returns — fires the earliest-due timer
+(sleeping via libc `nanosleep`) until no active timers remain, re-scanning so
+callback-scheduled timers run, and letting JSC drain microtasks each fire
+(Promise chains from a timer work). Carefully avoids the dangling-pointer
+hazard (snapshots by value, re-finds by id; never holds a list pointer across
+a JS call) and frees all GC roots + the registry (no DebugAllocator leak).
+Distinct from the parked full `jsc/event_loop.zig`. So the eval realm now has
+an async event loop — `home eval 'setTimeout(()=>console.log("hi"),5)'` works.
+
+The realm-globals foundation (console, process, web, crypto, timers) is now
+substantial enough that the **next milestone is routing `home run file.{js,ts}`
+through this realm** (off pantry `bun`). NOTE the corpus tension: the bun-corpus
+spawn tests use `home run` and currently pass *because* it delegates to real
+Bun; rerouting before Home's runtime is complete (fs, fetch, Bun.*, module
+loader) will **regress** those — so reroute only once the realm can carry the
+child scripts, or gate it. Keep building the realm via `home eval` (no corpus
+dependency) until then.
 
 **Next (Phase 2): `home run file.{js,ts}` must stop delegating to pantry
 `bun`** and instead route through the JSC path: read the file, transpile TS
