@@ -258,12 +258,28 @@ in JS) and `file:` URLs (read natively via the shared `std.Io`) into real
 `Response`s; `http(s):` rejects with an explicit not-yet-implemented
 `TypeError`. Realm jsc test count ~1476.
 
+**Native `Bun` global started (`c944efb2`, `jsc/bun_global.zig`):**
+`Bun.file(path)` (BunFile: async `text`/`json`/`arrayBuffer`/`bytes`/`exists`,
+sync `size`/`name`/`type`), `Bun.write(path, data)`, `Bun.version` — backed by
+Home's real native file read/write/stat (shared `std.Io`), Home's OWN `Bun`
+(not delegation). This is the first `Bun.*` surface and the first native
+filesystem access from the realm. Realm jsc test count ~1479.
+
+**Realm surface now (all native-or-faithful, through Home's own JSC):**
+`console`, `process`, `TextEncoder`/`Decoder`, `queueMicrotask`, `btoa`/`atob`,
+`crypto`, `setTimeout`/`setInterval`+event-loop, `performance`, `global`/`self`,
+`structuredClone`, `URL`/`URLSearchParams`, `Headers`/`Blob`/`Request`/`Response`,
+`fetch` (data:/file:), `Bun.file`/`Bun.write`.
+
 Remaining big subsystems (each multi-session), in rough order:
 1. **Network `fetch()`** — the data types + the `data:`/`file:` paths are done;
    what remains is wiring Home's ported HTTP client into the event loop: a host
    callback that performs the request and resolves the `Response` Promise on
    completion (the loop must also wait on in-flight network tasks, not just
    timers/microtasks).
+2. **`node:*` modules + a module loader** — expand the native fs surface into
+   `node:fs`/`node:path`/`node:os`/… behind a `require`/`import` resolver
+   (`Bun.file`/`Bun.write` are the fs foundation).
 2. **`fs`/`node:*` modules + a module loader** (`require`/`import`) — expose
    Home's native `sys`/file APIs (e.g. `Bun.file`, `node:fs` readFileSync) and
    resolve bare/`node:` specifiers.
