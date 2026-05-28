@@ -302,9 +302,15 @@ threads `args[3..]` so `process.argv.slice(2)` is populated on both paths.
 `HOME_NATIVE_RUN=1 home run f.js` runs `require('node:path')`,
 `process.platform`, `setTimeout`, `fetch`, `console` through Home's JSC.
 
+**More `node:*` landed (`902c25fe`):** `node:events` (EventEmitter),
+`node:util` (`format`/`inspect`/`promisify`/`inherits`/`types`), `node:buffer`
+(`Buffer` extends `Uint8Array`: from/alloc/concat/isBuffer/byteLength,
+utf8/hex/base64/latin1 toString, equals/toJSON) + the global `Buffer`. So
+`require()` now serves path/fs/os/events/util/buffer. Realm jsc tests ~1487.
+
 Remaining (each multi-session), in rough order:
-1. **More `node:*` + `fetch` polish** — `node:{events,util,stream,buffer,
-   crypto,child_process}` behind the existing `require()`; TS transpile on the
+1. **More `node:*` + `fetch` polish** — `node:{stream,crypto,child_process,
+   assert,querystring}` behind the existing `require()`; TS transpile on the
    native run path (so `.ts` files run natively); fetch response headers /
    binary bodies / async-on-loop.
 2. **Flip the native run default** (off bun delegation) once the realm carries
@@ -312,11 +318,6 @@ Remaining (each multi-session), in rough order:
    runtime so the pass-count finally measures real parity. This is the
    convergence point; the opt-in path (`HOME_NATIVE_RUN`) is the safe staging
    ground for getting there without regressions.
-2. **`fs`/`node:*` modules + a module loader** (`require`/`import`) — expose
-   Home's native `sys`/file APIs (e.g. `Bun.file`, `node:fs` readFileSync) and
-   resolve bare/`node:` specifiers.
-3. **`home run` reroute** onto the realm, then **route the corpus gate** through
-   the real runtime so the pass-count measures real parity.
 Keep building the realm via `home eval` (no corpus dependency) until the
 reroute is net-positive.
 
