@@ -1654,6 +1654,7 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
         home_rt.jsc.webcore_globals.install(allocator, ctx, global);
         home_rt.jsc.fetch_global.install(allocator, ctx, global);
         home_rt.jsc.bun_global.install(allocator, ctx, global);
+        home_rt.jsc.node_modules.install(allocator, ctx, global);
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, code, "home:eval", 1);
         defer evaluation.deinit(allocator);
 
