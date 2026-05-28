@@ -1444,12 +1444,20 @@ pub const Engine = struct {
         var first_type: TypeId = Primitive.none;
         var saw_any = false;
         var non_uniform = false;
+        var has_literal = false;
         for (members) |constituent| {
             if (constituent >= self.pool().typeCount()) return false;
             const cf = self.pool().flagsOf(constituent);
             if (!cf.is_object_type) return false;
             const pt = self.interner.objectMember(constituent, name) orelse return false;
-            if (!self.isUnitType(pt)) return false;
+            // tsc's `CheckFlagsHasLiteralType` is OR'd across the
+            // constituents' property types: it is enough that ONE
+            // constituent contributes a unit/literal type. A
+            // non-literal constituent (e.g. `value: number` alongside
+            // `value: undefined`) does not disqualify the property —
+            // mirrors `{ value: number } | { value: undefined }` in the
+            // GH58603 `Foo` discriminated union.
+            if (self.typeContainsUnit(pt)) has_literal = true;
             if (!saw_any) {
                 first_type = pt;
                 saw_any = true;
@@ -1457,7 +1465,21 @@ pub const Engine = struct {
                 non_uniform = true;
             }
         }
-        return saw_any and non_uniform;
+        return saw_any and non_uniform and has_literal;
+    }
+
+    /// True when `t` is a unit type, or a union with at least one unit
+    /// member. Mirrors the per-constituent `isLiteralType` test tsc
+    /// applies when computing `CheckFlagsHasLiteralType` for a synthetic
+    /// union property.
+    fn typeContainsUnit(self: *Engine, t: TypeId) bool {
+        if (self.isUnitType(t)) return true;
+        if (t < self.pool().typeCount() and self.pool().flagsOf(t).is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                if (self.isUnitType(m)) return true;
+            }
+        }
+        return false;
     }
 
     /// A "unit" type in tsc's sense: a single concrete value type. We
