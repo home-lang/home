@@ -1320,6 +1320,27 @@ pub const Printer = struct {
         if (p.init != hir_mod.none_node_id) {
             switch (self.hir.kindOf(p.init)) {
                 .var_decl, .let_decl, .const_decl => try self.printVarDeclHeader(p.init, true),
+                // Multi-declarator for-init (`for (let i = 0, j = 10; …)`)
+                // is wrapped in a synthetic block by the parser. Emit one
+                // keyword + comma-separated declarators.
+                .block_stmt => {
+                    const decls = hir_mod.blockStmts(self.hir, p.init);
+                    for (decls, 0..) |d, i| {
+                        const dk = self.hir.kindOf(d);
+                        if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                        if (i == 0) {
+                            try self.printVarDeclHeader(d, true);
+                        } else {
+                            try self.write(", ");
+                            const v = hir_mod.varDeclOf(self.hir, d);
+                            if (v.name != hir_mod.none_node_id) try self.printBindingName(v.name);
+                            if (v.init != hir_mod.none_node_id) {
+                                try self.write(" = ");
+                                try self.printExpression(v.init);
+                            }
+                        }
+                    }
+                },
                 else => try self.printExpression(p.init),
             }
         }
@@ -8892,6 +8913,13 @@ test "emit: computed class method names emit as methods, not field assignments" 
     // Must NOT be a `= () {}` field assignment.
     try T.expect(std.mem.indexOf(u8, out, "Symbol.iterator = ") == null);
     try T.expect(std.mem.indexOf(u8, out, "field = 2;") != null);
+}
+
+test "emit: multi-declarator for-init emits and does not error/truncate" {
+    const out = try emit("for (let i = 0, j = 10; i < j; i++) {}\nconst after = 1;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "for (let i = 0, j = 10;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const after = 1;") != null);
 }
 
 test "emit: call and new spread args emit and do not truncate the file" {
