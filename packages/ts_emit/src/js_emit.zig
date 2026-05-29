@@ -7382,6 +7382,12 @@ pub const Printer = struct {
             .assignment => try self.printAssignment(node),
             .call_expr => try self.printCall(node),
             .new_expr => try self.printNew(node),
+            // Spread element in a call-arg / new-arg position (array and
+            // object literals handle their own spread). Native `...expr`.
+            .spread => {
+                try self.write("...");
+                try self.printExpression(hir_mod.spreadOf(self.hir, node).expression);
+            },
             .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
                 // Type assertions and `expr!` non-null assertions
                 // erase at runtime — print the inner expression only.
@@ -8886,6 +8892,14 @@ test "emit: computed class method names emit as methods, not field assignments" 
     // Must NOT be a `= () {}` field assignment.
     try T.expect(std.mem.indexOf(u8, out, "Symbol.iterator = ") == null);
     try T.expect(std.mem.indexOf(u8, out, "field = 2;") != null);
+}
+
+test "emit: call and new spread args emit and do not truncate the file" {
+    const out = try emit("const r = f(...args, 1);\nconst o = new Foo(...a, b);\nconst after = 9;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "f(...args, 1)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "new Foo(...a, b)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const after = 9;") != null);
 }
 
 test "emit: regex literal emits verbatim (pattern + flags)" {
