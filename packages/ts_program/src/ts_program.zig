@@ -25,6 +25,24 @@ const binder = @import("binder");
 
 pub const FileId = u32;
 
+/// Why a file is part of the program — mirrors tsgo's
+/// `FileIncludeReason` (the subset Home can determine today). Drives the
+/// `--explainFiles` line for each file. Root-file provenance is supplied
+/// by the CLI layer (which knows how the path was specified); the
+/// program records the *import* reason here while building the edge
+/// graph, so `--explainFiles` can render TS1393.
+pub const IncludeKind = enum { root, import };
+
+pub const IncludeReason = struct {
+    kind: IncludeKind = .root,
+    /// For `.import`: the file id that imported this one.
+    importer: FileId = 0,
+    /// For `.import`: the module specifier as written, quoted to match
+    /// tsgo's `referenceLocation.text()` (the source slice). Owned by
+    /// the program.
+    specifier_text: []const u8 = "",
+};
+
 /// One file in the program. Owned by the program.
 pub const File = struct {
     id: FileId,
@@ -41,6 +59,10 @@ pub const File = struct {
     is_declaration: bool,
     /// True for `.tsx` / `.jsx` files.
     is_tsx: bool,
+    /// First-seen reason this file is in the program. `null` until set
+    /// by `resolveImports` (for imported files); root files are
+    /// classified by the CLI layer at `--explainFiles` time.
+    include_reason: ?IncludeReason = null,
 };
 
 pub const ProgramError = error{
@@ -79,6 +101,9 @@ pub const Program = struct {
                 self.gpa.destroy(c);
             }
             f.imports.deinit(self.gpa);
+            if (f.include_reason) |ir| {
+                if (ir.specifier_text.len != 0) self.gpa.free(ir.specifier_text);
+            }
             self.gpa.free(f.path);
             self.gpa.destroy(f);
         }
@@ -118,6 +143,7 @@ pub const Program = struct {
             .imports = .empty,
             .is_declaration = isDeclarationPath(path),
             .is_tsx = std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"),
+            .include_reason = null,
         };
 
         try self.files.append(self.gpa, file);
@@ -715,9 +741,75 @@ pub const Program = struct {
                 // the LSP will pick it up when the file is added.
                 if (self.by_path.get(res.path)) |target_id| {
                     try f.imports.append(self.gpa, target_id);
+                    // Record *why* the target is in the program, for
+                    // `--explainFiles` (TS1393). First importer wins,
+                    // matching tsgo's first-add reason ordering. The
+                    // specifier is quoted to mirror tsgo's source-slice
+                    // reference text; Home's interner drops the original
+                    // quotes, so we normalize to double quotes.
+                    const target = self.files.items[target_id];
+                    if (target.include_reason == null) {
+                        const quoted = try std.fmt.allocPrint(self.gpa, "\"{s}\"", .{module_name});
+                        target.include_reason = .{
+                            .kind = .import,
+                            .importer = f.id,
+                            .specifier_text = quoted,
+                        };
+                    }
                 }
             }
         }
+    }
+
+    /// Expand the program to the transitive closure of imports, reading
+    /// each newly-discovered file through the resolver's file system.
+    /// Mirrors tsc's file loader, which follows every module reference
+    /// from the root files until no new file is found. Returns the count
+    /// of files added beyond the initial roots.
+    ///
+    /// Each round compiles the current set (so HIR import lists exist),
+    /// then resolves+reads any imported file not already present; it
+    /// repeats until a round adds nothing. `resolveImports` (run inside
+    /// `compileAll`) records each added file's `include_reason`, so
+    /// `--explainFiles` can later render TS1393.
+    pub fn loadImportClosure(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
+        const hir_mod = @import("hir");
+        var added: usize = 0;
+        while (true) {
+            try self.compileAll(options);
+            var new_in_round: usize = 0;
+            // Snapshot the count: files appended this round are scanned
+            // in the next iteration, keeping the fixpoint simple.
+            const n = self.files.items.len;
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                const f = self.files.items[i];
+                const c = f.compilation orelse continue;
+                if (c.hir.kindOf(c.root) != .block_stmt) continue;
+                const stmts = hir_mod.blockStmts(&c.hir, c.root);
+                for (stmts) |s| {
+                    if (c.hir.kindOf(s) != .import_decl) continue;
+                    const imp = hir_mod.importOf(&c.hir, s);
+                    const module_name = c.interner.get(imp.module);
+                    if (module_name.len == 0) continue;
+                    const res = self.resolver.resolve(module_name, f.path) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => continue,
+                    };
+                    if (self.by_path.get(res.path) != null) continue;
+                    const src = self.resolver.fs.readFile(self.gpa, res.path) catch continue;
+                    defer self.gpa.free(src);
+                    _ = self.add(res.path, src) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => continue,
+                    };
+                    new_in_round += 1;
+                }
+            }
+            added += new_in_round;
+            if (new_in_round == 0) break;
+        }
+        return added;
     }
 
     /// Re-compile only the subset of files whose paths appear in
@@ -1278,6 +1370,33 @@ test "Program: resolves imports between files" {
     const a = p.fileById(a_id);
     try T.expectEqual(@as(usize, 1), a.imports.items.len);
     try T.expectEqual(b_id, a.imports.items[0]);
+}
+
+test "Program: imported file records TS1393 include reason (specifier + importer)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/a.ts", "import { y } from './b';");
+    try vfs.addFile("/proj/b.ts", "export let y = 42;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const a_id = try p.add("/proj/a.ts", "import { y } from './b';");
+    const b_id = try p.add("/proj/b.ts", "export let y = 42;");
+    try p.compileAll(.{});
+
+    // The imported file (b) carries an `.import` reason pointing back at
+    // the importer (a) with the specifier as written, quoted — exactly
+    // what `--explainFiles` renders as `Imported via "./b" from file 'a'`.
+    const b = p.fileById(b_id);
+    try T.expect(b.include_reason != null);
+    try T.expectEqual(IncludeKind.import, b.include_reason.?.kind);
+    try T.expectEqual(a_id, b.include_reason.?.importer);
+    try T.expectEqualStrings("\"./b\"", b.include_reason.?.specifier_text);
+
+    // The root importer itself has no recorded import reason — its
+    // provenance is supplied by the CLI layer.
+    try T.expect(p.fileById(a_id).include_reason == null);
 }
 
 test "Program: tsx flag inherits from .tsx file extension" {

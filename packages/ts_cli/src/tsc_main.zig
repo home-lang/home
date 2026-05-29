@@ -342,11 +342,35 @@ fn printExplainFiles(
     const code_files_list: u32 = 1409;
     const code_default_include: u32 = 1457;
     const code_include_pattern: u32 = 1407;
-    const code_via_import: u32 = 1399;
+    // TS1393 `Imported via {0} from file '{1}'` — the reason a
+    // transitively-included (non-root) file is in the program. Mirrors
+    // tsgo's `fileIncludeKindImport` branch of `computeReferenceFileDiagnostic`.
+    const code_imported_via: u32 = 1393;
+    _ = code_imported_via;
     for (program.files.items) |f| {
         std.debug.print("{s}\n", .{f.path});
         if (!pathInList(roots, f.path)) {
-            std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code_via_import) orelse unreachable).message});
+            // A non-root file is here because something imported it.
+            // Render TS1393 with the as-written specifier and the
+            // importing file. (tsgo prints one line per include reason;
+            // Home records the first importer.)
+            if (f.include_reason) |ir| {
+                if (ir.kind == .import) {
+                    const importer_path = program.files.items[ir.importer].path;
+                    const msg = std.fmt.allocPrint(
+                        gpa,
+                        "  Imported via {s} from file '{s}'",
+                        .{ ir.specifier_text, importer_path },
+                    ) catch return;
+                    defer gpa.free(msg);
+                    std.debug.print("{s}\n", .{msg});
+                    continue;
+                }
+            }
+            // No recorded import edge (partial program / resolution
+            // gap): fall back to the generic root-specified reason
+            // rather than fabricating an importer.
+            std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
             continue;
         }
         if (root.code == code_include_pattern) {
@@ -919,6 +943,13 @@ pub fn main(init: std.process.Init) !void {
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,
     };
+
+    // Build the transitive import closure (like tsc's file loader) so
+    // every reachable file participates in the program. This is what
+    // lets `--explainFiles` report imported files with their TS1393
+    // "Imported via … from file …" reason. Best-effort: resolution gaps
+    // simply leave the program partial, as they did before.
+    _ = program.loadImportClosure(compile_opts) catch {};
 
     // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input
     // path the program will compile. `--listFilesOnly` exits before
