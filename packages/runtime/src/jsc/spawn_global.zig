@@ -415,14 +415,24 @@ const install_glue =
     \\    return null;
     \\  }
     \\  function wrapBuf(u8) { return (typeof Buffer !== "undefined" && Buffer.from) ? Buffer.from(u8) : u8; }
+    \\  // proc.stdout/stderr: a node:stream Readable (push the captured bytes) with
+    \\  // Bun's text/json/bytes/arrayBuffer convenience accessors. Falls back to a
+    \\  // plain reader object if node:stream isn't available.
+    \\  function addAccessors(o, bytes) {
+    \\    o.text = function() { return Promise.resolve(new TextDecoder().decode(bytes)); };
+    \\    o.json = function() { return Promise.resolve(JSON.parse(new TextDecoder().decode(bytes))); };
+    \\    o.bytes = function() { return Promise.resolve(bytes.slice()); };
+    \\    o.arrayBuffer = function() { return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); };
+    \\    return o;
+    \\  }
     \\  function makeReader(bytes) {
     \\    if (bytes == null) return null;
-    \\    return {
-    \\      text: function() { return Promise.resolve(new TextDecoder().decode(bytes)); },
-    \\      json: function() { return Promise.resolve(JSON.parse(new TextDecoder().decode(bytes))); },
-    \\      bytes: function() { return Promise.resolve(bytes.slice()); },
-    \\      arrayBuffer: function() { return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); },
-    \\    };
+    \\    var S = (typeof globalThis.require === "function") ? (function() { try { return globalThis.require("node:stream"); } catch (e) { return null; } })() : null;
+    \\    if (!S || !S.Readable) return addAccessors({}, bytes);
+    \\    var r = new S.Readable();
+    \\    addAccessors(r, bytes);
+    \\    Promise.resolve().then(function() { if (bytes.length) r.push(bytes); r.push(null); });
+    \\    return r;
     \\  }
     \\
     \\  function spawnSync(cmdOrOpts, maybeOpts) {
@@ -667,6 +677,23 @@ test "Bun.spawn .exited resolves with the child exit code" {
         "Bun.spawn(['/bin/sh', '-c', 'exit 5']).exited.then(function(c){ globalThis.__se = 'C:' + c; });",
         "home:spawn-exit-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__se === 'C:5'"));
+}
+
+test "Bun.spawn stdout is a node:stream Readable (on 'data'/'end')" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__sps = '';" ++
+        "var p = Bun.spawn(['/bin/echo', 'streamed']); var got = '';" ++
+        "p.stdout.on('data', function(c) { got += (typeof c === 'string' ? c : new TextDecoder().decode(c)); });" ++
+        "p.stdout.on('end', function() { globalThis.__sps = got.trim(); });",
+        "home:spawn-stream-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__sps === 'streamed'"));
 }
 
 test "Bun.which resolves a binary via PATH" {
