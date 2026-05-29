@@ -5875,9 +5875,36 @@ pub const Printer = struct {
                         try self.write(key_name);
                         try self.write(storage_suffix);
                         try self.write(" = value; }");
+                    } else if (op.is_method) {
+                        // Method member — computed-name methods come through
+                        // the object_property path (regular ones are
+                        // fn_decl). Emit `[key](params){body}` /
+                        // `key(params){body}`, not a `key = value` field.
+                        if (op.is_static) try self.write("static ");
+                        const mf = hir_mod.fnDeclOf(self.hir, op.value);
+                        if (mf.flags.is_async and self.options.es_target.supportsNativeAsync()) try self.write("async ");
+                        if (mf.flags.is_getter) {
+                            try self.write("get ");
+                        } else if (mf.flags.is_setter) {
+                            try self.write("set ");
+                        }
+                        if (op.is_computed) {
+                            try self.write("[");
+                            try self.printExpression(op.key);
+                            try self.write("]");
+                        } else {
+                            try self.printExpression(op.key);
+                        }
+                        try self.printObjectMethodBody(op.value);
                     } else {
                         if (op.is_static) try self.write("static ");
-                        try self.printExpression(op.key);
+                        if (op.is_computed) {
+                            try self.write("[");
+                            try self.printExpression(op.key);
+                            try self.write("]");
+                        } else {
+                            try self.printExpression(op.key);
+                        }
                         if (op.value != hir_mod.none_node_id) {
                             try self.write(" = ");
                             // §4.A.9 v12 — wrap decorated field's
@@ -8849,6 +8876,16 @@ test "emit: abstract methods are omitted (no invalid bodyless signature)" {
     // The abstract method must not appear as a bodyless `f();`.
     try T.expect(std.mem.indexOf(u8, out, "f()") == null);
     try T.expect(std.mem.indexOf(u8, out, "abstract") == null);
+}
+
+test "emit: computed class method names emit as methods, not field assignments" {
+    const out = try emit("class C { [Symbol.iterator]() { return 1; } field = 2; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "[Symbol.iterator]()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return 1;") != null);
+    // Must NOT be a `= () {}` field assignment.
+    try T.expect(std.mem.indexOf(u8, out, "Symbol.iterator = ") == null);
+    try T.expect(std.mem.indexOf(u8, out, "field = 2;") != null);
 }
 
 test "emit: regex literal emits verbatim (pattern + flags)" {
