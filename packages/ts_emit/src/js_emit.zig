@@ -8043,6 +8043,12 @@ pub const Printer = struct {
         try self.write("{ ");
         for (props, 0..) |p, i| {
             if (i > 0) try self.write(", ");
+            // Object spread `{ ...rest }` (native at ES2018+).
+            if (self.hir.kindOf(p) == .spread) {
+                try self.write("...");
+                try self.printExpression(hir_mod.spreadOf(self.hir, p).expression);
+                continue;
+            }
             if (self.hir.kindOf(p) != .object_property) {
                 try self.printExpression(p);
                 continue;
@@ -8844,6 +8850,16 @@ test "emit: abstract methods are omitted (no invalid bodyless signature)" {
     // The abstract method must not appear as a bodyless `f();`.
     try T.expect(std.mem.indexOf(u8, out, "f()") == null);
     try T.expect(std.mem.indexOf(u8, out, "abstract") == null);
+}
+
+test "emit: object spread {...rest} emits and does not truncate the file" {
+    const out = try emit("const o = { a: 1, ...rest, b: 2 };\nconst after = 9;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "...rest") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a: 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "b: 2") != null);
+    // The statement AFTER the spread object must still be emitted.
+    try T.expect(std.mem.indexOf(u8, out, "const after = 9;") != null);
 }
 
 test "emit: class getter/setter/async/generator keep their keywords" {
