@@ -14461,10 +14461,14 @@ pub const Parser = struct {
         try args.append(self.gpa, strings_arr);
         try args.appendSlice(self.gpa, values.items);
 
-        if (type_args.len > 0) {
-            return try self.builder.addCallWithTypeArgs(call_sp, tag, args.items, type_args);
-        }
-        return try self.builder.addCall(call_sp, tag, args.items);
+        const call_node = if (type_args.len > 0)
+            try self.builder.addCallWithTypeArgs(call_sp, tag, args.items, type_args)
+        else
+            try self.builder.addCall(call_sp, tag, args.items);
+        // Flag the desugared call so the emitter re-renders it natively as
+        // `` tag`…` `` (the checker keeps its own source-based detection).
+        self.hir.call_payloads.items[self.hir.payloads.items[call_node]].is_tagged_template = true;
+        return call_node;
     }
 
     /// Allocates the args slice; caller must `gpa.free` it.

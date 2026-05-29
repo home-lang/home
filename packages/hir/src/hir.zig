@@ -358,6 +358,10 @@ pub const CallPayload = struct {
     type_args_len: u16,
     /// True for `?.(...)` optional call chains.
     optional: bool,
+    /// True when this call is the desugaring of a tagged template
+    /// (`tag`…``): arg 0 is the cooked-strings array, args 1.. are the
+    /// substitutions. The emitter re-renders it natively as `` tag`…` ``.
+    is_tagged_template: bool = false,
 };
 
 pub const MemberPayload = struct {

@@ -7898,8 +7898,53 @@ pub const Printer = struct {
         try self.printExpression(p.value);
     }
 
+    /// Escape cooked template text for emission inside a `` ` `` literal:
+    /// backtick, backslash, and a `${` substitution opener.
+    fn writeTemplateCooked(self: *Printer, s: []const u8) !void {
+        var i: usize = 0;
+        while (i < s.len) : (i += 1) {
+            switch (s[i]) {
+                '`' => try self.write("\\`"),
+                '\\' => try self.write("\\\\"),
+                '$' => {
+                    if (i + 1 < s.len and s[i + 1] == '{') try self.write("\\$") else try self.write("$");
+                },
+                else => try self.write(s[i .. i + 1]),
+            }
+        }
+    }
+
+    /// Re-render a desugared tagged-template call as the native
+    /// `` tag`s0${v0}s1…` `` form (tsc / Bun keep tagged templates native).
+    /// arg 0 is the cooked-strings array; args 1.. are the substitutions.
+    fn printTaggedTemplate(self: *Printer, node: NodeId, p: hir_mod.CallPayload) !void {
+        try self.printExpression(p.callee);
+        try self.write("`");
+        const args = hir_mod.callArgs(self.hir, node);
+        if (args.len > 0 and self.hir.kindOf(args[0]) == .array_literal) {
+            const cooked = hir_mod.arrayLiteralElements(self.hir, args[0]);
+            const values = args[1..];
+            for (cooked, 0..) |seg, i| {
+                if (self.hir.kindOf(seg) == .literal_string) {
+                    try self.writeTemplateCooked(self.interner.get(hir_mod.literalStringOf(self.hir, seg).value));
+                }
+                if (i < values.len) {
+                    try self.write("${");
+                    try self.printExpression(values[i]);
+                    try self.write("}");
+                }
+            }
+        }
+        try self.write("`");
+    }
+
     fn printCall(self: *Printer, node: NodeId) !void {
         const p = hir_mod.callOf(self.hir, node);
+        // Tagged template `tag`…`` — re-render natively.
+        if (p.is_tagged_template) {
+            try self.printTaggedTemplate(node, p);
+            return;
+        }
         // Dynamic `import("...")` lowering for CommonJS targets:
         // emit `Promise.resolve(require("..."))`. ESM keeps the
         // native `import()` form (handled by the runtime).
@@ -8968,6 +9013,22 @@ test "emit: computed class method names emit as methods, not field assignments" 
     // Must NOT be a `= () {}` field assignment.
     try T.expect(std.mem.indexOf(u8, out, "Symbol.iterator = ") == null);
     try T.expect(std.mem.indexOf(u8, out, "field = 2;") != null);
+}
+
+test "emit: tagged template renders natively (not a desugared call)" {
+    const out = try emit("const t = tag`a${1}b${x}c`;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "tag`a${1}b${x}c`") != null);
+    // Must NOT be the desugared `tag([...], ...)` call form.
+    try T.expect(std.mem.indexOf(u8, out, "tag([") == null);
+    try T.expect(std.mem.indexOf(u8, out, "tag([\"a\"") == null);
+}
+
+test "emit: tagged template escapes backtick / backslash / dollar-brace in cooked text" {
+    const out = try emit("const t = raw`a\\nb`;");
+    defer T.allocator.free(out);
+    // The cooked text keeps its content inside the native template.
+    try T.expect(std.mem.indexOf(u8, out, "raw`") != null);
 }
 
 test "emit: logical assignment is native at es2021+" {
