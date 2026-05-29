@@ -377,6 +377,63 @@ pub fn couldNotWriteFileDiagnostic(gpa: std.mem.Allocator, path: []const u8, err
     );
 }
 
+/// TS5083: a file named on the command line (a `@response-file`) could
+/// not be read. `{0}` is the file name. Caller frees.
+pub fn cannotReadFileDiagnostic(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const code: u32 = 5083;
+    return try std.fmt.allocPrint(gpa, "error TS{d}: Cannot read file '{s}'.", .{ code, path });
+}
+
+/// TS6045: a `@response-file` contained a quoted argument with no closing
+/// quote. `{0}` is the file name. Caller frees.
+pub fn unterminatedResponseFileStringDiagnostic(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const code: u32 = 6045;
+    return try std.fmt.allocPrint(gpa, "error TS{d}: Unterminated quoted string in response file '{s}'.", .{ code, path });
+}
+
+/// Tokenized result of a `@response-file`'s contents.
+pub const ResponseTokens = struct {
+    /// Arguments, each borrowing a slice of the input `contents`.
+    args: [][]const u8,
+    /// True when a quoted argument was opened but never closed (TS6045).
+    unterminated: bool,
+};
+
+/// Split a response-file body into command-line arguments, mirroring
+/// tsc's `parseResponseFile` tokenizer: whitespace-separated tokens, with
+/// double-quoted spans taken verbatim (without the quotes). An unquoted
+/// run ends at the next byte `<= ' '`. Sets `unterminated` when a quote is
+/// left open (the partial token is dropped, as tsc does). `args` borrows
+/// from `contents`; the returned slice is gpa-owned (free with `gpa.free`).
+pub fn tokenizeResponseFile(gpa: std.mem.Allocator, contents: []const u8) !ResponseTokens {
+    var args: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer args.deinit(gpa);
+    var unterminated = false;
+    var pos: usize = 0;
+    const n = contents.len;
+    while (pos < n) {
+        while (pos < n and contents[pos] <= ' ') pos += 1;
+        if (pos >= n) break;
+        if (contents[pos] == '"') {
+            pos += 1;
+            const start = pos;
+            while (pos < n and contents[pos] != '"') pos += 1;
+            if (pos < n) {
+                try args.append(gpa, contents[start..pos]);
+                pos += 1;
+            } else {
+                unterminated = true;
+                break;
+            }
+        } else {
+            const start = pos;
+            while (pos < n and contents[pos] > ' ') pos += 1;
+            try args.append(gpa, contents[start..pos]);
+        }
+    }
+    return .{ .args = try args.toOwnedSlice(gpa), .unterminated = unterminated };
+}
+
 /// One output-file collision found by `detectOutputCollisions`.
 pub const OutputCollision = struct {
     /// TS5055 (overwrites an input file) or TS5056 (two inputs → one output).
@@ -826,6 +883,41 @@ test "detectOutputCollisions: clean outputs produce no diagnostics" {
     const cols = try detectOutputCollisions(T.allocator, &inputs, &outputs, true);
     defer T.allocator.free(cols);
     try T.expectEqual(@as(usize, 0), cols.len);
+}
+
+test "cannotReadFileDiagnostic / unterminatedResponseFileStringDiagnostic message text" {
+    const m1 = try cannotReadFileDiagnostic(T.allocator, "args.txt");
+    defer T.allocator.free(m1);
+    try T.expectEqualStrings("error TS5083: Cannot read file 'args.txt'.", m1);
+    const m2 = try unterminatedResponseFileStringDiagnostic(T.allocator, "args.txt");
+    defer T.allocator.free(m2);
+    try T.expectEqualStrings("error TS6045: Unterminated quoted string in response file 'args.txt'.", m2);
+}
+
+test "tokenizeResponseFile: whitespace and quoted args" {
+    const r = try tokenizeResponseFile(T.allocator, "  --strict\n  --outDir \"my dir\"\t--noEmit ");
+    defer T.allocator.free(r.args);
+    try T.expect(!r.unterminated);
+    try T.expectEqual(@as(usize, 4), r.args.len);
+    try T.expectEqualStrings("--strict", r.args[0]);
+    try T.expectEqualStrings("--outDir", r.args[1]);
+    try T.expectEqualStrings("my dir", r.args[2]);
+    try T.expectEqualStrings("--noEmit", r.args[3]);
+}
+
+test "tokenizeResponseFile: unterminated quote flags TS6045 and drops the partial token" {
+    const r = try tokenizeResponseFile(T.allocator, "--outDir \"unclosed");
+    defer T.allocator.free(r.args);
+    try T.expect(r.unterminated);
+    try T.expectEqual(@as(usize, 1), r.args.len);
+    try T.expectEqualStrings("--outDir", r.args[0]);
+}
+
+test "tokenizeResponseFile: empty / whitespace-only yields no args" {
+    const r = try tokenizeResponseFile(T.allocator, "   \n\t  ");
+    defer T.allocator.free(r.args);
+    try T.expect(!r.unterminated);
+    try T.expectEqual(@as(usize, 0), r.args.len);
 }
 
 test "formatOutputCollision: TS5055 / TS5068 hint / TS5056 message text" {

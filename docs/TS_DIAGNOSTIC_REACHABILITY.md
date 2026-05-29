@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 975 |
-| reachable (parity targets) | 461 |
+| catalog-only total | 973 |
+| reachable (parity targets) | 459 |
 | dead in tsgo (leave catalog-only) | 514 |
 
 ## Reachable worklist by range
@@ -23,13 +23,13 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 168 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 140 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 139 |
 | 1xxx — parser / syntactic + program file-inclusion | 77 |
 | 4xxx — declaration-emit (privacy / serialization) | 23 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 12 |
-| 5xxx — tsconfig / build-option validation | 9 |
+| 5xxx — tsconfig / build-option validation | 8 |
 
 ### 2xxx — checker / type engine (168)
 
@@ -202,13 +202,12 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (140)
+### 6xxx — CLI / build / watch / resolution-trace messages (139)
 
 - TS6029 `Version_0_6029`
 - TS6031 `Starting_compilation_in_watch_mode_6031`
 - TS6032 `File_change_detected_Starting_incremental_compilation_6032`
 - TS6041 `Errors_Files_6041`
-- TS6045 `Unterminated_quoted_string_in_response_file_0_6045`
 - TS6046 `Argument_for_0_option_must_be_Colon_1_6046`
 - TS6064 `Option_0_can_only_be_specified_in_tsconfig_json_file_or_set_to_null_on_command_line_6064`
 - TS6086 `Resolving_module_0_from_1_6086`
@@ -504,7 +503,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 - TS7058 `If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058`
 
-### 5xxx — tsconfig / build-option validation (9)
+### 5xxx — tsconfig / build-option validation (8)
 
 - TS5072 `Unknown_build_option_0_5072`
 - TS5073 `Build_option_0_requires_a_value_of_type_1_5073`
@@ -512,7 +511,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS5078 `Unknown_watch_option_0_5078`
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
 - TS5080 `Watch_option_0_requires_a_value_of_type_1_5080`
-- TS5083 `Cannot_read_file_0_5083`
 - TS5093 `Compiler_option_0_may_only_be_used_with_build_5093`
 - TS5094 `Compiler_option_0_may_not_be_used_with_build_5094`
 

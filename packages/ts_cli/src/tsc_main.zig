@@ -59,6 +59,45 @@ const RealFs = struct {
     }
 };
 
+/// Expand `@response-file` arguments in place, mirroring tsc's
+/// `parseResponseFile`: a `@file` arg is replaced by the whitespace/
+/// quote-tokenized contents of `file` (recursively). A file that can't be
+/// read or is empty emits TS5083; an unterminated quoted span emits
+/// TS6045. `arena` owns the file contents (the appended args borrow into
+/// them, so it must outlive `out`). `depth` guards against cycles.
+fn expandResponseFiles(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    raw: []const []const u8,
+    out: *std.ArrayListUnmanaged([]const u8),
+    depth: usize,
+) void {
+    for (raw) |a| {
+        if (a.len > 1 and a[0] == '@' and depth <= 32) {
+            const fname = a[1..];
+            const contents = RealFs.read(arena, fname) catch "";
+            if (contents.len == 0) {
+                const msg = ts_cli.cannotReadFileDiagnostic(gpa, fname) catch continue;
+                defer gpa.free(msg);
+                std.debug.print("{s}\n", .{msg});
+                continue;
+            }
+            const toks = ts_cli.tokenizeResponseFile(gpa, contents) catch continue;
+            defer gpa.free(toks.args);
+            if (toks.unterminated) {
+                const msg = ts_cli.unterminatedResponseFileStringDiagnostic(gpa, fname) catch null;
+                if (msg) |m| {
+                    defer gpa.free(m);
+                    std.debug.print("{s}\n", .{m});
+                }
+            }
+            expandResponseFiles(gpa, arena, toks.args, out, depth + 1);
+        } else {
+            out.append(gpa, a) catch {};
+        }
+    }
+}
+
 /// True when `needle` string-equals any entry in `haystack`.
 fn pathInList(haystack: []const []const u8, needle: []const u8) bool {
     for (haystack) |p| {
@@ -214,7 +253,9 @@ pub fn main(init: std.process.Init) !void {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(gpa);
     if (all_args.len > 1) {
-        for (all_args[1..]) |a| try argv.append(gpa, a);
+        // Expand `@response-file` args (TS5083 / TS6045 on failure) before
+        // option parsing, the way tsc does.
+        expandResponseFiles(gpa, args_arena.allocator(), all_args[1..], &argv, 0);
     }
 
     var parse_ctx: ts_cli.ParseContext = .{};
