@@ -158,6 +158,112 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
     return .{ .nodes = nodes, .paths = paths.items };
 }
 
+/// Build a single project (used by `tsc --build` for each project in
+/// dependency order): load its tsconfig, gather inputs, compile, and emit
+/// `.js` (+ `.d.ts` when declaration/composite is set). Paths are resolved
+/// against the project's own directory. Returns true if the project had
+/// compile errors. Reuses the same program/driver/emit APIs as the normal
+/// single-project flow.
+fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8, verbose: bool) bool {
+    const cfg_src = RealFs.read(arena, config_path) catch {
+        std.debug.print("error reading {s}\n", .{config_path});
+        return true;
+    };
+    var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch {
+        std.debug.print("error parsing {s}\n", .{config_path});
+        return true;
+    };
+    cfg.file_path = config_path;
+    const project_dir = std.fs.path.dirname(config_path) orelse ".";
+    if (verbose) std.debug.print("Building project '{s}'...\n", .{config_path});
+
+    var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer input_files.deinit(gpa);
+    var owned: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned.items) |p| gpa.free(p);
+        owned.deinit(gpa);
+    }
+    if (cfg.files) |fs_list| {
+        for (fs_list) |f| {
+            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return true;
+            owned.append(gpa, p) catch return true;
+            input_files.append(gpa, p) catch return true;
+        }
+    } else {
+        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), effectiveExcludePatterns(cfg), &input_files, &owned) catch return true;
+    }
+    if (input_files.items.len == 0) {
+        if (verbose) std.debug.print("  (no input files)\n", .{});
+        return false;
+    }
+
+    var resolver_fs = ResolverRealFs{};
+    var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    for (input_files.items) |path| {
+        const src = RealFs.read(gpa, path) catch {
+            std.debug.print("error reading {s}\n", .{path});
+            return true;
+        };
+        defer gpa.free(src);
+        _ = program.add(path, src) catch return true;
+    }
+
+    var compile_opts = ts_driver.optionsFromConfig(&cfg);
+    var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    compile_opts.external_resolver = .{ .ptr = &resolver_adapter, .vtable = &CheckerResolverAdapter.vtable };
+
+    var had_errors = false;
+    var stream_ctx: StreamCtx = .{
+        .gpa = gpa,
+        .program = &program,
+        .use_pretty = true,
+        .use_color = false,
+        .any_errors = &had_errors,
+    };
+    program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch return true;
+    if (compile_opts.no_emit) return had_errors;
+
+    // Output directories are resolved against the project's own dir.
+    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+    else
+        null;
+    const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
+    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+    else
+        out_dir;
+
+    for (program.files.items) |f| {
+        const c = f.compilation orelse continue;
+        const out_path = computeOutPath(gpa, f.path, out_dir, ".js") catch continue;
+        defer gpa.free(out_path);
+        writeOrDie(gpa, out_path, c.js);
+        if (emit_dts) {
+            const dts_path = computeOutPath(gpa, f.path, declaration_dir, ".d.ts") catch continue;
+            defer gpa.free(dts_path);
+            // Prefer zig-dtsx (source-driven, infers exported types); fall
+            // back to the symbol-driven emitter if it can't process the file.
+            if (ts_emit.d_ts_fast.emit(gpa, f.source)) |dts| {
+                defer gpa.free(dts);
+                writeOrDie(gpa, dts_path, dts);
+            } else |_| {
+                var emitter = ts_emit.DtsEmitter.initWithTypes(gpa, &c.hir, &c.interner, &c.type_interner, .{});
+                defer emitter.deinit();
+                emitter.emitSourceFile(c.root) catch continue;
+                const dts_bytes = emitter.toOwnedSlice() catch continue;
+                defer gpa.free(dts_bytes);
+                writeOrDie(gpa, dts_path, dts_bytes);
+            }
+        }
+    }
+    return had_errors;
+}
+
 /// True when `needle` string-equals any entry in `haystack`.
 fn pathInList(haystack: []const []const u8, needle: []const u8) bool {
     for (haystack) |p| {
@@ -342,34 +448,38 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("home tsc --build: '--{s}' is not yet implemented.\n", .{if (bp.options.clean) "clean" else "dry"});
             return;
         }
-        // Resolve the project reference graph and check for cycles (TS6202)
-        // before building. "." / a directory resolves to its tsconfig.json.
+        // Resolve the project reference graph, check for cycles (TS6202),
+        // then build every project in dependency order. "." / a directory
+        // resolves to its tsconfig.json.
         const root_ref = if (bp.projects.len > 0) bp.projects[0] else ".";
         const root_cfg = resolveConfigPath(args_arena.allocator(), ".", root_ref) catch root_ref;
-        if (loadBuildGraph(gpa, args_arena.allocator(), root_cfg)) |graph| {
-            var ord = ts_cli.topoSortProjects(gpa, graph.nodes) catch
-                ts_cli.BuildOrder{ .order = &.{}, .cycle = null };
-            defer ord.deinit(gpa);
-            if (ord.cycle) |cyc| {
-                const msg = ts_cli.projectReferenceCycleDiagnostic(gpa, cyc) catch
-                    std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
-                defer gpa.free(msg);
-                std.debug.print("{s}\n", .{msg});
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        const graph = loadBuildGraph(gpa, args_arena.allocator(), root_cfg) catch {
+            std.debug.print("error: cannot load project '{s}'\n", .{root_cfg});
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        };
+        var ord = ts_cli.topoSortProjects(gpa, graph.nodes) catch
+            ts_cli.BuildOrder{ .order = &.{}, .cycle = null };
+        defer ord.deinit(gpa);
+        if (ord.cycle) |cyc| {
+            const msg = ts_cli.projectReferenceCycleDiagnostic(gpa, cyc) catch
+                std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
+            defer gpa.free(msg);
+            std.debug.print("{s}\n", .{msg});
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        }
+        if (bp.options.verbose and graph.paths.len > 1) {
+            std.debug.print("Projects to build (dependency order): {d}\n", .{graph.paths.len});
+        }
+        // Build each project (dependencies first). `--force` would skip
+        // up-to-date checks — we always build for now (no incremental skip).
+        var build_had_errors = false;
+        for (ord.order) |pi| {
+            if (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose)) {
+                build_had_errors = true;
             }
-            if (bp.options.verbose and graph.paths.len > 1) {
-                std.debug.print("Build order ({d} projects):\n", .{graph.paths.len});
-                for (ord.order) |pi| std.debug.print("  {s}\n", .{graph.paths[pi]});
-            }
-        } else |_| {}
-        // Build the resolved project. "." resolves to a discovered
-        // tsconfig.json in the cwd (same as plain `tsc`). (Multi-project
-        // dependency-order building is the remaining Phase B step.)
-        const proj = if (bp.projects.len > 0 and !std.mem.eql(u8, bp.projects[0], "."))
-            bp.projects[0]
-        else
-            null;
-        opts = .{ .project = proj };
+        }
+        if (build_had_errors) std.process.exit(@intFromEnum(ts_cli.ExitCode.type_errors));
+        return;
     } else {
         var parse_ctx: ts_cli.ParseContext = .{};
         opts = ts_cli.parseArgsCtx(gpa, argv.items, &parse_ctx) catch |err| {
