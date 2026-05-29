@@ -14,12 +14,19 @@
 // `enable_jsc`. Installed after `bun_global` (augments the existing `Bun`) and
 // after `node_modules` (so `Buffer` is available).
 //
+// Also exposes `Bun.which` (PATH resolution) and an eager `Bun.spawn`: an
+// async-shaped Subprocess (`pid`, `exited: Promise`, `stdout`/`stderr` readers
+// with text/json/bytes/arrayBuffer, `kill`/`ref`/`unref`) implemented on top of
+// the sync spawn — it runs the child to completion, then presents resolved
+// results. This covers `await proc.stdout.text()` / `await proc.exited`.
+//
 // Scope (v1): synchronous spawn with stdin written first, then stdout drained
 // before stderr (sequential blocking reads — no concurrency, since the realm's
 // single-threaded `std.Io` cannot satisfy a concurrent multi-pipe drain). Very
 // large piped stdin, or a child that floods stderr while stdout stays open, can
-// deadlock against a full pipe. The async streaming `Bun.spawn` (with
-// `.exited`/streams) is a separate later milestone.
+// deadlock against a full pipe. True streaming `Bun.spawn` (live streams,
+// interactive stdin, reaping a still-running child via the event loop) is a
+// separate later milestone.
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -408,6 +415,15 @@ const install_glue =
     \\    return null;
     \\  }
     \\  function wrapBuf(u8) { return (typeof Buffer !== "undefined" && Buffer.from) ? Buffer.from(u8) : u8; }
+    \\  function makeReader(bytes) {
+    \\    if (bytes == null) return null;
+    \\    return {
+    \\      text: function() { return Promise.resolve(new TextDecoder().decode(bytes)); },
+    \\      json: function() { return Promise.resolve(JSON.parse(new TextDecoder().decode(bytes))); },
+    \\      bytes: function() { return Promise.resolve(bytes.slice()); },
+    \\      arrayBuffer: function() { return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); },
+    \\    };
+    \\  }
     \\
     \\  function spawnSync(cmdOrOpts, maybeOpts) {
     \\    var opts, cmd;
@@ -435,6 +451,41 @@ const install_glue =
     \\    };
     \\  }
     \\
+    \\  // Bun.spawn — async-shaped Subprocess. v1 runs the child eagerly to
+    \\  // completion via the native sync spawn, then presents resolved
+    \\  // exited/stdout/stderr. Covers `await proc.stdout.text()` / `await
+    \\  // proc.exited`; true streaming + interactive stdin is a later refinement.
+    \\  function spawn(cmdOrOpts, maybeOpts) {
+    \\    var opts, cmd;
+    \\    if (Array.isArray(cmdOrOpts)) { cmd = cmdOrOpts; opts = maybeOpts || {}; }
+    \\    else if (cmdOrOpts && typeof cmdOrOpts === "object") { opts = cmdOrOpts; cmd = opts.cmd; }
+    \\    else { throw new TypeError("spawn: expected a cmd array or an options object"); }
+    \\    if (!Array.isArray(cmd) || cmd.length === 0) throw new TypeError("spawn: cmd must be a non-empty array");
+    \\    var r = spawnSyncNative(
+    \\      cmd.map(String),
+    \\      opts.cwd != null ? String(opts.cwd) : "",
+    \\      toEnvPairs(opts.env),
+    \\      toStdinBytes(opts.stdin),
+    \\      toMode(opts.stdout, 0),
+    \\      toMode(opts.stderr, 0),
+    \\      toMode(opts.stdin, 2)
+    \\    );
+    \\    if (r && r.__spawn_error) throw new Error(r.__spawn_error);
+    \\    return {
+    \\      pid: r.pid,
+    \\      exitCode: r.exitCode,
+    \\      signalCode: r.signalCode,
+    \\      success: r.success,
+    \\      exited: Promise.resolve(r.exitCode),
+    \\      stdout: makeReader(r.stdout == null ? null : wrapBuf(r.stdout)),
+    \\      stderr: makeReader(r.stderr == null ? null : wrapBuf(r.stderr)),
+    \\      stdin: undefined,
+    \\      kill: function() {},
+    \\      ref: function() {},
+    \\      unref: function() {},
+    \\    };
+    \\  }
+    \\
     \\  function which(cmd, opts) {
     \\    if (cmd == null) return null;
     \\    var path = (opts && opts.PATH != null)
@@ -446,6 +497,7 @@ const install_glue =
     \\
     \\  if (typeof globalThis.Bun !== "object" || globalThis.Bun === null) globalThis.Bun = {};
     \\  globalThis.Bun.spawnSync = spawnSync;
+    \\  globalThis.Bun.spawn = spawn;
     \\  globalThis.Bun.which = which;
     \\  delete globalThis.__home_spawn_sync;
     \\  delete globalThis.__home_which;
@@ -574,6 +626,47 @@ test "Bun.spawnSync honors stdout: 'ignore' (null stdout, still runs)" {
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "(function(){ var r = Bun.spawnSync(['/bin/echo', 'hi'], { stdout: 'ignore' }); " ++
         "return r.exitCode === 0 && r.stdout === null; })()"));
+}
+
+test "Bun.spawn (eager) exposes pid, exited, and stdout.text()" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Promise.all over already-resolved exited/stdout settles in the microtask
+    // drain that follows evaluation (same pattern as the bun_global tests).
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__sp = '';" ++
+        "(function(){ var p = Bun.spawn(['/bin/echo', 'spawn-hi']);" ++
+        "  if (typeof p.pid !== 'number' || p.pid <= 0) { globalThis.__sp = 'BADPID'; return; }" ++
+        "  Promise.all([p.exited, p.stdout.text()]).then(function(a){ globalThis.__sp = 'OK:' + a[0] + ':' + a[1].trim(); }," ++
+        "    function(e){ globalThis.__sp = 'ERR:' + e; });" ++
+        "})();",
+        "home:spawn-async-setup", 1, null);
+    const diag = try evalString(std.testing.allocator, ctx, "globalThis.__sp");
+    defer std.testing.allocator.free(diag);
+    std.testing.expectEqualStrings("OK:0:spawn-hi", diag) catch |err| {
+        std.debug.print("Bun.spawn diag: {s}\n", .{diag});
+        return err;
+    };
+}
+
+test "Bun.spawn .exited resolves with the child exit code" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__se = '';" ++
+        "Bun.spawn(['/bin/sh', '-c', 'exit 5']).exited.then(function(c){ globalThis.__se = 'C:' + c; });",
+        "home:spawn-exit-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__se === 'C:5'"));
 }
 
 test "Bun.which resolves a binary via PATH" {
