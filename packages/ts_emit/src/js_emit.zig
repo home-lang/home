@@ -904,6 +904,15 @@ pub const Printer = struct {
     }
 
     fn printStatement(self: *Printer, node: NodeId) anyerror!void {
+        // `declare`d / ambient declarations have no runtime presence and
+        // erase entirely (emitting `const a;` or `function f(x);` would be
+        // invalid JS). Checked before indenting so no stray whitespace is
+        // left behind.
+        switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => if (hir_mod.varDeclOf(self.hir, node).is_ambient) return,
+            .fn_decl => if (hir_mod.fnDeclOf(self.hir, node).body == hir_mod.none_node_id) return,
+            else => {},
+        }
         try self.indent();
         const span = self.hir.spanOf(node);
         try self.mapAt(span.start);
@@ -6849,11 +6858,12 @@ pub const Printer = struct {
         try self.writeSemi();
     }
 
-    /// True when a class method is `abstract` (no runtime presence —
-    /// emitting its bodyless signature `f();` would be invalid JS).
+    /// True when a class method has no runtime body — abstract methods,
+    /// overload signatures, and `declare`-class methods. Emitting their
+    /// bodyless signature `f();` would be invalid JS, so they're omitted.
     fn memberIsAbstract(self: *const Printer, m: NodeId) bool {
         return switch (self.hir.kindOf(m)) {
-            .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnDeclOf(self.hir, m).flags.is_abstract,
+            .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnDeclOf(self.hir, m).body == hir_mod.none_node_id,
             else => false,
         };
     }
@@ -8699,6 +8709,30 @@ test "emit: parameter-property assignments follow a leading super() call" {
     // Ordering: super() → this.n = n → rest of body.
     try T.expect(super_idx < assign_idx);
     try T.expect(assign_idx < use_idx);
+}
+
+test "emit: declare statements erase entirely" {
+    const out = try emit("declare const a: number;\ndeclare function f(x: string): void;\nexport const real = 1;");
+    defer T.allocator.free(out);
+    // No invalid bodyless / initializer-less declarations.
+    try T.expect(std.mem.indexOf(u8, out, "const a;") == null);
+    try T.expect(std.mem.indexOf(u8, out, "function f(") == null);
+    // Real declarations survive.
+    try T.expect(std.mem.indexOf(u8, out, "const real = 1;") != null);
+}
+
+test "emit: function overload signatures erase, implementation survives" {
+    const out = try emit("function over(x: string): void;\nfunction over(x: number): void;\nfunction over(x: any) { return x; }");
+    defer T.allocator.free(out);
+    // Exactly one `function over` (the implementation).
+    var count: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, out, idx, "function over")) |p| {
+        count += 1;
+        idx = p + 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+    try T.expect(std.mem.indexOf(u8, out, "return x;") != null);
 }
 
 test "emit: import x = require() lowers to const x = require()" {
