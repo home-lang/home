@@ -4,6 +4,11 @@
 
 Home is a modern programming language for systems, apps, and games that combines the speed of Zig, the safety of Rust, and the joy of TypeScript. The compiler is built with Zig and produces native x64 code, with features including pattern matching, generics, async/await, comptime evaluation, null safety operators, and error handling via Result types. Source files use `.home` or `.hm` extensions, and the project includes a lexer, parser, type system with inference, and a standard library with HTTP server and database modules.
 
+## Bun parity (TS→JS transpiler / runtime)
+
+- Home maintains Bun's engine for them (they moved to Rust). The **source of truth is Bun's official Zig at `~/Code/bun`** — when implementing TS→JS lowering or runtime parity, READ the corresponding Bun code (e.g. `src/js_printer/js_printer.zig`, `src/js_parser/`, `src/ast/`) and mirror its shape rather than reinventing or guessing. The TS→JS printer lives in `packages/ts_emit/src/js_emit.zig`.
+- Diagnostic parity (`TSxxxx`) is checked against typescript-go (`~/Code/typescript-go`); TS→JS *emit* parity is checked against Bun.
+
 ## TypeScript diagnostic parity
 
 - When emitting `TSxxxx` diagnostic codes for parity, **only implement codes in the REACHABLE set** — codes the reference compiler (typescript-go) actually emits. About half the `catalog-only` rows in `docs/TS_DIAGNOSTIC_CODE_STATUS.md` are **dead** (obsolete/superseded wording tsgo never produces, e.g. TS6015→TS6705); emitting those is anti-parity, not progress.
