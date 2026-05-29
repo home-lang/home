@@ -6814,6 +6814,37 @@ pub const Printer = struct {
         try self.write(" = {}));");
     }
 
+    /// Emit one exported namespace member: the inner declaration followed
+    /// by `N.<name> = <name>;`. Keeping the local binding means internal
+    /// references to the name still resolve without rewriting. tsc lowers
+    /// `export const x = 1` inside `namespace N` this way (a property on N).
+    fn emitNamespaceExportedMember(self: *Printer, ns_name: NodeId, export_node: NodeId) !void {
+        const ex = hir_mod.exportOf(self.hir, export_node);
+        if (ex.decl == hir_mod.none_node_id) {
+            // `export { ... }` / re-export — no local decl to bind.
+            try self.printStatement(export_node);
+            return;
+        }
+        try self.printStatement(ex.decl);
+        const name_node: NodeId = switch (self.hir.kindOf(ex.decl)) {
+            .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, ex.decl).name,
+            .fn_decl => hir_mod.fnDeclOf(self.hir, ex.decl).name,
+            .class_decl => hir_mod.classOf(self.hir, ex.decl).name,
+            else => hir_mod.none_node_id,
+        };
+        // Interfaces / type aliases erase — no assignment.
+        if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return;
+        const nm = self.interner.get(hir_mod.identifierOf(self.hir, name_node).name);
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.printExpression(ns_name);
+        try self.write(".");
+        try self.write(nm);
+        try self.write(" = ");
+        try self.write(nm);
+        try self.writeSemi();
+    }
+
     fn printNamespace(self: *Printer, node: NodeId) !void {
         const n = hir_mod.namespaceOf(self.hir, node);
         try self.write("var ");
@@ -6827,7 +6858,11 @@ pub const Printer = struct {
         self.depth += 1;
         for (body) |s| {
             try self.write(self.options.newline);
-            try self.printStatement(s);
+            if (self.hir.kindOf(s) == .export_decl) {
+                try self.emitNamespaceExportedMember(n.name, s);
+            } else {
+                try self.printStatement(s);
+            }
         }
         self.depth -= 1;
         try self.writeNewlineIndent();
@@ -8640,6 +8675,21 @@ test "emit: parameter-property assignments follow a leading super() call" {
     // Ordering: super() → this.n = n → rest of body.
     try T.expect(super_idx < assign_idx);
     try T.expect(assign_idx < use_idx);
+}
+
+test "emit: namespace exported members become N.x assignments (valid JS)" {
+    const out = try emit("namespace N { export const x = 1; export function f() { return x; } const hidden = 2; }");
+    defer T.allocator.free(out);
+    // No bare `export` may survive inside the IIFE (that would be invalid JS).
+    try T.expect(std.mem.indexOf(u8, out, "export const") == null);
+    try T.expect(std.mem.indexOf(u8, out, "export function") == null);
+    // Exported members are assigned onto the namespace object...
+    try T.expect(std.mem.indexOf(u8, out, "N.x = x;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "N.f = f;") != null);
+    // ...with the local binding kept (so `return x` still resolves).
+    try T.expect(std.mem.indexOf(u8, out, "const x = 1;") != null);
+    // Non-exported members are not assigned onto N.
+    try T.expect(std.mem.indexOf(u8, out, "N.hidden") == null);
 }
 
 test "emit: export = lowers to module.exports assignment" {
