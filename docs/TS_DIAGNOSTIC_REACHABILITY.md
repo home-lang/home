@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 966 |
-| reachable (parity targets) | 452 |
+| catalog-only total | 965 |
+| reachable (parity targets) | 451 |
 | dead in tsgo (leave catalog-only) | 514 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 168 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 137 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 136 |
 | 1xxx — parser / syntactic + program file-inclusion | 77 |
 | 4xxx — declaration-emit (privacy / serialization) | 23 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -202,7 +202,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (137)
+### 6xxx — CLI / build / watch / resolution-trace messages (136)
 
 - TS6029 `Version_0_6029`
 - TS6031 `Starting_compilation_in_watch_mode_6031`
@@ -244,7 +244,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6182 `Scoped_package_detected_looking_in_0_6182`
 - TS6193 `Found_1_error_Watching_for_file_changes_6193`
 - TS6194 `Found_0_errors_Watching_for_file_changes_6194`
-- TS6202 `Project_references_may_not_form_a_circular_graph_Cycle_detected_Colon_0_6202`
 - TS6210 `An_argument_for_0_was_not_provided_6210`
 - TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
 - TS6212 `Did_you_mean_to_call_this_expression_6212`

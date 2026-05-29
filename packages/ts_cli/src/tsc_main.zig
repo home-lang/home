@@ -98,6 +98,66 @@ fn expandResponseFiles(
     }
 }
 
+/// Resolve a project reference (a `references[].path`, or the `tsc -b`
+/// project argument) to a canonical `tsconfig.json` path. Per tsc: a path
+/// ending in `.json` is the config file itself; otherwise it's a directory
+/// holding `tsconfig.json`. `arena`-owned.
+fn resolveConfigPath(arena: std.mem.Allocator, base_dir: []const u8, ref: []const u8) ![]u8 {
+    if (std.mem.endsWith(u8, ref, ".json")) {
+        return std.fs.path.resolve(arena, &.{ base_dir, ref });
+    }
+    return std.fs.path.resolve(arena, &.{ base_dir, ref, "tsconfig.json" });
+}
+
+/// Built project-reference graph: parallel `nodes` (for `topoSortProjects`)
+/// and canonical config `paths`.
+const LoadedGraph = struct {
+    nodes: []ts_cli.ProjectNode,
+    paths: [][]const u8,
+};
+
+/// Load the `tsc --build` project graph starting from `root_config` (a
+/// canonical tsconfig path), following `references` recursively. Builds the
+/// node/dep structure `topoSortProjects` consumes. Unreadable/unparseable
+/// referenced configs are treated as leaf nodes (no deps). `arena`-owned.
+fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config: []const u8) !LoadedGraph {
+    // Everything is arena-owned (freed with the caller's arena) so the
+    // temporary lists don't need their own cleanup.
+    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    var dep_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
+
+    const ensure = struct {
+        fn idx(a: std.mem.Allocator, ps: *std.ArrayListUnmanaged([]const u8), ds: *std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)), p: []const u8) !usize {
+            for (ps.items, 0..) |existing, i| {
+                if (std.mem.eql(u8, existing, p)) return i;
+            }
+            try ps.append(a, p);
+            try ds.append(a, .empty);
+            return ps.items.len - 1;
+        }
+    };
+
+    _ = try ensure.idx(arena, &paths, &dep_lists, root_config);
+    var i: usize = 0;
+    while (i < paths.items.len) : (i += 1) {
+        const cfg_path = paths.items[i];
+        const src = RealFs.read(arena, cfg_path) catch continue; // leaf on read error
+        const cfg = tsconfig_mod.parseString(gpa, arena, src) catch continue;
+        const base = std.fs.path.dirname(cfg_path) orelse ".";
+        for (cfg.references) |ref| {
+            const ref_path = resolveConfigPath(arena, base, ref) catch continue;
+            const dep_idx = try ensure.idx(arena, &paths, &dep_lists, ref_path);
+            try dep_lists.items[i].append(arena, dep_idx);
+        }
+    }
+
+    const nodes = try arena.alloc(ts_cli.ProjectNode, paths.items.len);
+    for (paths.items, 0..) |p, k| {
+        nodes[k] = .{ .name = p, .deps = dep_lists.items[k].items };
+    }
+    return .{ .nodes = nodes, .paths = paths.items };
+}
+
 /// True when `needle` string-equals any entry in `haystack`.
 fn pathInList(haystack: []const []const u8, needle: []const u8) bool {
     for (haystack) |p| {
@@ -282,8 +342,29 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("home tsc --build: '--{s}' is not yet implemented.\n", .{if (bp.options.clean) "clean" else "dry"});
             return;
         }
+        // Resolve the project reference graph and check for cycles (TS6202)
+        // before building. "." / a directory resolves to its tsconfig.json.
+        const root_ref = if (bp.projects.len > 0) bp.projects[0] else ".";
+        const root_cfg = resolveConfigPath(args_arena.allocator(), ".", root_ref) catch root_ref;
+        if (loadBuildGraph(gpa, args_arena.allocator(), root_cfg)) |graph| {
+            var ord = ts_cli.topoSortProjects(gpa, graph.nodes) catch
+                ts_cli.BuildOrder{ .order = &.{}, .cycle = null };
+            defer ord.deinit(gpa);
+            if (ord.cycle) |cyc| {
+                const msg = ts_cli.projectReferenceCycleDiagnostic(gpa, cyc) catch
+                    std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
+                defer gpa.free(msg);
+                std.debug.print("{s}\n", .{msg});
+                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            }
+            if (bp.options.verbose and graph.paths.len > 1) {
+                std.debug.print("Build order ({d} projects):\n", .{graph.paths.len});
+                for (ord.order) |pi| std.debug.print("  {s}\n", .{graph.paths[pi]});
+            }
+        } else |_| {}
         // Build the resolved project. "." resolves to a discovered
-        // tsconfig.json in the cwd (same as plain `tsc`).
+        // tsconfig.json in the cwd (same as plain `tsc`). (Multi-project
+        // dependency-order building is the remaining Phase B step.)
         const proj = if (bp.projects.len > 0 and !std.mem.eql(u8, bp.projects[0], "."))
             bp.projects[0]
         else

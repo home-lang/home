@@ -720,6 +720,106 @@ pub fn parseBuildArgs(gpa: std.mem.Allocator, args: []const []const u8) !BuildPa
     };
 }
 
+/// A project in the `tsc --build` reference graph.
+pub const ProjectNode = struct {
+    /// Config path/name (used verbatim in the TS6202 cycle message).
+    name: []const u8,
+    /// Indices into the node list of the projects this one references.
+    deps: []const usize,
+};
+
+pub const BuildOrder = struct {
+    /// Topological order — each project appears after all its references
+    /// (dependencies built first). gpa-owned.
+    order: []usize,
+    /// When the graph has a cycle, the project names on the circular path
+    /// (gpa-owned slice of borrowed names); null otherwise. Drives TS6202.
+    cycle: ?[][]const u8,
+
+    pub fn deinit(self: *BuildOrder, gpa: std.mem.Allocator) void {
+        gpa.free(self.order);
+        if (self.cycle) |c| gpa.free(c);
+    }
+};
+
+/// Topologically order a project-reference graph (dependencies first),
+/// mirroring tsgo's `setupBuildTask` DFS post-order with `analyzing`/
+/// `completed` cycle detection. On the first cycle found, `cycle` holds the
+/// names on the circular path (for TS6202) and `order` is the partial order.
+pub fn topoSortProjects(gpa: std.mem.Allocator, nodes: []const ProjectNode) !BuildOrder {
+    const State = enum { unvisited, analyzing, completed };
+    const states = try gpa.alloc(State, nodes.len);
+    defer gpa.free(states);
+    @memset(states, .unvisited);
+
+    var order: std.ArrayListUnmanaged(usize) = .empty;
+    errdefer order.deinit(gpa);
+    var stack: std.ArrayListUnmanaged(usize) = .empty;
+    defer stack.deinit(gpa);
+    var cycle: ?[][]const u8 = null;
+    errdefer if (cycle) |c| gpa.free(c);
+
+    const Walk = struct {
+        fn visit(
+            g: std.mem.Allocator,
+            ns: []const ProjectNode,
+            st: []State,
+            ord: *std.ArrayListUnmanaged(usize),
+            stk: *std.ArrayListUnmanaged(usize),
+            cyc: *?[][]const u8,
+            idx: usize,
+        ) !void {
+            if (st[idx] == .completed) return;
+            if (st[idx] == .analyzing) {
+                if (cyc.* == null) {
+                    // Record the path from the earlier occurrence of `idx`
+                    // on the stack through to the current node.
+                    var start: usize = 0;
+                    for (stk.items, 0..) |s, i| {
+                        if (s == idx) {
+                            start = i;
+                            break;
+                        }
+                    }
+                    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+                    for (stk.items[start..]) |s| try names.append(g, ns[s].name);
+                    try names.append(g, ns[idx].name); // close the cycle
+                    cyc.* = try names.toOwnedSlice(g);
+                }
+                return;
+            }
+            st[idx] = .analyzing;
+            try stk.append(g, idx);
+            for (ns[idx].deps) |dep| {
+                try visit(g, ns, st, ord, stk, cyc, dep);
+            }
+            _ = stk.pop();
+            st[idx] = .completed;
+            try ord.append(g, idx);
+        }
+    };
+
+    for (nodes, 0..) |_, i| {
+        try Walk.visit(gpa, nodes, states, &order, &stack, &cycle, i);
+    }
+
+    return .{ .order = try order.toOwnedSlice(gpa), .cycle = cycle };
+}
+
+/// TS6202: a project-reference cycle. `{0}` is the cycle's project names
+/// joined by newlines (tsgo `strings.Join(circularityStack, "\n")`).
+/// Caller frees.
+pub fn projectReferenceCycleDiagnostic(gpa: std.mem.Allocator, cycle_names: []const []const u8) ![]u8 {
+    const code: u32 = 6202;
+    const joined = try std.mem.join(gpa, "\n", cycle_names);
+    defer gpa.free(joined);
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Project references may not form a circular graph. Cycle detected:\n{s}",
+        .{ code, joined },
+    );
+}
+
 pub const RunResult = struct {
     code: ExitCode,
     /// One of `helpText`, `versionText`, or empty.
@@ -1179,6 +1279,62 @@ test "parseBuildArgs: TS6370 for clean+force and clean+verbose" {
     var p2 = try parseBuildArgs(T.allocator, &.{ "--clean", "--verbose" });
     defer p2.deinit(T.allocator);
     try T.expect(buildDiagHas(p2, "error TS6370: Options 'clean' and 'verbose' cannot be combined."));
+}
+
+test "topoSortProjects: dependencies are ordered before dependents" {
+    // app → lib → core. Build order must be core, lib, app.
+    const nodes = [_]ProjectNode{
+        .{ .name = "app", .deps = &.{1} },
+        .{ .name = "lib", .deps = &.{2} },
+        .{ .name = "core", .deps = &.{} },
+    };
+    var r = try topoSortProjects(T.allocator, &nodes);
+    defer r.deinit(T.allocator);
+    try T.expect(r.cycle == null);
+    try T.expectEqual(@as(usize, 3), r.order.len);
+    // core (2) before lib (1) before app (0)
+    try T.expectEqual(@as(usize, 2), r.order[0]);
+    try T.expectEqual(@as(usize, 1), r.order[1]);
+    try T.expectEqual(@as(usize, 0), r.order[2]);
+}
+
+test "topoSortProjects: diamond graph orders each dep before dependents" {
+    // a → b,c ; b → d ; c → d. d must come first, a last.
+    const nodes = [_]ProjectNode{
+        .{ .name = "a", .deps = &.{ 1, 2 } },
+        .{ .name = "b", .deps = &.{3} },
+        .{ .name = "c", .deps = &.{3} },
+        .{ .name = "d", .deps = &.{} },
+    };
+    var r = try topoSortProjects(T.allocator, &nodes);
+    defer r.deinit(T.allocator);
+    try T.expect(r.cycle == null);
+    try T.expectEqual(@as(usize, 3), r.order[0]); // d first
+    try T.expectEqual(@as(usize, 0), r.order[r.order.len - 1]); // a last
+}
+
+test "topoSortProjects: detects a cycle and reports the path" {
+    // a → b → c → a.
+    const nodes = [_]ProjectNode{
+        .{ .name = "a", .deps = &.{1} },
+        .{ .name = "b", .deps = &.{2} },
+        .{ .name = "c", .deps = &.{0} },
+    };
+    var r = try topoSortProjects(T.allocator, &nodes);
+    defer r.deinit(T.allocator);
+    try T.expect(r.cycle != null);
+    const c = r.cycle.?;
+    // Path starts and ends at the same node (a … a).
+    try T.expectEqualStrings(c[0], c[c.len - 1]);
+    try T.expect(c.len >= 4); // a, b, c, a
+}
+
+test "projectReferenceCycleDiagnostic: TS6202 message joins names with newlines" {
+    const names = [_][]const u8{ "a/tsconfig.json", "b/tsconfig.json", "a/tsconfig.json" };
+    const msg = try projectReferenceCycleDiagnostic(T.allocator, &names);
+    defer T.allocator.free(msg);
+    try T.expect(std.mem.startsWith(u8, msg, "error TS6202: Project references may not form a circular graph. Cycle detected:\n"));
+    try T.expect(std.mem.indexOf(u8, msg, "a/tsconfig.json\nb/tsconfig.json\na/tsconfig.json") != null);
 }
 
 test "buildOnlyOptionInNormalMode: detects build-only flags for TS5093" {
