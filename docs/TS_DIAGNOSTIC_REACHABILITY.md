@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 965 |
-| reachable (parity targets) | 451 |
+| catalog-only total | 963 |
+| reachable (parity targets) | 449 |
 | dead in tsgo (leave catalog-only) | 514 |
 
 ## Reachable worklist by range
@@ -24,7 +24,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | --- | ---: |
 | 2xxx — checker / type engine | 168 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 136 |
-| 1xxx — parser / syntactic + program file-inclusion | 77 |
+| 1xxx — parser / syntactic + program file-inclusion | 75 |
 | 4xxx — declaration-emit (privacy / serialization) | 23 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -341,7 +341,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6928 `An_expanded_version_of_this_information_showing_all_possible_compiler_options_6928`
 - TS6929 `Compiles_the_current_project_with_additional_settings_6929`
 
-### 1xxx — parser / syntactic + program file-inclusion (77)
+### 1xxx — parser / syntactic + program file-inclusion (75)
 
 - TS1007 `The_parser_expected_to_find_a_1_to_match_the_0_token_here_1007`
 - TS1012 `Unexpected_token_1012`
@@ -375,7 +375,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1396 `Imported_via_0_from_file_1_with_packageId_2_to_import_importHelpers_as_specified_in_compilerOptions_1396`
 - TS1397 `Imported_via_0_from_file_1_to_import_jsx_and_jsxs_factory_functions_1397`
 - TS1398 `Imported_via_0_from_file_1_with_packageId_2_to_import_jsx_and_jsxs_factory_functions_1398`
-- TS1399 `File_is_included_via_import_here_1399`
 - TS1400 `Referenced_via_0_from_file_1_1400`
 - TS1401 `File_is_included_via_reference_here_1401`
 - TS1402 `Type_library_referenced_via_0_from_file_1_1402`
@@ -397,7 +396,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1424 `Default_library_1424`
 - TS1425 `Default_library_for_target_0_1425`
 - TS1426 `File_is_default_library_for_target_specified_here_1426`
-- TS1427 `Root_file_specified_for_compilation_1427`
 - TS1428 `File_is_output_of_project_reference_source_0_1428`
 - TS1429 `File_redirects_to_file_0_1429`
 - TS1430 `The_file_is_in_the_program_because_Colon_1430`

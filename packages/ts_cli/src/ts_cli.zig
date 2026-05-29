@@ -48,6 +48,8 @@ pub const Options = struct {
     list_files: bool = false,
     /// `--listFilesOnly`.
     list_files_only: bool = false,
+    /// `--explainFiles`.
+    explain_files: bool = false,
     /// `--showConfig`.
     show_config: bool = false,
     /// `--init`.
@@ -122,6 +124,8 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.list_files = true;
         } else if (std.mem.eql(u8, a, "--listFilesOnly")) {
             opts.list_files_only = true;
+        } else if (std.mem.eql(u8, a, "--explainFiles")) {
+            opts.explain_files = true;
         } else if (std.mem.eql(u8, a, "--showConfig")) {
             opts.show_config = true;
         } else if (std.mem.eql(u8, a, "--init")) {

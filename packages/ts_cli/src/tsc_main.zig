@@ -317,6 +317,20 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     return had_errors;
 }
 
+/// `--explainFiles`: print each program file with the reason it is part of
+/// the compilation, mirroring tsc's `ExplainFiles`. A root (input) file →
+/// TS1427 "Root file specified for compilation"; any other file was pulled
+/// in transitively → TS1399 "File is included via import here". Reason text
+/// is rendered from the diagnostic catalogue so it stays authoritative.
+fn printExplainFiles(program: *const ts_program.Program, roots: []const []const u8) void {
+    for (program.files.items) |f| {
+        std.debug.print("{s}\n", .{f.path});
+        const reason_code: u32 = if (pathInList(roots, f.path)) 1427 else 1399;
+        const msg = (ts_diagnostics.codes.lookup(reason_code) orelse unreachable).message;
+        std.debug.print("  {s}\n", .{msg});
+    }
+}
+
 /// True when `needle` string-equals any entry in `haystack`.
 fn pathInList(haystack: []const []const u8, needle: []const u8) bool {
     for (haystack) |p| {
@@ -928,6 +942,10 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
+
+    // `--explainFiles`: list every file in the program with the reason it
+    // was included (TS1427 root / TS1399 via-import).
+    if (opts.explain_files) printExplainFiles(&program, input_files.items);
 
     // Resolve outDir from CLI or tsconfig. CLI wins.
     const out_dir: ?[]const u8 = opts.out_dir orelse blk: {
