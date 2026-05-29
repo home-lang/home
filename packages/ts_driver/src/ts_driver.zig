@@ -1412,6 +1412,10 @@ pub fn compileSource(
     } else {
         var printer = ts_emit.Printer.init(gpa, &c.hir, &c.interner, options.emit);
         defer printer.deinit();
+        // The printer needs the source text to render span-based literals
+        // verbatim (regex `/…/flags`, numeric literals) rather than falling
+        // back to placeholders.
+        printer.setSource(source);
         if (c.root != hir_mod.none_node_id) {
             printer.printSourceFile(c.root) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,

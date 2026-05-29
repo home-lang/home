@@ -8851,6 +8851,14 @@ test "emit: abstract methods are omitted (no invalid bodyless signature)" {
     try T.expect(std.mem.indexOf(u8, out, "abstract") == null);
 }
 
+test "emit: regex literal emits verbatim (pattern + flags)" {
+    const out = try emit("const r = /ab+c/gi;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "/ab+c/gi") != null);
+    // Must not collapse to the `/./` placeholder.
+    try T.expect(std.mem.indexOf(u8, out, "/./") == null);
+}
+
 test "emit: object spread {...rest} emits and does not truncate the file" {
     const out = try emit("const o = { a: 1, ...rest, b: 2 };\nconst after = 9;");
     defer T.allocator.free(out);
