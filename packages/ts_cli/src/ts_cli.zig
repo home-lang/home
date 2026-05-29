@@ -21,6 +21,10 @@ const ts_driver = @import("ts_driver");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
 const tsconfig_mod = @import("tsconfig");
+const options_table = @import("options_table.zig");
+const codes = ts_diagnostics.codes;
+
+pub const all_options = options_table.all_options;
 
 pub const ExitCode = enum(u8) {
     success = 0,
@@ -236,6 +240,81 @@ pub const helpText: []const u8 =
 ;
 
 pub const versionText: []const u8 = "home tsc 0.1.0 (TS-compat 5.x)";
+
+/// Render `home tsc --help` (or `--all`) from the compiler-options table.
+///
+/// Faithful to tsc: each option's one-line description and its grouping
+/// category header are pulled from the diagnostic catalogue (the same
+/// `TSxxxx` messages tsc keys its `--help` text to) rather than from
+/// hand-written prose. The default view lists only the
+/// `ShowInSimplifiedHelpView` options; `--all` lists every option grouped
+/// under its category. Caller frees the returned buffer.
+pub fn renderHelp(gpa: std.mem.Allocator, all: bool) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+
+    try buf.appendSlice(gpa, "Usage: home tsc [files...] [options]\n\n");
+
+    // Collect distinct category codes in first-appearance order so the
+    // grouped listing mirrors the reference compiler's decl order.
+    var cats: [64]u32 = undefined;
+    var ncat: usize = 0;
+    for (all_options) |opt| {
+        if (opt.category == 0) continue;
+        var present = false;
+        for (cats[0..ncat]) |c| {
+            if (c == opt.category) {
+                present = true;
+                break;
+            }
+        }
+        if (!present and ncat < cats.len) {
+            cats[ncat] = opt.category;
+            ncat += 1;
+        }
+    }
+
+    for (cats[0..ncat]) |cat| {
+        // Skip categories with no visible options in this view.
+        var any = false;
+        for (all_options) |opt| {
+            if (opt.category != cat) continue;
+            if (!all and !opt.simplified) continue;
+            any = true;
+            break;
+        }
+        if (!any) continue;
+
+        if (codes.lookup(cat)) |ci| {
+            try buf.append(gpa, '\n');
+            try buf.appendSlice(gpa, ci.message);
+            try buf.append(gpa, '\n');
+        }
+        for (all_options) |opt| {
+            if (opt.category != cat) continue;
+            if (!all and !opt.simplified) continue;
+            try renderOption(gpa, &buf, opt);
+        }
+    }
+    return buf.toOwnedSlice(gpa);
+}
+
+fn renderOption(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), opt: options_table.OptionDecl) !void {
+    try buf.appendSlice(gpa, "  --");
+    try buf.appendSlice(gpa, opt.name);
+    if (opt.short.len > 0) {
+        try buf.appendSlice(gpa, ", -");
+        try buf.appendSlice(gpa, opt.short);
+    }
+    try buf.append(gpa, '\n');
+    if (opt.code != 0) {
+        if (codes.lookup(opt.code)) |ci| {
+            try buf.appendSlice(gpa, "      ");
+            try buf.appendSlice(gpa, ci.message);
+            try buf.append(gpa, '\n');
+        }
+    }
+}
 
 /// TS6044: a non-boolean compiler flag was given on the command line
 /// with no argument following it (e.g. a trailing `--outDir`). Mirrors
@@ -502,4 +581,44 @@ test "dispatch: --project sets up a compile run" {
     opts.project = "tsconfig.json";
     const r = dispatch(opts);
     try T.expectEqual(ExitCode.success, r.code);
+}
+
+test "options_table: every description/category code resolves in the catalogue" {
+    // A row's `.code` / `.category` must point at a real catalogue entry —
+    // a dangling code would render a blank `--help` line. (`0` means the
+    // upstream decl carried no description, e.g. tsgo-only flags absent
+    // from the upstream-derived catalogue.)
+    for (all_options) |opt| {
+        if (opt.code != 0) try T.expect(codes.lookup(opt.code) != null);
+        if (opt.category != 0) try T.expect(codes.lookup(opt.category) != null);
+    }
+}
+
+test "renderHelp: simplified view renders simplified option descriptions" {
+    const help = try renderHelp(T.allocator, false);
+    defer T.allocator.free(help);
+    try T.expect(std.mem.indexOf(u8, help, "Usage:") != null);
+    // `--watch` / `--strict` are ShowInSimplifiedHelpView; their catalogue
+    // descriptions must appear in the default view.
+    try T.expect(std.mem.indexOf(u8, help, "Watch input files.") != null);
+    try T.expect(std.mem.indexOf(u8, help, "Enable all strict type-checking options.") != null);
+    // `traceResolution` is not ShowInSimplifiedHelpView — it must NOT leak
+    // into the default view.
+    try T.expect(std.mem.indexOf(u8, help, "--traceResolution") == null);
+}
+
+test "renderHelp: --all view includes advanced options and category headers" {
+    const help = try renderHelp(T.allocator, true);
+    defer T.allocator.free(help);
+    // `traceResolution` is advanced-only; it appears under --all.
+    try T.expect(std.mem.indexOf(u8, help, "--traceResolution") != null);
+    try T.expect(std.mem.indexOf(u8, help, "Log paths used during the 'moduleResolution' process.") != null);
+    // Simplified options still render under --all too.
+    try T.expect(std.mem.indexOf(u8, help, "--target, -t") != null);
+}
+
+test "renderHelp: option names carry their short alias" {
+    const help = try renderHelp(T.allocator, false);
+    defer T.allocator.free(help);
+    try T.expect(std.mem.indexOf(u8, help, "--watch, -w") != null);
 }

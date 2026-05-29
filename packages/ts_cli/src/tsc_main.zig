@@ -272,6 +272,18 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // Help is rendered from the compiler-options table (table-driven, so
+    // the `--help` text stays in lockstep with the diagnostic catalogue).
+    if (opts.show_help or opts.show_all_help) {
+        const help = ts_cli.renderHelp(gpa, opts.show_all_help) catch {
+            std.debug.print("{s}\n", .{ts_cli.helpText});
+            return;
+        };
+        defer gpa.free(help);
+        std.debug.print("{s}\n", .{help});
+        return;
+    }
+
     const dec = ts_cli.dispatch(opts);
     if (dec.stdout_text.len > 0) {
         std.debug.print("{s}\n", .{dec.stdout_text});
