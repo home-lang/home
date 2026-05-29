@@ -215,7 +215,36 @@ fn spawnSyncNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSO
         }
     }
 
-    return runChild(c, a, args, cwd, env_ptr, stdin_bytes);
+    // stdio modes (args 4=stdout, 5=stderr, 6=stdin; 0=pipe, 1=inherit,
+    // 2=ignore). stdout/stderr default to pipe (captured); stdin defaults to
+    // ignore unless stdin bytes were supplied (then it is piped to write them).
+    const stdout_mode = readMode(c, argc, argv, 4, 0);
+    const stderr_mode = readMode(c, argc, argv, 5, 0);
+    const stdin_mode = readMode(c, argc, argv, 6, 2);
+
+    return runChild(c, a, args, cwd, env_ptr, stdin_bytes, stdout_mode, stderr_mode, stdin_mode);
+}
+
+/// Read a small stdio-mode int (0=pipe/1=inherit/2=ignore) from `argv[idx]`,
+/// falling back to `default_mode` when absent or out of range.
+fn readMode(c: *JSContextRef, argc: usize, argv: [*c]const ?*JSValue, idx: usize, default_mode: u8) u8 {
+    if (argc > idx) {
+        if (argv[idx]) |v| {
+            if (!extern_fns.JSValueIsUndefined(c, v) and !extern_fns.JSValueIsNull(c, v)) {
+                const n = extern_fns.JSValueToNumber(c, v, null);
+                if (n >= 0 and n <= 2) return @intFromFloat(n);
+            }
+        }
+    }
+    return default_mode;
+}
+
+fn stdioFromMode(mode: u8) std.process.SpawnOptions.StdIo {
+    return switch (mode) {
+        1 => .inherit,
+        2 => .ignore,
+        else => .pipe,
+    };
 }
 
 /// Read a child pipe to EOF (streaming mode — pipes are not seekable).
@@ -232,6 +261,9 @@ fn runChild(
     cwd: std.process.Child.Cwd,
     env_ptr: ?*const std.process.Environ.Map,
     stdin_bytes: ?[]const u8,
+    stdout_mode: u8,
+    stderr_mode: u8,
+    stdin_mode: u8,
 ) ?*JSValue {
     // A local Threaded io with a real allocator: spawn/wait null-terminate argv
     // and env through the io's allocator, so `global_single_threaded` (which has
@@ -244,9 +276,9 @@ fn runChild(
         .argv = args,
         .cwd = cwd,
         .environ_map = env_ptr,
-        .stdin = if (stdin_bytes != null) .pipe else .ignore,
-        .stdout = .pipe,
-        .stderr = .pipe,
+        .stdin = if (stdin_bytes != null) .pipe else stdioFromMode(stdin_mode),
+        .stdout = stdioFromMode(stdout_mode),
+        .stderr = stdioFromMode(stderr_mode),
     }) catch |err| {
         return switch (err) {
             error.FileNotFound => makeErrorResult(c, "spawnSync: executable not found"),
@@ -269,9 +301,10 @@ fn runChild(
 
     // Read the pipes BEFORE wait: `child.wait` (childCleanupPosix) closes and
     // nulls the stdout/stderr fds. Sequential blocking reads — the child closes
-    // its write ends on exit, giving EOF; we reap afterward.
-    const out = if (child.stdout) |so| readPipe(a, i, so) else "";
-    const errout = if (child.stderr) |se| readPipe(a, i, se) else "";
+    // its write ends on exit, giving EOF; we reap afterward. Non-piped streams
+    // (inherit/ignore) have null fds and yield null results, like Bun.
+    const out: ?[]u8 = if (child.stdout) |so| readPipe(a, i, so) else null;
+    const errout: ?[]u8 = if (child.stderr) |se| readPipe(a, i, se) else null;
 
     const term = child.wait(i) catch |err| return makeErrorResultFmt(c, a, "spawnSync: wait failed: {s}", .{@errorName(err)});
 
@@ -294,15 +327,70 @@ fn runChild(
         },
     }
     setNum(c, object, "pid", pid_val);
-    setValue(c, object, "stdout", makeUint8Array(c, out));
-    setValue(c, object, "stderr", makeUint8Array(c, errout));
+    setValue(c, object, "stdout", if (out) |o| makeUint8Array(c, o) else extern_fns.JSValueMakeNull(c));
+    setValue(c, object, "stderr", if (errout) |e| makeUint8Array(c, e) else extern_fns.JSValueMakeNull(c));
     return @ptrCast(object);
+}
+
+/// `__home_which(cmd, pathString)` -> absolute path string, or null.
+fn whichNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argc < 1) return extern_fns.JSValueMakeNull(c);
+    const cmd_v = argv[0] orelse return extern_fns.JSValueMakeNull(c);
+
+    var arena_inst = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    const cmd = argToOwnedUtf8(c, cmd_v, a) orelse return extern_fns.JSValueMakeNull(c);
+    if (cmd.len == 0) return extern_fns.JSValueMakeNull(c);
+
+    // An explicit path (contains '/') is checked directly, not searched.
+    if (std.mem.indexOfScalar(u8, cmd, '/') != null) {
+        return if (isExecutable(a, cmd)) makeJsString(c, a, cmd) else extern_fns.JSValueMakeNull(c);
+    }
+
+    const path = if (argc >= 2) blk: {
+        if (argv[1]) |v| break :blk (argToOwnedUtf8(c, v, a) orelse "");
+        break :blk "";
+    } else "";
+
+    var it = std.mem.splitScalar(u8, path, ':');
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const candidate = std.fs.path.join(a, &.{ dir, cmd }) catch continue;
+        if (isExecutable(a, candidate)) return makeJsString(c, a, candidate);
+    }
+    return extern_fns.JSValueMakeNull(c);
+}
+
+/// True when `path` exists and is executable by the current user.
+fn isExecutable(a: std.mem.Allocator, path: []const u8) bool {
+    const z = a.dupeZ(u8, path) catch return false;
+    return std.c.access(z.ptr, std.posix.X_OK) == 0;
+}
+
+fn makeJsString(c: *JSContextRef, a: std.mem.Allocator, s: []const u8) ?*JSValue {
+    const z = a.dupeZ(u8, s) catch return extern_fns.JSValueMakeNull(c);
+    const js = extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse return extern_fns.JSValueMakeNull(c);
+    defer extern_fns.JSStringRelease(js);
+    return extern_fns.JSValueMakeString(c, js);
 }
 
 const install_glue =
     \\(function() {
     \\  var spawnSyncNative = globalThis.__home_spawn_sync;
+    \\  var whichNative = globalThis.__home_which;
     \\
+    \\  function toMode(v, def) {
+    \\    if (v === "inherit") return 1;
+    \\    if (v === "ignore") return 2;
+    \\    if (v === "pipe") return 0;
+    \\    return def;
+    \\  }
     \\  function toEnvPairs(env) {
     \\    if (!env || typeof env !== "object") return null;
     \\    var pairs = [];
@@ -327,21 +415,40 @@ const install_glue =
     \\    else if (cmdOrOpts && typeof cmdOrOpts === "object") { opts = cmdOrOpts; cmd = opts.cmd; }
     \\    else { throw new TypeError("spawnSync: expected a cmd array or an options object"); }
     \\    if (!Array.isArray(cmd) || cmd.length === 0) throw new TypeError("spawnSync: cmd must be a non-empty array");
-    \\    var r = spawnSyncNative(cmd.map(String), opts.cwd != null ? String(opts.cwd) : "", toEnvPairs(opts.env), toStdinBytes(opts.stdin));
+    \\    var r = spawnSyncNative(
+    \\      cmd.map(String),
+    \\      opts.cwd != null ? String(opts.cwd) : "",
+    \\      toEnvPairs(opts.env),
+    \\      toStdinBytes(opts.stdin),
+    \\      toMode(opts.stdout, 0),
+    \\      toMode(opts.stderr, 0),
+    \\      toMode(opts.stdin, 2)
+    \\    );
     \\    if (r && r.__spawn_error) throw new Error(r.__spawn_error);
     \\    return {
     \\      pid: r.pid,
     \\      exitCode: r.exitCode,
     \\      signalCode: r.signalCode,
     \\      success: r.success,
-    \\      stdout: wrapBuf(r.stdout),
-    \\      stderr: wrapBuf(r.stderr),
+    \\      stdout: r.stdout == null ? null : wrapBuf(r.stdout),
+    \\      stderr: r.stderr == null ? null : wrapBuf(r.stderr),
     \\    };
+    \\  }
+    \\
+    \\  function which(cmd, opts) {
+    \\    if (cmd == null) return null;
+    \\    var path = (opts && opts.PATH != null)
+    \\      ? String(opts.PATH)
+    \\      : ((typeof process !== "undefined" && process.env && process.env.PATH) || "");
+    \\    var r = whichNative(String(cmd), path);
+    \\    return r == null ? null : r;
     \\  }
     \\
     \\  if (typeof globalThis.Bun !== "object" || globalThis.Bun === null) globalThis.Bun = {};
     \\  globalThis.Bun.spawnSync = spawnSync;
+    \\  globalThis.Bun.which = which;
     \\  delete globalThis.__home_spawn_sync;
+    \\  delete globalThis.__home_which;
     \\})();
 ;
 
@@ -352,6 +459,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     if (comptime !build_options.enable_jsc) return;
 
     callback.registerCallback(ctx, global, "__home_spawn_sync", spawnSyncNative);
+    callback.registerCallback(ctx, global, "__home_which", whichNative);
 
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:spawn-install", 1) catch return;
     result.deinit(allocator);
@@ -374,6 +482,7 @@ fn evalString(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const 
 
 fn installRealm(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     @import("web_globals.zig").install(allocator, ctx, global);
+    @import("process.zig").install(allocator, ctx, global, &[_][]const u8{"home"});
     @import("bun_global.zig").install(allocator, ctx, global);
     @import("node_modules.zig").install(allocator, ctx, global);
     install(allocator, ctx, global);
@@ -452,4 +561,45 @@ test "Bun.spawnSync throws for a missing executable" {
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "(function(){ try { Bun.spawnSync(['/no/such/binary/zzz']); return false; } " ++
         "catch (e) { return e instanceof Error; } })()"));
+}
+
+test "Bun.spawnSync honors stdout: 'ignore' (null stdout, still runs)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){ var r = Bun.spawnSync(['/bin/echo', 'hi'], { stdout: 'ignore' }); " ++
+        "return r.exitCode === 0 && r.stdout === null; })()"));
+}
+
+test "Bun.which resolves a binary via PATH" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Explicit PATH keeps this deterministic regardless of the test env.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){ var p = Bun.which('sh', { PATH: '/usr/bin:/bin' }); " ++
+        "return typeof p === 'string' && p.endsWith('/sh'); })()"));
+}
+
+test "Bun.which returns null for a missing binary and resolves absolute paths" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){ return Bun.which('home-no-such-bin-zzz', { PATH: '/usr/bin:/bin' }) === null " ++
+        "&& Bun.which('/bin/sh') === '/bin/sh' " ++
+        "&& Bun.which('/no/such/abs/zzz') === null; })()"));
 }
