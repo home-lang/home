@@ -5754,6 +5754,10 @@ pub const Printer = struct {
             // member; we skip them in the in-class output and
             // collect them for the post-class __decorate calls.
             if (self.hir.kindOf(m) == .decorator) continue;
+            // Abstract members (`abstract f(): void;` / `abstract x: T;`)
+            // have no runtime presence — tsc strips them. Emitting the
+            // bodyless method signature `f();` would be invalid JS.
+            if (self.memberIsAbstract(m)) continue;
             // Private fields are stored in the per-class WeakMap;
             // skip the in-class field declaration entirely. Their
             // initializers are hoisted into the (explicit or
@@ -6843,6 +6847,15 @@ pub const Printer = struct {
         try self.write(" = ");
         try self.write(nm);
         try self.writeSemi();
+    }
+
+    /// True when a class method is `abstract` (no runtime presence —
+    /// emitting its bodyless signature `f();` would be invalid JS).
+    fn memberIsAbstract(self: *const Printer, m: NodeId) bool {
+        return switch (self.hir.kindOf(m)) {
+            .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnDeclOf(self.hir, m).flags.is_abstract,
+            else => false,
+        };
     }
 
     fn printNamespace(self: *Printer, node: NodeId) !void {
@@ -8675,6 +8688,16 @@ test "emit: parameter-property assignments follow a leading super() call" {
     // Ordering: super() → this.n = n → rest of body.
     try T.expect(super_idx < assign_idx);
     try T.expect(assign_idx < use_idx);
+}
+
+test "emit: abstract methods are omitted (no invalid bodyless signature)" {
+    const out = try emit("abstract class A { abstract f(): void; g() { return 1; } }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "class A") != null);
+    try T.expect(std.mem.indexOf(u8, out, "g()") != null);
+    // The abstract method must not appear as a bodyless `f();`.
+    try T.expect(std.mem.indexOf(u8, out, "f()") == null);
+    try T.expect(std.mem.indexOf(u8, out, "abstract") == null);
 }
 
 test "emit: namespace exported members become N.x assignments (valid JS)" {
