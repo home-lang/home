@@ -514,6 +514,26 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS5093 `Compiler_option_0_may_only_be_used_with_build_5093`
 - TS5094 `Compiler_option_0_may_not_be_used_with_build_5094`
 
+## Notes: heuristic false-positives & subsystem-gated clusters
+
+Some codes the heuristic marks *reachable* are blocked or effectively
+dead. Confirm against this list before picking one:
+
+- **Effectively dead despite a reference** — the diagnostic name appears
+  only inside a config struct literal whose consumer is dead/commented in
+  tsgo, so it is never emitted: **TS5078 / TS5079** (`Unknown_watch_option…`)
+  live in `watchOptionsDidYouMeanDiagnostics`, but tsgo's JSON `watchOptions`
+  parsing is commented out, so only TS5080 (its `OptionTypeMismatchDiagnostic`,
+  used on the command line) actually fires.
+- **`tsc --build` mode (not yet in Home)** — **TS5072 / TS5073 / TS5077**
+  (build-option parse errors) and **TS5093 / TS5094** (`--build`-only vs
+  non-`--build` option gating) require the project-references build
+  orchestrator. Implement `tsc -b` before these.
+- **CLI watch-flag typing** — **TS5080** (`Watch_option_0_requires_a_value_of_type_1`)
+  fires when a watch flag like `--watchFile` gets a wrong-typed value on the
+  command line; needs Home's arg parser to model the watch-option table + value
+  types (Home currently accepts unknown flags loosely).
+
 ## Dead in tsgo (faithfully catalog-only)
 
 514 codes. Listed for auditability; none should be `emitted`.

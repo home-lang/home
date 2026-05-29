@@ -128,6 +128,26 @@ for (const [b, rows] of [...byBucket.entries()].sort((a, c) => c[1].length - a[1
   }
   out.push("");
 }
+out.push("## Notes: heuristic false-positives & subsystem-gated clusters");
+out.push("");
+out.push("Some codes the heuristic marks *reachable* are blocked or effectively");
+out.push("dead. Confirm against this list before picking one:");
+out.push("");
+out.push("- **Effectively dead despite a reference** — the diagnostic name appears");
+out.push("  only inside a config struct literal whose consumer is dead/commented in");
+out.push("  tsgo, so it is never emitted: **TS5078 / TS5079** (`Unknown_watch_option…`)");
+out.push("  live in `watchOptionsDidYouMeanDiagnostics`, but tsgo's JSON `watchOptions`");
+out.push("  parsing is commented out, so only TS5080 (its `OptionTypeMismatchDiagnostic`,");
+out.push("  used on the command line) actually fires.");
+out.push("- **`tsc --build` mode (not yet in Home)** — **TS5072 / TS5073 / TS5077**");
+out.push("  (build-option parse errors) and **TS5093 / TS5094** (`--build`-only vs");
+out.push("  non-`--build` option gating) require the project-references build");
+out.push("  orchestrator. Implement `tsc -b` before these.");
+out.push("- **CLI watch-flag typing** — **TS5080** (`Watch_option_0_requires_a_value_of_type_1`)");
+out.push("  fires when a watch flag like `--watchFile` gets a wrong-typed value on the");
+out.push("  command line; needs Home's arg parser to model the watch-option table + value");
+out.push("  types (Home currently accepts unknown flags loosely).");
+out.push("");
 out.push("## Dead in tsgo (faithfully catalog-only)");
 out.push("");
 out.push(`${dead.length} codes. Listed for auditability; none should be \`emitted\`.`);
