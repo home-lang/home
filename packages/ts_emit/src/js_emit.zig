@@ -949,6 +949,12 @@ pub const Printer = struct {
                 // For now decorators erase so output remains runnable.
                 return;
             },
+            .labeled_stmt => {
+                const ls = hir_mod.labeledStmtOf(self.hir, node);
+                try self.printExpression(ls.label);
+                try self.write(": ");
+                try self.printStatementInline(ls.body);
+            },
             .enum_decl => try self.printEnum(node),
             .namespace_decl => try self.printNamespace(node),
             .import_decl => try self.printImport(node),
@@ -1945,6 +1951,9 @@ pub const Printer = struct {
         for (stmts) |s| {
             const k = self.hir.kindOf(s);
             switch (k) {
+                // Labeled statements aren't handled by the inline
+                // generator lowering — bail to native `function*`.
+                .labeled_stmt => return false,
                 .yield_expr, .return_stmt => continue,
                 .var_decl, .let_decl, .const_decl => {
                     const v = hir_mod.varDeclOf(self.hir, s);
@@ -4392,6 +4401,10 @@ pub const Printer = struct {
         for (stmts) |s| {
             const k = self.hir.kindOf(s);
             switch (k) {
+                // Labeled statements (incl. labeled loops with labeled
+                // break/continue) aren't handled by the inline async-gen
+                // lowering — bail to native `async function*`.
+                .labeled_stmt => return false,
                 .yield_expr => {
                     const yp = hir_mod.yieldExprOf(self.hir, s);
                     if (yp.expr != hir_mod.none_node_id) {
@@ -9013,6 +9026,15 @@ test "emit: computed class method names emit as methods, not field assignments" 
     // Must NOT be a `= () {}` field assignment.
     try T.expect(std.mem.indexOf(u8, out, "Symbol.iterator = ") == null);
     try T.expect(std.mem.indexOf(u8, out, "field = 2;") != null);
+}
+
+test "emit: labeled statement keeps its label (break/continue target)" {
+    const out = try emit("outer: for (const x of list) { if (x) continue outer; }\nL: { break L; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "outer: for") != null);
+    try T.expect(std.mem.indexOf(u8, out, "continue outer") != null);
+    try T.expect(std.mem.indexOf(u8, out, "L: {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "break L") != null);
 }
 
 test "emit: tagged template renders natively (not a desugared call)" {

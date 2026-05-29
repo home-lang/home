@@ -382,6 +382,7 @@ pub const Binder = struct {
     fn bindStatement(self: *Binder, node: NodeId) anyerror!void {
         const kind = self.hir.kindOf(node);
         switch (kind) {
+            .labeled_stmt => try self.bindStatement(hir_mod.labeledStmtOf(self.hir, node).body),
             .var_decl, .let_decl, .const_decl => try self.bindVarDecl(node),
             .fn_decl, .fn_expr, .arrow_fn => try self.bindFunctionDecl(node),
             .class_decl => try self.bindClassDecl(node),

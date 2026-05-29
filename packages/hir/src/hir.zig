@@ -133,6 +133,7 @@ pub const NodeKind = enum(u8) {
     try_stmt,
     switch_stmt,
     expression_stmt,
+    labeled_stmt,
 
     // ----- Expressions -----
     identifier,
@@ -246,7 +247,7 @@ pub const NodeKind = enum(u8) {
     pub fn isStatement(self: NodeKind) bool {
         const v = @intFromEnum(self);
         return v >= @intFromEnum(NodeKind.block_stmt) and
-            v <= @intFromEnum(NodeKind.expression_stmt);
+            v <= @intFromEnum(NodeKind.labeled_stmt);
     }
 
     /// Returns true if the kind is in the "declaration" category.
@@ -499,6 +500,13 @@ pub const SwitchPayload = struct {
 pub const LabelPayload = struct {
     /// `none_node_id` for an unlabeled `break` / `continue`.
     label: NodeId,
+};
+
+/// `L: <stmt>` — a labeled statement. `label` is the identifier node, and
+/// `body` the labeled statement (commonly a loop or block).
+pub const LabeledStmtPayload = struct {
+    label: NodeId,
+    body: NodeId,
 };
 
 pub const FnDeclPayload = struct {
@@ -1168,6 +1176,7 @@ pub const Hir = struct {
     switch_case_payloads: std.ArrayListUnmanaged(SwitchCasePayload),
     switch_payloads: std.ArrayListUnmanaged(SwitchPayload),
     label_payloads: std.ArrayListUnmanaged(LabelPayload),
+    labeled_stmt_payloads: std.ArrayListUnmanaged(LabeledStmtPayload),
     fn_decl_payloads: std.ArrayListUnmanaged(FnDeclPayload),
     parameter_payloads: std.ArrayListUnmanaged(ParameterPayload),
     type_alias_payloads: std.ArrayListUnmanaged(TypeAliasPayload),
@@ -1254,6 +1263,7 @@ pub const Hir = struct {
             .switch_case_payloads = .empty,
             .switch_payloads = .empty,
             .label_payloads = .empty,
+            .labeled_stmt_payloads = .empty,
             .fn_decl_payloads = .empty,
             .parameter_payloads = .empty,
             .type_alias_payloads = .empty,
@@ -1347,6 +1357,7 @@ pub const Hir = struct {
         self.switch_case_payloads.deinit(self.gpa);
         self.switch_payloads.deinit(self.gpa);
         self.label_payloads.deinit(self.gpa);
+        self.labeled_stmt_payloads.deinit(self.gpa);
         self.fn_decl_payloads.deinit(self.gpa);
         self.parameter_payloads.deinit(self.gpa);
         self.type_alias_payloads.deinit(self.gpa);
@@ -1876,6 +1887,15 @@ pub const Builder = struct {
         const id = try self.newNode(.switch_stmt, span, payload_idx);
         self.hir.setParent(discriminant, id);
         for (cases) |c| self.hir.setParent(c, id);
+        return id;
+    }
+
+    pub fn addLabeledStmt(self: *Builder, span: Span, label: NodeId, body: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.labeled_stmt_payloads.items.len);
+        try self.hir.labeled_stmt_payloads.append(self.hir.gpa, .{ .label = label, .body = body });
+        const id = try self.newNode(.labeled_stmt, span, payload_idx);
+        if (label != none_node_id) self.hir.setParent(label, id);
+        if (body != none_node_id) self.hir.setParent(body, id);
         return id;
     }
 
@@ -3140,6 +3160,11 @@ pub fn labelOf(hir: *const Hir, id: NodeId) LabelPayload {
     const k = hir.kindOf(id);
     std.debug.assert(k == .break_stmt or k == .continue_stmt);
     return hir.label_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn labeledStmtOf(hir: *const Hir, id: NodeId) LabeledStmtPayload {
+    std.debug.assert(hir.kindOf(id) == .labeled_stmt);
+    return hir.labeled_stmt_payloads.items[hir.payloads.items[id]];
 }
 
 pub fn fnDeclOf(hir: *const Hir, id: NodeId) FnDeclPayload {

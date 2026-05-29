@@ -1730,12 +1730,17 @@ pub const Parser = struct {
                 .wraps_iteration = wraps_iteration,
             });
             defer _ = self.label_stack.pop();
+            // Preserve the label in the AST (`L: <stmt>`) so the emitter can
+            // re-render it — dropping it would orphan `break L` / `continue L`.
+            const label_ident = try self.builder.addIdentifier(tokenSpan(label_tok), label_name);
             if (self.isAmbientContextAt(label_tok.span.start)) {
                 self.nested_statement_depth += 1;
                 defer self.nested_statement_depth -= 1;
-                return try self.parseStatement();
+                const inner_a = try self.parseStatement();
+                return try self.builder.addLabeledStmt(.{ .start = label_tok.span.start, .end = self.hir.spanOf(inner_a).end }, label_ident, inner_a);
             }
-            return try self.parseStatement();
+            const inner = try self.parseStatement();
+            return try self.builder.addLabeledStmt(.{ .start = label_tok.span.start, .end = self.hir.spanOf(inner).end }, label_ident, inner);
         }
         return switch (t.kind) {
             .kw_let, .kw_const, .kw_var => blk: {
@@ -17886,7 +17891,10 @@ test "parser: break and continue" {
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
-    const body_id = hir_mod.whileOf(&s.hir, top).body;
+    // `label: while …` now parses to a labeled_stmt wrapping the while.
+    try T.expectEqual(hir_mod.NodeKind.labeled_stmt, s.hir.kindOf(top));
+    const while_id = hir_mod.labeledStmtOf(&s.hir, top).body;
+    const body_id = hir_mod.whileOf(&s.hir, while_id).body;
     const stmts = hir_mod.blockStmts(&s.hir, body_id);
     try T.expectEqual(@as(usize, 4), stmts.len);
     try T.expectEqual(hir_mod.NodeKind.break_stmt, s.hir.kindOf(stmts[0]));
