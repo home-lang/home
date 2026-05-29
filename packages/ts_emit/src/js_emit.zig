@@ -1018,16 +1018,11 @@ pub const Printer = struct {
         const kw = self.varDeclKeyword(kind);
         const v = hir_mod.varDeclOf(self.hir, node);
         // Destructuring binding: `const { a } = obj` / `const [x] = arr`.
-        // The native pattern syntax isn't yet wired through the
-        // expression printer, so we always lower to a comma-declarator
-        // chain that pulls each binding out of a single temporary
-        // holding the initializer:
-        //     `var _o = obj, a = _o.a;`
-        //     `var _arr = arr, x = _arr[0];`
-        // At ES5 the `let`/`const` keyword also collapses to `var`.
-        // v0 covers shorthand keys + plain array elements only —
-        // defaults, renames, rest, and nested patterns are TODOs.
-        if (v.name != hir_mod.none_node_id) {
+        // Destructuring is ES2015 syntax — at ES2015+ keep it NATIVE (as
+        // tsc / Bun's printer do). Only below ES2015 (ES5/ES3) do we lower
+        // to a comma-declarator chain pulling each binding out of a single
+        // temporary holding the initializer (`var _o = obj, a = _o.a;`).
+        if (v.name != hir_mod.none_node_id and self.options.es_target == .es5) {
             const name_kind = self.hir.kindOf(v.name);
             if (name_kind == .object_pattern or name_kind == .array_pattern) {
                 try self.printDestructuringVarDecl(kw, v.name, v.init);
@@ -1123,28 +1118,32 @@ pub const Printer = struct {
         for (elements, 0..) |elem, i| {
             if (self.hir.kindOf(elem) != .parameter) continue;
             const param = hir_mod.parameterOf(self.hir, elem);
-            // Computed-key synthetic elements pair with the following
-            // binding param — skip here, the binding emits the
-            // `[key]: name` form by looking back at this element.
-            if (param.flags.is_computed_binding_key) continue;
+            // Computed-key / rename-key synthetic elements pair with the
+            // following binding param — skip here; the binding emits the
+            // `[key]: name` / `key: name` form by looking back.
+            if (param.flags.is_computed_binding_key or param.flags.is_rename_binding_key) continue;
             if (emitted > 0) try self.write(", ");
             emitted += 1;
             if (param.flags.is_rest) try self.write("...");
-            // §4.A.4 destructuring v11 — computed binding key. The
-            // preceding synthetic element carries the key expression
-            // in its `default_value`; emit `[key]: name` shape.
-            const computed_key_expr: NodeId = blk: {
-                if (i == 0 or param.flags.is_rest) break :blk hir_mod.none_node_id;
+            const prev_key: ?hir_mod.ParameterPayload = blk: {
+                if (i == 0 or param.flags.is_rest) break :blk null;
                 const prev = elements[i - 1];
-                if (self.hir.kindOf(prev) != .parameter) break :blk hir_mod.none_node_id;
+                if (self.hir.kindOf(prev) != .parameter) break :blk null;
                 const pp = hir_mod.parameterOf(self.hir, prev);
-                if (!pp.flags.is_computed_binding_key) break :blk hir_mod.none_node_id;
-                break :blk pp.default_value;
+                if (pp.flags.is_computed_binding_key or pp.flags.is_rename_binding_key) break :blk pp;
+                break :blk null;
             };
-            if (computed_key_expr != hir_mod.none_node_id) {
-                try self.write("[");
-                try self.printExpression(computed_key_expr);
-                try self.write("]: ");
+            if (prev_key) |pp| {
+                if (pp.flags.is_computed_binding_key) {
+                    // `[expr]: name`
+                    try self.write("[");
+                    try self.printExpression(pp.default_value);
+                    try self.write("]: ");
+                } else {
+                    // Renamed binding `key: name`.
+                    try self.printExpression(pp.default_value);
+                    try self.write(": ");
+                }
             }
             if (param.name != hir_mod.none_node_id) try self.printBindingName(param.name);
             if (param.default_value != hir_mod.none_node_id) {
@@ -8968,14 +8967,18 @@ test "emit: array destructuring lowers to temp + index reads at es5" {
     try T.expect(std.mem.indexOf(u8, out, "const ") == null);
 }
 
-test "emit: destructuring keeps const keyword at es2015+" {
+test "emit: destructuring is native at es2015+" {
     const out = try emitWithOpts("const { a } = obj;", .{ .es_target = .es2015 });
     defer T.allocator.free(out);
-    // ES2015+ keeps `const` (the v0 lowering still chains property
-    // reads since native pattern emit isn't wired up yet).
-    try T.expect(std.mem.indexOf(u8, out, "const _o = obj") != null);
-    try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
-    try T.expect(std.mem.indexOf(u8, out, "var ") == null);
+    // ES2015+ keeps native destructuring (matching tsc / Bun's printer).
+    try T.expect(std.mem.indexOf(u8, out, "const { a } = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_o") == null);
+}
+
+test "emit: object destructuring preserves rename and default at es2015+" {
+    const out = try emit("const { x, y: z, w = 3 } = obj;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "{ x, y: z, w = 3 }") != null);
 }
 
 test "emit: object destructuring with default fires void 0 check at es5" {
@@ -9291,16 +9294,15 @@ test "emit: function with computed-key destructuring param renders pattern at es
 }
 
 test "emit: destructuring var-decl with computed key + adjacent plain key renders both at es2015+" {
-    // Make sure the mixed shape doesn't drop the plain key or
-    // misrender the comma.
+    // Make sure the mixed shape renders natively without dropping either
+    // key or misrendering the comma.
     const out = try emitWithOpts(
         "const { a, [k]: b } = obj;",
         .{ .es_target = .es2015 },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "const _o = obj") != null);
-    try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
-    try T.expect(std.mem.indexOf(u8, out, "b = _o[k]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "{ a, [k]: b }") != null);
+    try T.expect(std.mem.indexOf(u8, out, "= obj") != null);
     // Double-comma indicates the v11 bug; must not appear.
     try T.expect(std.mem.indexOf(u8, out, ", ,") == null);
 }

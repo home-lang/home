@@ -558,7 +558,7 @@ pub const ParameterPayload = struct {
     decorators_len: u16 = 0,
 };
 
-pub const ParamFlags = packed struct(u8) {
+pub const ParamFlags = packed struct(u16) {
     is_optional: bool = false,
     is_rest: bool = false,
     is_readonly: bool = false,
@@ -572,6 +572,11 @@ pub const ParamFlags = packed struct(u8) {
     is_override: bool = false,
     is_private: bool = false,
     is_protected: bool = false,
+    /// Synthetic pattern element carrying an object binding *rename* key
+    /// (`{ key: target }`). The key identifier is stored in the element's
+    /// `default_value`; the following element is the binding target.
+    is_rename_binding_key: bool = false,
+    _pad: u7 = 0,
 };
 
 pub const TypeAliasPayload = struct {

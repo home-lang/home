@@ -4244,6 +4244,21 @@ pub const Parser = struct {
                     };
                     try self.reportAwaitBindingIfReserved(key_tok);
                     if (self.match(.colon)) {
+                        // Renamed binding `key: target`. Store the property
+                        // key as a synthetic preceding element (carried in
+                        // `default_value`) so the emitter can render
+                        // `key: target` rather than dropping the key — the
+                        // same shape used for computed `[expr]: target`.
+                        const key_id = try self.internToken(key_tok);
+                        const key_ident = try self.builder.addIdentifier(tokenSpan(key_tok), key_id);
+                        const key_elem = try self.builder.addParameter(
+                            tokenSpan(key_tok),
+                            hir_mod.none_node_id,
+                            hir_mod.none_node_id,
+                            key_ident,
+                            .{ .is_rename_binding_key = true },
+                        );
+                        try elements.append(self.gpa, key_elem);
                         const target_tok = self.peek();
                         const target = try self.parseBindingTarget();
                         try self.reportUnusedRenameInFnTypeBindingPattern(key_tok, target);
@@ -18348,12 +18363,16 @@ test "parser: object binding pattern supports renames nested patterns and rest" 
     const param = hir_mod.parameterOf(&s.hir, params[0]);
     try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(param.name));
     const elems = hir_mod.patternElements(&s.hir, param.name);
-    try T.expectEqual(@as(usize, 3), elems.len);
-    const renamed = hir_mod.parameterOf(&s.hir, elems[0]);
+    // Renamed keys (`x:`, `y:`) each add a synthetic key element before
+    // their binding, so the element list is: keyX, a, keyY, nested, rest.
+    try T.expectEqual(@as(usize, 5), elems.len);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[0]).flags.is_rename_binding_key);
+    const renamed = hir_mod.parameterOf(&s.hir, elems[1]);
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(renamed.name));
-    const nested = hir_mod.parameterOf(&s.hir, elems[1]);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[2]).flags.is_rename_binding_key);
+    const nested = hir_mod.parameterOf(&s.hir, elems[3]);
     try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(nested.name));
-    const rest = hir_mod.parameterOf(&s.hir, elems[2]);
+    const rest = hir_mod.parameterOf(&s.hir, elems[4]);
     try T.expect(rest.flags.is_rest);
 }
 
@@ -18412,9 +18431,12 @@ test "parser: object binding pattern supports literal and computed keys" {
     const decl = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(decl.name));
     const elems = hir_mod.patternElements(&s.hir, decl.name);
-    try T.expectEqual(@as(usize, 4), elems.len);
-    try T.expect(hir_mod.parameterOf(&s.hir, elems[1]).flags.is_computed_binding_key);
-    try T.expect(hir_mod.parameterOf(&s.hir, elems[3]).flags.is_rest);
+    // `'a':` adds a synthetic rename-key element, `[k]:` a computed-key
+    // one: keyA, a1, keyK, a2, rest.
+    try T.expectEqual(@as(usize, 5), elems.len);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[0]).flags.is_rename_binding_key);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[2]).flags.is_computed_binding_key);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[4]).flags.is_rest);
 }
 
 test "parser: reserved object binding target reports TS1359" {
