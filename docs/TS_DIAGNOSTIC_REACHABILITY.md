@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 973 |
-| reachable (parity targets) | 459 |
+| catalog-only total | 966 |
+| reachable (parity targets) | 452 |
 | dead in tsgo (leave catalog-only) | 514 |
 
 ## Reachable worklist by range
@@ -23,13 +23,13 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 168 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 139 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 137 |
 | 1xxx — parser / syntactic + program file-inclusion | 77 |
 | 4xxx — declaration-emit (privacy / serialization) | 23 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 12 |
-| 5xxx — tsconfig / build-option validation | 8 |
+| 5xxx — tsconfig / build-option validation | 3 |
 
 ### 2xxx — checker / type engine (168)
 
@@ -202,7 +202,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (139)
+### 6xxx — CLI / build / watch / resolution-trace messages (137)
 
 - TS6029 `Version_0_6029`
 - TS6031 `Starting_compilation_in_watch_mode_6031`
@@ -297,8 +297,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6362 `Skipping_build_of_project_0_because_its_dependency_1_has_errors_6362`
 - TS6363 `Project_0_can_t_be_built_because_its_dependency_1_has_errors_6363`
 - TS6364 `Build_one_or_more_projects_and_their_dependencies_if_out_of_date_6364`
-- TS6369 `Option_build_must_be_the_first_command_line_argument_6369`
-- TS6370 `Options_0_and_1_cannot_be_combined_6370`
 - TS6371 `Updating_unchanged_output_timestamps_of_project_0_6371`
 - TS6374 `A_non_dry_build_would_update_timestamps_for_output_of_project_0_6374`
 - TS6377 `Cannot_write_file_0_because_it_will_overwrite_tsbuildinfo_file_generated_by_referenced_project_1_6377`
@@ -503,16 +501,11 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 - TS7058 `If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058`
 
-### 5xxx — tsconfig / build-option validation (8)
+### 5xxx — tsconfig / build-option validation (3)
 
-- TS5072 `Unknown_build_option_0_5072`
-- TS5073 `Build_option_0_requires_a_value_of_type_1_5073`
-- TS5077 `Unknown_build_option_0_Did_you_mean_1_5077`
 - TS5078 `Unknown_watch_option_0_5078`
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
 - TS5080 `Watch_option_0_requires_a_value_of_type_1_5080`
-- TS5093 `Compiler_option_0_may_only_be_used_with_build_5093`
-- TS5094 `Compiler_option_0_may_not_be_used_with_build_5094`
 
 ## Notes: heuristic false-positives & subsystem-gated clusters
 

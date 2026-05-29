@@ -526,6 +526,200 @@ pub fn formatOutputCollision(gpa: std.mem.Allocator, col: OutputCollision) ![]u8
     };
 }
 
+// =============================================================================
+// `tsc --build` command-line parsing
+// =============================================================================
+
+/// `OptionsForBuild` — the build-specific flags. Boolean unless noted.
+/// Mirrors tsgo `internal/tsoptions/declsbuild.go`.
+const BuildOptions = struct {
+    verbose: bool = false,
+    dry: bool = false,
+    force: bool = false,
+    clean: bool = false,
+    builders: ?u32 = null, // number
+    stop_build_on_errors: bool = false,
+};
+
+/// `commonOptionsWithBuild` ∪ `OptionsForBuild` — every option valid in
+/// `tsc --build` mode (tsgo `BuildOpts`). A `-`/`--` flag not in this set
+/// is either a compiler-only option (TS5094) or unknown (TS5072/TS5077).
+const build_valid_names = [_][]const u8{
+    // commonOptionsWithBuild (canonical names)
+    "assumeChangesOnlyAffectDirectDependencies", "checkers",      "declaration",
+    "declarationMap",                            "deduplicatePackages", "diagnostics",
+    "emitDeclarationOnly",                       "explainFiles",  "extendedDiagnostics",
+    "generateCpuProfile",                        "generateTrace", "help",
+    "incremental",                               "inlineSourceMap", "listEmittedFiles",
+    "listFiles",                                 "locale",        "noCheck",
+    "noEmit",                                    "pprofDir",      "preserveWatchOutput",
+    "pretty",                                    "quiet",         "singleThreaded",
+    "sourceMap",                                 "traceResolution", "watch",
+    // OptionsForBuild
+    "build", "verbose", "dry", "force", "clean", "builders", "stopBuildOnErrors",
+};
+
+/// Build-only flags (in `BuildOpts` but not a compiler option) — using one
+/// of these in plain `tsc` (no `--build`) is TS5093. `build` is excluded:
+/// it is the mode switch, not a misused option.
+const build_only_names = [_][]const u8{
+    "verbose", "dry", "force", "clean", "builders", "stopBuildOnErrors",
+};
+
+/// Resolve a build-mode short alias to its canonical name (tsgo
+/// `BuildNameMap`, `allowShort`). Returns the input unchanged if not a
+/// recognized short.
+fn canonicalBuildName(name: []const u8) []const u8 {
+    const pairs = [_]struct { short: []const u8, long: []const u8 }{
+        .{ .short = "b", .long = "build" },   .{ .short = "v", .long = "verbose" },
+        .{ .short = "d", .long = "dry" },     .{ .short = "f", .long = "force" },
+        .{ .short = "h", .long = "help" },    .{ .short = "w", .long = "watch" },
+        .{ .short = "i", .long = "incremental" }, .{ .short = "q", .long = "quiet" },
+    };
+    for (pairs) |p| if (std.mem.eql(u8, name, p.short)) return p.long;
+    return name;
+}
+
+fn isBuildValidName(name: []const u8) bool {
+    for (build_valid_names) |n| if (std.mem.eql(u8, name, n)) return true;
+    return false;
+}
+
+/// Strip leading `-` characters from a flag (`--verbose` → `verbose`).
+fn stripDashes(flag: []const u8) []const u8 {
+    var s = flag;
+    while (s.len > 0 and s[0] == '-') s = s[1..];
+    return s;
+}
+
+/// If `flag` (a raw `--name` / `-x` argument) names a build-only option,
+/// return its canonical name — used by plain `tsc` to emit TS5093. Matches
+/// canonical full names only (short aliases mean compiler options like
+/// `-d`=declaration in non-build mode).
+pub fn buildOnlyOptionInNormalMode(flag: []const u8) ?[]const u8 {
+    const name = stripDashes(flag);
+    for (build_only_names) |n| if (std.mem.eql(u8, name, n)) return n;
+    return null;
+}
+
+/// Closest build-option name to `name` within a length-scaled edit
+/// distance, or null. Drives the TS5077 "Did you mean" suggestion.
+fn closestBuildOptionName(name: []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_dist: usize = std.math.maxInt(usize);
+    const threshold = @max(name.len, 2) / 2 + 1;
+    for (build_valid_names) |cand| {
+        const d = tsconfig_mod.levenshteinIcase(name, cand);
+        if (d < best_dist and d <= threshold) {
+            best_dist = d;
+            best = cand;
+        }
+    }
+    return best;
+}
+
+pub const BuildParse = struct {
+    options: BuildOptions,
+    /// Project paths (positional args); defaults to `["."]` when none given.
+    projects: [][]const u8,
+    /// Fully-formatted `error TSxxxx: …` lines (gpa-owned, each freed).
+    diagnostics: [][]u8,
+
+    pub fn deinit(self: *BuildParse, gpa: std.mem.Allocator) void {
+        for (self.diagnostics) |d| gpa.free(d);
+        gpa.free(self.diagnostics);
+        gpa.free(self.projects);
+    }
+};
+
+/// Parse a `tsc --build` argument list (the args AFTER the leading
+/// `-b`/`--build`), mirroring tsgo `ParseBuildCommandLine` +
+/// `createUnknownOptionError`:
+///   - unknown option that is a compiler option  → TS5094 (or TS6369 for `build`)
+///   - unknown option, close to a build option    → TS5077
+///   - unknown option, otherwise                   → TS5072
+///   - `builders` without a numeric value          → TS5073
+///   - clean+force / clean+verbose                 → TS6370
+/// Non-flag args are project paths (default `["."]`). Caller frees via
+/// `BuildParse.deinit`.
+pub fn parseBuildArgs(gpa: std.mem.Allocator, args: []const []const u8) !BuildParse {
+    var opts: BuildOptions = .{};
+    var projects: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer projects.deinit(gpa);
+    var diags: std.ArrayListUnmanaged([]u8) = .empty;
+    errdefer {
+        for (diags.items) |d| gpa.free(d);
+        diags.deinit(gpa);
+    }
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (a.len == 0) continue;
+        if (a[0] != '-') {
+            try projects.append(gpa, a);
+            continue;
+        }
+        const raw = stripDashes(a);
+        const name = canonicalBuildName(raw);
+        if (std.mem.eql(u8, name, "verbose")) {
+            opts.verbose = true;
+        } else if (std.mem.eql(u8, name, "dry")) {
+            opts.dry = true;
+        } else if (std.mem.eql(u8, name, "force")) {
+            opts.force = true;
+        } else if (std.mem.eql(u8, name, "clean")) {
+            opts.clean = true;
+        } else if (std.mem.eql(u8, name, "stopBuildOnErrors")) {
+            opts.stop_build_on_errors = true;
+        } else if (std.mem.eql(u8, name, "builders")) {
+            // Number option: needs a numeric value.
+            if (i + 1 < args.len and std.fmt.parseInt(u32, args[i + 1], 10) catch null != null) {
+                opts.builders = std.fmt.parseInt(u32, args[i + 1], 10) catch unreachable;
+                i += 1;
+            } else {
+                const code: u32 = 5073;
+                try diags.append(gpa, try std.fmt.allocPrint(gpa, "error TS{d}: Build option '{s}' requires a value of type number.", .{ code, name }));
+            }
+        } else if (isBuildValidName(name)) {
+            // Other valid build option (a common option) — accepted; value
+            // handling for these is the orchestrator's concern.
+        } else if (tsconfig_mod.isKnownCompilerOptionName(name)) {
+            if (std.mem.eql(u8, name, "build")) {
+                const code: u32 = 6369;
+                try diags.append(gpa, try std.fmt.allocPrint(gpa, "error TS{d}: Option '--build' must be the first command line argument.", .{code}));
+            } else {
+                const code: u32 = 5094;
+                try diags.append(gpa, try std.fmt.allocPrint(gpa, "error TS{d}: Compiler option '--{s}' may not be used with '--build'.", .{ code, name }));
+            }
+        } else if (closestBuildOptionName(name)) |suggestion| {
+            const code: u32 = 5077;
+            try diags.append(gpa, try std.fmt.allocPrint(gpa, "error TS{d}: Unknown build option '{s}'. Did you mean '{s}'?", .{ code, name, suggestion }));
+        } else {
+            const code: u32 = 5072;
+            try diags.append(gpa, try std.fmt.allocPrint(gpa, "error TS{d}: Unknown build option '{s}'.", .{ code, name }));
+        }
+    }
+
+    // Nonsensical combinations (tsgo ParseBuildCommandLine).
+    if (opts.clean and opts.force) {
+        const code: u32 = 6370;
+        try diags.append(gpa, try std.fmt.allocPrint(gpa, "error TS{d}: Options '{s}' and '{s}' cannot be combined.", .{ code, "clean", "force" }));
+    }
+    if (opts.clean and opts.verbose) {
+        const code: u32 = 6370;
+        try diags.append(gpa, try std.fmt.allocPrint(gpa, "error TS{d}: Options '{s}' and '{s}' cannot be combined.", .{ code, "clean", "verbose" }));
+    }
+
+    if (projects.items.len == 0) try projects.append(gpa, ".");
+
+    return .{
+        .options = opts,
+        .projects = try projects.toOwnedSlice(gpa),
+        .diagnostics = try diags.toOwnedSlice(gpa),
+    };
+}
+
 pub const RunResult = struct {
     code: ExitCode,
     /// One of `helpText`, `versionText`, or empty.
@@ -918,6 +1112,83 @@ test "tokenizeResponseFile: empty / whitespace-only yields no args" {
     defer T.allocator.free(r.args);
     try T.expect(!r.unterminated);
     try T.expectEqual(@as(usize, 0), r.args.len);
+}
+
+fn buildDiagHas(p: BuildParse, needle: []const u8) bool {
+    for (p.diagnostics) |d| {
+        if (std.mem.indexOf(u8, d, needle) != null) return true;
+    }
+    return false;
+}
+
+test "parseBuildArgs: valid build flags set options, no diagnostics" {
+    var p = try parseBuildArgs(T.allocator, &.{ "--verbose", "--force", "--builders", "4", "./proj" });
+    defer p.deinit(T.allocator);
+    try T.expect(p.options.verbose);
+    try T.expect(p.options.force);
+    try T.expectEqual(@as(?u32, 4), p.options.builders);
+    try T.expectEqual(@as(usize, 1), p.projects.len);
+    try T.expectEqualStrings("./proj", p.projects[0]);
+    try T.expectEqual(@as(usize, 0), p.diagnostics.len);
+}
+
+test "parseBuildArgs: short aliases resolve (-v/-f/-b)" {
+    var p = try parseBuildArgs(T.allocator, &.{ "-v", "-f" });
+    defer p.deinit(T.allocator);
+    try T.expect(p.options.verbose);
+    try T.expect(p.options.force);
+    try T.expectEqual(@as(usize, 0), p.diagnostics.len);
+}
+
+test "parseBuildArgs: no projects defaults to '.'" {
+    var p = try parseBuildArgs(T.allocator, &.{"--dry"});
+    defer p.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 1), p.projects.len);
+    try T.expectEqualStrings(".", p.projects[0]);
+}
+
+test "parseBuildArgs: TS5094 for a compiler option in build mode" {
+    var p = try parseBuildArgs(T.allocator, &.{"--strict"});
+    defer p.deinit(T.allocator);
+    try T.expect(buildDiagHas(p, "error TS5094: Compiler option '--strict' may not be used with '--build'."));
+}
+
+test "parseBuildArgs: TS5073 when builders has no numeric value" {
+    var p = try parseBuildArgs(T.allocator, &.{ "--builders", "--verbose" });
+    defer p.deinit(T.allocator);
+    try T.expect(buildDiagHas(p, "error TS5073: Build option 'builders' requires a value of type number."));
+    try T.expect(p.options.verbose); // --verbose still parsed
+}
+
+test "parseBuildArgs: TS5077 did-you-mean for a near-miss build option" {
+    var p = try parseBuildArgs(T.allocator, &.{"--verbos"});
+    defer p.deinit(T.allocator);
+    try T.expect(buildDiagHas(p, "error TS5077: Unknown build option 'verbos'. Did you mean 'verbose'?"));
+}
+
+test "parseBuildArgs: TS5072 for a wholly-unknown build option" {
+    var p = try parseBuildArgs(T.allocator, &.{"--zzzqqq"});
+    defer p.deinit(T.allocator);
+    try T.expect(buildDiagHas(p, "error TS5072: Unknown build option 'zzzqqq'."));
+}
+
+test "parseBuildArgs: TS6370 for clean+force and clean+verbose" {
+    var p = try parseBuildArgs(T.allocator, &.{ "--clean", "--force" });
+    defer p.deinit(T.allocator);
+    try T.expect(buildDiagHas(p, "error TS6370: Options 'clean' and 'force' cannot be combined."));
+    var p2 = try parseBuildArgs(T.allocator, &.{ "--clean", "--verbose" });
+    defer p2.deinit(T.allocator);
+    try T.expect(buildDiagHas(p2, "error TS6370: Options 'clean' and 'verbose' cannot be combined."));
+}
+
+test "buildOnlyOptionInNormalMode: detects build-only flags for TS5093" {
+    try T.expectEqualStrings("verbose", buildOnlyOptionInNormalMode("--verbose").?);
+    try T.expectEqualStrings("clean", buildOnlyOptionInNormalMode("--clean").?);
+    // A compiler option / non-build flag → null.
+    try T.expect(buildOnlyOptionInNormalMode("--strict") == null);
+    try T.expect(buildOnlyOptionInNormalMode("--noEmit") == null);
+    // Short `-d` is declaration in normal mode, NOT build-only `dry`.
+    try T.expect(buildOnlyOptionInNormalMode("-d") == null);
 }
 
 test "formatOutputCollision: TS5055 / TS5068 hint / TS5056 message text" {

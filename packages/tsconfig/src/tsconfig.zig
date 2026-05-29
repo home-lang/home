@@ -829,7 +829,7 @@ const known_compiler_option_names = [_][]const u8{
     "pprofDir",
 };
 
-fn isKnownCompilerOptionName(name: []const u8) bool {
+pub fn isKnownCompilerOptionName(name: []const u8) bool {
     for (known_compiler_option_names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
     }
@@ -1646,7 +1646,7 @@ fn typeAcquisitionOptionSuggestion(option: []const u8) ?[]const u8 {
     return if (best != null and best_distance <= threshold) best else null;
 }
 
-fn levenshteinIcase(a: []const u8, b: []const u8) usize {
+pub fn levenshteinIcase(a: []const u8, b: []const u8) usize {
     var previous_buf: [128]usize = undefined;
     var current_buf: [128]usize = undefined;
     if (b.len + 1 > previous_buf.len) return std.math.maxInt(usize);

@@ -258,27 +258,79 @@ pub fn main(init: std.process.Init) !void {
         expandResponseFiles(gpa, args_arena.allocator(), all_args[1..], &argv, 0);
     }
 
-    var parse_ctx: ts_cli.ParseContext = .{};
-    var opts = ts_cli.parseArgsCtx(gpa, argv.items, &parse_ctx) catch |err| {
-        switch (err) {
-            // TS6044: a non-boolean flag (e.g. `--outDir`) was the last
-            // argument with no value following it.
-            error.MissingValue => {
-                if (parse_ctx.missing_value_option.len > 0) {
-                    const msg = ts_cli.compilerOptionExpectsArgumentDiagnostic(gpa, parse_ctx.missing_value_option) catch {
-                        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
-                    };
-                    defer gpa.free(msg);
-                    std.debug.print("{s}\n", .{msg});
-                } else {
-                    std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
-                }
-            },
-            else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
+    // `tsc -b` / `tsc --build` (build mode) must be the FIRST argument.
+    const is_build_mode = argv.items.len > 0 and
+        (std.mem.eql(u8, argv.items[0], "-b") or std.mem.eql(u8, argv.items[0], "--build"));
+
+    var opts: ts_cli.Options = undefined;
+    var opts_files_owned = false;
+    if (is_build_mode) {
+        // Parse the build flags (TS5072/5073/5077/5094/6369/6370). Phase A:
+        // on clean parse, build each project via the normal per-project
+        // compile flow (full topological/incremental orchestration is a
+        // follow-up). `--clean` / `--dry` are not yet implemented.
+        var bp = ts_cli.parseBuildArgs(gpa, argv.items[1..]) catch
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
+        defer bp.deinit(gpa);
+        var had_build_err = false;
+        for (bp.diagnostics) |d| {
+            std.debug.print("{s}\n", .{d});
+            had_build_err = true;
         }
-        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
-    };
-    defer gpa.free(opts.files);
+        if (had_build_err) std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        if (bp.options.clean or bp.options.dry) {
+            std.debug.print("home tsc --build: '--{s}' is not yet implemented.\n", .{if (bp.options.clean) "clean" else "dry"});
+            return;
+        }
+        // Build the resolved project. "." resolves to a discovered
+        // tsconfig.json in the cwd (same as plain `tsc`).
+        const proj = if (bp.projects.len > 0 and !std.mem.eql(u8, bp.projects[0], "."))
+            bp.projects[0]
+        else
+            null;
+        opts = .{ .project = proj };
+    } else {
+        var parse_ctx: ts_cli.ParseContext = .{};
+        opts = ts_cli.parseArgsCtx(gpa, argv.items, &parse_ctx) catch |err| {
+            switch (err) {
+                // TS6044: a non-boolean flag (e.g. `--outDir`) was the last
+                // argument with no value following it.
+                error.MissingValue => {
+                    if (parse_ctx.missing_value_option.len > 0) {
+                        const msg = ts_cli.compilerOptionExpectsArgumentDiagnostic(gpa, parse_ctx.missing_value_option) catch {
+                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                        };
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                    } else {
+                        std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
+                    }
+                },
+                else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
+            }
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        };
+        opts_files_owned = true;
+
+        // TS5093 / TS6369: a build-only option (or a non-first `--build`)
+        // used in plain `tsc` mode.
+        for (argv.items) |a| {
+            if (ts_cli.buildOnlyOptionInNormalMode(a)) |bn| {
+                const code: u32 = 5093;
+                const msg = std.fmt.allocPrint(gpa, "error TS{d}: Compiler option '--{s}' may only be used with '--build'.", .{ code, bn }) catch
+                    std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                defer gpa.free(msg);
+                std.debug.print("{s}\n", .{msg});
+                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            }
+            if (std.mem.eql(u8, a, "--build") or std.mem.eql(u8, a, "-b")) {
+                const code: u32 = 6369;
+                std.debug.print("error TS{d}: Option '--build' must be the first command line argument.\n", .{code});
+                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            }
+        }
+    }
+    defer if (opts_files_owned) gpa.free(opts.files);
 
     // TS5042: `--project` (or `-p`) cannot be combined with positional
     // source files. Mirrors upstream `internal/execute/tsc.go`.
