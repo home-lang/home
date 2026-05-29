@@ -1815,6 +1815,16 @@ pub const Printer = struct {
             try self.write("constructor");
         } else if (f.flags.is_method) {
             if (f.flags.is_static) try self.write("static ");
+            // `async` (unless downleveled) — accessors are never async.
+            if (f.flags.is_async and !f.flags.is_getter and !f.flags.is_setter and
+                !downlevel_async and !downlevel_async_gen) try self.write("async ");
+            // Accessor keyword — `get x()` / `set x(v)`.
+            if (f.flags.is_getter) {
+                try self.write("get ");
+            } else if (f.flags.is_setter) {
+                try self.write("set ");
+            }
+            if (f.flags.is_generator and !downlevel_generator and !downlevel_async_gen) try self.write("*");
             if (f.name != hir_mod.none_node_id) {
                 try self.printExpression(f.name);
             }
@@ -8834,6 +8844,15 @@ test "emit: abstract methods are omitted (no invalid bodyless signature)" {
     // The abstract method must not appear as a bodyless `f();`.
     try T.expect(std.mem.indexOf(u8, out, "f()") == null);
     try T.expect(std.mem.indexOf(u8, out, "abstract") == null);
+}
+
+test "emit: class getter/setter/async/generator keep their keywords" {
+    const out = try emit("class C { get x() { return 1; } set x(v: number) {} async m() {} static *g() {} }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "get x()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "set x(v)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "async m()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static *g()") != null);
 }
 
 test "emit: qualified namespace A.B desugars to nested IIFEs (valid JS)" {
