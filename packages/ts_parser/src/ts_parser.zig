@@ -7216,13 +7216,10 @@ pub const Parser = struct {
             const expr = try self.parseAssignmentExpression();
             try self.consumeStatementTerminator();
             const end_pos = self.tokens[self.cursor - 1].span.end;
-            return try self.builder.addExport(
+            return try self.builder.addExportEquals(
                 .{ .start = start.span.start, .end = end_pos },
                 expr,
-                &.{},
                 empty_string,
-                is_type_only,
-                false,
             );
         }
 

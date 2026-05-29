@@ -673,6 +673,10 @@ pub const ExportPayload = struct {
     namespace_alias: StringId,
     namespace_alias_is_string_literal: bool = false,
     namespace_alias_pos: u32 = 0,
+    /// True for a TypeScript `export = <expr>;` assignment (CommonJS-style
+    /// default export). `decl` holds the exported expression. Lowered to
+    /// `module.exports = <expr>;`.
+    is_export_equals: bool = false,
 };
 
 pub const ImportSpecifierPayload = struct {
@@ -2182,6 +2186,14 @@ pub const Builder = struct {
         is_default: bool,
     ) !NodeId {
         return self.addExportFull(span, decl, named, module, is_type_only, is_default, false, 0);
+    }
+
+    /// `export = <expr>;` (TypeScript export assignment). `expr` is stored
+    /// as the export's `decl`; the node is flagged `is_export_equals`.
+    pub fn addExportEquals(self: *Builder, span: Span, expr: NodeId, empty_module: StringId) !NodeId {
+        const node = try self.addExport(span, expr, &.{}, empty_module, false, false);
+        self.hir.export_payloads.items[self.hir.payloads.items[node]].is_export_equals = true;
+        return node;
     }
 
     /// Extended form of `addExport` for `export * [as ns] from "m"`

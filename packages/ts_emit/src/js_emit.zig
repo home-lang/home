@@ -6992,6 +6992,14 @@ pub const Printer = struct {
     fn printExport(self: *Printer, node: NodeId) !void {
         const ex = hir_mod.exportOf(self.hir, node);
         if (ex.is_type_only) return;
+        // `export = <expr>;` lowers to `module.exports = <expr>;`
+        // (CommonJS-style default export) regardless of module kind.
+        if (ex.is_export_equals) {
+            try self.write("module.exports = ");
+            try self.printExpression(ex.decl);
+            try self.writeSemi();
+            return;
+        }
         // `export interface I {}` / `export type T = ...` erase at
         // runtime — bail before writing the `export ` keyword so we
         // don't leave a dangling token.
@@ -8632,6 +8640,14 @@ test "emit: parameter-property assignments follow a leading super() call" {
     // Ordering: super() → this.n = n → rest of body.
     try T.expect(super_idx < assign_idx);
     try T.expect(assign_idx < use_idx);
+}
+
+test "emit: export = lowers to module.exports assignment" {
+    const out = try emitWithOpts("class Foo {}\nexport = Foo;", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports = Foo;") != null);
+    // Must not leave a dangling `export Foo`.
+    try T.expect(std.mem.indexOf(u8, out, "export Foo") == null);
 }
 
 test "emit: numeric enum lowers to bidirectional IIFE with auto-increment" {
