@@ -7685,6 +7685,36 @@ pub const Printer = struct {
                 }
             }
         }
+        // Optional call `f?.(args)`. Below ES2020, downlevel to
+        // `(f === null || f === void 0 ? void 0 : f(args))` (re-evaluating
+        // the callee, matching printMember's `?.` downlevel style); at
+        // ES2020+ preserve the native `?.()` form.
+        if (p.optional) {
+            const args = hir_mod.callArgs(self.hir, node);
+            if (!self.options.es_target.supportsNullishAndOptional()) {
+                try self.write("(");
+                try self.printExpression(p.callee);
+                try self.write(" === null || ");
+                try self.printExpression(p.callee);
+                try self.write(" === void 0 ? void 0 : ");
+                try self.printExpression(p.callee);
+                try self.write("(");
+                for (args, 0..) |a, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.printExpression(a);
+                }
+                try self.write("))");
+                return;
+            }
+            try self.printExpression(p.callee);
+            try self.write("?.(");
+            for (args, 0..) |a, i| {
+                if (i > 0) try self.write(", ");
+                try self.printExpression(a);
+            }
+            try self.write(")");
+            return;
+        }
         try self.printExpression(p.callee);
         try self.write("(");
         const args = hir_mod.callArgs(self.hir, node);
@@ -8570,6 +8600,20 @@ test "emit: parameter-property assignments follow a leading super() call" {
     // Ordering: super() → this.n = n → rest of body.
     try T.expect(super_idx < assign_idx);
     try T.expect(assign_idx < use_idx);
+}
+
+test "emit: optional call ?.() preserved natively at es2020+" {
+    const out = try emitWithOpts("f?.(1);", .{ .es_target = .es2020 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "f?.(1)") != null);
+}
+
+test "emit: optional call ?.() downlevels below es2020" {
+    const out = try emitWithOpts("f?.(1);", .{ .es_target = .es2019 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "f === null || f === void 0 ? void 0 : f(1)") != null);
+    // Must NOT collapse to a plain unconditional call.
+    try T.expect(std.mem.indexOf(u8, out, "?.(") == null);
 }
 
 test "emit: a plain (non-property) constructor param emits no assignment" {
