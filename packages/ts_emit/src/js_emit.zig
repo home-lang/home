@@ -6737,10 +6737,25 @@ pub const Printer = struct {
         try self.printExpression(node);
     }
 
+    /// Write an enum member's name as a quoted JS string (`"A"`). Member
+    /// names are identifiers or string-literal keys.
+    fn writeEnumMemberName(self: *Printer, key: NodeId) !void {
+        try self.write("\"");
+        switch (self.hir.kindOf(key)) {
+            .identifier => try self.write(self.interner.get(hir_mod.identifierOf(self.hir, key).name)),
+            .literal_string => try self.write(self.interner.get(hir_mod.literalStringOf(self.hir, key).value)),
+            else => try self.printExpression(key),
+        }
+        try self.write("\"");
+    }
+
     fn printEnum(self: *Printer, node: NodeId) !void {
-        // tsc lowers enum to an IIFE. We emit a placeholder; full
-        // semantic emit (string vs. number, const-enum inlining) is a
-        // Phase 4 follow-up.
+        // tsc lowers an enum to an IIFE that builds the member object.
+        // Numeric members get a bidirectional mapping
+        // (`E[E["A"] = 0] = "A";`), string members forward-only
+        // (`E["A"] = "x";`). (const-enum use-site inlining is a separate
+        // optimization; the object is still emitted, as with
+        // preserveConstEnums.)
         const e = hir_mod.enumOf(self.hir, node);
         try self.write("var ");
         try self.printExpression(e.name);
@@ -6754,24 +6769,41 @@ pub const Printer = struct {
         var auto: i64 = 0;
         for (members) |m| {
             if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            const has_value = op.value != hir_mod.none_node_id;
+            const string_member = has_value and self.hir.kindOf(op.value) == .literal_string;
             try self.write(self.options.newline);
             try self.indent();
-            const op = hir_mod.objectPropertyOf(self.hir, m);
-            try self.printExpression(e.name);
-            try self.write("[");
-            try self.printExpression(e.name);
-            try self.write("[");
-            try self.printExpression(op.key);
-            try self.write("]] = ");
-            if (op.value != hir_mod.none_node_id) {
+            if (string_member) {
+                // E["A"] = "x";  (no reverse mapping for string members)
+                try self.printExpression(e.name);
+                try self.write("[");
+                try self.writeEnumMemberName(op.key);
+                try self.write("] = ");
                 try self.printExpression(op.value);
+                try self.writeSemi();
             } else {
-                var buf: [32]u8 = undefined;
-                const w = std.fmt.bufPrint(&buf, "{d}", .{auto}) catch "0";
-                try self.write(w);
+                // E[E["A"] = <value>] = "A";
+                try self.printExpression(e.name);
+                try self.write("[");
+                try self.printExpression(e.name);
+                try self.write("[");
+                try self.writeEnumMemberName(op.key);
+                try self.write("] = ");
+                if (has_value) {
+                    try self.printExpression(op.value);
+                    if (self.hir.kindOf(op.value) == .literal_number) {
+                        auto = @as(i64, @intFromFloat(hir_mod.literalNumberOf(self.hir, op.value))) + 1;
+                    }
+                } else {
+                    var buf: [32]u8 = undefined;
+                    try self.write(std.fmt.bufPrint(&buf, "{d}", .{auto}) catch "0");
+                    auto += 1;
+                }
+                try self.write("] = ");
+                try self.writeEnumMemberName(op.key);
+                try self.writeSemi();
             }
-            try self.writeSemi();
-            auto += 1;
         }
         self.depth -= 1;
         try self.writeNewlineIndent();
@@ -8600,6 +8632,25 @@ test "emit: parameter-property assignments follow a leading super() call" {
     // Ordering: super() → this.n = n → rest of body.
     try T.expect(super_idx < assign_idx);
     try T.expect(assign_idx < use_idx);
+}
+
+test "emit: numeric enum lowers to bidirectional IIFE with auto-increment" {
+    const out = try emit("enum F { X, Y = 5, Z }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "F[F[\"X\"] = 0] = \"X\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "F[F[\"Y\"] = 5] = \"Y\";") != null);
+    // Auto-increment resumes from the explicit 5.
+    try T.expect(std.mem.indexOf(u8, out, "F[F[\"Z\"] = 6] = \"Z\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "(F || (F = {}))") != null);
+}
+
+test "emit: string enum members are forward-only (no reverse mapping)" {
+    const out = try emit("enum Dir { Up = \"UP\", Down = \"DOWN\" }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "Dir[\"Up\"] = \"UP\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Dir[\"Down\"] = \"DOWN\";") != null);
+    // No bidirectional reverse mapping for string members.
+    try T.expect(std.mem.indexOf(u8, out, "Dir[Dir[\"Up\"]") == null);
 }
 
 test "emit: optional call ?.() preserved natively at es2020+" {
