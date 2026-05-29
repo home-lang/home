@@ -6890,6 +6890,17 @@ pub const Printer = struct {
         const imp = hir_mod.importOf(self.hir, node);
         // Type-only imports erase entirely.
         if (imp.is_type_only) return;
+        // `import name = require("m")` → `const name = require("m");`
+        // (the require form, regardless of module kind).
+        if (imp.is_require_equals and imp.default_binding != hir_mod.none_node_id) {
+            try self.write("const ");
+            try self.printExpression(imp.default_binding);
+            try self.write(" = require(\"");
+            try self.write(self.interner.get(imp.module));
+            try self.write("\")");
+            try self.writeSemi();
+            return;
+        }
         if (self.options.module_kind == .commonjs) {
             try self.printImportCjs(node, imp);
             return;
@@ -8688,6 +8699,21 @@ test "emit: parameter-property assignments follow a leading super() call" {
     // Ordering: super() → this.n = n → rest of body.
     try T.expect(super_idx < assign_idx);
     try T.expect(assign_idx < use_idx);
+}
+
+test "emit: import x = require() lowers to const x = require()" {
+    const out = try emit("import foo = require(\"./foo\");");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "const foo = require(\"./foo\")") != null);
+    // Must not be mistaken for an ESM default import.
+    try T.expect(std.mem.indexOf(u8, out, "import foo from") == null);
+}
+
+test "emit: a plain default import stays an ESM import" {
+    const out = try emit("import foo from \"./foo\";");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "import foo from \"./foo\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "require(") == null);
 }
 
 test "emit: abstract methods are omitted (no invalid bodyless signature)" {

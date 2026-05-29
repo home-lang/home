@@ -652,6 +652,10 @@ pub const ImportPayload = struct {
     /// TS1269 ("Cannot use 'export import' on a type or type-only
     /// namespace …") when the alias target resolves to a type.
     is_export: bool = false,
+    /// True for `import name = require("module")` — distinguishes it from a
+    /// plain default import (same `default_binding`/`module` shape).
+    /// Lowered to `const name = require("module");`.
+    is_require_equals: bool = false,
 };
 
 pub const ExportPayload = struct {

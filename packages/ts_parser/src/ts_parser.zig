@@ -6682,7 +6682,9 @@ pub const Parser = struct {
             _ = self.advance(); // =
             var module_id = self.interner.intern("") catch return error.OutOfMemory;
             var import_equals = hir_mod.none_node_id;
+            var is_require_equals = false;
             if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren and self.peekAt(2).kind == .string_literal) {
+                is_require_equals = true;
                 _ = self.advance(); // require
                 _ = self.advance(); // (
                 const mod_tok = self.advance();
@@ -6717,7 +6719,7 @@ pub const Parser = struct {
                 }
             }
             const end_pos = self.tokens[self.cursor - 1].span.end;
-            return try self.builder.addImport(
+            const import_node = try self.builder.addImport(
                 .{ .start = start.span.start, .end = end_pos },
                 module_id,
                 alias_node,
@@ -6726,6 +6728,10 @@ pub const Parser = struct {
                 &.{},
                 is_type_only,
             );
+            if (is_require_equals) {
+                self.hir.import_payloads.items[self.hir.payloads.items[import_node]].is_require_equals = true;
+            }
+            return import_node;
         }
 
         if (self.peek().kind == .string_literal) {
