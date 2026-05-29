@@ -37,9 +37,13 @@ for (const m of statusText.matchAll(
 }
 
 // --- names referenced in tsgo source (excluding the generated table) ------
+// Drop fully-commented lines (`// …diagnostics.X…`) so a reference that
+// only survives in dead/commented code (e.g. TS5012) isn't counted as
+// reachable. Inline trailing comments are rare for emission sites and are
+// left in; this catches the common commented-out-statement case.
 const grep = cp
   .execSync(
-    `grep -rhoE 'diagnostics\\.[A-Za-z0-9_]+' ${JSON.stringify(refInternal)} --include=*.go | grep -v diagnostics_generated.go | sort -u`,
+    `grep -rho --include=*.go -E '^[^/]*diagnostics\\.[A-Za-z0-9_]+' ${JSON.stringify(refInternal)} | grep -v diagnostics_generated.go | grep -oE 'diagnostics\\.[A-Za-z0-9_]+' | sort -u`,
     { maxBuffer: 1 << 28 },
   )
   .toString();

@@ -14,21 +14,21 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 981 |
-| reachable (parity targets) | 472 |
-| dead in tsgo (leave catalog-only) | 509 |
+| catalog-only total | 979 |
+| reachable (parity targets) | 465 |
+| dead in tsgo (leave catalog-only) | 514 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 168 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 142 |
-| 1xxx — parser / syntactic + program file-inclusion | 78 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 140 |
+| 1xxx — parser / syntactic + program file-inclusion | 77 |
 | 4xxx — declaration-emit (privacy / serialization) | 23 |
-| 9xxxx — editor code-fix / refactor (language service) | 18 |
-| 5xxx — tsconfig / build-option validation | 16 |
+| 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
+| 5xxx — tsconfig / build-option validation | 13 |
 | 7xxx — noImplicitAny / implicit-type family | 12 |
 
 ### 2xxx — checker / type engine (168)
@@ -202,7 +202,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (142)
+### 6xxx — CLI / build / watch / resolution-trace messages (140)
 
 - TS6029 `Version_0_6029`
 - TS6031 `Starting_compilation_in_watch_mode_6031`
@@ -327,7 +327,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
 - TS6506 `Consider_adding_a_declare_modifier_to_this_class_6506`
 - TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
-- TS6908 `if_files_is_specified_otherwise_Asterisk_Asterisk_Slash_Asterisk_6908`
 - TS6911 `Computed_from_the_list_of_input_files_6911`
 - TS6912 `Platform_specific_6912`
 - TS6913 `You_can_learn_about_all_of_the_compiler_options_at_0_6913`
@@ -343,15 +342,13 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6924 `Ignoring_tsconfig_json_compiles_the_specified_files_with_default_compiler_options_6924`
 - TS6925 `Build_a_composite_project_in_the_working_directory_6925`
 - TS6926 `Creates_a_tsconfig_json_with_the_recommended_settings_in_the_working_directory_6926`
-- TS6927 `Compiles_the_TypeScript_project_located_at_the_specified_path_6927`
 - TS6928 `An_expanded_version_of_this_information_showing_all_possible_compiler_options_6928`
 - TS6929 `Compiles_the_current_project_with_additional_settings_6929`
 
-### 1xxx — parser / syntactic + program file-inclusion (78)
+### 1xxx — parser / syntactic + program file-inclusion (77)
 
 - TS1007 `The_parser_expected_to_find_a_1_to_match_the_0_token_here_1007`
 - TS1012 `Unexpected_token_1012`
-- TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
 - TS1059 `A_promise_must_have_a_then_method_1059`
 - TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060`
 - TS1062 `Type_is_referenced_directly_or_indirectly_in_the_fulfillment_callback_of_its_own_then_method_1062`
@@ -454,7 +451,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS4125 `Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125`
 - TS4126 `One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126`
 
-### 9xxxx — editor code-fix / refactor (language service) (18)
+### 9xxxx — editor code-fix / refactor (language service) (17)
 
 - TS90014 `Change_0_to_1_90014`
 - TS90055 `Remove_type_from_import_declaration_from_0_90055`
@@ -472,27 +469,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS90070 `Mark_array_literal_as_const_90070`
 - TS90071 `Annotate_types_of_properties_expando_function_in_a_namespace_90071`
 - TS95064 `Add_all_missing_imports_95064`
-- TS95110 `Visit_https_Colon_Slash_Slashaka_ms_Slashtsconfig_to_read_more_about_this_file_95110`
 - TS95174 `Use_0_95174`
-
-### 5xxx — tsconfig / build-option validation (16)
-
-- TS5012 `Cannot_read_file_0_Colon_1_5012`
-- TS5033 `Could_not_write_file_0_Colon_1_5033`
-- TS5054 `A_tsconfig_json_file_is_already_defined_at_Colon_0_5054`
-- TS5055 `Cannot_write_file_0_because_it_would_overwrite_input_file_5055`
-- TS5056 `Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056`
-- TS5068 `Adding_a_tsconfig_json_file_will_help_organize_projects_that_contain_both_TypeScript_and_JavaScript__5068`
-- TS5072 `Unknown_build_option_0_5072`
-- TS5073 `Build_option_0_requires_a_value_of_type_1_5073`
-- TS5077 `Unknown_build_option_0_Did_you_mean_1_5077`
-- TS5078 `Unknown_watch_option_0_5078`
-- TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
-- TS5080 `Watch_option_0_requires_a_value_of_type_1_5080`
-- TS5083 `Cannot_read_file_0_5083`
-- TS5092 `The_root_value_of_a_0_file_must_be_an_object_5092`
-- TS5093 `Compiler_option_0_may_only_be_used_with_build_5093`
-- TS5094 `Compiler_option_0_may_not_be_used_with_build_5094`
 
 ### other (15)
 
@@ -512,6 +489,22 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS80008 `Numeric_literals_with_absolute_values_equal_to_2_53_or_greater_are_too_large_to_be_represented_accur_80008`
 
+### 5xxx — tsconfig / build-option validation (13)
+
+- TS5033 `Could_not_write_file_0_Colon_1_5033`
+- TS5055 `Cannot_write_file_0_because_it_would_overwrite_input_file_5055`
+- TS5056 `Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056`
+- TS5068 `Adding_a_tsconfig_json_file_will_help_organize_projects_that_contain_both_TypeScript_and_JavaScript__5068`
+- TS5072 `Unknown_build_option_0_5072`
+- TS5073 `Build_option_0_requires_a_value_of_type_1_5073`
+- TS5077 `Unknown_build_option_0_Did_you_mean_1_5077`
+- TS5078 `Unknown_watch_option_0_5078`
+- TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
+- TS5080 `Watch_option_0_requires_a_value_of_type_1_5080`
+- TS5083 `Cannot_read_file_0_5083`
+- TS5093 `Compiler_option_0_may_only_be_used_with_build_5093`
+- TS5094 `Compiler_option_0_may_not_be_used_with_build_5094`
+
 ### 7xxx — noImplicitAny / implicit-type family (12)
 
 - TS7012 `This_overload_implicitly_returns_the_type_0_because_it_lacks_a_return_type_annotation_7012`
@@ -529,12 +522,13 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 ## Dead in tsgo (faithfully catalog-only)
 
-509 codes. Listed for auditability; none should be `emitted`.
+514 codes. Listed for auditability; none should be `emitted`.
 
 <details><summary>Show dead codes</summary>
 
 - TS1055 `Type_0_is_not_a_valid_async_function_return_type_in_ES5_because_it_does_not_refer_to_a_Promise_compa_1055`
 - TS1056 `Accessors_are_only_available_when_targeting_ECMAScript_5_and_higher_1056`
+- TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
 - TS1195 `export_Asterisk_does_not_re_export_a_default_1195`
 - TS1236 `The_return_type_of_a_property_decorator_function_must_be_either_void_or_any_1236`
 - TS1237 `The_return_type_of_a_parameter_decorator_function_must_be_either_void_or_any_1237`
@@ -607,6 +601,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2870 `This_binary_expression_is_never_nullish_Are_you_missing_parentheses_2870`
 - TS4124 `Compiler_option_0_of_value_1_is_unstable_Use_nightly_TypeScript_to_silence_this_error_Try_updating_w_4124`
 - TS5001 `The_current_host_does_not_support_the_0_option_5001`
+- TS5012 `Cannot_read_file_0_Colon_1_5012`
 - TS5057 `Cannot_find_a_tsconfig_json_file_at_the_specified_directory_Colon_0_5057`
 - TS5074 `Option_incremental_can_only_be_specified_using_tsconfig_emitting_to_single_file_or_when_option_tsBui_5074`
 - TS5075 `_0_is_assignable_to_the_constraint_of_type_1_but_1_could_be_instantiated_with_a_different_subtype_of_5075`
@@ -790,8 +785,10 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6905 `false_unless_strict_is_set_6905`
 - TS6906 `false_unless_composite_is_set_6906`
 - TS6907 `node_modules_bower_components_jspm_packages_plus_the_value_of_outDir_if_one_is_specified_6907`
+- TS6908 `if_files_is_specified_otherwise_Asterisk_Asterisk_Slash_Asterisk_6908`
 - TS6909 `true_if_composite_false_otherwise_6909`
 - TS6922 `tsc_Colon_The_TypeScript_Compiler_6922`
+- TS6927 `Compiles_the_TypeScript_project_located_at_the_specified_path_6927`
 - TS6930 `true_for_ES2022_and_above_including_ESNext_6930`
 - TS7037 `Enables_emit_interoperability_between_CommonJS_and_ES_Modules_via_creation_of_namespace_objects_for__7037`
 - TS7048 `Property_0_implicitly_has_type_any_but_a_better_type_for_its_get_accessor_may_be_inferred_from_usage_7048`
@@ -956,6 +953,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS95107 `Fix_all_implicit_this_errors_95107`
 - TS95108 `Wrap_invalid_character_in_an_expression_container_95108`
 - TS95109 `Wrap_all_invalid_characters_in_an_expression_container_95109`
+- TS95110 `Visit_https_Colon_Slash_Slashaka_ms_Slashtsconfig_to_read_more_about_this_file_95110`
 - TS95111 `Add_a_return_statement_95111`
 - TS95112 `Remove_braces_from_arrow_function_body_95112`
 - TS95113 `Wrap_the_following_body_with_parentheses_which_should_be_an_object_literal_95113`
