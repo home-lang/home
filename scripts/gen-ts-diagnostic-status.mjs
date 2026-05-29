@@ -218,6 +218,8 @@ Status meanings:
 - \`tested-only\`: referenced only from test code or test fixtures.
 - \`catalog-only\`: present in the upstream TypeScript catalogue but not yet referenced by Home source.
 
+Not every \`catalog-only\` code is a parity target: ~half are **dead in the reference compiler** (typescript-go) — obsolete wording the reference never emits (e.g. the pre-Go TS6015 option descriptions superseded by TS6705). Faithful parity means emitting the *reachable* subset, not chasing dead codes. See [TS_DIAGNOSTIC_REACHABILITY.md](./TS_DIAGNOSTIC_REACHABILITY.md) for the reachable-vs-dead split and the per-range reachable worklist.
+
 This is a scanner-generated code-coverage ledger, not a proof of exact parity. Documentation references are intentionally excluded from status classification so coordination notes cannot make a code look implemented. Exact wording, ordering, spans, related information, and fixture pass/fail status remain tracked by [TS_PARITY_PLAN.md](./TS_PARITY_PLAN.md) and the exact conformance runners.
 
 ## Multi-Agent Usage
