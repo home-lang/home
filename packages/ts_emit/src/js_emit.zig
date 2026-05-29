@@ -1822,6 +1822,10 @@ pub const Printer = struct {
                 try self.printAsyncDownlevelBody(f.body, params);
             } else if (downlevel_generator) {
                 try self.printGeneratorDownlevelBody(f.body, params);
+            } else if (f.flags.is_constructor and self.hasParameterProperty(params)) {
+                // TS parameter properties: emit `this.x = x;` assignments
+                // (after a leading super() call) at the constructor head.
+                try self.printConstructorBodyWithParamProps(f.body, params);
             } else if (self.options.es_target == .es5 and (self.hasDefaultParam(params) or self.hasDestructuringParam(params))) {
                 // §4.A — at ES5, lower default-parameter syntax to a
                 // body-prefix `if (x === void 0) { x = ...; }` shim
@@ -5502,6 +5506,81 @@ pub const Printer = struct {
         try self.write("}");
     }
 
+    /// True when any parameter carries a visibility/`readonly` modifier
+    /// (a TS "parameter property"). Only constructors can have these.
+    fn hasParameterProperty(self: *const Printer, params: []const NodeId) bool {
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            if (hir_mod.parameterOf(self.hir, p).flags.is_parameter_property) return true;
+        }
+        return false;
+    }
+
+    /// True when `stmt` is a `super(...)` call statement (the call has a
+    /// `super` callee). Parameter-property assignments are emitted right
+    /// after such a leading call, matching tsc.
+    fn isSuperCallStatement(self: *const Printer, stmt: NodeId) bool {
+        if (self.hir.kindOf(stmt) != .call_expr) return false;
+        const callee = hir_mod.callOf(self.hir, stmt).callee;
+        if (self.hir.kindOf(callee) == .super_expr) return true;
+        // `super` is also modeled as an identifier named "super".
+        if (self.hir.kindOf(callee) == .identifier) {
+            return std.mem.eql(u8, self.interner.get(hir_mod.identifierOf(self.hir, callee).name), "super");
+        }
+        return false;
+    }
+
+    /// Emit `this.x = x;` for each constructor parameter property, the way
+    /// tsc lowers `constructor(public x) {}`. Pattern/`this` params can't be
+    /// parameter properties, so the name is always a plain identifier.
+    fn emitParameterPropertyAssignments(self: *Printer, params: []const NodeId) !void {
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (!pp.flags.is_parameter_property) continue;
+            if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+            const name = self.interner.get(hir_mod.identifierOf(self.hir, pp.name).name);
+            try self.write(self.options.newline);
+            try self.indent();
+            try self.write("this.");
+            try self.write(name);
+            try self.write(" = ");
+            try self.write(name);
+            try self.writeSemi();
+        }
+    }
+
+    /// Print a constructor body that has parameter properties: emit any
+    /// leading `super(...)` call, then the `this.x = x;` assignments, then
+    /// the remaining statements (tsc's ordering).
+    fn printConstructorBodyWithParamProps(self: *Printer, body: NodeId, params: []const NodeId) !void {
+        try self.write("{");
+        self.depth += 1;
+        // ES5 default-param shims (uncommon in constructors; kept for safety).
+        if (self.options.es_target == .es5 and self.hasDefaultParam(params)) {
+            try self.writeNewlineIndent();
+            try self.writeDefaultParamShims(params);
+        }
+        var stmts: []const NodeId = &.{};
+        if (body != hir_mod.none_node_id and self.hir.kindOf(body) == .block_stmt) {
+            stmts = hir_mod.blockStmts(self.hir, body);
+        }
+        var start: usize = 0;
+        if (stmts.len > 0 and self.isSuperCallStatement(stmts[0])) {
+            try self.write(self.options.newline);
+            try self.printStatement(stmts[0]);
+            start = 1;
+        }
+        try self.emitParameterPropertyAssignments(params);
+        for (stmts[start..]) |s| {
+            try self.write(self.options.newline);
+            try self.printStatement(s);
+        }
+        self.depth -= 1;
+        try self.writeNewlineIndent();
+        try self.write("}");
+    }
+
     /// True if `param` is an explicit `this: T` first-parameter
     /// (TS-only — must not appear in the runtime JS output).
     fn isThisParam(self: *const Printer, param: NodeId) bool {
@@ -8466,6 +8545,37 @@ test "emit: class preserved at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
     try T.expect(std.mem.indexOf(u8, out, "prototype") == null);
+}
+
+test "emit: parameter properties lower to this.x = x assignments" {
+    const out = try emit("class P { constructor(public x: number, private y: number, readonly z: string) {} }");
+    defer T.allocator.free(out);
+    // Modifiers stripped from the param list; assignments synthesized.
+    try T.expect(std.mem.indexOf(u8, out, "constructor(x, y, z)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = x;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.y = y;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.z = z;") != null);
+}
+
+test "emit: parameter-property assignments follow a leading super() call" {
+    const out = try emit(
+        \\class D extends B {
+        \\  constructor(public n: number) { super(); use(n); }
+        \\}
+    );
+    defer T.allocator.free(out);
+    const super_idx = std.mem.indexOf(u8, out, "super()").?;
+    const assign_idx = std.mem.indexOf(u8, out, "this.n = n;").?;
+    const use_idx = std.mem.indexOf(u8, out, "use(n)").?;
+    // Ordering: super() → this.n = n → rest of body.
+    try T.expect(super_idx < assign_idx);
+    try T.expect(assign_idx < use_idx);
+}
+
+test "emit: a plain (non-property) constructor param emits no assignment" {
+    const out = try emit("class P { constructor(x: number) { this.q = x; } }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = x;") == null);
 }
 
 test "emit: object destructuring lowers to temp + property reads at es5" {
