@@ -59,6 +59,26 @@ const RealFs = struct {
     }
 };
 
+/// True when `needle` string-equals any entry in `haystack`.
+fn pathInList(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |p| {
+        if (std.mem.eql(u8, p, needle)) return true;
+    }
+    return false;
+}
+
+/// Write `bytes` to `path`, or emit TS5033 and exit on failure. Mirrors
+/// tsc's emitter, which reports `Could_not_write_file` for any output
+/// write error.
+fn writeOrDie(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) void {
+    RealFs.write(gpa, path, bytes) catch |err| {
+        const msg = ts_cli.couldNotWriteFileDiagnostic(gpa, path, @errorName(err)) catch std.process.exit(1);
+        defer gpa.free(msg);
+        std.debug.print("{s}\n", .{msg});
+        std.process.exit(1);
+    };
+}
+
 const ResolverRealFs = struct {
     pub fn fs(self: *ResolverRealFs) ts_resolver.FileSystem {
         return .{ .ptr = self, .vtable = &vt };
@@ -597,12 +617,48 @@ pub fn main(init: std.process.Init) !void {
     // Diagnostics already printed above by the streaming callback;
     // this loop only handles JS / .d.ts emission. The streaming
     // any-errors flag flows into the final exit-code decision.
-    const any_errors = any_errors_streaming;
+    var any_errors = any_errors_streaming;
+
+    // TS5055/5056: before emitting, verify no output file would overwrite
+    // an input file or be written twice (tsc's `verifyEmitFilePath`). Such
+    // outputs are blocked from emit and reported.
+    var blocked_outputs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (blocked_outputs.items) |b| gpa.free(b);
+        blocked_outputs.deinit(gpa);
+    }
+    if (!opts.no_emit) {
+        var inputs: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer inputs.deinit(gpa);
+        var outputs: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer {
+            for (outputs.items) |o| gpa.free(o);
+            outputs.deinit(gpa);
+        }
+        for (program.files.items) |f| {
+            try inputs.append(gpa, f.path);
+            if (f.compilation == null) continue;
+            try outputs.append(gpa, try computeOutPath(gpa, f.path, out_dir, ".js"));
+            if (emit_dts) try outputs.append(gpa, try computeOutPath(gpa, f.path, declaration_dir, ".d.ts"));
+        }
+        const cols = try ts_cli.detectOutputCollisions(gpa, inputs.items, outputs.items, loaded_cfg != null);
+        defer gpa.free(cols);
+        for (cols) |col| {
+            const msg = try ts_cli.formatOutputCollision(gpa, col);
+            defer gpa.free(msg);
+            std.debug.print("{s}\n", .{msg});
+            try blocked_outputs.append(gpa, try gpa.dupe(u8, col.output_path));
+        }
+        if (cols.len > 0) any_errors = true;
+    }
+
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
         if (opts.no_emit) continue;
         const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
         defer gpa.free(out_path);
+        // Skip files whose output was blocked by the TS5055/5056 check.
+        if (pathInList(blocked_outputs.items, out_path)) continue;
 
         // §4.A.13 — when sourceMap is enabled, re-emit through a
         // Printer hooked up to a SourceMap so the printer records
@@ -642,17 +698,11 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const js_bytes: []const u8 = sm_owned_js orelse c.js;
-        RealFs.write(gpa, out_path, js_bytes) catch |err| {
-            std.debug.print("error writing {s}: {s}\n", .{ out_path, @errorName(err) });
-            std.process.exit(1);
-        };
+        writeOrDie(gpa, out_path, js_bytes);
         if (emit_source_map) {
             const map_bytes: []const u8 = sm_owned_map orelse "{}";
             const map_path = sm_map_path_owned.?;
-            RealFs.write(gpa, map_path, map_bytes) catch |err| {
-                std.debug.print("error writing {s}: {s}\n", .{ map_path, @errorName(err) });
-                std.process.exit(1);
-            };
+            writeOrDie(gpa, map_path, map_bytes);
         }
 
         if (emit_dts) {
@@ -666,10 +716,7 @@ pub fn main(init: std.process.Init) !void {
             defer gpa.free(dts_bytes);
             const dts_path = try computeOutPath(gpa, f.path, declaration_dir, ".d.ts");
             defer gpa.free(dts_path);
-            RealFs.write(gpa, dts_path, dts_bytes) catch |err| {
-                std.debug.print("error writing {s}: {s}\n", .{ dts_path, @errorName(err) });
-                std.process.exit(1);
-            };
+            writeOrDie(gpa, dts_path, dts_bytes);
 
             // §4.A.x — when `declarationMap` is on, write a parallel
             // `.d.ts.map` next to the `.d.ts`. v0 emits Source Map V3
@@ -691,10 +738,7 @@ pub fn main(init: std.process.Init) !void {
                     defer gpa.free(mb);
                     const map_path = try std.fmt.allocPrint(gpa, "{s}.map", .{dts_path});
                     defer gpa.free(map_path);
-                    RealFs.write(gpa, map_path, mb) catch |err| {
-                        std.debug.print("error writing {s}: {s}\n", .{ map_path, @errorName(err) });
-                        std.process.exit(1);
-                    };
+                    writeOrDie(gpa, map_path, mb);
                 }
             }
         }
@@ -826,9 +870,7 @@ pub fn main(init: std.process.Init) !void {
                 if (opts.no_emit) continue;
                 const out_path = computeOutPath(gpa, path, out_dir, ".js") catch continue;
                 defer gpa.free(out_path);
-                RealFs.write(gpa, out_path, c.js) catch |err| {
-                    std.debug.print("error writing {s}: {s}\n", .{ out_path, @errorName(err) });
-                };
+                writeOrDie(gpa, out_path, c.js);
             }
         }
     }

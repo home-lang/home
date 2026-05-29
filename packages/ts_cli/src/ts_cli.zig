@@ -365,6 +365,110 @@ pub const defaultTsconfigContents: []const u8 =
 pub const initCreatedMessage: []const u8 =
     "Created a new tsconfig.json.\nYou can learn more at https://aka.ms/tsconfig";
 
+/// TS5033: an output file could not be written. `{0}` is the path, `{1}`
+/// is the underlying OS error text. Mirrors tsc's emitter write-failure
+/// diagnostic. Caller frees.
+pub fn couldNotWriteFileDiagnostic(gpa: std.mem.Allocator, path: []const u8, err_text: []const u8) ![]u8 {
+    const code: u32 = 5033;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Could not write file '{s}': {s}.",
+        .{ code, path, err_text },
+    );
+}
+
+/// One output-file collision found by `detectOutputCollisions`.
+pub const OutputCollision = struct {
+    /// TS5055 (overwrites an input file) or TS5056 (two inputs → one output).
+    code: u32,
+    /// The offending output path (borrowed from the caller's slice).
+    output_path: []const u8,
+    /// For TS5055 only: whether to append the TS5068 "add a tsconfig.json"
+    /// message chain (tsc adds it when the program has no config file).
+    add_tsconfig_hint: bool = false,
+};
+
+/// Detect output-file collisions the way tsc's program output-path check
+/// does (`verifyEmitFilePath` in program.go):
+///   - TS5055 when an emitted output path equals one of the input files
+///     (with the TS5068 hint appended when `has_config` is false);
+///   - TS5056 when two emitted outputs resolve to the same path.
+/// `outputs` is in emit order; both slices hold already-normalized paths
+/// (the caller decides case sensitivity by normalizing beforehand).
+/// Returns an owned slice; the `output_path` fields borrow from `outputs`.
+pub fn detectOutputCollisions(
+    gpa: std.mem.Allocator,
+    inputs: []const []const u8,
+    outputs: []const []const u8,
+    has_config: bool,
+) ![]OutputCollision {
+    var result: std.ArrayListUnmanaged(OutputCollision) = .empty;
+    errdefer result.deinit(gpa);
+    var seen: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer seen.deinit(gpa);
+
+    for (outputs) |out| {
+        if (out.len == 0) continue;
+        var overwrites_input = false;
+        for (inputs) |in| {
+            if (std.mem.eql(u8, in, out)) {
+                overwrites_input = true;
+                break;
+            }
+        }
+        if (overwrites_input) {
+            try result.append(gpa, .{
+                .code = 5055,
+                .output_path = out,
+                .add_tsconfig_hint = !has_config,
+            });
+        }
+        var already_seen = false;
+        for (seen.items) |s| {
+            if (std.mem.eql(u8, s, out)) {
+                already_seen = true;
+                break;
+            }
+        }
+        if (already_seen) {
+            try result.append(gpa, .{ .code = 5056, .output_path = out });
+        } else {
+            try seen.append(gpa, out);
+        }
+    }
+    return result.toOwnedSlice(gpa);
+}
+
+/// Render an `OutputCollision` as its `error TSxxxx: …` line(s). TS5055
+/// with `add_tsconfig_hint` appends the TS5068 hint as an indented chain
+/// line, matching tsc's message chain. Caller frees.
+pub fn formatOutputCollision(gpa: std.mem.Allocator, col: OutputCollision) ![]u8 {
+    return switch (col.code) {
+        5055 => if (col.add_tsconfig_hint) blk: {
+            // The hint is TS5068, attached as a message chain. Render its
+            // text from the catalogue so it stays authoritative.
+            const hint_code: u32 = 5068;
+            break :blk try std.fmt.allocPrint(
+                gpa,
+                "error TS5055: Cannot write file '{s}' because it would overwrite input file.\n  {s}",
+                .{ col.output_path, (codes.lookup(hint_code) orelse unreachable).message },
+            );
+        }
+        else
+            try std.fmt.allocPrint(
+                gpa,
+                "error TS5055: Cannot write file '{s}' because it would overwrite input file.",
+                .{col.output_path},
+            ),
+        5056 => try std.fmt.allocPrint(
+            gpa,
+            "error TS5056: Cannot write file '{s}' because it would be overwritten by multiple input files.",
+            .{col.output_path},
+        ),
+        else => try std.fmt.allocPrint(gpa, "error TS{d}: output file collision: '{s}'.", .{ col.code, col.output_path }),
+    };
+}
+
 pub const RunResult = struct {
     code: ExitCode,
     /// One of `helpText`, `versionText`, or empty.
@@ -675,4 +779,67 @@ test "defaultTsconfigContents parses as a tsconfig object" {
     const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), defaultTsconfigContents);
     try T.expect(!cfg.root_not_object);
     try T.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
+}
+
+test "couldNotWriteFileDiagnostic: TS5033 message text" {
+    const msg = try couldNotWriteFileDiagnostic(T.allocator, "dist/a.js", "AccessDenied");
+    defer T.allocator.free(msg);
+    try T.expectEqualStrings("error TS5033: Could not write file 'dist/a.js': AccessDenied.", msg);
+}
+
+test "detectOutputCollisions: TS5055 when output overwrites an input" {
+    const inputs = [_][]const u8{ "src/a.ts", "src/b.js" };
+    // Emitting a.ts to a.js (fine) but b.js would overwrite the input b.js.
+    const outputs = [_][]const u8{ "src/a.js", "src/b.js" };
+    const cols = try detectOutputCollisions(T.allocator, &inputs, &outputs, true);
+    defer T.allocator.free(cols);
+    try T.expectEqual(@as(usize, 1), cols.len);
+    try T.expectEqual(@as(u32, 5055), cols[0].code);
+    try T.expectEqualStrings("src/b.js", cols[0].output_path);
+    try T.expect(!cols[0].add_tsconfig_hint); // has_config = true
+}
+
+test "detectOutputCollisions: TS5055 adds the TS5068 hint without a config" {
+    const inputs = [_][]const u8{"a.js"};
+    const outputs = [_][]const u8{"a.js"};
+    const cols = try detectOutputCollisions(T.allocator, &inputs, &outputs, false);
+    defer T.allocator.free(cols);
+    try T.expectEqual(@as(usize, 1), cols.len);
+    try T.expectEqual(@as(u32, 5055), cols[0].code);
+    try T.expect(cols[0].add_tsconfig_hint);
+}
+
+test "detectOutputCollisions: TS5056 when two inputs map to the same output" {
+    const inputs = [_][]const u8{ "src/a.ts", "src/a.tsx" };
+    // Both emit to the same a.js.
+    const outputs = [_][]const u8{ "dist/a.js", "dist/a.js" };
+    const cols = try detectOutputCollisions(T.allocator, &inputs, &outputs, true);
+    defer T.allocator.free(cols);
+    try T.expectEqual(@as(usize, 1), cols.len);
+    try T.expectEqual(@as(u32, 5056), cols[0].code);
+    try T.expectEqualStrings("dist/a.js", cols[0].output_path);
+}
+
+test "detectOutputCollisions: clean outputs produce no diagnostics" {
+    const inputs = [_][]const u8{ "src/a.ts", "src/b.ts" };
+    const outputs = [_][]const u8{ "dist/a.js", "dist/b.js" };
+    const cols = try detectOutputCollisions(T.allocator, &inputs, &outputs, true);
+    defer T.allocator.free(cols);
+    try T.expectEqual(@as(usize, 0), cols.len);
+}
+
+test "formatOutputCollision: TS5055 / TS5068 hint / TS5056 message text" {
+    const m1 = try formatOutputCollision(T.allocator, .{ .code = 5055, .output_path = "a.js" });
+    defer T.allocator.free(m1);
+    try T.expectEqualStrings("error TS5055: Cannot write file 'a.js' because it would overwrite input file.", m1);
+
+    const m2 = try formatOutputCollision(T.allocator, .{ .code = 5055, .output_path = "a.js", .add_tsconfig_hint = true });
+    defer T.allocator.free(m2);
+    try T.expect(std.mem.indexOf(u8, m2, "error TS5055:") != null);
+    try T.expect(std.mem.indexOf(u8, m2, "Adding a tsconfig.json file will help organize") != null);
+    try T.expect(std.mem.indexOf(u8, m2, "https://aka.ms/tsconfig") != null);
+
+    const m3 = try formatOutputCollision(T.allocator, .{ .code = 5056, .output_path = "a.js" });
+    defer T.allocator.free(m3);
+    try T.expectEqualStrings("error TS5056: Cannot write file 'a.js' because it would be overwritten by multiple input files.", m3);
 }

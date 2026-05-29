@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 979 |
-| reachable (parity targets) | 465 |
+| catalog-only total | 975 |
+| reachable (parity targets) | 461 |
 | dead in tsgo (leave catalog-only) | 514 |
 
 ## Reachable worklist by range
@@ -28,8 +28,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | 4xxx — declaration-emit (privacy / serialization) | 23 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
-| 5xxx — tsconfig / build-option validation | 13 |
 | 7xxx — noImplicitAny / implicit-type family | 12 |
+| 5xxx — tsconfig / build-option validation | 9 |
 
 ### 2xxx — checker / type engine (168)
 
@@ -489,22 +489,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS80008 `Numeric_literals_with_absolute_values_equal_to_2_53_or_greater_are_too_large_to_be_represented_accur_80008`
 
-### 5xxx — tsconfig / build-option validation (13)
-
-- TS5033 `Could_not_write_file_0_Colon_1_5033`
-- TS5055 `Cannot_write_file_0_because_it_would_overwrite_input_file_5055`
-- TS5056 `Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056`
-- TS5068 `Adding_a_tsconfig_json_file_will_help_organize_projects_that_contain_both_TypeScript_and_JavaScript__5068`
-- TS5072 `Unknown_build_option_0_5072`
-- TS5073 `Build_option_0_requires_a_value_of_type_1_5073`
-- TS5077 `Unknown_build_option_0_Did_you_mean_1_5077`
-- TS5078 `Unknown_watch_option_0_5078`
-- TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
-- TS5080 `Watch_option_0_requires_a_value_of_type_1_5080`
-- TS5083 `Cannot_read_file_0_5083`
-- TS5093 `Compiler_option_0_may_only_be_used_with_build_5093`
-- TS5094 `Compiler_option_0_may_not_be_used_with_build_5094`
-
 ### 7xxx — noImplicitAny / implicit-type family (12)
 
 - TS7012 `This_overload_implicitly_returns_the_type_0_because_it_lacks_a_return_type_annotation_7012`
@@ -519,6 +503,18 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS7054 `No_index_signature_with_a_parameter_of_type_0_was_found_on_type_1_7054`
 - TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 - TS7058 `If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058`
+
+### 5xxx — tsconfig / build-option validation (9)
+
+- TS5072 `Unknown_build_option_0_5072`
+- TS5073 `Build_option_0_requires_a_value_of_type_1_5073`
+- TS5077 `Unknown_build_option_0_Did_you_mean_1_5077`
+- TS5078 `Unknown_watch_option_0_5078`
+- TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
+- TS5080 `Watch_option_0_requires_a_value_of_type_1_5080`
+- TS5083 `Cannot_read_file_0_5083`
+- TS5093 `Compiler_option_0_may_only_be_used_with_build_5093`
+- TS5094 `Compiler_option_0_may_not_be_used_with_build_5094`
 
 ## Dead in tsgo (faithfully catalog-only)
 
