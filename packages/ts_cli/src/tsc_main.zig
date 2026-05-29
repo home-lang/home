@@ -284,6 +284,22 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // `--init`: write a default tsconfig.json, or TS5054 if one exists.
+    if (opts.init_config) {
+        if (fileExistsOnDisk(gpa, "tsconfig.json")) {
+            const msg = ts_cli.tsconfigAlreadyDefinedDiagnostic(gpa, "tsconfig.json") catch std.process.exit(1);
+            defer gpa.free(msg);
+            std.debug.print("{s}\n", .{msg});
+            std.process.exit(1);
+        }
+        RealFs.write(gpa, "tsconfig.json", ts_cli.defaultTsconfigContents) catch |err| {
+            std.debug.print("error writing tsconfig.json: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        std.debug.print("{s}\n", .{ts_cli.initCreatedMessage});
+        return;
+    }
+
     const dec = ts_cli.dispatch(opts);
     if (dec.stdout_text.len > 0) {
         std.debug.print("{s}\n", .{dec.stdout_text});

@@ -330,6 +330,12 @@ pub const TsConfig = struct {
     /// next to the TS50xx consistency diagnostics. Empty when the
     /// config parsed cleanly.
     option_parse_diagnostics: []OptionParseDiagnostic = &.{},
+    /// True when the config file's JSON root was present but was not an
+    /// object (e.g. a top-level array, string, number, boolean, or
+    /// `null`). tsc's `convertConfigFileToObject` reports TS5092 and
+    /// recovers with an empty config (or, for a top-level array, the
+    /// first object element). `validate` re-emits the TS5092 here.
+    root_not_object: bool = false,
 
     /// Walk the resolved config and report cross-field consistency
     /// issues that the parser accepts but `tsc` would reject during
@@ -353,6 +359,20 @@ pub const TsConfig = struct {
         errdefer diags.deinit(gpa);
 
         const co = self.compiler_options;
+
+        // TS5092: a non-object JSON root. tsc reports this as the config
+        // file's error and recovers with an empty config, so it reads
+        // first, ahead of any option-level diagnostics.
+        if (self.root_not_object) {
+            const base = rootConfigBaseName(self.file_path);
+            const msg = try std.fmt.allocPrint(gpa, "The root value of a '{s}' file must be an object.", .{base});
+            try diags.append(gpa, .{
+                .code = 5092,
+                .message = msg,
+                .owns_message = true,
+                .field = "",
+            });
+        }
 
         // Surface value-type diagnostics the parser captured rather than
         // aborting on (TS5024 value-type mismatch, TS5064 paths
@@ -661,6 +681,15 @@ pub fn freeValidationDiagnostics(gpa: std.mem.Allocator, diags: []ValidationDiag
         if (d.owns_message) gpa.free(d.message);
     }
     gpa.free(diags);
+}
+
+/// The `{0}` argument for TS5092 — the config file's base name. tsc uses
+/// `"jsconfig.json"` when the file is a jsconfig and `"tsconfig.json"`
+/// otherwise (the default when the path is unknown).
+fn rootConfigBaseName(file_path: []const u8) []const u8 {
+    const base = std.fs.path.basename(file_path);
+    if (std.mem.eql(u8, base, "jsconfig.json")) return "jsconfig.json";
+    return "tsconfig.json";
 }
 
 /// All valid `compilerOptions` keys recognized by `tsc` (the
@@ -1463,7 +1492,20 @@ pub fn parseString(
     const doc = try jsonc.parse(gpa, arena, source);
     gpa.free(doc.diagnostics);
 
-    const root = doc.value.asObject() orelse return error.NotAnObject;
+    // TS5092: the root value parsed but is not an object. Mirror tsc's
+    // `convertConfigFileToObject` recovery — for a top-level array, adopt
+    // the first object element; otherwise fall back to an empty config —
+    // and flag the config so `validate` emits the diagnostic.
+    var root_not_object = false;
+    const root: jsonc.Value.Object = doc.value.asObject() orelse blk: {
+        root_not_object = true;
+        if (doc.value.asArray()) |elems| {
+            for (elems) |el| {
+                if (el.asObject()) |o| break :blk o;
+            }
+        }
+        break :blk jsonc.Value.Object{ .keys = &.{}, .values = &.{} };
+    };
 
     var cfg: TsConfig = .{
         .file_path = "",
@@ -1475,6 +1517,7 @@ pub fn parseString(
         .exclude = null,
         .references = &.{},
         .unknown_type_acquisition_options = &.{},
+        .root_not_object = root_not_object,
     };
 
     // extends: string or [string]
@@ -2347,6 +2390,79 @@ test "tsconfig.validate: outDir == rootDir reports TS5009-shaped diagnostic" {
     try t.expectEqual(@as(usize, 1), diags.len);
     try t.expectEqual(@as(u32, 5009), diags[0].code);
     try t.expectEqualStrings("outDir", diags[0].field);
+}
+
+test "tsconfig.validate: non-object root reports TS5092" {
+    // tsc's convertConfigFileToObject: a JSON root that is present but not
+    // an object literal → TS5092, recover with an empty config.
+    const cases = [_][]const u8{
+        \\[]
+        ,
+        \\"a string"
+        ,
+        \\42
+        ,
+        \\true
+        ,
+        \\null
+    };
+    for (cases) |src| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const cfg = try parseString(t.allocator, arena.allocator(), src);
+        try t.expect(cfg.root_not_object);
+        const diags = try cfg.validate(t.allocator);
+        defer freeValidationDiagnostics(t.allocator, diags);
+        try t.expectEqual(@as(usize, 1), diags.len);
+        try t.expectEqual(@as(u32, 5092), diags[0].code);
+        try t.expectEqualStrings(
+            "The root value of a 'tsconfig.json' file must be an object.",
+            diags[0].message,
+        );
+    }
+}
+
+test "tsconfig.validate: jsconfig.json non-object root names jsconfig in TS5092" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var cfg = try parseString(t.allocator, arena.allocator(),
+        \\[]
+    );
+    cfg.file_path = "/proj/jsconfig.json";
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(u32, 5092), diags[0].code);
+    try t.expectEqualStrings(
+        "The root value of a 'jsconfig.json' file must be an object.",
+        diags[0].message,
+    );
+}
+
+test "tsconfig.validate: top-level array recovers first object element (still TS5092)" {
+    // tsc recovers a config object from `[ {…} ]` (stray brackets) but
+    // still reports TS5092.
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\[ { "compilerOptions": { "strict": true } } ]
+    );
+    try t.expect(cfg.root_not_object);
+    try t.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5092));
+}
+
+test "tsconfig.validate: object root does not report TS5092" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strict": true } }
+    );
+    try t.expect(!cfg.root_not_object);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5092));
 }
 
 test "tsconfig.validate: composite without declaration reports TS6304-shaped diagnostic" {

@@ -329,6 +329,42 @@ pub fn compilerOptionExpectsArgumentDiagnostic(gpa: std.mem.Allocator, option: [
     );
 }
 
+/// TS5054: `--init` was asked to create a `tsconfig.json` but one already
+/// exists at `path`. Mirrors tsc's `WriteConfigFile` guard; `{0}` is the
+/// normalized absolute path of the existing file. Caller frees.
+pub fn tsconfigAlreadyDefinedDiagnostic(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const code: u32 = 5054;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: A 'tsconfig.json' file is already defined at: '{s}'.",
+        .{ code, path },
+    );
+}
+
+/// Default `tsconfig.json` body written by `home tsc --init` when no
+/// config exists. A compact, valid superset of tsc's `--init` defaults
+/// (the parity-relevant behavior is the TS5054 guard + the created path;
+/// the body is a sensible default Home and tsc both accept).
+pub const defaultTsconfigContents: []const u8 =
+    \\{
+    \\  "compilerOptions": {
+    \\    "target": "esnext",
+    \\    "module": "esnext",
+    \\    "moduleResolution": "bundler",
+    \\    "strict": true,
+    \\    "esModuleInterop": true,
+    \\    "skipLibCheck": true,
+    \\    "forceConsistentCasingInFileNames": true
+    \\  }
+    \\}
+    \\
+;
+
+/// Message printed after `--init` successfully writes a new config.
+/// Mirrors tsc's "Created a new tsconfig.json" header + learn-more line.
+pub const initCreatedMessage: []const u8 =
+    "Created a new tsconfig.json.\nYou can learn more at https://aka.ms/tsconfig";
+
 pub const RunResult = struct {
     code: ExitCode,
     /// One of `helpText`, `versionText`, or empty.
@@ -621,4 +657,22 @@ test "renderHelp: option names carry their short alias" {
     const help = try renderHelp(T.allocator, false);
     defer T.allocator.free(help);
     try T.expect(std.mem.indexOf(u8, help, "--watch, -w") != null);
+}
+
+test "tsconfigAlreadyDefinedDiagnostic: TS5054 message text" {
+    const msg = try tsconfigAlreadyDefinedDiagnostic(T.allocator, "/proj/tsconfig.json");
+    defer T.allocator.free(msg);
+    try T.expectEqualStrings(
+        "error TS5054: A 'tsconfig.json' file is already defined at: '/proj/tsconfig.json'.",
+        msg,
+    );
+}
+
+test "defaultTsconfigContents parses as a tsconfig object" {
+    // --init must write a config Home itself can load.
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), defaultTsconfigContents);
+    try T.expect(!cfg.root_not_object);
+    try T.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
 }
