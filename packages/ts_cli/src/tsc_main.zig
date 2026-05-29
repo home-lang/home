@@ -158,13 +158,43 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
     return .{ .nodes = nodes, .paths = paths.items };
 }
 
+/// A project is up to date when every expected output (`.js`, and `.d.ts`
+/// when declarations are emitted) exists and is at least as new as every
+/// input file. Mirrors the timestamp half of tsc's getUpToDateStatus.
+fn projectIsUpToDate(
+    gpa: std.mem.Allocator,
+    inputs: []const []const u8,
+    out_dir: ?[]const u8,
+    declaration_dir: ?[]const u8,
+    emit_dts: bool,
+) bool {
+    var newest_input: i128 = std.math.minInt(i128);
+    for (inputs) |in| {
+        const m = fileMtimeNanos(in) orelse return false; // can't stat → rebuild
+        if (m > newest_input) newest_input = m;
+    }
+    for (inputs) |in| {
+        const js = computeOutPath(gpa, in, out_dir, ".js") catch return false;
+        defer gpa.free(js);
+        const jm = fileMtimeNanos(js) orelse return false; // output missing → rebuild
+        if (jm < newest_input) return false;
+        if (emit_dts) {
+            const dts = computeOutPath(gpa, in, declaration_dir, ".d.ts") catch return false;
+            defer gpa.free(dts);
+            const dm = fileMtimeNanos(dts) orelse return false;
+            if (dm < newest_input) return false;
+        }
+    }
+    return true;
+}
+
 /// Build a single project (used by `tsc --build` for each project in
 /// dependency order): load its tsconfig, gather inputs, compile, and emit
 /// `.js` (+ `.d.ts` when declaration/composite is set). Paths are resolved
 /// against the project's own directory. Returns true if the project had
 /// compile errors. Reuses the same program/driver/emit APIs as the normal
 /// single-project flow.
-fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8, verbose: bool) bool {
+fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8, verbose: bool, force: bool) bool {
     const cfg_src = RealFs.read(arena, config_path) catch {
         std.debug.print("error reading {s}\n", .{config_path});
         return true;
@@ -175,7 +205,6 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     };
     cfg.file_path = config_path;
     const project_dir = std.fs.path.dirname(config_path) orelse ".";
-    if (verbose) std.debug.print("Building project '{s}'...\n", .{config_path});
 
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
     defer input_files.deinit(gpa);
@@ -191,12 +220,47 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
             input_files.append(gpa, p) catch return true;
         }
     } else {
-        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), effectiveExcludePatterns(cfg), &input_files, &owned) catch return true;
+        // Exclude the project's own output dir (so emitted .js/.d.ts aren't
+        // re-ingested as inputs on rebuild) and node_modules, in addition
+        // to any configured excludes — mirrors tsc's default excludes.
+        var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer excludes.deinit(gpa);
+        if (cfg.exclude) |ex| {
+            for (ex) |e| excludes.append(gpa, e) catch return true;
+        }
+        if (cfg.compiler_options.out_dir) |d| {
+            excludes.append(gpa, d) catch return true;
+            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return true) catch return true;
+        }
+        if (cfg.compiler_options.declaration_dir) |d| {
+            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return true) catch return true;
+        }
+        excludes.append(gpa, "**/node_modules/**") catch return true;
+        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return true;
     }
     if (input_files.items.len == 0) {
         if (verbose) std.debug.print("  (no input files)\n", .{});
         return false;
     }
+
+    // Output directories are resolved against the project's own dir.
+    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+    else
+        null;
+    const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
+    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+    else
+        out_dir;
+
+    // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
+    // input/output mtime comparison). Skipped under `--force`.
+    if (!force and projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts)) {
+        if (verbose) std.debug.print("Project '{s}' is up to date — skipping.\n", .{config_path});
+        return false;
+    }
+    if (verbose) std.debug.print("Building project '{s}'...\n", .{config_path});
 
     var resolver_fs = ResolverRealFs{};
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), .{});
@@ -226,17 +290,6 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     };
     program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch return true;
     if (compile_opts.no_emit) return had_errors;
-
-    // Output directories are resolved against the project's own dir.
-    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
-    else
-        null;
-    const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
-    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
-    else
-        out_dir;
 
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
@@ -270,6 +323,19 @@ fn pathInList(haystack: []const []const u8, needle: []const u8) bool {
         if (std.mem.eql(u8, p, needle)) return true;
     }
     return false;
+}
+
+/// Modification time of `path` in nanoseconds, or null if it can't be
+/// stat'd (missing/unreadable). Used by `tsc --build`'s up-to-date check.
+fn fileMtimeNanos(path: []const u8) ?i128 {
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    var file = cwd.openFile(io, path, .{}) catch return null;
+    defer file.close(io);
+    const st = file.stat(io) catch return null;
+    return @as(i128, st.mtime.nanoseconds);
 }
 
 /// Write `bytes` to `path`, or emit TS5033 and exit on failure. Mirrors
@@ -474,7 +540,7 @@ pub fn main(init: std.process.Init) !void {
         // up-to-date checks — we always build for now (no incremental skip).
         var build_had_errors = false;
         for (ord.order) |pi| {
-            if (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose)) {
+            if (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force)) {
                 build_had_errors = true;
             }
         }
