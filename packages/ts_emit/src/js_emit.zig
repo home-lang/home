@@ -961,10 +961,33 @@ pub const Printer = struct {
             .export_decl => try self.printExport(node),
             // Expression statement.
             else => {
+                // An expression statement whose leftmost token is `{`,
+                // `function`, or `class` must be parenthesized, else it
+                // parses as a block / declaration (`({a}=o);`, IIFE, etc.).
+                const needs_parens = self.exprStmtNeedsParens(node);
+                if (needs_parens) try self.write("(");
                 try self.printExpression(node);
+                if (needs_parens) try self.write(")");
                 try self.writeSemi();
             },
         }
+    }
+
+    /// True when an expression statement's leftmost emitted token would be
+    /// `{` / `function` / `class`, requiring it to be parenthesized.
+    /// Descends the left edge of left-associative forms; binops /
+    /// conditionals self-parenthesize so they aren't followed here.
+    fn exprStmtNeedsParens(self: *const Printer, node: NodeId) bool {
+        return switch (self.hir.kindOf(node)) {
+            // (`fn_decl`/`class_decl` appear here too: the parser emits them
+            // even in expression position.)
+            .object_literal, .fn_expr, .fn_decl, .class_expr, .class_decl => true,
+            .call_expr => self.exprStmtNeedsParens(hir_mod.callOf(self.hir, node).callee),
+            .member_access => self.exprStmtNeedsParens(hir_mod.memberOf(self.hir, node).object),
+            .element_access => self.exprStmtNeedsParens(hir_mod.elementOf(self.hir, node).object),
+            .assignment => self.exprStmtNeedsParens(hir_mod.assignmentOf(self.hir, node).target),
+            else => false,
+        };
     }
 
     fn indent(self: *Printer) !void {
@@ -1779,7 +1802,12 @@ pub const Printer = struct {
                 if (self.hir.kindOf(f.body) == .block_stmt) {
                     try self.printBlock(f.body);
                 } else {
+                    // An object-literal concise body must be parenthesized,
+                    // else `=> { … }` parses as a block, not a returned object.
+                    const needs_parens = self.hir.kindOf(f.body) == .object_literal;
+                    if (needs_parens) try self.write("(");
                     try self.printExpression(f.body);
+                    if (needs_parens) try self.write(")");
                 }
             }
             return;
@@ -9026,6 +9054,32 @@ test "emit: computed class method names emit as methods, not field assignments" 
     // Must NOT be a `= () {}` field assignment.
     try T.expect(std.mem.indexOf(u8, out, "Symbol.iterator = ") == null);
     try T.expect(std.mem.indexOf(u8, out, "field = 2;") != null);
+}
+
+test "emit: arrow with object-literal concise body is parenthesized" {
+    const out = try emit("const f = () => ({ k: 1 });");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "=> ({ k: 1 })") != null);
+    // Must not become a block body `=> { k: 1 }`.
+    try T.expect(std.mem.indexOf(u8, out, "=> { k: 1 }") == null);
+}
+
+test "emit: statement-leading object/function/destructuring is parenthesized" {
+    const out1 = try emit("({ a } = obj);");
+    defer T.allocator.free(out1);
+    try T.expect(std.mem.indexOf(u8, out1, "({ a } = obj)") != null);
+
+    const out2 = try emit("(function() { return 1; })();");
+    defer T.allocator.free(out2);
+    // The IIFE must stay parenthesized (a bare `function(){}()` is invalid).
+    try T.expect(std.mem.indexOf(u8, out2, "(function") != null);
+    try T.expect(std.mem.indexOf(u8, out2, "}())") != null or std.mem.indexOf(u8, out2, "})()") != null);
+
+    // A real function declaration is NOT extra-parenthesized.
+    const out3 = try emit("function real() { return 2; }");
+    defer T.allocator.free(out3);
+    try T.expect(std.mem.indexOf(u8, out3, "(function real") == null);
+    try T.expect(std.mem.indexOf(u8, out3, "function real(") != null);
 }
 
 test "emit: labeled statement keeps its label (break/continue target)" {
