@@ -5902,13 +5902,7 @@ pub const Printer = struct {
                         // fn_decl). Emit `[key](params){body}` /
                         // `key(params){body}`, not a `key = value` field.
                         if (op.is_static) try self.write("static ");
-                        const mf = hir_mod.fnDeclOf(self.hir, op.value);
-                        if (mf.flags.is_async and self.options.es_target.supportsNativeAsync()) try self.write("async ");
-                        if (mf.flags.is_getter) {
-                            try self.write("get ");
-                        } else if (mf.flags.is_setter) {
-                            try self.write("set ");
-                        }
+                        try self.writeMethodPrefix(op.value);
                         if (op.is_computed) {
                             try self.write("[");
                             try self.printExpression(op.key);
@@ -8113,19 +8107,28 @@ pub const Printer = struct {
                 // Object literal method shorthand: `{ foo() { … } }`.
                 // The HIR stores the property name on `op.key` and the
                 // method body on `op.value` (a `fn_expr` with
-                // `is_method = true`, `name = none`). At ES2015+ we
-                // emit the native shorthand `key(params) { body }`.
-                // At ES5 we lower to `key: function (params) { body }`,
-                // matching tsc's downlevel shape.
-                if (op.is_computed) {
-                    try self.write("[");
-                    try self.printExpression(op.key);
-                    try self.write("]");
-                } else {
-                    try self.printExpression(op.key);
-                }
+                // `is_method = true`, `name = none`). At ES2015+ we emit
+                // the native shorthand `[get|set|async|*] key(params)
+                // { body }`; at ES5 we lower to `key: function (…) {…}`.
                 if (self.options.es_target == .es5) {
+                    if (op.is_computed) {
+                        try self.write("[");
+                        try self.printExpression(op.key);
+                        try self.write("]");
+                    } else {
+                        try self.printExpression(op.key);
+                    }
                     try self.write(": function ");
+                } else {
+                    // Accessor / async / generator keywords precede the key.
+                    try self.writeMethodPrefix(op.value);
+                    if (op.is_computed) {
+                        try self.write("[");
+                        try self.printExpression(op.key);
+                        try self.write("]");
+                    } else {
+                        try self.printExpression(op.key);
+                    }
                 }
                 try self.printObjectMethodBody(op.value);
             } else {
@@ -8150,10 +8153,26 @@ pub const Printer = struct {
     /// the ES5 default-param shim. (Async object-method shorthand is
     /// a follow-up — the `async` prefix needs to land before the
     /// method name, which the caller has already emitted.)
+    /// Write a method's leading keywords before its name: `get `/`set ` for
+    /// accessors, else `async `/`*` (the generator star must precede the
+    /// name, so it's emitted here by the caller, not in the body).
+    fn writeMethodPrefix(self: *Printer, fn_node: NodeId) !void {
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.flags.is_getter) {
+            try self.write("get ");
+            return;
+        }
+        if (f.flags.is_setter) {
+            try self.write("set ");
+            return;
+        }
+        if (f.flags.is_async and self.options.es_target.supportsNativeAsync()) try self.write("async ");
+        if (f.flags.is_generator) try self.write("*");
+    }
+
     fn printObjectMethodBody(self: *Printer, fn_node: NodeId) anyerror!void {
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         const downlevel_async = f.flags.is_async and !self.options.es_target.supportsNativeAsync();
-        if (f.flags.is_generator) try self.write("*");
         try self.write("(");
         const params = hir_mod.fnParams(self.hir, fn_node);
         try self.printRuntimeParams(params);
@@ -8913,6 +8932,17 @@ test "emit: computed class method names emit as methods, not field assignments" 
     // Must NOT be a `= () {}` field assignment.
     try T.expect(std.mem.indexOf(u8, out, "Symbol.iterator = ") == null);
     try T.expect(std.mem.indexOf(u8, out, "field = 2;") != null);
+}
+
+test "emit: object-literal accessors/async/generator keep keywords + star placement" {
+    const out = try emit("const o = { get x() { return 1; }, set x(v) {}, async am() {}, *g() {} };");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "get x()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "set x(v)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "async am()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "*g()") != null);
+    // The generator star must precede the name, never `g*(`.
+    try T.expect(std.mem.indexOf(u8, out, "g*(") == null);
 }
 
 test "emit: multi-declarator for-init emits and does not error/truncate" {
