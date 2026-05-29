@@ -6831,7 +6831,7 @@ pub const Printer = struct {
     /// by `N.<name> = <name>;`. Keeping the local binding means internal
     /// references to the name still resolve without rewriting. tsc lowers
     /// `export const x = 1` inside `namespace N` this way (a property on N).
-    fn emitNamespaceExportedMember(self: *Printer, ns_name: NodeId, export_node: NodeId) !void {
+    fn emitNamespaceExportedMember(self: *Printer, ns_name: []const u8, export_node: NodeId) !void {
         const ex = hir_mod.exportOf(self.hir, export_node);
         if (ex.decl == hir_mod.none_node_id) {
             // `export { ... }` / re-export — no local decl to bind.
@@ -6850,7 +6850,7 @@ pub const Printer = struct {
         const nm = self.interner.get(hir_mod.identifierOf(self.hir, name_node).name);
         try self.write(self.options.newline);
         try self.indent();
-        try self.printExpression(ns_name);
+        try self.write(ns_name);
         try self.write(".");
         try self.write(nm);
         try self.write(" = ");
@@ -6870,30 +6870,106 @@ pub const Printer = struct {
 
     fn printNamespace(self: *Printer, node: NodeId) !void {
         const n = hir_mod.namespaceOf(self.hir, node);
+        const body = hir_mod.namespaceBody(self.hir, node);
+        // A qualified name (`namespace A.B.C`) desugars to nested IIFEs.
+        // The parser interns the dotted text as one identifier name.
+        const full = if (self.hir.kindOf(n.name) == .identifier)
+            self.interner.get(hir_mod.identifierOf(self.hir, n.name).name)
+        else
+            "";
+        var parts: [16][]const u8 = undefined;
+        var nparts: usize = 0;
+        if (full.len > 0 and std.mem.indexOfScalar(u8, full, '.') != null) {
+            var it = std.mem.splitScalar(u8, full, '.');
+            while (it.next()) |p| {
+                if (nparts < parts.len) {
+                    parts[nparts] = p;
+                    nparts += 1;
+                }
+            }
+        }
+        if (nparts > 1) {
+            try self.printNamespaceLevel(parts[0..nparts], 0, "", body);
+            try self.write(";");
+            return;
+        }
+        // Non-identifier name (e.g. `module "foo"`): emit via the node.
+        if (full.len == 0) {
+            try self.write("var ");
+            try self.printExpression(n.name);
+            try self.write(";");
+            try self.writeNewlineIndent();
+            try self.write("(function (");
+            try self.printExpression(n.name);
+            try self.write(") {");
+            self.depth += 1;
+            for (body) |s| {
+                try self.write(self.options.newline);
+                try self.printStatement(s);
+            }
+            self.depth -= 1;
+            try self.writeNewlineIndent();
+            try self.write("})(");
+            try self.printExpression(n.name);
+            try self.write(" || (");
+            try self.printExpression(n.name);
+            try self.write(" = {}));");
+            return;
+        }
+        // Single-segment identifier namespace.
+        const one = [_][]const u8{full};
+        try self.printNamespaceLevel(&one, 0, "", body);
+        try self.write(";");
+    }
+
+    /// Emit one level of a (possibly nested) namespace IIFE. `parts` is the
+    /// dotted name split into segments; `parent` is the enclosing segment's
+    /// name ("" at the outermost). The body is emitted at the innermost.
+    fn printNamespaceLevel(self: *Printer, parts: []const []const u8, idx: usize, parent: []const u8, body: []const NodeId) anyerror!void {
+        const name = parts[idx];
         try self.write("var ");
-        try self.printExpression(n.name);
+        try self.write(name);
         try self.write(";");
         try self.writeNewlineIndent();
         try self.write("(function (");
-        try self.printExpression(n.name);
+        try self.write(name);
         try self.write(") {");
-        const body = hir_mod.namespaceBody(self.hir, node);
         self.depth += 1;
-        for (body) |s| {
-            try self.write(self.options.newline);
-            if (self.hir.kindOf(s) == .export_decl) {
-                try self.emitNamespaceExportedMember(n.name, s);
-            } else {
-                try self.printStatement(s);
+        if (idx + 1 == parts.len) {
+            for (body) |s| {
+                try self.write(self.options.newline);
+                if (self.hir.kindOf(s) == .export_decl) {
+                    try self.emitNamespaceExportedMember(name, s);
+                } else {
+                    try self.printStatement(s);
+                }
             }
+        } else {
+            try self.write(self.options.newline);
+            try self.indent();
+            try self.printNamespaceLevel(parts, idx + 1, name, body);
         }
         self.depth -= 1;
         try self.writeNewlineIndent();
         try self.write("})(");
-        try self.printExpression(n.name);
-        try self.write(" || (");
-        try self.printExpression(n.name);
-        try self.write(" = {}));");
+        if (idx == 0) {
+            try self.write(name);
+            try self.write(" || (");
+            try self.write(name);
+            try self.write(" = {}))");
+        } else {
+            // `name = parent.name || (parent.name = {})`
+            try self.write(name);
+            try self.write(" = ");
+            try self.write(parent);
+            try self.write(".");
+            try self.write(name);
+            try self.write(" || (");
+            try self.write(parent);
+            try self.write(".");
+            try self.write(name);
+            try self.write(" = {}))");
+        }
     }
 
     fn printImport(self: *Printer, node: NodeId) !void {
@@ -8758,6 +8834,19 @@ test "emit: abstract methods are omitted (no invalid bodyless signature)" {
     // The abstract method must not appear as a bodyless `f();`.
     try T.expect(std.mem.indexOf(u8, out, "f()") == null);
     try T.expect(std.mem.indexOf(u8, out, "abstract") == null);
+}
+
+test "emit: qualified namespace A.B desugars to nested IIFEs (valid JS)" {
+    const out = try emit("namespace A.B { export const z = 1; }");
+    defer T.allocator.free(out);
+    // No invalid `var A.B`.
+    try T.expect(std.mem.indexOf(u8, out, "var A.B") == null);
+    // Outer A and inner B IIFEs, with B assigned onto A.B.
+    try T.expect(std.mem.indexOf(u8, out, "var A;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var B;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "B = A.B || (A.B = {})") != null);
+    try T.expect(std.mem.indexOf(u8, out, "B.z = z;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "(A || (A = {}))") != null);
 }
 
 test "emit: namespace exported members become N.x assignments (valid JS)" {
