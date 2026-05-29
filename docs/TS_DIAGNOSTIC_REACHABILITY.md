@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 963 |
-| reachable (parity targets) | 449 |
+| catalog-only total | 960 |
+| reachable (parity targets) | 446 |
 | dead in tsgo (leave catalog-only) | 514 |
 
 ## Reachable worklist by range
@@ -24,7 +24,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | --- | ---: |
 | 2xxx — checker / type engine | 168 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 136 |
-| 1xxx — parser / syntactic + program file-inclusion | 75 |
+| 1xxx — parser / syntactic + program file-inclusion | 72 |
 | 4xxx — declaration-emit (privacy / serialization) | 23 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -341,7 +341,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6928 `An_expanded_version_of_this_information_showing_all_possible_compiler_options_6928`
 - TS6929 `Compiles_the_current_project_with_additional_settings_6929`
 
-### 1xxx — parser / syntactic + program file-inclusion (75)
+### 1xxx — parser / syntactic + program file-inclusion (72)
 
 - TS1007 `The_parser_expected_to_find_a_1_to_match_the_0_token_here_1007`
 - TS1012 `Unexpected_token_1012`
@@ -382,9 +382,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1404 `File_is_included_via_type_library_reference_here_1404`
 - TS1405 `Library_referenced_via_0_from_file_1_1405`
 - TS1406 `File_is_included_via_library_reference_here_1406`
-- TS1407 `Matched_by_include_pattern_0_in_1_1407`
 - TS1408 `File_is_matched_by_include_pattern_specified_here_1408`
-- TS1409 `Part_of_files_list_in_tsconfig_json_1409`
 - TS1410 `File_is_matched_by_files_list_specified_here_1410`
 - TS1417 `Entry_point_of_type_library_0_specified_in_compilerOptions_1417`
 - TS1418 `Entry_point_of_type_library_0_specified_in_compilerOptions_with_packageId_1_1418`
@@ -401,7 +399,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1430 `The_file_is_in_the_program_because_Colon_1430`
 - TS1435 `Unknown_keyword_or_identifier_Did_you_mean_0_1435`
 - TS1440 `Variable_declaration_not_allowed_at_this_location_1440`
-- TS1457 `Matched_by_default_include_pattern_Asterisk_Asterisk_Slash_Asterisk_1457`
 - TS1458 `File_is_ECMAScript_module_because_0_has_field_type_with_value_module_1458`
 - TS1459 `File_is_CommonJS_module_because_0_has_field_type_whose_value_is_not_module_1459`
 - TS1460 `File_is_CommonJS_module_because_0_does_not_have_field_type_1460`

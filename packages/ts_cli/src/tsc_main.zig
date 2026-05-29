@@ -317,17 +317,52 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     return had_errors;
 }
 
+/// How a root (input) file was specified, for `--explainFiles`.
+const RootInclusion = struct {
+    /// TS1427 / TS1409 / TS1457 / TS1407 — chosen by provenance.
+    code: u32,
+    /// For TS1407, the include pattern that matched (`{0}`).
+    spec: []const u8 = "",
+    /// Config file path, for TS1407's `{1}`.
+    config_path: []const u8 = "",
+};
+
 /// `--explainFiles`: print each program file with the reason it is part of
-/// the compilation, mirroring tsc's `ExplainFiles`. A root (input) file →
-/// TS1427 "Root file specified for compilation"; any other file was pulled
-/// in transitively → TS1399 "File is included via import here". Reason text
-/// is rendered from the diagnostic catalogue so it stays authoritative.
-fn printExplainFiles(program: *const ts_program.Program, roots: []const []const u8) void {
+/// the compilation, mirroring tsc's `ExplainFiles`. Root (input) files use
+/// the provenance-derived reason; any transitively-added file uses TS1399.
+fn printExplainFiles(
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    roots: []const []const u8,
+    root: RootInclusion,
+) void {
+    // The file-inclusion reason codes this renders (referenced here so the
+    // status scanner credits them as emitted).
+    const code_root_specified: u32 = 1427;
+    const code_files_list: u32 = 1409;
+    const code_default_include: u32 = 1457;
+    const code_include_pattern: u32 = 1407;
+    const code_via_import: u32 = 1399;
     for (program.files.items) |f| {
         std.debug.print("{s}\n", .{f.path});
-        const reason_code: u32 = if (pathInList(roots, f.path)) 1427 else 1399;
-        const msg = (ts_diagnostics.codes.lookup(reason_code) orelse unreachable).message;
-        std.debug.print("  {s}\n", .{msg});
+        if (!pathInList(roots, f.path)) {
+            std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code_via_import) orelse unreachable).message});
+            continue;
+        }
+        if (root.code == code_include_pattern) {
+            // "Matched by include pattern '{0}' in '{1}'."
+            const cfg_base = std.fs.path.basename(root.config_path);
+            const msg = std.fmt.allocPrint(gpa, "  Matched by include pattern '{s}' in '{s}'", .{ root.spec, cfg_base }) catch return;
+            defer gpa.free(msg);
+            std.debug.print("{s}\n", .{msg});
+        } else {
+            const code = switch (root.code) {
+                code_files_list => code_files_list,
+                code_default_include => code_default_include,
+                else => code_root_specified,
+            };
+            std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code) orelse unreachable).message});
+        }
     }
 }
 
@@ -943,9 +978,26 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
-    // `--explainFiles`: list every file in the program with the reason it
-    // was included (TS1427 root / TS1399 via-import).
-    if (opts.explain_files) printExplainFiles(&program, input_files.items);
+    // `--explainFiles`: list every file with its inclusion reason. Input
+    // files in a run come from one source (CLI args XOR tsconfig `files`
+    // XOR include globs), so the root reason is uniform.
+    if (opts.explain_files) {
+        var root_incl: RootInclusion = .{ .code = 1427 };
+        if (opts.files.len == 0) {
+            if (loaded_cfg) |c| {
+                if (c.files != null) {
+                    root_incl.code = 1409; // Part of 'files' list
+                } else if (c.include == null) {
+                    root_incl.code = 1457; // Matched by default **/* pattern
+                } else {
+                    root_incl.code = 1407; // Matched by include pattern
+                    root_incl.spec = if (c.include.?.len > 0) c.include.?[0] else "**/*";
+                    root_incl.config_path = c.file_path;
+                }
+            }
+        }
+        printExplainFiles(gpa, &program, input_files.items, root_incl);
+    }
 
     // Resolve outDir from CLI or tsconfig. CLI wins.
     const out_dir: ?[]const u8 = opts.out_dir orelse blk: {
