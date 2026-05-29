@@ -18,7 +18,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 ## Multi-Agent Usage
 
-- Pick a narrow, non-overlapping row or small cluster before editing. `catalog-only`, `declared`, and `tested-only` rows are good discovery targets, but every change still needs upstream TypeScript source/baseline verification.
+- **STOP — do not implement a `catalog-only` code without first confirming it is REACHABLE.** Roughly half the `catalog-only` rows are **dead in the reference compiler** (typescript-go never emits them): obsolete wording, classic-tsc-only codes, or descriptions superseded by a newer code (e.g. TS6015 → TS6705, TS1236/1237 → TS1271). Emitting a dead code is **negative work** — it diverges from the reference and inflates the ledger without parity. The reachable parity targets (the ~472 codes tsgo actually references) and the dead set are listed in [TS_DIAGNOSTIC_REACHABILITY.md](./TS_DIAGNOSTIC_REACHABILITY.md). **Only pick work from the reachable worklist there.** Re-derive it any time with `node scripts/gen-ts-reachability.mjs` (a code is reachable iff tsgo references `diagnostics.<Name>` outside its generated message table).
+- Pick a narrow, non-overlapping row or small cluster from the **reachable** set before editing. Every change still needs upstream TypeScript source/baseline verification.
 - Claim active work in [TS_PARITY_PLAN.md](./TS_PARITY_PLAN.md) when a task will take more than a quick local patch, and keep write scopes disjoint across agents wherever possible.
 - Do not hand-edit status rows. After adding or moving diagnostics, run `node scripts/gen-ts-diagnostic-status.mjs` so references and counts are regenerated consistently.
 - A row becoming `emitted` only means Home has a production reference to that code. Faithful parity still requires focused unit coverage plus exact TypeScript fixture verification, with the command and pass count recorded in the parity plan.

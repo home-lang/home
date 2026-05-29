@@ -4,6 +4,11 @@
 
 Home is a modern programming language for systems, apps, and games that combines the speed of Zig, the safety of Rust, and the joy of TypeScript. The compiler is built with Zig and produces native x64 code, with features including pattern matching, generics, async/await, comptime evaluation, null safety operators, and error handling via Result types. Source files use `.home` or `.hm` extensions, and the project includes a lexer, parser, type system with inference, and a standard library with HTTP server and database modules.
 
+## TypeScript diagnostic parity
+
+- When emitting `TSxxxx` diagnostic codes for parity, **only implement codes in the REACHABLE set** — codes the reference compiler (typescript-go) actually emits. About half the `catalog-only` rows in `docs/TS_DIAGNOSTIC_CODE_STATUS.md` are **dead** (obsolete/superseded wording tsgo never produces, e.g. TS6015→TS6705); emitting those is anti-parity, not progress.
+- Pick work from `docs/TS_DIAGNOSTIC_REACHABILITY.md` (regenerate with `node scripts/gen-ts-reachability.mjs`). Do not chase dead codes to inflate the ledger.
+
 ## Linting
 
 - Use **pickier** for linting — never use eslint directly

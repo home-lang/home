@@ -5,6 +5,8 @@
 > Cross-references: [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`COMPILER_PIPELINE.md`](./COMPILER_PIPELINE.md), [`CAPABILITY_MATRIX.md`](./CAPABILITY_MATRIX.md), [`ROADMAP-WEB-COMPETITIVE.md`](./ROADMAP-WEB-COMPETITIVE.md), [`TS_DIAGNOSTIC_CODE_STATUS.md`](./TS_DIAGNOSTIC_CODE_STATUS.md) for the generated all-TSxxxx diagnostic-code ledger, Appendix E below for the game-scale TS-flavor validation track.
 >
 > **Source verification.** All claims about tsgo internals in this document have been verified against the tsgo source tree at `~/Code/typescript-go` (Go port of `tsc` from microsoft/typescript-go). Citations use the form `path/file.go:line` referencing that tree. See Appendix D for a full verification table.
+>
+> **⚠️ Diagnostic-code work: emit the REACHABLE set only.** Of the `catalog-only` codes in [`TS_DIAGNOSTIC_CODE_STATUS.md`](./TS_DIAGNOSTIC_CODE_STATUS.md), only ~472 are genuine parity targets (tsgo actually emits them); the other ~509 are **dead in the reference compiler** — obsolete wording / superseded codes (TS6015→TS6705, TS1236/1237→TS1271, …) that tsgo never produces. Implementing a dead code is anti-parity (it diverges from the reference and inflates the ledger). Pick diagnostic work exclusively from [`TS_DIAGNOSTIC_REACHABILITY.md`](./TS_DIAGNOSTIC_REACHABILITY.md) (regenerate via `node scripts/gen-ts-reachability.mjs`).
 
 ---
 
