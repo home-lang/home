@@ -1223,6 +1223,19 @@ pub const Interner = struct {
         return self.pool.literal_payloads.items[self.pool.payloadOf(id)];
     }
 
+    /// Bounds-checked variant for callers that receive arbitrary type ids
+    /// (e.g. assignment sources funneled into suggestion heuristics). A type
+    /// can carry the `is_literal` flag while its payload index points outside
+    /// `literal_payloads` (substituted/cached types whose flags and payload
+    /// column diverge); the unchecked `literalOf` would index out of bounds.
+    pub fn literalOfOrNull(self: *const Interner, id: TypeId) ?types.LiteralData {
+        if (id >= self.pool.typeCount()) return null;
+        if (!self.pool.flagsOf(id).is_literal) return null;
+        const idx: usize = self.pool.payloadOf(id);
+        if (idx >= self.pool.literal_payloads.items.len) return null;
+        return self.pool.literal_payloads.items[idx];
+    }
+
     pub fn conditionalPayload(self: *const Interner, id: TypeId) types.ConditionalPayload {
         std.debug.assert(self.pool.flagsOf(id).is_conditional);
         return self.pool.conditional_payloads.items[self.pool.payloadOf(id)];
