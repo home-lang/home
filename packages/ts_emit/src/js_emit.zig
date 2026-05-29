@@ -71,6 +71,10 @@ pub const EsTarget = enum {
 
     /// Numeric separators (`1_000_000`) are an ES2021 feature. Below
     /// that we strip the underscores from the literal text on emit.
+    pub fn supportsLogicalAssignment(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2021);
+    }
+
     pub fn supportsNumericSeparators(self: EsTarget) bool {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2021);
     }
@@ -7865,6 +7869,30 @@ pub const Printer = struct {
 
     fn printAssignment(self: *Printer, node: NodeId) !void {
         const p = hir_mod.assignmentOf(self.hir, node);
+        // Logical assignment (`a ||= b`) below ES2021 downlevels to the
+        // short-circuit form `(a || (a = b))` (re-evaluating the target,
+        // matching the printer's other downlevels). At ES2021+ it's native.
+        if (p.op) |op| {
+            const logical_str: ?[]const u8 = switch (op) {
+                .logical_or => " || ",
+                .logical_and => " && ",
+                .nullish_coalesce => " ?? ",
+                else => null,
+            };
+            if (logical_str) |ls| {
+                if (!self.options.es_target.supportsLogicalAssignment()) {
+                    try self.write("(");
+                    try self.printExpression(p.target);
+                    try self.write(ls);
+                    try self.write("(");
+                    try self.printExpression(p.target);
+                    try self.write(" = ");
+                    try self.printExpression(p.value);
+                    try self.write("))");
+                    return;
+                }
+            }
+        }
         try self.printExpression(p.target);
         try self.write(if (p.op != null) compoundOpString(p.op.?) else " = ");
         try self.printExpression(p.value);
@@ -8272,6 +8300,11 @@ fn binOpString(op: hir_mod.BinOp) []const u8 {
         .instanceof => "instanceof",
         .in => "in",
         .comma => ",",
+        // Logical-assignment ops only appear as assignment operators, never
+        // as a binary_op; included for switch exhaustiveness.
+        .logical_or => "||",
+        .logical_and => "&&",
+        .nullish_coalesce => "??",
     };
 }
 
@@ -8317,6 +8350,9 @@ fn compoundOpString(op: hir_mod.BinOp) []const u8 {
         .shl => " <<= ",
         .shr => " >>= ",
         .shr_unsigned => " >>>= ",
+        .logical_or => " ||= ",
+        .logical_and => " &&= ",
+        .nullish_coalesce => " ??= ",
         else => " = ",
     };
 }
@@ -8932,6 +8968,23 @@ test "emit: computed class method names emit as methods, not field assignments" 
     // Must NOT be a `= () {}` field assignment.
     try T.expect(std.mem.indexOf(u8, out, "Symbol.iterator = ") == null);
     try T.expect(std.mem.indexOf(u8, out, "field = 2;") != null);
+}
+
+test "emit: logical assignment is native at es2021+" {
+    const out = try emitWithOpts("a ||= b; a &&= c; a ??= d;", .{ .es_target = .es2021 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "a ||= b") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a &&= c") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a ??= d") != null);
+}
+
+test "emit: logical assignment downlevels to short-circuit below es2021" {
+    const out = try emitWithOpts("a ||= b; a ??= d;", .{ .es_target = .es2019 });
+    defer T.allocator.free(out);
+    // a ||= b  ->  (a || (a = b))  — NOT the always-assigning `a = (a || b)`.
+    try T.expect(std.mem.indexOf(u8, out, "(a || (a = b))") != null);
+    try T.expect(std.mem.indexOf(u8, out, "(a ?? (a = d))") != null);
+    try T.expect(std.mem.indexOf(u8, out, "||=") == null);
 }
 
 test "emit: object-literal accessors/async/generator keep keywords + star placement" {

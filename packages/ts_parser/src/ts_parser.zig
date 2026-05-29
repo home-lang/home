@@ -13289,11 +13289,18 @@ pub const Parser = struct {
         try self.reportInvalidStrictIdentifierNode(left);
         try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
-        const left_dup = try self.cloneLogicalAssignmentTarget(left);
         const left_span = self.hir.spanOf(left);
         const op_span: Span = .{ .start = left_span.start, .end = self.hir.spanOf(right).end };
-        const logical = try self.builder.addLogicalOp(op_span, op, left_dup, right);
-        return try self.builder.addAssignment(op_span, left, logical, null);
+        // Preserve the logical-assignment natively (`a ||= b`) rather than
+        // desugaring to `a = a || b` (which is the wrong semantics — `||=`
+        // short-circuits — and non-native). The emitter renders `||=`/`&&=`/
+        // `??=` at ES2021+, or the short-circuit form below.
+        const assign_op: hir_mod.BinOp = switch (op) {
+            .@"or" => .logical_or,
+            .@"and" => .logical_and,
+            .nullish => .nullish_coalesce,
+        };
+        return try self.builder.addAssignment(op_span, left, right, assign_op);
     }
 
     fn cloneLogicalAssignmentTarget(self: *Parser, node: NodeId) ParseError!NodeId {

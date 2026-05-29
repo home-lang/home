@@ -283,6 +283,12 @@ pub const BinOp = enum(u8) {
     instanceof,
     in,
     comma,
+    // Logical-assignment operators (`||=`, `&&=`, `??=`). Only valid as an
+    // `AssignmentPayload.op` (the non-assigning `||`/`&&`/`??` use
+    // `LogicalOp`, a separate enum). ES2021.
+    logical_or,
+    logical_and,
+    nullish_coalesce,
 };
 
 pub const UnaryOp = enum(u8) {
