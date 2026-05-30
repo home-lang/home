@@ -203,6 +203,25 @@ pub const Resolver = struct {
         self.arena.deinit();
     }
 
+    /// Best-effort rendering of the probe extension set for the
+    /// "target file types: {1}" trace slot. Honestly reports the
+    /// extensions Home actually probes (rendered into the trace sink's
+    /// arena). Only called when a sink is attached.
+    fn targetFileTypesText(self: *Resolver) []const u8 {
+        const sink = self.trace orelse return "";
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const a = sink.arena.allocator();
+        buf.append(a, '[') catch return "[]";
+        for (self.config.extensions, 0..) |ext, i| {
+            if (i != 0) buf.appendSlice(a, ", ") catch return "[]";
+            buf.append(a, '\'') catch return "[]";
+            buf.appendSlice(a, ext) catch return "[]";
+            buf.append(a, '\'') catch return "[]";
+        }
+        buf.append(a, ']') catch return "[]";
+        return buf.items;
+    }
+
     /// Append a `--traceResolution` line (no-op when no sink is attached).
     fn traceMsg(self: *Resolver, code: u32, comptime fmt: []const u8, args: anytype) void {
         const sink = self.trace orelse return;
@@ -642,6 +661,7 @@ pub const Resolver = struct {
             if (obj.get(key)) |v| {
                 if (v == .string) {
                     const target = try self.joinPath(dir, v.string);
+                    self.traceMsg(6101, "'package.json' has '{s}' field '{s}' that references '{s}'.", .{ key, v.string, target });
                     if (try self.tryFileWithExtensions(target)) |r| {
                         // In alternate (declaration-only) mode, a JS
                         // `main`/`module` target that resolves to a
@@ -681,8 +701,12 @@ pub const Resolver = struct {
     }
 
     fn tryPathsMapping(self: *Resolver, specifier: []const u8) ResolveError!?Resolution {
+        if (self.trace != null and self.config.paths.len > 0) {
+            self.traceMsg(6091, "'paths' option is specified, looking for a pattern to match module name '{s}'.", .{specifier});
+        }
         for (self.config.paths) |entry| {
             if (matchPattern(entry.pattern, specifier)) |substitution| {
+                self.traceMsg(6092, "Module name '{s}', matched pattern '{s}'.", .{ specifier, entry.pattern });
                 for (entry.targets) |target| {
                     const expanded = try expandTarget(self.ar(), target, substitution);
                     const root = self.config.base_url;
@@ -690,6 +714,7 @@ pub const Resolver = struct {
                         expanded
                     else
                         try self.joinPath(root, expanded);
+                    self.traceMsg(6093, "Trying substitution '{s}', candidate module location: '{s}'.", .{ target, expanded });
                     if (try self.tryFileWithExtensions(full)) |r| {
                         return .{
                             .path = r.path,
@@ -714,6 +739,14 @@ pub const Resolver = struct {
         // Walk up the directory tree looking for node_modules/<spec>.
         const split = packageNameSplit(specifier);
         var dir = dirname(containing_file);
+        if (self.trace != null) {
+            self.traceMsg(6098, "Loading module '{s}' from 'node_modules' folder, target file types: {s}.", .{ specifier, self.targetFileTypesText() });
+            self.traceMsg(6125, "Looking up in 'node_modules' folder, initial location '{s}'.", .{dir});
+            // `@scope/pkg` — tsc notes the scoped lookup directory.
+            if (specifier.len > 0 and specifier[0] == '@') {
+                self.traceMsg(6182, "Scoped package detected, looking in '{s}'", .{split.name});
+            }
+        }
         while (true) {
             const nm = try self.joinPath(dir, "node_modules");
             if (self.fs.directoryExists(nm)) {
@@ -1420,6 +1453,66 @@ test "Resolver: --traceResolution emits TS6086/6089/6096/6097 banners and file p
     try T.expect(saw_6086);
     try T.expect(saw_6089);
     try T.expect(saw_6097);
+}
+
+test "Resolver: node_modules + package.json resolution traces TS6098/6125/6099/6101" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/node_modules/dep/package.json", "{\"main\":\"./lib.js\"}");
+    try vfs.addFile("/proj/node_modules/dep/lib.js", "module.exports = {};");
+    try vfs.addFile("/proj/src/app.ts", "import 'dep';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    _ = r.resolve("dep", "/proj/src/app.ts") catch {};
+    var saw_6098 = false;
+    var saw_6125 = false;
+    var saw_6101 = false;
+    for (sink.entries.items) |e| {
+        switch (e.code) {
+            6098 => saw_6098 = true,
+            6125 => saw_6125 = true,
+            6101 => saw_6101 = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_6098);
+    try T.expect(saw_6125);
+    try T.expect(saw_6101);
+}
+
+test "Resolver: paths mapping traces TS6091/6092/6093" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/foo.ts", "export const x = 1;");
+    try vfs.addFile("/proj/src/bar.ts", "import '@app/foo';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    const paths = [_]Config.PathEntry{.{ .pattern = "@app/*", .targets = &.{"./src/*"} }};
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .base_url = "/proj", .paths = &paths });
+    defer r.deinit();
+    r.trace = &sink;
+
+    _ = r.resolve("@app/foo", "/proj/src/bar.ts") catch {};
+    var saw_6091 = false;
+    var saw_6092 = false;
+    var saw_6093 = false;
+    for (sink.entries.items) |e| {
+        switch (e.code) {
+            6091 => saw_6091 = true,
+            6092 => saw_6092 = true,
+            6093 => saw_6093 = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_6091);
+    try T.expect(saw_6092);
+    try T.expect(saw_6093);
 }
 
 test "Resolver: not-found resolution traces TS6090" {
