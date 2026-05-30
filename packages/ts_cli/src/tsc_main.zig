@@ -791,7 +791,8 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("error writing tsconfig.json: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
-        std.debug.print("{s}\n", .{ts_cli.initCreatedMessage});
+        // TS6071 — tsc's `--init` success message (CategoryMessage).
+        buildStatusMessage(6071, "Successfully created a tsconfig.json file.\n", .{});
         return;
     }
 
