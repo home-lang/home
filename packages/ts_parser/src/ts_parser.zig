@@ -7093,13 +7093,17 @@ pub const Parser = struct {
                 continue;
             }
             _ = try self.expect(.colon, "':' in import attribute");
-            // value: string literal per spec; accept identifier too for
-            // forward-compatibility — discarded either way.
-            const val_kind = self.peek().kind;
-            if (val_kind == .string_literal or val_kind == .identifier) {
-                _ = self.advance();
-            } else {
-                return error.UnexpectedToken;
+            // value: must be a string-literal expression per spec. tsc
+            // parses any assignment expression for the value and reports
+            // TS2858 in the checker when it isn't a plain string literal
+            // (`import * as x from "m" with { field: 0 }`). Home discards
+            // the attribute payload, so the parser is the faithful
+            // emission point. Anchored at the value-expression start,
+            // matching `importAssertionNonstring`/`importAttributes6`.
+            const val_tok = self.peek();
+            const val_node = try self.parseAssignmentExpression();
+            if (self.hir.kindOf(val_node) != .literal_string) {
+                try self.reportCodeAt(val_tok.span.start, val_tok.line, 2858, "Import attribute values must be string literal expressions.");
             }
             if (!self.match(.comma)) break;
         }
@@ -19671,6 +19675,31 @@ test "parser: malformed import attribute key reports TS1478" {
     _ = try s.parser.parseSourceFile();
     const d = findFirstDiagnosticOfCode(&s.parser, 1478) orelse return error.TestExpectedEqual;
     try T.expectEqualStrings("Identifier or string literal expected.", d.message);
+}
+
+test "parser: non-string import attribute value reports TS2858" {
+    var s = try newTestSetup("import x from \"./m\" with { field: 0 };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 2858) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("Import attribute values must be string literal expressions.", d.message);
+}
+
+test "parser: identifier import attribute value reports TS2858" {
+    var s = try newTestSetup("import x from \"./m\" with { type: json };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 2858) != null);
+}
+
+test "parser: string import attribute value stays clean (no TS2858)" {
+    var s = try newTestSetup("import x from \"./m\" with { type: \"json\" };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 2858) == null);
 }
 
 test "parser: property type annotation cannot start call TS1441" {
