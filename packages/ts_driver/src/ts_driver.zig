@@ -116,6 +116,23 @@ fn dupeCheckerChain(
 /// ownership of `js` (the emitted JavaScript) and `diagnostics`. The
 /// supporting structures (HIR, interner, scope graph) stay live so
 /// the LSP can walk them; call `Compilation.deinit` to release them.
+/// A triple-slash reference directive (`/// <reference path=… />`,
+/// `… types=… />`, `… lib=… />`) extracted from a source file. Drives
+/// program file inclusion (path references join the program) and the
+/// `--explainFiles` reason (TS1400). Mirrors tsgo's `ast.FileReference`
+/// triple split into `ReferencedFiles` / `TypeReferenceDirectives` /
+/// `LibReferenceDirectives`.
+pub const ReferenceDirective = struct {
+    pub const Kind = enum { path, types, lib };
+    kind: Kind,
+    /// Target as written in the directive (e.g. `./foo.ts`, `node`,
+    /// `es2015`). Owned by the Compilation.
+    name: []const u8,
+    /// Byte offset of the target text within the source, for
+    /// related-info anchoring (TS1401).
+    pos: u32,
+};
+
 pub const Compilation = struct {
     gpa: std.mem.Allocator,
     /// Original source (caller-owned slice; we keep a pointer for
@@ -139,6 +156,9 @@ pub const Compilation = struct {
     js: []u8,
     /// All diagnostics from every phase, in source order.
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
+    /// Triple-slash reference directives in this file, in source order.
+    /// Populated during `compileSource`.
+    references: std.ArrayListUnmanaged(ReferenceDirective),
     /// True if any phase produced an error-level diagnostic.
     has_errors: bool,
 
@@ -149,6 +169,8 @@ pub const Compilation = struct {
             freeDiagnosticChain(self.gpa, d.chain);
         }
         self.diagnostics.deinit(self.gpa);
+        for (self.references.items) |r| self.gpa.free(r.name);
+        self.references.deinit(self.gpa);
         self.module.deinit();
         self.gpa.destroy(self.module);
         self.type_engine.deinit();
@@ -461,6 +483,62 @@ fn reportJsxFactoryOptionDiagnostics(
     if (compilerOptionDirectiveValue(source, "jsxFragmentFactory")) |value| {
         if (!tsconfig_mod.isValidIsolatedEntityName(value)) {
             try appendInvalidJsxFactoryValueDiagnostic(gpa, c, "jsxFragmentFactory", value);
+        }
+    }
+}
+
+/// Extract every triple-slash reference directive (`path` / `types` /
+/// `lib`) into `c.references`, in source order, recording each target's
+/// byte offset. Mirrors tsgo's reference-comment scan in the parser;
+/// kept as a lightweight line scan here so it shares the same shape as
+/// the existing reference-diagnostic walks. Path references later drive
+/// program file inclusion + the TS1400 `--explainFiles` reason.
+fn extractReferenceDirectives(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+) CompileError!void {
+    if (std.mem.indexOf(u8, source, "<reference") == null) return;
+    const attrs = [_]struct { name: []const u8, kind: ReferenceDirective.Kind }{
+        .{ .name = "path", .kind = .path },
+        .{ .name = "types", .kind = .types },
+        .{ .name = "lib", .kind = .lib },
+    };
+    var offset: usize = 0;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line_without_cr = std.mem.trim(u8, raw_line, "\r");
+        defer offset += raw_line.len + 1;
+        var leading: usize = 0;
+        while (leading < line_without_cr.len and
+            (line_without_cr[leading] == ' ' or line_without_cr[leading] == '\t')) : (leading += 1)
+        {}
+        const line = line_without_cr[leading..];
+        if (!std.mem.startsWith(u8, line, "///")) continue;
+        const ref_rel = std.mem.indexOf(u8, line, "<reference") orelse continue;
+        // A directive carries exactly one of path/types/lib; take the
+        // first attribute that parses to a quoted value.
+        for (attrs) |attr| {
+            const attr_rel = std.mem.indexOf(u8, line[ref_rel..], attr.name) orelse continue;
+            var idx = ref_rel + attr_rel + attr.name.len;
+            while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+            if (idx >= line.len or line[idx] != '=') continue;
+            idx += 1;
+            while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+            if (idx >= line.len or (line[idx] != '\'' and line[idx] != '"')) continue;
+            const quote = line[idx];
+            idx += 1;
+            const val_start = idx;
+            while (idx < line.len and line[idx] != quote) : (idx += 1) {}
+            if (idx >= line.len) continue;
+            const value = line[val_start..idx];
+            if (value.len == 0) continue;
+            try c.references.append(gpa, .{
+                .kind = attr.kind,
+                .name = try gpa.dupe(u8, value),
+                .pos = @intCast(offset + leading + val_start),
+            });
+            break;
         }
     }
 }
@@ -1066,6 +1144,7 @@ pub fn compileSource(
         .type_engine = undefined,
         .js = &.{},
         .diagnostics = .empty,
+        .references = .empty,
         .has_errors = false,
     };
 
@@ -1093,6 +1172,7 @@ pub fn compileSource(
     try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
     try reportSelfReferencePathDiagnostics(gpa, c, source, options);
     try reportMissingReferencePathDiagnostics(gpa, c, source);
+    try extractReferenceDirectives(gpa, c, source);
 
     const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
     const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);

@@ -347,29 +347,47 @@ fn printExplainFiles(
     // tsgo's `fileIncludeKindImport` branch of `computeReferenceFileDiagnostic`.
     const code_imported_via: u32 = 1393;
     _ = code_imported_via;
+    // TS1400 `Referenced via '{0}' from file '{1}'` — a file pulled in by
+    // a `/// <reference path="…" />` directive.
+    const code_referenced_via: u32 = 1400;
+    _ = code_referenced_via;
     for (program.files.items) |f| {
         std.debug.print("{s}\n", .{f.path});
         if (!pathInList(roots, f.path)) {
-            // A non-root file is here because something imported it.
-            // Render TS1393 with the as-written specifier and the
-            // importing file. (tsgo prints one line per include reason;
-            // Home records the first importer.)
+            // A non-root file is here because something pulled it in —
+            // an import (TS1393) or a `/// <reference path>` directive
+            // (TS1400). tsgo prints one line per include reason; Home
+            // records the first puller.
             if (f.include_reason) |ir| {
-                if (ir.kind == .import) {
-                    const importer_path = program.files.items[ir.importer].path;
-                    const msg = std.fmt.allocPrint(
-                        gpa,
-                        "  Imported via {s} from file '{s}'",
-                        .{ ir.specifier_text, importer_path },
-                    ) catch return;
-                    defer gpa.free(msg);
-                    std.debug.print("{s}\n", .{msg});
-                    continue;
+                switch (ir.kind) {
+                    .import => {
+                        const importer_path = program.files.items[ir.importer].path;
+                        const msg = std.fmt.allocPrint(
+                            gpa,
+                            "  Imported via {s} from file '{s}'",
+                            .{ ir.specifier_text, importer_path },
+                        ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        continue;
+                    },
+                    .reference_file => {
+                        const referencing_path = program.files.items[ir.importer].path;
+                        const msg = std.fmt.allocPrint(
+                            gpa,
+                            "  Referenced via '{s}' from file '{s}'",
+                            .{ ir.specifier_text, referencing_path },
+                        ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        continue;
+                    },
+                    .root => {},
                 }
             }
-            // No recorded import edge (partial program / resolution
-            // gap): fall back to the generic root-specified reason
-            // rather than fabricating an importer.
+            // No recorded edge (partial program / resolution gap): fall
+            // back to the generic root-specified reason rather than
+            // fabricating a puller.
             std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
             continue;
         }

@@ -31,15 +31,18 @@ pub const FileId = u32;
 /// by the CLI layer (which knows how the path was specified); the
 /// program records the *import* reason here while building the edge
 /// graph, so `--explainFiles` can render TS1393.
-pub const IncludeKind = enum { root, import };
+pub const IncludeKind = enum { root, import, reference_file };
 
 pub const IncludeReason = struct {
     kind: IncludeKind = .root,
-    /// For `.import`: the file id that imported this one.
+    /// For `.import` / `.reference_file`: the file id that pulled this
+    /// one in (the importer, or the file containing the `/// <reference
+    /// path>` directive).
     importer: FileId = 0,
-    /// For `.import`: the module specifier as written, quoted to match
-    /// tsgo's `referenceLocation.text()` (the source slice). Owned by
-    /// the program.
+    /// The reference text as written: for `.import` the module specifier
+    /// quoted to match tsgo's `referenceLocation.text()`; for
+    /// `.reference_file` the bare reference path (TS1400 renders it
+    /// single-quoted itself). Owned by the program.
     specifier_text: []const u8 = "",
 };
 
@@ -805,11 +808,53 @@ pub const Program = struct {
                     };
                     new_in_round += 1;
                 }
+                // Triple-slash `/// <reference path="X" />` directives
+                // pull X into the program as a referenced file (tsgo's
+                // `fileIncludeKindReferenceFile`). Reference paths are
+                // literal file paths relative to the containing file —
+                // NOT module specifiers — so resolve by path-join, not
+                // through the module resolver. `types`/`lib` references
+                // need @types / bundled-lib resolution Home does not
+                // have, so they are intentionally not followed.
+                for (c.references.items) |ref| {
+                    if (ref.kind != .path) continue;
+                    const candidate = self.joinReferencePath(f.path, ref.name) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                    };
+                    defer self.gpa.free(candidate);
+                    if (self.by_path.get(candidate) != null) continue;
+                    const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
+                    defer self.gpa.free(rsrc);
+                    const new_id = self.add(candidate, rsrc) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => continue,
+                    };
+                    const target = self.files.items[new_id];
+                    if (target.include_reason == null) {
+                        target.include_reason = .{
+                            .kind = .reference_file,
+                            .importer = f.id,
+                            .specifier_text = try self.gpa.dupe(u8, ref.name),
+                        };
+                    }
+                    new_in_round += 1;
+                }
             }
             added += new_in_round;
             if (new_in_round == 0) break;
         }
         return added;
+    }
+
+    /// Resolve a triple-slash reference path (a literal file path) to a
+    /// program-canonical path relative to the file that contains the
+    /// directive. Normalizes `.`/`..` via `resolvePosix`; absolute paths
+    /// pass through. Caller owns the returned slice.
+    fn joinReferencePath(self: *Program, containing_file: []const u8, ref: []const u8) error{OutOfMemory}![]u8 {
+        if (std.fs.path.dirname(containing_file)) |dir| {
+            return std.fs.path.resolvePosix(self.gpa, &.{ dir, ref });
+        }
+        return std.fs.path.resolvePosix(self.gpa, &.{ref});
     }
 
     /// Re-compile only the subset of files whose paths appear in
@@ -1397,6 +1442,30 @@ test "Program: imported file records TS1393 include reason (specifier + importer
     // The root importer itself has no recorded import reason — its
     // provenance is supplied by the CLI layer.
     try T.expect(p.fileById(a_id).include_reason == null);
+}
+
+test "Program: loadImportClosure follows /// <reference path> (TS1400 reason)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "/// <reference path=\"./dep.ts\" />\nlet x = 1;\n");
+    try vfs.addFile("/proj/dep.ts", "declare const dep: number;\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const main_id = try p.add("/proj/main.ts", "/// <reference path=\"./dep.ts\" />\nlet x = 1;\n");
+
+    // Only main.ts is a root; the closure must discover dep.ts via the
+    // reference directive and add it.
+    const added = try p.loadImportClosure(.{});
+    try T.expectEqual(@as(usize, 1), added);
+
+    const dep_id = p.lookupPath("/proj/dep.ts") orelse return error.TestUnexpectedResult;
+    const dep = p.fileById(dep_id);
+    try T.expect(dep.include_reason != null);
+    try T.expectEqual(IncludeKind.reference_file, dep.include_reason.?.kind);
+    try T.expectEqual(main_id, dep.include_reason.?.importer);
+    try T.expectEqualStrings("./dep.ts", dep.include_reason.?.specifier_text);
 }
 
 test "Program: tsx flag inherits from .tsx file extension" {
