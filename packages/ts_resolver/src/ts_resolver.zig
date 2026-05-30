@@ -454,6 +454,7 @@ pub const Resolver = struct {
         }
         if (try self.tryNodeModules(specifier, containing_file)) |alt| {
             if (alt.is_declaration) {
+                self.traceMsg(6278, "There are types at '{s}', but this result could not be resolved when respecting package.json \"exports\". The '{s}' library may need to update its package.json or typings.", .{ alt.path, packageNameSplit(specifier).name });
                 return .{
                     .path = r.path,
                     .source = r.source,
