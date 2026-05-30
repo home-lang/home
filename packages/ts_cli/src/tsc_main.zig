@@ -1052,6 +1052,8 @@ pub fn main(init: std.process.Init) !void {
     var stream_error_count: usize = 0;
     var stream_files_with_errors: usize = 0;
     var stream_first_error_file: []const u8 = "";
+    var stream_first_error_line: usize = 0;
+    var stream_first_error_col: usize = 0;
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
@@ -1061,6 +1063,8 @@ pub fn main(init: std.process.Init) !void {
         .error_count = &stream_error_count,
         .files_with_errors = &stream_files_with_errors,
         .first_error_file = &stream_first_error_file,
+        .first_error_line = &stream_first_error_line,
+        .first_error_col = &stream_first_error_col,
     };
     program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
@@ -1079,6 +1083,8 @@ pub fn main(init: std.process.Init) !void {
     } else if (stream_error_count > 1) {
         if (stream_files_with_errors > 1) {
             buildStatusMessage(6261, "Found {d} errors in {d} files.\n", .{ stream_error_count, stream_files_with_errors });
+        } else if (stream_files_with_errors == 1 and stream_first_error_file.len != 0) {
+            buildStatusMessage(6260, "Found {d} errors in the same file, starting at: {s}:{d}\n", .{ stream_error_count, stream_first_error_file, stream_first_error_line });
         } else {
             buildStatusMessage(6217, "Found {d} errors.\n", .{stream_error_count});
         }
@@ -1433,6 +1439,9 @@ const StreamCtx = struct {
     /// {1} files.").
     files_with_errors: ?*usize = null,
     first_error_file: ?*[]const u8 = null,
+    /// Line/col of the first error, for TS6260's "starting at:" anchor.
+    first_error_line: ?*usize = null,
+    first_error_col: ?*usize = null,
 };
 
 /// Invoked once per compiled file, in compilation order. Renders
@@ -1483,7 +1492,11 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
                 file_had_error = true;
                 if (ctx.files_with_errors) |fc| fc.* += 1;
                 if (ctx.first_error_file) |fe| {
-                    if (fe.*.len == 0) fe.* = f.path;
+                    if (fe.*.len == 0) {
+                        fe.* = f.path;
+                        if (ctx.first_error_line) |fl| fl.* = pos.line;
+                        if (ctx.first_error_col) |fcol| fcol.* = pos.col;
+                    }
                 }
             }
         }
