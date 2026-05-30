@@ -8277,6 +8277,17 @@ pub const Parser = struct {
             return try self.builder.addBlock(.{ .start = open.span.start, .end = end_pos }, stmts.items);
         }
         const close = try self.expect(.close_brace, "'}' to close block");
+        // tsc: a `{...}` parsed as a statement block immediately
+        // followed by `=` is almost certainly a destructuring
+        // assignment missing its wrapping parentheses (`{a} = b` should
+        // be `({a} = b)`). `parseBlock` emits TS2809 at the `=` and
+        // consumes it. Mirrors upstream `parseBlock`'s trailing-equals
+        // recovery (fixture `parserDestructuringAssignment*`).
+        if (self.peek().kind == .equal) {
+            const eq = self.peek();
+            try self.reportCodeAt(eq.span.start, eq.line, 2809, "Declaration or statement expected. This follows a block of statements, so if you intended to write a destructuring assignment you might need to wrap the whole assignment in parentheses.");
+            _ = self.advance();
+        }
         return try self.builder.addBlock(span(open, close), stmts.items);
     }
 
@@ -19675,6 +19686,23 @@ test "parser: malformed import attribute key reports TS1478" {
     _ = try s.parser.parseSourceFile();
     const d = findFirstDiagnosticOfCode(&s.parser, 1478) orelse return error.TestExpectedEqual;
     try T.expectEqualStrings("Identifier or string literal expected.", d.message);
+}
+
+test "parser: block statement followed by '=' reports TS2809" {
+    var s = try newTestSetup("{ a } = b;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 2809) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("Declaration or statement expected. This follows a block of statements, so if you intended to write a destructuring assignment you might need to wrap the whole assignment in parentheses.", d.message);
+}
+
+test "parser: parenthesized destructuring assignment stays clean (no TS2809)" {
+    var s = try newTestSetup("({ a } = b);");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 2809) == null);
 }
 
 test "parser: non-string import attribute value reports TS2858" {
