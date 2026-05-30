@@ -42,10 +42,25 @@ pub const Strategy = enum {
     bundler,
 };
 
+/// tsc-compatible display name for a resolution strategy, used in the
+/// TS6087/TS6088 `--traceResolution` banner.
+fn strategyName(s: Strategy) []const u8 {
+    return switch (s) {
+        .classic => "Classic",
+        .node10 => "Node10",
+        .node16 => "Node16",
+        .nodenext => "NodeNext",
+        .bundler => "Bundler",
+    };
+}
+
 /// Module-resolution config. Caller-owned; kept as a slice borrowing
 /// from the parsed tsconfig.
 pub const Config = struct {
     strategy: Strategy = .bundler,
+    /// True when `moduleResolution` was set explicitly (selects the
+    /// TS6087 "Explicitly specified…" trace over the TS6088 default).
+    explicit_strategy: bool = false,
     /// `compilerOptions.baseUrl`. Empty means unset.
     base_url: []const u8 = "",
     /// `compilerOptions.paths` — list of `(pattern, [target...])`.
@@ -186,6 +201,8 @@ pub const Resolver = struct {
     arena: std.heap.ArenaAllocator,
     /// Optional `--traceResolution` sink. Null means tracing is off.
     trace: ?*TraceSink = null,
+    /// Guards the once-per-program resolution-kind banner (TS6087/6088).
+    resolution_kind_traced: bool = false,
     /// Per-(directory, specifier) resolution memo, mirroring tsc's
     /// module-resolution cache. The checker re-resolves the same
     /// specifiers many times during type-checking; without this every
@@ -263,6 +280,18 @@ pub const Resolver = struct {
         containing_file: []const u8,
     ) ResolveError!Resolution {
         if (specifier.len == 0) return error.InvalidSpecifier;
+        // Once-per-program resolution-kind banner (tsc emits this before
+        // the first module resolution). TS6087 when explicit, TS6088 when
+        // defaulted.
+        if (self.trace != null and !self.resolution_kind_traced) {
+            self.resolution_kind_traced = true;
+            const kind = strategyName(self.config.strategy);
+            if (self.config.explicit_strategy) {
+                self.traceMsg(6087, "Explicitly specified module resolution kind: '{s}'.", .{kind});
+            } else {
+                self.traceMsg(6088, "Module resolution kind is not specified, using '{s}'.", .{kind});
+            }
+        }
         const dir = dirname(containing_file);
         // Cache key: "<dir>\x00<specifier>" interned in the resolver arena.
         // On allocation failure, fall through to an uncached resolve.
@@ -1600,6 +1629,41 @@ test "Resolver: resolution cache dedupes repeated resolves (one trace set, not N
         if (e.code == 6086) count_6086 += 1;
     }
     try T.expectEqual(@as(usize, 1), count_6086);
+}
+
+test "Resolver: resolution-kind banner TS6088 (default) / TS6087 (explicit), once" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/foo.ts", "export const x = 1;");
+    try vfs.addFile("/proj/src/bar.ts", "import './foo';");
+
+    {
+        var sink = TraceSink.init(T.allocator);
+        defer sink.deinit();
+        var r = Resolver.init(T.allocator, vfs.fs(), .{});
+        defer r.deinit();
+        r.trace = &sink;
+        _ = try r.resolve("./foo", "/proj/src/bar.ts");
+        _ = try r.resolve("./foo", "/proj/src/bar.ts");
+        var count_6088: usize = 0;
+        for (sink.entries.items) |e| {
+            if (e.code == 6088) count_6088 += 1;
+        }
+        try T.expectEqual(@as(usize, 1), count_6088); // once, not per-resolve
+    }
+    {
+        var sink = TraceSink.init(T.allocator);
+        defer sink.deinit();
+        var r = Resolver.init(T.allocator, vfs.fs(), .{ .explicit_strategy = true });
+        defer r.deinit();
+        r.trace = &sink;
+        _ = try r.resolve("./foo", "/proj/src/bar.ts");
+        var saw_6087 = false;
+        for (sink.entries.items) |e| {
+            if (e.code == 6087) saw_6087 = true;
+        }
+        try T.expect(saw_6087);
+    }
 }
 
 test "Resolver: not-found resolution traces TS6090" {
