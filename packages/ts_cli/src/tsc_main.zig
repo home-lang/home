@@ -1049,17 +1049,27 @@ pub fn main(init: std.process.Init) !void {
         const stdout = std.Io.File.stdout();
         break :blk stdout.isTty(tty_io) catch false;
     };
+    var stream_error_count: usize = 0;
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
         .use_pretty = opts.pretty orelse true,
         .use_color = stdout_is_tty,
         .any_errors = &any_errors_streaming,
+        .error_count = &stream_error_count,
     };
     program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
+    // tsc's post-compilation summary (CategoryMessage). TS6216 for a
+    // single error, TS6217 otherwise. Only printed when there are errors
+    // so a clean compile stays silent (matches Home's prior behaviour).
+    if (stream_error_count == 1) {
+        buildStatusMessage(6216, "Found 1 error.\n", .{});
+    } else if (stream_error_count > 1) {
+        buildStatusMessage(6217, "Found {d} errors.\n", .{stream_error_count});
+    }
 
     // `--explainFiles`: list every file with its inclusion reason. Input
     // files in a run come from one source (CLI args XOR tsconfig `files`
@@ -1400,6 +1410,10 @@ const StreamCtx = struct {
     use_pretty: bool,
     use_color: bool,
     any_errors: *bool,
+    /// Running count of non-emit diagnostics, for the TS6216/TS6217
+    /// "Found N errors" summary. Optional so the build-mode caller can
+    /// skip it.
+    error_count: ?*usize = null,
 };
 
 /// Invoked once per compiled file, in compilation order. Renders
@@ -1442,7 +1456,10 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             ts_diagnostics.formatDefault(ctx.gpa, fdiag) catch continue;
         defer ctx.gpa.free(formatted);
         std.debug.print("{s}\n", .{formatted});
-        if (d.phase != .emit) ctx.any_errors.* = true;
+        if (d.phase != .emit) {
+            ctx.any_errors.* = true;
+            if (ctx.error_count) |ec| ec.* += 1;
+        }
     }
 }
 
