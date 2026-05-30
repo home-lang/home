@@ -175,22 +175,42 @@ fn projectIsUpToDate(
     out_dir: ?[]const u8,
     declaration_dir: ?[]const u8,
     emit_dts: bool,
+    project: []const u8,
+    verbose: bool,
 ) bool {
     var newest_input: i128 = std.math.minInt(i128);
+    var newest_input_path: []const u8 = "";
     for (inputs) |in| {
         const m = fileMtimeNanos(in) orelse return false; // can't stat → rebuild
-        if (m > newest_input) newest_input = m;
+        if (m > newest_input) {
+            newest_input = m;
+            newest_input_path = in;
+        }
     }
     for (inputs) |in| {
         const js = computeOutPath(gpa, in, out_dir, ".js") catch return false;
         defer gpa.free(js);
-        const jm = fileMtimeNanos(js) orelse return false; // output missing → rebuild
-        if (jm < newest_input) return false;
+        const jm = fileMtimeNanos(js) orelse {
+            // TS6352 — output file does not exist → out of date.
+            if (verbose) buildStatusMessage(6352, "Project '{s}' is out of date because output file '{s}' does not exist\n", .{ project, js });
+            return false;
+        };
+        if (jm < newest_input) {
+            // TS6350 — output older than input → out of date.
+            if (verbose) buildStatusMessage(6350, "Project '{s}' is out of date because output '{s}' is older than input '{s}'\n", .{ project, js, newest_input_path });
+            return false;
+        }
         if (emit_dts) {
             const dts = computeOutPath(gpa, in, declaration_dir, ".d.ts") catch return false;
             defer gpa.free(dts);
-            const dm = fileMtimeNanos(dts) orelse return false;
-            if (dm < newest_input) return false;
+            const dm = fileMtimeNanos(dts) orelse {
+                if (verbose) buildStatusMessage(6352, "Project '{s}' is out of date because output file '{s}' does not exist\n", .{ project, dts });
+                return false;
+            };
+            if (dm < newest_input) {
+                if (verbose) buildStatusMessage(6350, "Project '{s}' is out of date because output '{s}' is older than input '{s}'\n", .{ project, dts, newest_input_path });
+                return false;
+            }
         }
     }
     return true;
@@ -264,7 +284,7 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
 
     // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
     // input/output mtime comparison). Skipped under `--force`.
-    if (!force and projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts)) {
+    if (!force and projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, verbose)) {
         // TS6361 — `tsc --build` status message (CategoryMessage, plain text).
         if (verbose) buildStatusMessage(6361, "Project '{s}' is up to date\n", .{config_path});
         return false;
@@ -635,7 +655,9 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
         }
         if (bp.options.verbose and graph.paths.len > 1) {
-            std.debug.print("Projects to build (dependency order): {d}\n", .{graph.paths.len});
+            // TS6355 — `Projects in this build: {0}` (the project list).
+            buildStatusMessage(6355, "Projects in this build:\n", .{});
+            for (graph.paths) |p| std.debug.print("    * {s}\n", .{p});
         }
         // Build each project (dependencies first). `--force` would skip
         // up-to-date checks — we always build for now (no incremental skip).
