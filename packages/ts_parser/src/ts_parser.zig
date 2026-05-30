@@ -9787,8 +9787,14 @@ pub const Parser = struct {
             } else if (self.match(.question)) {
                 optional_mod = 1;
             }
-            _ = try self.expect(.colon, "':' in mapped type");
-            const value = try self.parseTypeAnnotation();
+            // The template type is optional: `{ [P in T] }` is valid and
+            // means the template is implicitly `any` (tsc reports TS7039
+            // under `noImplicitAny`). Only parse a value when the `:` is
+            // present; otherwise leave `value` as `none`.
+            const value: NodeId = if (self.match(.colon))
+                try self.parseTypeAnnotation()
+            else
+                hir_mod.none_node_id;
             _ = self.match(.semicolon);
             _ = self.match(.comma);
             // TS7061 — `A mapped type may not declare properties or
