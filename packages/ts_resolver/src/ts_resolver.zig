@@ -392,12 +392,18 @@ pub const Resolver = struct {
         defer parsed.deinit();
         if (parsed.value != .object) return null;
         const obj = parsed.value.object;
-        const imports_v = obj.get("imports") orelse return null;
+        const imports_v = obj.get("imports") orelse {
+            self.traceMsg(6273, "package.json scope '{s}' has no imports defined.", .{scope.dir});
+            return null;
+        };
         // `imports` keys are always `#`-prefixed; reuse the same subpath
         // lookup machinery as `exports` (exact key then `*` pattern).
         if (try self.lookupExports(imports_v, specifier)) |target| {
             switch (target) {
-                .matched_null => return null, // hard rejection
+                .matched_null => {
+                    self.traceMsg(6274, "package.json scope '{s}' explicitly maps specifier '{s}' to null.", .{ scope.dir, specifier });
+                    return null; // hard rejection
+                },
                 .matched => |m| {
                     const joined = try self.joinPath(scope.dir, m);
                     if (try self.tryFileWithExtensions(joined)) |r| {
@@ -405,9 +411,13 @@ pub const Resolver = struct {
                     }
                     return null;
                 },
-                .not_matched => return null,
+                .not_matched => {
+                    self.traceMsg(6271, "Import specifier '{s}' does not exist in package.json scope at path '{s}'.", .{ specifier, scope.dir });
+                    return null;
+                },
             }
         }
+        self.traceMsg(6271, "Import specifier '{s}' does not exist in package.json scope at path '{s}'.", .{ specifier, scope.dir });
         return null;
     }
 
@@ -939,6 +949,7 @@ pub const Resolver = struct {
                             // doesn't cover this subpath — tsc treats
                             // missing subpath entries as a hard fail
                             // (no fallback to legacy `main`).
+                            self.traceMsg(6276, "Export specifier '{s}' does not exist in package.json scope at path '{s}'.", .{ key, pkg_dir });
                             return .blocked;
                         },
                     }
