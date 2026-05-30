@@ -121,7 +121,7 @@ for (const file of sourceFiles) {
     if (code) addRef(code, file, line, kindAtLine(line));
   }
 
-  for (const m of text.matchAll(/(?:\.code\s*=\s*|reportCodeAt\([^,\n]+,[^,\n]+,\s*|reportCodeAtWithSpan\([^,\n]+,[^,\n]+,[^,\n]+,\s*|reportCodeWithSpanAt\([^,\n]+,[^,\n]+,\s*|reportAt\([^,\n]+,[^,\n]+,\s*|traceMsg\(\s*|appendDriverDiagnostic\([^,\n]+,[^,\n]+,[^,\n]+,\s*)(\d{4,5})\b/g)) {
+  for (const m of text.matchAll(/(?:\.code\s*=\s*|reportCodeAt\([^,\n]+,[^,\n]+,\s*|reportCodeAtWithSpan\([^,\n]+,[^,\n]+,[^,\n]+,\s*|reportCodeWithSpanAt\([^,\n]+,[^,\n]+,\s*|reportAt\([^,\n]+,[^,\n]+,\s*|traceMsg\(\s*|buildStatusMessage\(\s*|appendDriverDiagnostic\([^,\n]+,[^,\n]+,[^,\n]+,\s*)(\d{4,5})\b/g)) {
     const line = lineOf(text, m.index);
     addRef(Number(m[1]), file, line, kindAtLine(line));
   }
@@ -153,7 +153,7 @@ for (const file of sourceFiles) {
   //     deliberately excluded so catalog declarations stay tracked via the
   //     existing `tsCodeNames` map rather than being credited as production
   //     emissions.
-  const emitLineRe = /\b(?:reportCodeAt|reportCodeAtWithSpan|reportCodeWithSpanAt|reportAt|reportCodeOnce|reportOnce|reportCode|traceMsg|appendDriverDiagnostic|parseTypeReferenceWithOptionalChainDiagnostic|report)\s*\(|\.code\s*=|^\s+const\s+\w+\s*:\s*u32\s*=/;
+  const emitLineRe = /\b(?:reportCodeAt|reportCodeAtWithSpan|reportCodeWithSpanAt|reportAt|reportCodeOnce|reportOnce|reportCode|traceMsg|buildStatusMessage|appendDriverDiagnostic|parseTypeReferenceWithOptionalChainDiagnostic|report)\s*\(|\.code\s*=|^\s+const\s+\w+\s*:\s*u32\s*=/;
   const lineList = file.endsWith(".zig") ? text.split("\n") : [];
   for (let i = 0; i < lineList.length; i++) {
     if (!emitLineRe.test(lineList[i])) continue;

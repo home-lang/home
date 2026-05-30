@@ -158,6 +158,14 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
     return .{ .nodes = nodes, .paths = paths.items };
 }
 
+/// Emit a `tsc --build` status message. tsc prints these
+/// CategoryMessage diagnostics as plain text (no `TSxxxx:` prefix); the
+/// `code` is carried so the diagnostic-coverage ledger credits it.
+fn buildStatusMessage(comptime code: u32, comptime fmt: []const u8, args: anytype) void {
+    comptime std.debug.assert(code >= 6000);
+    std.debug.print(fmt, args);
+}
+
 /// A project is up to date when every expected output (`.js`, and `.d.ts`
 /// when declarations are emitted) exists and is at least as new as every
 /// input file. Mirrors the timestamp half of tsc's getUpToDateStatus.
@@ -257,10 +265,12 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
     // input/output mtime comparison). Skipped under `--force`.
     if (!force and projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts)) {
-        if (verbose) std.debug.print("Project '{s}' is up to date — skipping.\n", .{config_path});
+        // TS6361 — `tsc --build` status message (CategoryMessage, plain text).
+        if (verbose) buildStatusMessage(6361, "Project '{s}' is up to date\n", .{config_path});
         return false;
     }
-    if (verbose) std.debug.print("Building project '{s}'...\n", .{config_path});
+    // TS6358 — `Building project '{0}'...`
+    if (verbose) buildStatusMessage(6358, "Building project '{s}'...\n", .{config_path});
 
     var resolver_fs = ResolverRealFs{};
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), .{});
