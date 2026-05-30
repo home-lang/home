@@ -749,7 +749,9 @@ pub const Resolver = struct {
         }
         while (true) {
             const nm = try self.joinPath(dir, "node_modules");
-            if (self.fs.directoryExists(nm)) {
+            if (!self.fs.directoryExists(nm)) {
+                self.traceMsg(6148, "Directory '{s}' does not exist, skipping all lookups in it.", .{nm});
+            } else {
                 // Resolve against the package root so we can consult
                 // package.json `exports` / `typesVersions` before falling
                 // back to direct file probing on the joined candidate.

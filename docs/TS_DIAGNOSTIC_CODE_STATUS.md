@@ -29,10 +29,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1137 |
+| emitted | 1138 |
 | declared | 5 |
 | tested-only | 0 |
-| catalog-only | 934 |
+| catalog-only | 933 |
 | total upstream codes | 2076 |
 
 ## Codes
@@ -1272,7 +1272,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6087 | message | catalog-only |  | Explicitly_specified_module_resolution_kind_Colon_0_6087 |
 | TS6088 | message | catalog-only |  | Module_resolution_kind_is_not_specified_using_0_6088 |
 | TS6089 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:246<br>packages/ts_resolver/src/ts_resolver.zig:236 | Module_name_0_was_successfully_resolved_to_1_6089 |
-| TS6090 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:248<br>packages/ts_resolver/src/ts_resolver.zig:236<br>packages/ts_resolver/src/ts_resolver.zig:1472 | Module_name_0_was_not_resolved_6090 |
+| TS6090 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:248<br>packages/ts_resolver/src/ts_resolver.zig:236<br>packages/ts_resolver/src/ts_resolver.zig:1534 | Module_name_0_was_not_resolved_6090 |
 | TS6091 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:705 | paths_option_is_specified_looking_for_a_pattern_to_match_module_name_0_6091 |
 | TS6092 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:709 | Module_name_0_matched_pattern_1_6092 |
 | TS6093 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:717 | Trying_substitution_0_candidate_module_location_Colon_1_6093 |
@@ -1322,7 +1322,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6144 | message | catalog-only |  | Module_0_was_resolved_as_locally_declared_ambient_module_in_file_1_6144 |
 | TS6146 | message | catalog-only |  | Specify_the_JSX_factory_function_to_use_when_targeting_react_JSX_emit_e_g_React_createElement_or_h_6146 |
 | TS6147 | message | catalog-only |  | Resolution_for_module_0_was_found_in_cache_from_location_1_6147 |
-| TS6148 | message | catalog-only |  | Directory_0_does_not_exist_skipping_all_lookups_in_it_6148 |
+| TS6148 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:753 | Directory_0_does_not_exist_skipping_all_lookups_in_it_6148 |
 | TS6149 | message | catalog-only |  | Show_diagnostic_information_6149 |
 | TS6150 | message | catalog-only |  | Show_verbose_diagnostic_information_6150 |
 | TS6151 | message | catalog-only |  | Emit_a_single_file_with_source_maps_instead_of_having_a_separate_file_6151 |
