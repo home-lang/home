@@ -29,10 +29,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1124 |
+| emitted | 1130 |
 | declared | 5 |
 | tested-only | 0 |
-| catalog-only | 947 |
+| catalog-only | 941 |
 | total upstream codes | 2076 |
 
 ## Codes
@@ -1268,20 +1268,20 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6083 | message | catalog-only |  | Base_directory_to_resolve_non_absolute_module_names_6083 |
 | TS6084 | message | catalog-only |  | Deprecated_Use_jsxFactory_instead_Specify_the_object_invoked_for_createElement_when_targeting_react__6084 |
 | TS6085 | message | catalog-only |  | Enable_tracing_of_the_name_resolution_process_6085 |
-| TS6086 | message | catalog-only |  | Resolving_module_0_from_1_6086 |
+| TS6086 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:224 | Resolving_module_0_from_1_6086 |
 | TS6087 | message | catalog-only |  | Explicitly_specified_module_resolution_kind_Colon_0_6087 |
 | TS6088 | message | catalog-only |  | Module_resolution_kind_is_not_specified_using_0_6088 |
-| TS6089 | message | catalog-only |  | Module_name_0_was_successfully_resolved_to_1_6089 |
-| TS6090 | message | catalog-only |  | Module_name_0_was_not_resolved_6090 |
+| TS6089 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:227<br>packages/ts_resolver/src/ts_resolver.zig:217 | Module_name_0_was_successfully_resolved_to_1_6089 |
+| TS6090 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:229<br>packages/ts_resolver/src/ts_resolver.zig:217<br>packages/ts_resolver/src/ts_resolver.zig:1439 | Module_name_0_was_not_resolved_6090 |
 | TS6091 | message | catalog-only |  | paths_option_is_specified_looking_for_a_pattern_to_match_module_name_0_6091 |
 | TS6092 | message | catalog-only |  | Module_name_0_matched_pattern_1_6092 |
 | TS6093 | message | catalog-only |  | Trying_substitution_0_candidate_module_location_Colon_1_6093 |
 | TS6094 | message | catalog-only |  | Resolving_module_name_0_relative_to_base_url_1_2_6094 |
 | TS6095 | message | catalog-only |  | Loading_module_as_file_Slash_folder_candidate_module_location_0_target_file_types_Colon_1_6095 |
-| TS6096 | message | catalog-only |  | File_0_does_not_exist_6096 |
-| TS6097 | message | catalog-only |  | File_0_exists_use_it_as_a_name_resolution_result_6097 |
+| TS6096 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:519 | File_0_does_not_exist_6096 |
+| TS6097 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:517 | File_0_exists_use_it_as_a_name_resolution_result_6097 |
 | TS6098 | message | catalog-only |  | Loading_module_0_from_node_modules_folder_target_file_types_Colon_1_6098 |
-| TS6099 | message | catalog-only |  | Found_package_json_at_0_6099 |
+| TS6099 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:306 | Found_package_json_at_0_6099 |
 | TS6100 | message | catalog-only |  | package_json_does_not_have_a_0_field_6100 |
 | TS6101 | message | catalog-only |  | package_json_has_0_field_1_that_references_2_6101 |
 | TS6102 | message | catalog-only |  | Allow_javascript_files_to_be_compiled_6102 |

@@ -155,11 +155,33 @@ pub const FileSystem = struct {
 
 /// Module resolver. Caller owns the strings inside `Resolution`;
 /// they're allocated from the resolver's arena.
+/// Collects `--traceResolution` trace lines (tsc's `TSxxxx` resolution
+/// trace messages). Each entry carries its TypeScript message code and
+/// the fully-formatted text. Owns an arena for the text. When a
+/// `Resolver` has no sink attached, tracing is a no-op (zero overhead),
+/// so the resolver behaves identically with or without `--traceResolution`.
+pub const TraceSink = struct {
+    arena: std.heap.ArenaAllocator,
+    entries: std.ArrayListUnmanaged(Entry) = .empty,
+
+    pub const Entry = struct { code: u32, text: []const u8 };
+
+    pub fn init(gpa: std.mem.Allocator) TraceSink {
+        return .{ .arena = std.heap.ArenaAllocator.init(gpa) };
+    }
+
+    pub fn deinit(self: *TraceSink) void {
+        self.arena.deinit();
+    }
+};
+
 pub const Resolver = struct {
     gpa: std.mem.Allocator,
     fs: FileSystem,
     config: Config,
     arena: std.heap.ArenaAllocator,
+    /// Optional `--traceResolution` sink. Null means tracing is off.
+    trace: ?*TraceSink = null,
     /// Set transiently by `attachExportsAlternateResult` while probing
     /// the exports-disabled "alternate" resolution. In this mode the
     /// legacy `main`/`types`/`module` fields only count when they
@@ -181,10 +203,35 @@ pub const Resolver = struct {
         self.arena.deinit();
     }
 
+    /// Append a `--traceResolution` line (no-op when no sink is attached).
+    fn traceMsg(self: *Resolver, code: u32, comptime fmt: []const u8, args: anytype) void {
+        const sink = self.trace orelse return;
+        const a = sink.arena.allocator();
+        const text = std.fmt.allocPrint(a, fmt, args) catch return;
+        sink.entries.append(a, .{ .code = code, .text = text }) catch {};
+    }
+
     /// Resolve `specifier` from a file located at `containing_file`.
     /// `containing_file` is the importer; specifier is its argument
-    /// to `import`/`require`/`from`.
+    /// to `import`/`require`/`from`. Wraps `resolveImpl` with tsc's
+    /// per-resolution entry/exit banner traces (TS6086/6089/6090).
     pub fn resolve(
+        self: *Resolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!Resolution {
+        if (self.trace == null) return self.resolveImpl(specifier, containing_file);
+        self.traceMsg(6086, "======== Resolving module '{s}' from '{s}'. ========", .{ specifier, containing_file });
+        const result = self.resolveImpl(specifier, containing_file);
+        if (result) |r| {
+            self.traceMsg(6089, "======== Module name '{s}' was successfully resolved to '{s}'. ========", .{ specifier, r.path });
+        } else |_| {
+            self.traceMsg(6090, "======== Module name '{s}' was not resolved. ========", .{specifier});
+        }
+        return result;
+    }
+
+    fn resolveImpl(
         self: *Resolver,
         specifier: []const u8,
         containing_file: []const u8,
@@ -256,6 +303,7 @@ pub const Resolver = struct {
         while (true) {
             const pkg_path = try self.joinPath(dir, "package.json");
             if (self.fs.fileExists(pkg_path)) {
+                self.traceMsg(6099, "Found 'package.json' at '{s}'.", .{pkg_path});
                 return .{ .dir = dir, .pkg_json = pkg_path };
             }
             if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
@@ -459,6 +507,21 @@ pub const Resolver = struct {
         return std.fmt.allocPrint(self.ar(), "{s}/{s}", .{ aa, bb }) catch error.OutOfMemory;
     }
 
+    /// `fileExists` wrapped with tsc's per-candidate resolution traces
+    /// (TS6097 "File 'X' exists - use it as a name resolution result." /
+    /// TS6096 "File 'X' does not exist."). No-op tracing when no sink.
+    fn fileExistsTraced(self: *Resolver, path: []const u8) bool {
+        const exists = self.fs.fileExists(path);
+        if (self.trace != null) {
+            if (exists) {
+                self.traceMsg(6097, "File '{s}' exists - use it as a name resolution result.", .{path});
+            } else {
+                self.traceMsg(6096, "File '{s}' does not exist.", .{path});
+            }
+        }
+        return exists;
+    }
+
     /// Probe `base` then `base.ext` for each configured extension and
     /// `.d.ts`. Returns the first hit.
     fn tryFileWithExtensions(self: *Resolver, base: []const u8) ResolveError!?Resolution {
@@ -468,7 +531,7 @@ pub const Resolver = struct {
         const explicit_json = hasExtension(base, ".json");
         const explicit_known = hasKnownExtension(base) or (explicit_json and self.config.resolve_json);
         if (explicit_known) {
-            if (self.fs.fileExists(base)) {
+            if (self.fileExistsTraced(base)) {
                 return .{
                     .path = try self.ar().dupe(u8, base),
                     .source = .relative,
@@ -484,7 +547,7 @@ pub const Resolver = struct {
         // Probe each extension in order.
         for (self.config.extensions) |ext| {
             const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ base, ext }) catch return error.OutOfMemory;
-            if (self.fs.fileExists(candidate)) {
+            if (self.fileExistsTraced(candidate)) {
                 return .{
                     .path = candidate,
                     .source = .relative,
@@ -494,7 +557,7 @@ pub const Resolver = struct {
         }
         if (self.config.resolve_json) {
             const candidate = std.fmt.allocPrint(self.ar(), "{s}.json", .{base}) catch return error.OutOfMemory;
-            if (self.fs.fileExists(candidate)) {
+            if (self.fileExistsTraced(candidate)) {
                 return .{
                     .path = candidate,
                     .source = .relative,
@@ -1326,6 +1389,68 @@ test "Resolver: relative .ts file" {
     const res = try r.resolve("./foo", "/proj/src/bar.ts");
     try T.expectEqualStrings("/proj/src/foo.ts", res.path);
     try T.expectEqual(Resolution.Source.relative, res.source);
+}
+
+test "Resolver: --traceResolution emits TS6086/6089/6096/6097 banners and file probes" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/foo.ts", "export const x = 1;");
+    try vfs.addFile("/proj/src/bar.ts", "import './foo';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("./foo", "/proj/src/bar.ts");
+    try T.expectEqualStrings("/proj/src/foo.ts", res.path);
+
+    var saw_6086 = false;
+    var saw_6089 = false;
+    var saw_6097 = false;
+    for (sink.entries.items) |e| {
+        switch (e.code) {
+            6086 => saw_6086 = true,
+            6089 => saw_6089 = true,
+            6097 => saw_6097 = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_6086);
+    try T.expect(saw_6089);
+    try T.expect(saw_6097);
+}
+
+test "Resolver: not-found resolution traces TS6090" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/bar.ts", "import './missing';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    try T.expectError(error.NotFound, r.resolve("./missing", "/proj/src/bar.ts"));
+    var saw_6090 = false;
+    for (sink.entries.items) |e| {
+        if (e.code == 6090) saw_6090 = true;
+    }
+    try T.expect(saw_6090);
+}
+
+test "Resolver: no trace sink means no tracing overhead (entries stay empty)" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/foo.ts", "export const x = 1;");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    // No sink attached: resolve still works, tracing is a no-op.
+    const res = try r.resolve("./foo", "/proj/src/foo.ts");
+    try T.expectEqualStrings("/proj/src/foo.ts", res.path);
 }
 
 test "Resolver: relative directory falls through to index.ts" {
