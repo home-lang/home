@@ -1389,6 +1389,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
         var chain_arena = std.heap.ArenaAllocator.init(ctx.gpa);
         defer chain_arena.deinit();
         const rendered_chain = mapDriverChain(chain_arena.allocator(), d.chain) catch &.{};
+        const rendered_related = mapDriverRelated(chain_arena.allocator(), ctx.program, f, d.related) catch &.{};
         const fdiag: ts_diagnostics.Diagnostic = .{
             .file = f.path,
             .line = pos.line,
@@ -1399,6 +1400,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             .message = d.message,
             .span_len = 0,
             .chain = rendered_chain,
+            .related = rendered_related,
         };
         const formatted = if (ctx.use_pretty)
             ts_diagnostics.formatPretty(ctx.gpa, fdiag, f.source, ctx.use_color) catch continue
@@ -1425,6 +1427,47 @@ fn mapDriverChain(
             .message = entry.message,
             .children = try mapDriverChain(arena, entry.children),
         };
+    }
+    return out;
+}
+
+/// Map a driver diagnostic's related-info anchors into the renderer's
+/// shape, resolving each anchor's byte `pos` to line:col against the
+/// right file source. A null `file` anchors in the diagnostic's own file
+/// (`primary`); a non-null `file` is a cross-file anchor (e.g. TS1377)
+/// looked up in the program. If the cross-file source isn't available,
+/// the anchor still renders its message (location omitted). Allocated in
+/// the caller's arena.
+fn mapDriverRelated(
+    arena: std.mem.Allocator,
+    program: *const ts_program.Program,
+    primary: *const ts_program.File,
+    related: []const ts_driver.RelatedInfo,
+) error{OutOfMemory}![]const ts_diagnostics.Related {
+    if (related.len == 0) return &.{};
+    const out = try arena.alloc(ts_diagnostics.Related, related.len);
+    for (related, 0..) |r, i| {
+        const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (r.code_prefix) {
+            .TS => .TS,
+            .HM => .HM,
+        };
+        // Resolve the anchor's file + source.
+        var anchor_file: []const u8 = primary.path;
+        var anchor_source: ?[]const u8 = primary.source;
+        if (r.file) |rf| {
+            anchor_file = rf;
+            if (program.lookupPath(rf)) |afid| {
+                anchor_source = program.fileById(afid).source;
+            } else {
+                anchor_source = null; // source unavailable — omit location
+            }
+        }
+        if (anchor_source) |src| {
+            const lc = ts_diagnostics.positionToLineCol(src, r.pos);
+            out[i] = .{ .file = anchor_file, .line = lc.line, .col = lc.col, .code = r.code, .code_prefix = prefix, .message = r.message };
+        } else {
+            out[i] = .{ .file = "", .code = r.code, .code_prefix = prefix, .message = r.message };
+        }
     }
     return out;
 }

@@ -37,6 +37,7 @@ pub const Lowerer = lower.Lowerer;
 pub const Checker = check.Checker;
 pub const Diagnostic = check.Diagnostic;
 pub const DiagnosticChainEntry = check.DiagnosticChainEntry;
+pub const RelatedInfo = check.RelatedInfo;
 pub const StrictFlags = check.StrictFlags;
 pub const ExternalResolver = check.ExternalResolver;
 pub const ScriptObjectExpando = check.ScriptObjectExpando;

@@ -52,6 +52,25 @@ pub const ChainEntry = struct {
     children: []const ChainEntry = &.{},
 };
 
+/// One "related information" anchor under a diagnostic, mirroring tsc's
+/// `relatedInformation[]` (typescript-go `ast.Diagnostic.relatedInformation`).
+/// Each anchor points at its own location and carries its own message
+/// (e.g. "'x' was imported here.", "and here."). Rendered as an indented
+/// line beneath the primary header — the location followed by the
+/// message, matching typescript-go's `FormatDiagnosticWithColorAndContext`
+/// related-info loop. `line`/`col` are pre-resolved by the caller (which
+/// owns the file sources, possibly cross-file).
+pub const Related = struct {
+    /// File the anchor points into. Empty renders the location-less
+    /// message only.
+    file: []const u8 = "",
+    line: u32 = 0,
+    col: u32 = 0,
+    code: u32 = 0,
+    code_prefix: Diagnostic.CodePrefix = .TS,
+    message: []const u8,
+};
+
 pub const Diagnostic = struct {
     /// File path the diagnostic relates to. Empty for whole-program
     /// diagnostics.
@@ -74,6 +93,11 @@ pub const Diagnostic = struct {
     /// `formatDefault`/`formatPretty` append each entry as an indented
     /// continuation line (tsc `messageChain` render).
     chain: []const ChainEntry = &.{},
+    /// Optional related-information anchors (tsc `relatedInformation`).
+    /// Empty by default so flat diagnostics render byte-identically.
+    /// When non-empty, rendered as indented `file(line,col): message`
+    /// lines beneath the header (and any chain).
+    related: []const Related = &.{},
 
     pub const CodePrefix = enum { TS, HM };
 };
@@ -96,7 +120,31 @@ pub fn formatDefault(gpa: std.mem.Allocator, d: Diagnostic) ![]u8 {
     try buf.appendSlice(gpa, ": ");
     try buf.appendSlice(gpa, d.message);
     try writeMessageChain(&buf, gpa, d.chain, 1);
+    try writeRelatedInfo(&buf, gpa, d.related);
     return try buf.toOwnedSlice(gpa);
+}
+
+/// Append a diagnostic's related-information anchors, each on its own
+/// line indented two spaces: `  path/file.ts(line,col): message`.
+/// Mirrors typescript-go's related-info loop in
+/// `FormatDiagnosticWithColorAndContext` (location + flattened message;
+/// the TSxxxx code is intentionally not shown on related lines, as in
+/// tsc's terminal output). No-op for an empty list.
+fn writeRelatedInfo(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    related: []const Related,
+) !void {
+    for (related) |r| {
+        try buf.append(gpa, '\n');
+        try buf.appendSlice(gpa, "  ");
+        if (r.file.len > 0) {
+            try buf.appendSlice(gpa, r.file);
+            var nbuf: [32]u8 = undefined;
+            try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "({d},{d}): ", .{ r.line, r.col }));
+        }
+        try buf.appendSlice(gpa, r.message);
+    }
 }
 
 /// Append a diagnostic's nested elaboration chain in tsc's flattened
@@ -184,6 +232,9 @@ pub fn formatPretty(
             try buf.append(gpa, '\n');
         }
     }
+
+    // Related-info anchors render after the source excerpt (tsc order).
+    try writeRelatedInfo(&buf, gpa, d.related);
 
     return try buf.toOwnedSlice(gpa);
 }
@@ -403,6 +454,69 @@ test "formatPretty: message chain renders indented lines before the source excer
     const out = try formatPretty(T.allocator, d, src, false);
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\n  Types of property 'item' are incompatible.\n") != null);
+}
+
+test "formatDefault: related-info renders indented location + message" {
+    const d: Diagnostic = .{
+        .file = "b.ts",
+        .line = 3,
+        .col = 5,
+        .code = 1380,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "An import alias cannot reference a declaration that was imported using 'import type'.",
+        .span_len = 1,
+        .related = &.{
+            .{ .file = "b.ts", .line = 1, .col = 8, .code = 1376, .message = "'X' was imported here." },
+        },
+    };
+    const out = try formatDefault(T.allocator, d);
+    defer T.allocator.free(out);
+    // Primary header, then an indented related line carrying the
+    // anchor location + message (no TS code on the related line, as in
+    // tsc's terminal output).
+    try T.expect(std.mem.startsWith(u8, out, "b.ts(3,5): error TS1380:"));
+    try T.expect(std.mem.indexOf(u8, out, "\n  b.ts(1,8): 'X' was imported here.") != null);
+}
+
+test "formatDefault: empty related list is byte-identical to flat output" {
+    const d: Diagnostic = .{
+        .file = "a.ts",
+        .line = 1,
+        .col = 1,
+        .code = 2304,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Cannot find name 'foo'.",
+        .span_len = 3,
+        // .related defaults to empty
+    };
+    const out = try formatDefault(T.allocator, d);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("a.ts(1,1): error TS2304: Cannot find name 'foo'.", out);
+}
+
+test "formatPretty: related-info renders after the source excerpt" {
+    const src = "import X = require('m');";
+    const d: Diagnostic = .{
+        .file = "b.ts",
+        .line = 1,
+        .col = 8,
+        .code = 1380,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "An import alias cannot reference a declaration that was imported using 'import type'.",
+        .span_len = 1,
+        .related = &.{
+            .{ .file = "b.ts", .line = 1, .col = 1, .code = 1376, .message = "'X' was imported here." },
+        },
+    };
+    const out = try formatPretty(T.allocator, d, src, false);
+    defer T.allocator.free(out);
+    // The related anchor comes after the squiggly underline block.
+    const tilde = std.mem.indexOf(u8, out, "~") orelse return error.TestUnexpectedResult;
+    const related = std.mem.indexOf(u8, out, "  b.ts(1,1): 'X' was imported here.") orelse return error.TestUnexpectedResult;
+    try T.expect(related > tilde);
 }
 
 test "formatDefault: empty file path is omitted" {

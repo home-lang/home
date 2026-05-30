@@ -37,6 +37,21 @@ pub const DiagnosticChainEntry = struct {
     children: []const DiagnosticChainEntry = &.{},
 };
 
+/// One "related information" anchor on a diagnostic — tsc's
+/// `relatedInformation[]` (e.g. "'x' was imported here.", "and here.",
+/// "Non-simple parameter declared here."). Carries a resolved byte
+/// position so the renderer can compute line:col; `file` is null for the
+/// common same-file case and a path for cross-file anchors (TS1377).
+/// `gpa`-owned; freed by `Compilation.deinit`.
+pub const RelatedInfo = struct {
+    code: u32 = 0,
+    code_prefix: Diagnostic.CodePrefix = .TS,
+    message: []const u8,
+    pos: u32 = 0,
+    span_len: u32 = 0,
+    file: ?[]const u8 = null,
+};
+
 /// One unified diagnostic across all phases.
 pub const Diagnostic = struct {
     pub const Phase = enum { lex, parse, bind, emit };
@@ -65,9 +80,63 @@ pub const Diagnostic = struct {
     /// Optional nested elaboration chain (tsc `messageChain`). Empty by
     /// default. `gpa`-owned; freed by `Compilation.deinit`.
     chain: []const DiagnosticChainEntry = &.{},
+    /// Optional related-information anchors (tsc `relatedInformation`).
+    /// Empty by default. `gpa`-owned; freed by `Compilation.deinit`.
+    related: []const RelatedInfo = &.{},
     /// Error vs suggestion. Defaults to `.error_`.
     category: Category = .error_,
 };
+
+/// Free a `gpa`-owned related-info array (each entry's `message` and
+/// optional `file`, plus the array itself).
+fn freeDiagnosticRelated(gpa: std.mem.Allocator, related: []const RelatedInfo) void {
+    for (related) |r| {
+        gpa.free(r.message);
+        if (r.file) |f| gpa.free(f);
+    }
+    if (related.len > 0) gpa.free(related);
+}
+
+/// Deep-copy a checker related-info array (arena-borrowed) into a
+/// `gpa`-owned driver array that outlives the checker. Resolves each
+/// entry's anchor to a byte position: an explicit `pos` wins, else the
+/// node's span start. Returns an empty slice for empty input.
+fn dupeCheckerRelated(
+    gpa: std.mem.Allocator,
+    hir: *const Hir,
+    related: []const ts_checker.RelatedInfo,
+) error{OutOfMemory}![]const RelatedInfo {
+    if (related.len == 0) return &.{};
+    const out = try gpa.alloc(RelatedInfo, related.len);
+    errdefer gpa.free(out);
+    var filled: usize = 0;
+    errdefer for (out[0..filled]) |e| {
+        gpa.free(e.message);
+        if (e.file) |f| gpa.free(f);
+    };
+    for (related, 0..) |r, i| {
+        const msg = try gpa.dupe(u8, r.message);
+        errdefer gpa.free(msg);
+        const file_dupe: ?[]const u8 = if (r.file) |f| try gpa.dupe(u8, f) else null;
+        errdefer if (file_dupe) |f| gpa.free(f);
+        // A cross-file anchor carries its own byte pos (into another
+        // file). A same-file anchor resolves the node's span start.
+        const anchor_pos: u32 = r.pos orelse hir.spanOf(r.node).start;
+        out[i] = .{
+            .code = r.code,
+            .code_prefix = switch (r.code_prefix) {
+                .TS => .TS,
+                .HM => .HM,
+            },
+            .message = msg,
+            .pos = anchor_pos,
+            .span_len = 0,
+            .file = file_dupe,
+        };
+        filled = i + 1;
+    }
+    return out;
+}
 
 /// Recursively free a `gpa`-owned diagnostic chain (each entry's
 /// `message` plus its `children` array).
@@ -167,6 +236,7 @@ pub const Compilation = struct {
         for (self.diagnostics.items) |d| {
             self.gpa.free(d.message);
             freeDiagnosticChain(self.gpa, d.chain);
+            freeDiagnosticRelated(self.gpa, d.related);
         }
         self.diagnostics.deinit(self.gpa);
         for (self.references.items) |r| self.gpa.free(r.name);
@@ -1456,6 +1526,7 @@ pub fn compileSource(
                 if (existing.code == 2300 and existing.pos == diag_pos) {
                     gpa.free(existing.message);
                     freeDiagnosticChain(gpa, existing.chain);
+                    freeDiagnosticRelated(gpa, existing.related);
                     _ = c.diagnostics.orderedRemove(pi);
                     continue;
                 }
@@ -1475,6 +1546,7 @@ pub fn compileSource(
             },
             .message = try gpa.dupe(u8, d.message),
             .chain = try dupeCheckerChain(gpa, d.chain),
+            .related = try dupeCheckerRelated(gpa, &c.hir, d.related),
             .category = if (is_suggestion) .suggestion else .error_,
         });
         // Suggestions are not errors — they must not flip `has_errors`
@@ -2613,6 +2685,35 @@ test "driver: type-only import erases entirely" {
         T.allocator.destroy(c);
     }
     try T.expectEqualStrings("", c.js);
+}
+
+test "driver: checker related-info propagates across the boundary (TS1380 carries TS1376)" {
+    // `import Bar = Foo;` where Foo is a type-only import → TS1380 with a
+    // TS1376 "'Foo' was imported here." related anchor. The driver must
+    // carry that related-info through to its own Diagnostic (it used to
+    // drop it), with the anchor resolved to a byte position.
+    var c = try compileSource(
+        T.allocator,
+        "import type { Foo } from \"./mod\";\nimport Bar = Foo;\n",
+        .{ .no_emit = true },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_1380 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1380) {
+            saw_1380 = true;
+            try T.expect(d.related.len >= 1);
+            try T.expectEqual(@as(u32, 1376), d.related[0].code);
+            try T.expectEqualStrings("'Foo' was imported here.", d.related[0].message);
+            // The anchor was resolved to a real source position (the
+            // `import type` line), not left at 0.
+            try T.expect(d.related[0].pos > 0);
+        }
+    }
+    try T.expect(saw_1380);
 }
 
 test "driver: control flow round-trips" {
