@@ -162,6 +162,26 @@ const install_glue =
     \\    json() { return this.text().then(JSON.parse); }
     \\  }
     \\
+    \\  function bunDeepEquals(a, b, strict) {
+    \\    if (a === b) return true;
+    \\    if (a === null || b === null || typeof a !== "object" || typeof b !== "object") {
+    \\      return (!strict && a == b) || (a !== a && b !== b);
+    \\    }
+    \\    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    \\    if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
+    \\      if (a.length !== b.length) return false;
+    \\      for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    \\      return true;
+    \\    }
+    \\    var ka = Object.keys(a), kb = Object.keys(b);
+    \\    if (ka.length !== kb.length) return false;
+    \\    for (var j = 0; j < ka.length; j++) {
+    \\      if (!Object.prototype.hasOwnProperty.call(b, ka[j])) return false;
+    \\      if (!bunDeepEquals(a[ka[j]], b[ka[j]], strict)) return false;
+    \\    }
+    \\    return true;
+    \\  }
+    \\  var htmlEsc = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;" };
     \\  globalThis.Bun = {
     \\    version: __HOME_BUN_VERSION__,
     \\    file: function(path, options) { return new BunFile(path, options); },
@@ -171,6 +191,13 @@ const install_glue =
     \\      if (n < 0) return Promise.reject(new Error("Bun.write failed: " + dest));
     \\      return Promise.resolve(n);
     \\    },
+    \\    get env() { return (typeof globalThis.process !== "undefined" && globalThis.process.env) || {}; },
+    \\    sleep: function(ms) { return new Promise(function(res) { setTimeout(res, ms instanceof Date ? Math.max(0, ms.getTime() - Date.now()) : ms); }); },
+    \\    nanoseconds: function() { return Math.trunc((typeof performance !== "undefined" ? performance.now() : 0) * 1e6); },
+    \\    inspect: function(v, opts) { var u = (typeof globalThis.require === "function") ? globalThis.require("node:util") : null; return u ? u.inspect(v, opts) : String(v); },
+    \\    deepEquals: function(a, b, strict) { return bunDeepEquals(a, b, !!strict); },
+    \\    escapeHTML: function(s) { return String(s).replace(/[&<>"']/g, function(c) { return htmlEsc[c]; }); },
+    \\    stringWidth: function(s) { return String(s).replace(/\x1b\[[0-9;]*m/g, "").length; },
     \\  };
     \\  delete globalThis.__home_bun_read_file;
     \\  delete globalThis.__home_bun_stat;
@@ -203,6 +230,51 @@ fn evalBool(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const u8
 fn installRealm(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     @import("web_globals.zig").install(allocator, ctx, global);
     install(allocator, ctx, global);
+}
+
+// Full realm for the utility batch (env/sleep/nanoseconds/inspect need
+// process/timers/misc/node_modules), mirroring installRealmGlobals order.
+fn installRealmFull(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
+    @import("web_globals.zig").install(allocator, ctx, global);
+    @import("process.zig").install(allocator, ctx, global, &[_][]const u8{"home"});
+    @import("timers_global.zig").install(allocator, ctx, global);
+    @import("misc_globals.zig").install(allocator, ctx, global);
+    install(allocator, ctx, global);
+    @import("node_modules.zig").install(allocator, ctx, global);
+}
+
+test "Bun utility batch: deepEquals/escapeHTML/stringWidth" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (!Bun.deepEquals({ a: 1, b: [2, 3] }, { a: 1, b: [2, 3] })) return false;" ++
+        "  if (Bun.deepEquals({ a: 1 }, { a: 2 })) return false;" ++
+        "  if (Bun.escapeHTML('<a href=\"x\">&') !== '&lt;a href=&quot;x&quot;&gt;&amp;') return false;" ++
+        "  return Bun.stringWidth('ab\\u001b[31mcd\\u001b[0m') === 4; })()"));
+}
+
+test "Bun utility batch: env/sleep/nanoseconds/inspect (full realm)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealmFull(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__bu = '';" ++
+        "var ok = (Bun.env === process.env) && (typeof Bun.nanoseconds() === 'number') &&" ++
+        "  (Bun.inspect({ a: 1 }).indexOf('a') >= 0);" ++
+        "Bun.sleep(1).then(function() { globalThis.__bu = ok ? 'slept' : 'no'; });",
+        "home:bun-util-setup", 1, null);
+    @import("timers_global.zig").drain(ctx);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__bu === 'slept'"));
 }
 
 test "Bun global exposes version + file/write surface" {
