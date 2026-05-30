@@ -1050,6 +1050,8 @@ pub fn main(init: std.process.Init) !void {
         break :blk stdout.isTty(tty_io) catch false;
     };
     var stream_error_count: usize = 0;
+    var stream_files_with_errors: usize = 0;
+    var stream_first_error_file: []const u8 = "";
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
@@ -1057,18 +1059,29 @@ pub fn main(init: std.process.Init) !void {
         .use_color = stdout_is_tty,
         .any_errors = &any_errors_streaming,
         .error_count = &stream_error_count,
+        .files_with_errors = &stream_files_with_errors,
+        .first_error_file = &stream_first_error_file,
     };
     program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
-    // tsc's post-compilation summary (CategoryMessage). TS6216 for a
-    // single error, TS6217 otherwise. Only printed when there are errors
-    // so a clean compile stays silent (matches Home's prior behaviour).
+    // tsc's post-compilation summary (CategoryMessage), only when there
+    // are errors so a clean compile stays silent. tsc picks the message
+    // by error-and-file count: 1 error → TS6259 in one file else TS6216;
+    // many errors across >1 files → TS6261; otherwise TS6217.
     if (stream_error_count == 1) {
-        buildStatusMessage(6216, "Found 1 error.\n", .{});
+        if (stream_files_with_errors == 1 and stream_first_error_file.len != 0) {
+            buildStatusMessage(6259, "Found 1 error in {s}\n", .{stream_first_error_file});
+        } else {
+            buildStatusMessage(6216, "Found 1 error.\n", .{});
+        }
     } else if (stream_error_count > 1) {
-        buildStatusMessage(6217, "Found {d} errors.\n", .{stream_error_count});
+        if (stream_files_with_errors > 1) {
+            buildStatusMessage(6261, "Found {d} errors in {d} files.\n", .{ stream_error_count, stream_files_with_errors });
+        } else {
+            buildStatusMessage(6217, "Found {d} errors.\n", .{stream_error_count});
+        }
     }
 
     // `--explainFiles`: list every file with its inclusion reason. Input
@@ -1414,6 +1427,12 @@ const StreamCtx = struct {
     /// "Found N errors" summary. Optional so the build-mode caller can
     /// skip it.
     error_count: ?*usize = null,
+    /// Count of distinct files that had at least one error, and the
+    /// path of the first such file — for the per-file summary variants
+    /// TS6259 ("Found 1 error in {0}") / TS6261 ("Found {0} errors in
+    /// {1} files.").
+    files_with_errors: ?*usize = null,
+    first_error_file: ?*[]const u8 = null,
 };
 
 /// Invoked once per compiled file, in compilation order. Renders
@@ -1423,6 +1442,7 @@ const StreamCtx = struct {
 fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts_driver.Diagnostic) void {
     const fid = ctx.program.lookupPath(file_path) orelse return;
     const f = ctx.program.fileById(fid);
+    var file_had_error = false;
     for (diags) |d| {
         const pos = ts_diagnostics.positionToLineCol(f.source, d.pos);
         const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
@@ -1459,6 +1479,13 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
         if (d.phase != .emit) {
             ctx.any_errors.* = true;
             if (ctx.error_count) |ec| ec.* += 1;
+            if (!file_had_error) {
+                file_had_error = true;
+                if (ctx.files_with_errors) |fc| fc.* += 1;
+                if (ctx.first_error_file) |fe| {
+                    if (fe.*.len == 0) fe.* = f.path;
+                }
+            }
         }
     }
 }
