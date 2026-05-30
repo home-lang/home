@@ -289,6 +289,8 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
         if (verbose) buildStatusMessage(6361, "Project '{s}' is up to date\n", .{config_path});
         return false;
     }
+    // TS6388 — under `--force`, tsc rebuilds regardless of up-to-dateness.
+    if (force and verbose) buildStatusMessage(6388, "Project '{s}' is being forcibly rebuilt\n", .{config_path});
     // TS6358 — `Building project '{0}'...`
     if (verbose) buildStatusMessage(6358, "Building project '{s}'...\n", .{config_path});
 
