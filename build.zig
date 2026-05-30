@@ -419,6 +419,11 @@ pub fn build(b: *std.Build) void {
     home_tsc_exe.root_module.addImport("ts_watch", ts_watch_pkg);
     home_tsc_exe.root_module.addImport("d_hm", d_hm_pkg);
     b.installArtifact(home_tsc_exe);
+    // Dedicated step so the TS compiler can be built in isolation,
+    // independent of the runtime exes (`home`/`database`/…) which may be
+    // mid-migration on a given Zig toolchain: `zig build home-tsc`.
+    const home_tsc_step = b.step("home-tsc", "Build just the home-tsc TypeScript compiler");
+    home_tsc_step.dependOn(&b.addInstallArtifact(home_tsc_exe, .{}).step);
 
     const home_lsp_exe = b.addExecutable(.{
         .name = "home-lsp",

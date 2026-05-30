@@ -164,6 +164,10 @@ pub const TraceSink = struct {
     arena: std.heap.ArenaAllocator,
     entries: std.ArrayListUnmanaged(Entry) = .empty,
 
+    /// Hard cap on collected trace lines — a safety bound so a pathological
+    /// resolution closure can't grow the sink without limit.
+    pub const max_entries: usize = 20_000;
+
     pub const Entry = struct { code: u32, text: []const u8 };
 
     pub fn init(gpa: std.mem.Allocator) TraceSink {
@@ -182,6 +186,16 @@ pub const Resolver = struct {
     arena: std.heap.ArenaAllocator,
     /// Optional `--traceResolution` sink. Null means tracing is off.
     trace: ?*TraceSink = null,
+    /// Per-(directory, specifier) resolution memo, mirroring tsc's
+    /// module-resolution cache. The checker re-resolves the same
+    /// specifiers many times during type-checking; without this every
+    /// reference re-walks the filesystem (and, under `--traceResolution`,
+    /// re-emits the whole trace, which exploded the trace volume). Keyed
+    /// by `"<dir>\x00<specifier>"` (interned in `arena`); value `null`
+    /// memoizes a `NotFound`. Resolution depends only on the containing
+    /// DIRECTORY (relative joins + the package-scope walk both start from
+    /// `dirname(containing_file)`), so a per-dir key is sound.
+    cache: std.StringHashMapUnmanaged(?Resolution) = .empty,
     /// Set transiently by `attachExportsAlternateResult` while probing
     /// the exports-disabled "alternate" resolution. In this mode the
     /// legacy `main`/`types`/`module` fields only count when they
@@ -200,6 +214,7 @@ pub const Resolver = struct {
     }
 
     pub fn deinit(self: *Resolver) void {
+        self.cache.deinit(self.gpa);
         self.arena.deinit();
     }
 
@@ -223,8 +238,13 @@ pub const Resolver = struct {
     }
 
     /// Append a `--traceResolution` line (no-op when no sink is attached).
+    /// Capped at `TraceSink.max_entries`: resolving a full type/lib
+    /// closure (e.g. during declaration emit) can drive an enormous
+    /// number of resolutions, and an uncapped sink would grow without
+    /// bound. The cap is far above what any human reads for diagnosis.
     fn traceMsg(self: *Resolver, code: u32, comptime fmt: []const u8, args: anytype) void {
         const sink = self.trace orelse return;
+        if (sink.entries.items.len >= TraceSink.max_entries) return;
         const a = sink.arena.allocator();
         const text = std.fmt.allocPrint(a, fmt, args) catch return;
         sink.entries.append(a, .{ .code = code, .text = text }) catch {};
@@ -232,9 +252,35 @@ pub const Resolver = struct {
 
     /// Resolve `specifier` from a file located at `containing_file`.
     /// `containing_file` is the importer; specifier is its argument
-    /// to `import`/`require`/`from`. Wraps `resolveImpl` with tsc's
-    /// per-resolution entry/exit banner traces (TS6086/6089/6090).
+    /// to `import`/`require`/`from`. Memoizes per (directory, specifier)
+    /// and wraps `resolveImpl` with tsc's per-resolution entry/exit
+    /// banner traces (TS6086/6089/6090) — emitted only on a cache MISS,
+    /// so repeated resolutions of the same specifier don't re-walk the
+    /// filesystem or re-emit traces.
     pub fn resolve(
+        self: *Resolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!Resolution {
+        if (specifier.len == 0) return error.InvalidSpecifier;
+        const dir = dirname(containing_file);
+        // Cache key: "<dir>\x00<specifier>" interned in the resolver arena.
+        // On allocation failure, fall through to an uncached resolve.
+        const key = std.fmt.allocPrint(self.arena.allocator(), "{s}\x00{s}", .{ dir, specifier }) catch
+            return self.resolveTraced(specifier, containing_file);
+        if (self.cache.get(key)) |cached| return cached orelse error.NotFound;
+        const result = self.resolveTraced(specifier, containing_file);
+        if (result) |r| {
+            self.cache.put(self.gpa, key, r) catch {};
+        } else |e| {
+            if (e == error.NotFound) self.cache.put(self.gpa, key, null) catch {};
+        }
+        return result;
+    }
+
+    /// `resolveImpl` plus the TS6086/6089/6090 banner traces. Separated
+    /// so `resolve` can apply the memo around it.
+    fn resolveTraced(
         self: *Resolver,
         specifier: []const u8,
         containing_file: []const u8,
@@ -1527,6 +1573,33 @@ test "Resolver: paths mapping traces TS6091/6092/6093" {
     try T.expect(saw_6091);
     try T.expect(saw_6092);
     try T.expect(saw_6093);
+}
+
+test "Resolver: resolution cache dedupes repeated resolves (one trace set, not N)" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/foo.ts", "export const x = 1;");
+    try vfs.addFile("/proj/src/bar.ts", "import './foo';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    // Resolve the same (dir, specifier) 5 times — the checker does this
+    // many times during type-checking. Only the first should walk the FS
+    // and trace; the rest hit the memo.
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        const res = try r.resolve("./foo", "/proj/src/bar.ts");
+        try T.expectEqualStrings("/proj/src/foo.ts", res.path);
+    }
+    var count_6086: usize = 0;
+    for (sink.entries.items) |e| {
+        if (e.code == 6086) count_6086 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_6086);
 }
 
 test "Resolver: not-found resolution traces TS6090" {
