@@ -159,6 +159,7 @@ pub const Method = enum {
     text_document_document_highlight,
     text_document_formatting,
     text_document_range_formatting,
+    text_document_ranges_formatting,
     text_document_on_type_formatting,
     text_document_code_lens,
     code_lens_resolve,
@@ -238,6 +239,7 @@ pub const Method = enum {
             .{ "textDocument/documentHighlight", Method.text_document_document_highlight },
             .{ "textDocument/formatting", Method.text_document_formatting },
             .{ "textDocument/rangeFormatting", Method.text_document_range_formatting },
+            .{ "textDocument/rangesFormatting", Method.text_document_ranges_formatting },
             .{ "textDocument/onTypeFormatting", Method.text_document_on_type_formatting },
             .{ "textDocument/codeLens", Method.text_document_code_lens },
             .{ "codeLens/resolve", Method.code_lens_resolve },
@@ -321,6 +323,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/documentHighlight",
     "textDocument/formatting",
     "textDocument/rangeFormatting",
+    "textDocument/rangesFormatting",
     "textDocument/onTypeFormatting",
     "textDocument/rename",
     "textDocument/prepareRename",
@@ -3321,6 +3324,99 @@ pub fn handleRangeFormatting(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/rangesFormatting` JSON-RPC request (LSP 3.18):
+/// extract the URI and the `ranges` array, format the document, and
+/// emit `TextEdit[]` containing every edit that overlaps at least one
+/// requested range. Mirrors `handleRangeFormatting` for the per-range
+/// overlap test; the union over all ranges is the response. With an
+/// absent or empty `ranges` array, every edit is returned so the
+/// behaviour matches a full-document format. Caller owns the slice.
+pub fn handleRangesFormatting(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const Range = struct { sl: i64, sc: i64, el: i64, ec: i64 };
+    var ranges: std.ArrayListUnmanaged(Range) = .empty;
+    defer ranges.deinit(gpa);
+    if (findJsonRawField(params_json, "ranges")) |arr_raw| {
+        // Walk the JSON array body and pull each `{ start, end }` object.
+        // The structure is shallow enough to use a brace-depth counter:
+        // each range object has two nested objects (start/end), so depth
+        // returns to 0 exactly at the outer close.
+        var idx: usize = 0;
+        while (idx < arr_raw.len) {
+            const obj_start = std.mem.indexOfScalarPos(u8, arr_raw, idx, '{') orelse break;
+            var depth: usize = 0;
+            var obj_end: ?usize = null;
+            var j = obj_start;
+            while (j < arr_raw.len) : (j += 1) {
+                if (arr_raw[j] == '{') depth += 1;
+                if (arr_raw[j] == '}') {
+                    depth -= 1;
+                    if (depth == 0) {
+                        obj_end = j;
+                        break;
+                    }
+                }
+            }
+            const e_idx = obj_end orelse break;
+            const obj = arr_raw[obj_start .. e_idx + 1];
+            var sl: i64 = 0;
+            var sc: i64 = 0;
+            var el: i64 = std.math.maxInt(i64);
+            var ec: i64 = std.math.maxInt(i64);
+            if (std.mem.indexOf(u8, obj, "\"start\":")) |sp| {
+                const sub = obj[sp..];
+                sl = findJsonIntField(sub, "line") orelse 0;
+                sc = findJsonIntField(sub, "character") orelse 0;
+            }
+            if (std.mem.indexOf(u8, obj, "\"end\":")) |ep| {
+                const sub = obj[ep..];
+                el = findJsonIntField(sub, "line") orelse std.math.maxInt(i64);
+                ec = findJsonIntField(sub, "character") orelse std.math.maxInt(i64);
+            }
+            try ranges.append(gpa, .{ .sl = sl, .sc = sc, .el = el, .ec = ec });
+            idx = e_idx + 1;
+        }
+    }
+
+    const edits = try service.formatDocument(gpa, path);
+    defer gpa.free(edits);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    var emitted: usize = 0;
+    for (edits) |e| {
+        const e_end_line: i64 = @intCast(e.end_line);
+        const e_end_col: i64 = @intCast(e.end_col);
+        const e_start_line: i64 = @intCast(e.start_line);
+        const e_start_col: i64 = @intCast(e.start_col);
+        var overlaps_any = ranges.items.len == 0;
+        for (ranges.items) |r| {
+            const ends_before = e_end_line < r.sl or
+                (e_end_line == r.sl and e_end_col < r.sc);
+            const starts_after = e_start_line > r.el or
+                (e_start_line == r.el and e_start_col > r.ec);
+            if (!(ends_before or starts_after)) {
+                overlaps_any = true;
+                break;
+            }
+        }
+        if (!overlaps_any) continue;
+        if (emitted > 0) try buf.append(gpa, ',');
+        try writeTextEdit(&buf, gpa, e);
+        emitted += 1;
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `textDocument/onTypeFormatting` JSON-RPC request: extract
 /// the URI, position, trigger character, and `FormattingOptions`,
 /// route to `Service.onTypeFormatting`, and emit an LSP `TextEdit[]`
@@ -4103,6 +4199,10 @@ pub fn dispatchRequest(
         .text_document_range_formatting => {
             if (is_notification) return &.{};
             return try handleRangeFormatting(service, gpa, id, params);
+        },
+        .text_document_ranges_formatting => {
+            if (is_notification) return &.{};
+            return try handleRangesFormatting(service, gpa, id, params);
         },
         .text_document_on_type_formatting => {
             if (is_notification) return &.{};
