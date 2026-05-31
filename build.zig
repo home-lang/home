@@ -1,5 +1,24 @@
 const std = @import("std");
 
+/// Compile flags for the vendored SQLite amalgamation (Bun's feature set:
+/// fast, small, threadsafe). Applied only when statically compiling sqlite3.c
+/// on Linux/Windows/cross targets; macOS links the system libsqlite3 instead.
+const sqlite_amalgamation_flags = [_][]const u8{
+    "-DSQLITE_THREADSAFE=1",
+    "-DSQLITE_ENABLE_COLUMN_METADATA=1",
+    "-DSQLITE_MAX_VARIABLE_NUMBER=250000",
+    "-DSQLITE_ENABLE_RTREE=1",
+    "-DSQLITE_ENABLE_FTS3=1",
+    "-DSQLITE_ENABLE_FTS3_PARENTHESIS=1",
+    "-DSQLITE_ENABLE_FTS5=1",
+    "-DSQLITE_ENABLE_JSON1=1",
+    "-DSQLITE_ENABLE_MATH_FUNCTIONS=1",
+    "-DSQLITE_ENABLE_UPDATE_DELETE_LIMIT=1",
+    "-DSQLITE_UDL_CAPABLE_PARSER=1",
+    "-DSQLITE_DQS=0",
+    "-Wno-incompatible-pointer-types-discards-qualifiers",
+};
+
 /// Resolve the active Xcode macOS SDK path. Panics if it can't be found -
 /// only called from macOS-only branches.
 fn macosSdkPath(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
@@ -131,27 +150,26 @@ pub fn build(b: *std.Build) void {
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize, zig_test_framework);
     const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize, zig_test_framework);
     {
-        // translate-c can only locate sqlite3.h when it is present on the
-        // build host's default include path. That rules out Windows
-        // (sqlite3-dev isn't a standard install) and any cross-compile
-        // (the target sysroot won't have it). Use the hand-rolled stub
-        // module in those cases — the real sqlite3 symbols are resolved
-        // at link time where the library is actually available.
-        const use_stub = target.result.os.tag == .windows or !target.query.isNative();
-        if (use_stub) {
-            const stub = b.createModule(.{
-                .root_source_file = b.path("packages/database/src/sqlite_c_stub.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            database_pkg.addImport("c", stub);
+        // SQLite strategy mirrors Bun: macOS uses the system libsqlite3; Linux,
+        // Windows and any cross-compile statically link the vendored amalgamation.
+        // We translate-c the *vendored* header for ALL targets, so no system
+        // <sqlite3.h> needs to be on the host include path (Zig ships the libc
+        // headers translate-c needs, so this works when cross-compiling too).
+        const sqlite_c = b.addTranslateC(.{
+            .root_source_file = b.path("packages/database/vendor/sqlite3.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        database_pkg.addImport("c", sqlite_c.createModule());
+        database_pkg.link_libc = true;
+        if (target.result.os.tag == .macos) {
+            database_pkg.linkSystemLibrary("sqlite3", .{});
         } else {
-            const sqlite_c = b.addTranslateC(.{
-                .root_source_file = b.path("packages/database/src/sqlite_c.h"),
-                .target = target,
-                .optimize = optimize,
+            database_pkg.addCSourceFile(.{
+                .file = b.path("packages/database/vendor/sqlite3.c"),
+                .flags = &sqlite_amalgamation_flags,
             });
-            database_pkg.addImport("c", sqlite_c.createModule());
         }
     }
     const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize, zig_test_framework);
