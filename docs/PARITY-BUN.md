@@ -59,6 +59,15 @@ Legend:
 
 ## JS-visible APIs (the `Home.*` / `Bun.*` namespace)
 
+> **Note (realm vs corpus):** 🟡 rows below marked "JS-callable via Home's
+> realm" work through Home's **own** JavaScriptCore realm — exercised by
+> `home eval` and `HOME_NATIVE_RUN=1 home run`, NOT by delegating to system
+> `bun`, and each is unit-tested in `packages/runtime/src/jsc/`
+> (`bun_global.zig`, `spawn_global.zig`, `node_modules.zig`). They are
+> useful subsets, not full APIs, and are **not yet wired into the
+> bun-corpus gate** (which still routes through the bootstrap text-rewrite
+> harness), so they do not yet move the corpus pass-count.
+
 ### `Bun.serve`
 
 🔴 Not implemented as a general JS API. A narrow Home-native bootstrap
@@ -75,7 +84,11 @@ narrow hosted fetch path for the Bake deinitialization fixture's
 
 ### `Bun.file` / `Bun.write`
 
-🔴 Not implemented. `BunFile` reader/writer.
+🟡 JS-callable via Home's realm (`home eval` / `HOME_NATIVE_RUN`), backed by
+native fs. `Bun.file(path)` → `BunFile` with async `text`/`json`/
+`arrayBuffer`/`bytes`/`exists` and sync `size`/`name`/`type`;
+`Bun.write(path, data)` (string/Uint8Array/ArrayBuffer/view). Missing:
+`Bun.file` slicing/streams, `FileSink`, incremental writers.
 
 ### `node:fs` sync methods
 
@@ -87,11 +100,15 @@ import surfaces.
 
 ### `Bun.spawn` / `Bun.spawnSync`
 
-🟡 Partial bootstrap bridge. `Bun.spawnSync({ cmd, cwd, stdio })` now
-delegates to a native Home host callback for the Bun corpus bootstrap,
-including real OS subprocess execution, corpus-relative cwd/path
-resolution, and pipe/inherit/ignore stdio modes. The full Bun API surface
-and `Bun.spawn` remain unported. The runtime source port now includes
+🟡 JS-callable via Home's realm, backed by native `std.process` (real OS
+subprocess, NOT bun delegation). `Bun.spawnSync(cmd[]|{cmd,...})` →
+`{ pid, exitCode, signalCode, success, stdout, stderr }` with cwd/env/stdin
+bytes and `pipe`/`inherit`/`ignore` stdio modes. `Bun.spawn(...)` returns an
+async-shaped Subprocess (`pid`, `exited: Promise`, `stdout`/`stderr` as
+`node:stream` Readables with `text`/`json`/`bytes`/`arrayBuffer`,
+`kill`/`ref`/`unref`). Caveat: `Bun.spawn` is **eager** (runs the child to
+completion, then resolves) — no live streaming / interactive stdin yet.
+The runtime source port also includes
 Bun's POSIX `WaitPidResult`, `posix_spawnattr_t`, and
 `posix_spawn_file_actions_t` wrapper substrate in
 `packages/runtime/src/runtime/api/bun/spawn.zig`, rewritten for Home fd
@@ -119,7 +136,10 @@ ported as Tier-0 leaves).
 
 ### `Bun.hash` / `Bun.CryptoHasher`
 
-🔴 Not implemented.
+🟡 `Bun.hash` JS-callable via Home's realm, native (Zig `std.hash`):
+`Bun.hash(data, seed?)` (wyhash→BigInt) + `Bun.hash.{wyhash,crc32,adler32,
+cityHash32,cityHash64,murmur32v3,murmur64v2}` (32-bit → Number, 64-bit →
+BigInt). `Bun.CryptoHasher` not yet implemented.
 
 ### `Bun.semver`
 
@@ -132,23 +152,24 @@ ported as Tier-0 leaves).
 
 ### `Bun.gzipSync` / `Bun.gunzipSync` / `Bun.deflateSync` / `Bun.inflateSync`
 
-🔴 Not implemented. Substrate vendored under `packages/runtime/src/zlib/`.
+🟡 JS-callable via Home's realm, native (Zig `std.compress.flate`). All four
+(+ the `node:zlib` raw/deflate/gzip family) round-trip. Missing: options
+(level/strategy), brotli.
 
 ### `Bun.deepEquals` / `Bun.deepMatch`
 
-🔴 Not implemented.
+🟡 `Bun.deepEquals(a, b, strict?)` JS-callable via Home's realm (structural
+compare over arrays/typed-arrays/objects). `Bun.deepMatch` not yet.
 
 ### `Bun.escapeHTML`
 
-🔴 Not implemented as a JS-callable runtime API. The Bun corpus bootstrap
-has a narrow shim matching Bun's five-character escaping behavior for the
-allowlisted `js/bun/util/escapeHTML.test.js` smoke.
+🟡 JS-callable via Home's realm — Bun's five-character escaping
+(`& < > " '`).
 
 ### `Bun.inspect`
 
-🔴 Not implemented. The Bun corpus bootstrap has a narrow
-`Bun.inspect({ key: Set<string> })` shim for one allowlisted smoke; this
-is not a JS-callable runtime API.
+🟡 JS-callable via Home's realm — delegates to `node:util.inspect`.
+`Bun.inspect.table` not yet.
 
 ### `Bun.peek`
 
@@ -169,9 +190,9 @@ is not a JS-callable runtime API.
 
 ### `Bun.sleep` / `Bun.sleepSync`
 
-🟡 Bootstrap-only `Bun.sleepSync` support for copied corpus smokes:
-millisecond timing plus missing, non-number, and negative argument
-validation. Native runtime parity and `Bun.sleep` remain open.
+🟡 `Bun.sleep(ms|Date)` JS-callable via Home's realm (Promise via the
+event-loop timer). `Bun.sleepSync` remains a bootstrap-only shim (native
+blocking sleep not yet wired).
 
 ### `Bun.stdin` / `Bun.stdout` / `Bun.stderr`
 
@@ -179,7 +200,8 @@ validation. Native runtime parity and `Bun.sleep` remain open.
 
 ### `Bun.stringWidth`
 
-🔴 Not implemented.
+🟡 JS-callable via Home's realm — ANSI-stripped string length (v1; does not
+yet count wide/zero-width chars as Bun does).
 
 ### `Bun.udpSocket`
 
@@ -187,13 +209,28 @@ validation. Native runtime parity and `Bun.sleep` remain open.
 
 ### `Bun.which`
 
-🔴 Not implemented.
+🟡 JS-callable via Home's realm, native — `Bun.which(cmd, {PATH})` resolves
+an executable via PATH (or an explicit `/`-path) using `access(X_OK)` →
+absolute path or `null`.
+
+### `Bun.Glob`
+
+🟡 JS-callable via Home's realm — `new Bun.Glob(pattern).match(str)` (glob→
+RegExp: `*`/`**`/`?`/`{a,b}`/`[abc]`). `scan()` (filesystem walk) throws
+`ENOSYS` for now.
+
+### `Bun.env` / `Bun.argv` / `Bun.main` / `Bun.nanoseconds` / `Bun.fileURLToPath` / `Bun.pathToFileURL` / `Bun.concatArrayBuffers` / `Bun.allocUnsafe` / `Bun.gc`
+
+🟡 JS-callable via Home's realm — `Bun.env` (→`process.env`), `Bun.argv`
+(→`process.argv`), `Bun.main` (argv[1]), `Bun.nanoseconds()`,
+`Bun.fileURLToPath`/`Bun.pathToFileURL`, `Bun.concatArrayBuffers`,
+`Bun.allocUnsafe`, `Bun.gc` (no-op), `Bun.isMainThread` (true), `Bun.revision`.
 
 ### `Bun.version` / `Bun.revision`
 
-🔴 Not implemented. The Bun corpus bootstrap exposes smoke-test aliases
-for allowlisted files only; the runtime namespace does not yet provide
-these as real APIs.
+🟡 JS-callable via Home's realm — `Bun.version` (the pinned Bun-compat
+version string) and `Bun.revision` are real realm properties (no longer
+bootstrap-only aliases).
 
 ## Bundler (`packages/bundler/`)
 
