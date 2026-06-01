@@ -67,7 +67,10 @@ zig build -Doptimize=ReleaseFast && bash bench/run.sh
 ## Roadmap
 
 1. **v0** — splice TCP pump, `reusePort`, swappable backend. ✅
-2. **io_uring** engine — multishot accept + splice ops. ✅ (opt-in `uring`)
+2. **io_uring** engine — single-shot accept + `IORING_OP_SPLICE`. ⚠️ implemented &
+   compiles, but returns 0 req/s in CI (the loop accepts but never moves bytes —
+   needs local-Linux `strace` to pin down; blind CI iteration exhausted). Opt-in
+   (`uring` arg); the default `poll` engine is the validated path.
 3. **kTLS** — terminate TLS in-kernel so encrypted bodies can *still* splice; the
    key to beating nginx on HTTPS body throughput.
 4. HTTP/1.1 parse for host routing + `X-Forwarded-*`; HTTP/2; WebSocket.
@@ -75,21 +78,24 @@ zig build -Doptimize=ReleaseFast && bash bench/run.sh
    (the pattern rpx's cluster mode already uses).
 6. A **Home-native io backend** behind the engine seam.
 
-## Status — beats nginx on bodies (validated in CI)
+## Status — beats nginx on bodies, and the win grows with body size
 
-First Linux CI run (`dataplane-bench.yml`, HTML ~16 KB, 50 concurrent, GitHub
-2-vCPU runner):
+Full Linux CI sweep (`dataplane-bench.yml`, median of 3, 4-core GitHub runner,
+all proxies `reusePort` N-up like nginx `worker_processes auto`):
 
-| target        | req/s  |
-|---------------|-------:|
-| direct        | 62,704 |
-| nginx         | 33,170 |
-| **dataplane** | **40,439** |
+| body  | conc | direct | nginx  | **poll** | poll ÷ nginx |
+|-------|-----:|-------:|-------:|---------:|-------------:|
+| 16 KB |   50 | 64,643 | 34,651 | **40,266** | **1.16×** |
+| 16 KB |  256 | 68,320 | 37,569 | **43,547** | **1.16×** |
+| 1 MB  |   50 |  7,048 |  1,559 |  **3,629** | **2.33×** |
+| 1 MB  |  256 |  6,522 |  1,529 |  **3,300** | **2.16×** |
 
-**~1.22× nginx** — on the exact body-bound metric where a Bun proxy is ~3× *behind*
-nginx. That's the thesis confirmed: nginx copies bodies through userspace; the
-dataplane `splice()`s kernel→kernel and doesn't. (Single run on a noisy shared
-2-vCPU runner — directionally strong, not a final number; re-runs on every change
-and via manual dispatch.)
+The thesis, confirmed: nginx copies proxied bodies through userspace; the dataplane
+`splice()`s kernel→kernel and doesn't — so **the bigger the body, the bigger the
+edge** (1.16× at 16 KB → ~2.3× at 1 MB). This is the exact body-bound metric where
+a Bun/JS proxy runs ~3× *behind* nginx.
 
-Next: io_uring + kTLS for HTTPS bodies, then HTTP routing — see the roadmap above.
+The `uring` engine currently reports **0** (see roadmap #2 — accepts but never
+splices; needs local-Linux debugging). The numbers above are the `poll` engine, the
+validated default. Next: fix io_uring (where batching should pull ahead on 1 MB),
+then kTLS for HTTPS bodies — see the roadmap above.
