@@ -13,22 +13,13 @@
 
 const std = @import("std");
 
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2. Same `enum(i64)`
-// representation as the real type so pass-by-value extern signatures stay
-// ABI-stable.
-const JSValue = enum(i64) { _ };
-// JSC bridge JSObject stubbed — re-attaches in Phase 12.2.
-const JSObject = opaque {};
-
-// JSC bridge ZigString stubbed — re-attaches in Phase 12.2. Real ZigString
-// is a `{ptr, len}` pair; we only need the address-of operations here, so a
-// minimal extern struct is enough to keep the signatures honest.
-const ZigString = extern struct {
-    _ptr: ?[*]const u8 = null,
-    _len: usize = 0,
-};
+// JSC bring-up: import the real shared types (not local opaque stubs) so the
+// jsc type graph is coherent — `jsc.JSString` signatures use the same
+// JSGlobalObject/JSValue/JSObject/ZigString identities as the rest of `jsc`.
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
+const JSValue = @import("./JSValue.zig").JSValue;
+const JSObject = @import("./JSObject.zig").JSObject;
+const ZigString = @import("./ZigString.zig").ZigString;
 
 pub const JSString = opaque {
     extern fn JSC__JSString__toObject(this: *JSString, global: *JSGlobalObject) ?*JSObject;

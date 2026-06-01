@@ -4976,7 +4976,7 @@ test {
     // from 1434 → 338 errors (now deep jsc-namespace gaps: jsc.Node.StringOrBuffer,
     // jsc.Expect, JSString methods, VirtualMachine.RareData fields). Parked here
     // so the rest stays green; un-comment to resume the grind.
-    // _ = @import("ZigGeneratedClasses"); // parked at ~410 (structural: type-identity + C++ link)
+    // _ = @import("ZigGeneratedClasses"); // parked: ~410 structural (see audit doc)
     // Bun-original foundational leaves (2026-06-01 integration sweep). These
     // are Bun's `bun_core/*` originals; Home's live code uses the reorganized
     // `core/*` + `string/immutable.zig` copies, but referencing the originals
