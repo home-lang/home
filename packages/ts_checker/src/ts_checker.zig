@@ -43,6 +43,7 @@ pub const ExternalResolver = check.ExternalResolver;
 pub const ScriptObjectExpando = check.ScriptObjectExpando;
 pub const ModuleInterfaceAugmentation = check.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = check.ProgramExportedClass;
+pub const ProgramExportedClassMember = check.ProgramExportedClassMember;
 pub const renderType = render.renderType;
 
 const std = @import("std");

@@ -27,6 +27,7 @@ pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
+pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
 
 /// One nested elaboration entry under a unified diagnostic, mirroring
 /// tsc's `messageChain`. `message` and any `children` array are

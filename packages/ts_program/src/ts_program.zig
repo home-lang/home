@@ -221,7 +221,7 @@ pub const Program = struct {
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
-        defer self.gpa.free(program_exported_classes);
+        defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         for (self.files.items) |f| {
             if (f.compilation != null) continue;
             var per_file = options;
@@ -282,7 +282,7 @@ pub const Program = struct {
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
-        defer self.gpa.free(program_exported_classes);
+        defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         for (self.files.items) |f| {
             if (f.compilation != null) {
                 // Already compiled — replay its diagnostics anyway so
@@ -386,12 +386,130 @@ pub const Program = struct {
             cursor += "class".len;
             while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
             const name_end = parseIdentifierEnd(source, cursor, source.len) orelse continue;
+            var members: []const ts_driver.ProgramExportedClassMember = &.{};
+            if (std.mem.indexOfScalarPos(u8, source, name_end, '{')) |class_open| {
+                if (findMatchingBrace(source, class_open)) |class_close| {
+                    members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
+                }
+            }
             try out.append(gpa, .{
                 .target_path = path,
                 .class_name = source[cursor..name_end],
+                .members = members,
             });
             search_start = name_end;
         }
+    }
+
+    fn collectExportedClassMembers(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        body_start: usize,
+        body_end: usize,
+    ) ProgramError![]const ts_driver.ProgramExportedClassMember {
+        var members: std.ArrayListUnmanaged(ts_driver.ProgramExportedClassMember) = .empty;
+        errdefer members.deinit(gpa);
+        var i = body_start;
+        var depth: usize = 0;
+        while (i < body_end and i < source.len) : (i += 1) {
+            const c = source[i];
+            if (c == '{' or c == '(' or c == '[') {
+                depth += 1;
+                continue;
+            }
+            if (c == '}' or c == ')' or c == ']') {
+                if (depth > 0) depth -= 1;
+                continue;
+            }
+            if (depth != 0 or !asciiIdentifierStart(c)) continue;
+            const member_start = i;
+            const member_end = parseIdentifierEnd(source, member_start, body_end) orelse continue;
+            const name = source[member_start..member_end];
+            if (std.mem.eql(u8, name, "constructor") or
+                std.mem.eql(u8, name, "get") or
+                std.mem.eql(u8, name, "set") or
+                std.mem.eql(u8, name, "static") or
+                std.mem.eql(u8, name, "public") or
+                std.mem.eql(u8, name, "private") or
+                std.mem.eql(u8, name, "protected") or
+                std.mem.eql(u8, name, "readonly") or
+                std.mem.eql(u8, name, "declare") or
+                std.mem.eql(u8, name, "abstract"))
+            {
+                i = member_end;
+                continue;
+            }
+            var cursor = member_end;
+            while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            if (cursor < body_end and source[cursor] == '(') {
+                try members.append(gpa, .{ .name = name, .type_name = "any", .is_method = true });
+                if (findMatchingParen(source, cursor, body_end)) |close| {
+                    i = skipClassMemberRemainder(source, close + 1, body_end);
+                }
+                continue;
+            }
+            var type_name: []const u8 = "any";
+            if (cursor < body_end and source[cursor] == ':') {
+                cursor += 1;
+                while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+                const type_start = cursor;
+                if (parseIdentifierEnd(source, type_start, body_end)) |type_end| {
+                    type_name = source[type_start..type_end];
+                    cursor = type_end;
+                }
+            } else if (cursor < body_end and source[cursor] == '=') {
+                cursor += 1;
+                while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+                type_name = inferSimpleInitializerTypeName(source, cursor, body_end);
+            }
+            try members.append(gpa, .{ .name = name, .type_name = type_name, .is_method = false });
+            i = skipClassMemberRemainder(source, cursor, body_end);
+        }
+        return members.toOwnedSlice(gpa);
+    }
+
+    fn skipClassMemberRemainder(source: []const u8, start: usize, limit: usize) usize {
+        var i = start;
+        var depth: usize = 0;
+        var quote: u8 = 0;
+        while (i < limit and i < source.len) : (i += 1) {
+            const c = source[i];
+            if (quote != 0) {
+                if (c == '\\') {
+                    i += 1;
+                } else if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '"' or c == '\'' or c == '`') {
+                quote = c;
+                continue;
+            }
+            if (c == '(' or c == '[' or c == '{') {
+                depth += 1;
+                continue;
+            }
+            if (c == ')' or c == ']' or c == '}') {
+                if (depth == 0) return i;
+                depth -= 1;
+                continue;
+            }
+            if (depth == 0 and (c == ';' or c == '\n' or c == '\r')) return i;
+        }
+        return i;
+    }
+
+    fn inferSimpleInitializerTypeName(source: []const u8, start: usize, limit: usize) []const u8 {
+        if (start >= limit or start >= source.len) return "any";
+        const c = source[start];
+        if (c == '"' or c == '\'' or c == '`') return "string";
+        if (std.ascii.isDigit(c)) return "number";
+        if (std.mem.startsWith(u8, source[start..@min(limit, source.len)], "true") or
+            std.mem.startsWith(u8, source[start..@min(limit, source.len)], "false")) return "boolean";
+        if (std.mem.startsWith(u8, source[start..@min(limit, source.len)], "undefined")) return "undefined";
+        if (std.mem.startsWith(u8, source[start..@min(limit, source.len)], "null")) return "null";
+        return "any";
     }
 
     fn collectRelativeModuleInterfaceAugmentationsFromSource(
@@ -753,6 +871,13 @@ pub const Program = struct {
         gpa.free(items);
     }
 
+    fn freeProgramExportedClasses(gpa: std.mem.Allocator, items: []const ts_driver.ProgramExportedClass) void {
+        for (items) |item| {
+            if (item.members.len > 0) gpa.free(item.members);
+        }
+        gpa.free(items);
+    }
+
     /// One `declare global { … }` block discovered at a file's top
     /// level. The eventual cross-file symbol-table merge — driven by
     /// `binder.Module.augment` — needs to know which files contribute
@@ -866,7 +991,7 @@ pub const Program = struct {
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
-        defer self.gpa.free(program_exported_classes);
+        defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         var shared_options = options;
         shared_options.module_interface_augmentations = module_interface_augmentations;
         shared_options.program_exported_classes = program_exported_classes;
@@ -2293,6 +2418,38 @@ test "Program: relative module augmentation preserves missing member diagnostic"
     try p.compileAll(.{ .no_emit = true });
     const bad_c = p.fileById(bad_id).compilation.?;
     try expectCompilationHasDiagnosticCode(bad_c, 2339);
+}
+
+test "Program: relative module augmentation checks imported class return type" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    _ = try p.add("/proj/a.ts",
+        \\export class A {}
+    );
+    _ = try p.add("/proj/b.ts",
+        \\export class B { value = 1; }
+    );
+    const augment_id = try p.add("/proj/augment.ts",
+        \\import { A } from "./a";
+        \\import { B } from "./b";
+        \\export {};
+        \\declare module "./a" {
+        \\  interface A {
+        \\    getB(): B;
+        \\  }
+        \\}
+        \\A.prototype.getB = function() { return "wrong"; };
+    );
+
+    try p.compileAll(.{ .no_emit = true });
+    const augment_c = p.fileById(augment_id).compilation.?;
+    try expectCompilationHasDiagnosticCode(augment_c, 2322);
+    try expectCompilationLacksDiagnosticCode(augment_c, 2339);
 }
 
 test "moduleStem strips dir and extensions" {
