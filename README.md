@@ -60,8 +60,8 @@ view; these are the drill-down pages — modeled after Bun's
 | **Bun runtime — source files present** | **1,289 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
 | **Bun runtime — files integrated** | **552 / 1,193 — ~46.3%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
 | **Bun compat shim — `bun.*` symbols** | **16 / ~103 — ~15.5%** | Tier-0 + Tier-1 (`Output`, `strings`, `String`, `AllocationScope`, `Environment`, `JSError`, `create`, `debugAssert`, `env_var`) lets vendored Bun source compile against Home's stdlib |
-| **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
-| **JSC bring-up (Phase 12.2)** | **128 files** | M6 milestone + native eval smoke landed; JS-callable bridge pending |
+| **Node.js — `node:*` modules JS-callable** | **24 / 47 — ~51% (🟡 subsets)** | callable via Home's own JSC realm (`home eval` / `HOME_NATIVE_RUN`), unit-tested; see [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md). Not yet wired into the bun-corpus gate |
+| **JSC bring-up (Phase 12.2)** | **JS-callable bridge live** | `home eval` / `HOME_NATIVE_RUN` run through Home's own JSC; 24 `node:*` modules + a broad `Bun.*` surface (spawn/spawnSync/which/file/write/hash/gzipSync/Glob/…) callable & unit-tested. Native subsystems: zlib (`std.compress`), crypto HMAC/pbkdf2 (`std.crypto`), spawn (`std.process`) |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
 | **Total test count** | **7,023 / 7,025 — ~100%** (2 skipped, 0 failed) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev — full unit + integration + conformance pin suite |
 
@@ -106,17 +106,22 @@ HOME_TS_CONFORMANCE_LIMIT=1000 \
 ### Bun runtime port (`packages/runtime/`)
 
 Phase 12 vendors Bun's Zig source under MIT and rewrites it to compile
-against Home's stdlib. **JSC bring-up is mid-flight** (M6 milestone
-landed); end-to-end `home run app.ts` waits on the JS-callable bridge
-to wire up.
+against Home's stdlib. **The JS-callable bridge is live**: `home eval` and
+`HOME_NATIVE_RUN=1 home run` execute JavaScript through Home's **own**
+JavaScriptCore realm (not system `bun`), with 24 `node:*` modules and a
+broad `Bun.*` surface callable and unit-tested. The default `home run`
+still delegates to pantry `bun`, and the bun-corpus gate still routes
+through the bootstrap harness — wiring the realm into those is the next
+convergence step (see [`docs/BUN_PARITY_PLAN.md`](./docs/BUN_PARITY_PLAN.md)).
 
 | Measurement | Coverage | % |
 |---|---|---|
 | **Runtime Zig source files present** | **1,289 files** | live `packages/runtime/src/**/*.zig` count; includes Home glue and staged Bun integration backlog |
 | **Bun source files integrated** | **552 / 1,193** | **~46.3%** |
 | Subsystems scaffolded | 85 directories under `packages/runtime/src/` | — |
-| Functional runtime | 🚧 JSC M6 landed; JS-callable bridge pending | — |
-| JSC bring-up (Phase 12.2) | 128 files | M1-M6 landed (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers) |
+| Functional runtime | 🟡 JS-callable realm live (`home eval` / `HOME_NATIVE_RUN`); default `home run` + corpus gate still delegate | — |
+| JS-callable realm surface | 24 `node:*` modules + broad `Bun.*` | 🟡 subsets, unit-tested; see [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md) / [`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md) |
+| JSC bring-up (Phase 12.2) | 128 files | M1-M6 + JS-callable bridge live (eval/run through Home's own JSC; realm globals: console/process/web/crypto/timers/url/webcore/fetch/Bun/require) |
 | `node:*` substrate (Phase 12.7) | 28 files | round-15 landed (buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty + binding files) |
 
 Upstream pinned at `fd0b6f1a` (see
