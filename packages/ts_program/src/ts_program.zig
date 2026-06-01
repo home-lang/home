@@ -218,12 +218,15 @@ pub const Program = struct {
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
         const script_object_expandos = try self.collectScriptObjectExpandos();
         defer self.gpa.free(script_object_expandos);
+        const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
+        defer self.gpa.free(module_interface_augmentations);
         for (self.files.items) |f| {
             if (f.compilation != null) continue;
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
+            per_file.module_interface_augmentations = module_interface_augmentations;
             // Per-file declaration-file flag. Multi-file fixtures
             // (e.g. `react.d.ts` + `app.tsx` in one conformance case)
             // share a global `options.is_declaration_file` that the
@@ -273,6 +276,8 @@ pub const Program = struct {
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
         const script_object_expandos = try self.collectScriptObjectExpandos();
         defer self.gpa.free(script_object_expandos);
+        const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
+        defer self.gpa.free(module_interface_augmentations);
         for (self.files.items) |f| {
             if (f.compilation != null) {
                 // Already compiled — replay its diagnostics anyway so
@@ -286,6 +291,7 @@ pub const Program = struct {
             per_file.is_declaration_file = f.is_declaration;
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
+            per_file.module_interface_augmentations = module_interface_augmentations;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -330,6 +336,161 @@ pub const Program = struct {
             }
         }
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectRelativeModuleInterfaceAugmentations(self: *const Program) ProgramError![]const ts_driver.ModuleInterfaceAugmentation {
+        var out: std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation) = .empty;
+        errdefer out.deinit(self.gpa);
+        for (self.files.items) |f| {
+            try collectRelativeModuleInterfaceAugmentationsFromSource(self.gpa, f.source, &out);
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectRelativeModuleInterfaceAugmentationsFromSource(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation),
+    ) ProgramError!void {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "declare")) |declare_pos| {
+            search_start = declare_pos + "declare".len;
+            if (!identifierKeywordAt(source, declare_pos, "declare")) continue;
+            var module_pos = declare_pos + "declare".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (!identifierKeywordAt(source, module_pos, "module")) continue;
+            module_pos += "module".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (module_pos >= source.len or (source[module_pos] != '"' and source[module_pos] != '\'')) continue;
+            const quote = source[module_pos];
+            const spec_start = module_pos + 1;
+            const spec_end = std.mem.indexOfScalarPos(u8, source, spec_start, quote) orelse continue;
+            const spec = source[spec_start..spec_end];
+            if (!std.mem.startsWith(u8, spec, ".")) continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, spec_end + 1, '{') orelse continue;
+            const body_close = findMatchingBrace(source, body_open) orelse continue;
+            try collectInterfaceMethodAugmentations(gpa, source, spec, body_open + 1, body_close, out);
+            search_start = body_close + 1;
+        }
+    }
+
+    fn collectInterfaceMethodAugmentations(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        spec: []const u8,
+        body_start: usize,
+        body_end: usize,
+        out: *std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation),
+    ) ProgramError!void {
+        var search_start = body_start;
+        while (search_start < body_end) {
+            const iface_pos = std.mem.indexOfPos(u8, source, search_start, "interface") orelse break;
+            if (iface_pos >= body_end) break;
+            search_start = iface_pos + "interface".len;
+            if (!identifierKeywordAt(source, iface_pos, "interface")) continue;
+            var name_start = iface_pos + "interface".len;
+            while (name_start < body_end and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
+            const name_end = parseIdentifierEnd(source, name_start, body_end) orelse continue;
+            const iface_name = source[name_start..name_end];
+            const iface_open = std.mem.indexOfScalarPos(u8, source, name_end, '{') orelse continue;
+            if (iface_open >= body_end) continue;
+            const iface_close = findMatchingBrace(source, iface_open) orelse continue;
+            if (iface_close > body_end) continue;
+            try collectInterfaceMethodAugmentationsFromBody(gpa, source, spec, iface_name, iface_open + 1, iface_close, out);
+            search_start = iface_close + 1;
+        }
+    }
+
+    fn collectInterfaceMethodAugmentationsFromBody(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        spec: []const u8,
+        iface_name: []const u8,
+        body_start: usize,
+        body_end: usize,
+        out: *std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation),
+    ) ProgramError!void {
+        var i = body_start;
+        while (i < body_end) : (i += 1) {
+            if (!asciiIdentifierStart(source[i])) continue;
+            const member_start = i;
+            const member_end = parseIdentifierEnd(source, member_start, body_end) orelse continue;
+            var cursor = member_end;
+            while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            if (cursor >= body_end or source[cursor] != '(') {
+                i = member_end;
+                continue;
+            }
+            const params_close = findMatchingParen(source, cursor, body_end) orelse {
+                i = member_end;
+                continue;
+            };
+            cursor = params_close + 1;
+            while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            if (cursor >= body_end or source[cursor] != ':') {
+                i = params_close;
+                continue;
+            }
+            cursor += 1;
+            while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            const return_start = cursor;
+            const return_end = parseIdentifierEnd(source, return_start, body_end) orelse {
+                i = cursor;
+                continue;
+            };
+            try out.append(gpa, .{
+                .target_path = spec,
+                .interface_name = iface_name,
+                .member_name = source[member_start..member_end],
+                .return_type_name = source[return_start..return_end],
+                .is_method = true,
+            });
+            i = return_end;
+        }
+    }
+
+    fn parseIdentifierEnd(source: []const u8, start: usize, limit: usize) ?usize {
+        if (start >= limit or start >= source.len or !asciiIdentifierStart(source[start])) return null;
+        var end = start + 1;
+        while (end < limit and end < source.len and asciiIdentifierContinue(source[end])) : (end += 1) {}
+        return end;
+    }
+
+    fn findMatchingBrace(source: []const u8, open_pos: usize) ?usize {
+        return findMatchingDelimited(source, open_pos, source.len, '{', '}');
+    }
+
+    fn findMatchingParen(source: []const u8, open_pos: usize, limit: usize) ?usize {
+        return findMatchingDelimited(source, open_pos, limit, '(', ')');
+    }
+
+    fn findMatchingDelimited(source: []const u8, open_pos: usize, limit: usize, open_ch: u8, close_ch: u8) ?usize {
+        if (open_pos >= limit or open_pos >= source.len or source[open_pos] != open_ch) return null;
+        var depth: usize = 0;
+        var quote: u8 = 0;
+        var i = open_pos;
+        while (i < limit and i < source.len) : (i += 1) {
+            const c = source[i];
+            if (quote != 0) {
+                if (c == '\\') {
+                    i += 1;
+                } else if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '"' or c == '\'' or c == '`') {
+                quote = c;
+                continue;
+            }
+            if (c == open_ch) {
+                depth += 1;
+            } else if (c == close_ch) {
+                depth -= 1;
+                if (depth == 0) return i;
+            }
+        }
+        return null;
     }
 
     fn appendTopLevelNamespaceRootsFromSource(
@@ -655,6 +816,10 @@ pub const Program = struct {
     /// embarrassingly parallel (each file is independent). Number
     /// of workers defaults to `min(NPROC, 8)` matching tsgo.
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
+        defer self.gpa.free(module_interface_augmentations);
+        var shared_options = options;
+        shared_options.module_interface_augmentations = module_interface_augmentations;
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const n = workers orelse @min(cpu_count, 8);
 
@@ -698,9 +863,9 @@ pub const Program = struct {
         var spawned: usize = 0;
         for (threads, 0..) |*t, i| {
             _ = i;
-            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, options, pending.items, &cursor, &failures }) catch {
+            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, shared_options, pending.items, &cursor, &failures }) catch {
                 // If we can't spawn more workers, do the rest serially.
-                Worker.run(self, options, pending.items, &cursor, &failures);
+                Worker.run(self, shared_options, pending.items, &cursor, &failures);
                 break;
             };
             spawned += 1;
@@ -1515,6 +1680,23 @@ pub fn moduleStem(path: []const u8) []const u8 {
 
 const T = std.testing;
 
+fn compilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32) bool {
+    for (c.diagnostics.items) |d| {
+        if (d.code == code) return true;
+    }
+    return false;
+}
+
+fn expectCompilationLacksDiagnosticCode(c: *const ts_driver.Compilation, code: u32) !void {
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != code);
+    }
+}
+
+fn expectCompilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32) !void {
+    try T.expect(compilationHasDiagnosticCode(c, code));
+}
+
 test "Program: add returns stable FileId, dedups on path" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -1974,6 +2156,76 @@ test "Program: declare global namespace roots are visible across files" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 2503);
     }
+}
+
+test "Program: relative module augmentation summary adds methods to matching class name" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    _ = try p.add("/proj/a.ts",
+        \\export class B { value = 1; }
+        \\export class Cls { ok = true; }
+        \\export class A {}
+    );
+    _ = try p.add("/proj/augment.ts",
+        \\import { A, B, Cls } from "./a";
+        \\export {};
+        \\declare module "./a" {
+        \\  interface A {
+        \\    getB(): B;
+        \\    getCls(): Cls;
+        \\  }
+        \\}
+        \\A.prototype.getB = function() { return new B(); };
+        \\A.prototype.getCls = function() { return new Cls(); };
+    );
+    const use_id = try p.add("/proj/use.ts",
+        \\class A {}
+        \\const a = new A();
+        \\a.getB().value;
+        \\a.getCls().ok;
+    );
+
+    try p.compileAll(.{ .no_emit = true });
+    const use_c = p.fileById(use_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(use_c, 2339);
+}
+
+test "Program: relative module augmentation preserves missing member diagnostic" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    _ = try p.add("/proj/a.ts",
+        \\export class B {}
+        \\export class A {}
+    );
+    _ = try p.add("/proj/augment.ts",
+        \\import { A, B } from "./a";
+        \\export {};
+        \\declare module "./a" {
+        \\  interface A {
+        \\    getB(): B;
+        \\  }
+        \\}
+        \\A.prototype.getB = function() { return new B(); };
+    );
+    const bad_id = try p.add("/proj/bad.ts",
+        \\class Other {}
+        \\const other = new Other();
+        \\other.getB();
+    );
+
+    try p.compileAll(.{ .no_emit = true });
+    const bad_c = p.fileById(bad_id).compilation.?;
+    try expectCompilationHasDiagnosticCode(bad_c, 2339);
 }
 
 test "moduleStem strips dir and extensions" {

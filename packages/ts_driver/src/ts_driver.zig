@@ -25,6 +25,7 @@ pub const Token = ts_lexer.Token;
 pub const StrictFlags = ts_checker.StrictFlags;
 pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
+pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 
 /// One nested elaboration entry under a unified diagnostic, mirroring
 /// tsc's `messageChain`. `message` and any `children` array are
@@ -330,6 +331,9 @@ pub const CompileOptions = struct {
     /// Program-level JS namespace-object expandos discovered in
     /// sibling script files.
     script_object_expandos: []const ScriptObjectExpando = &.{},
+    /// Program-level relative module interface augmentations discovered
+    /// in sibling files.
+    module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
     /// Effective `--moduleResolution` value as a normalized
     /// lower-case label (`"classic"`, `"node10"`, `"node16"`,
     /// `"nodenext"`, `"bundler"`). The conformance harness derives
@@ -1442,6 +1446,9 @@ pub fn compileSource(
     }
     if (options.ambient_global_namespace_roots.len > 0) {
         checker.setAmbientGlobalNamespaceRoots(options.ambient_global_namespace_roots);
+    }
+    if (options.module_interface_augmentations.len > 0) {
+        checker.setModuleInterfaceAugmentations(options.module_interface_augmentations);
     }
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
