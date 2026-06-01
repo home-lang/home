@@ -6579,11 +6579,15 @@ pub const Parser = struct {
             const lit = self.source[name_tok.span.start..name_tok.span.end];
             if (lit.len >= 3) {
                 const inner = lit[1 .. lit.len - 1];
-                if (std.mem.startsWith(u8, inner, "./") or
+                const is_relative_name = std.mem.startsWith(u8, inner, "./") or
                     std.mem.startsWith(u8, inner, "../") or
                     std.mem.eql(u8, inner, ".") or
-                    std.mem.eql(u8, inner, ".."))
-                {
+                    std.mem.eql(u8, inner, "..");
+                const is_external_module_augmentation = is_relative_name and
+                    self.top_level_external_module_indicator and
+                    self.block_depth == 0 and
+                    self.namespace_depth == 0;
+                if (is_relative_name and !is_external_module_augmentation) {
                     try self.reportCodeAt(name_tok.span.start, name_tok.line, 2436, "Ambient module declaration cannot specify relative module name.");
                 }
             }
@@ -19846,6 +19850,38 @@ test "parser: TS2436 not reported for non-ambient module declarations" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 2436);
     }
+}
+
+test "parser: TS2436 not reported for relative augmentation in external module" {
+    var s = try newTestSetup(
+        \\export {};
+        \\declare module "./a" {
+        \\    interface A { value: string; }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2436);
+    }
+}
+
+test "parser: TS2436 still reports nested relative ambient module" {
+    var s = try newTestSetup(
+        \\export {};
+        \\declare namespace N {
+        \\    declare module "./a" { }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2436) found = true;
+    }
+    try T.expect(found);
 }
 
 test "parser: TS2435 ambient modules cannot be nested" {
