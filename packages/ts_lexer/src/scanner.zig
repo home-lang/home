@@ -482,6 +482,11 @@ pub const Scanner = struct {
         return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$' or c >= 0x80;
     }
 
+    fn isDecodedIdentStart(cp: u32) bool {
+        if (cp <= 0x7f) return isIdentStart(@intCast(cp));
+        return true;
+    }
+
     fn isIdentCont(c: u8) bool {
         return isIdentStart(c) or (c >= '0' and c <= '9');
     }
@@ -527,6 +532,33 @@ pub const Scanner = struct {
         if (c >= '0' and c <= '9') return c - '0';
         if (c >= 'a' and c <= 'f') return 10 + c - 'a';
         return 10 + c - 'A';
+    }
+
+    fn decodedUnicodeEscapeValue(self: *const Scanner, start: u32) ?u32 {
+        if (start + 1 >= self.source.len or self.source[start] != '\\' or self.source[start + 1] != 'u') return null;
+        var p = start + 2;
+        if (p < self.source.len and self.source[p] == '{') {
+            p += 1;
+            var value: u32 = 0;
+            var digits: u32 = 0;
+            while (p < self.source.len and self.source[p] != '}') : (p += 1) {
+                const ch = self.source[p];
+                if (!isHexDigit(ch)) return null;
+                value = value * 16 + hexValue(ch);
+                digits += 1;
+            }
+            if (p >= self.source.len or self.source[p] != '}' or digits == 0) return null;
+            return value;
+        }
+        if (p + 4 > self.source.len) return null;
+        var value: u32 = 0;
+        var i: u32 = 0;
+        while (i < 4) : (i += 1) {
+            const ch = self.source[p + i];
+            if (!isHexDigit(ch)) return null;
+            value = value * 16 + hexValue(ch);
+        }
+        return value;
     }
 
     fn scanIdentifierOrKeyword(self: *Scanner, start: u32, line: u32, flags: TokenFlags) Token {
@@ -1043,6 +1075,18 @@ pub const Scanner = struct {
         // and downstream binders/checkers can't see the intended name.
         // Baseline: scannerS7.6_A4.2_T1.errors.txt.
         if (c == '\\' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == 'u') {
+            if (self.decodedUnicodeEscapeValue(self.pos)) |value| {
+                if (!isDecodedIdentStart(value)) {
+                    self.pos += 1;
+                    self.reportAt(gpa, start, line, "Invalid character.");
+                    return .{
+                        .span = .{ .start = start, .end = self.pos },
+                        .kind = .invalid,
+                        .flags = flags,
+                        .line = line,
+                    };
+                }
+            }
             var ident_flags = flags;
             ident_flags.has_escape = true;
             self.pos += 2; // skip `\u`
@@ -1661,6 +1705,18 @@ test "Scanner: escaped keywords classify as keywords and preserve escape flag" {
     try t.expectEqual(TokenKind.kw_async, toks.items[1].kind);
     try t.expect(toks.items[1].flags.has_escape);
     try t.expect(toks.items[1].flags.contextual);
+}
+
+test "Scanner: escaped digit is invalid as identifier start but valid as part" {
+    var s = Scanner.init(t.allocator, "a\\u0031 \\u0031a");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.identifier, toks.items[0].kind);
+    try t.expect(toks.items[0].flags.has_escape);
+    try t.expectEqual(TokenKind.invalid, toks.items[1].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[2].kind);
 }
 
 test "Scanner: numeric literals" {

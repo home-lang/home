@@ -16360,6 +16360,14 @@ pub const Parser = struct {
         if (t.kind == .identifier or t.kind == .private_identifier or t.kind.isKeyword()) {
             return self.advance();
         }
+        if (t.kind == .invalid) {
+            _ = self.advance();
+            const recovered = self.peek();
+            if (recovered.kind == .identifier or recovered.kind == .private_identifier or recovered.kind.isKeyword()) {
+                return self.advance();
+            }
+            return t;
+        }
         try self.reportCodeAt(t.span.start, t.line, 1003, "Identifier expected.");
         return error.UnexpectedToken;
     }
@@ -24383,6 +24391,19 @@ test "parser: statement invalid token recovers following declaration" {
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 1), stmts.len);
     try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmts[0]));
+}
+
+test "parser: invalid escaped identifier start reports only invalid character" {
+    var s = try newTestSetup(
+        \\var a\u0031;
+        \\var \u0031a;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1003);
+    }
 }
 
 test "parser: invalid token at call argument tail preserves partial call" {

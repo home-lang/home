@@ -1501,8 +1501,16 @@ pub fn compileSource(
         };
     }
     const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or sourceIsUncheckedJs(source);
+    var has_invalid_character_diagnostic = false;
+    for (c.diagnostics.items) |existing| {
+        if (existing.code == 1127) {
+            has_invalid_character_diagnostic = true;
+            break;
+        }
+    }
     for (checker.diagnostics.items) |d| {
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, d.message, source)) continue;
+        if (has_invalid_character_diagnostic and d.code == ts_checker.check.TsCodes.variable_implicitly_any_declaration) continue;
         // Suggestion-category diagnostics (TS7043-TS7050) only surface
         // when the caller opted in. They are never errors and never
         // appear in `.errors.txt` baselines, so conformance / normal
@@ -2270,6 +2278,23 @@ test "driver: simple let binding round-trips" {
     // Symbol table is populated.
     const sym = c.lookupTopLevel("x") orelse return error.NoSymbol;
     try T.expect(sym.flags.is_let);
+}
+
+test "driver: invalid escaped identifier start suppresses evolving-any cascade" {
+    var c = try compileSource(T.allocator,
+        \\var a\u0031;
+        \\var \u0031a;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_invalid = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1127) saw_invalid = true;
+        try T.expect(d.code != ts_checker.check.TsCodes.variable_implicitly_any_declaration);
+    }
+    try T.expect(saw_invalid);
 }
 
 test "driver: implicit-any suggestions hidden by default, surfaced on opt-in" {
