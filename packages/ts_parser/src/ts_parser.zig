@@ -6528,6 +6528,7 @@ pub const Parser = struct {
 
     fn parseNamespaceDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // namespace / module
+        const has_declare_modifier = self.cursor >= 2 and self.tokens[self.cursor - 2].kind == .kw_declare;
         // TS1046: A top-level `namespace` / `module` in a `.d.ts` file
         // without a leading `declare` / `export` modifier is invalid.
         // Anchored at the `namespace` / `module` keyword to match
@@ -6587,17 +6588,17 @@ pub const Parser = struct {
                 }
             }
         }
-        // TS2435: `declare module "outer" { declare module "inner" {}}`
-        // (or any ambient external module declared inside another
-        // namespace/module body) is rejected by upstream tsc —
-        // ambient modules must appear at the top level of a file.
-        // `namespace_depth > 0` signals we're inside another
-        // namespace/module body at this point. Only applies to the
-        // string-literal (external module) form; identifier-named
-        // namespaces nest freely.
+        // TS2435: explicit nested ambient modules
+        // (`declare module "outer" { declare module "inner" {} }`)
+        // and string-named modules nested in identifier namespaces are
+        // rejected. A bare `module "Observable" { ... }` inside a
+        // string-named ambient module is the module-augmentation form
+        // tsc accepts and re-roots at the global external module name.
+        // Mirrors `moduleAugmentationInAmbientModule3`.
         if (name_tok.kind == .string_literal and
             self.namespace_depth > 0 and
-            (self.ambient_depth > 0 or self.isAmbientContextAt(start.span.start)))
+            (self.ambient_depth > 0 or self.isAmbientContextAt(start.span.start)) and
+            (has_declare_modifier or !self.in_string_named_module))
         {
             try self.reportCodeAt(name_tok.span.start, name_tok.line, 2435, "Ambient modules cannot be nested in other modules or namespaces.");
         }
@@ -19872,6 +19873,22 @@ test "parser: TS2435 not reported for top-level ambient modules" {
     var s = try newTestSetup(
         \\declare module "first" { }
         \\declare module "second" { }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2435);
+    }
+}
+
+test "parser: TS2435 not reported for module augmentation inside ambient external module" {
+    var s = try newTestSetup(
+        \\declare module "Map" {
+        \\    module "Observable" {
+        \\        interface Observable {}
+        \\    }
+        \\}
     );
     defer destroyTestSetup(s);
 
