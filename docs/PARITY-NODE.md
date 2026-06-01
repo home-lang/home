@@ -5,23 +5,28 @@ drill-down view; the at-a-glance row is in the
 [README parity status](../README.md#nodejs-compatibility-packagesruntimesrcnode)
 section.
 
-> **Status:** Substrate landing module-by-module. JSC bring-up
-> (Phase 12.2) is at the M6 milestone — JSON + Promise + Iterator
-> + Global helpers across 96 files. Phase 12.7 round-15 has
-> top-level `node:*` substrate modules (`buffer`, `stream`, `fs`,
-> `events`, `util`, `assert`, `os`, `url`, `querystring`, `crypto`,
-> `process`, `string_decoder`, `tty`) alongside the binding/helper
-> files. Total **28 Zig substrate files** ported; no
-> `node:*` module is JavaScript-callable yet, but the runway is
-> shortening. Once JSC reaches the JS-callable milestone, each
-> module flips from 🔴 to 🟡 or 🟢 based on Bun's existing port.
+> **Status:** The JS-callable bridge is live. A `require()` (CommonJS) of
+> the `node:*` modules below works through Home's **own** JavaScriptCore
+> realm — exercised today by `home eval` and `HOME_NATIVE_RUN=1 home run`,
+> NOT by delegating to system `bun`. 24 modules are JS-callable (🟡) as
+> behavioral subsets, each unit-tested in
+> `packages/runtime/src/jsc/node_modules.zig` (+ `jsc/spawn_global.zig` for
+> `child_process`). Several are backed by native Zig: `node:zlib`
+> (`std.compress.flate`), `node:crypto` HMAC/pbkdf2 (`std.crypto`),
+> `node:fs`/`child_process` (`std.process` / native fs).
+>
+> **Scope caveat:** 🟡 here means "callable through Home's realm as a
+> useful subset", NOT "passes the Node test suite" (we don't run it yet)
+> and NOT "wired into the bun-corpus gate" (that still routes through the
+> separate bootstrap harness). Socket/networking and heavy modules
+> (`net`/`http`/`tls`/`dns`/`worker_threads`/`vm`/…) remain 🔴.
 
 Legend:
 
 - 🟢 **Fully implemented** — JS-callable today, passes its slice of
   the Node test suite at the rate noted.
-- 🟡 **Partially implemented** — JS-callable, with missing APIs listed
-  inline.
+- 🟡 **Partially implemented** — JS-callable (through Home's realm), with
+  missing APIs / caveats noted inline.
 - 🔴 **Not implemented** — no JS surface yet; Zig substrate may exist.
 - ❌ **Won't implement** — explicitly out of scope (no Node-only
   internals like `node:wasi` legacy quirks).
@@ -30,10 +35,12 @@ Legend:
 
 ### [`node:assert`](https://nodejs.org/api/assert.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/assert.zig` (top-level shim) +
-`packages/runtime/src/node/assert/myers_diff.zig` — the diff helper
-used by `assert.deepStrictEqual` error formatting.
+🟡 JS-callable. `ok`/`equal`/`notEqual`/`strictEqual`/`notStrictEqual`,
+`deepEqual`/`deepStrictEqual`/`notDeepStrictEqual`, `throws`/`doesNotThrow`,
+`rejects`/`doesNotReject`, `match`/`doesNotMatch`, `ifError`, `fail`,
+`AssertionError` (code `ERR_ASSERTION`), `assert.strict`. Missing: full
+`AssertionError` diff formatting (the `myers_diff.zig` substrate isn't wired
+to messages yet).
 
 ### [`node:async_hooks`](https://nodejs.org/api/async_hooks.html)
 
@@ -41,13 +48,23 @@ used by `assert.deepStrictEqual` error formatting.
 
 ### [`node:buffer`](https://nodejs.org/api/buffer.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/buffer.zig` (Phase 12.7 round-10
-port of Bun's `node:buffer`).
+🟡 JS-callable (`Buffer extends Uint8Array`, also a global). `from`
+(utf8/hex/base64/base64url/latin1/array/ArrayBuffer/view), `alloc`/
+`allocUnsafe`, `isBuffer`, `byteLength`, `concat`, `compare` (static +
+instance), `equals`, `toString` (utf8/hex/base64/base64url/latin1/ascii),
+`toJSON`, `subarray` (memory-sharing view), and read/write `UInt8`/`Int8`,
+`UInt16`/`Int16` LE+BE, `UInt32`/`Int32` LE+BE, `BigUInt64` LE/BE,
+`Float`/`Double` LE. Missing: `Blob`, `File`, the full read/write variant
+matrix, `SlowBuffer`, `transcode`. Zig substrate: `node/buffer.zig`.
 
 ### [`node:child_process`](https://nodejs.org/api/child_process.html)
 
-🔴 Not implemented.
+🟡 JS-callable, mapped onto Home's native `Bun.spawnSync`:
+`spawnSync`/`execSync`/`execFileSync` (Node result shapes) + `exec`/
+`execFile` (async callback) + `spawn` (EventEmitter emitting stdout/stderr
+`data`/`end` and `exit`/`close`). Caveat: **eager** — children run to
+completion synchronously under the hood (no live streaming / interactive
+stdin yet). `fork`/IPC not implemented.
 
 ### [`node:cluster`](https://nodejs.org/api/cluster.html)
 
@@ -55,25 +72,28 @@ port of Bun's `node:buffer`).
 
 ### [`node:console`](https://nodejs.org/api/console.html)
 
-🔴 Not implemented.
+🟡 JS-callable — `require("node:console")` returns the realm's `console`
+global (`log`/`info`/`debug`/`error`/`warn`/`trace`/`dir`).
 
 ### [`node:constants`](https://nodejs.org/api/os.html#os_constants)
 
-🔴 Not implemented. Zig substrate landed:
-`packages/runtime/src/node/os_constants.zig` (POSIX error codes,
-signal numbers, fs constants).
+🟡 JS-callable — POSIX/Darwin subset: `O_*` open flags, `F_OK`/`R_OK`/
+`W_OK`/`X_OK`, `S_IF*` mode bits, `SIG*` signal numbers. Zig substrate:
+`packages/runtime/src/node/os_constants.zig`.
 
 ### [`node:crypto`](https://nodejs.org/api/crypto.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/crypto.zig` — CSPRNG,
-`randomBytes`, `randomFillSync`, `randomUUID`, hash/HMAC families
-built on `std.crypto`; OpenSSL/BoringSSL-backed surfaces remain
-stubbed until the native crypto bindings port.
+🟡 JS-callable. `createHash` (sha256/sha512/sha1/md5), `createHmac`
+(HMAC over native hash), `pbkdf2`/`pbkdf2Sync` (native `std.crypto.pwhash`,
+sha1/256/512 — RFC 6070 verified), `randomBytes`, `randomFillSync`,
+`randomInt`, `randomUUID` (v4), `timingSafeEqual`, `getHashes`. Missing:
+`createCipheriv`/`createDecipheriv`, `createSign`/`verify`, `hkdf`,
+`scrypt`, `KeyObject`, X.509 — the OpenSSL/BoringSSL-backed surfaces.
+Zig substrate: `node/crypto.zig`.
 
 ### [`node:dgram`](https://nodejs.org/api/dgram.html)
 
-🔴 Not implemented.
+🔴 Not implemented (needs UDP sockets).
 
 ### [`node:diagnostics_channel`](https://nodejs.org/api/diagnostics_channel.html)
 
@@ -81,32 +101,37 @@ stubbed until the native crypto bindings port.
 
 ### [`node:dns`](https://nodejs.org/api/dns.html)
 
-🔴 Not implemented.
+🔴 Not implemented (needs resolver bindings).
 
 ### [`node:events`](https://nodejs.org/api/events.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/events.zig`.
+🟡 JS-callable. `EventEmitter` (`on`/`once`/`off`/`emit`/`addListener`/
+`prependListener`/`removeListener`/`removeAllListeners`/`listeners`/
+`listenerCount`/`eventNames`/`setMaxListeners`), `events.once(emitter,name)`
+→ Promise, `events.getEventListeners`. Missing: `events.on` async iterator,
+`captureRejections`, `EventTarget` interop. Zig substrate: `node/events.zig`.
 
 ### [`node:fs`](https://nodejs.org/api/fs.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed:
-- `packages/runtime/src/node/fs.zig` — top-level `node:fs` shim (Phase 12.7 round-10).
-- `packages/runtime/src/node/Stat.zig` — `fs.Stats` shape.
-- `packages/runtime/src/node/StatFS.zig` — `fs.StatFs` shape.
-- `packages/runtime/src/node/dir_iterator.zig` — `fs.Dir` iterator.
-- `packages/runtime/src/node/fs_events.zig` — `fs.watch` event types.
-- `packages/runtime/src/node/node_fs_constant.zig` — file mode / open flag constants.
-- `packages/runtime/src/node/time_like.zig` — `utimes` / `lutimes` argument coercion.
+🟡 JS-callable, backed by Home's native fs. Sync:
+`readFileSync`/`writeFileSync`/`existsSync`/`statSync`/`mkdirSync`/
+`appendFileSync`. Callback: `readFile`/`writeFile`. Streams:
+`createReadStream`/`createWriteStream` (on `node:stream`). `fs.promises`
+(see below). Missing: `readdirSync`/`readdir` (throws ENOSYS),
+`rm`/`unlink`/`rename`/`copyFile`/`watch`, full `Stats` instances, most
+async callback variants. Zig substrate: `node/fs.zig`, `Stat.zig`,
+`StatFS.zig`, `dir_iterator.zig`, `fs_events.zig`, `node_fs_constant.zig`,
+`time_like.zig`.
 
 ### [`node:fs/promises`](https://nodejs.org/api/fs.html#promises-api)
 
-🔴 Not implemented.
+🟡 JS-callable (`require("node:fs/promises")` or `fs.promises`):
+`readFile`/`writeFile`/`appendFile`/`mkdir`/`stat`/`access`. Missing the
+rest of the promises surface (readdir/rm/open/FileHandle/…).
 
 ### [`node:http`](https://nodejs.org/api/http.html)
 
-🔴 Not implemented.
+🔴 Not implemented (needs the socket/server stack).
 
 ### [`node:http2`](https://nodejs.org/api/http2.html)
 
@@ -122,40 +147,46 @@ landed:
 
 ### [`node:module`](https://nodejs.org/api/module.html)
 
-🔴 Not implemented.
+🔴 Not implemented (the realm exposes a CommonJS `require` global, but the
+`node:module` API — `createRequire`/`Module`/`builtinModules` — is not).
 
 ### [`node:net`](https://nodejs.org/api/net.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/node_net_binding.zig` —
-`net.Socket` / `net.Server` C-callable layer.
+🔴 Not implemented (needs TCP/IPC sockets). Zig substrate:
+`packages/runtime/src/node/node_net_binding.zig`.
 
 ### [`node:os`](https://nodejs.org/api/os.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed:
-- `packages/runtime/src/node/os.zig` — top-level `node:os` shim (Phase 12.7).
-- `packages/runtime/src/node/os_constants.zig` — constants table.
+🟡 JS-callable. `platform`/`arch`/`type`/`release`/`machine`/`version`,
+`EOL`, `homedir`/`tmpdir`/`hostname`, `cpus`/`totalmem`/`freemem`
+(placeholder values), `endianness`, `loadavg`, `uptime`,
+`availableParallelism`, `networkInterfaces` (`{}`), `userInfo`,
+`constants.signals`, `getPriority`/`setPriority`, `devNull`. Several derive
+from `process`/`navigator` rather than syscalls. Zig substrate:
+`node/os.zig`, `os_constants.zig`.
 
 ### [`node:path`](https://nodejs.org/api/path.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig port: **fully
-ported** at `packages/runtime/src/node/path.zig` — POSIX + Win32
-path resolution algorithms vendored verbatim from Bun. Will flip
-🟢 the moment the JS bridge is wired.
+🟡 JS-callable. Full POSIX surface (`join`/`normalize`/`resolve`/
+`dirname`/`basename`/`extname`/`isAbsolute`/`relative`/`parse`/`format`/
+`sep`/`delimiter`), plus `path.posix`/`path.win32` namespaces,
+`path.matchesGlob`, `path.toNamespacedPath`. Win32 is a backslash-aware
+subset. (The verbatim Bun Zig port at `node/path.zig` is not yet the
+backing impl — the current impl is the realm's JS port.)
 
 ### [`node:perf_hooks`](https://nodejs.org/api/perf_hooks.html)
 
-🔴 Not implemented.
+🟡 JS-callable — `{ performance, PerformanceObserver (stub) }`. Missing
+`PerformanceObserver` actually observing, `performance.mark`/`measure`
+entries.
 
 ### [`node:process`](https://nodejs.org/api/process.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/process.zig` — host facts and
-mutators for `cwd` / `chdir`, env reads/writes/snapshots, `pid`,
-`ppid`, `platform`, `arch`, `uptime`, `hrtime`, `memoryUsage`, and
-`cpuUsage`. EventEmitter, `nextTick`, native bindings, and JS export
-shape attach with the JS-callable bridge.
+🟡 JS-callable — `require("node:process")` returns the realm's `process`
+global: `argv`, `env`, `platform`, `arch`, `version`/`versions`, `pid`,
+`cwd()`, `exit()`, `nextTick()`, `stdout`/`stderr` `.write`. Missing:
+EventEmitter surface, `hrtime`, `memoryUsage`/`cpuUsage`, signal handlers,
+`process.binding`. Zig substrate: `node/process.zig`.
 
 ### [`node:punycode`](https://nodejs.org/api/punycode.html)
 
@@ -163,15 +194,14 @@ shape attach with the JS-callable bridge.
 
 ### [`node:querystring`](https://nodejs.org/api/querystring.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/querystring.zig` — legacy
-`parse` / `stringify` / `escape` / `unescape` plus `encode` /
-`decode` aliases, preserving duplicate keys as ordered entries until
-the JS object surface attaches.
+🟡 JS-callable — `parse`/`stringify`/`escape`/`unescape` (duplicate keys
+preserved as arrays). Zig substrate: `node/querystring.zig`.
 
 ### [`node:readline`](https://nodejs.org/api/readline.html)
 
-🔴 Not implemented.
+🟡 JS-callable — `createInterface({ input })` reads lines from a Readable
+input, emitting `line`/`close` (CRLF-trimmed). `question` is a stub.
+Missing: interactive/output mode, history, cursor control.
 
 ### [`node:readline/promises`](https://nodejs.org/api/readline.html#promises-api)
 
@@ -183,9 +213,12 @@ the JS object surface attaches.
 
 ### [`node:stream`](https://nodejs.org/api/stream.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/stream.zig` (Phase 12.7 round-10
-port of Bun's `node:stream`).
+🟡 JS-callable, flowing-mode on `EventEmitter`: `Readable` (`push`/`read`/
+`resume`/`pause`/`pipe`/`Readable.from`/`[Symbol.asyncIterator]`),
+`Writable`, `Transform`, `PassThrough`, `Duplex`, and `stream.finished`/
+`stream.pipeline` (callback). Missing: object-mode nuances, backpressure,
+`highWaterMark`, `cork`/`uncork`, the web-streams bridge. Zig substrate:
+`node/stream.zig`.
 
 ### [`node:stream/consumers`](https://nodejs.org/api/stream.html#streamconsumers)
 
@@ -193,38 +226,40 @@ port of Bun's `node:stream`).
 
 ### [`node:stream/promises`](https://nodejs.org/api/stream.html#streampromises-api)
 
-🔴 Not implemented.
+🟡 JS-callable — `stream.promises.pipeline` / `finished` (also via
+`require("node:stream/promises")`).
 
 ### [`node:stream/web`](https://nodejs.org/api/webstreams.html)
 
-🔴 Not implemented.
+🔴 Not implemented (no WHATWG `ReadableStream`/`WritableStream`/
+`TransformStream` yet).
 
 ### [`node:string_decoder`](https://nodejs.org/api/string_decoder.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/string_decoder.zig` — allocator
-owned `StringDecoder` state machine for split UTF-8, UTF-16LE/`ucs2`,
-base64/base64url grouping, hex, ascii, latin1, and binary decoding.
-The public `require("string_decoder").StringDecoder` constructor
-attaches once the JS module bridge is live.
+🟡 JS-callable — `StringDecoder` with UTF-8 chunk-boundary handling
+(buffers an incomplete trailing multibyte sequence between `write`s);
+non-utf8 encodings fall back to whole-chunk `Buffer.toString`. Zig
+substrate: `node/string_decoder.zig`.
 
 ### [`node:test`](https://nodejs.org/api/test.html)
 
-🔴 Not implemented. Will land as part of `home test` (Phase 12.8) —
-the runner is a port of Bun's test runner, not Node's, but the
-`node:test` API surface is mapped onto it.
+🔴 Not implemented. Will land as part of `home test` (Phase 12.8).
 
 ### [`node:timers`](https://nodejs.org/api/timers.html)
 
-🔴 Not implemented.
+🟡 JS-callable — `setTimeout`/`clearTimeout`/`setInterval`/`clearInterval`/
+`setImmediate`/`clearImmediate` (re-exporting the realm's event-loop
+timers) + `timers.promises.setTimeout`.
 
 ### [`node:timers/promises`](https://nodejs.org/api/timers.html#timers-promises-api)
 
-🔴 Not implemented.
+🟡 JS-callable — `setTimeout(ms, value)` → Promise (via
+`require("node:timers/promises")`). Missing `setInterval`/`setImmediate`
+async-iterator forms.
 
 ### [`node:tls`](https://nodejs.org/api/tls.html)
 
-🔴 Not implemented.
+🔴 Not implemented (needs TLS sockets).
 
 ### [`node:trace_events`](https://nodejs.org/api/tracing.html)
 
@@ -232,27 +267,25 @@ the runner is a port of Bun's test runner, not Node's, but the
 
 ### [`node:tty`](https://nodejs.org/api/tty.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/tty.zig`, backed by
-`packages/runtime/src/core/tty.zig` — `isatty`, window-size probing,
-raw/normal/io terminal modes, color-depth environment rules, and
-lightweight stream state for future `ReadStream` / `WriteStream`
-wrappers.
+🟡 JS-callable — `isatty()` (returns `false` for now), `ReadStream`/
+`WriteStream` stubs. Missing real tty detection / window-size / raw mode.
+Zig substrate: `node/tty.zig`, `core/tty.zig`.
 
 ### [`node:url`](https://nodejs.org/api/url.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/url.zig` — WHATWG `URL`,
-`URLSearchParams`, legacy `parse` / `format` / `resolve`, and
-file-URL helpers.
+🟡 JS-callable — `URL`/`URLSearchParams` (the realm's WHATWG globals),
+`fileURLToPath`/`pathToFileURL`, `format`. Missing legacy `url.parse`/
+`resolve` (the old `Url` object shape). Zig substrate: `node/url.zig`.
 
 ### [`node:util`](https://nodejs.org/api/util.html)
 
-🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed:
-- `packages/runtime/src/node/util.zig` — top-level `node:util` shim (Phase 12.7).
-- `packages/runtime/src/node/util/parse_args_utils.zig` — `util.parseArgs` parser.
-- `packages/runtime/src/node/types.zig` — `util.types.*` type-predicate exports.
+🟡 JS-callable — `inspect`, `format`, `promisify`, `callbackify`,
+`inherits`, `deprecate`, `isDeepStrictEqual`, `stripVTControlCharacters`,
+`toUSVString`, `debuglog`, `TextEncoder`/`TextDecoder`, `parseArgs`
+(long/short/`=value`/clustered/boolean+string/multiple/defaults/
+positionals/`--`), and `types.*` (isDate/isRegExp/isPromise/isMap/isSet/
+isArrayBuffer/isTypedArray/isAsyncFunction/isNativeError/isAnyArrayBuffer).
+Zig substrate: `node/util.zig`, `util/parse_args_utils.zig`, `types.zig`.
 
 ### [`node:v8`](https://nodejs.org/api/v8.html)
 
@@ -274,40 +307,46 @@ equivalent in JSC.
 
 ### [`node:zlib`](https://nodejs.org/api/zlib.html)
 
-🔴 Not implemented.
+🟡 JS-callable, **native** (Zig `std.compress.flate`): `gzipSync`/
+`gunzipSync`/`deflateSync`/`inflateSync`/`deflateRawSync`/`inflateRawSync`
++ async (callback) `gzip`/`gunzip`/`deflate`/`inflate`. Missing: brotli,
+streaming `Gzip`/`Gunzip` transform classes, options (level/strategy).
 
 ## Node.js globals
 
-🔴 Not implemented. Once JSC is up, `process`, `Buffer`,
-`globalThis`, `console`, the timer functions (`setTimeout` /
-`setInterval` / `setImmediate` and their `clearX` pairs),
-`queueMicrotask`, `fetch`, `URL`, `URLSearchParams`, `TextEncoder`,
-`TextDecoder`, `crypto`, `performance`, `structuredClone`, and the
-`*Streams` family all attach via Bun's existing port.
+🟡 JS-callable in the realm: `process`, `Buffer`, `console`, the timer
+functions (`setTimeout`/`setInterval`/`setImmediate` + `clearX`),
+`queueMicrotask`, `fetch` (data:/file:/http(s)), `URL`, `URLSearchParams`,
+`TextEncoder`/`TextDecoder`, `crypto` (`getRandomValues`/`randomUUID`),
+`performance`, `structuredClone`, `atob`/`btoa`, `global`/`self`. Missing:
+`WebSocket`, the WHATWG `*Stream` family, `navigator` (intentionally absent
+to prove non-delegation).
 
 ## Summary
 
 | Status | Count | % |
 |---|---|---|
 | 🟢 Fully implemented | 0 | 0% |
-| 🟡 Partially implemented | 0 | 0% |
-| 🔴 Not implemented (JS-callable) | 47 | ~98% |
+| 🟡 Partially implemented (JS-callable subset) | 24 | ~51% |
+| 🔴 Not implemented | 22 | ~47% |
 | ❌ Won't implement | 1 | ~2% |
 
-**Zig substrate ported:** 28 files. Phase 12.7 round-15 has top-level
-module shims for `assert.zig`, `buffer.zig`, `crypto.zig`,
-`events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`,
-`querystring.zig`, `stream.zig`, `string_decoder.zig`, `tty.zig`,
-`url.zig`, and `util.zig`. On top of the 14 binding/helper files already
-present: `Stat`, `StatFS`, `dir_iterator`, `fs_events`,
-`os_constants`, `nodejs_error_code`, `node_fs_constant`,
-`node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`,
-`types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`.
+🟡 modules (JS-callable via Home's realm — `home eval` /
+`HOME_NATIVE_RUN`): `assert`, `buffer`, `child_process`, `console`,
+`constants`, `crypto`, `events`, `fs`, `fs/promises`, `os`, `path`,
+`perf_hooks`, `process`, `querystring`, `readline`, `stream`,
+`stream/promises`, `string_decoder`, `timers`, `timers/promises`, `tty`,
+`url`, `util`, `zlib`.
 
-JSC bring-up (Phase 12.2) has reached the M6 milestone — JSON +
-Promise + Iterator + Global helpers across 96 files. Once the
-JS-callable bridge wires up, the substrate-backed modules
-(`assert`, `buffer`, `crypto`, `events`, `fs`, `net`, `os`, `path`,
-`process`, `querystring`, `stream`, `string_decoder`, `tty`, `url`, `util`)
-flip from 🔴 to 🟡 / 🟢 based on Bun's existing port, and the
-remaining modules grow substrate per their own Phase 12.7 rounds.
+Still 🔴 (the next frontier — mostly sockets/networking + heavy runtime):
+`net`, `http`, `https`, `http2`, `tls`, `dgram`, `dns`, `worker_threads`,
+`vm`, `cluster`, `repl`, `wasi`, `inspector`, `module`, `async_hooks`,
+`trace_events`, `diagnostics_channel`, `punycode`, `readline/promises`,
+`stream/consumers`, `stream/web`, `test`.
+
+**Honest caveats:** (1) 🟡 = a useful subset callable through Home's own
+JSC realm, not a full module nor Node-test-suite-verified; (2) these are
+**not** yet wired into the bun-corpus gate (which still routes through the
+bootstrap text-rewrite harness), so they do not yet move the corpus
+pass-count — that needs the loader/runtime convergence work tracked in
+[`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
