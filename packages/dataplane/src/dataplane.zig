@@ -1,212 +1,195 @@
 //! Home `dataplane`: a native reverse-proxy hot path (`packages/dataplane/`).
 //!
-//! Meant to sit behind a high-level control plane (e.g. rpx's TypeScript daemon)
-//! that owns config, TLS issuance, routing, DNS and /etc/hosts — the dataplane
-//! just moves bytes as fast as the kernel allows.
+//! Sits behind a high-level control plane (e.g. rpx's TypeScript daemon) that
+//! owns config, TLS issuance, routing, DNS and /etc/hosts — the dataplane just
+//! moves bytes as fast as the kernel allows.
 //!
 //! Thesis: a runtime/JS proxy is body-bound because every byte is copied through
 //! userspace + GC (~3x behind nginx on HTML). For *proxying*, nginx also copies
 //! through userspace — so a no-GC, no-per-request-alloc native proxy should match
-//! nginx, and on Linux `splice()` (kernel→kernel, zero-copy) goes *past* it,
-//! since we then move bytes nginx still copies. A natural fit for Home's no-GC
-//! systems model; stock Zig std here is a placeholder for Home's own io_uring/
-//! splice primitives.
+//! nginx, and `splice()` (kernel→kernel, zero-copy) goes *past* it, since we then
+//! move bytes nginx still copies. A natural fit for Home's no-GC systems model.
 //!
-//! This v0 is a transparent 1:1 TCP proxy (each client connection gets its own
-//! upstream connection) driven by a single-threaded non-blocking `poll()` loop.
-//! Run N copies with SO_REUSEPORT for multi-core (the bench does this, like it
-//! does for the Bun workers). Plaintext only; the Bun control plane owns TLS,
-//! certs, routing, /etc/hosts, DNS — the dataplane just moves bytes fast.
-//!
-//! Data movement is abstracted behind `Direction`: a userspace copy everywhere
-//! (portable, runs on macOS), and `splice()` via a pipe on Linux (the path that
-//! beats nginx). Select with `-Doptimize=ReleaseFast` for real numbers.
+//! v0 is a transparent 1:1 TCP proxy (each client connection gets its own upstream
+//! connection) on a single-threaded non-blocking `poll()` loop. Run one copy per
+//! core with SO_REUSEPORT for multi-core (the kernel load-balances). It talks the
+//! raw Linux syscall ABI directly (no hosted std net/posix layer) — the right,
+//! churn-proof foundation for a dataplane, and where Home's own io_uring/splice
+//! primitives slot in next.
 const std = @import("std");
 const builtin = @import("builtin");
-const posix = std.posix;
+const linux = std.os.linux;
+const fd_t = linux.fd_t;
 
-const use_splice = builtin.os.tag == .linux;
+comptime {
+    if (builtin.os.tag != .linux)
+        @compileError("dataplane targets Linux (its splice/io_uring data path is Linux-only)");
+}
+
+// Linux ABI constants (x86_64 / aarch64).
+const AF_INET: u32 = 2;
+const SOCK_STREAM: u32 = 1;
+const SOCK_NONBLOCK: u32 = 0o4000;
+const SOL_SOCKET: i32 = 1;
+const SO_REUSEADDR: u32 = 2;
+const SO_REUSEPORT: u32 = 15;
+const IPPROTO_TCP: u32 = 6;
+const TCP_NODELAY: u32 = 1;
+const POLLIN: i16 = 0x001;
+const POLLOUT: i16 = 0x004;
+const POLLERR: i16 = 0x008;
+const POLLHUP: i16 = 0x010;
+const SHUT_WR: i32 = 1;
+const SPLICE_F_MOVE: usize = 1;
+const SPLICE_F_NONBLOCK: usize = 2;
+
 const BUF_SIZE: usize = 64 * 1024;
 const MAX_CONNS: usize = 4096;
 
-var upstream_addr: std.net.Address = undefined;
+const Sockaddr = extern struct {
+    family: u16 = AF_INET,
+    port: u16, // network byte order
+    addr: u32, // network byte order
+    zero: [8]u8 = @splat(0),
+};
 
-pub fn main() !void {
-    var args = std.process.args();
-    _ = args.next(); // argv[0]
-    const listen_port = parsePort(args.next()) orelse fatal("usage: rpx-dataplane <listenPort> <upstreamHost> <upstreamPort>");
-    const up_host = args.next() orelse fatal("missing upstream host");
-    const up_port = parsePort(args.next()) orelse fatal("missing upstream port");
+var upstream_sa: Sockaddr = undefined;
 
-    upstream_addr = try resolve(up_host, up_port);
+pub fn main(init: std.process.Init) !void {
+    // Zig 0.17-dev passes args/env/io in via `Init` (no globals).
+    var it = init.minimal.args.iterate();
+    _ = it.next(); // argv[0]
+    const a_port = it.next() orelse fatal("usage: dataplane <listenPort> <upstreamHost> <upstreamPort>");
+    const a_host = it.next() orelse fatal("missing upstream host");
+    const a_up_port = it.next() orelse fatal("missing upstream port");
+    const listen_port = parsePort(a_port) orelse fatal("invalid listen port");
+    const up_port = parsePort(a_up_port) orelse fatal("invalid upstream port");
+
+    upstream_sa = .{ .port = byteSwap16(up_port), .addr = parseIp4(a_host) orelse fatal("upstream host must be an IPv4 literal") };
 
     const listen_fd = try openListener(listen_port);
-    defer posix.close(listen_fd);
+    defer _ = linux.close(listen_fd);
 
     try eventLoop(listen_fd);
 }
 
-fn parsePort(s: ?[]const u8) ?u16 {
-    const v = s orelse return null;
-    return std.fmt.parseInt(u16, v, 10) catch null;
+fn parsePort(s: []const u8) ?u16 {
+    return std.fmt.parseInt(u16, s, 10) catch null;
+}
+
+fn byteSwap16(v: u16) u16 {
+    return if (builtin.cpu.arch.endian() == .little) @byteSwap(v) else v;
+}
+
+/// Parse `a.b.c.d` into a network-byte-order u32 (the in_addr layout).
+fn parseIp4(s: []const u8) ?u32 {
+    var bytes: [4]u8 = undefined;
+    var it = std.mem.splitScalar(u8, s, '.');
+    var i: usize = 0;
+    while (it.next()) |part| : (i += 1) {
+        if (i >= 4) return null;
+        bytes[i] = std.fmt.parseInt(u8, part, 10) catch return null;
+    }
+    if (i != 4) return null;
+    return @bitCast(bytes); // bytes already in network order in memory
 }
 
 fn fatal(comptime msg: []const u8) noreturn {
-    std.debug.print("rpx-dataplane: {s}\n", .{msg});
+    std.debug.print("dataplane: {s}\n", .{msg});
     std.process.exit(1);
 }
 
-fn resolve(host: []const u8, port: u16) !std.net.Address {
-    // The bench always points at 127.0.0.1; parse it directly (no resolver dep).
-    return std.net.Address.parseIp(host, port) catch blk: {
-        const list = try std.net.getAddressList(std.heap.page_allocator, host, port);
-        defer list.deinit();
-        if (list.addrs.len == 0) return error.UnknownHost;
-        break :blk list.addrs[0];
-    };
+fn setIntSockOpt(fd: fd_t, level: i32, optname: u32, value: c_int) void {
+    var v = value;
+    _ = linux.setsockopt(fd, level, optname, std.mem.asBytes(&v), @sizeOf(c_int));
 }
 
-fn openListener(port: u16) !posix.fd_t {
-    const addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
-    const fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.NONBLOCK, posix.IPPROTO.TCP);
-    errdefer posix.close(fd);
-    try posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-    // SO_REUSEPORT: kernel load-balances accepted connections across the N copies
-    // the bench spawns — the same multi-core model nginx/rpx use.
-    try posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
-    try posix.bind(fd, &addr.any, addr.getOsSockLen());
-    try posix.listen(fd, 1024);
+fn openListener(port: u16) !fd_t {
+    const rc = linux.socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (linux.errno(rc) != .SUCCESS) return error.SocketFailed;
+    const fd: fd_t = @intCast(rc);
+    setIntSockOpt(fd, SOL_SOCKET, SO_REUSEADDR, 1);
+    // SO_REUSEPORT: the kernel load-balances accepted connections across the N
+    // copies run for multi-core (the same model nginx/rpx use).
+    setIntSockOpt(fd, SOL_SOCKET, SO_REUSEPORT, 1);
+    var sa = Sockaddr{ .port = byteSwap16(port), .addr = parseIp4("127.0.0.1").? };
+    if (linux.errno(linux.bind(fd, @ptrCast(&sa), @sizeOf(Sockaddr))) != .SUCCESS) return error.BindFailed;
+    if (linux.errno(linux.listen(fd, 1024)) != .SUCCESS) return error.ListenFailed;
     return fd;
 }
 
-/// One half of a connection: move bytes from `src` to `dst`. Userspace copy
-/// everywhere; on Linux a pipe + `splice()` makes it zero-copy (kernel→kernel).
+/// One half of a connection: move bytes `src`→`dst` via a pipe + `splice()`
+/// (kernel→kernel, zero-copy). `pending`/`in_pipe` is what's buffered in the
+/// kernel pipe waiting to be written to `dst`.
 const Direction = struct {
-    src: posix.fd_t,
-    dst: posix.fd_t,
-    src_eof: bool = false,
-    done: bool = false, // src_eof AND everything in flight has been written
-
-    // copy path
-    buf: if (use_splice) void else []u8 = if (use_splice) {} else undefined,
-    len: usize = 0,
-    off: usize = 0,
-
-    // splice path
-    pipe_r: if (use_splice) posix.fd_t else void = if (use_splice) -1 else {},
-    pipe_w: if (use_splice) posix.fd_t else void = if (use_splice) -1 else {},
+    src: fd_t,
+    dst: fd_t,
+    pipe_r: fd_t = -1,
+    pipe_w: fd_t = -1,
     in_pipe: usize = 0,
+    src_eof: bool = false,
+    done: bool = false,
 
-    fn init(self: *Direction, alloc: std.mem.Allocator) !void {
-        if (use_splice) {
-            const fds = try posix.pipe();
-            self.pipe_r = fds[0];
-            self.pipe_w = fds[1];
-        } else {
-            self.buf = try alloc.alloc(u8, BUF_SIZE);
-        }
+    fn init(self: *Direction) !void {
+        var fds: [2]fd_t = undefined;
+        if (linux.errno(linux.pipe2(&fds, .{ .NONBLOCK = true })) != .SUCCESS) return error.PipeFailed;
+        self.pipe_r = fds[0];
+        self.pipe_w = fds[1];
     }
 
-    fn deinit(self: *Direction, alloc: std.mem.Allocator) void {
-        if (use_splice) {
-            if (self.pipe_r != -1) posix.close(self.pipe_r);
-            if (self.pipe_w != -1) posix.close(self.pipe_w);
-        } else {
-            alloc.free(self.buf);
-        }
+    fn deinit(self: *Direction) void {
+        if (self.pipe_r != -1) _ = linux.close(self.pipe_r);
+        if (self.pipe_w != -1) _ = linux.close(self.pipe_w);
     }
 
-    /// Bytes buffered/in-flight, waiting to be written to `dst`.
-    fn pending(self: *const Direction) usize {
-        return if (use_splice) self.in_pipe else self.len - self.off;
-    }
-
-    /// Room to read more from `src` (don't read until what we have is written).
     fn wantRead(self: *const Direction) bool {
-        return !self.src_eof and self.pending() == 0;
+        return !self.src_eof and self.in_pipe == 0;
     }
 
     fn wantWrite(self: *const Direction) bool {
-        return self.pending() > 0;
+        return self.in_pipe > 0;
     }
 
-    /// `src` is readable: pull bytes in. Returns false on hard error.
     fn onReadable(self: *Direction) bool {
-        if (use_splice) {
-            // socket → pipe (kernel buffer), no userspace copy.
-            const n = linuxSplice(self.src, self.pipe_w, BUF_SIZE) catch |e| {
-                return e == error.WouldBlock;
-            };
-            if (n == 0) {
-                self.markEof();
-            } else {
-                self.in_pipe += n;
-            }
-            return true;
-        } else {
-            const n = posix.read(self.src, self.buf) catch |e| {
-                return e == error.WouldBlock;
-            };
-            if (n == 0) {
-                self.markEof();
-            } else {
-                self.len = n;
-                self.off = 0;
-            }
-            return true;
-        }
+        const n = splice(self.src, self.pipe_w, BUF_SIZE) catch |e| return e == error.WouldBlock;
+        if (n == 0) self.markEof() else self.in_pipe += n;
+        return true;
     }
 
-    /// `dst` is writable: push buffered bytes out. Returns false on hard error.
     fn onWritable(self: *Direction) bool {
-        if (use_splice) {
-            const n = linuxSplice(self.pipe_r, self.dst, self.in_pipe) catch |e| {
-                return e == error.WouldBlock;
-            };
-            self.in_pipe -= n;
-        } else {
-            const n = posix.write(self.dst, self.buf[self.off..self.len]) catch |e| {
-                return e == error.WouldBlock;
-            };
-            self.off += n;
-            if (self.off >= self.len) {
-                self.len = 0;
-                self.off = 0;
-            }
-        }
-        // Source already hit EOF and we've now drained everything → propagate the
-        // half-close downstream so the peer sees the end of the response.
-        if (self.src_eof and self.pending() == 0 and !self.done) {
+        const n = splice(self.pipe_r, self.dst, self.in_pipe) catch |e| return e == error.WouldBlock;
+        self.in_pipe -= n;
+        // Source already hit EOF and we've drained the pipe → propagate the
+        // half-close so the peer sees the end of the response.
+        if (self.src_eof and self.in_pipe == 0 and !self.done) {
             self.done = true;
-            posix.shutdown(self.dst, .send) catch {};
+            _ = linux.shutdown(self.dst, SHUT_WR);
         }
         return true;
     }
 
     fn markEof(self: *Direction) void {
         self.src_eof = true;
-        if (self.pending() == 0 and !self.done) {
+        if (self.in_pipe == 0 and !self.done) {
             self.done = true;
-            posix.shutdown(self.dst, .send) catch {};
+            _ = linux.shutdown(self.dst, SHUT_WR);
         }
     }
 };
 
 const Conn = struct {
-    client: posix.fd_t,
-    upstream: posix.fd_t,
-    c2u: Direction, // client → upstream
-    u2c: Direction, // upstream → client
+    client: fd_t,
+    upstream: fd_t,
+    c2u: Direction,
+    u2c: Direction,
 
     fn finished(self: *const Conn) bool {
         return self.c2u.done and self.u2c.done;
     }
 };
 
-fn linuxSplice(from: posix.fd_t, to: posix.fd_t, max: usize) !usize {
-    const SPLICE_F_MOVE: usize = 1;
-    const SPLICE_F_NONBLOCK: usize = 2;
-    const rc = std.os.linux.syscall6(
+fn splice(from: fd_t, to: fd_t, max: usize) !usize {
+    const rc = linux.syscall6(
         .splice,
         @as(usize, @bitCast(@as(isize, from))),
         0,
@@ -215,38 +198,33 @@ fn linuxSplice(from: posix.fd_t, to: posix.fd_t, max: usize) !usize {
         max,
         SPLICE_F_MOVE | SPLICE_F_NONBLOCK,
     );
-    const signed: isize = @bitCast(rc);
-    if (signed >= 0) return @intCast(signed);
-    const err: posix.E = @enumFromInt(@as(usize, @bitCast(-signed)));
-    return switch (err) {
+    return switch (linux.errno(rc)) {
+        .SUCCESS => @intCast(rc),
         .AGAIN => error.WouldBlock,
         else => error.SpliceFailed,
     };
 }
 
-fn eventLoop(listen_fd: posix.fd_t) !void {
+fn eventLoop(listen_fd: fd_t) !void {
     const alloc = std.heap.page_allocator;
-    var conns: [MAX_CONNS]?*Conn = .{null} ** MAX_CONNS;
+    var conns: [MAX_CONNS]?*Conn = std.mem.zeroes([MAX_CONNS]?*Conn); // all null
     var n_conns: usize = 0;
 
-    // pollfds: listener + up to 2 fds per connection.
-    var pollfds: [1 + MAX_CONNS * 2]posix.pollfd = undefined;
-    // Map each pollfd slot (beyond the listener) back to its conn + which fd.
+    var pollfds: [1 + MAX_CONNS * 2]linux.pollfd = undefined;
     var slot_conn: [MAX_CONNS * 2]usize = undefined;
     var slot_is_client: [MAX_CONNS * 2]bool = undefined;
 
     while (true) {
-        // Build the pollfd set for this iteration.
-        pollfds[0] = .{ .fd = listen_fd, .events = posix.POLL.IN, .revents = 0 };
+        pollfds[0] = .{ .fd = listen_fd, .events = POLLIN, .revents = 0 };
         var nfds: usize = 1;
         for (conns, 0..) |maybe, ci| {
             const c = maybe orelse continue;
             var cev: i16 = 0;
             var uev: i16 = 0;
-            if (c.c2u.wantRead()) cev |= posix.POLL.IN; // read from client
-            if (c.u2c.wantWrite()) cev |= posix.POLL.OUT; // write to client
-            if (c.u2c.wantRead()) uev |= posix.POLL.IN; // read from upstream
-            if (c.c2u.wantWrite()) uev |= posix.POLL.OUT; // write to upstream
+            if (c.c2u.wantRead()) cev |= POLLIN; // read from client
+            if (c.u2c.wantWrite()) cev |= POLLOUT; // write to client
+            if (c.u2c.wantRead()) uev |= POLLIN; // read from upstream
+            if (c.c2u.wantWrite()) uev |= POLLOUT; // write to upstream
             if (cev != 0) {
                 pollfds[nfds] = .{ .fd = c.client, .events = cev, .revents = 0 };
                 slot_conn[nfds - 1] = ci;
@@ -261,20 +239,18 @@ fn eventLoop(listen_fd: posix.fd_t) !void {
             }
         }
 
-        _ = posix.poll(pollfds[0..nfds], -1) catch |e| {
-            if (e == error.SignalInterrupt) continue;
-            return e;
-        };
+        const prc = linux.poll(&pollfds, @intCast(nfds), -1);
+        if (linux.errno(prc) != .SUCCESS) continue; // EINTR etc. — rebuild + retry
 
-        // Accept new connections.
-        if (pollfds[0].revents & posix.POLL.IN != 0) {
+        if (pollfds[0].revents & POLLIN != 0) {
             while (n_conns < MAX_CONNS) {
-                const cfd = posix.accept(listen_fd, null, null, posix.SOCK.NONBLOCK) catch break;
+                const arc = linux.accept4(listen_fd, null, null, SOCK_NONBLOCK);
+                if (linux.errno(arc) != .SUCCESS) break; // EAGAIN — drained
+                const cfd: fd_t = @intCast(arc);
                 const conn = acceptConn(alloc, cfd) catch {
-                    posix.close(cfd);
+                    _ = linux.close(cfd);
                     continue;
                 };
-                // Park it in the first free slot.
                 for (&conns) |*slot| {
                     if (slot.* == null) {
                         slot.* = conn;
@@ -285,7 +261,6 @@ fn eventLoop(listen_fd: posix.fd_t) !void {
             }
         }
 
-        // Service ready connection fds.
         var i: usize = 1;
         while (i < nfds) : (i += 1) {
             const re = pollfds[i].revents;
@@ -294,33 +269,35 @@ fn eventLoop(listen_fd: posix.fd_t) !void {
             const c = conns[ci] orelse continue;
             const is_client = slot_is_client[i - 1];
             var ok = true;
-            if (re & (posix.POLL.IN | posix.POLL.HUP) != 0) {
+            if (re & (POLLIN | POLLHUP) != 0)
                 ok = if (is_client) c.c2u.onReadable() else c.u2c.onReadable();
-            }
-            if (ok and re & posix.POLL.OUT != 0) {
+            if (ok and re & POLLOUT != 0)
                 ok = if (is_client) c.u2c.onWritable() else c.c2u.onWritable();
-            }
-            if (!ok or re & posix.POLL.ERR != 0) {
+            if (!ok or re & POLLERR != 0) {
                 closeConn(alloc, &conns, ci, &n_conns);
                 continue;
             }
-            if (c.finished()) {
+            if (c.finished())
                 closeConn(alloc, &conns, ci, &n_conns);
-            }
         }
     }
 }
 
-fn acceptConn(alloc: std.mem.Allocator, client_fd: posix.fd_t) !*Conn {
-    const up_fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.NONBLOCK, posix.IPPROTO.TCP);
-    errdefer posix.close(up_fd);
-    setNoDelay(client_fd);
-    setNoDelay(up_fd);
-    // Non-blocking connect to a localhost upstream completes ~immediately; treat
-    // EINPROGRESS as success (poll will surface real failures as POLL.ERR).
-    posix.connect(up_fd, &upstream_addr.any, upstream_addr.getOsSockLen()) catch |e| {
-        if (e != error.WouldBlock and e != error.ConnectionPending) return e;
-    };
+fn acceptConn(alloc: std.mem.Allocator, client_fd: fd_t) !*Conn {
+    const urc = linux.socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (linux.errno(urc) != .SUCCESS) return error.SocketFailed;
+    const up_fd: fd_t = @intCast(urc);
+    setIntSockOpt(client_fd, IPPROTO_TCP, TCP_NODELAY, 1);
+    setIntSockOpt(up_fd, IPPROTO_TCP, TCP_NODELAY, 1);
+    // Non-blocking connect to a localhost upstream completes ~immediately;
+    // EINPROGRESS is fine (poll surfaces real failures as POLLERR).
+    switch (linux.errno(linux.connect(up_fd, @ptrCast(&upstream_sa), @sizeOf(Sockaddr)))) {
+        .SUCCESS, .INPROGRESS, .AGAIN => {},
+        else => {
+            _ = linux.close(up_fd);
+            return error.ConnectFailed;
+        },
+    }
 
     const conn = try alloc.create(Conn);
     errdefer alloc.destroy(conn);
@@ -330,23 +307,19 @@ fn acceptConn(alloc: std.mem.Allocator, client_fd: posix.fd_t) !*Conn {
         .c2u = .{ .src = client_fd, .dst = up_fd },
         .u2c = .{ .src = up_fd, .dst = client_fd },
     };
-    try conn.c2u.init(alloc);
-    errdefer conn.c2u.deinit(alloc);
-    try conn.u2c.init(alloc);
+    try conn.c2u.init();
+    errdefer conn.c2u.deinit();
+    try conn.u2c.init();
     return conn;
 }
 
 fn closeConn(alloc: std.mem.Allocator, conns: *[MAX_CONNS]?*Conn, ci: usize, n_conns: *usize) void {
     const c = conns[ci] orelse return;
-    posix.close(c.client);
-    posix.close(c.upstream);
-    c.c2u.deinit(alloc);
-    c.u2c.deinit(alloc);
+    _ = linux.close(c.client);
+    _ = linux.close(c.upstream);
+    c.c2u.deinit();
+    c.u2c.deinit();
     alloc.destroy(c);
     conns[ci] = null;
     n_conns.* -= 1;
-}
-
-fn setNoDelay(fd: posix.fd_t) void {
-    posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1))) catch {};
 }
