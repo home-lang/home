@@ -809,6 +809,121 @@ const install_glue =
     \\  globalThis.TransformStream = TransformStream;
     \\  globalThis.CountQueuingStrategy = CountQueuingStrategy;
     \\  globalThis.ByteLengthQueuingStrategy = ByteLengthQueuingStrategy;
+    \\
+    \\  // ---- Encoding / Compression streams (built on TransformStream) ----
+    \\  function TextEncoderStream() {
+    \\    var enc = new TextEncoder();
+    \\    var ts = new TransformStream({
+    \\      transform: function(chunk, controller) {
+    \\        if (chunk === undefined) return;
+    \\        controller.enqueue(enc.encode(String(chunk)));
+    \\      }
+    \\    });
+    \\    this._ts = ts;
+    \\  }
+    \\  Object.defineProperty(TextEncoderStream.prototype, "encoding", { get: function() { return "utf-8"; }, enumerable: true, configurable: true });
+    \\  Object.defineProperty(TextEncoderStream.prototype, "readable", { get: function() { return this._ts.readable; }, enumerable: true, configurable: true });
+    \\  Object.defineProperty(TextEncoderStream.prototype, "writable", { get: function() { return this._ts.writable; }, enumerable: true, configurable: true });
+    \\
+    \\  // Returns the count of leading bytes that form complete UTF-8 sequences; any
+    \\  // trailing bytes of an incomplete sequence are excluded so the caller can buffer
+    \\  // them across chunks (mirrors node:string_decoder boundary handling).
+    \\  function utf8CompleteLen(bytes) {
+    \\    var n = bytes.length;
+    \\    if (n === 0) return 0;
+    \\    var i = n - 1, cont = 0;
+    \\    while (i >= 0 && (bytes[i] & 0xC0) === 0x80 && cont < 3) { i--; cont++; }
+    \\    if (i < 0) return n;
+    \\    var lead = bytes[i], need;
+    \\    if (lead < 0x80) need = 1;
+    \\    else if ((lead & 0xE0) === 0xC0) need = 2;
+    \\    else if ((lead & 0xF0) === 0xE0) need = 3;
+    \\    else if ((lead & 0xF8) === 0xF0) need = 4;
+    \\    else return n;
+    \\    var have = n - i;
+    \\    if (have >= need) return n;
+    \\    return i;
+    \\  }
+    \\  function toUint8(chunk) {
+    \\    if (chunk instanceof Uint8Array) return chunk;
+    \\    if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+    \\    return new Uint8Array(ArrayBuffer.isView(chunk) ? chunk.buffer : chunk);
+    \\  }
+    \\  function TextDecoderStream(label, options) {
+    \\    var dec = new TextDecoder(label, options);
+    \\    var carry = null;
+    \\    var ts = new TransformStream({
+    \\      transform: function(chunk, controller) {
+    \\        if (chunk === undefined) return;
+    \\        var bytes = toUint8(chunk);
+    \\        if (carry && carry.length) {
+    \\          var merged = new Uint8Array(carry.length + bytes.length);
+    \\          merged.set(carry, 0);
+    \\          merged.set(bytes, carry.length);
+    \\          bytes = merged;
+    \\          carry = null;
+    \\        }
+    \\        var split = utf8CompleteLen(bytes);
+    \\        if (split < bytes.length) carry = bytes.slice(split);
+    \\        if (split > 0) {
+    \\          var s = dec.decode(bytes.slice(0, split));
+    \\          if (s) controller.enqueue(s);
+    \\        }
+    \\      },
+    \\      flush: function(controller) {
+    \\        if (carry && carry.length) {
+    \\          var s = dec.decode(carry);
+    \\          if (s) controller.enqueue(s);
+    \\          carry = null;
+    \\        }
+    \\      }
+    \\    });
+    \\    this._encoding = String(label || "utf-8").toLowerCase();
+    \\    this._ts = ts;
+    \\  }
+    \\  Object.defineProperty(TextDecoderStream.prototype, "encoding", { get: function() { return this._encoding; }, enumerable: true, configurable: true });
+    \\  Object.defineProperty(TextDecoderStream.prototype, "readable", { get: function() { return this._ts.readable; }, enumerable: true, configurable: true });
+    \\  Object.defineProperty(TextDecoderStream.prototype, "writable", { get: function() { return this._ts.writable; }, enumerable: true, configurable: true });
+    \\
+    \\  function makeZlibStream(fnName) {
+    \\    var parts = [];
+    \\    return new TransformStream({
+    \\      transform: function(chunk) {
+    \\        if (chunk === undefined) return;
+    \\        parts.push(toUint8(chunk));
+    \\      },
+    \\      flush: function(controller) {
+    \\        var total = 0, i;
+    \\        for (i = 0; i < parts.length; i++) total += parts[i].length;
+    \\        var joined = new Uint8Array(total), off = 0;
+    \\        for (i = 0; i < parts.length; i++) { joined.set(parts[i], off); off += parts[i].length; }
+    \\        var zlib = globalThis.require("node:zlib");
+    \\        var out = zlib[fnName](joined);
+    \\        controller.enqueue(out instanceof Uint8Array ? out : new Uint8Array(out));
+    \\      }
+    \\    });
+    \\  }
+    \\  function CompressionStream(format) {
+    \\    var fn = format === "gzip" ? "gzipSync" : (format === "deflate" ? "deflateSync" : (format === "deflate-raw" ? "deflateRawSync" : null));
+    \\    if (!fn) throw new TypeError("Unsupported compression format: " + format);
+    \\    this._format = String(format);
+    \\    this._ts = makeZlibStream(fn);
+    \\  }
+    \\  Object.defineProperty(CompressionStream.prototype, "readable", { get: function() { return this._ts.readable; }, enumerable: true, configurable: true });
+    \\  Object.defineProperty(CompressionStream.prototype, "writable", { get: function() { return this._ts.writable; }, enumerable: true, configurable: true });
+    \\  function DecompressionStream(format) {
+    \\    var fn = format === "gzip" ? "gunzipSync" : (format === "deflate" ? "inflateSync" : (format === "deflate-raw" ? "inflateRawSync" : null));
+    \\    if (!fn) throw new TypeError("Unsupported compression format: " + format);
+    \\    this._format = String(format);
+    \\    this._ts = makeZlibStream(fn);
+    \\  }
+    \\  Object.defineProperty(DecompressionStream.prototype, "readable", { get: function() { return this._ts.readable; }, enumerable: true, configurable: true });
+    \\  Object.defineProperty(DecompressionStream.prototype, "writable", { get: function() { return this._ts.writable; }, enumerable: true, configurable: true });
+    \\
+    \\  globalThis.TextEncoderStream = TextEncoderStream;
+    \\  globalThis.TextDecoderStream = TextDecoderStream;
+    \\  globalThis.CompressionStream = CompressionStream;
+    \\  globalThis.DecompressionStream = DecompressionStream;
     \\})();
 ;
 
@@ -1027,4 +1142,58 @@ test "CountQueuingStrategy and ByteLengthQueuingStrategy report size and highWat
         "  var bqs = new ByteLengthQueuingStrategy({ highWaterMark: 16 });" ++
         "  return bqs.highWaterMark === 16 && bqs.size(new Uint8Array(4)) === 4;" ++
         "})()"));
+}
+
+test "TextEncoderStream pipes string chunks to UTF-8 bytes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__es_a = '';(function(){var tes = new TextEncoderStream();var w = tes.writable.getWriter();var reader = tes.readable.getReader();var chunks = [];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_a = new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();w.write('hé');w.write('llo ✓');w.close();})();",
+        "home:es-encstream-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__es_a === 'héllo ✓'"));
+}
+
+test "TextDecoderStream buffers a multibyte sequence split across chunks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // "✓" = U+2713 = bytes E2 9C 93, written as [E2,9C] then [93].
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__es_b = '';(function(){var tds = new TextDecoderStream();var w = tds.writable.getWriter();var reader = tds.readable.getReader();var out = [];function loop(){return reader.read().then(function(r){if (r.done){globalThis.__es_b = out.join('');return;}out.push(r.value);return loop();});}loop();w.write(new Uint8Array([0xE2,0x9C]));w.write(new Uint8Array([0x93]));w.close();})();",
+        "home:es-decstream-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__es_b === '✓'"));
+}
+
+test "CompressionStream then DecompressionStream round-trips gzip" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const global = engine.currentGlobalObject();
+    // require / node:zlib / Buffer come from node_modules; install the full realm
+    // in the same order node_modules.installRealm uses (web_globals, process, node).
+    install(std.testing.allocator, ctx, global);
+    @import("process.zig").install(std.testing.allocator, ctx, global, &[_][]const u8{"home"});
+    @import("node_modules.zig").install(std.testing.allocator, ctx, global);
+
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__es_c = '';(function(){var input='hello hello hello';var src=new ReadableStream({start:function(c){c.enqueue(new TextEncoder().encode(input));c.close();}});var out=src.pipeThrough(new CompressionStream('gzip')).pipeThrough(new DecompressionStream('gzip'));var reader=out.getReader();var chunks=[];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_c=new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();})();",
+        "home:es-gzip-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__es_c === 'hello hello hello'"));
 }

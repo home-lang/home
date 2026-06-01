@@ -149,6 +149,33 @@ const install_glue =
     \\  }
     \\  defineBody(Response.prototype);
     \\
+    \\  // Streaming bodies: leverage the realm's ReadableStream to surface stored
+    \\  // body bytes as a one-chunk-then-close stream. Reading a body stream
+    \\  // consumes the body, sharing the bodyUsed single-consumption guard.
+    \\  function bytesToStream(bytes) {
+    \\    return new ReadableStream({
+    \\      start: function(controller) {
+    \\        if (bytes && bytes.length > 0) controller.enqueue(bytes.slice());
+    \\        controller.close();
+    \\      }
+    \\    });
+    \\  }
+    \\  Blob.prototype.stream = function() { return bytesToStream(this._bytes || new Uint8Array(0)); };
+    \\  function defineBodyStream(proto) {
+    \\    Object.defineProperty(proto, "body", {
+    \\      get: function() {
+    \\        if (this._bodyBytes === null || this._bodyBytes === undefined) return null;
+    \\        if (this.bodyUsed) throw new TypeError("Body already used");
+    \\        this.bodyUsed = true;
+    \\        return bytesToStream(this._bodyBytes);
+    \\      },
+    \\      enumerable: true,
+    \\      configurable: true
+    \\    });
+    \\  }
+    \\  defineBodyStream(Request.prototype);
+    \\  defineBodyStream(Response.prototype);
+    \\
     \\  globalThis.Headers = Headers;
     \\  globalThis.Blob = Blob;
     \\  globalThis.Request = Request;
@@ -273,4 +300,92 @@ test "body single-use guard rejects a second read" {
         "});",
         "home:webcore-bodyused-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__used === 'TypeError'"));
+}
+
+test "Blob.stream() yields a ReadableStream draining to the original bytes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // stream() is sync; the drain runs on the microtask queue inside one eval.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(new Blob(['x']).stream()) instanceof ReadableStream"));
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__bs = null;" ++
+        "(function(){" ++
+        "  var rs = new Blob(['hé', 'llo']).stream();" ++
+        "  (async function(){" ++
+        "    var chunks = [];" ++
+        "    for await (var ch of rs) chunks.push(ch);" ++
+        "    var total = 0; for (var i = 0; i < chunks.length; i++) total += chunks[i].length;" ++
+        "    var out = new Uint8Array(total), off = 0;" ++
+        "    for (var j = 0; j < chunks.length; j++) { out.set(chunks[j], off); off += chunks[j].length; }" ++
+        "    globalThis.__bs = new TextDecoder().decode(out);" ++
+        "  })();" ++
+        "})();",
+        "home:webcore-blobstream-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__bs === 'héllo'"));
+}
+
+test "Response.body is a ReadableStream draining to the body bytes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // A body present -> ReadableStream; no body -> null.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var r = new Response('hello');" ++
+        "  if (!(r.body instanceof ReadableStream)) return false;" ++
+        "  return new Response(null).body === null;" ++
+        "})()"));
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__rbody = null;" ++
+        "(function(){" ++
+        "  var rs = new Response('hello').body;" ++
+        "  (async function(){" ++
+        "    var chunks = [];" ++
+        "    for await (var ch of rs) chunks.push(ch);" ++
+        "    var total = 0; for (var i = 0; i < chunks.length; i++) total += chunks[i].length;" ++
+        "    var out = new Uint8Array(total), off = 0;" ++
+        "    for (var j = 0; j < chunks.length; j++) { out.set(chunks[j], off); off += chunks[j].length; }" ++
+        "    globalThis.__rbody = new TextDecoder().decode(out);" ++
+        "  })();" ++
+        "})();",
+        "home:webcore-respbody-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__rbody === 'hello'"));
+}
+
+test "reading .body sets bodyUsed and a second consume is rejected" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Reading .body flips bodyUsed synchronously, and a second .body access throws.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var r = new Response('hello');" ++
+        "  if (r.bodyUsed !== false) return false;" ++
+        "  var b = r.body;" ++
+        "  if (!(b instanceof ReadableStream) || r.bodyUsed !== true) return false;" ++
+        "  try { var b2 = r.body; return false; } catch (e) { return e.name === 'TypeError'; }" ++
+        "})()"));
+
+    // After .body, text() rejects via the shared single-consumption guard.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__bodyGuard = null;" ++
+        "var r = new Response('once');" ++
+        "var s = r.body;" ++
+        "r.text().then(function() { globalThis.__bodyGuard = 'no-throw'; }, function(e) { globalThis.__bodyGuard = e.name; });",
+        "home:webcore-bodyguard-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__bodyGuard === 'TypeError'"));
 }
