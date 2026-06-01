@@ -18,8 +18,9 @@ section.
 > **Scope caveat:** 🟡 here means "callable through Home's realm as a
 > useful subset", NOT "passes the Node test suite" (we don't run it yet)
 > and NOT "wired into the bun-corpus gate" (that still routes through the
-> separate bootstrap harness). Socket/networking and heavy modules
-> (`net`/`http`/`tls`/`dns`/`worker_threads`/`vm`/…) remain 🔴.
+> separate bootstrap harness). The remaining 🔴 are server-side sockets
+> and heavy runtime (`tls`/`http2`/`dgram`/`worker_threads`/`cluster`/…);
+> client networking (`dns`/`net`/`http`/`https`) is now 🟡 (client-only).
 
 Legend:
 
@@ -335,25 +336,28 @@ to prove non-delegation).
 | Status | Count | % |
 |---|---|---|
 | 🟢 Fully implemented | 0 | 0% |
-| 🟡 Partially implemented (JS-callable subset) | 24 | ~51% |
-| 🔴 Not implemented | 22 | ~47% |
+| 🟡 Partially implemented (JS-callable subset) | 36 | ~77% |
+| 🔴 Not implemented | 10 | ~21% |
 | ❌ Won't implement | 1 | ~2% |
 
 🟡 modules (JS-callable via Home's realm — `home eval` /
-`HOME_NATIVE_RUN`): `assert`, `buffer`, `child_process`, `console`,
-`constants`, `crypto`, `events`, `fs`, `fs/promises`, `os`, `path`,
-`perf_hooks`, `process`, `querystring`, `readline`, `stream`,
-`stream/promises`, `string_decoder`, `timers`, `timers/promises`, `tty`,
-`url`, `util`, `zlib`.
+`HOME_NATIVE_RUN`): `assert`, `async_hooks`, `buffer`, `child_process`,
+`console`, `constants`, `crypto`, `diagnostics_channel`, `dns`, `events`,
+`fs`, `fs/promises`, `http`, `https`, `module`, `net`, `os`, `path`,
+`perf_hooks`, `process`, `punycode`, `querystring`, `readline`,
+`readline/promises`, `stream`, `stream/consumers`, `stream/promises`,
+`stream/web`, `string_decoder`, `timers`, `timers/promises`, `tty`,
+`url`, `util`, `vm`, `zlib`.
 
-Still 🔴 (the next frontier — mostly sockets/networking + heavy runtime):
-`net`, `http`, `https`, `http2`, `tls`, `dgram`, `dns`, `worker_threads`,
-`vm`, `cluster`, `repl`, `wasi`, `inspector`, `module`, `async_hooks`,
-`trace_events`, `diagnostics_channel`, `punycode`, `readline/promises`,
-`stream/consumers`, `stream/web`, `test`.
+Still 🔴 (the next frontier — server-side sockets + heavy runtime):
+`http2`, `tls`, `dgram`, `worker_threads`, `cluster`, `repl`, `wasi`,
+`inspector`, `trace_events`, `test`.
 
 **Honest caveats:** (1) 🟡 = a useful subset callable through Home's own
-JSC realm, not a full module nor Node-test-suite-verified; (2) these are
+JSC realm, not a full module nor Node-test-suite-verified — e.g. `net`/`http`
+are **client-only** (real `net.connect` via `std.Io.net`; `http`/`https`
+request/get over the realm's `fetch`), with `createServer`/duplex streaming
+still parked on the event loop; (2) these are
 **not** yet wired into the bun-corpus gate (which still routes through the
 bootstrap text-rewrite harness), so they do not yet move the corpus
 pass-count — that needs the loader/runtime convergence work tracked in
