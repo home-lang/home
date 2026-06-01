@@ -55,11 +55,14 @@ EOF
 
 wait_port() { for _ in $(seq 1 80); do (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && return 0; sleep 0.1; done; return 1; }
 
-# median of $RUNS oha runs (req/s, integer). args: port conc nreq
+# median of $RUNS oha runs (req/s, integer). args: port conc nreq.
+# Each run is hard-capped by `timeout` so a stuck/buggy engine yields 0, not a
+# hung CI job. oha's own --timeout bounds individual requests too.
 median_rps() {
-  local port="$1" conc="$2" n="$3" vals=()
+  local port="$1" conc="$2" n="$3" vals=() r
   for _ in $(seq 1 "$RUNS"); do
-    vals+=("$(oha -n "$n" -c "$conc" --no-tui -j "http://127.0.0.1:$port/" 2>/dev/null | jq -r '.summary.requestsPerSec | floor')")
+    r="$(timeout 30 oha -n "$n" -c "$conc" -t 5s --no-tui -j "http://127.0.0.1:$port/" 2>/dev/null | jq -r '.summary.requestsPerSec | floor' 2>/dev/null)"
+    vals+=("${r:-0}")
   done
   printf '%s\n' "${vals[@]}" | sort -n | awk '{a[NR]=$1} END{print a[int((NR+1)/2)]}'
 }

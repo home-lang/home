@@ -129,6 +129,22 @@ pub fn dialUpstream(sa: *const Sockaddr) !fd_t {
     }
 }
 
+/// Open a TCP socket to `sa` with a *blocking* connect, then return it (the fd
+/// stays blocking — io_uring drives I/O on it async). Used by the io_uring engine
+/// so a splice is never issued against a still-connecting upstream (ENOTCONN).
+/// Fine for a localhost upstream where connect is ~instant.
+pub fn dialUpstreamBlocking(sa: *const Sockaddr) !fd_t {
+    const rc = linux.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (linux.errno(rc) != .SUCCESS) return error.SocketFailed;
+    const fd: fd_t = @intCast(rc);
+    setIntSockOpt(fd, IPPROTO_TCP, TCP_NODELAY, 1);
+    if (linux.errno(linux.connect(fd, @ptrCast(sa), @sizeOf(Sockaddr))) != .SUCCESS) {
+        _ = linux.close(fd);
+        return error.ConnectFailed;
+    }
+    return fd;
+}
+
 /// Create a non-blocking pipe (the splice intermediary). Shared by both engines.
 pub fn makePipe() ![2]fd_t {
     var fds: [2]fd_t = undefined;

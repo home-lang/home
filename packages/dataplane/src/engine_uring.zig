@@ -70,7 +70,7 @@ pub fn run(listen_fd: fd_t, upstream_sa: *const dp.Sockaddr) !void {
     defer ring.deinit();
     for (&conns) |*c| c.* = .{};
 
-    _ = try ring.accept_multishot(ACCEPT_UD, listen_fd, null, null, 0);
+    _ = try ring.accept_multishot(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK);
     _ = try ring.submit();
 
     var cqes: [256]linux.io_uring_cqe = undefined;
@@ -90,7 +90,7 @@ fn handle(cqe: linux.io_uring_cqe, listen_fd: fd_t, upstream_sa: *const dp.Socka
             onAccept(@intCast(cqe.res), upstream_sa);
         // Re-arm the accept if the kernel won't keep delivering on this SQE.
         if (cqe.flags & linux.IORING_CQE_F_MORE == 0)
-            _ = ring.accept_multishot(ACCEPT_UD, listen_fd, null, null, 0) catch {};
+            _ = ring.accept_multishot(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK) catch {};
         return;
     }
 
@@ -118,7 +118,7 @@ fn onAccept(client_fd: fd_t, upstream_sa: *const dp.Sockaddr) void {
         return;
     }
     const c = &conns[slot];
-    const up_fd = dp.dialUpstream(upstream_sa) catch {
+    const up_fd = dp.dialUpstreamBlocking(upstream_sa) catch {
         _ = linux.close(client_fd);
         return;
     };
