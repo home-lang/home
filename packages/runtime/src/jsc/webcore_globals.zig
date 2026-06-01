@@ -164,10 +164,11 @@ const install_glue =
     \\  function defineBodyStream(proto) {
     \\    Object.defineProperty(proto, "body", {
     \\      get: function() {
+    \\        if (this._bodyStreamCached) return this._bodyStreamCached;
     \\        if (this._bodyBytes === null || this._bodyBytes === undefined) return null;
-    \\        if (this.bodyUsed) throw new TypeError("Body already used");
+    \\        this._bodyStreamCached = bytesToStream(this._bodyBytes);
     \\        this.bodyUsed = true;
-    \\        return bytesToStream(this._bodyBytes);
+    \\        return this._bodyStreamCached;
     \\      },
     \\      enumerable: true,
     \\      configurable: true
@@ -207,15 +208,14 @@ const install_glue =
     \\    proto.blob = function() { var t = this.headers ? this.headers.get("content-type") : null; return __homeConsumeStream(this).then(function(b) { var nb = new Blob([], { type: t || "" }); nb._bytes = b; return nb; }); };
     \\    Object.defineProperty(proto, "body", {
     \\      get: function() {
-    \\        if (this._bodyStream) {
-    \\          if (this.bodyUsed) throw new TypeError("Body already used");
-    \\          this.bodyUsed = true;
-    \\          return this._bodyStream;
-    \\        }
-    \\        if (this._bodyBytes === null || this._bodyBytes === undefined) return null;
-    \\        if (this.bodyUsed) throw new TypeError("Body already used");
+    \\        if (this._bodyStreamCached) return this._bodyStreamCached;
+    \\        var s;
+    \\        if (this._bodyStream) s = this._bodyStream;
+    \\        else if (this._bodyBytes === null || this._bodyBytes === undefined) return null;
+    \\        else s = bytesToStream(this._bodyBytes);
+    \\        this._bodyStreamCached = s;
     \\        this.bodyUsed = true;
-    \\        return bytesToStream(this._bodyBytes);
+    \\        return s;
     \\      },
     \\      enumerable: true,
     \\      configurable: true
@@ -434,14 +434,15 @@ test "reading .body sets bodyUsed and a second consume is rejected" {
     const ctx = engine.currentContext();
     installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
 
-    // Reading .body flips bodyUsed synchronously, and a second .body access throws.
+    // Reading .body flips bodyUsed synchronously; .body is idempotent (WHATWG:
+    // repeated access returns the SAME ReadableStream, it does not throw).
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "(function() {" ++
         "  var r = new Response('hello');" ++
         "  if (r.bodyUsed !== false) return false;" ++
         "  var b = r.body;" ++
         "  if (!(b instanceof ReadableStream) || r.bodyUsed !== true) return false;" ++
-        "  try { var b2 = r.body; return false; } catch (e) { return e.name === 'TypeError'; }" ++
+        "  return r.body === b;" ++
         "})()"));
 
     // After .body, text() rejects via the shared single-consumption guard.

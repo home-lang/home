@@ -261,6 +261,76 @@ const install_glue =
     \\      return Promise.reject(e);
     \\    }
     \\  };
+    \\
+    \\  // --- AbortSignal support (retrofit, wraps the fetch defined above) ---
+    \\  // The realm has no DOMException; provide a minimal one so AbortError has
+    \\  // the right .name and is an Error instance, then keep it on globalThis.
+    \\  if (typeof globalThis.DOMException !== "function") {
+    \\    var DOMExceptionCtor = function DOMException(message, name) {
+    \\      var err = new Error(message === undefined ? "" : String(message));
+    \\      err.name = (name === undefined ? "Error" : String(name));
+    \\      err.message = (message === undefined ? "" : String(message));
+    \\      Object.setPrototypeOf(err, DOMException.prototype);
+    \\      return err;
+    \\    };
+    \\    DOMExceptionCtor.prototype = Object.create(Error.prototype);
+    \\    DOMExceptionCtor.prototype.constructor = DOMExceptionCtor;
+    \\    DOMExceptionCtor.prototype.name = "Error";
+    \\    globalThis.DOMException = DOMExceptionCtor;
+    \\  }
+    \\  // Normalize an abort reason into a real Error/DOMException. The realm's
+    \\  // AbortController.abort()/AbortSignal.abort() leave reason as a PLAIN object
+    \\  // ({ name, message }) when no reason is given, so passing it through verbatim
+    \\  // would fail `instanceof Error`/`instanceof DOMException`. Pass real Errors
+    \\  // through untouched; coerce anything else into a DOMException.
+    \\  function makeAbortError(reason) {
+    \\    if (reason instanceof Error) return reason;
+    \\    var name = "AbortError", msg = "The operation was aborted.";
+    \\    if (reason !== undefined && reason !== null && typeof reason === "object") {
+    \\      if (reason.name !== undefined) name = String(reason.name);
+    \\      if (reason.message !== undefined) msg = String(reason.message);
+    \\    }
+    \\    return new globalThis.DOMException(msg, name);
+    \\  }
+    \\
+    \\  var __homeInnerFetch = globalThis.fetch;
+    \\  globalThis.fetch = function(input, init) {
+    \\    var signal;
+    \\    if (init && init.signal !== undefined && init.signal !== null) signal = init.signal;
+    \\    else if (input && typeof input === "object" && input.signal !== undefined && input.signal !== null) signal = input.signal;
+    \\
+    \\    // Already-aborted -> reject up front (covers the sync data:/file: paths too).
+    \\    if (signal && signal.aborted) return Promise.reject(makeAbortError(signal.reason));
+    \\
+    \\    var inner;
+    \\    try { inner = __homeInnerFetch(input, init); }
+    \\    catch (e) { return Promise.reject(e); }
+    \\
+    \\    // No signal: behave exactly as before.
+    \\    if (!signal || typeof signal.addEventListener !== "function") return inner;
+    \\
+    \\    // Race the in-flight response against a later abort.
+    \\    return new Promise(function(resolve, reject) {
+    \\      var settled = false;
+    \\      var onAbort = function() {
+    \\        if (settled) return;
+    \\        settled = true;
+    \\        reject(makeAbortError(signal.reason));
+    \\      };
+    \\      signal.addEventListener("abort", onAbort, { once: true });
+    \\      Promise.resolve(inner).then(function(resp) {
+    \\        if (settled) return;
+    \\        settled = true;
+    \\        if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onAbort);
+    \\        resolve(resp);
+    \\      }, function(err) {
+    \\        if (settled) return;
+    \\        settled = true;
+    \\        if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onAbort);
+    \\        reject(err);
+    \\      });
+    \\    });
+    \\  };
     \\  delete globalThis.__home_fetch_read_file;
     \\  delete globalThis.__home_fetch_http;
     \\})();
@@ -359,4 +429,97 @@ test "fetch attempts http: and rejects on a refused connection" {
         "globalThis.__h = null; fetch('http://127.0.0.1:1/').then(function() { globalThis.__h = 'resolved'; }, function(e) { globalThis.__h = e.name; });",
         "home:fetch-http-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__h === 'TypeError'"));
+}
+
+test "fetch with an already-aborted signal rejects with an AbortError DOMException" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // A pre-aborted signal rejects even though the data: path would resolve sync.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__ab = null;" ++
+        "var ctrl = new AbortController();" ++
+        "ctrl.abort();" ++
+        "fetch('data:,hello', { signal: ctrl.signal }).then(" ++
+        "  function() { globalThis.__ab = 'resolved'; }," ++
+        "  function(e) { globalThis.__ab = e.name + ':' + (e instanceof Error) + ':' + (e instanceof DOMException); });",
+        "home:fetch-aborted-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "globalThis.__ab === 'AbortError:true:true'"));
+}
+
+test "fetch rejects with AbortError when the signal aborts mid-flight" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Abort the http: request before it can settle: the abort listener wins the race.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__mid = null;" ++
+        "var ctrl = new AbortController();" ++
+        "var p = fetch('http://127.0.0.1:1/', { signal: ctrl.signal });" ++
+        "p.then(function() { globalThis.__mid = 'resolved'; }, function(e) { globalThis.__mid = e.name; });" ++
+        "ctrl.abort();",
+        "home:fetch-midflight-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "globalThis.__mid === 'AbortError'"));
+}
+
+test "fetch data: response .body drains to the original bytes via getReader" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // The resolved Response exposes a ReadableStream body backed by the bytes.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__bd = null;" ++
+        "fetch('data:,hi').then(function(r) {" ++
+        "  if (!(r.body instanceof ReadableStream)) { globalThis.__bd = 'not-stream'; return; }" ++
+        "  var reader = r.body.getReader();" ++
+        "  var chunks = [];" ++
+        "  function loop() {" ++
+        "    return reader.read().then(function(res) {" ++
+        "      if (res.done) {" ++
+        "        var total = 0; for (var i = 0; i < chunks.length; i++) total += chunks[i].length;" ++
+        "        var out = new Uint8Array(total), off = 0;" ++
+        "        for (var j = 0; j < chunks.length; j++) { out.set(chunks[j], off); off += chunks[j].length; }" ++
+        "        globalThis.__bd = new TextDecoder().decode(out);" ++
+        "        return;" ++
+        "      }" ++
+        "      chunks.push(res.value);" ++
+        "      return loop();" ++
+        "    });" ++
+        "  }" ++
+        "  return loop();" ++
+        "});",
+        "home:fetch-body-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__bd === 'hi'"));
+}
+
+test "fetch accepts a Request object as input" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // A Request carrying a data: URL resolves through fetch via its .url.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__rq = null;" ++
+        "var req = new Request('data:text/plain,from-request');" ++
+        "fetch(req).then(function(r) { return r.text().then(function(t) { globalThis.__rq = r.status + ':' + t; }); });",
+        "home:fetch-request-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "globalThis.__rq === '200:from-request'"));
 }

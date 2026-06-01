@@ -1069,6 +1069,164 @@ const install_glue =
     \\  };
     \\
     \\  globalThis.Event = Event;
+    \\
+    \\  // ---- DOMException (legacy-code mapped, Error-derived) ----
+    \\  var DOM_CODES = {
+    \\    IndexSizeError: 1,
+    \\    HierarchyRequestError: 3,
+    \\    WrongDocumentError: 4,
+    \\    InvalidCharacterError: 5,
+    \\    NoModificationAllowedError: 7,
+    \\    NotFoundError: 8,
+    \\    NotSupportedError: 9,
+    \\    InUseAttributeError: 10,
+    \\    InvalidStateError: 11,
+    \\    SyntaxError: 12,
+    \\    InvalidModificationError: 13,
+    \\    NamespaceError: 14,
+    \\    InvalidAccessError: 15,
+    \\    SecurityError: 18,
+    \\    NetworkError: 19,
+    \\    AbortError: 20,
+    \\    URLMismatchError: 21,
+    \\    QuotaExceededError: 22,
+    \\    TimeoutError: 23,
+    \\    InvalidNodeTypeError: 24,
+    \\    DataCloneError: 25
+    \\  };
+    \\  function DOMException(message, name) {
+    \\    var msg = message === undefined ? "" : String(message);
+    \\    var nm = name === undefined ? "Error" : String(name);
+    \\    var err = new Error(msg);
+    \\    Object.setPrototypeOf(err, DOMException.prototype);
+    \\    Object.defineProperty(err, "name", { value: nm, writable: true, enumerable: false, configurable: true });
+    \\    Object.defineProperty(err, "message", { value: msg, writable: true, enumerable: false, configurable: true });
+    \\    Object.defineProperty(err, "code", { value: DOM_CODES[nm] || 0, writable: false, enumerable: false, configurable: true });
+    \\    return err;
+    \\  }
+    \\  DOMException.prototype = Object.create(Error.prototype);
+    \\  Object.defineProperty(DOMException.prototype, "constructor", { value: DOMException, writable: true, enumerable: false, configurable: true });
+    \\  Object.defineProperty(DOMException.prototype, "name", { value: "Error", writable: true, enumerable: false, configurable: true });
+    \\  Object.defineProperty(DOMException.prototype, "message", { value: "", writable: true, enumerable: false, configurable: true });
+    \\  Object.defineProperty(DOMException.prototype, "code", { value: 0, writable: true, enumerable: false, configurable: true });
+    \\  (function() {
+    \\    var CONSTS = {
+    \\      INDEX_SIZE_ERR: 1,
+    \\      DOMSTRING_SIZE_ERR: 2,
+    \\      HIERARCHY_REQUEST_ERR: 3,
+    \\      WRONG_DOCUMENT_ERR: 4,
+    \\      INVALID_CHARACTER_ERR: 5,
+    \\      NO_DATA_ALLOWED_ERR: 6,
+    \\      NO_MODIFICATION_ALLOWED_ERR: 7,
+    \\      NOT_FOUND_ERR: 8,
+    \\      NOT_SUPPORTED_ERR: 9,
+    \\      INUSE_ATTRIBUTE_ERR: 10,
+    \\      INVALID_STATE_ERR: 11,
+    \\      SYNTAX_ERR: 12,
+    \\      INVALID_MODIFICATION_ERR: 13,
+    \\      NAMESPACE_ERR: 14,
+    \\      INVALID_ACCESS_ERR: 15,
+    \\      VALIDATION_ERR: 16,
+    \\      TYPE_MISMATCH_ERR: 17,
+    \\      SECURITY_ERR: 18,
+    \\      NETWORK_ERR: 19,
+    \\      ABORT_ERR: 20,
+    \\      URL_MISMATCH_ERR: 21,
+    \\      QUOTA_EXCEEDED_ERR: 22,
+    \\      TIMEOUT_ERR: 23,
+    \\      INVALID_NODE_TYPE_ERR: 24,
+    \\      DATA_CLONE_ERR: 25
+    \\    };
+    \\    var keys = Object.keys(CONSTS);
+    \\    for (var i = 0; i < keys.length; i++) {
+    \\      var k = keys[i];
+    \\      Object.defineProperty(DOMException, k, { value: CONSTS[k], writable: false, enumerable: true, configurable: false });
+    \\      Object.defineProperty(DOMException.prototype, k, { value: CONSTS[k], writable: false, enumerable: false, configurable: false });
+    \\    }
+    \\  })();
+    \\  globalThis.DOMException = DOMException;
+    \\
+    \\  // ---- Retrofit AbortSignal/AbortController to produce DOMException reasons ----
+    \\  AbortSignal.abort = function(reason) {
+    \\    var s = new AbortSignal();
+    \\    s.aborted = true;
+    \\    s.reason = reason !== undefined ? reason : new DOMException("signal is aborted without reason", "AbortError");
+    \\    return s;
+    \\  };
+    \\  AbortSignal.timeout = function(ms) {
+    \\    var s = new AbortSignal();
+    \\    if (typeof globalThis.setTimeout === "function") {
+    \\      globalThis.setTimeout(function() {
+    \\        signalAbort(s, new DOMException("The operation timed out.", "TimeoutError"));
+    \\      }, ms);
+    \\    }
+    \\    return s;
+    \\  };
+    \\  AbortController.prototype.abort = function(reason) {
+    \\    var r = reason !== undefined ? reason : new DOMException("The operation was aborted.", "AbortError");
+    \\    signalAbort(this.signal, r);
+    \\  };
+    \\
+    \\  // ---- MessageChannel / MessagePort (pure JS, microtask delivery) ----
+    \\  function MessagePort() {
+    \\    EventTarget.call(this);
+    \\    this._onmessage = null;
+    \\    this._other = null;
+    \\    this._started = false;
+    \\    this._closed = false;
+    \\    this._pending = [];
+    \\  }
+    \\  MessagePort.prototype = Object.create(EventTarget.prototype);
+    \\  MessagePort.prototype.constructor = MessagePort;
+    \\  Object.defineProperty(MessagePort.prototype, "onmessage", {
+    \\    get: function() { return this._onmessage; },
+    \\    set: function(v) { this._onmessage = (typeof v === "function") ? v : null; this.start(); },
+    \\    enumerable: true,
+    \\    configurable: true
+    \\  });
+    \\  function messagePortDeliver(port, data) {
+    \\    if (port._closed) return;
+    \\    var ev = new Event("message");
+    \\    ev.data = data;
+    \\    if (typeof port._onmessage === "function") {
+    \\      try { port._onmessage.call(port, ev); } catch (e) { void e; }
+    \\    }
+    \\    port.dispatchEvent(ev);
+    \\  }
+    \\  MessagePort.prototype.postMessage = function(data) {
+    \\    var other = this._other;
+    \\    if (!other || other._closed) return;
+    \\    queueMicrotask(function() {
+    \\      if (other._closed) return;
+    \\      if (!other._started) { other._pending.push(data); return; }
+    \\      messagePortDeliver(other, data);
+    \\    });
+    \\  };
+    \\  MessagePort.prototype.start = function() {
+    \\    if (this._started) return;
+    \\    this._started = true;
+    \\    var self = this;
+    \\    var queued = this._pending;
+    \\    this._pending = [];
+    \\    queued.forEach(function(data) {
+    \\      queueMicrotask(function() { messagePortDeliver(self, data); });
+    \\    });
+    \\  };
+    \\  MessagePort.prototype.close = function() { this._closed = true; };
+    \\  MessagePort.prototype.addEventListener = function(type, listener, opts) {
+    \\    EventTarget.prototype.addEventListener.call(this, type, listener, opts);
+    \\    if (String(type) === "message") this.start();
+    \\  };
+    \\  function MessageChannel() {
+    \\    var p1 = new MessagePort();
+    \\    var p2 = new MessagePort();
+    \\    p1._other = p2;
+    \\    p2._other = p1;
+    \\    this.port1 = p1;
+    \\    this.port2 = p2;
+    \\  }
+    \\  globalThis.MessagePort = MessagePort;
+    \\  globalThis.MessageChannel = MessageChannel;
     \\  globalThis.CustomEvent = CustomEvent;
     \\  globalThis.EventTarget = EventTarget;
     \\  globalThis.AbortSignal = AbortSignal;
@@ -1496,4 +1654,94 @@ test "AbortSignal.timeout aborts after the timer fires (drained via timers_globa
     @import("timers_global.zig").drain(ctx);
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__abrt === 'timeout'"));
+}
+
+test "DOMException is Error-derived with legacy name->code mapping and static constants" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){" ++
+        "  var e = new DOMException('x', 'AbortError');" ++
+        "  if (!(e instanceof Error)) return false;" ++
+        "  if (!(e instanceof DOMException)) return false;" ++
+        "  if (e.name !== 'AbortError' || e.message !== 'x' || e.code !== 20) return false;" ++
+        "  if (typeof e.stack !== 'string') return false;" ++
+        "  var d = new DOMException();" ++
+        "  if (d.name !== 'Error' || d.message !== '' || d.code !== 0) return false;" ++
+        "  var nf = new DOMException('m', 'NotFoundError');" ++
+        "  if (nf.code !== 8) return false;" ++
+        "  var ns = new DOMException('m', 'NotSupportedError');" ++
+        "  if (ns.code !== 9) return false;" ++
+        "  var dc = new DOMException('m', 'DataCloneError');" ++
+        "  if (dc.code !== 25) return false;" ++
+        "  var sx = new DOMException('m', 'SyntaxError');" ++
+        "  if (sx.code !== 12) return false;" ++
+        "  var to = new DOMException('m', 'TimeoutError');" ++
+        "  if (to.code !== 23) return false;" ++
+        "  var unk = new DOMException('m', 'TotallyMadeUpError');" ++
+        "  if (unk.code !== 0) return false;" ++
+        "  return DOMException.ABORT_ERR === 20 && DOMException.TIMEOUT_ERR === 23 && " ++
+        "    DOMException.NOT_FOUND_ERR === 8 && DOMException.DATA_CLONE_ERR === 25;" ++
+        "})()"));
+}
+
+test "AbortController.abort default reason is a DOMException named AbortError" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){" ++
+        "  var ac = new AbortController();" ++
+        "  ac.abort();" ++
+        "  var r = ac.signal.reason;" ++
+        "  if (!(r instanceof DOMException) || !(r instanceof Error)) return false;" ++
+        "  if (r.name !== 'AbortError' || r.code !== 20) return false;" ++
+        "  var d = AbortSignal.abort();" ++
+        "  return d.reason instanceof DOMException && d.reason.name === 'AbortError' && d.reason.code === 20;" ++
+        "})()"));
+}
+
+test "MessageChannel port1.postMessage delivers to port2.onmessage on a microtask" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__mc = '';(function(){var mc = new MessageChannel();var got = [];mc.port2.onmessage = function(e){ got.push('2:' + e.data); };mc.port1.onmessage = function(e){ got.push('1:' + e.data); };mc.port1.postMessage('ping');mc.port2.postMessage('pong');queueMicrotask(function(){ queueMicrotask(function(){ globalThis.__mc = got.join(','); }); });})();",
+        "home:mc-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__mc === '2:ping,1:pong'"));
+}
+
+test "MessagePort addEventListener('message') receives postMessage from the paired port" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__mc2 = '';(function(){var mc = new MessageChannel();mc.port2.addEventListener('message', function(e){ globalThis.__mc2 = String(e.data); });mc.port1.postMessage('hello');})();",
+        "home:mc2-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__mc2 === 'hello'"));
 }
