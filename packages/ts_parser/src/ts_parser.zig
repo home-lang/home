@@ -4767,7 +4767,16 @@ pub const Parser = struct {
                 }
                 continue;
             }
-            if (self.peek().kind == .kw_var and self.peekAt(1).kind != .open_paren and self.peekAt(1).kind != .less_than and self.peekAt(1).kind != .colon and self.peekAt(1).kind != .semicolon and self.peekAt(1).kind != .open_brace) {
+            if (self.peek().kind == .kw_var and
+                !self.peekAt(1).flags.preceded_by_newline and
+                self.peekAt(1).kind != .open_paren and
+                self.peekAt(1).kind != .less_than and
+                self.peekAt(1).kind != .colon and
+                self.peekAt(1).kind != .semicolon and
+                self.peekAt(1).kind != .close_brace and
+                self.peekAt(1).kind != .eof and
+                self.peekAt(1).kind != .open_brace)
+            {
                 const bad = self.advance();
                 try self.reportCodeAt(bad.span.start, bad.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
                 try self.skipUntilTypeMemberSeparator();
@@ -17091,6 +17100,28 @@ test "parser: const may be a class method name" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1248);
+    }
+}
+
+test "parser: var may be a class property name terminated by ASI" {
+    var s = try newTestSetup(
+        \\class Foo {
+        \\    var;
+        \\    x = 1;
+        \\}
+        \\
+        \\class Foo2 {
+        \\    var
+        \\    x = 1;
+        \\}
+        \\
+        \\class Foo3 { var }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1068);
+        try T.expect(d.code != 1128);
     }
 }
 
