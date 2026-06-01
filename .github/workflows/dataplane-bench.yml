@@ -1,0 +1,48 @@
+name: Dataplane Benchmark
+
+# Builds the native reverse-proxy dataplane with the pinned Zig 0.17-dev toolchain
+# and benchmarks it against nginx on the HTML (body-bound) workload — the metric
+# where a runtime/JS proxy is ~3x behind nginx, and where splice() should let the
+# dataplane match or beat it. Runs on Linux (the dataplane's splice path is
+# Linux-only). Results are written to the job summary.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'packages/dataplane/**'
+      - '.github/workflows/dataplane-bench.yml'
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.0-dev.263+0add2dfc4'
+
+      - name: Verify Zig
+        run: zig version
+
+      - name: Install nginx, jq, oha
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nginx jq
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.4.0/oha-linux-amd64 -o oha \
+            || cargo install oha --locked
+          if [ -f oha ]; then chmod +x oha && sudo mv oha /usr/local/bin/oha; fi
+          oha --version
+
+      - name: Build dataplane (ReleaseFast)
+        working-directory: packages/dataplane
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Benchmark vs nginx (HTML)
+        working-directory: packages/dataplane
+        run: bash bench/run.sh | tee -a "$GITHUB_STEP_SUMMARY"
