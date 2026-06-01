@@ -116,18 +116,20 @@ Zig substrate: `node/crypto.zig`.
 🟡 JS-callable, backed by Home's native fs. Sync:
 `readFileSync`/`writeFileSync`/`existsSync`/`statSync`/`mkdirSync`/
 `appendFileSync`. Callback: `readFile`/`writeFile`. Streams:
-`createReadStream`/`createWriteStream` (on `node:stream`). `fs.promises`
-(see below). Missing: `readdirSync`/`readdir` (throws ENOSYS),
-`rm`/`unlink`/`rename`/`copyFile`/`watch`, full `Stats` instances, most
-async callback variants. Zig substrate: `node/fs.zig`, `Stat.zig`,
+`createReadStream`/`createWriteStream` (on `node:stream`),
+`readdirSync`/`readdir` (+`withFileTypes`), `unlinkSync`/`unlink`,
+`renameSync`/`rename`, `rmSync`/`rmdirSync` (recursive). `fs.promises`
+(see below). Missing: `copyFile`/`watch`/`open`/`readSync`/`writeSync`,
+full `Stats` instances, most async callback variants. Zig substrate:
+`node/fs.zig`, `Stat.zig`,
 `StatFS.zig`, `dir_iterator.zig`, `fs_events.zig`, `node_fs_constant.zig`,
 `time_like.zig`.
 
 ### [`node:fs/promises`](https://nodejs.org/api/fs.html#promises-api)
 
 🟡 JS-callable (`require("node:fs/promises")` or `fs.promises`):
-`readFile`/`writeFile`/`appendFile`/`mkdir`/`stat`/`access`. Missing the
-rest of the promises surface (readdir/rm/open/FileHandle/…).
+`readFile`/`writeFile`/`appendFile`/`mkdir`/`stat`/`access`/`readdir`/
+`unlink`/`rm`/`rename`. Missing: `open`/`FileHandle`/`copyFile`/`cp`/`watch`.
 
 ### [`node:http`](https://nodejs.org/api/http.html)
 
