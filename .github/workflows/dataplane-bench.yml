@@ -43,6 +43,23 @@ jobs:
         working-directory: packages/dataplane
         run: zig build -Doptimize=ReleaseFast
 
+      - name: Diagnose io_uring engine (trace a few requests)
+        working-directory: packages/dataplane
+        run: |
+          set -x
+          bun -e 'Bun.serve({port:8591,hostname:"127.0.0.1",fetch(){return new Response("hello from origin\n")}})' &
+          ORIGIN=$!
+          sleep 1
+          ./zig-out/bin/dataplane 8590 127.0.0.1 8591 uring debug 2>uring.trace &
+          DP=$!
+          sleep 1
+          echo "--- curl 1 ---"; curl -sS --max-time 5 http://127.0.0.1:8590/ || echo "CURL FAILED"
+          echo "--- curl 2 ---"; curl -sS --max-time 5 http://127.0.0.1:8590/ || echo "CURL FAILED"
+          sleep 1
+          kill $DP $ORIGIN 2>/dev/null || true
+          echo "===== io_uring trace ====="
+          cat uring.trace
+
       - name: Benchmark vs nginx (HTML)
         working-directory: packages/dataplane
         run: bash bench/run.sh | tee -a "$GITHUB_STEP_SUMMARY"

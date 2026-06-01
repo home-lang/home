@@ -63,6 +63,7 @@ pub fn main(init: std.process.Init) !void {
     const a_host = it.next() orelse fatal("missing upstream host");
     const a_up_port = it.next() orelse fatal("missing upstream port");
     const a_engine = it.next(); // optional: "poll" (default) | "uring"
+    const a_debug = it.next(); // optional: "debug" — trace io_uring to stderr
     const listen_port = parsePort(a_port) orelse fatal("invalid listen port");
     const up_port = parsePort(a_up_port) orelse fatal("invalid upstream port");
 
@@ -75,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
     // io_uring engine (a future Home-native io module is a third backend here).
     if (a_engine) |e| {
         if (std.mem.eql(u8, e, "uring"))
-            return @import("engine_uring.zig").run(listen_fd, &upstream_sa);
+            return @import("engine_uring.zig").run(listen_fd, &upstream_sa, std.mem.eql(u8, a_debug orelse "", "debug"));
         if (!std.mem.eql(u8, e, "poll"))
             fatal("engine must be 'poll' or 'uring'");
     }

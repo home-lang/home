@@ -41,6 +41,11 @@ const Conn = struct {
 
 var ring: linux.IoUring = undefined;
 var conns: [MAX_CONNS]Conn = undefined;
+var dbg: bool = false;
+
+fn dprint(comptime fmt: []const u8, args: anytype) void {
+    if (dbg) std.debug.print("[uring] " ++ fmt ++ "\n", args);
+}
 
 fn encodeUD(slot: usize, gen: u32, dir: u1, op: u1) u64 {
     return (@as(u64, gen) << 18) | (@as(u64, slot) << 2) | (@as(u64, dir) << 1) | op;
@@ -65,10 +70,12 @@ fn submitSplice(ud: u64, fd_in: fd_t, fd_out: fd_t, len: usize) !void {
     };
 }
 
-pub fn run(listen_fd: fd_t, upstream_sa: *const dp.Sockaddr) !void {
+pub fn run(listen_fd: fd_t, upstream_sa: *const dp.Sockaddr, debug: bool) !void {
+    dbg = debug;
     ring = try linux.IoUring.init(RING_ENTRIES, 0);
     defer ring.deinit();
     for (&conns) |*c| c.* = .{};
+    dprint("ring up (entries={d}), accepting on fd={d}", .{ RING_ENTRIES, listen_fd });
 
     _ = try ring.accept(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK);
 
@@ -76,17 +83,20 @@ pub fn run(listen_fd: fd_t, upstream_sa: *const dp.Sockaddr) !void {
     while (true) {
         // submit_and_wait flushes queued SQEs *and* waits for ≥1 completion in one
         // enter() — copy_cqes alone never submits (it enters with to_submit=0).
-        _ = ring.submit_and_wait(1) catch |e| {
+        const subd = ring.submit_and_wait(1) catch |e| {
             if (e == error.SignalInterrupt) continue;
+            dprint("submit_and_wait err: {s}", .{@errorName(e)});
             return e;
         };
         const n = ring.copy_cqes(&cqes, 0) catch 0;
+        dprint("woke: submitted={d} cqes={d}", .{ subd, n });
         for (cqes[0..n]) |cqe| try handle(cqe, listen_fd, upstream_sa);
     }
 }
 
 fn handle(cqe: linux.io_uring_cqe, listen_fd: fd_t, upstream_sa: *const dp.Sockaddr) !void {
     if (cqe.user_data == ACCEPT_UD) {
+        dprint("accept cqe res={d}", .{cqe.res});
         if (cqe.res >= 0)
             onAccept(@intCast(cqe.res), upstream_sa);
         _ = ring.accept(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK) catch {}; // re-arm (single-shot)
@@ -94,6 +104,7 @@ fn handle(cqe: linux.io_uring_cqe, listen_fd: fd_t, upstream_sa: *const dp.Socka
     }
 
     const d = decodeUD(cqe.user_data);
+    dprint("splice cqe slot={d} gen={d} dir={d} op={d} res={d}", .{ d.slot, d.gen, d.dir, d.op, cqe.res });
     const c = &conns[d.slot];
     if (!c.used or c.gen != d.gen) return; // stale completion for a freed slot
     c.in_flight -= 1;
@@ -117,10 +128,12 @@ fn onAccept(client_fd: fd_t, upstream_sa: *const dp.Sockaddr) void {
         return;
     }
     const c = &conns[slot];
-    const up_fd = dp.dialUpstreamBlocking(upstream_sa) catch {
+    const up_fd = dp.dialUpstreamBlocking(upstream_sa) catch |e| {
+        dprint("dial upstream failed: {s}", .{@errorName(e)});
         _ = linux.close(client_fd);
         return;
     };
+    dprint("accepted client_fd={d} -> upstream_fd={d} slot={d}", .{ client_fd, up_fd, slot });
     const p_c2u = dp.makePipe() catch {
         _ = linux.close(client_fd);
         _ = linux.close(up_fd);
