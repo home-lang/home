@@ -18,6 +18,12 @@ const RING_ENTRIES: u16 = 8192;
 /// splice offset for pipe/socket fds: -1 means "no offset, use the stream".
 const NO_OFF: u64 = @bitCast(@as(i64, -1));
 const ACCEPT_UD: u64 = std.math.maxInt(u64);
+// splice() does not get io_uring's automatic poll-retry the way READ/RECV do, so a
+// completion can surface a transient -EAGAIN/-EINTR — re-arm the op, don't tear the
+// connection down. (Both fds are blocking so this is rare, but splice can still
+// report it.) Genuine errors are any other negative res.
+const EAGAIN: i32 = -11;
+const EINTR: i32 = -4;
 
 const Half = struct {
     src: fd_t,
@@ -77,7 +83,10 @@ pub fn run(listen_fd: fd_t, upstream_sa: *const dp.Sockaddr, debug: bool) !void 
     for (&conns) |*c| c.* = .{};
     dprint("ring up (entries={d}), accepting on fd={d}", .{ RING_ENTRIES, listen_fd });
 
-    _ = try ring.accept(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK);
+    // Accept blocking client fds (flags=0): io_uring drives their splices via io-wq
+    // and they *wait* for data — a SOCK_NONBLOCK client fd makes splice return
+    // -EAGAIN immediately (splice has no poll-retry), which we'd mis-read as a close.
+    _ = try ring.accept(ACCEPT_UD, listen_fd, null, null, 0);
 
     var cqes: [256]linux.io_uring_cqe = undefined;
     while (true) {
@@ -99,7 +108,7 @@ fn handle(cqe: linux.io_uring_cqe, listen_fd: fd_t, upstream_sa: *const dp.Socka
         dprint("accept cqe res={d}", .{cqe.res});
         if (cqe.res >= 0)
             onAccept(@intCast(cqe.res), upstream_sa);
-        _ = ring.accept(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK) catch {}; // re-arm (single-shot)
+        _ = ring.accept(ACCEPT_UD, listen_fd, null, null, 0) catch {}; // re-arm (single-shot; blocking fd — splice waits via io-wq, no EAGAIN)
         return;
     }
 
@@ -180,13 +189,17 @@ fn startWrite(c: *Conn, slot: usize, dir: u1) void {
 }
 
 fn onReadDone(c: *Conn, h: *Half, d: Decoded, res: i32) void {
-    if (res <= 0) {
-        // 0 = upstream/client closed its send side; <0 = error.
-        h.src_eof = true;
-        if (res < 0) {
-            c.closing = true;
+    if (res < 0) {
+        if (res == EAGAIN or res == EINTR) {
+            startRead(c, d.slot, d.dir); // transient — re-arm, don't close
             return;
         }
+        c.closing = true;
+        return;
+    }
+    if (res == 0) {
+        // src closed its send side — half-close dst once the pipe is drained.
+        h.src_eof = true;
         if (h.in_pipe == 0 and !h.done) {
             h.done = true;
             _ = linux.shutdown(h.dst, dp.SHUT_WR);
@@ -199,6 +212,10 @@ fn onReadDone(c: *Conn, h: *Half, d: Decoded, res: i32) void {
 
 fn onWriteDone(c: *Conn, h: *Half, d: Decoded, res: i32) void {
     if (res < 0) {
+        if (res == EAGAIN or res == EINTR) {
+            startWrite(c, d.slot, d.dir); // transient — re-arm the write
+            return;
+        }
         c.closing = true;
         return;
     }
