@@ -300,7 +300,10 @@ equivalent in JSC.
 
 ### [`node:vm`](https://nodejs.org/api/vm.html)
 
-🔴 Not implemented.
+🟡 JS-callable — `vm.runInThisContext(code)` + `vm.Script(code).runInThisContext()`
+evaluate in the realm's current global via JSC (`JSEvaluateScript`).
+`createContext`/`isContext` present; `runInNewContext`/`compileFunction` throw
+`ENOSYS` (no context isolation yet).
 
 ### [`node:wasi`](https://nodejs.org/api/wasi.html)
 
