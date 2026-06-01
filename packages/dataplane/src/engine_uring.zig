@@ -70,17 +70,18 @@ pub fn run(listen_fd: fd_t, upstream_sa: *const dp.Sockaddr) !void {
     defer ring.deinit();
     for (&conns) |*c| c.* = .{};
 
-    _ = try ring.accept_multishot(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK);
-    _ = try ring.submit();
+    _ = try ring.accept(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK);
 
     var cqes: [256]linux.io_uring_cqe = undefined;
     while (true) {
-        const n = ring.copy_cqes(&cqes, 1) catch |e| {
+        // submit_and_wait flushes queued SQEs *and* waits for ≥1 completion in one
+        // enter() — copy_cqes alone never submits (it enters with to_submit=0).
+        _ = ring.submit_and_wait(1) catch |e| {
             if (e == error.SignalInterrupt) continue;
             return e;
         };
+        const n = ring.copy_cqes(&cqes, 0) catch 0;
         for (cqes[0..n]) |cqe| try handle(cqe, listen_fd, upstream_sa);
-        _ = ring.submit() catch {};
     }
 }
 
@@ -88,9 +89,7 @@ fn handle(cqe: linux.io_uring_cqe, listen_fd: fd_t, upstream_sa: *const dp.Socka
     if (cqe.user_data == ACCEPT_UD) {
         if (cqe.res >= 0)
             onAccept(@intCast(cqe.res), upstream_sa);
-        // Re-arm the accept if the kernel won't keep delivering on this SQE.
-        if (cqe.flags & linux.IORING_CQE_F_MORE == 0)
-            _ = ring.accept_multishot(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK) catch {};
+        _ = ring.accept(ACCEPT_UD, listen_fd, null, null, dp.SOCK_NONBLOCK) catch {}; // re-arm (single-shot)
         return;
     }
 

@@ -15,7 +15,8 @@ CONCS="${CONCS:-50 256}"
 ORIGIN_PORT=8481; NGINX_PORT=8482; DP_POLL_PORT=8483; DP_URING_PORT=8484
 TMP="$(mktemp -d)"
 PIDS=()
-cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; PIDS=(); rm -rf "$TMP"; }
+kill_pids() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; PIDS=(); }
+cleanup() { kill_pids; rm -rf "$TMP"; }
 trap cleanup EXIT
 
 [ -x "$DP" ] || { echo "dataplane binary not found at $DP (run: zig build -Doptimize=ReleaseFast)"; exit 1; }
@@ -88,8 +89,7 @@ bench_size() {
     printf "| dataplane poll  | %s |\n" "$(median_rps "$DP_POLL_PORT" "$c" "$n")"
     printf "| dataplane uring | %s |\n" "$(median_rps "$DP_URING_PORT" "$c" "$n")"
   done
-  cleanup
-  trap cleanup EXIT
+  kill_pids
   sleep 1
 }
 
