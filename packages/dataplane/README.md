@@ -67,10 +67,12 @@ zig build -Doptimize=ReleaseFast && bash bench/run.sh
 ## Roadmap
 
 1. **v0** — splice TCP pump, `reusePort`, swappable backend. ✅
-2. **io_uring** engine — single-shot accept + `IORING_OP_SPLICE`. ⚠️ implemented &
-   compiles, but returns 0 req/s in CI (the loop accepts but never moves bytes —
-   needs local-Linux `strace` to pin down; blind CI iteration exhausted). Opt-in
-   (`uring` arg); the default `poll` engine is the validated path.
+2. **io_uring** engine — single-shot accept + `IORING_OP_SPLICE`. ✅ works
+   end-to-end (opt-in `uring` arg), but currently *slower* than `poll`: client fds
+   are blocking, so every waiting read-splice parks in an io-wq worker thread —
+   overhead that dominates on small, high-rate requests. **Next:** poll-then-splice
+   (arm `IORING_OP_POLL_ADD`, splice only when readable, keep fds non-blocking) to
+   drop io-wq and let it match/beat `poll`.
 3. **kTLS** — terminate TLS in-kernel so encrypted bodies can *still* splice; the
    key to beating nginx on HTTPS body throughput.
 4. HTTP/1.1 parse for host routing + `X-Forwarded-*`; HTTP/2; WebSocket.
@@ -78,24 +80,23 @@ zig build -Doptimize=ReleaseFast && bash bench/run.sh
    (the pattern rpx's cluster mode already uses).
 6. A **Home-native io backend** behind the engine seam.
 
-## Status — beats nginx on bodies, and the win grows with body size
+## Status — `poll` beats nginx on bodies, and the win grows with body size
 
-Full Linux CI sweep (`dataplane-bench.yml`, median of 3, 4-core GitHub runner,
-all proxies `reusePort` N-up like nginx `worker_processes auto`):
+Full Linux sweep (median of 3, 4-core runner, all proxies `reusePort` N-up like
+nginx `worker_processes auto`):
 
-| body  | conc | direct | nginx  | **poll** | poll ÷ nginx |
-|-------|-----:|-------:|-------:|---------:|-------------:|
-| 16 KB |   50 | 64,643 | 34,651 | **40,266** | **1.16×** |
-| 16 KB |  256 | 68,320 | 37,569 | **43,547** | **1.16×** |
-| 1 MB  |   50 |  7,048 |  1,559 |  **3,629** | **2.33×** |
-| 1 MB  |  256 |  6,522 |  1,529 |  **3,300** | **2.16×** |
+| body  | conc | direct | nginx  | **poll** | uring  | poll ÷ nginx |
+|-------|-----:|-------:|-------:|---------:|-------:|-------------:|
+| 16 KB |   50 | 55,818 | 30,674 | **35,995** | 19,769 | **1.17×** |
+| 16 KB |  256 | 62,804 | 33,421 | **39,776** | 21,223 | **1.19×** |
+| 1 MB  |   50 |  6,999 |  1,484 |  **3,537** |  2,906 | **2.38×** |
+| 1 MB  |  256 |  6,475 |  1,447 |  **3,151** |  2,874 | **2.18×** |
 
 The thesis, confirmed: nginx copies proxied bodies through userspace; the dataplane
 `splice()`s kernel→kernel and doesn't — so **the bigger the body, the bigger the
-edge** (1.16× at 16 KB → ~2.3× at 1 MB). This is the exact body-bound metric where
+edge** (~1.18× at 16 KB → ~2.3× at 1 MB). This is the exact body-bound metric where
 a Bun/JS proxy runs ~3× *behind* nginx.
 
-The `uring` engine currently reports **0** (see roadmap #2 — accepts but never
-splices; needs local-Linux debugging). The numbers above are the `poll` engine, the
-validated default. Next: fix io_uring (where batching should pull ahead on 1 MB),
-then kTLS for HTTPS bodies — see the roadmap above.
+`uring` works correctly and beats nginx ~2× on 1 MB, but trails `poll` (see roadmap
+#2 — io-wq overhead from blocking fds). `poll` is the validated default. Next:
+poll-then-splice to make `uring` competitive, then kTLS for HTTPS bodies.
