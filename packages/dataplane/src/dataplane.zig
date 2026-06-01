@@ -19,7 +19,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const linux = std.os.linux;
-const fd_t = linux.fd_t;
+pub const fd_t = linux.fd_t;
 
 comptime {
     if (builtin.os.tag != .linux)
@@ -27,26 +27,26 @@ comptime {
 }
 
 // Linux ABI constants (x86_64 / aarch64).
-const AF_INET: u32 = 2;
-const SOCK_STREAM: u32 = 1;
-const SOCK_NONBLOCK: u32 = 0o4000;
+pub const AF_INET: u32 = 2;
+pub const SOCK_STREAM: u32 = 1;
+pub const SOCK_NONBLOCK: u32 = 0o4000;
 const SOL_SOCKET: i32 = 1;
 const SO_REUSEADDR: u32 = 2;
 const SO_REUSEPORT: u32 = 15;
-const IPPROTO_TCP: u32 = 6;
-const TCP_NODELAY: u32 = 1;
+pub const IPPROTO_TCP: u32 = 6;
+pub const TCP_NODELAY: u32 = 1;
 const POLLIN: i16 = 0x001;
 const POLLOUT: i16 = 0x004;
 const POLLERR: i16 = 0x008;
 const POLLHUP: i16 = 0x010;
-const SHUT_WR: i32 = 1;
+pub const SHUT_WR: i32 = 1;
 const SPLICE_F_MOVE: usize = 1;
 const SPLICE_F_NONBLOCK: usize = 2;
 
-const BUF_SIZE: usize = 64 * 1024;
+pub const BUF_SIZE: usize = 64 * 1024;
 const MAX_CONNS: usize = 4096;
 
-const Sockaddr = extern struct {
+pub const Sockaddr = extern struct {
     family: u16 = AF_INET,
     port: u16, // network byte order
     addr: u32, // network byte order
@@ -59,9 +59,10 @@ pub fn main(init: std.process.Init) !void {
     // Zig 0.17-dev passes args/env/io in via `Init` (no globals).
     var it = init.minimal.args.iterate();
     _ = it.next(); // argv[0]
-    const a_port = it.next() orelse fatal("usage: dataplane <listenPort> <upstreamHost> <upstreamPort>");
+    const a_port = it.next() orelse fatal("usage: dataplane <listenPort> <upstreamHost> <upstreamPort> [poll|uring]");
     const a_host = it.next() orelse fatal("missing upstream host");
     const a_up_port = it.next() orelse fatal("missing upstream port");
+    const a_engine = it.next(); // optional: "poll" (default) | "uring"
     const listen_port = parsePort(a_port) orelse fatal("invalid listen port");
     const up_port = parsePort(a_up_port) orelse fatal("invalid upstream port");
 
@@ -70,7 +71,15 @@ pub fn main(init: std.process.Init) !void {
     const listen_fd = try openListener(listen_port);
     defer _ = linux.close(listen_fd);
 
-    try eventLoop(listen_fd);
+    // Swappable io backend: `poll` is the validated default; `uring` is the
+    // io_uring engine (a future Home-native io module is a third backend here).
+    if (a_engine) |e| {
+        if (std.mem.eql(u8, e, "uring"))
+            return @import("engine_uring.zig").run(listen_fd, &upstream_sa);
+        if (!std.mem.eql(u8, e, "poll"))
+            fatal("engine must be 'poll' or 'uring'");
+    }
+    try pollEngine(listen_fd);
 }
 
 fn parsePort(s: []const u8) ?u16 {
@@ -99,9 +108,32 @@ fn fatal(comptime msg: []const u8) noreturn {
     std.process.exit(1);
 }
 
-fn setIntSockOpt(fd: fd_t, level: i32, optname: u32, value: c_int) void {
+pub fn setIntSockOpt(fd: fd_t, level: i32, optname: u32, value: c_int) void {
     var v = value;
     _ = linux.setsockopt(fd, level, optname, std.mem.asBytes(&v), @sizeOf(c_int));
+}
+
+/// Open a non-blocking TCP socket to `sa` (TCP_NODELAY on). A localhost connect
+/// completes ~immediately; EINPROGRESS/EAGAIN are fine. Shared by both engines.
+pub fn dialUpstream(sa: *const Sockaddr) !fd_t {
+    const rc = linux.socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (linux.errno(rc) != .SUCCESS) return error.SocketFailed;
+    const fd: fd_t = @intCast(rc);
+    setIntSockOpt(fd, IPPROTO_TCP, TCP_NODELAY, 1);
+    switch (linux.errno(linux.connect(fd, @ptrCast(sa), @sizeOf(Sockaddr)))) {
+        .SUCCESS, .INPROGRESS, .AGAIN => return fd,
+        else => {
+            _ = linux.close(fd);
+            return error.ConnectFailed;
+        },
+    }
+}
+
+/// Create a non-blocking pipe (the splice intermediary). Shared by both engines.
+pub fn makePipe() ![2]fd_t {
+    var fds: [2]fd_t = undefined;
+    if (linux.errno(linux.pipe2(&fds, .{ .NONBLOCK = true })) != .SUCCESS) return error.PipeFailed;
+    return fds;
 }
 
 fn openListener(port: u16) !fd_t {
@@ -188,7 +220,7 @@ const Conn = struct {
     }
 };
 
-fn splice(from: fd_t, to: fd_t, max: usize) !usize {
+pub fn splice(from: fd_t, to: fd_t, max: usize) !usize {
     const rc = linux.syscall6(
         .splice,
         @as(usize, @bitCast(@as(isize, from))),
@@ -205,7 +237,7 @@ fn splice(from: fd_t, to: fd_t, max: usize) !usize {
     };
 }
 
-fn eventLoop(listen_fd: fd_t) !void {
+fn pollEngine(listen_fd: fd_t) !void {
     const alloc = std.heap.page_allocator;
     var conns: [MAX_CONNS]?*Conn = std.mem.zeroes([MAX_CONNS]?*Conn); // all null
     var n_conns: usize = 0;

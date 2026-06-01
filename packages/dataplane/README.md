@@ -29,25 +29,34 @@ connection) on a single-threaded non-blocking `poll()` loop. Run one copy per
 core with `SO_REUSEPORT` for multi-core (the bench does this; the kernel
 load-balances on Linux). Byte movement:
 
-- **copy path** (portable): `read()`/`write()` through a 64 KB buffer.
-- **splice path** (Linux, `comptime`): `splice()` socket→pipe→socket, zero-copy.
+All byte movement is zero-copy `splice()` (socket→pipe→socket); the engine is a
+**swappable io backend**, selected by an optional 4th arg:
 
+- **`poll`** (default) — readiness-driven non-blocking `poll()` loop. Validated.
+- **`uring`** — completion-driven `io_uring`: multishot accept + `IORING_OP_SPLICE`,
+  batched submits. Each connection-half alternates one read-splice (src→pipe) and
+  write-splices (pipe→dst), driven by completions; slots are generation-tagged and
+  reference-counted for safe teardown.
+
+A future **Home-native io module** is just a third backend behind the same seam.
 No HTTP parsing yet — a TCP pump is the right *upper bound* for the single-upstream
-benchmark (isolates the data path). Host routing + `X-Forwarded-*` rewrite are v1.
+benchmark (isolates the data path). Host routing + `X-Forwarded-*` rewrite are next.
 
 ```bash
 zig build -Doptimize=ReleaseFast
-./zig-out/bin/dataplane <listenPort> <upstreamHost> <upstreamPort>
+./zig-out/bin/dataplane <listenPort> <upstreamHost> <upstreamPort> [poll|uring]
 ```
 
-Toolchain: the repo's pinned **Zig 0.17-dev** (`package.json` → `ziglang.org`).
-The splice path needs any modern Linux kernel.
+Toolchain: the repo's pinned **Zig 0.17-dev** (`package.json` → `ziglang.org`),
+talking the raw Linux syscall ABI (`std.os.linux`) directly. Needs a modern
+Linux kernel (`splice` + `io_uring`).
 
 ## Benchmark
 
 `bench/run.sh` (Linux; needs `bun`, `nginx`, `oha`, `jq`) starts an origin, nginx
-(`reverse_proxy`), and the dataplane — all forwarding to the same origin — and
-reports req/s for a ~16 KB HTML page. CI runs it on every change via
+(`reverse_proxy`), and both dataplane engines — all forwarding to the same origin
+— and reports median req/s across a **body-size sweep** (~16 KB HTML, ~1 MB asset)
+× **concurrency sweep** (50, 256). CI runs it on every change via
 [`.github/workflows/dataplane-bench.yml`](../../.github/workflows/dataplane-bench.yml)
 (or trigger it manually from the Actions tab); results land in the job summary.
 
@@ -57,13 +66,14 @@ zig build -Doptimize=ReleaseFast && bash bench/run.sh
 
 ## Roadmap
 
-1. **v0** — splice/copy TCP pump, `reusePort`, `poll()` loop. *(here)*
-2. **io_uring** event loop (multishot accept, batched SQEs, registered buffers).
+1. **v0** — splice TCP pump, `reusePort`, swappable backend. ✅
+2. **io_uring** engine — multishot accept + splice ops. ✅ (opt-in `uring`)
 3. **kTLS** — terminate TLS in-kernel so encrypted bodies can *still* splice; the
    key to beating nginx on HTTPS body throughput.
 4. HTTP/1.1 parse for host routing + `X-Forwarded-*`; HTTP/2; WebSocket.
 5. Control-plane hand-off: consume certs/config from disk + reload on `SIGHUP`
    (the pattern rpx's cluster mode already uses).
+6. A **Home-native io backend** behind the engine seam.
 
 ## Status — beats nginx on bodies (validated in CI)
 
