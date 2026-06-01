@@ -1289,6 +1289,178 @@ pub fn moduleExportNestedTypeSpaceName(
     return false;
 }
 
+pub const InferredExportUnsafeReference = struct {
+    symbol_name: []const u8,
+    module_specifier: []const u8,
+};
+
+/// Declaration-emit portability query for an exported function's
+/// declared return type. Given the resolved module source and a value
+/// export name (`foo` in `import { foo } from "foo"`), find the first
+/// imported type reference in `foo`'s return annotation whose package
+/// specifier would include a nested `node_modules` segment. This mirrors
+/// the subset of tsc's declaration writer that reports TS2883 for
+/// inferred exported variables such as `export const x = foo()`.
+pub fn moduleInferredExportUnsafeReference(
+    gpa: std.mem.Allocator,
+    out: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    module_source: []const u8,
+    module_path: []const u8,
+    exported_name: []const u8,
+    is_tsx: bool,
+) ?InferredExportUnsafeReference {
+    var compilation = ts_driver.compileSource(gpa, module_source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return null;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    const root = compilation.root;
+    if (compilation.hir.kindOf(root) != .block_stmt) return null;
+    const exported_id = compilation.interner.lookup(exported_name) orelse return null;
+    for (hir_mod_ns.blockStmts(&compilation.hir, root)) |stmt| {
+        if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
+        const decl = ex.decl;
+        if (decl == hir_mod_ns.none_node_id or compilation.hir.kindOf(decl) != .fn_decl) continue;
+        const f = hir_mod_ns.fnDeclOf(&compilation.hir, decl);
+        if (f.name == hir_mod_ns.none_node_id or compilation.hir.kindOf(f.name) != .identifier) continue;
+        if (hir_mod_ns.identifierOf(&compilation.hir, f.name).name != exported_id) continue;
+        if (f.return_type == hir_mod_ns.none_node_id) return null;
+        var ctx = InferredExportScanContext{
+            .out = out,
+            .resolver = resolver,
+            .compilation = compilation,
+            .module_path = module_path,
+        };
+        return ctx.findUnsafeReference(f.return_type) catch null;
+    }
+    return null;
+}
+
+const InferredExportScanContext = struct {
+    out: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    compilation: *ts_driver.Compilation,
+    module_path: []const u8,
+
+    fn findUnsafeReference(self: *InferredExportScanContext, type_node: hir_mod_ns.NodeId) !?InferredExportUnsafeReference {
+        if (type_node == hir_mod_ns.none_node_id) return null;
+        switch (self.compilation.hir.kindOf(type_node)) {
+            .type_ref => {
+                const tr = hir_mod_ns.typeRefOf(&self.compilation.hir, type_node);
+                if (tr.qualifier_len == 0) {
+                    if (try self.unsafeReferenceForImportedType(tr.name)) |unsafe| return unsafe;
+                }
+                for (hir_mod_ns.typeRefArgs(&self.compilation.hir, type_node)) |arg| {
+                    if (try self.findUnsafeReference(arg)) |unsafe| return unsafe;
+                }
+            },
+            .tuple_type => for (hir_mod_ns.tupleTypeElements(&self.compilation.hir, type_node)) |elem| {
+                if (try self.findUnsafeReference(elem)) |unsafe| return unsafe;
+            },
+            .array_type => {
+                const at = hir_mod_ns.arrayTypeOf(&self.compilation.hir, type_node);
+                if (try self.findUnsafeReference(at.element)) |unsafe| return unsafe;
+            },
+            .rest_type => {
+                const rt = hir_mod_ns.restTypeOf(&self.compilation.hir, type_node);
+                if (try self.findUnsafeReference(rt.operand)) |unsafe| return unsafe;
+            },
+            .union_type => for (hir_mod_ns.unionTypeMembers(&self.compilation.hir, type_node)) |member| {
+                if (try self.findUnsafeReference(member)) |unsafe| return unsafe;
+            },
+            .intersection_type => for (hir_mod_ns.intersectionTypeMembers(&self.compilation.hir, type_node)) |member| {
+                if (try self.findUnsafeReference(member)) |unsafe| return unsafe;
+            },
+            .fn_type, .constructor_type => {
+                const ft = hir_mod_ns.fnTypeOf(&self.compilation.hir, type_node);
+                if (try self.findUnsafeReference(ft.return_type)) |unsafe| return unsafe;
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    fn unsafeReferenceForImportedType(
+        self: *InferredExportScanContext,
+        local_name: hir_mod_ns.StringId,
+    ) !?InferredExportUnsafeReference {
+        const binding = self.importBindingForLocal(local_name) orelse return null;
+        const specifier = self.compilation.interner.get(binding.specifier);
+        const resolved = self.resolver.resolve(specifier, self.module_path) catch return null;
+        const rendered = try packageSpecifierForResolvedPath(self.out, resolved.path) orelse return null;
+        if (std.mem.indexOf(u8, rendered, "/node_modules/") == null) {
+            self.out.free(rendered);
+            return null;
+        }
+        const symbol_name = try self.out.dupe(u8, self.compilation.interner.get(binding.imported_name));
+        return .{
+            .symbol_name = symbol_name,
+            .module_specifier = rendered,
+        };
+    }
+
+    const ImportBinding = struct {
+        specifier: hir_mod_ns.StringId,
+        imported_name: hir_mod_ns.StringId,
+    };
+
+    fn importBindingForLocal(
+        self: *InferredExportScanContext,
+        local_name: hir_mod_ns.StringId,
+    ) ?ImportBinding {
+        const root = self.compilation.root;
+        if (self.compilation.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod_ns.blockStmts(&self.compilation.hir, root)) |stmt| {
+            if (self.compilation.hir.kindOf(stmt) != .import_decl) continue;
+            const imp = hir_mod_ns.importOf(&self.compilation.hir, stmt);
+            for (hir_mod_ns.importNamed(&self.compilation.hir, stmt)) |spec_node| {
+                const spec = hir_mod_ns.importSpecifierOf(&self.compilation.hir, spec_node);
+                if (spec.local != local_name) continue;
+                return .{
+                    .specifier = imp.module,
+                    .imported_name = spec.imported,
+                };
+            }
+        }
+        return null;
+    }
+};
+
+fn packageSpecifierForResolvedPath(out: std.mem.Allocator, resolved_path: []const u8) !?[]u8 {
+    const marker = "/node_modules/";
+    const idx = std.mem.indexOf(u8, resolved_path, marker) orelse return null;
+    var spec = resolved_path[idx + marker.len ..];
+    spec = stripKnownTsJsExtension(spec);
+    if (std.mem.endsWith(u8, spec, "/index")) spec = spec[0 .. spec.len - "/index".len];
+    return try out.dupe(u8, spec);
+}
+
+fn stripKnownTsJsExtension(path: []const u8) []const u8 {
+    const exts = [_][]const u8{
+        ".d.ts",
+        ".d.mts",
+        ".d.cts",
+        ".tsx",
+        ".ts",
+        ".jsx",
+        ".js",
+        ".mts",
+        ".cts",
+        ".mjs",
+        ".cjs",
+    };
+    inline for (exts) |ext| {
+        if (std.mem.endsWith(u8, path, ext)) return path[0 .. path.len - ext.len];
+    }
+    return path;
+}
+
 /// True when `scope` (a namespace body) and every enclosing namespace up
 /// to the module root are `export`ed, so the namespace chain is reachable
 /// from an importing module. The binder tags `export namespace N` on the
@@ -1894,4 +2066,54 @@ test "moduleExportNestedTypeSpaceName: top-level exports and value-only members 
     try T.expect(!moduleExportNestedTypeSpaceName(T.allocator, private_ns, "Inner", false));
     // Absent name.
     try T.expect(!moduleExportNestedTypeSpaceName(T.allocator, "export namespace N { export interface I {} }", "Missing", false));
+}
+
+test "moduleInferredExportUnsafeReference: nested node_modules return type is non-portable" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/r/node_modules/foo/node_modules/nested/index.d.ts", "export interface NestedProps {}");
+    try vfs.addFile("/r/node_modules/foo/other/index.d.ts", "export interface OtherIndexProps {}");
+    try vfs.addFile("/r/node_modules/foo/other.d.ts", "export interface OtherProps {}");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    const src =
+        \\import { OtherProps } from "./other";
+        \\import { OtherIndexProps } from "./other/index";
+        \\import { NestedProps } from "nested";
+        \\export interface SomeProps {}
+        \\export function foo(): [SomeProps, OtherProps, OtherIndexProps, NestedProps];
+    ;
+    const unsafe = moduleInferredExportUnsafeReference(
+        T.allocator,
+        T.allocator,
+        &resolver,
+        src,
+        "/r/node_modules/foo/index.d.ts",
+        "foo",
+        false,
+    ) orelse return error.TestExpectedEqual;
+    defer T.allocator.free(unsafe.symbol_name);
+    defer T.allocator.free(unsafe.module_specifier);
+    try T.expectEqualStrings("NestedProps", unsafe.symbol_name);
+    try T.expectEqualStrings("foo/node_modules/nested", unsafe.module_specifier);
+}
+
+test "moduleInferredExportUnsafeReference: portable return type stays clean" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    const src =
+        \\export interface RootProps {}
+        \\export function bar(): RootProps;
+    ;
+    try T.expect(moduleInferredExportUnsafeReference(
+        T.allocator,
+        T.allocator,
+        &resolver,
+        src,
+        "/node_modules/root/index.d.ts",
+        "bar",
+        false,
+    ) == null);
 }

@@ -44,6 +44,7 @@ const CheckerResolverAdapter = struct {
     pub const vtable = ts_checker.ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
+        .inferredExportUnsafeReference = inferredExportUnsafeReferenceImpl,
     };
 
     fn resolveImpl(
@@ -99,6 +100,35 @@ const CheckerResolverAdapter = struct {
             .type_only_export = type_only_pos != null,
             .export_path = export_path,
             .export_pos = type_only_pos orelse 0,
+        };
+    }
+
+    fn inferredExportUnsafeReferenceImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+        exported_name: []const u8,
+    ) ?ts_checker.ExternalResolver.InferredExportUnsafeReference {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        var stack_buf: [1024]u8 = undefined;
+        const containing = canonicalContainingPath(&stack_buf, containing_file);
+        const r = self.resolver.resolve(specifier, containing) catch return null;
+        const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
+        defer self.resolver.gpa.free(src);
+        const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+        const arena = self.resolver.arena.allocator();
+        const unsafe = ts_program.moduleInferredExportUnsafeReference(
+            self.resolver.gpa,
+            arena,
+            self.resolver,
+            src,
+            r.path,
+            exported_name,
+            is_tsx,
+        ) orelse return null;
+        return .{
+            .symbol_name = unsafe.symbol_name,
+            .module_specifier = unsafe.module_specifier,
         };
     }
 };
@@ -597,6 +627,8 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // tsc expects at the failing attribute.
     if (!rawSourceHasNonCodeMarker(c.raw_source)) {
         if (parserSuiteNeedsVirtualFileBoundaries(c)) return true;
+        if ((directiveBool(c.raw_source, "declaration") orelse false) and
+            rawSourceHasNodeModulesCodeMarker(c.raw_source)) return true;
         return false;
     }
     return true;
@@ -684,6 +716,16 @@ fn rawSourceHasMultipleCodeMarkers(raw: []const u8) bool {
         if (!isCodeVirtualFile(path)) continue;
         count += 1;
         if (count >= 2) return true;
+    }
+    return false;
+}
+
+fn rawSourceHasNodeModulesCodeMarker(raw: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        const path = virtualFilename(line) orelse continue;
+        if (isCodeVirtualFile(path) and isNodeModulesVirtualPath(path)) return true;
     }
     return false;
 }
@@ -1657,7 +1699,8 @@ pub fn loadDirectoryWithOptions(
             false;
         const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
             (baseline_path != null and !baseline_only_option_deprecation);
-        const directive_state = parseStrictDirectiveState(case_src);
+        const directive_source = if (raw_source.len != 0) raw_source else case_src;
+        const directive_state = parseStrictDirectiveState(directive_source);
         // Per-fixture strict-state inference. We previously
         // unconditionally flipped strict-on for every expected-error
         // fixture without an explicit directive, which over-fires
@@ -2902,6 +2945,7 @@ const StrictDirectiveState = struct {
     no_implicit_returns: ?bool = null,
     no_fallthrough_cases_in_switch: ?bool = null,
     use_unknown_in_catch_variables: ?bool = null,
+    declaration: ?bool = null,
 };
 
 fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
@@ -3330,6 +3374,7 @@ fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.
         .no_implicit_returns = state.no_implicit_returns orelse false,
         .no_fallthrough_cases_in_switch = state.no_fallthrough_cases_in_switch orelse false,
         .use_unknown_in_catch_variables = state.use_unknown_in_catch_variables orelse strict_on,
+        .declaration = state.declaration orelse false,
     };
 }
 
@@ -3377,6 +3422,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.no_fallthrough_cases_in_switch = value;
     } else if (std.mem.eql(u8, name, "useUnknownInCatchVariables")) {
         state.use_unknown_in_catch_variables = value;
+    } else if (std.mem.eql(u8, name, "declaration")) {
+        state.declaration = value;
     } else {
         return false;
     }
