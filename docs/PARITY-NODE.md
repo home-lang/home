@@ -85,10 +85,12 @@ global (`log`/`info`/`debug`/`error`/`warn`/`trace`/`dir`).
 
 🟡 JS-callable. `createHash` (sha256/sha512/sha1/md5), `createHmac`
 (HMAC over native hash), `pbkdf2`/`pbkdf2Sync` (native `std.crypto.pwhash`,
-sha1/256/512 — RFC 6070 verified), `randomBytes`, `randomFillSync`,
-`randomInt`, `randomUUID` (v4), `timingSafeEqual`, `getHashes`. Missing:
-`createCipheriv`/`createDecipheriv`, `createSign`/`verify`, `hkdf`,
-`scrypt`, `KeyObject`, X.509 — the OpenSSL/BoringSSL-backed surfaces.
+sha1/256/512 — RFC 6070 verified), `hkdf`/`hkdfSync` (native
+`std.crypto.kdf.hkdf`, sha256/512 — RFC 5869 verified), `randomBytes`,
+`randomFillSync`, `randomInt`, `randomUUID` (v4), `timingSafeEqual`,
+`getHashes`. Missing: `createCipheriv`/`createDecipheriv`,
+`createSign`/`verify`, `scrypt`, `KeyObject`, X.509 — the OpenSSL/
+BoringSSL-backed surfaces.
 Zig substrate: `node/crypto.zig`.
 
 ### [`node:dgram`](https://nodejs.org/api/dgram.html)
