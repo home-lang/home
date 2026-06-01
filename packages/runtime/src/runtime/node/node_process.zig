@@ -50,7 +50,7 @@ pub fn getExecPath(globalObject: *jsc.JSGlobalObject) callconv(.c) jsc.JSValue {
 }
 
 fn createExecArgv(globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-    var sfb = std.heap.stackFallback(4096, globalObject.allocator());
+    var sfb = bun.stackFallback(4096, globalObject.allocator());
     const temp_alloc = sfb.get();
     const vm = globalObject.bunVM();
 
@@ -162,7 +162,7 @@ fn createArgv(globalObject: *jsc.JSGlobalObject) callconv(.c) jsc.JSValue {
     const vm = globalObject.bunVM();
 
     // Allocate up to 32 strings in stack
-    var stack_fallback_allocator = std.heap.stackFallback(
+    var stack_fallback_allocator = bun.stackFallback(
         32 * @sizeOf(jsc.ZigString) + (bun.MAX_PATH_BYTES + 1) + 32,
         bun.default_allocator,
     );
@@ -314,7 +314,7 @@ pub fn Bun__Process__editWindowsEnvVar(k: bun.String, v: bun.String) callconv(.c
     comptime bun.assert(bun.Environment.isWindows);
     if (k.tag == .Empty) return;
     const wtf1 = k.value.WTFStringImpl;
-    var fixed_stack_allocator = std.heap.stackFallback(1025, bun.default_allocator);
+    var fixed_stack_allocator = bun.stackFallback(1025, bun.default_allocator);
     const allocator = fixed_stack_allocator.get();
     var buf1 = bun.handleOom(allocator.alloc(u16, k.utf16ByteLength() + 1));
     defer allocator.free(buf1);

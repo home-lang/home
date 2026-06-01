@@ -1206,7 +1206,9 @@ pub fn toUTF16Alloc(allocator: std.mem.Allocator, bytes: []const u8, comptime fa
     return null;
 }
 
-pub const TestingAPIs = @import("../../jsc/bun_string_jsc.zig").UnicodeTestingAPIs;
+// Home relocated this Bun-original file under `bun_core/`, one level deeper
+// than upstream, so the path to top-level `jsc/` needs an extra `../`.
+pub const TestingAPIs = @import("../../../jsc/bun_string_jsc.zig").UnicodeTestingAPIs;
 
 // this one does the thing it's named after
 pub fn toUTF16AllocForReal(allocator: std.mem.Allocator, bytes: []const u8, comptime fail_if_invalid: bool, comptime sentinel: bool) !if (sentinel) [:0]u16 else []u16 {
@@ -1243,7 +1245,7 @@ pub fn toUTF16AllocMaybeBuffered(
         const res = bun.simdutf.convert.utf8.to.utf16.with_errors.le(bytes, out);
         if (res.status == .success) {
             log("toUTF16 {d} UTF8 -> {d} UTF16", .{ bytes.len, out_length });
-            return .{ out, .{0} ** 3, 0 };
+            return .{ out, .{ 0, 0, 0 }, 0 };
         }
 
         var list = std.ArrayListUnmanaged(u16).fromOwnedSlice(out[0..first_non_ascii]);
@@ -1315,7 +1317,7 @@ pub fn toUTF16AllocMaybeBuffered(
     }
 
     log("toUTF16 {d} UTF8 -> {d} UTF16", .{ bytes.len, output.items.len });
-    return .{ output.items, .{0} ** 3, 0 };
+    return .{ output.items, .{ 0, 0, 0 }, 0 };
 }
 
 pub fn utf16CodepointWithFFFD(input: []const u16) UTF16Replacement {

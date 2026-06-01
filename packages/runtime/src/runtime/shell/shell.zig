@@ -1073,11 +1073,11 @@ pub const AST = struct {
 
         pub fn memoryCost(this: *const @This()) usize {
             var cost: usize = @sizeOf(CompoundAtom);
-            cost += this.#atomsMemoryCost();
+            cost += this._atomsMemoryCost();
             return cost;
         }
 
-        fn #atomsMemoryCost(this: *const @This()) usize {
+        fn _atomsMemoryCost(this: *const @This()) usize {
             var cost: usize = 0;
             for (this.atoms) |*atom| {
                 cost += atom.memoryCost();
@@ -1753,7 +1753,7 @@ pub const Parser = struct {
     }
 
     fn parse_atom(self: *Parser) !?AST.Atom {
-        var array_alloc = std.heap.stackFallback(@sizeOf(AST.SimpleAtom), self.alloc);
+        var array_alloc = bun.stackFallback(@sizeOf(AST.SimpleAtom), self.alloc);
         var atoms = try std.array_list.Managed(AST.SimpleAtom).initCapacity(array_alloc.get(), 1);
         var has_brace_open = false;
         var has_brace_close = false;
@@ -3077,7 +3077,7 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
                 '0'...'9' => {
                     // Codepoint int casts are safe here because the digits are in the ASCII range
                     var count: usize = 1;
-                    var buf: [32]u8 = [_]u8{@intCast(first.char)} ** 32;
+                    var buf: [32]u8 = @splat(@intCast(first.char));
 
                     while (self.peek()) |peeked| {
                         const char = peeked.char;
@@ -3166,7 +3166,7 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
         fn eat_number_word(self: *@This()) ?usize {
             const snap = self.make_snapshot();
             var count: usize = 0;
-            var buf: [32]u8 = [_]u8{0} ** 32;
+            var buf: [32]u8 = @splat(0);
 
             while (self.eat()) |result| {
                 const char = result.char;
@@ -3456,7 +3456,7 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
         }
 
         fn eat_slice(self: *@This(), comptime CodepointType: type, comptime N: usize) ?[N]CodepointType {
-            var slice = [_]CodepointType{0} ** N;
+            var slice: [N]CodepointType = @splat(0);
             var i: usize = 0;
             while (self.peek()) |result| {
                 // If we passed in codepoint range that is equal to the source
@@ -3900,7 +3900,7 @@ pub fn shellCmdFromJS(
     marked_argument_buffer: *jsc.MarkedArgumentBuffer,
 ) bun.JSError!void {
     var builder = ShellSrcBuilder.init(globalThis, out_script, jsstrings);
-    var jsobjref_buf: [128]u8 = [_]u8{0} ** 128;
+    var jsobjref_buf: [128]u8 = @splat(0);
 
     var string_iter = try string_args.arrayIterator(globalThis);
     var i: u32 = 0;
@@ -4056,7 +4056,7 @@ pub const ShellSrcBuilder = struct {
     globalThis: *jsc.JSGlobalObject,
     outbuf: *std.array_list.Managed(u8),
     jsstrs_to_escape: *std.array_list.Managed(bun.String),
-    jsstr_ref_buf: [128]u8 = [_]u8{0} ** 128,
+    jsstr_ref_buf: [128]u8 = @splat(0),
 
     pub fn init(
         globalThis: *jsc.JSGlobalObject,
@@ -4581,7 +4581,7 @@ pub const TestingAPIs = struct {
             return globalThis.throw("shell: expected 2 arguments, got 0", .{});
         };
         var template_args = try template_args_js.arrayIterator(globalThis);
-        var stack_alloc = std.heap.stackFallback(@sizeOf(bun.String) * 4, arena.allocator());
+        var stack_alloc = bun.stackFallback(@sizeOf(bun.String) * 4, arena.allocator());
         var jsstrings = try std.array_list.Managed(bun.String).initCapacity(stack_alloc.get(), 4);
         defer {
             for (jsstrings.items[0..]) |bunstr| {
@@ -4649,7 +4649,7 @@ pub const TestingAPIs = struct {
             return globalThis.throw("shell: expected 2 arguments, got 0", .{});
         };
         var template_args = try template_args_js.arrayIterator(globalThis);
-        var stack_alloc = std.heap.stackFallback(@sizeOf(bun.String) * 4, arena.allocator());
+        var stack_alloc = bun.stackFallback(@sizeOf(bun.String) * 4, arena.allocator());
         var jsstrings = try std.array_list.Managed(bun.String).initCapacity(stack_alloc.get(), 4);
         defer {
             for (jsstrings.items[0..]) |bunstr| {

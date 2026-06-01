@@ -608,7 +608,7 @@ pub fn split(
     //
     // thing
     var it = std.mem.splitScalar(T, s, newline);
-    var lines = std.ArrayListUnmanaged([]const T){};
+    var lines = std.ArrayListUnmanaged([]const T).empty;
     try lines.ensureUnusedCapacity(alloc, s.len >> 4);
     errdefer lines.deinit(alloc);
     while (it.next()) |l| {
@@ -623,7 +623,9 @@ const builtin = @import("builtin");
 const std = @import("std");
 const t = std.testing;
 const assert = std.debug.assert;
-const stackFallback = std.heap.stackFallback;
+// `bun.stackFallback` was dropped from the pinned Zig 0.17 stdlib; route
+// through Home's drop-in replacement (same `.get()` -> Allocator shape).
+const stackFallback = @import("home_rt").stackFallback;
 
 const mem = std.mem;
 const Allocator = mem.Allocator;

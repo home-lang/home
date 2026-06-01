@@ -14,6 +14,7 @@ pub const stem = std.fs.path.stem;
 pub const Platform = @import("paths/resolve_path.zig").Platform;
 pub const isSepAny = @import("paths/resolve_path.zig").isSepAny;
 pub const isSepAnyT = @import("paths/resolve_path.zig").isSepAnyT;
+pub const joinAbs = @import("paths/resolve_path.zig").joinAbs;
 pub const joinAbsStringBuf = @import("paths/resolve_path.zig").joinAbsStringBuf;
 pub const joinAbsStringBufChecked = @import("paths/resolve_path.zig").joinAbsStringBufChecked;
 pub const joinAbsStringBufZ = @import("paths/resolve_path.zig").joinAbsStringBufZ;

@@ -472,7 +472,7 @@ pub const Style = union(enum) {
     pub fn fromJS(value: JSValue, global: *jsc.JSGlobalObject) !Style {
         if (value.isString()) {
             const bun_string = try value.toBunString(global);
-            var sfa = std.heap.stackFallback(4096, bun.default_allocator);
+            var sfa = bun.stackFallback(4096, bun.default_allocator);
             const utf8 = bun_string.toUTF8(sfa.get());
             defer utf8.deinit();
             if (map.get(utf8.slice())) |style| {
@@ -1238,7 +1238,7 @@ pub const JSFrameworkRouter = struct {
 
         var params_out: MatchedParams = undefined;
         if (jsfr.router.matchSlow(path.slice(), &params_out)) |index| {
-            var sfb = std.heap.stackFallback(4096, bun.default_allocator);
+            var sfb = bun.stackFallback(4096, bun.default_allocator);
             const alloc = sfb.get();
 
             return (try jsc.JSObject.create(.{
@@ -1261,7 +1261,7 @@ pub const JSFrameworkRouter = struct {
     pub fn toJSON(jsfr: *JSFrameworkRouter, global: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
         _ = callframe;
 
-        var sfb = std.heap.stackFallback(4096, bun.default_allocator);
+        var sfb = bun.stackFallback(4096, bun.default_allocator);
         const alloc = sfb.get();
 
         return jsfr.routeToJson(global, Route.Index.init(0), alloc);

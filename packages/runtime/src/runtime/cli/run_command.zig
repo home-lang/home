@@ -1748,7 +1748,7 @@ pub const RunCommand = struct {
             log("Executing from stdin", .{});
 
             // read from stdin
-            var stack_fallback = std.heap.stackFallback(2048, bun.default_allocator);
+            var stack_fallback = bun.stackFallback(2048, bun.default_allocator);
             var list = std.Io.Writer.Allocating.init(stack_fallback.get());
             errdefer list.deinit();
 

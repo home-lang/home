@@ -114,7 +114,7 @@ pub fn initFromLog(
     assert(messages.len > 0);
 
     // Avoid small re-allocations without requesting so much from the heap
-    var sfb = std.heap.stackFallback(65536, dev.allocator());
+    var sfb = bun.stackFallback(65536, dev.allocator());
     var payload = std.array_list.Managed(u8).initCapacity(sfb.get(), 65536) catch
         unreachable; // enough space
     const w = payload.writer();

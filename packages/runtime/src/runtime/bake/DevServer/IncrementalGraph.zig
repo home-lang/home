@@ -63,9 +63,20 @@ const Content = union(enum) {
     css_child: void,
 
     const Untagged = blk: {
-        var info = @typeInfo(Content);
-        info.@"union".tag_type = null;
-        break :blk @Type(info);
+        // Zig 0.17 (Home/Bun fork): `@Type(.{...})` was replaced by the
+        // per-kind `@Union(layout, tag_type, names, types, attrs)` builtin.
+        // Build the untagged (tag_type = null) version of Content's fields,
+        // mirroring collections/multi_array_list.zig.
+        const u = @typeInfo(Content).@"union";
+        var field_names: [u.fields.len][]const u8 = undefined;
+        var field_types: [u.fields.len]type = undefined;
+        var field_attrs: [u.fields.len]std.builtin.Type.UnionField.Attributes = undefined;
+        for (u.fields, &field_names, &field_types, &field_attrs) |field, *name, *FType, *attrs| {
+            name.* = field.name;
+            FType.* = field.type;
+            attrs.* = .{ .@"align" = field.alignment };
+        }
+        break :blk @Union(u.layout, null, &field_names, &field_types, &field_attrs);
     };
 };
 
@@ -878,7 +889,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             bun.assert(bundler_index.isValid());
             bun.assert(ctx.loaders[bundler_index.get()].isCSS());
 
-            var sfb = std.heap.stackFallback(@sizeOf(bun.ast.Index) * 64, temp_alloc);
+            var sfb = bun.stackFallback(@sizeOf(bun.ast.Index) * 64, temp_alloc);
             const queue_alloc = sfb.get();
 
             // This queue avoids stack overflow.
@@ -1733,7 +1744,7 @@ pub fn IncrementalGraph(comptime side: bake.Side) type {
             // to inform the HMR runtime some crucial entry-point info. The
             // exact upper bound of this can be calculated, but is not to
             // avoid worrying about windows paths.
-            var end_sfa = std.heap.stackFallback(65536, g.allocator());
+            var end_sfa = bun.stackFallback(65536, g.allocator());
             var end_list = std.array_list.Managed(u8).initCapacity(end_sfa.get(), 65536) catch unreachable;
             defer end_list.deinit();
             const end = end: {

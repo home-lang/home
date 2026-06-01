@@ -552,7 +552,7 @@ pub const Value = union(enum) {
         }
 
         pub fn toJS(this: Decimal, globalObject: *JSC.JSGlobalObject) JSValue {
-            var stack = std.heap.stackFallback(64, bun.default_allocator);
+            var stack = bun.stackFallback(64, bun.default_allocator);
             var str = std.array_list.Managed(u8).init(stack.get());
             defer str.deinit();
 

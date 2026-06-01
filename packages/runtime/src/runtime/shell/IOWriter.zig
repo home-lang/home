@@ -238,7 +238,7 @@ fn write(this: *IOWriter) enum {
     bun.assert(this.writer.handle == .poll);
     if (this.writer.handle.poll.isWatching()) return .suspended;
     switch (this.writer.start(this.fd, this.flags.pollable)) {
-        .result => |_| {},
+        .result => {},
         .err => |err| {
             this.onError(err);
             return .failed;
@@ -467,7 +467,7 @@ pub fn onError(this: *IOWriter, err__: bun.sys.Error) void {
         this.flags.broken_pipe = true;
     }
     log("IOWriter(0x{x}, fd={f}) onError errno={s} errmsg={f} errsyscall={f}", .{ @intFromPtr(this), this.fd, @tagName(ee.getErrno()), ee.message, ee.syscall });
-    var seen_alloc = std.heap.stackFallback(@sizeOf(usize) * 64, bun.default_allocator);
+    var seen_alloc = bun.stackFallback(@sizeOf(usize) * 64, bun.default_allocator);
     var seen = bun.handleOom(std.array_list.Managed(usize).initCapacity(seen_alloc.get(), 64));
     defer seen.deinit();
     // Writers before writer_idx have already had their onIOWriterChunk callback fired and may

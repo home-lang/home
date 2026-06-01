@@ -14,7 +14,7 @@ cwd: ?bun.String = null,
 this_jsvalue: JSValue = .zero,
 estimated_size_for_gc: usize = 0,
 
-fn #computeEstimatedSizeForGC(this: *const ParsedShellScript) usize {
+fn _computeEstimatedSizeForGC(this: *const ParsedShellScript) usize {
     var size: usize = @sizeOf(ParsedShellScript);
     if (this.args) |args| {
         size += args.memoryCost();
@@ -30,7 +30,7 @@ fn #computeEstimatedSizeForGC(this: *const ParsedShellScript) usize {
 }
 
 pub fn memoryCost(this: *const ParsedShellScript) usize {
-    return this.#computeEstimatedSizeForGC();
+    return this._computeEstimatedSizeForGC();
 }
 
 pub fn estimatedSize(this: *const ParsedShellScript) usize {
@@ -143,7 +143,7 @@ fn createParsedShellScriptImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.
     const template_args_js = arguments[1];
     var template_args = try template_args_js.arrayIterator(globalThis);
 
-    var stack_alloc = std.heap.stackFallback(@sizeOf(bun.String) * 4, shargs.arena_allocator());
+    var stack_alloc = bun.stackFallback(@sizeOf(bun.String) * 4, shargs.arena_allocator());
     var jsstrings = try std.array_list.Managed(bun.String).initCapacity(stack_alloc.get(), 4);
     defer {
         for (jsstrings.items[0..]) |bunstr| {
@@ -188,7 +188,7 @@ fn createParsedShellScriptImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.
         .args = shargs,
         .jsobjs = jsobjs,
     });
-    parsed_shell_script.estimated_size_for_gc = parsed_shell_script.#computeEstimatedSizeForGC();
+    parsed_shell_script.estimated_size_for_gc = parsed_shell_script._computeEstimatedSizeForGC();
     const this_jsvalue = jsc.Codegen.JSParsedShellScript.toJSWithValues(parsed_shell_script, globalThis, marked_argument_buffer);
     parsed_shell_script.this_jsvalue = this_jsvalue;
 

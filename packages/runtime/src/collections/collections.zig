@@ -6,7 +6,7 @@ pub const OffsetByteList = baby_list.OffsetByteList;
 pub const bit_set = @import("./bit_set.zig");
 pub const AutoBitSet = bit_set.AutoBitSet;
 pub const HiveArray = @import("./hive_array.zig").HiveArray;
-pub const BoundedArray = @import("./bounded_array.zig").BoundedArray;
+pub const BoundedArray = @import("../core/bounded_array.zig").BoundedArray;
 
 pub const array_list = @import("./array_list.zig");
 pub const ArrayList = array_list.ArrayList; // any `std.mem.Allocator`

@@ -1,15 +1,22 @@
 // Copied (partial) from bun/src/glob/glob.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: the upstream aggregator also re-exports `./matcher.zig`
-// and `./GlobWalker.zig` which depend on `bun.sys`, `bun.path`, the JSC
-// surface, and several syscall accessors that aren't ported yet — those
-// re-exports are parked and only `detectGlobSyntax` lands now.
+// Imports rewritten: `./matcher.zig` (the pure pattern matcher) is now wired
+// in faithfully as `match`. The upstream aggregator also re-exports
+// `./GlobWalker.zig`, which depends on `bun.sys`, `bun.path`, and several
+// syscall accessors that aren't ported yet — that re-export stays parked.
 
-//! Pure-Zig glob helpers. Today this is just `detectGlobSyntax`, a heuristic
-//! that decides whether a pattern needs the full glob walker or can be
-//! treated as a literal path. The walker + matcher land alongside `bun.sys`.
+//! Pure-Zig glob helpers. `detectGlobSyntax` is a heuristic that decides
+//! whether a pattern needs the full glob walker or can be treated as a
+//! literal path; `match` is Bun's faithful pattern matcher. The walker
+//! (`GlobWalker.zig`) lands alongside `bun.sys`.
 
 const std = @import("std");
+
+/// Faithful upstream Bun glob matcher. Mirrors Bun's
+/// `pub const match = @import("./matcher.zig").match;` in `glob/glob.zig`.
+/// Returns a `MatchResult` (`.match` / `.no_match` / `.negate_match` /
+/// `.negate_no_match`); call `.matches()` for a plain bool.
+pub const match = @import("./matcher.zig").match;
 
 /// Returns true if the given string contains glob syntax,
 /// excluding those escaped with backslashes

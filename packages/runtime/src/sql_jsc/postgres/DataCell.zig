@@ -583,7 +583,7 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
         .numeric => {
             if (binary) {
                 // this is probrably good enough for most cases
-                var stack_buffer = std.heap.stackFallback(1024, bun.default_allocator);
+                var stack_buffer = bun.stackFallback(1024, bun.default_allocator);
                 const allocator = stack_buffer.get();
                 var numeric_buffer = std.array_list.Managed(u8).fromOwnedSlice(allocator, &stack_buffer.buffer);
                 numeric_buffer.items.len = 0;

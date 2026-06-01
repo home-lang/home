@@ -33,6 +33,18 @@ pub const enable_fuzzilli = false; // Fuzzilli REPRL — re-attaches in a future
 pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
 pub const allow_assert = isDebug;
+pub const enable_asan = false;
+/// Upstream `bun_core/env.zig:39` ties this to `isDebug or enable_asan`, but the
+/// alloc-scope tracking is a debug-only *diagnostic* (it inlines a tracking
+/// allocator that grows struct layouts, e.g. PackedMap 40→48). Home's gate
+/// locks the non-tracking (release) layout via the existing `@sizeOf`
+/// assertions, so this stays off here; it does not change ported behavior.
+pub const enableAllocScopes = false;
+/// Faithful to upstream `bun_core/env.zig:50-52` (`git_sha = build_options.sha`).
+/// Home's gate has no embedded SHA, so these are the empty-SHA branch.
+pub const git_sha: []const u8 = "";
+pub const git_sha_short: []const u8 = "";
+pub const git_sha_shorter: []const u8 = "";
 pub const enable_logs = false;
 pub const is_canary = false;
 pub const ci_assert = false;

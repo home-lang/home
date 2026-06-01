@@ -491,5 +491,115 @@ const BraceIndex = struct {
     end: u32 = 0,
 };
 
-const bun = @import("bun");
+const bun = @import("home_rt");
 const std = @import("std");
+
+// ---------------------------------------------------------------------------
+// Home integration tests (2026-06-01).
+//
+// These exercise the faithful upstream Bun glob matcher now that it is wired
+// into Home as `home_rt.glob.match`. The matcher is byte-identical to Bun's
+// `src/glob/matcher.zig` apart from the `@import("bun") -> @import("home_rt")`
+// rewrite above; the assertions below cover every documented pattern feature
+// (`?`, `*`, `**`, `[...]`, ranges, `[!..]`/`[^..]`, `{a,b}` braces, negation,
+// escapes, and UTF-8) so a regression in the wiring or the underlying string
+// helpers (`wtf8ByteSequenceLength`, `decodeWTF8RuneT`) is caught here.
+// ---------------------------------------------------------------------------
+
+fn expectMatch(glob: []const u8, path: []const u8) !void {
+    try std.testing.expect(match(glob, path).matches());
+}
+
+fn expectNoMatch(glob: []const u8, path: []const u8) !void {
+    try std.testing.expect(!match(glob, path).matches());
+}
+
+test "matcher: literal paths" {
+    try expectMatch("foo.zig", "foo.zig");
+    try expectMatch("path/to/file.txt", "path/to/file.txt");
+    try expectNoMatch("foo.zig", "bar.zig");
+    try expectNoMatch("foo.zig", "foo.zigx");
+    try expectNoMatch("foo.zig", "foo.zi");
+}
+
+test "matcher: single-char wildcard '?'" {
+    try expectMatch("foo?.zig", "fooa.zig");
+    try expectMatch("?oo.zig", "boo.zig");
+    try expectNoMatch("foo?.zig", "foo.zig"); // '?' requires exactly one char
+    // '?' does not cross a path separator
+    try expectNoMatch("a?b", "a/b");
+}
+
+test "matcher: star '*' stays within a path segment" {
+    try expectMatch("*.zig", "foo.zig");
+    try expectMatch("src/*.zig", "src/main.zig");
+    try expectMatch("a*", "a");
+    try expectMatch("a*b", "ab");
+    try expectMatch("a*b", "axyzb");
+    // '*' must not span '/'
+    try expectNoMatch("src/*.zig", "src/sub/main.zig");
+    try expectNoMatch("*.zig", "src/main.zig");
+}
+
+test "matcher: globstar '**' spans path separators" {
+    try expectMatch("**/*.zig", "src/main.zig");
+    try expectMatch("**/*.zig", "a/b/c/main.zig");
+    try expectMatch("src/**/main.zig", "src/main.zig");
+    try expectMatch("src/**/main.zig", "src/a/b/main.zig");
+    try expectMatch("**", "anything/at/all.txt");
+    try expectNoMatch("src/**/*.zig", "lib/main.zig");
+}
+
+test "matcher: character classes and ranges" {
+    try expectMatch("foo[abc].zig", "fooa.zig");
+    try expectMatch("foo[abc].zig", "fooc.zig");
+    try expectNoMatch("foo[abc].zig", "food.zig");
+    try expectMatch("file[0-9].txt", "file7.txt");
+    try expectNoMatch("file[0-9].txt", "filex.txt");
+    try expectMatch("[a-z][a-z].zig", "go.zig");
+}
+
+test "matcher: negated character classes" {
+    try expectMatch("foo[!abc].zig", "food.zig");
+    try expectNoMatch("foo[!abc].zig", "fooa.zig");
+    try expectMatch("foo[^abc].zig", "food.zig");
+    try expectNoMatch("foo[^abc].zig", "fooc.zig");
+}
+
+test "matcher: brace alternation" {
+    try expectMatch("foo.{zig,c}", "foo.zig");
+    try expectMatch("foo.{zig,c}", "foo.c");
+    try expectNoMatch("foo.{zig,c}", "foo.rs");
+    try expectMatch("{src,lib}/main.zig", "lib/main.zig");
+    // nested braces
+    try expectMatch("a{b,c{d,e}}f", "acef");
+    try expectMatch("a{b,c{d,e}}f", "abf");
+}
+
+test "matcher: leading negation" {
+    try expectNoMatch("!*.zig", "foo.zig");
+    try expectMatch("!*.zig", "foo.c");
+    // double negation cancels out
+    try expectMatch("!!*.zig", "foo.zig");
+}
+
+test "matcher: backslash escapes special characters" {
+    // escaped star is a literal '*'
+    try expectMatch("foo\\*bar", "foo*bar");
+    try expectNoMatch("foo\\*bar", "fooXbar");
+}
+
+test "matcher: utf-8 paths" {
+    try expectMatch("*.zig", "café.zig");
+    try expectMatch("caf?.zig", "café.zig"); // '?' matches the multi-byte rune
+    try expectMatch("**", "ünïcödé/path.txt");
+}
+
+test "matcher: MatchResult variants for switch callers" {
+    // plain match / no-match
+    try std.testing.expect(match("*.zig", "a.zig") == .match);
+    try std.testing.expect(match("*.zig", "a.c") == .no_match);
+    // negation produces the negate_* variants used by WorkspaceMap.zig
+    try std.testing.expect(match("!*.zig", "a.zig") == .negate_no_match);
+    try std.testing.expect(match("!*.zig", "a.c") == .negate_match);
+}

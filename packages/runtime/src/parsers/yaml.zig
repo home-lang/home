@@ -987,29 +987,29 @@ pub fn Parser(comptime enc: Encoding) type {
         }
 
         const MappingProps = struct {
-            #list: bun.collections.ArrayList(G.Property),
+            _list: bun.collections.ArrayList(G.Property),
 
             pub fn init(allocator: std.mem.Allocator) MappingProps {
-                return .{ .#list = .initIn(allocator) };
+                return .{ ._list = .initIn(allocator) };
             }
 
             pub fn merge(self: *MappingProps, merge_props: []const G.Property) OOM!void {
-                try self.#list.ensureUnusedCapacity(merge_props.len);
+                try self._list.ensureUnusedCapacity(merge_props.len);
                 var iter = std.mem.reverseIterator(merge_props);
                 next_merge_prop: while (iter.next()) |merge_prop| {
                     const merge_key = merge_prop.key.?;
-                    for (self.#list.items()) |existing_prop| {
+                    for (self._list.items()) |existing_prop| {
                         const existing_key = existing_prop.key.?;
                         if (yamlMergeKeyExprEql(existing_key, merge_key)) {
                             continue :next_merge_prop;
                         }
                     }
-                    self.#list.appendAssumeCapacity(merge_prop);
+                    self._list.appendAssumeCapacity(merge_prop);
                 }
             }
 
             pub fn append(self: *MappingProps, prop: G.Property) OOM!void {
-                try self.#list.append(prop);
+                try self._list.append(prop);
             }
 
             pub fn appendMaybeMerge(self: *MappingProps, key: Expr, value: Expr) OOM!void {
@@ -1017,7 +1017,7 @@ pub fn Parser(comptime enc: Encoding) type {
                     .e_string => |key_str| !key_str.eqlComptime("<<"),
                     else => true,
                 }) {
-                    return self.#list.append(.{ .key = key, .value = value });
+                    return self._list.append(.{ .key = key, .value = value });
                 }
 
                 return switch (value.data) {
@@ -1033,12 +1033,12 @@ pub fn Parser(comptime enc: Encoding) type {
                         }
                     },
 
-                    else => self.#list.append(.{ .key = key, .value = value }),
+                    else => self._list.append(.{ .key = key, .value = value }),
                 };
             }
 
             pub fn moveList(self: *MappingProps) G.Property.List {
-                return .moveFromList(&self.#list);
+                return .moveFromList(&self._list);
             }
         };
 

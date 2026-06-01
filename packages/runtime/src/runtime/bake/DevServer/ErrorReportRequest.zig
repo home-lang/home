@@ -41,8 +41,8 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
     var s = std.io.fixedBufferStream(body);
     const reader = s.reader();
 
-    var sfa_general = std.heap.stackFallback(65536, ctx.dev.allocator());
-    var sfa_sourcemap = std.heap.stackFallback(65536, ctx.dev.allocator());
+    var sfa_general = bun.stackFallback(65536, ctx.dev.allocator());
+    var sfa_sourcemap = bun.stackFallback(65536, ctx.dev.allocator());
     const temp_alloc = sfa_general.get();
     var arena = std.heap.ArenaAllocator.init(temp_alloc);
     defer arena.deinit();
@@ -352,7 +352,7 @@ fn extractJsonEncodedSourceCode(contents: []const u8, target_line: u32, comptime
     };
     defer log.deinit();
 
-    var result: [n][]const u8 = .{""} ** n;
+    var result: [n][]const u8 = @splat("");
     for (&result) |*decoded_line| {
         var has_extra_escapes = false;
         prev = 0;

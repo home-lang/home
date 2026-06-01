@@ -42,6 +42,13 @@ pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGrap
 /// JSON / package.json / tsconfig parser leaf of the resolver/macro/PM cone.
 /// Dead-code-eliminated while the cone's parser probe stays off.
 pub const json = @import("parsers/json.zig");
+/// Faithful to upstream `bun.resolver` (`src/bun.zig:201`):
+/// `pub const resolver = @import("./resolver/resolver.zig");`.
+pub const resolver = @import("resolver/resolver.zig");
+/// Faithful to upstream `bun.collections` (`src/bun.zig:501`) and
+/// `bun.SmallList` (`src/bun.zig:236`, = `css.SmallList`).
+pub const collections = @import("collections/collections.zig");
+pub const SmallList = @import("css/small_list.zig").SmallList;
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -333,7 +340,17 @@ pub const ImportRecord = @import("options_types/import_record.zig").ImportRecord
 pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
 pub const schema = @import("options_types/schema.zig");
 pub const bake = struct {
-    pub const DevServer = opaque {};
+    pub const DevServer = opaque {
+        // Faithful to upstream `bun.bake.DevServer.DevAllocator`
+        // (`src/runtime/bake/DevServer.zig:754-755`):
+        // `const AllocationScope = bun.allocators.AllocationScopeIn(bun.DefaultAllocator);`
+        // `pub const DevAllocator = AllocationScope.Borrowed;`. Used by PackedMap.
+        pub const DevAllocator = @import("bun_alloc/allocation_scope.zig").AllocationScopeIn(DefaultAllocator).Borrowed;
+    };
+    // Faithful to upstream `bun.bake.Side` (`src/bake/bake.zig`): the
+    // client/server render-side enum used by OutputFile + the production
+    // bundler. Sourced from the full ported bake.zig.
+    pub const Side = @import("runtime/bake/bake.zig").Side;
 
     pub const Framework = struct {
         is_built_in_react: bool = false,
@@ -1167,6 +1184,10 @@ pub const jsc = struct {
 
     pub const JSValue = @import("jsc/JSValue.zig").JSValue;
     pub const CallFrame = @import("jsc/CallFrame.zig").CallFrame;
+    // Faithful to upstream `jsc/jsc.zig:204`:
+    // `pub const GeneratedClassesList = @import("./generated_classes_list.zig").Classes;`.
+    // Consumed by the vendored `ZigGeneratedClasses` module.
+    pub const GeneratedClassesList = @import("jsc/generated_classes_list.zig").Classes;
     pub const JSGlobalObject = @import("jsc/JSGlobalObject.zig").JSGlobalObject;
     pub const ConsoleObject = struct {
         pub const MessageLevel = enum(u32) {
@@ -1294,6 +1315,9 @@ pub const jsc = struct {
         CRYPTO_INVALID_SCRYPT_PARAMS = 4,
         OUT_OF_RANGE = 5,
         WEBASSEMBLY_RESPONSE = 6,
+        // Values from the generated ErrorCode enum (faithful to upstream).
+        INVALID_STATE = 136,
+        INVALID_URL = 142,
         _,
 
         pub fn fmt(this: Error, globalThis: *JSGlobalObject, comptime fmt_: [:0]const u8, args: anytype) JSValue {
@@ -1398,7 +1422,9 @@ pub const jsc = struct {
     pub const ConcurrentPromiseTask = @import("jsc/ConcurrentPromiseTask.zig").ConcurrentPromiseTask;
     // Seventh-wave port batch (2026-05-18):
     pub const AbortSignal = @import("jsc/AbortSignal.zig").AbortSignal;
-    pub const JSString = @import("jsc/JSString.zig");
+    // Faithful to upstream `jsc/jsc.zig:71`: `@import("./JSString.zig").JSString`
+    // (the struct, where length/getZigString/toSliceClone live — not the file).
+    pub const JSString = @import("jsc/JSString.zig").JSString;
     pub const RefString = @import("jsc/RefString.zig").RefString;
     pub const StringBuilder = @import("jsc/StringBuilder.zig").StringBuilder;
     pub const ZigString = @import("jsc/ZigString.zig").ZigString;
@@ -1459,13 +1485,21 @@ pub const jsc = struct {
         pub const Jest = struct {
             pub threadlocal var runner: ?*Runner = null;
         };
+        // Faithful to upstream `runtime/test_runner/jest.zig` `bun_test` module
+        // (ScopeFunctions / DoneCallback consumed by the generated class registry).
+        pub const bun_test = @import("runtime/test_runner/bun_test.zig");
     };
     pub const Node = struct {
         pub const Encoding = @import("runtime/node/types.zig").Encoding;
+        pub const StringOrBuffer = @import("runtime/node/types.zig").StringOrBuffer;
+        pub const BlobOrStringOrBuffer = @import("runtime/node/types.zig").BlobOrStringOrBuffer;
         pub const Dirent = struct {
             pub const Kind = std.Io.File.Kind;
         };
     };
+    // JSC bring-up: faithful to upstream `jsc/jsc.zig` (Expect:124, Codegen:203).
+    pub const Expect = @import("runtime/test_runner/expect.zig");
+    pub const Codegen = @import("ZigGeneratedClasses");
     pub const Task = struct {
         callback: ?*const fn (*Task) void = null,
     };
@@ -2330,6 +2364,10 @@ pub const ptr = struct {
     pub const WeakPtr = @import("ptr/weak_ptr.zig").WeakPtr;
     pub const WeakPtrData = @import("ptr/weak_ptr.zig").WeakPtrData;
     pub const ExternalShared = @import("ptr/external_shared.zig").ExternalShared;
+    // Faithful to upstream `bun.ptr.{Owned,OwnedIn}` (`src/ptr/ptr.zig`):
+    // owned smart-pointer factory used by the bake DevServer PackedMap.
+    pub const Owned = @import("ptr/owned.zig").Owned;
+    pub const OwnedIn = @import("ptr/owned.zig").OwnedIn;
 };
 pub const TaggedPointer = ptr.TaggedPointer;
 pub const TaggedPointerUnion = ptr.TaggedPointerUnion;
@@ -2817,6 +2855,16 @@ pub const runtime = struct {
         pub const server = struct {
             pub const ServerConfig = @import("runtime/server/ServerConfig.zig").ServerConfig;
         };
+        // JSC bring-up (2026-06-01): namespaces the generated class registry
+        // resolves through. Faithful to upstream `runtime/api.zig`.
+        pub const Bun = @import("runtime/api/BunObject.zig");
+        pub const HTMLRewriter = @import("runtime/api/html_rewriter.zig");
+        pub const Shell = @import("runtime/shell/shell.zig");
+        pub const Postgres = @import("sql_jsc/postgres.zig");
+        pub const MySQL = @import("sql_jsc/mysql.zig");
+        pub const node = @import("runtime/node.zig");
+        pub const cron = @import("runtime/api/cron.zig");
+        pub const dns = @import("runtime/dns_jsc/dns.zig");
     };
     // Wave-15 Tier-1 grinder (2026-05-18). Pure-Zig shell helpers; full
     // shell surface lands once `bun.Output.scoped` + the shell parser port.
@@ -4123,51 +4171,19 @@ pub const wyhash = struct {
 };
 
 // ---- src/glob/ ---------------------------------------------------------
-// Fifth-wave port batch (2026-05-18). Glob syntax detection only;
-// matcher + walker re-attach with bun.sys + bun.path normalizer.
+// Port batch updated 2026-06-01. `detectGlobSyntax` + the faithful upstream
+// Bun matcher (`glob/matcher.zig`) are wired in; the previous hand-rolled
+// `?`/`*`-only placeholder is removed so `bun.glob.match` now returns Bun's
+// `MatchResult` enum (the shape every caller — WorkspaceMap, Tree, jest,
+// pack/test/outdated commands — already switches on). The walker
+// (`GlobWalker.zig`) re-attaches with bun.sys + bun.path.
 pub const glob = struct {
     pub const detectGlobSyntax = @import("glob/glob.zig").detectGlobSyntax;
 
-    pub const Match = struct {
-        matched: bool,
-
-        pub fn matches(this: Match) bool {
-            return this.matched;
-        }
-    };
-
-    pub fn match(pattern: []const u8, input: []const u8) Match {
-        return .{ .matched = globMatch(pattern, input) };
-    }
-
-    fn globMatch(pattern: []const u8, input: []const u8) bool {
-        var pattern_index: usize = 0;
-        var input_index: usize = 0;
-        var star_index: ?usize = null;
-        var retry_index: usize = 0;
-
-        while (input_index < input.len) {
-            if (pattern_index < pattern.len and (pattern[pattern_index] == '?' or pattern[pattern_index] == input[input_index])) {
-                pattern_index += 1;
-                input_index += 1;
-            } else if (pattern_index < pattern.len and pattern[pattern_index] == '*') {
-                star_index = pattern_index;
-                retry_index = input_index;
-                pattern_index += 1;
-            } else if (star_index) |star| {
-                pattern_index = star + 1;
-                retry_index += 1;
-                input_index = retry_index;
-            } else {
-                return false;
-            }
-        }
-
-        while (pattern_index < pattern.len and pattern[pattern_index] == '*') {
-            pattern_index += 1;
-        }
-        return pattern_index == pattern.len;
-    }
+    /// Faithful upstream Bun glob matcher. Returns a `MatchResult`
+    /// (`.match` / `.no_match` / `.negate_match` / `.negate_no_match`);
+    /// call `.matches()` for a plain bool.
+    pub const match = @import("glob/glob.zig").match;
 };
 
 // ---- src/highway/ ------------------------------------------------------
@@ -4948,7 +4964,137 @@ test {
     _ = @import("picohttp_sys/picohttpparser.zig");
     _ = @import("wyhash/wyhash.zig");
     _ = @import("glob/glob.zig");
+    _ = @import("glob/matcher.zig");
+    // JSC bring-up scaffolding: the vendored `ZigGeneratedClasses` module + the
+    // `jsc.GeneratedClassesList` export are wired (build.zig), but referencing
+    // the module here pulls all ~92 generated classes, which need their real
+    // webcore/server/S3/stream impls wired into generated_classes_list.zig
+    // (measured: 1434 errors). That is the full-runtime adoption step; left out
+    // of the gate so the rest stays green. See BUN_ZIG_SOURCE_AUDIT_2026-06-01.
+    // JSC bring-up checkpoint (2026-06-01): with generated_classes_list wired to
+    // real impls + the api.* namespaces, compiling ZigGeneratedClasses dropped
+    // from 1434 → 338 errors (now deep jsc-namespace gaps: jsc.Node.StringOrBuffer,
+    // jsc.Expect, JSString methods, VirtualMachine.RareData fields). Parked here
+    // so the rest stays green; un-comment to resume the grind.
+    // _ = @import("ZigGeneratedClasses"); // parked at ~410 (structural: type-identity + C++ link)
+    // Bun-original foundational leaves (2026-06-01 integration sweep). These
+    // are Bun's `bun_core/*` originals; Home's live code uses the reorganized
+    // `core/*` + `string/immutable.zig` copies, but referencing the originals
+    // here keeps them compiled + test-covered against home_rt rather than
+    // dormant. `bun` resolves to home_rt via the build.zig package alias.
+    _ = @import("bun_core/bounded_array.zig");
+    _ = @import("bun_core/util.zig");
+    _ = @import("bun_core/string/immutable/escapeHTML.zig");
+    _ = @import("bun_core/string/immutable/exact_size_matcher.zig");
+    _ = @import("bun_core/string/immutable/grapheme.zig");
+    _ = @import("bun_core/string/immutable/grapheme_tables.zig");
+    _ = @import("bun_core/string/immutable/unicode.zig");
+    // NOTE: bun_core/string/immutable/visible.zig is NOT referenced — its
+    // width/emoji path links against ICU's `icu_hasBinaryProperty` (defined in
+    // Bun's C++), absent from the -Denable_jsc=false test gate; stubbing would
+    // falsify behavior. Tracked in docs/BUN_ZIG_SOURCE_AUDIT_2026-06-01.md.
     _ = @import("highway/highway.zig");
+    // Config-format parsers (2026-06-01 integration sweep). interchange.zig
+    // re-exports json/json5/toml/yaml; toml pulls toml/lexer. json is already
+    // wired as home_rt.json.
+    _ = @import("parsers/interchange.zig");
+    // Misc self-contained leaves (2026-06-01 integration sweep).
+    _ = @import("threading/channel.zig");
+    _ = @import("ast/logger.zig");
+    _ = @import("io/ParentDeathWatchdog.zig");
+    _ = @import("glob/GlobWalker.zig");
+    _ = @import("io/posix_event_loop.zig");
+    _ = @import("io/windows_event_loop.zig");
+    // CSS value modules (2026-06-01 integration sweep). These build on the
+    // already-compiled css/css_parser.zig framework. css/values/values.zig is
+    // still a stub aggregator; these reference the real Bun value parsers.
+    _ = @import("css/values/angle.zig");
+    _ = @import("css/values/calc.zig");
+    _ = @import("css/values/color.zig");
+    _ = @import("css/values/color_generated.zig");
+    _ = @import("css/values/gradient.zig");
+    _ = @import("css/values/ident.zig");
+    _ = @import("css/values/image.zig");
+    _ = @import("css/values/length.zig");
+    _ = @import("css/values/percentage.zig");
+    _ = @import("css/values/syntax.zig");
+    _ = @import("css/values/url.zig");
+    _ = @import("css_jsc/color_js.zig");
+    _ = @import("css_jsc/css_internals.zig");
+    _ = @import("css_jsc/error_jsc.zig");
+    // runtime/node bindings (2026-06-01 integration sweep).
+    _ = @import("runtime/node/assert/myers_diff.zig");
+    _ = @import("runtime/node/node_assert.zig");
+    _ = @import("runtime/node/node_assert_binding.zig");
+    _ = @import("runtime/node/node_error_binding.zig");
+    _ = @import("runtime/node/node_http_binding.zig");
+    _ = @import("runtime/node/node_net_binding.zig");
+    _ = @import("runtime/node/node_util_binding.zig");
+    _ = @import("runtime/node/os/constants.zig");
+    // runtime/server contexts (2026-06-01 integration sweep).
+    _ = @import("runtime/server/AnyRequestContext.zig");
+    _ = @import("runtime/server/FileResponseStream.zig");
+    _ = @import("runtime/server/FileRoute.zig");
+    // NodeHTTPResponse.zig blocked: needs jsc.Codegen + uws.{AnyResponse,Request}
+    // (full uWebSockets HTTP bindings + JSC codegen), absent from the gate.
+    // _ = @import("runtime/server/NodeHTTPResponse.zig");
+    _ = @import("runtime/server/RequestContext.zig");
+    _ = @import("runtime/server/ServerWebSocket.zig");
+    _ = @import("runtime/server/StaticRoute.zig");
+    _ = @import("runtime/server/WebSocketServerContext.zig");
+    // runtime/bake DevServer + router (2026-06-01 integration sweep).
+    _ = @import("runtime/bake/DevServer/Assets.zig");
+    _ = @import("runtime/bake/DevServer/DirectoryWatchStore.zig");
+    _ = @import("runtime/bake/DevServer/ErrorReportRequest.zig");
+    _ = @import("runtime/bake/DevServer/HotReloadEvent.zig");
+    _ = @import("runtime/bake/DevServer/IncrementalGraph.zig");
+    _ = @import("runtime/bake/DevServer/PackedMap.zig");
+    _ = @import("runtime/bake/DevServer/SerializedFailure.zig");
+    _ = @import("runtime/bake/DevServer/WatcherAtomics.zig");
+    _ = @import("runtime/bake/DevServer/memory_cost.zig");
+    _ = @import("runtime/bake/FrameworkRouter.zig");
+    // http h2/h3 clients (2026-06-01 integration sweep).
+    _ = @import("http/h2_client/ClientSession.zig");
+    _ = @import("http/h2_client/dispatch.zig");
+    _ = @import("http/h2_client/encode.zig");
+    _ = @import("http/h3_client/ClientContext.zig");
+    _ = @import("http/h3_client/ClientSession.zig");
+    _ = @import("http/h3_client/callbacks.zig");
+    _ = @import("http/h3_client/encode.zig");
+    // _jsc bridges + misc (2026-06-01 integration sweep). jsc surface is
+    // stubbed under -Denable_jsc=false; decl-only bridges still compile.
+    _ = @import("ast_jsc/logger_jsc.zig");
+    _ = @import("install_jsc/install_binding.zig");
+    // virtual_machine_exports.zig blocked: needs the full jsc.VirtualMachine
+    // (enqueueTask/tick/ipc/plugin_runner/TLS + timer fields), far beyond the
+    // stubbed VM available under -Denable_jsc=false.
+    // _ = @import("jsc/virtual_machine_exports.zig");
+    _ = @import("semver_jsc/SemverObject.zig");
+    _ = @import("semver_jsc/SemverString_jsc.zig");
+    _ = @import("sql_jsc/mysql/protocol/any_mysql_error_jsc.zig");
+    _ = @import("sql_jsc/mysql/protocol/error_packet_jsc.zig");
+    _ = @import("sql_jsc/postgres/command_tag_jsc.zig");
+    _ = @import("sql_jsc/postgres/error_jsc.zig");
+    _ = @import("sql_jsc/postgres/protocol/error_response_jsc.zig");
+    _ = @import("sql_jsc/postgres/protocol/notice_response_jsc.zig");
+    _ = @import("sql_jsc/postgres/types/tag_jsc.zig");
+    _ = @import("sys_jsc/signal_code_jsc.zig");
+    _ = @import("url_jsc/url_jsc.zig");
+    _ = @import("runtime/webcore/s3/error_jsc.zig");
+    _ = @import("unit_test.zig");
+    // main_test.zig (native test main, pulls @cImport recover) and
+    // main_wasm.zig (wasm entry, wasm-only exports) are build roots, not modules.
+    // unicode/uucode* (vendored standalone Zig package) left dormant: its
+    // codegen tree needs an `@import("uucode")` build module + a generated
+    // src/build/Ucd.zig and uses `@Type`, none available in this gate.
+    // recover.zig blocked: uses `@cImport` for signal/setjmp C headers, which
+    // the pinned Zig build config (no C translate) does not provide.
+    // _ = @import("runtime/test_runner/harness/recover.zig");
+    // production.zig blocked at the JSC host boundary: the production bundler
+    // creates JS error instances + global objects (ZigString.toErrorInstance,
+    // JSGlobalObject) that need the real JavaScriptCore runtime, stubbed under
+    // -Denable_jsc=false. resolver / path.joinAbs / bake.Side are now wired.
+    // _ = @import("runtime/bake/production.zig");
     _ = @import("sourcemap/VLQ.zig");
     // Sixth-wave port batch (2026-05-18, 7-agent parallel dispatch):
     _ = @import("jsc/CommonStrings.zig");

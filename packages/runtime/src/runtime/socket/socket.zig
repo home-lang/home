@@ -125,7 +125,7 @@ pub fn NewSocket(comptime ssl: bool) type {
 
             switch (connection) {
                 .host => |host| {
-                    var sf = std.heap.stackFallback(1024, bun.default_allocator);
+                    var sf = bun.stackFallback(1024, bun.default_allocator);
                     const alloc = sf.get();
                     // getaddrinfo doesn't accept bracketed IPv6.
                     const raw = host.host;
@@ -146,7 +146,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                     };
                 },
                 .unix => |u| {
-                    var sf = std.heap.stackFallback(1024, bun.default_allocator);
+                    var sf = bun.stackFallback(1024, bun.default_allocator);
                     const alloc = sf.get();
                     const pathz = bun.handleOom(alloc.dupeZ(u8, u));
                     defer alloc.free(pathz);
@@ -1018,7 +1018,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return this.writeOrEnd(globalObject, &values, true, is_end);
             }
 
-            var stack_fallback = std.heap.stackFallback(16 * 1024, bun.default_allocator);
+            var stack_fallback = bun.stackFallback(16 * 1024, bun.default_allocator);
             const allow_string_object = true;
             const buffer: jsc.Node.StringOrBuffer = if (data_value.isUndefined())
                 jsc.Node.StringOrBuffer.empty
@@ -1161,7 +1161,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return globalObject.throwTODO("Support encoding with offset and length altogether. Only either encoding or offset, length is supported, but not both combinations yet.") catch .fail;
             }
 
-            var stack_fallback = std.heap.stackFallback(16 * 1024, bun.default_allocator);
+            var stack_fallback = bun.stackFallback(16 * 1024, bun.default_allocator);
             const buffer: jsc.Node.BlobOrStringOrBuffer = if (args[0].isUndefined())
                 jsc.Node.BlobOrStringOrBuffer{ .string_or_buffer = jsc.Node.StringOrBuffer.empty }
             else

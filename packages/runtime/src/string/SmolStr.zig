@@ -2,7 +2,10 @@
 pub const SmolStr = packed struct(u128) {
     __len: u32,
     cap: u32,
-    __ptr: [*]u8,
+    // Zig 0.17: packed structs cannot contain pointer fields. Store the
+    // pointer (plus the inline/heap tag bit) as a usize; `ptr()` / `ptrConst()`
+    // recover the `[*]u8` via `@ptrFromInt`. Layout (u128) is unchanged.
+    __ptr: usize,
 
     const Tag: usize = 0x8000000000000000; // NOTE: only works on little endian systems
     const NegatedTag: usize = ~Tag;
@@ -74,30 +77,30 @@ pub const SmolStr = packed struct(u128) {
 
     pub fn len(this: *const SmolStr) u32 {
         if (this.isInlined()) {
-            return @intCast((@intFromPtr(this.__ptr) >> 56) & 0b01111111);
+            return @intCast((this.__ptr >> 56) & 0b01111111);
         }
 
         return this.__len;
     }
 
     pub fn ptr(this: *SmolStr) [*]u8 {
-        return @ptrFromInt(@as(usize, @intFromPtr(this.__ptr)) & NegatedTag);
+        return @ptrFromInt(this.__ptr & NegatedTag);
     }
 
     pub fn ptrConst(this: *const SmolStr) [*]const u8 {
-        return @ptrFromInt(@as(usize, @intFromPtr(this.__ptr)) & NegatedTag);
+        return @ptrFromInt(this.__ptr & NegatedTag);
     }
 
     pub fn markInlined(this: *SmolStr) void {
-        this.__ptr = @ptrFromInt(@as(usize, @intFromPtr(this.__ptr)) | Tag);
+        this.__ptr = this.__ptr | Tag;
     }
 
     pub fn markHeap(this: *SmolStr) void {
-        this.__ptr = @ptrFromInt(@as(usize, @intFromPtr(this.__ptr)) & NegatedTag);
+        this.__ptr = this.__ptr & NegatedTag;
     }
 
     pub fn isInlined(this: *const SmolStr) bool {
-        return @as(usize, @intFromPtr(this.__ptr)) & Tag != 0;
+        return this.__ptr & Tag != 0;
     }
 
     /// ## Panics
@@ -113,7 +116,7 @@ pub const SmolStr = packed struct(u128) {
         var smol_str: SmolStr = .{
             .__len = baby_list.len,
             .cap = baby_list.cap,
-            .__ptr = baby_list.ptr,
+            .__ptr = @intFromPtr(baby_list.ptr),
         };
         smol_str.markHeap();
         return smol_str;
@@ -171,7 +174,7 @@ pub const SmolStr = packed struct(u128) {
                 baby_list.appendSliceAssumeCapacity(inlined.slice());
                 try baby_list.append(allocator, char);
                 this.__len = baby_list.len;
-                this.__ptr = baby_list.ptr;
+                this.__ptr = @intFromPtr(baby_list.ptr);
                 this.cap = baby_list.cap;
                 this.markHeap();
                 return;
@@ -191,7 +194,7 @@ pub const SmolStr = packed struct(u128) {
         try baby_list.append(allocator, char);
 
         this.__len = baby_list.len;
-        this.__ptr = baby_list.ptr;
+        this.__ptr = @intFromPtr(baby_list.ptr);
         this.cap = baby_list.cap;
         return;
     }

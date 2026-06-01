@@ -501,7 +501,7 @@ pub const ShellSubprocess = struct {
         return this.process.kill(@intCast(sig));
     }
 
-    // fn hasCalledGetter(this: *Subprocess, comptime getter: @Type(.enum_literal)) bool {
+    // fn hasCalledGetter(this: *Subprocess, comptime getter: @TypeOf(.enum_literal)) bool {
     //     return this.observable_getters.contains(getter);
     // }
 
@@ -518,7 +518,7 @@ pub const ShellSubprocess = struct {
         // this.ipc_mode = .none;
     }
 
-    pub fn closeIO(this: *@This(), comptime io: @Type(.enum_literal)) void {
+    pub fn closeIO(this: *@This(), comptime io: @TypeOf(.enum_literal)) void {
         if (this.closed.contains(io)) return;
         log("close IO {s}", .{@tagName(io)});
         this.closed.insert(io);
