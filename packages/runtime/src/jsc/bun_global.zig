@@ -290,6 +290,23 @@ const install_glue =
     \\    Glob.prototype.scan = function() { throw Object.assign(new Error("Bun.Glob.scan is not implemented yet (needs directory iteration)"), { code: "ENOSYS" }); };
     \\    globalThis.Bun.Glob = Glob;
     \\  })();
+    \\  (function() {
+    \\    var B = globalThis.Bun;
+    \\    B.fileURLToPath = function(u) { var s = (u && u.href) ? u.href : String(u); if (s.indexOf("file://") === 0) s = s.slice(7); return decodeURIComponent(s); };
+    \\    B.pathToFileURL = function(p) { return new globalThis.URL("file://" + encodeURI(String(p))); };
+    \\    B.concatArrayBuffers = function(buffers) {
+    \\      var total = 0, i; for (i = 0; i < buffers.length; i++) total += (buffers[i].byteLength != null ? buffers[i].byteLength : buffers[i].length);
+    \\      var out = new Uint8Array(total), off = 0;
+    \\      for (i = 0; i < buffers.length; i++) { var v = buffers[i] instanceof ArrayBuffer ? new Uint8Array(buffers[i]) : (buffers[i] instanceof Uint8Array ? buffers[i] : new Uint8Array(buffers[i].buffer || buffers[i])); out.set(v, off); off += v.length; }
+    \\      return out.buffer;
+    \\    };
+    \\    B.allocUnsafe = function(n) { return new Uint8Array(n); };
+    \\    B.gc = function() { return 0; };
+    \\    B.isMainThread = true;
+    \\    B.revision = "0000000000000000000000000000000000000000";
+    \\    Object.defineProperty(B, "argv", { get: function() { return (typeof globalThis.process !== "undefined" && globalThis.process.argv) || ["bun"]; }, configurable: true });
+    \\    Object.defineProperty(B, "main", { get: function() { var a = (typeof globalThis.process !== "undefined" && globalThis.process.argv) || []; return a[1] || ""; }, configurable: true });
+    \\  })();
     \\  delete globalThis.__home_bun_hash;
     \\  delete globalThis.__home_bun_write_file;
     \\})();
@@ -384,6 +401,24 @@ test "Bun.Glob.match (wildcards, globstar, braces, char classes)" {
         "  if (!new G('file-{a,b}.txt').match('file-b.txt') || new G('file-{a,b}.txt').match('file-c.txt')) return false;" ++
         "  if (!new G('?at').match('cat')) return false;" ++
         "  return new G('[hc]at').match('hat') && !new G('[hc]at').match('bat'); })()"));
+}
+
+test "Bun global fill-out: fileURLToPath/concatArrayBuffers/allocUnsafe/argv/main/gc" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealmFull(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() { var B = Bun;" ++
+        "  if (B.fileURLToPath('file:///tmp/a%20b.txt') !== '/tmp/a b.txt') return false;" ++
+        "  if (B.isMainThread !== true || B.gc() !== 0 || B.allocUnsafe(4).length !== 4) return false;" ++
+        "  var ab = B.concatArrayBuffers([new Uint8Array([1, 2]).buffer, new Uint8Array([3, 4]).buffer]);" ++
+        "  var u = new Uint8Array(ab); if (u.length !== 4 || u[0] !== 1 || u[3] !== 4) return false;" ++
+        "  if (!Array.isArray(B.argv) || typeof B.main !== 'string') return false;" ++
+        "  return B.revision.length === 40; })()"));
 }
 
 test "Bun utility batch: env/sleep/nanoseconds/inspect (full realm)" {
