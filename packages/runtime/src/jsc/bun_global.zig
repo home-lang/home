@@ -265,6 +265,31 @@ const install_glue =
     \\    bunHash.murmur64v2 = function(d, seed) { return h64(6, d, seed); };
     \\    globalThis.Bun.hash = bunHash;
     \\  })();
+    \\  (function() {
+    \\    function globToRegExp(pattern) {
+    \\      var re = "", i = 0, n = pattern.length, depth = 0;
+    \\      while (i < n) {
+    \\        var c = pattern[i++];
+    \\        if (c === "*") {
+    \\          if (pattern[i] === "*") { i++; if (pattern[i] === "/") i++; re += ".*"; } else re += "[^/]*";
+    \\        } else if (c === "?") re += "[^/]";
+    \\        else if (c === "[") {
+    \\          var cls = "["; if (pattern[i] === "!" || pattern[i] === "^") { cls += "^"; i++; }
+    \\          while (i < n && pattern[i] !== "]") { var cc = pattern[i++]; cls += (cc === "\\") ? "\\\\" : cc; }
+    \\          if (i < n) i++; re += cls + "]";
+    \\        } else if (c === "{") { re += "(?:"; depth++; }
+    \\        else if (c === "}" && depth > 0) { re += ")"; depth--; }
+    \\        else if (c === "," && depth > 0) re += "|";
+    \\        else if (".+()|^$\\".indexOf(c) >= 0) re += "\\" + c;
+    \\        else re += c;
+    \\      }
+    \\      return new RegExp("^" + re + "$");
+    \\    }
+    \\    function Glob(pattern) { this.pattern = String(pattern); this._re = globToRegExp(this.pattern); }
+    \\    Glob.prototype.match = function(str) { return this._re.test(String(str)); };
+    \\    Glob.prototype.scan = function() { throw Object.assign(new Error("Bun.Glob.scan is not implemented yet (needs directory iteration)"), { code: "ENOSYS" }); };
+    \\    globalThis.Bun.Glob = Glob;
+    \\  })();
     \\  delete globalThis.__home_bun_hash;
     \\  delete globalThis.__home_bun_write_file;
     \\})();
@@ -341,6 +366,24 @@ test "Bun.hash family (native std.hash): crc32 vector + types/determinism" {
         "  if (typeof h.cityHash64('x') !== 'bigint' || typeof h.murmur32v3('x') !== 'number') return false;" ++
         "  if (h.wyhash('a', 0) !== h.wyhash('a', 0)) return false;" ++
         "  return h.wyhash('a', 1) !== h.wyhash('a', 2); })()"));
+}
+
+test "Bun.Glob.match (wildcards, globstar, braces, char classes)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() { var G = Bun.Glob;" ++
+        "  if (!new G('*.ts').match('foo.ts') || new G('*.ts').match('foo.js')) return false;" ++
+        "  if (!new G('src/**/*.ts').match('src/a/b/c.ts')) return false;" ++
+        "  if (!new G('**/*.ts').match('a/b.ts')) return false;" ++
+        "  if (!new G('file-{a,b}.txt').match('file-b.txt') || new G('file-{a,b}.txt').match('file-c.txt')) return false;" ++
+        "  if (!new G('?at').match('cat')) return false;" ++
+        "  return new G('[hc]at').match('hat') && !new G('[hc]at').match('bat'); })()"));
 }
 
 test "Bun utility batch: env/sleep/nanoseconds/inspect (full realm)" {
