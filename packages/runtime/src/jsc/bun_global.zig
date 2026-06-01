@@ -122,6 +122,55 @@ fn writeFileNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSO
     return extern_fns.JSValueMakeNumber(c, @floatFromInt(len));
 }
 
+fn makeJsString(ctx: *JSContextRef, s: []const u8) ?*JSValue {
+    const allocator = std.heap.page_allocator;
+    const z = allocator.dupeZ(u8, s) catch return extern_fns.JSValueMakeNull(ctx);
+    defer allocator.free(z);
+    const js = extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse return extern_fns.JSValueMakeNull(ctx);
+    defer extern_fns.JSStringRelease(js);
+    return extern_fns.JSValueMakeString(ctx, js);
+}
+
+/// `__home_bun_hash(algo, bytesUint8Array, seed)` -> decimal string of the hash.
+/// algo: 0 wyhash / 1 crc32 / 2 adler32 / 3 cityHash32 / 4 cityHash64 /
+/// 5 murmur32v3 / 6 murmur64v2. The JS wrapper turns it into a Number/BigInt.
+fn bunHashNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argc < 2) return makeJsString(c, "0");
+    const algo: u8 = @intFromFloat(extern_fns.JSValueToNumber(c, argv[0].?, null));
+    const data_v = argv[1] orelse return makeJsString(c, "0");
+    if (extern_fns.JSValueGetTypedArrayType(c, data_v, null) == .kJSTypedArrayTypeNone) return makeJsString(c, "0");
+    const obj = extern_fns.JSValueToObject(c, data_v, null) orelse return makeJsString(c, "0");
+    const len = extern_fns.JSObjectGetTypedArrayByteLength(c, obj, null);
+    const ptr = extern_fns.JSObjectGetTypedArrayBytesPtr(c, obj, null);
+    const input: []const u8 = if (len > 0 and ptr != null) @as([*]const u8, @ptrCast(ptr.?))[0..len] else "";
+    var seed: u64 = 0;
+    if (argc >= 3) {
+        if (argv[2]) |sv| {
+            if (!extern_fns.JSValueIsUndefined(c, sv) and !extern_fns.JSValueIsNull(c, sv)) {
+                const sf = extern_fns.JSValueToNumber(c, sv, null);
+                if (sf >= 0) seed = @intFromFloat(sf);
+            }
+        }
+    }
+    const v: u64 = switch (algo) {
+        0 => std.hash.Wyhash.hash(seed, input),
+        1 => std.hash.Crc32.hash(input),
+        2 => std.hash.Adler32.hash(input),
+        3 => std.hash.cityhash.CityHash32.hash(input),
+        4 => std.hash.cityhash.CityHash64.hashWithSeed(input, seed),
+        5 => std.hash.murmur.Murmur3_32.hashWithSeed(input, @truncate(seed)),
+        6 => std.hash.murmur.Murmur2_64.hashWithSeed(input, seed),
+        else => 0,
+    };
+    var buf: [24]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}", .{v}) catch return makeJsString(c, "0");
+    return makeJsString(c, s);
+}
+
 fn setBool(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: bool) void {
     setValue(ctx, object, key, extern_fns.JSValueMakeBoolean(ctx, value));
 }
@@ -142,6 +191,7 @@ const install_glue =
     \\  var readFn = globalThis.__home_bun_read_file;
     \\  var statFn = globalThis.__home_bun_stat;
     \\  var writeFn = globalThis.__home_bun_write_file;
+    \\  var hashFn = globalThis.__home_bun_hash;
     \\
     \\  function toBytes(data) {
     \\    if (typeof data === "string") return new TextEncoder().encode(data);
@@ -201,6 +251,21 @@ const install_glue =
     \\  };
     \\  delete globalThis.__home_bun_read_file;
     \\  delete globalThis.__home_bun_stat;
+    \\  (function() {
+    \\    function hbytes(d) { return typeof d === "string" ? new TextEncoder().encode(d) : (d instanceof Uint8Array ? d : new Uint8Array(ArrayBuffer.isView(d) ? d.buffer : d)); }
+    \\    function h64(algo, d, seed) { return BigInt(hashFn(algo, hbytes(d), seed === undefined ? 0 : Number(seed))); }
+    \\    function h32(algo, d, seed) { return Number(hashFn(algo, hbytes(d), seed === undefined ? 0 : Number(seed))); }
+    \\    var bunHash = function(d, seed) { return h64(0, d, seed); };
+    \\    bunHash.wyhash = function(d, seed) { return h64(0, d, seed); };
+    \\    bunHash.crc32 = function(d) { return h32(1, d); };
+    \\    bunHash.adler32 = function(d) { return h32(2, d); };
+    \\    bunHash.cityHash32 = function(d) { return h32(3, d); };
+    \\    bunHash.cityHash64 = function(d, seed) { return h64(4, d, seed); };
+    \\    bunHash.murmur32v3 = function(d, seed) { return h32(5, d, seed); };
+    \\    bunHash.murmur64v2 = function(d, seed) { return h64(6, d, seed); };
+    \\    globalThis.Bun.hash = bunHash;
+    \\  })();
+    \\  delete globalThis.__home_bun_hash;
     \\  delete globalThis.__home_bun_write_file;
     \\})();
 ;
@@ -213,6 +278,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_bun_read_file", readFileNative);
     callback.registerCallback(ctx, global, "__home_bun_stat", statNative);
     callback.registerCallback(ctx, global, "__home_bun_write_file", writeFileNative);
+    callback.registerCallback(ctx, global, "__home_bun_hash", bunHashNative);
 
     // Inject the version literal into the glue (kept out of the raw string).
     const glue = std.mem.replaceOwned(u8, allocator, install_glue, "__HOME_BUN_VERSION__", "\"" ++ bun_version ++ "\"") catch return;
@@ -257,6 +323,24 @@ test "Bun utility batch: deepEquals/escapeHTML/stringWidth" {
         "  if (Bun.deepEquals({ a: 1 }, { a: 2 })) return false;" ++
         "  if (Bun.escapeHTML('<a href=\"x\">&') !== '&lt;a href=&quot;x&quot;&gt;&amp;') return false;" ++
         "  return Bun.stringWidth('ab\\u001b[31mcd\\u001b[0m') === 4; })()"));
+}
+
+test "Bun.hash family (native std.hash): crc32 vector + types/determinism" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() { var h = Bun.hash;" ++
+        "  if (typeof h('abc') !== 'bigint' || h('abc') !== h('abc') || h('abc') === h('abd')) return false;" ++
+        "  if (h.crc32('hello') !== 907060870) return false;" ++ // known CRC-32 (IsoHdlc) of 'hello'
+        "  if (typeof h.crc32('x') !== 'number' || typeof h.adler32('x') !== 'number') return false;" ++
+        "  if (typeof h.cityHash64('x') !== 'bigint' || typeof h.murmur32v3('x') !== 'number') return false;" ++
+        "  if (h.wyhash('a', 0) !== h.wyhash('a', 0)) return false;" ++
+        "  return h.wyhash('a', 1) !== h.wyhash('a', 2); })()"));
 }
 
 test "Bun utility batch: env/sleep/nanoseconds/inspect (full realm)" {
