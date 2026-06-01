@@ -220,6 +220,8 @@ pub const Program = struct {
         defer self.gpa.free(script_object_expandos);
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
+        const program_exported_classes = try self.collectProgramExportedClasses();
+        defer self.gpa.free(program_exported_classes);
         for (self.files.items) |f| {
             if (f.compilation != null) continue;
             var per_file = options;
@@ -227,6 +229,7 @@ pub const Program = struct {
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
             per_file.module_interface_augmentations = module_interface_augmentations;
+            per_file.program_exported_classes = program_exported_classes;
             // Per-file declaration-file flag. Multi-file fixtures
             // (e.g. `react.d.ts` + `app.tsx` in one conformance case)
             // share a global `options.is_declaration_file` that the
@@ -278,6 +281,8 @@ pub const Program = struct {
         defer self.gpa.free(script_object_expandos);
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
+        const program_exported_classes = try self.collectProgramExportedClasses();
+        defer self.gpa.free(program_exported_classes);
         for (self.files.items) |f| {
             if (f.compilation != null) {
                 // Already compiled — replay its diagnostics anyway so
@@ -292,6 +297,7 @@ pub const Program = struct {
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             per_file.script_object_expandos = script_object_expandos;
             per_file.module_interface_augmentations = module_interface_augmentations;
+            per_file.program_exported_classes = program_exported_classes;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -345,6 +351,47 @@ pub const Program = struct {
             try collectRelativeModuleInterfaceAugmentationsFromSource(self.gpa, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramExportedClasses(self: *const Program) ProgramError![]const ts_driver.ProgramExportedClass {
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClass) = .empty;
+        errdefer out.deinit(self.gpa);
+        for (self.files.items) |f| {
+            try collectProgramExportedClassesFromSource(self.gpa, f.path, f.source, &out);
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectProgramExportedClassesFromSource(
+        gpa: std.mem.Allocator,
+        path: []const u8,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClass),
+    ) ProgramError!void {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "export")) |export_pos| {
+            search_start = export_pos + "export".len;
+            if (!identifierKeywordAt(source, export_pos, "export")) continue;
+            var cursor = export_pos + "export".len;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            if (identifierKeywordAt(source, cursor, "default")) {
+                cursor += "default".len;
+                while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            }
+            if (identifierKeywordAt(source, cursor, "abstract")) {
+                cursor += "abstract".len;
+                while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            }
+            if (!identifierKeywordAt(source, cursor, "class")) continue;
+            cursor += "class".len;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            const name_end = parseIdentifierEnd(source, cursor, source.len) orelse continue;
+            try out.append(gpa, .{
+                .target_path = path,
+                .class_name = source[cursor..name_end],
+            });
+            search_start = name_end;
+        }
     }
 
     fn collectRelativeModuleInterfaceAugmentationsFromSource(
@@ -818,8 +865,11 @@ pub const Program = struct {
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
         const module_interface_augmentations = try self.collectRelativeModuleInterfaceAugmentations();
         defer self.gpa.free(module_interface_augmentations);
+        const program_exported_classes = try self.collectProgramExportedClasses();
+        defer self.gpa.free(program_exported_classes);
         var shared_options = options;
         shared_options.module_interface_augmentations = module_interface_augmentations;
+        shared_options.program_exported_classes = program_exported_classes;
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const n = workers orelse @min(cpu_count, 8);
 
@@ -2158,7 +2208,7 @@ test "Program: declare global namespace roots are visible across files" {
     }
 }
 
-test "Program: relative module augmentation summary adds methods to matching class name" {
+test "Program: relative module augmentation summary adds methods to imported class" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -2167,32 +2217,48 @@ test "Program: relative module augmentation summary adds methods to matching cla
     defer p.deinit();
 
     _ = try p.add("/proj/a.ts",
-        \\export class B { value = 1; }
-        \\export class Cls { ok = true; }
         \\export class A {}
     );
-    _ = try p.add("/proj/augment.ts",
-        \\import { A, B, Cls } from "./a";
+    _ = try p.add("/proj/b.ts",
+        \\export class B { value = 1; }
+    );
+    _ = try p.add("/proj/c.ts",
+        \\export class Cls { ok = true; }
+    );
+    _ = try p.add("/proj/d.ts",
+        \\import { A } from "./a";
+        \\import { B } from "./b";
         \\export {};
         \\declare module "./a" {
         \\  interface A {
         \\    getB(): B;
-        \\    getCls(): Cls;
         \\  }
         \\}
         \\A.prototype.getB = function() { return new B(); };
+    );
+    _ = try p.add("/proj/e.ts",
+        \\import { A } from "./a";
+        \\import { Cls } from "./c";
+        \\export {};
+        \\declare module "./a" {
+        \\  interface A {
+        \\    getCls(): Cls;
+        \\  }
+        \\}
         \\A.prototype.getCls = function() { return new Cls(); };
     );
-    const use_id = try p.add("/proj/use.ts",
-        \\class A {}
+    const main_id = try p.add("/proj/main.ts",
+        \\import { A } from "./a";
+        \\import "./d";
+        \\import "./e";
         \\const a = new A();
         \\a.getB().value;
         \\a.getCls().ok;
     );
 
     try p.compileAll(.{ .no_emit = true });
-    const use_c = p.fileById(use_id).compilation.?;
-    try expectCompilationLacksDiagnosticCode(use_c, 2339);
+    const main_c = p.fileById(main_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(main_c, 2339);
 }
 
 test "Program: relative module augmentation preserves missing member diagnostic" {
@@ -2218,9 +2284,10 @@ test "Program: relative module augmentation preserves missing member diagnostic"
         \\A.prototype.getB = function() { return new B(); };
     );
     const bad_id = try p.add("/proj/bad.ts",
-        \\class Other {}
-        \\const other = new Other();
-        \\other.getB();
+        \\import { A } from "./a";
+        \\import "./augment";
+        \\const a = new A();
+        \\a.missing();
     );
 
     try p.compileAll(.{ .no_emit = true });

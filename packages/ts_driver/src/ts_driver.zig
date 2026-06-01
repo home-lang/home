@@ -26,6 +26,7 @@ pub const StrictFlags = ts_checker.StrictFlags;
 pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
+pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
 
 /// One nested elaboration entry under a unified diagnostic, mirroring
 /// tsc's `messageChain`. `message` and any `children` array are
@@ -334,6 +335,8 @@ pub const CompileOptions = struct {
     /// Program-level relative module interface augmentations discovered
     /// in sibling files.
     module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
+    /// Program-level exported classes discovered in sibling files.
+    program_exported_classes: []const ProgramExportedClass = &.{},
     /// Effective `--moduleResolution` value as a normalized
     /// lower-case label (`"classic"`, `"node10"`, `"node16"`,
     /// `"nodenext"`, `"bundler"`). The conformance harness derives
@@ -1449,6 +1452,9 @@ pub fn compileSource(
     }
     if (options.module_interface_augmentations.len > 0) {
         checker.setModuleInterfaceAugmentations(options.module_interface_augmentations);
+    }
+    if (options.program_exported_classes.len > 0) {
+        checker.setProgramExportedClasses(options.program_exported_classes);
     }
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
