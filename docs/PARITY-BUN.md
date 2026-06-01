@@ -139,7 +139,9 @@ ported as Tier-0 leaves).
 🟡 `Bun.hash` JS-callable via Home's realm, native (Zig `std.hash`):
 `Bun.hash(data, seed?)` (wyhash→BigInt) + `Bun.hash.{wyhash,crc32,adler32,
 cityHash32,cityHash64,murmur32v3,murmur64v2}` (32-bit → Number, 64-bit →
-BigInt). `Bun.CryptoHasher` not yet implemented.
+BigInt). `Bun.CryptoHasher` JS-callable too — incremental
+`new Bun.CryptoHasher(algo).update(...).digest(enc?)` + static
+`Bun.CryptoHasher.hash(algo, data, enc?)` over native sha256/sha512/sha1/md5.
 
 ### `Bun.semver`
 
