@@ -65,8 +65,21 @@ zig build -Doptimize=ReleaseFast && bash bench/run.sh
 5. Control-plane hand-off: consume certs/config from disk + reload on `SIGHUP`
    (the pattern rpx's cluster mode already uses).
 
-## Status
+## Status — beats nginx on bodies (validated in CI)
 
-Cross-compiles to Linux including the `splice` path; benchmarked vs nginx in CI.
-The proxy logic (poll loop, EOF/half-close, splice state machine) is
-correct-by-inspection and validated by the CI run.
+First Linux CI run (`dataplane-bench.yml`, HTML ~16 KB, 50 concurrent, GitHub
+2-vCPU runner):
+
+| target        | req/s  |
+|---------------|-------:|
+| direct        | 62,704 |
+| nginx         | 33,170 |
+| **dataplane** | **40,439** |
+
+**~1.22× nginx** — on the exact body-bound metric where a Bun proxy is ~3× *behind*
+nginx. That's the thesis confirmed: nginx copies bodies through userspace; the
+dataplane `splice()`s kernel→kernel and doesn't. (Single run on a noisy shared
+2-vCPU runner — directionally strong, not a final number; re-runs on every change
+and via manual dispatch.)
+
+Next: io_uring + kTLS for HTTPS bodies, then HTTP routing — see the roadmap above.
