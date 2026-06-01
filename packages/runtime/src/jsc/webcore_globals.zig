@@ -177,6 +177,70 @@ const install_glue =
     \\  defineBodyStream(Response.prototype);
     \\
     \\  globalThis.Headers = Headers;
+    \\  // Stream-aware bodies: Request/Response may receive a ReadableStream init.body.
+    \\  // Detect it by duck-typing (getReader), store it on _bodyStream, and drain it the
+    \\  // first time a body accessor runs, sharing the bodyUsed single-consumption guard.
+    \\  function __homeIsStream(x) { return x !== null && x !== undefined && typeof x.getReader === "function"; }
+    \\  function __homeDrainStream(stream) {
+    \\    var reader = stream.getReader();
+    \\    var chunks = [];
+    \\    function loop() {
+    \\      return reader.read().then(function(r) {
+    \\        if (r.done) return concatBytes(chunks);
+    \\        chunks.push(r.value);
+    \\        return loop();
+    \\      });
+    \\    }
+    \\    return loop();
+    \\  }
+    \\  function __homeConsumeStream(self) {
+    \\    if (self.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\    self.bodyUsed = true;
+    \\    if (self._bodyStream) return __homeDrainStream(self._bodyStream);
+    \\    return Promise.resolve(self._bodyBytes || new Uint8Array(0));
+    \\  }
+    \\  function defineStreamBody(proto) {
+    \\    proto.arrayBuffer = function() { return __homeConsumeStream(this).then(function(b) { return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); }); };
+    \\    proto.bytes = function() { return __homeConsumeStream(this).then(function(b) { return b.slice(); }); };
+    \\    proto.text = function() { return __homeConsumeStream(this).then(function(b) { return new TextDecoder().decode(b); }); };
+    \\    proto.json = function() { return this.text().then(function(t) { return JSON.parse(t); }); };
+    \\    proto.blob = function() { var t = this.headers ? this.headers.get("content-type") : null; return __homeConsumeStream(this).then(function(b) { var nb = new Blob([], { type: t || "" }); nb._bytes = b; return nb; }); };
+    \\    Object.defineProperty(proto, "body", {
+    \\      get: function() {
+    \\        if (this._bodyStream) {
+    \\          if (this.bodyUsed) throw new TypeError("Body already used");
+    \\          this.bodyUsed = true;
+    \\          return this._bodyStream;
+    \\        }
+    \\        if (this._bodyBytes === null || this._bodyBytes === undefined) return null;
+    \\        if (this.bodyUsed) throw new TypeError("Body already used");
+    \\        this.bodyUsed = true;
+    \\        return bytesToStream(this._bodyBytes);
+    \\      },
+    \\      enumerable: true,
+    \\      configurable: true
+    \\    });
+    \\  }
+    \\  defineStreamBody(Request.prototype);
+    \\  defineStreamBody(Response.prototype);
+    \\  var __HomeBaseRequest = Request;
+    \\  Request = class extends __HomeBaseRequest {
+    \\    constructor(input, init) {
+    \\      init = init || {};
+    \\      var streamBody = __homeIsStream(init.body) ? init.body : null;
+    \\      if (streamBody) { var i2 = {}; for (var k in init) if (hasOwn(init, k)) i2[k] = init[k]; i2.body = null; super(input, i2); this._bodyStream = streamBody; }
+    \\      else { super(input, init); this._bodyStream = (input instanceof __HomeBaseRequest && input._bodyStream) ? input._bodyStream : null; }
+    \\      this.signal = init.signal !== undefined ? init.signal : (input instanceof __HomeBaseRequest ? input.signal : undefined);
+    \\    }
+    \\  };
+    \\  var __HomeBaseResponse = Response;
+    \\  Response = class extends __HomeBaseResponse {
+    \\    constructor(body, init) {
+    \\      var streamBody = __homeIsStream(body) ? body : null;
+    \\      super(streamBody ? null : body, init);
+    \\      this._bodyStream = streamBody;
+    \\    }
+    \\  };
     \\  globalThis.Blob = Blob;
     \\  globalThis.Request = Request;
     \\  globalThis.Response = Response;
@@ -388,4 +452,80 @@ test "reading .body sets bodyUsed and a second consume is rejected" {
         "r.text().then(function() { globalThis.__bodyGuard = 'no-throw'; }, function(e) { globalThis.__bodyGuard = e.name; });",
         "home:webcore-bodyguard-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__bodyGuard === 'TypeError'"));
+}
+
+test "Response constructed from a ReadableStream drains to the original string" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // A ReadableStream init.body is stored; .text() drains it on the microtask queue.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__streamResp = null;" ++
+        "var rs = new ReadableStream({ start: function(c) { c.enqueue(new TextEncoder().encode('héllo')); c.close(); } });" ++
+        "new Response(rs).text().then(function(t) { globalThis.__streamResp = t; });",
+        "home:webcore-streamresp-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__streamResp === 'héllo'"));
+}
+
+test "Request constructed from a ReadableStream body drains via text() and .body returns the stream" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // .body of a stream-bodied Request is the original stream object.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var rs = new ReadableStream({ start: function(c) { c.enqueue(new Uint8Array([1])); c.close(); } });" ++
+        "  var r = new Request('https://h.com/x', { method: 'POST', body: rs });" ++
+        "  return r.body === rs;" ++
+        "})()"));
+
+    // text() drains the stream body the first time.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__streamReq = null;" ++
+        "var rs2 = new ReadableStream({ start: function(c) { c.enqueue(new TextEncoder().encode('wörld')); c.close(); } });" ++
+        "new Request('https://h.com/x', { method: 'POST', body: rs2 }).text().then(function(t) { globalThis.__streamReq = t; });",
+        "home:webcore-streamreq-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__streamReq === 'wörld'"));
+}
+
+test "Request carries init.signal (or undefined when absent)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var sig = {};" ++
+        "  var r = new Request('https://h.com/x', { signal: sig });" ++
+        "  if (r.signal !== sig) return false;" ++
+        "  return new Request('https://h.com/x').signal === undefined;" ++
+        "})()"));
+}
+
+test "Response.redirect sets status and Location; error/json statics intact" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var r = Response.redirect('/x', 301);" ++
+        "  if (r.status !== 301 || r.headers.get('location') !== '/x') return false;" ++
+        "  if (Response.error().type !== 'error') return false;" ++
+        "  return Response.json({ a: 1 }).headers.get('content-type') === 'application/json';" ++
+        "})()"));
 }

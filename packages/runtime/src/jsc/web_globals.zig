@@ -924,6 +924,155 @@ const install_glue =
     \\  globalThis.TextDecoderStream = TextDecoderStream;
     \\  globalThis.CompressionStream = CompressionStream;
     \\  globalThis.DecompressionStream = DecompressionStream;
+    \\
+    \\  // ---- Events + Abort (DOM-ish, pure JS) ----
+    \\  function Event(type, init) {
+    \\    init = init || {};
+    \\    this.type = String(type);
+    \\    this.bubbles = !!init.bubbles;
+    \\    this.cancelable = !!init.cancelable;
+    \\    this.defaultPrevented = false;
+    \\    this.timeStamp = 0;
+    \\    this.target = null;
+    \\    this.currentTarget = null;
+    \\    this._stopPropagation = false;
+    \\    this._stopImmediate = false;
+    \\  }
+    \\  Event.prototype.preventDefault = function() {
+    \\    if (this.cancelable) this.defaultPrevented = true;
+    \\  };
+    \\  Event.prototype.stopPropagation = function() { this._stopPropagation = true; };
+    \\  Event.prototype.stopImmediatePropagation = function() {
+    \\    this._stopImmediate = true;
+    \\    this._stopPropagation = true;
+    \\  };
+    \\
+    \\  function CustomEvent(type, init) {
+    \\    Event.call(this, type, init);
+    \\    this.detail = init && init.detail !== undefined ? init.detail : null;
+    \\  }
+    \\  CustomEvent.prototype = Object.create(Event.prototype);
+    \\  CustomEvent.prototype.constructor = CustomEvent;
+    \\
+    \\  function EventTarget() {
+    \\    this._listeners = Object.create(null);
+    \\  }
+    \\  function ensureListeners(self) {
+    \\    if (!self._listeners) self._listeners = Object.create(null);
+    \\    return self._listeners;
+    \\  }
+    \\  EventTarget.prototype.addEventListener = function(type, listener, opts) {
+    \\    if (listener === undefined || listener === null) return;
+    \\    var t = String(type);
+    \\    var map = ensureListeners(this);
+    \\    var list = map[t] || (map[t] = []);
+    \\    var once = !!(opts && typeof opts === "object" && opts.once);
+    \\    for (var i = 0; i < list.length; i++) {
+    \\      if (list[i].listener === listener) return;
+    \\    }
+    \\    list.push({ listener: listener, once: once });
+    \\  };
+    \\  EventTarget.prototype.removeEventListener = function(type, listener) {
+    \\    var map = ensureListeners(this);
+    \\    var list = map[String(type)];
+    \\    if (!list) return;
+    \\    for (var i = 0; i < list.length; i++) {
+    \\      if (list[i].listener === listener) { list.splice(i, 1); return; }
+    \\    }
+    \\  };
+    \\  EventTarget.prototype.dispatchEvent = function(event) {
+    \\    var map = ensureListeners(this);
+    \\    var list = map[event.type];
+    \\    event.target = this;
+    \\    event.currentTarget = this;
+    \\    if (list && list.length) {
+    \\      var snapshot = list.slice();
+    \\      for (var i = 0; i < snapshot.length; i++) {
+    \\        var entry = snapshot[i];
+    \\        if (entry.once) {
+    \\          for (var j = 0; j < list.length; j++) {
+    \\            if (list[j] === entry) { list.splice(j, 1); break; }
+    \\          }
+    \\        }
+    \\        var fn = entry.listener;
+    \\        try {
+    \\          if (typeof fn === "function") fn.call(this, event);
+    \\          else if (fn && typeof fn.handleEvent === "function") fn.handleEvent(event);
+    \\        } catch (e) { void e; }
+    \\        if (event._stopImmediate) break;
+    \\      }
+    \\    }
+    \\    event.currentTarget = null;
+    \\    return !event.defaultPrevented;
+    \\  };
+    \\
+    \\  function AbortSignal() {
+    \\    EventTarget.call(this);
+    \\    this.aborted = false;
+    \\    this.reason = undefined;
+    \\    this.onabort = null;
+    \\  }
+    \\  AbortSignal.prototype = Object.create(EventTarget.prototype);
+    \\  AbortSignal.prototype.constructor = AbortSignal;
+    \\  AbortSignal.prototype.throwIfAborted = function() {
+    \\    if (this.aborted) throw this.reason;
+    \\  };
+    \\  function signalAbort(signal, reason) {
+    \\    if (signal.aborted) return;
+    \\    signal.aborted = true;
+    \\    signal.reason = reason;
+    \\    var ev = new Event("abort");
+    \\    if (typeof signal.onabort === "function") {
+    \\      try { signal.onabort.call(signal, ev); } catch (e) { void e; }
+    \\    }
+    \\    signal.dispatchEvent(ev);
+    \\  }
+    \\  AbortSignal.abort = function(reason) {
+    \\    var s = new AbortSignal();
+    \\    s.aborted = true;
+    \\    s.reason = reason !== undefined ? reason : { name: "AbortError", message: "signal is aborted without reason" };
+    \\    return s;
+    \\  };
+    \\  AbortSignal.timeout = function(ms) {
+    \\    var s = new AbortSignal();
+    \\    if (typeof globalThis.setTimeout === "function") {
+    \\      globalThis.setTimeout(function() {
+    \\        signalAbort(s, { name: "TimeoutError", message: "The operation timed out." });
+    \\      }, ms);
+    \\    }
+    \\    return s;
+    \\  };
+    \\  AbortSignal.any = function(signals) {
+    \\    var s = new AbortSignal();
+    \\    var arr = [];
+    \\    if (signals && typeof signals[Symbol.iterator] === "function") {
+    \\      for (var it = signals[Symbol.iterator](), step = it.next(); !step.done; step = it.next()) arr.push(step.value);
+    \\    }
+    \\    for (var i = 0; i < arr.length; i++) {
+    \\      var input = arr[i];
+    \\      if (input && input.aborted) { signalAbort(s, input.reason); return s; }
+    \\    }
+    \\    arr.forEach(function(input) {
+    \\      if (input && typeof input.addEventListener === "function") {
+    \\        input.addEventListener("abort", function() { signalAbort(s, input.reason); }, { once: true });
+    \\      }
+    \\    });
+    \\    return s;
+    \\  };
+    \\
+    \\  function AbortController() {
+    \\    this.signal = new AbortSignal();
+    \\  }
+    \\  AbortController.prototype.abort = function(reason) {
+    \\    var r = reason !== undefined ? reason : { name: "AbortError", message: "The operation was aborted." };
+    \\    signalAbort(this.signal, r);
+    \\  };
+    \\
+    \\  globalThis.Event = Event;
+    \\  globalThis.CustomEvent = CustomEvent;
+    \\  globalThis.EventTarget = EventTarget;
+    \\  globalThis.AbortSignal = AbortSignal;
+    \\  globalThis.AbortController = AbortController;
     \\})();
 ;
 
@@ -1196,4 +1345,155 @@ test "CompressionStream then DecompressionStream round-trips gzip" {
         "globalThis.__es_c = '';(function(){var input='hello hello hello';var src=new ReadableStream({start:function(c){c.enqueue(new TextEncoder().encode(input));c.close();}});var out=src.pipeThrough(new CompressionStream('gzip')).pipeThrough(new DecompressionStream('gzip'));var reader=out.getReader();var chunks=[];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_c=new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();})();",
         "home:es-gzip-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__es_c === 'hello hello hello'"));
+}
+
+test "EventTarget addEventListener/dispatchEvent fires with event.type, once removes, removeEventListener works" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){" ++
+        "  var et = new EventTarget();" ++
+        "  var seen = [];" ++
+        "  var onceCount = 0;" ++
+        "  var typed = null;" ++
+        "  function regular(e){ seen.push(e.type); typed = e.type; }" ++
+        "  function onceCb(){ onceCount++; }" ++
+        "  et.addEventListener('ping', regular);" ++
+        "  et.addEventListener('ping', onceCb, { once: true });" ++
+        "  et.dispatchEvent(new Event('ping'));" ++
+        "  et.dispatchEvent(new Event('ping'));" ++
+        "  if (onceCount !== 1) return false;" ++
+        "  if (typed !== 'ping' || seen.length !== 2) return false;" ++
+        "  et.removeEventListener('ping', regular);" ++
+        "  et.dispatchEvent(new Event('ping'));" ++
+        "  if (seen.length !== 2) return false;" ++
+        "  var handlerObj = { calls: 0, handleEvent: function(){ this.calls++; } };" ++
+        "  et.addEventListener('obj', handlerObj);" ++
+        "  et.dispatchEvent(new Event('obj'));" ++
+        "  return handlerObj.calls === 1;" ++
+        "})()"));
+}
+
+test "CustomEvent carries detail and extends Event" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){" ++
+        "  var ce = new CustomEvent('thing', { detail: { n: 42 } });" ++
+        "  if (!(ce instanceof Event)) return false;" ++
+        "  if (ce.type !== 'thing') return false;" ++
+        "  if (!ce.detail || ce.detail.n !== 42) return false;" ++
+        "  var plain = new CustomEvent('empty');" ++
+        "  return plain.detail === null;" ++
+        "})()"));
+}
+
+test "AbortController.abort sets aborted+reason, fires 'abort' listener, throwIfAborted throws" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){" ++
+        "  var ac = new AbortController();" ++
+        "  var sig = ac.signal;" ++
+        "  if (sig.aborted !== false) return false;" ++
+        "  var fired = 0;" ++
+        "  sig.addEventListener('abort', function(e){ if (e.type === 'abort') fired++; });" ++
+        "  ac.abort('boom');" ++
+        "  if (!sig.aborted || sig.reason !== 'boom' || fired !== 1) return false;" ++
+        "  ac.abort('again');" ++
+        "  if (fired !== 1) return false;" ++
+        "  var threw = false;" ++
+        "  try { sig.throwIfAborted(); } catch (e) { threw = (e === 'boom'); }" ++
+        "  return threw;" ++
+        "})()"));
+}
+
+test "AbortSignal.abort returns an already-aborted signal" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){" ++
+        "  var s = AbortSignal.abort('x');" ++
+        "  if (s.aborted !== true || s.reason !== 'x') return false;" ++
+        "  var d = AbortSignal.abort();" ++
+        "  return d.aborted === true && !!d.reason && d.reason.name === 'AbortError';" ++
+        "})()"));
+}
+
+test "AbortSignal.any aborts when an input is already aborted" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function(){" ++
+        "  var combined = AbortSignal.any([AbortSignal.abort('pre')]);" ++
+        "  if (combined.aborted !== true || combined.reason !== 'pre') return false;" ++
+        "  var ac = new AbortController();" ++
+        "  var any2 = AbortSignal.any([ac.signal]);" ++
+        "  if (any2.aborted !== false) return false;" ++
+        "  ac.abort('later');" ++
+        "  return any2.aborted === true && any2.reason === 'later';" ++
+        "})()"));
+}
+
+test "AbortSignal.timeout aborts after the timer fires (drained via timers_global)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const global = engine.currentGlobalObject();
+    install(std.testing.allocator, ctx, global);
+    @import("timers_global.zig").install(std.testing.allocator, ctx, global);
+
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__abrt = '';" ++
+        "(function(){" ++
+        "  var s = AbortSignal.timeout(1);" ++
+        "  s.addEventListener('abort', function(){ globalThis.__abrt = s.aborted && s.reason && s.reason.name === 'TimeoutError' ? 'timeout' : 'wrong'; });" ++
+        "})();",
+        "home:abort-timeout-setup", 1, null);
+
+    // Not aborted yet: the timer is pending until the loop is pumped.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__abrt === ''"));
+
+    @import("timers_global.zig").drain(ctx);
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__abrt === 'timeout'"));
 }
