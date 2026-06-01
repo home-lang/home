@@ -75,6 +75,14 @@ pub const Config = struct {
     allow_ts_extensions: bool = false,
     /// True when `compilerOptions.resolveJsonModule` is on.
     resolve_json: bool = true,
+    /// Output directory options used by modern package self-name
+    /// resolution to map an `exports` target such as
+    /// `./types/index.d.ts` or `./dist/index.js` back to the source
+    /// input (`./index.ts`) before giving up.
+    out_dir: []const u8 = "",
+    declaration_dir: []const u8 = "",
+    root_dir: []const u8 = "",
+    config_file_path: []const u8 = "",
 
     pub const PathEntry = struct {
         pattern: []const u8,
@@ -643,6 +651,9 @@ pub const Resolver = struct {
                     .is_declaration = isDeclarationPath(base),
                 };
             }
+            if (try self.tryFileWithOutputExtensionSubstitution(base)) |resolution| {
+                return resolution;
+            }
         }
         if (!explicit_known) {
             if (try self.tryArbitraryExtensionDeclaration(base)) |resolution| {
@@ -667,6 +678,24 @@ pub const Resolver = struct {
                     .path = candidate,
                     .source = .relative,
                     .is_declaration = false,
+                };
+            }
+        }
+        return null;
+    }
+
+    fn tryFileWithOutputExtensionSubstitution(self: *Resolver, path: []const u8) ResolveError!?Resolution {
+        const source_exts = sourceExtensionsForOutputPath(path);
+        if (source_exts.len == 0) return null;
+        const source_base = stripOutputExtension(path) orelse return null;
+        for (source_exts) |ext| {
+            const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ source_base, ext }) catch return error.OutOfMemory;
+            if (std.mem.eql(u8, candidate, path)) continue;
+            if (self.fileExistsTraced(candidate)) {
+                return .{
+                    .path = candidate,
+                    .source = .relative,
+                    .is_declaration = isDeclarationPath(candidate),
                 };
             }
         }
@@ -1013,6 +1042,7 @@ pub const Resolver = struct {
                         .matched => |m| {
                             const joined = try self.joinPath(pkg_dir, m);
                             if (try self.tryFileWithExtensions(joined)) |r| return .{ .resolved = r };
+                            if (try self.tryLoadInputFileForPath(joined)) |r| return .{ .resolved = r };
                             // The exports map matched but the target file
                             // is missing on disk; tsc treats this as a
                             // resolution failure rather than falling back
@@ -1242,6 +1272,62 @@ pub const Resolver = struct {
         }
         return null;
     }
+
+    /// tsc's `tryLoadInputFileForPath` subset. When resolving package
+    /// `exports` under a project with `outDir` / `declarationDir`, an
+    /// export target may name an emitted file that is not physically
+    /// present in the test VFS yet (`./types/index.d.ts`,
+    /// `./dist/index.js`). TypeScript maps that output path back to the
+    /// source input relative to `rootDir` (or the config directory) and
+    /// then probes source extensions.
+    fn tryLoadInputFileForPath(self: *Resolver, output_path: []const u8) ResolveError!?Resolution {
+        if (std.mem.indexOf(u8, output_path, "/node_modules/") != null) return null;
+        const config_root = self.configRootDir() orelse return null;
+        if (self.config.declaration_dir.len != 0) {
+            if (try self.tryLoadInputFileFromOutputDir(output_path, self.config.declaration_dir, config_root)) |r| return r;
+        }
+        if (self.config.out_dir.len != 0 and
+            !std.mem.eql(u8, self.config.out_dir, self.config.declaration_dir))
+        {
+            if (try self.tryLoadInputFileFromOutputDir(output_path, self.config.out_dir, config_root)) |r| return r;
+        }
+        return null;
+    }
+
+    fn tryLoadInputFileFromOutputDir(
+        self: *Resolver,
+        output_path: []const u8,
+        configured_output_dir: []const u8,
+        config_root: []const u8,
+    ) ResolveError!?Resolution {
+        const output_dir = try self.joinPath(config_root, configured_output_dir);
+        if (!pathHasDirPrefix(output_path, output_dir)) return null;
+        const rel = output_path[output_dir.len..];
+        const rel_trimmed = if (rel.len > 0 and rel[0] == '/') rel[1..] else rel;
+        const source_root = if (self.config.root_dir.len != 0)
+            try self.joinPath(config_root, self.config.root_dir)
+        else
+            config_root;
+        const source_base_with_output_ext = try self.joinPath(source_root, rel_trimmed);
+        const source_base = stripOutputExtension(source_base_with_output_ext) orelse source_base_with_output_ext;
+        const candidates = sourceExtensionsForOutputPath(output_path);
+        for (candidates) |ext| {
+            const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ source_base, ext }) catch return error.OutOfMemory;
+            if (self.fileExistsTraced(candidate)) {
+                return .{
+                    .path = candidate,
+                    .source = .package_exports,
+                    .is_declaration = isDeclarationPath(candidate),
+                };
+            }
+        }
+        return null;
+    }
+
+    fn configRootDir(self: *Resolver) ?[]const u8 {
+        if (self.config.config_file_path.len != 0) return dirname(self.config.config_file_path);
+        return null;
+    }
 };
 
 /// Split a bare specifier into `(packageName, subpath)`.
@@ -1315,6 +1401,28 @@ fn isDeclarationPath(s: []const u8) bool {
         std.mem.endsWith(u8, s, ".d.hm") or
         std.mem.endsWith(u8, s, ".d.home") or
         (std.mem.endsWith(u8, s, ".ts") and std.mem.indexOf(u8, s, ".d.") != null);
+}
+
+fn pathHasDirPrefix(path: []const u8, dir: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, dir)) return false;
+    if (path.len == dir.len) return true;
+    if (dir.len > 0 and dir[dir.len - 1] == '/') return true;
+    return path[dir.len] == '/';
+}
+
+fn stripOutputExtension(path: []const u8) ?[]const u8 {
+    const exts = [_][]const u8{ ".d.ts", ".d.mts", ".d.cts", ".js", ".jsx", ".mjs", ".cjs" };
+    inline for (exts) |ext| {
+        if (std.mem.endsWith(u8, path, ext)) return path[0 .. path.len - ext.len];
+    }
+    return null;
+}
+
+fn sourceExtensionsForOutputPath(path: []const u8) []const []const u8 {
+    if (std.mem.endsWith(u8, path, ".d.mts") or std.mem.endsWith(u8, path, ".mjs")) return &.{ ".mts", ".d.mts", ".mjs" };
+    if (std.mem.endsWith(u8, path, ".d.cts") or std.mem.endsWith(u8, path, ".cjs")) return &.{ ".cts", ".d.cts", ".cjs" };
+    if (std.mem.endsWith(u8, path, ".jsx")) return &.{ ".tsx", ".d.ts", ".jsx" };
+    return &.{ ".ts", ".tsx", ".d.ts", ".js", ".jsx" };
 }
 
 fn hasExtension(s: []const u8, ext: []const u8) bool {
@@ -1825,6 +1933,18 @@ test "Resolver: explicit extension match" {
     try T.expectEqualStrings("/proj/foo.ts", res.path);
 }
 
+test "Resolver: relative emitted js specifier maps to ts source input" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/thing.ts", "");
+    try vfs.addFile("/proj/index.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .nodenext });
+    defer r.deinit();
+    const res = try r.resolve("./src/thing.js", "/proj/index.ts");
+    try T.expectEqualStrings("/proj/src/thing.ts", res.path);
+}
+
 test "Resolver: tsx extension" {
     var vfs = VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -2304,6 +2424,62 @@ test "Resolver: package exports — subpath resolves through pattern wildcard" {
     const res = try r.resolve("foo/sub", "/a.ts");
     try T.expectEqualStrings("/node_modules/foo/types/sub.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+test "Resolver: self-name exports declarationDir target maps back to source input" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{
+        \\  "name": "@this/package",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": {
+        \\      "types": "./types/index.d.ts",
+        \\      "default": "./dist/index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/index.ts", "export {};");
+    try vfs.addFile("/src/thing.ts", "import '@this/package';");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .nodenext,
+        .declaration_dir = "./types",
+        .out_dir = "./dist",
+        .config_file_path = "/tsconfig.json",
+    });
+    defer r.deinit();
+    const res = try r.resolve("@this/package", "/src/thing.ts");
+    try T.expectEqualStrings("/index.ts", res.path);
+    try T.expectEqual(Resolution.Source.package_exports, res.source);
+}
+
+test "Resolver: self-name exports outDir default target maps back to source input" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{
+        \\  "name": "@this/package",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": {
+        \\      "default": "./dist/index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/index.ts", "export {};");
+    try vfs.addFile("/src/thing.ts", "import '@this/package';");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .nodenext,
+        .out_dir = "./dist",
+        .config_file_path = "/tsconfig.json",
+    });
+    defer r.deinit();
+    const res = try r.resolve("@this/package", "/src/thing.ts");
+    try T.expectEqualStrings("/index.ts", res.path);
+    try T.expectEqual(Resolution.Source.package_exports, res.source);
 }
 
 test "Resolver: nestedPackageJsonRedirect — subpath has its own package.json with relative types" {

@@ -611,6 +611,12 @@ fn shouldRouteThroughProgram(c: Case) bool {
         // rebuilds the full VFS (including the synthesized declaration
         // stub) and resolves it correctly. Mirrors `APISample_*`.
         if (rawSourceHasAbsoluteTypesPackageJson(c.raw_source)) return true;
+        // Clean package self-name fixtures with `exports` pointing at
+        // emitted `outDir`/`declarationDir` files need the full VFS and
+        // tsconfig-derived resolver options. The legacy path strips
+        // package.json/tsconfig and then reports a spurious TS2307 for
+        // the package's own name.
+        if (rawSourceHasProjectSelfNameOutputMapping(c.raw_source)) return true;
         return false;
     }
     if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
@@ -664,6 +670,51 @@ fn rawSourceHasAbsoluteTypesPackageJson(raw: []const u8) bool {
         }
     }
     return false;
+}
+
+fn rawSourceHasProjectSelfNameOutputMapping(raw: []const u8) bool {
+    var saw_root_package_json = false;
+    var root_package_has_name = false;
+    var root_package_has_exports = false;
+    var tsconfig_has_output_mapping = false;
+    var section: enum { none, root_package_json, tsconfig_json, other } = .none;
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, " \t\r");
+        if (virtualFilename(line)) |path| {
+            if (isRootVirtualPath(path, "package.json")) {
+                section = .root_package_json;
+                saw_root_package_json = true;
+            } else if (isRootVirtualPath(path, "tsconfig.json")) {
+                section = .tsconfig_json;
+            } else {
+                section = .other;
+            }
+            continue;
+        }
+        switch (section) {
+            .root_package_json => {
+                if (jsonStringFieldOnLine(line, "name") != null) root_package_has_name = true;
+                if (std.mem.indexOf(u8, line, "\"exports\"") != null) root_package_has_exports = true;
+            },
+            .tsconfig_json => {
+                if (jsonStringFieldOnLine(line, "outDir") != null or
+                    jsonStringFieldOnLine(line, "declarationDir") != null)
+                {
+                    tsconfig_has_output_mapping = true;
+                }
+            },
+            .none, .other => {},
+        }
+    }
+    return saw_root_package_json and root_package_has_name and root_package_has_exports and tsconfig_has_output_mapping;
+}
+
+fn isRootVirtualPath(path: []const u8, expected: []const u8) bool {
+    var p = std.mem.trim(u8, path, " \t\r");
+    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+    return std.mem.eql(u8, p, expected);
 }
 
 /// Extract a JSON `"<key>": "<value>"` string value from one line.
@@ -849,7 +900,7 @@ fn cannotFindNameDiagnosticName(message: []const u8) ?[]const u8 {
 /// directive. Multi-value directives (`node16,nodenext,bundler`) pick
 /// the first valid one — matching what the upstream runner does for
 /// the unspecified-variant baseline.
-fn resolverStrategyFromCase(c: Case) ts_resolver.Strategy {
+fn resolverStrategyFromCase(c: Case, module_option: []const u8) ts_resolver.Strategy {
     // When the chosen baseline carries a `(moduleresolution=X)` suffix,
     // honour that explicitly so the resolver matches the variant we'll
     // compare against. Without this, multi-variant fixtures (e.g.
@@ -860,14 +911,219 @@ fn resolverStrategyFromCase(c: Case) ts_resolver.Strategy {
         if (strategyFromLabel(c.baseline_module_resolution)) |s| return s;
     }
     const raw = directiveValue(c.raw_source, "moduleResolution") orelse
-        directiveValue(c.raw_source, "ModuleResolution") orelse
-        return .bundler;
+        directiveValue(c.raw_source, "ModuleResolution") orelse blk: {
+        if (std.ascii.eqlIgnoreCase(module_option, "nodenext")) return .nodenext;
+        if (std.ascii.eqlIgnoreCase(module_option, "node16")) return .node16;
+        break :blk "";
+    };
+    if (raw.len == 0) return .bundler;
     var it = std.mem.splitScalar(u8, raw, ',');
     while (it.next()) |part| {
         const trimmed = std.mem.trim(u8, part, " \t\r");
         if (strategyFromLabel(trimmed)) |s| return s;
     }
     return .bundler;
+}
+
+const TsconfigResolverOptions = struct {
+    out_dir: []const u8 = "",
+    declaration_dir: []const u8 = "",
+    root_dir: []const u8 = "",
+    config_file_path: []const u8 = "",
+    module: []const u8 = "",
+
+    fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
+        if (self.out_dir.len != 0) gpa.free(self.out_dir);
+        if (self.declaration_dir.len != 0) gpa.free(self.declaration_dir);
+        if (self.root_dir.len != 0) gpa.free(self.root_dir);
+        if (self.config_file_path.len != 0) gpa.free(self.config_file_path);
+        if (self.module.len != 0) gpa.free(self.module);
+    }
+};
+
+fn resolverConfigOptionsFromVirtualTsconfig(
+    gpa: std.mem.Allocator,
+    files: []const VirtualFile,
+) !TsconfigResolverOptions {
+    for (files) |f| {
+        if (!std.mem.eql(u8, f.path, "tsconfig.json") and
+            !std.mem.eql(u8, f.path, "/tsconfig.json")) continue;
+        var parsed = std.json.parseFromSlice(std.json.Value, gpa, f.source, .{}) catch return .{};
+        defer parsed.deinit();
+        if (parsed.value != .object) return .{};
+        const compiler_options = parsed.value.object.get("compilerOptions") orelse return .{};
+        if (compiler_options != .object) return .{};
+        const obj = compiler_options.object;
+        return .{
+            .out_dir = try dupeJsonStringField(gpa, obj, "outDir"),
+            .declaration_dir = try dupeJsonStringField(gpa, obj, "declarationDir"),
+            .root_dir = try dupeJsonStringField(gpa, obj, "rootDir"),
+            .module = try dupeJsonStringField(gpa, obj, "module"),
+            .config_file_path = try canonicalVfsPath(gpa, f.path),
+        };
+    }
+    return .{};
+}
+
+fn dupeJsonStringField(
+    gpa: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+) ![]const u8 {
+    const value = obj.get(key) orelse return "";
+    if (value != .string) return "";
+    return try gpa.dupe(u8, value.string);
+}
+
+test "conformance: virtual tsconfig feeds resolver output mapping options" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "tsconfig.json",
+            .source =
+            \\{
+            \\  "compilerOptions": {
+            \\    "module": "nodenext",
+            \\    "outDir": "./dist",
+            \\    "declarationDir": "./types",
+            \\    "composite": true
+            \\  }
+            \\}
+            ,
+            .extra_strip = 0,
+        },
+    };
+    const opts = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &files);
+    defer opts.deinit(T.allocator);
+    try T.expectEqualStrings("./dist", opts.out_dir);
+    try T.expectEqualStrings("./types", opts.declaration_dir);
+    try T.expectEqualStrings("nodenext", opts.module);
+    try T.expectEqualStrings("/tsconfig.json", opts.config_file_path);
+}
+
+test "conformance: resolver config resolves package self-name through declarationDir output" {
+    const raw =
+        \\// @filename: tsconfig.json
+        \\{
+        \\  "compilerOptions": {
+        \\    "module": "nodenext",
+        \\    "outDir": "./dist",
+        \\    "declarationDir": "./types",
+        \\    "composite": true
+        \\  }
+        \\}
+        \\// @filename: package.json
+        \\{
+        \\  "name": "@this/package",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": {
+        \\      "default": "./dist/index.js",
+        \\      "types": "./types/index.d.ts"
+        \\    }
+        \\  }
+        \\}
+        \\// @filename: index.ts
+        \\export {srcthing as thing} from "./src/thing.js";
+        \\// @filename: src/thing.ts
+        \\import * as me from "@this/package";
+    ;
+    var files = try splitVirtualFiles(T.allocator, raw);
+    defer files.deinit(T.allocator);
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    for (files.items) |f| {
+        const canon = try canonicalVfsPath(T.allocator, f.path);
+        defer T.allocator.free(canon);
+        try vfs.addFile(canon, f.source);
+    }
+    const opts = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, files.items);
+    defer opts.deinit(T.allocator);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = resolverStrategyFromCase(.{ .name = "x", .source = "", .path = "", .raw_source = raw }, opts.module),
+        .out_dir = opts.out_dir,
+        .declaration_dir = opts.declaration_dir,
+        .root_dir = opts.root_dir,
+        .config_file_path = opts.config_file_path,
+    });
+    defer resolver.deinit();
+    const resolved = try resolver.resolve("@this/package", "/src/thing.ts");
+    try T.expectEqualStrings("/index.ts", resolved.path);
+}
+
+test "conformance: runProgram resolves package self-name through declarationDir output" {
+    const raw =
+        \\// @target: es2015
+        \\// @noImplicitReferences: true
+        \\// @filename: tsconfig.json
+        \\{
+        \\  "compilerOptions": {
+        \\    "module": "nodenext",
+        \\    "outDir": "./dist",
+        \\    "declarationDir": "./types",
+        \\    "composite": true
+        \\  }
+        \\}
+        \\// @filename: package.json
+        \\{
+        \\  "name": "@this/package",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": {
+        \\      "default": "./dist/index.js",
+        \\      "types": "./types/index.d.ts"
+        \\    }
+        \\  }
+        \\}
+        \\// @filename: index.ts
+        \\export {srcthing as thing} from "./src/thing.js";
+        \\// @filename: src/thing.ts
+        \\import * as me from "@this/package";
+        \\me.thing();
+        \\export function srcthing(): void {}
+    ;
+    const result = try runProgram(T.allocator, .{
+        .name = "nodeNextPackageSelfNameWithOutDirDeclDirCompositeNestedDirs",
+        .source = "",
+        .path = "src/thing.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    }) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: clean package self-name output mappings route through program" {
+    const raw =
+        \\// @filename: tsconfig.json
+        \\{
+        \\  "compilerOptions": {
+        \\    "module": "nodenext",
+        \\    "outDir": "./dist",
+        \\    "declarationDir": "./types"
+        \\  }
+        \\}
+        \\// @filename: package.json
+        \\{
+        \\  "name": "@this/package",
+        \\  "exports": {
+        \\    ".": {
+        \\      "types": "./types/index.d.ts"
+        \\    }
+        \\  }
+        \\}
+        \\// @filename: index.ts
+        \\export {};
+    ;
+    try T.expect(rawSourceHasProjectSelfNameOutputMapping(raw));
+    try T.expect(shouldRouteThroughProgram(.{
+        .name = "nodeNextPackageSelfNameWithOutDirDeclDirCompositeNestedDirs",
+        .source = "",
+        .path = "index.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    }));
 }
 
 fn strategyFromLabel(label: []const u8) ?ts_resolver.Strategy {
@@ -976,8 +1232,14 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     // no spurious TS2307 leaks. Mirrors `APISample_*`.
     try synthesizeAbsoluteTypesStubs(gpa, virtual_files.items, &vfs);
 
+    const tsconfig_options = try resolverConfigOptionsFromVirtualTsconfig(gpa, virtual_files.items);
+    defer tsconfig_options.deinit(gpa);
     var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
-        .strategy = resolverStrategyFromCase(c),
+        .strategy = resolverStrategyFromCase(c, tsconfig_options.module),
+        .out_dir = tsconfig_options.out_dir,
+        .declaration_dir = tsconfig_options.declaration_dir,
+        .root_dir = tsconfig_options.root_dir,
+        .config_file_path = tsconfig_options.config_file_path,
     });
     defer resolver.deinit();
 
@@ -1056,7 +1318,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,
     };
-    const module_resolution_label: []const u8 = switch (resolverStrategyFromCase(c)) {
+    const module_resolution_label: []const u8 = switch (resolverStrategyFromCase(c, tsconfig_options.module)) {
         .classic => "classic",
         .node10 => "node10",
         .node16 => "node16",
