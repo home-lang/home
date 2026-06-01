@@ -308,6 +308,48 @@ const install_glue =
     \\    Object.defineProperty(B, "main", { get: function() { var a = (typeof globalThis.process !== "undefined" && globalThis.process.argv) || []; return a[1] || ""; }, configurable: true });
     \\  })();
     \\  delete globalThis.__home_bun_hash;
+    \\  (function() {
+    \\    var B = globalThis.Bun;
+    \\    function drainStream(stream) {
+    \\      if (!stream || typeof stream.getReader !== "function") return Promise.reject(new TypeError("Expected a ReadableStream"));
+    \\      var reader = stream.getReader();
+    \\      var chunks = [];
+    \\      function step() {
+    \\        return reader.read().then(function(r) {
+    \\          if (r.done) return chunks;
+    \\          if (r.value !== undefined) chunks.push(r.value);
+    \\          return step();
+    \\        });
+    \\      }
+    \\      return step();
+    \\    }
+    \\    function chunkToBytes(chunk) {
+    \\      if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+    \\      if (chunk instanceof Uint8Array) return chunk;
+    \\      if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk.slice(0));
+    \\      if (ArrayBuffer.isView(chunk)) return new Uint8Array(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+    \\      return new TextEncoder().encode(String(chunk));
+    \\    }
+    \\    function concatChunkBytes(chunks) {
+    \\      var parts = [], total = 0, i;
+    \\      for (i = 0; i < chunks.length; i++) { var b = chunkToBytes(chunks[i]); parts.push(b); total += b.length; }
+    \\      var out = new Uint8Array(total), off = 0;
+    \\      for (i = 0; i < parts.length; i++) { out.set(parts[i], off); off += parts[i].length; }
+    \\      return out;
+    \\    }
+    \\    function chunksToText(chunks) {
+    \\      var allStrings = true;
+    \\      for (var i = 0; i < chunks.length; i++) { if (typeof chunks[i] !== "string") { allStrings = false; break; } }
+    \\      if (allStrings) return chunks.join("");
+    \\      return new TextDecoder().decode(concatChunkBytes(chunks));
+    \\    }
+    \\    B.readableStreamToArray = function(stream) { return drainStream(stream); };
+    \\    B.readableStreamToText = function(stream) { return drainStream(stream).then(chunksToText); };
+    \\    B.readableStreamToJSON = function(stream) { return drainStream(stream).then(function(chunks) { return JSON.parse(chunksToText(chunks)); }); };
+    \\    B.readableStreamToBytes = function(stream) { return drainStream(stream).then(concatChunkBytes); };
+    \\    B.readableStreamToArrayBuffer = function(stream) { return drainStream(stream).then(function(chunks) { var b = concatChunkBytes(chunks); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); }); };
+    \\    B.readableStreamToBlob = function(stream) { return drainStream(stream).then(function(chunks) { var Blob = globalThis.Blob; if (typeof Blob !== "function") throw new TypeError("Blob is not defined in this realm"); return new Blob(chunks); }); };
+    \\  })();
     \\  delete globalThis.__home_bun_write_file;
     \\})();
 ;
@@ -491,4 +533,30 @@ test "Bun.file.exists reflects presence; missing file text() rejects" {
         "});",
         "home:bun-exists-setup", 1, null);
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__e === 'false:rejected'"));
+}
+
+test "Bun.readableStreamToText/Array drain a web ReadableStream" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // A minimal pull-based ReadableStream over ["foo", "bar"]; the consumers
+    // only touch getReader()/read(), and reads resolve via already-settled
+    // promises so the whole chain drains within this single evaluateUtf8.
+    _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
+        "globalThis.__rsText = null; globalThis.__rsArr = null;" ++
+        "function makeStream(items) {" ++
+        "  var i = 0;" ++
+        "  return { getReader: function() { return {" ++
+        "    read: function() { return Promise.resolve(i < items.length ? { value: items[i++], done: false } : { value: undefined, done: true }); }" ++
+        "  }; } };" ++
+        "}" ++
+        "Bun.readableStreamToText(makeStream(['foo', 'bar'])).then(function(t) { globalThis.__rsText = t; });" ++
+        "Bun.readableStreamToArray(makeStream(['foo', 'bar'])).then(function(a) { globalThis.__rsArr = JSON.stringify(a); });",
+        "home:bun-rs-consumers-setup", 1, null);
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "globalThis.__rsText === 'foobar' && globalThis.__rsArr === '[\"foo\",\"bar\"]'"));
 }
