@@ -40,6 +40,7 @@ const hir_mod = @import("hir");
 /// `@filename:` virtual-section scan.
 const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
+    ambient_modules: []const AmbientModuleResolution = &.{},
 
     pub const vtable = ts_checker.ExternalResolver.VTable{
         .resolve = resolveImpl,
@@ -58,12 +59,33 @@ const CheckerResolverAdapter = struct {
         // a leading slash; normalize before delegating.
         var stack_buf: [1024]u8 = undefined;
         const containing = canonicalContainingPath(&stack_buf, containing_file);
-        const r = self.resolver.resolve(specifier, containing) catch return null;
+        const r = self.resolver.resolve(specifier, containing) catch {
+            if (self.ambientModulePathForSpecifier(specifier, containing)) |path| {
+                return .{
+                    .path = path,
+                    .is_declaration = true,
+                };
+            }
+            return null;
+        };
         return .{
             .path = r.path,
             .is_declaration = r.is_declaration,
             .alternate_result = r.alternate_result,
         };
+    }
+
+    fn ambientModulePathForSpecifier(
+        self: *CheckerResolverAdapter,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?[]const u8 {
+        for (self.ambient_modules) |m| {
+            if (!std.mem.eql(u8, m.specifier, specifier)) continue;
+            if (!ambientAtTypesModuleVisibleFrom(m.path, containing_file)) continue;
+            return m.path;
+        }
+        return null;
     }
 
     fn moduleExportImpl(
@@ -565,6 +587,92 @@ const ScriptGlobalSpaces = struct {
         return self.types.get(name) != null and self.values.get(name) == null;
     }
 };
+
+const AmbientModuleResolution = struct {
+    specifier: []const u8,
+    path: []const u8,
+};
+
+fn freeAmbientModuleResolutions(gpa: std.mem.Allocator, items: []const AmbientModuleResolution) void {
+    for (items) |item| {
+        gpa.free(item.specifier);
+        gpa.free(item.path);
+    }
+    gpa.free(items);
+}
+
+fn collectAmbientAtTypesModules(
+    gpa: std.mem.Allocator,
+    files: []const VirtualFile,
+) ![]const AmbientModuleResolution {
+    var out: std.ArrayListUnmanaged(AmbientModuleResolution) = .empty;
+    errdefer {
+        for (out.items) |item| {
+            gpa.free(item.specifier);
+            gpa.free(item.path);
+        }
+        out.deinit(gpa);
+    }
+
+    for (files) |file| {
+        if (!isCodeVirtualFile(file.path)) continue;
+        if (!std.mem.endsWith(u8, file.path, ".d.ts")) continue;
+        if (!isAtTypesVirtualPath(file.path)) continue;
+        var search_start: usize = 0;
+        while (ambientDeclareModuleName(file.source, &search_start)) |module_name| {
+            const canon = try canonicalVfsPath(gpa, file.path);
+            errdefer gpa.free(canon);
+            const spec = try gpa.dupe(u8, module_name);
+            errdefer gpa.free(spec);
+            try out.append(gpa, .{
+                .specifier = spec,
+                .path = canon,
+            });
+        }
+    }
+
+    return try out.toOwnedSlice(gpa);
+}
+
+fn ambientDeclareModuleName(source: []const u8, search_start: *usize) ?[]const u8 {
+    const needle = "declare module";
+    while (std.mem.indexOfPos(u8, source, search_start.*, needle)) |idx| {
+        var i = idx + needle.len;
+        search_start.* = i;
+        if (idx > 0 and isIdentifierContinue(source[idx - 1])) continue;
+        if (i < source.len and isIdentifierContinue(source[i])) continue;
+        while (i < source.len and (source[i] == ' ' or source[i] == '\t' or source[i] == '\r' or source[i] == '\n')) i += 1;
+        if (i >= source.len or (source[i] != '"' and source[i] != '\'')) continue;
+        const quote = source[i];
+        i += 1;
+        const name_start = i;
+        while (i < source.len and source[i] != quote) : (i += 1) {}
+        search_start.* = i;
+        if (i >= source.len) return null;
+        if (i == name_start) continue;
+        return source[name_start..i];
+    }
+    return null;
+}
+
+fn isAtTypesVirtualPath(path: []const u8) bool {
+    return std.mem.indexOf(u8, path, "/node_modules/@types/") != null or
+        std.mem.startsWith(u8, path, "node_modules/@types/");
+}
+
+fn ambientAtTypesModuleVisibleFrom(module_path: []const u8, containing_file: []const u8) bool {
+    const marker = std.mem.indexOf(u8, module_path, "/node_modules/@types/") orelse blk: {
+        if (std.mem.startsWith(u8, module_path, "node_modules/@types/")) break :blk @as(usize, 0);
+        return false;
+    };
+    const root = module_path[0..marker];
+    if (root.len == 0 or std.mem.eql(u8, root, "/")) return true;
+    const containing_dir = std.fs.path.dirname(containing_file) orelse "";
+    if (std.mem.eql(u8, containing_dir, root)) return true;
+    return std.mem.startsWith(u8, containing_dir, root) and
+        containing_dir.len > root.len and
+        containing_dir[root.len] == '/';
+}
 
 fn putStringSet(
     gpa: std.mem.Allocator,
@@ -1225,6 +1333,49 @@ test "conformance: clean ancestor node_modules declaration fixture routes throug
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: visible @types ambient modules resolve from multiple node_modules roots" {
+    const raw =
+        \\// @module: commonjs
+        \\// @target: es2015
+        \\// @noImplicitReferences: true
+        \\// @traceResolution: true
+        \\// @currentDirectory: /src
+        \\// @types: *
+        \\// @filename: /node_modules/@types/dopey/index.d.ts
+        \\declare module "xyz" {
+        \\  export const x: number;
+        \\}
+        \\// @filename: /foo/node_modules/@types/grumpy/index.d.ts
+        \\declare module "pdq" {
+        \\  export const y: number;
+        \\}
+        \\// @filename: /foo/node_modules/@types/sneezy/index.d.ts
+        \\declare module "abc" {
+        \\  export const z: number;
+        \\}
+        \\// @filename: /foo/bar/a.ts
+        \\import { x } from "xyz";
+        \\import { y } from "pdq";
+        \\import { z } from "abc";
+        \\x + y + z;
+        \\// @filename: /foo/bar/tsconfig.json
+        \\{}
+    ;
+    const c: Case = .{
+        .name = "typeRootsFromMultipleNodeModulesDirectories",
+        .source = "",
+        .path = "/foo/bar/a.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    };
+    try T.expect(rawSourceHasNodeModulesDeclarationAndBareImport(raw));
+    try T.expect(shouldRouteThroughProgram(c));
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: relative module augmentation virtual fixture routes through program" {
     const raw =
         \\// @filename: map.ts
@@ -1438,7 +1589,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     // installs it on every per-file checker so bare-module
     // resolution and TS7016 enrichment delegate to `ts_resolver`
     // instead of the in-source `@filename:` heuristic.
-    var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    const ambient_modules = try collectAmbientAtTypesModules(gpa, virtual_files.items);
+    defer freeAmbientModuleResolutions(gpa, ambient_modules);
+
+    var resolver_adapter = CheckerResolverAdapter{
+        .resolver = &resolver,
+        .ambient_modules = ambient_modules,
+    };
     const external = ts_checker.ExternalResolver{
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,
