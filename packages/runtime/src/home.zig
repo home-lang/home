@@ -3498,6 +3498,8 @@ pub const c = struct {
     // macOS <sys/stat.h>: `#define UTIME_NOW -1` (Linux uses std.os.linux.UTIME.NOW).
     pub const UTIME_NOW = -1;
     pub const ZSTD_inBuffer = @import("zstd/zstd.zig").c.ZSTD_inBuffer;
+    pub const ZSTD_outBuffer = @import("zstd/zstd.zig").c.ZSTD_outBuffer;
+    pub const AF_INET = std.c.AF.INET;
 };
 
 // ---- src/sys/ ----------------------------------------------------------
