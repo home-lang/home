@@ -654,6 +654,15 @@ pub const timespec = extern struct {
         return this.ns() / std.time.ns_per_ms;
     }
 
+    /// Faithful to upstream `bun.zig:3395`.
+    pub fn msFromNow(comptime mock_mode: MockMode, interval: i64) timespec {
+        return now(mock_mode).addMs(interval);
+    }
+
+    pub fn min(a: timespec, b: timespec) timespec {
+        return if (a.order(&b) == .lt) a else b;
+    }
+
     /// Faithful to upstream `bun.zig` `timespec.addMs`.
     pub fn addMs(this: *const timespec, interval: i64) timespec {
         const sec_inc = @divTrunc(interval, std.time.ms_per_s);
@@ -2474,6 +2483,7 @@ pub const runtime = struct {
     pub const shell = struct {
         pub const RefCountedStr = @import("runtime/shell/RefCountedStr.zig");
         pub const EnvMap = @import("runtime/shell/EnvMap.zig");
+        pub const SmolList = @import("runtime/shell/shell.zig").SmolList;
         pub const ShellSubprocess = struct {
             pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
                 _ = this;
@@ -3475,6 +3485,7 @@ pub const sys = struct {
     pub const getErrno = @import("sys/sys.zig").getErrno;
     pub const unlink = @import("sys/sys.zig").unlink;
     pub const munmap = @import("sys/sys.zig").munmap;
+    pub const PosixStat = @import("sys/PosixStat.zig").PosixStat;
 
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const Error = @import("sys/Error.zig");
