@@ -25,7 +25,7 @@ pub fn encode(out: *[max_len]u8, w: u32, h: u32, rgba: []const u8) []u8 {
     home_rt.assert(rgba.len == @as(usize, w) * h * 4);
 
     // Average colour (alpha-weighted so transparent pixels don't tug it).
-    // Home divergence: Zig 0.17 rejects `.{0} ** 4` (stylechecker complains about
+    // Home divergence: Zig 0.17 rejects `@splat(0)` (stylechecker complains about
     // asymmetric whitespace around `**`); `@splat(0)` produces an equivalent array.
     var avg: [4]f32 = @splat(0);
     var i: usize = 0;

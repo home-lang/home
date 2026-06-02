@@ -27,7 +27,7 @@
 /// ```zig
 /// const Demo = extern struct {
 ///     a: u8,
-///     _padding: [7]u8 = .{0} ** 7,
+///     _padding: [7]u8 = @splat(0),
 ///     b: u64, // same offset as before
 /// }
 /// ```

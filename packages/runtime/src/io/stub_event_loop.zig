@@ -5,12 +5,24 @@ pub const Loop = struct {};
 pub const KeepAlive = struct {
     ref_count: usize = 0,
 
-    pub fn ref(this: *KeepAlive) void {
+    pub fn init() KeepAlive {
+        return .{};
+    }
+    // Real callers pass the VM/event-loop; the stub ignores it.
+    pub fn ref(this: *KeepAlive, _: anytype) void {
         this.ref_count += 1;
     }
-
-    pub fn unref(this: *KeepAlive) void {
+    pub fn unref(this: *KeepAlive, _: anytype) void {
         if (this.ref_count > 0) this.ref_count -= 1;
+    }
+    pub fn refConcurrently(this: *KeepAlive, _: anytype) void {
+        this.ref_count += 1;
+    }
+    pub fn unrefConcurrently(this: *KeepAlive, _: anytype) void {
+        if (this.ref_count > 0) this.ref_count -= 1;
+    }
+    pub fn disable(this: *KeepAlive) void {
+        this.ref_count = 0;
     }
 };
 pub const FilePoll = struct {};

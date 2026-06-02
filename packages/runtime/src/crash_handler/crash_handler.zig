@@ -1846,7 +1846,7 @@ pub const StoredTrace = struct {
     index: usize,
 
     pub const empty: StoredTrace = .{
-        .data = .{0} ** 31,
+        .data = @splat(0),
         .index = 0,
     };
 
