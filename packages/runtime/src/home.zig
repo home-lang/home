@@ -1530,6 +1530,32 @@ pub const jsc = struct {
     pub const WorkPoolTask = @import("threading/work_pool.zig").Task;
     // Faithful to upstream jsc/jsc.zig:154 (`WorkPool = EventLoop.WorkPool`).
     pub const WorkPool = @import("threading/work_pool.zig").WorkPool;
+    // Faithful to upstream jsc/jsc.zig:156 (`WorkTask = EventLoop.WorkTask`).
+    pub const WorkTask = @import("jsc/WorkTask.zig").WorkTask;
+    // Faithful to upstream jsc/jsc.zig:101.
+    pub const RareData = @import("jsc/rare_data.zig");
+    // Faithful to upstream jsc/jsc.zig:209.
+    pub const Ref = struct {
+        has: bool = false,
+
+        pub fn init() Ref {
+            return .{};
+        }
+
+        pub fn unref(this: *Ref, vm: *VirtualMachine) void {
+            if (!this.has)
+                return;
+            this.has = false;
+            vm.active_tasks -= 1;
+        }
+
+        pub fn ref(this: *Ref, vm: *VirtualMachine) void {
+            if (this.has)
+                return;
+            this.has = true;
+            vm.active_tasks += 1;
+        }
+    };
     // Faithful to upstream jsc/jsc.zig:112.
     pub const ZigStackFrame = @import("jsc/ZigStackFrame.zig").ZigStackFrame;
     pub const ManagedTask = @import("event_loop/ManagedTask.zig");
@@ -1700,6 +1726,15 @@ pub const jsc = struct {
     /// location is available for future use. Mirrors the upstream
     /// signature `markBinding(src: std.builtin.SourceLocation)`.
     pub fn markBinding(src: std.builtin.SourceLocation) void {
+        _ = src;
+    }
+
+    /// Faithful to upstream `jsc/jsc.zig:175`. Logs the binding member call
+    /// site when `Environment.enable_logs` is set; a no-op otherwise (Home
+    /// gates logs off, so the body compiles away).
+    pub inline fn markMemberBinding(comptime class: anytype, src: std.builtin.SourceLocation) void {
+        if (!Environment.enable_logs) return;
+        _ = class;
         _ = src;
     }
 };
