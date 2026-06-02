@@ -44,9 +44,9 @@ pub const JSMap = opaque {
     /// Attempt to convert a `JSValue` to a `*JSMap`.
     ///
     /// Returns `null` if the value is not a Map.
-    pub fn fromJS(value: *const JSValue) ?*JSMap {
-        if (value.*.jsTypeLoose() == .Map) {
-            const ptr = value.*.asEncoded().asPtr orelse return null;
+    pub fn fromJS(value: JSValue) ?*JSMap {
+        if (value.jsTypeLoose() == .Map) {
+            const ptr = value.asEncoded().asPtr orelse return null;
             return @ptrCast(@alignCast(ptr));
         }
         return null;

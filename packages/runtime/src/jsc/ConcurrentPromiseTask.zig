@@ -31,7 +31,7 @@ const JSPromise = opaque {
 
     pub const Strong = struct {
         strong: StrongInner = .{},
-        value_: JSValueOpaque = .{},
+        value_: JSValueOpaque = .zero,
 
         const StrongInner = struct {
             pub fn set(_: *StrongInner, _: *JSGlobalObject, _: JSValueOpaque) void {}
@@ -163,7 +163,7 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
         }
 
         pub fn onFinish(this: *This) void {
-            this.event_loop.enqueueTaskConcurrent(this.concurrent_task.from(this, .manual_deinit));
+            this.event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.from(&this.concurrent_task, this, .manual_deinit));
         }
 
         pub fn deinit(this: *This) void {

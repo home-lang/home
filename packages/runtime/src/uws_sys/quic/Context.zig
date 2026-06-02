@@ -1,12 +1,10 @@
 // Copied from bun/src/uws_sys/quic/Context.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../../cli/LICENSE.bun.md.
 // Imports rewritten: @import("bun") → @import("home"). The upstream
-// `uws.Loop` opaque has the same forward-decl pattern as the sibling
-// `uws_sys/{Timer,ConnectingSocket,SocketGroup}.zig` files — `Loop` is
-// declared locally as `opaque {}` until the full `uws_sys/Loop.zig` lands
-// (it pulls in InternalLoopData + jsc.EventLoopHandle + libuv on Windows).
 // The PendingConnect / Socket / Stream siblings already live in
-// `home_rt.uws_sys.quic.*` so the references rewrite trivially.
+// `home_rt.uws_sys.quic.*` so the references rewrite trivially. `Loop` is the
+// real uWS loop type now that `uws_sys/Loop.zig` is ported, keeping H3 client
+// context and pending-connect handles type-identical.
 
 //! `us_quic_socket_context_t` — one lsquic engine + its event-loop wiring.
 //! For the client there is exactly one of these per HTTP-thread loop and it
@@ -62,9 +60,7 @@ const PendingConnect = @import("PendingConnect.zig").PendingConnect;
 const Socket = @import("Socket.zig").Socket;
 const Stream = @import("Stream.zig").Stream;
 
-/// Placeholder forward-declaration — see sibling `uws_sys/Timer.zig`.
-/// Replaced when `uws_sys/Loop.zig` ports.
-pub const Loop = opaque {};
+pub const Loop = @import("../Loop.zig").Loop;
 
 test "quic.Context exposes the us_quic_socket_context_t API surface" {
     const std = @import("std");

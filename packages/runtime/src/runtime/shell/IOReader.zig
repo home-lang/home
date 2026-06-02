@@ -217,7 +217,7 @@ fn asyncDeinitCallback(this: *@This()) void {
             // We set reader.flags.close_handle=false in init(), so reader.deinit() will not
             // return the FilePoll to its pool. Do it explicitly (without closing the fd —
             // we own that and close it ourselves below).
-            if (this.reader.handle == .poll) {
+            if (@hasDecl(@TypeOf(this.reader.handle), "closeImpl")) {
                 this.reader.handle.closeImpl(null, {}, false);
             }
             log("IOReader(0x{x}) __deinit fd={f}", .{ @intFromPtr(this), this.fd });

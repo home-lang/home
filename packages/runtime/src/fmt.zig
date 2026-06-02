@@ -232,11 +232,70 @@ pub inline fn utf16(slice: []const u16) FormatUTF16 {
 
 pub const FormatUTF16 = struct {
     buf: []const u16,
+    path_fmt_opts: ?PathFormatOptions = null,
 
     pub fn format(self: FormatUTF16, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (self.path_fmt_opts) |opts| {
+            try formatUTF16TypeWithPathOptions(self.buf, writer, opts);
+            return;
+        }
+
         try formatUTF16Type(self.buf, writer);
     }
 };
+
+pub const FormatUTF8 = struct {
+    buf: []const u8,
+    path_fmt_opts: ?PathFormatOptions = null,
+
+    pub fn format(self: FormatUTF8, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (self.path_fmt_opts) |opts| {
+            try formatPathBytes(self.buf, writer, opts);
+            return;
+        }
+
+        try writer.writeAll(self.buf);
+    }
+};
+
+pub const PathFormatOptions = struct {
+    path_sep: Sep = .any,
+    escape_backslashes: bool = false,
+
+    pub const Sep = enum {
+        any,
+        auto,
+        posix,
+        windows,
+    };
+};
+
+pub const FormatOSPath = if (bun.Environment.isWindows) FormatUTF16 else FormatUTF8;
+
+pub fn fmtOSPath(buf: bun.OSPathSlice, options: PathFormatOptions) FormatOSPath {
+    return .{
+        .buf = buf,
+        .path_fmt_opts = options,
+    };
+}
+
+pub fn fmtPath(
+    comptime T: type,
+    path: []const T,
+    options: PathFormatOptions,
+) if (T == u8) FormatUTF8 else FormatUTF16 {
+    if (T == u8) {
+        return .{
+            .buf = path,
+            .path_fmt_opts = options,
+        };
+    }
+
+    return .{
+        .buf = path,
+        .path_fmt_opts = options,
+    };
+}
 
 pub const HostFormatter = struct {
     host: []const u8,
@@ -347,6 +406,43 @@ pub fn formatUTF16Type(slice_: []const u16, writer: *std.Io.Writer) !void {
         try writer.writeAll(chunk[0..result.written]);
         slice = slice[result.read..];
     }
+}
+
+pub fn formatUTF16TypeWithPathOptions(slice_: []const u16, writer: *std.Io.Writer, opts: PathFormatOptions) !void {
+    var chunk: [256]u8 = undefined;
+    var slice = slice_;
+    while (slice.len > 0) {
+        const result = strings.copyUTF16IntoUTF8(&chunk, slice);
+        if (result.read == 0 or result.written == 0)
+            break;
+        try formatPathBytes(chunk[0..result.written], writer, opts);
+        slice = slice[result.read..];
+    }
+}
+
+fn formatPathBytes(bytes: []const u8, writer: *std.Io.Writer, opts: PathFormatOptions) std.Io.Writer.Error!void {
+    if (opts.path_sep == .any and !opts.escape_backslashes) {
+        try writer.writeAll(bytes);
+        return;
+    }
+
+    var ptr = bytes;
+    while (strings.indexOfAny(ptr, "\\/")) |i| {
+        const sep: u8 = switch (opts.path_sep) {
+            .windows => '\\',
+            .posix => '/',
+            .auto => std.fs.path.sep,
+            .any => ptr[i],
+        };
+        try writer.writeAll(ptr[0..i]);
+        try writer.writeByte(sep);
+        if (opts.escape_backslashes and sep == '\\') {
+            try writer.writeByte(sep);
+        }
+        ptr = ptr[i + 1 ..];
+    }
+
+    try writer.writeAll(ptr);
 }
 
 pub const FormatDouble = struct {

@@ -1243,30 +1243,30 @@ pub const Map = struct {
         return envp_buf;
     }
 
-    /// Returns a wrapper around the std.process.EnvMap that does not duplicate the memory of
+    /// Returns a wrapper around the std.process.Environ.Map that does not duplicate the memory of
     /// the keys and values, but instead points into the memory of the bun env map.
     ///
     /// To prevent
     pub fn stdEnvMap(this: *Map, allocator: std.mem.Allocator) OOM!StdEnvMapWrapper {
-        var env_map = std.process.EnvMap.init(allocator);
+        var env_map = std.process.Environ.Map.init(allocator);
 
         var iter = this.map.iterator();
         while (iter.next()) |entry| {
-            try env_map.hash_map.put(entry.key_ptr.*, entry.value_ptr.value);
+            try env_map.put(entry.key_ptr.*, entry.value_ptr.value);
         }
 
         return .{ .unsafe_map = env_map };
     }
 
     pub const StdEnvMapWrapper = struct {
-        unsafe_map: std.process.EnvMap,
+        unsafe_map: std.process.Environ.Map,
 
-        pub fn get(this: *const StdEnvMapWrapper) *const std.process.EnvMap {
+        pub fn get(this: *const StdEnvMapWrapper) *const std.process.Environ.Map {
             return &this.unsafe_map;
         }
 
         pub fn deinit(this: *StdEnvMapWrapper) void {
-            this.unsafe_map.hash_map.deinit();
+            this.unsafe_map.deinit();
         }
     };
 

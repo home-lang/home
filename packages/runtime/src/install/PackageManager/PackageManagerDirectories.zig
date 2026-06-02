@@ -33,7 +33,7 @@ var getTemporaryDirectoryOnce = bun.once(struct {
         const temp_dir_name = Fs.FileSystem.RealFS.getDefaultTempDir();
 
         var tried_dot_tmp = false;
-        var tempdir: std.Io.Dir = bun.MakePath.makeOpenPath(std.fs.cwd(), temp_dir_name, .{}) catch brk: {
+        var tempdir: std.Io.Dir = bun.MakePath.makeOpenPath(std.Io.Dir.cwd(), temp_dir_name, .{}) catch brk: {
             tried_dot_tmp = true;
             break :brk bun.MakePath.makeOpenPath(cache_directory, bun.pathLiteral(".tmp"), .{}) catch |err| {
                 Output.prettyErrorln("<r><red>error<r>: bun is unable to access tempdir: {s}", .{@errorName(err)});
@@ -42,9 +42,9 @@ var getTemporaryDirectoryOnce = bun.once(struct {
         };
         var tmpbuf: bun.PathBuffer = undefined;
         const tmpname = Fs.FileSystem.tmpname("hm", &tmpbuf, bun.fastRandom()) catch unreachable;
-        var timer: std.time.Timer = if (manager.options.log_level != .silent) std.time.Timer.start() catch unreachable else undefined;
+        var timer: bun.Instant = if (manager.options.log_level != .silent) bun.Instant.now() catch unreachable else undefined;
         brk: while (true) {
-            var file = tempdir.createFileZ(tmpname, .{ .truncate = true }) catch |err2| {
+            var file = tempdir.createFile(std.Options.debug_io, bun.span(tmpname), .{ .truncate = true }) catch |err2| {
                 if (!tried_dot_tmp) {
                     tried_dot_tmp = true;
 
@@ -64,12 +64,12 @@ var getTemporaryDirectoryOnce = bun.once(struct {
                 });
                 Global.crash();
             };
-            file.close();
+            file.close(std.Options.debug_io);
 
-            std.posix.renameatZ(tempdir.fd, tmpname, cache_directory.fd, tmpname) catch |err| {
+            bun.sys.renameat(.fromStdDir(tempdir), tmpname, .fromStdDir(cache_directory), tmpname).unwrap() catch |err| {
                 if (!tried_dot_tmp) {
                     tried_dot_tmp = true;
-                    tempdir = cache_directory.makeOpenPath(".tmp", .{}) catch |err2| {
+                    tempdir = bun.MakePath.makeOpenPath(cache_directory, ".tmp", .{}) catch |err2| {
                         Output.prettyErrorln("<r><red>error<r>: bun is unable to write files to tempdir: {s}", .{@errorName(err2)});
                         Global.crash();
                     };
@@ -86,7 +86,7 @@ var getTemporaryDirectoryOnce = bun.once(struct {
                 });
                 Global.crash();
             };
-            cache_directory.deleteFileZ(tmpname) catch {};
+            cache_directory.deleteFile(std.Options.debug_io, bun.span(tmpname)) catch {};
             break;
         }
         if (tried_dot_tmp) {
@@ -141,7 +141,7 @@ noinline fn ensureCacheDirectory(this: *PackageManager) std.Io.Dir {
             .auto,
         )) catch |err| bun.handleOom(err);
 
-        return std.fs.cwd().makeOpenPath("node_modules/.cache", .{}) catch |err| {
+        return bun.MakePath.makeOpenPath(std.Io.Dir.cwd(), "node_modules/.cache", .{}) catch |err| {
             Output.prettyErrorln("<r><red>error<r>: bun is unable to write files: {s}", .{@errorName(err)});
             Global.crash();
         };
@@ -376,7 +376,7 @@ pub fn setupGlobalDir(manager: *PackageManager, ctx: Command.Context) !void {
 
 pub fn globalLinkDir(this: *PackageManager) std.Io.Dir {
     return this.global_link_dir orelse brk: {
-        var global_dir = Options.openGlobalDir(this.options.explicit_global_directory) catch |err| switch (err) {
+        const global_dir = Options.openGlobalDir(this.options.explicit_global_directory) catch |err| switch (err) {
             error.@"No global directory found" => {
                 Output.errGeneric("failed to find a global directory for package caching and global link directories", .{});
                 Global.exit(1);
@@ -387,7 +387,7 @@ pub fn globalLinkDir(this: *PackageManager) std.Io.Dir {
             },
         };
         this.global_dir = global_dir;
-        this.global_link_dir = global_dir.makeOpenPath("node_modules", .{}) catch |err| {
+        this.global_link_dir = bun.MakePath.makeOpenPath(global_dir, "node_modules", .{}) catch |err| {
             Output.err(err, "failed to open global link dir node_modules at '{f}'", .{FD.fromStdDir(global_dir)});
             Global.exit(1);
         };
@@ -476,7 +476,7 @@ pub fn computeCacheDirAndSubpath(
 ) struct { cache_dir: std.Io.Dir, cache_dir_subpath: stringZ } {
     const name = pkg_name;
     const buf = manager.lockfile.buffers.string_bytes.items;
-    var cache_dir = std.fs.cwd();
+    var cache_dir = std.Io.Dir.cwd();
     var cache_dir_subpath: stringZ = "";
 
     switch (resolution.tag) {
@@ -507,7 +507,7 @@ pub fn computeCacheDirAndSubpath(
                 folder_path_buf[folder.len] = 0;
                 cache_dir_subpath = folder_path_buf[0..folder.len :0];
             }
-            cache_dir = std.fs.cwd();
+            cache_dir = std.Io.Dir.cwd();
         },
         .local_tarball => {
             cache_dir_subpath = manager.cachedTarballFolderName(resolution.value.local_tarball, patch_hash);
@@ -527,7 +527,7 @@ pub fn computeCacheDirAndSubpath(
                 folder_path_buf[folder.len] = 0;
                 cache_dir_subpath = folder_path_buf[0..folder.len :0];
             }
-            cache_dir = std.fs.cwd();
+            cache_dir = std.Io.Dir.cwd();
         },
         .symlink => {
             const directory = manager.globalLinkDir();
@@ -536,7 +536,7 @@ pub fn computeCacheDirAndSubpath(
 
             if (folder.len == 0 or (folder.len == 1 and folder[0] == '.')) {
                 cache_dir_subpath = ".";
-                cache_dir = std.fs.cwd();
+                cache_dir = std.Io.Dir.cwd();
             } else {
                 const global_link_dir = manager.globalLinkDirPath();
                 var ptr = folder_path_buf;
@@ -565,7 +565,7 @@ pub fn computeCacheDirAndSubpath(
 }
 
 pub fn attemptToCreatePackageJSONAndOpen() !std.Io.File {
-    const package_json_file = std.fs.cwd().createFileZ("package.json", .{ .read = true }) catch |err| {
+    const package_json_file = std.Io.Dir.cwd().createFileZ("package.json", .{ .read = true }) catch |err| {
         Output.prettyErrorln("<r><red>error:<r> {s} create package.json", .{@errorName(err)});
         Global.crash();
     };

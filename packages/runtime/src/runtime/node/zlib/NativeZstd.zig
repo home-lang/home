@@ -137,9 +137,8 @@ const Context = struct {
         switch (this.mode) {
             .ZSTD_COMPRESS => {
                 this.pledged_src_size = pledged_src_size;
-                const state = c.ZSTD_createCCtx();
-                if (state == null) return .init("Could not initialize zstd instance", -1, "ERR_ZLIB_INITIALIZATION_FAILED");
-                this.state = state.?;
+                const state = c.ZSTD_createCCtx() orelse return .init("Could not initialize zstd instance", -1, "ERR_ZLIB_INITIALIZATION_FAILED");
+                this.state = state;
                 const result = c.ZSTD_CCtx_setPledgedSrcSize(state, pledged_src_size);
                 if (c.ZSTD_isError(result) > 0) {
                     _ = c.ZSTD_freeCCtx(state);
@@ -149,9 +148,8 @@ const Context = struct {
                 return .ok;
             },
             .ZSTD_DECOMPRESS => {
-                const state = c.ZSTD_createDCtx();
-                if (state == null) return .init("Could not initialize zstd instance", -1, "ERR_ZLIB_INITIALIZATION_FAILED");
-                this.state = state.?;
+                const state = c.ZSTD_createDCtx() orelse return .init("Could not initialize zstd instance", -1, "ERR_ZLIB_INITIALIZATION_FAILED");
+                this.state = state;
                 return .ok;
             },
             else => @panic("unreachable"),
@@ -161,12 +159,12 @@ const Context = struct {
     pub fn setParams(this: *Context, key: c_uint, value: u32) Error {
         switch (this.mode) {
             .ZSTD_COMPRESS => {
-                const result = c.ZSTD_CCtx_setParameter(@ptrCast(this.state), key, @bitCast(value));
+                const result = c.ZSTD_CCtx_setParameter(@ptrCast(this.state.?), key, @bitCast(value));
                 if (c.ZSTD_isError(result) > 0) return .init("Setting parameter failed", -1, "ERR_ZSTD_PARAM_SET_FAILED");
                 return .ok;
             },
             .ZSTD_DECOMPRESS => {
-                const result = c.ZSTD_DCtx_setParameter(@ptrCast(this.state), key, @bitCast(value));
+                const result = c.ZSTD_DCtx_setParameter(@ptrCast(this.state.?), key, @bitCast(value));
                 if (c.ZSTD_isError(result) > 0) return .init("Setting parameter failed", -1, "ERR_ZSTD_PARAM_SET_FAILED");
                 return .ok;
             },
@@ -185,8 +183,8 @@ const Context = struct {
     /// Use close() for full cleanup that also sets mode to NONE.
     fn deinitState(this: *Context) void {
         _ = switch (this.mode) {
-            .ZSTD_COMPRESS => c.ZSTD_freeCCtx(@ptrCast(this.state)),
-            .ZSTD_DECOMPRESS => c.ZSTD_freeDCtx(@ptrCast(this.state)),
+            .ZSTD_COMPRESS => c.ZSTD_freeCCtx(@ptrCast(this.state.?)),
+            .ZSTD_DECOMPRESS => c.ZSTD_freeDCtx(@ptrCast(this.state.?)),
             else => unreachable,
         };
         this.state = null;
@@ -207,8 +205,8 @@ const Context = struct {
 
     pub fn doWork(this: *Context) void {
         this.remaining = switch (this.mode) {
-            .ZSTD_COMPRESS => c.ZSTD_compressStream2(@ptrCast(this.state), &this.output, &this.input, @intCast(this.flush)),
-            .ZSTD_DECOMPRESS => c.ZSTD_decompressStream(@ptrCast(this.state), &this.output, &this.input),
+            .ZSTD_COMPRESS => c.ZSTD_compressStream2(@ptrCast(this.state.?), &this.output, &this.input, @intCast(this.flush)),
+            .ZSTD_DECOMPRESS => c.ZSTD_decompressStream(@ptrCast(this.state.?), &this.output, &this.input),
             else => @panic("unreachable"),
         };
     }
@@ -263,8 +261,8 @@ const Context = struct {
 
     pub fn close(this: *Context) void {
         _ = switch (this.mode) {
-            .ZSTD_COMPRESS => c.ZSTD_CCtx_reset(@ptrCast(this.state), c.ZSTD_reset_session_and_parameters),
-            .ZSTD_DECOMPRESS => c.ZSTD_DCtx_reset(@ptrCast(this.state), c.ZSTD_reset_session_and_parameters),
+            .ZSTD_COMPRESS => c.ZSTD_CCtx_reset(@ptrCast(this.state.?), c.ZSTD_reset_session_and_parameters),
+            .ZSTD_DECOMPRESS => c.ZSTD_DCtx_reset(@ptrCast(this.state.?), c.ZSTD_reset_session_and_parameters),
             else => unreachable,
         };
         this.deinitState();

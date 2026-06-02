@@ -42,19 +42,13 @@ pub fn fromCodeInt(errno: anytype, syscall_tag: sys.Tag) Error {
 }
 
 pub fn format(self: Error, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    // We want to reuse the code from SystemError for formatting.
-    // But, we do not want to call String.createUTF8 on the path/dest strings
-    // because we're intending to pass them to writer.print()
-    // which will convert them back into UTF*.
-    var that = self.withoutPath().toShellSystemError();
-    bun.debugAssert(that.path.tag != .WTFStringImpl);
-    bun.debugAssert(that.dest.tag != .WTFStringImpl);
-    that.path = bun.String.borrowUTF8(self.path);
-    that.dest = bun.String.borrowUTF8(self.dest);
-    bun.debugAssert(that.path.tag != .WTFStringImpl);
-    bun.debugAssert(that.dest.tag != .WTFStringImpl);
-
-    return that.format(writer);
+    if (self.path.len > 0 and self.dest.len > 0) {
+        _ = try writer.print("{s}: {s}: {s} -> {s}", .{ @tagName(self.syscall), self.name(), self.path, self.dest });
+    } else if (self.path.len > 0) {
+        _ = try writer.print("{s}: {s}: {s}", .{ @tagName(self.syscall), self.name(), self.path });
+    } else {
+        _ = try writer.print("{s}: {s}", .{ @tagName(self.syscall), self.name() });
+    }
 }
 
 pub inline fn getErrno(this: Error) E {

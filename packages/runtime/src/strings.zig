@@ -50,6 +50,8 @@ pub const copyLatin1IntoUTF8 = @import("string/immutable.zig").copyLatin1IntoUTF
 pub const copyUTF16IntoUTF8 = @import("string/immutable.zig").copyUTF16IntoUTF8;
 pub const convertUTF8BytesIntoUTF16WithLength = @import("string/immutable.zig").convertUTF8BytesIntoUTF16WithLength;
 pub const copyCP1252IntoUTF16 = @import("string/immutable.zig").copyCP1252IntoUTF16;
+pub const withoutNTPrefix = @import("string/immutable.zig").withoutNTPrefix;
+pub const inMapCaseInsensitive = @import("string/immutable.zig").inMapCaseInsensitive;
 pub const toUTF16AllocMaybeBuffered = @import("string/immutable.zig").toUTF16AllocMaybeBuffered;
 pub const withoutUTF8BOM = @import("string/immutable.zig").withoutUTF8BOM;
 pub const toUTF8ListWithType = @import("string/immutable.zig").toUTF8ListWithType;
@@ -126,6 +128,10 @@ pub const NewLengthSorter = @import("string/immutable.zig").NewLengthSorter;
 pub const NewGlobLengthSorter = @import("string/immutable.zig").NewGlobLengthSorter;
 
 pub fn indexOfChar(slice: []const u8, char: u8) ?usize {
+    return std.mem.indexOfScalar(u8, slice, char);
+}
+
+pub fn indexOfCharZ(slice: [:0]const u8, char: u8) ?usize {
     return std.mem.indexOfScalar(u8, slice, char);
 }
 

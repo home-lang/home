@@ -192,5 +192,5 @@ test "Stream.new allocates and round-trips via destroy" {
     });
     try std.testing.expectEqual(@as(u31, 9), s.id);
     try std.testing.expectEqual(@as(i32, 100), s.send_window);
-    destroy(s);
+    home_rt.destroy(s);
 }

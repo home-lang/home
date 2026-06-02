@@ -163,6 +163,8 @@ pub const version: std.SemanticVersion = .{
     .minor = 0,
     .patch = 0,
 };
+pub const version_string = "0.0.0";
+pub const reported_nodejs_version = "20.0.0";
 
 test "environment flags are mutually consistent" {
     var count: usize = 0;

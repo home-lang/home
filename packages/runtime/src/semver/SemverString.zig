@@ -112,6 +112,13 @@ pub const String = extern struct {
         return &this.bytes;
     }
 
+    pub inline fn sliced(this: *const String, buf: string) SlicedString {
+        return if (this.isInline())
+            SlicedString.init(this.slice(""), this.slice(""))
+        else
+            SlicedString.init(buf, this.slice(buf));
+    }
+
     pub inline fn stringHash(buf: string) u64 {
         return std.hash.Wyhash.hash(0, buf);
     }
@@ -128,6 +135,11 @@ pub const String = extern struct {
             return a.eql(b, this.arg_buf, this.existing_buf);
         }
     };
+
+    pub fn arrayHashContext(lockfile: anytype, existing: ?string) ArrayHashContext {
+        const buf = lockfile.buffers.string_bytes.items;
+        return .{ .arg_buf = buf, .existing_buf = existing orelse buf };
+    }
 
     /// Faithful port of upstream `bun.Semver.String.Builder`
     /// (`src/install_types/SemverString.zig`). Counts then bump-allocates a
@@ -363,6 +375,7 @@ const copy = shim.copy;
 const IdentityContext = shim.IdentityContext;
 const strings = shim.strings;
 const ExternalString = @import("ExternalString.zig").ExternalString;
+const SlicedString = @import("SlicedString.zig");
 
 test "Semver String.Builder.stringHash matches Wyhash11 seed 0" {
     try std.testing.expectEqual(

@@ -2588,9 +2588,9 @@ pub fn renameatConcurrentlyWithoutFallback(
         //  sad path: let's try to delete the folder and then rename it
         if (to_dir_fd.isValid()) {
             var to_dir = to_dir_fd.stdDir();
-            to_dir.deleteTree(to) catch {};
+            to_dir.deleteTree(std.Options.debug_io, to) catch {};
         } else {
-            std.fs.deleteTreeAbsolute(to) catch {};
+            std.Io.Dir.cwd().deleteTree(std.Options.debug_io, to) catch {};
         }
         switch (renameat(from_dir_fd, from, to_dir_fd, to)) {
             .err => |err| {
@@ -4648,15 +4648,17 @@ pub fn dlsymWithHandle(comptime Type: type, comptime name: [:0]const u8, comptim
     const Wrapper = struct {
         pub var function: Type = undefined;
         var failed = false;
-        pub var once = std.once(loadOnce);
+        var loaded = false;
         fn loadOnce() void {
+            if (loaded) return;
+            loaded = true;
             function = bun.cast(Type, dlsymImpl(@call(bun.callmod_inline, handle_getter, .{}), name) orelse {
                 failed = true;
                 return;
             });
         }
     };
-    Wrapper.once.call();
+    Wrapper.loadOnce();
     if (Wrapper.failed) {
         return null;
     }

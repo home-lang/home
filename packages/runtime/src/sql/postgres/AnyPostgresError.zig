@@ -62,3 +62,6 @@ pub const PostgresErrorOptions = struct {
     line: ?[]const u8 = null,
     routine: ?[]const u8 = null,
 };
+
+pub const createPostgresError = @import("../../sql_jsc/postgres/error_jsc.zig").createPostgresError;
+pub const postgresErrorToJS = @import("../../sql_jsc/postgres/error_jsc.zig").postgresErrorToJS;

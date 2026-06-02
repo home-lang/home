@@ -19,23 +19,7 @@
 
 const std = @import("std");
 
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-pub const JSValue = enum(i64) {
-    zero = 0,
-    _,
-
-    pub fn isCell(self: JSValue) bool {
-        // Phase 12.2 routes through the real JSValue.isCell. The leaf port
-        // only needs the type to compile.
-        return @intFromEnum(self) != 0;
-    }
-    pub fn protect(self: JSValue) void {
-        _ = self;
-    }
-    pub fn unprotect(self: JSValue) void {
-        _ = self;
-    }
-};
+const JSValue = @import("./JSValue.zig").JSValue;
 
 // Compile-time toggle mirroring `bun.Environment.ci_assert` — defaults to
 // off until the Environment toggle is wired.

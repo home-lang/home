@@ -26,6 +26,30 @@ pub const SendFile = struct {
 /// impl wires through `bun.ptr.ThreadSafeRefCount`. The stub no-ops it so
 /// the union's `.detach()` path compiles.
 pub const ThreadSafeStreamBuffer = struct {
+    const Buffer = struct {
+        cursor: usize = 0,
+
+        pub fn slice(_: *Buffer) []const u8 {
+            return "";
+        }
+
+        pub fn isEmpty(_: *Buffer) bool {
+            return true;
+        }
+
+        pub fn reset(_: *Buffer) void {}
+    };
+
+    buffer: Buffer = .{},
+
+    pub fn acquire(self: *ThreadSafeStreamBuffer) *Buffer {
+        return &self.buffer;
+    }
+
+    pub fn reportDrain(_: *ThreadSafeStreamBuffer) void {}
+
+    pub fn release(_: *ThreadSafeStreamBuffer) void {}
+
     pub fn deref(self: *ThreadSafeStreamBuffer) void {
         _ = self;
     }

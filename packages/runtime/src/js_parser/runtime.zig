@@ -238,12 +238,11 @@ pub const Runtime = struct {
             for (feature_flags) |flag| {
                 bun.handleOom(set.insert(flag));
             }
-            set.map.sort(struct {
-                keys: []const []const u8,
-                pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
-                    return std.mem.lessThan(u8, ctx.keys[a], ctx.keys[b]);
+            std.sort.pdq([]const u8, set.ordered_keys.items, {}, struct {
+                pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                    return std.mem.lessThan(u8, a, b);
                 }
-            }{ .keys = set.map.keys() });
+            }.lessThan);
             return set;
         }
 

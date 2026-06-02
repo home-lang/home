@@ -79,9 +79,14 @@ pub const PathWatcherManager = struct {
 
     /// Remove `watcher` from the dedup map. Caller holds `mutex`.
     fn unlinkWatcherLocked(this: *PathWatcherManager, watcher: *PathWatcher) void {
-        if (std.mem.indexOfScalar(*PathWatcher, this.watchers.values(), watcher)) |i| {
-            bun.default_allocator.free(this.watchers.keys()[i]);
-            this.watchers.swapRemoveAt(i);
+        var iter = this.watchers.iterator();
+        while (iter.next()) |entry| {
+            if (entry.value_ptr.* == watcher) {
+                const key = entry.key_ptr.*;
+                _ = this.watchers.remove(key);
+                bun.default_allocator.free(key);
+                return;
+            }
         }
     }
 };
@@ -577,9 +582,10 @@ const Linux = struct {
                         .syscall = .read,
                     };
                     manager.mutex.lock();
-                    for (manager.watchers.values()) |w| {
-                        w.emitError(err);
-                        w.flush();
+                    var iter = manager.watchers.valueIterator();
+                    while (iter.next()) |w| {
+                        w.*.emitError(err);
+                        w.*.flush();
                     }
                     manager.mutex.unlock();
                     return;

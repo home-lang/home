@@ -9,12 +9,9 @@
 //     ported as a sibling leaf at `src/core/string/StringBuilder.zig`. The
 //     other `home_rt.jsc.StringBuilder` (the WTF C++ wrapper) is a different
 //     type and is NOT what this file wants.
-//   * `Headers = bun.http.Headers` and `api = bun.schema.api` are not yet
-//     ported (Headers depends on FetchHeaders + Blob — Phase 12.5). To keep
-//     HeaderBuilder usable today we mirror only the two extern points it
-//     actually reaches into: `Headers.Entry.List` (a MultiArrayList of
-//     `{name, value}` StringPointer pairs) and `api.StringPointer` (the
-//     `{offset: u32, length: u32}` extern struct).
+//   * `Headers = bun.http.Headers` and `api = bun.schema.api` are kept as the
+//     canonical header-list/string-pointer identities so AsyncHTTP can take a
+//     HeaderBuilder-built list without an adapter.
 //
 // `apply(client: *HTTPClient)` is the only method that touches the full
 // HTTPClient state; upstream's `HTTPClient` lives in `bun/src/http/http.zig`
@@ -28,29 +25,16 @@ const std = @import("std");
 
 const home_rt = @import("home");
 const StringBuilder = @import("../core/string/StringBuilder.zig");
-const multi_array_list = @import("../collections/multi_array_list.zig");
+const Headers = @import("./Headers.zig");
+const api = home_rt.schema.api;
 
 const string = []const u8;
 
 const HeaderBuilder = @This();
 
-/// Mirrors `bun.schema.api.StringPointer` — `{offset, length}` into a
-/// shared backing buffer.
-pub const StringPointer = extern struct {
-    offset: u32 = 0,
-    length: u32 = 0,
-};
+pub const StringPointer = api.StringPointer;
 
-/// Mirrors `bun.http.Headers.Entry` and its `Entry.List` MultiArrayList
-/// alias. When the full `Headers.zig` port lands, this local alias is
-/// replaced by `Headers.Entry.List`; today HeaderBuilder is self-contained
-/// so it can be exercised before the full Headers leaf attaches.
-pub const Entry = struct {
-    name: StringPointer,
-    value: StringPointer,
-
-    pub const List = multi_array_list.MultiArrayList(Entry);
-};
+pub const Entry = Headers.Entry;
 
 content: StringBuilder = .{},
 header_count: u64 = 0,

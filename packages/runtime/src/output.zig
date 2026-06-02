@@ -289,6 +289,18 @@ pub fn printStartEndStdout(start: i128, end: i128) void {
 }
 
 pub fn enableBuffering() void {}
+pub fn enableBufferingScope() BufferingScope {
+    enableBuffering();
+    return .{};
+}
+
+pub const BufferingScope = struct {
+    pub fn deinit(_: BufferingScope) void {
+        flush();
+        disableBuffering();
+    }
+};
+
 pub fn disableBuffering() void {
     flush();
 }

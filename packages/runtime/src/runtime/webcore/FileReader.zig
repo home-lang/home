@@ -97,10 +97,10 @@ pub const Lazy = union(enum) {
 
         if (comptime Environment.isPosix) {
             if ((file.is_atty orelse false) or
-                (fd.stdioTag() != null and std.posix.isatty(fd.cast())) or
+                (fd.stdioTag() != null and bun.c.isatty(fd.cast()) != 0) or
                 (file.pathlike == .fd and
                     file.pathlike.fd.stdioTag() != null and
-                    std.posix.isatty(file.pathlike.fd.cast())))
+                    bun.c.isatty(file.pathlike.fd.cast()) != 0))
             {
                 // var termios = std.mem.zeroes(std.posix.termios);
                 // _ = std.c.tcgetattr(fd.cast(), &termios);

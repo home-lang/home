@@ -6,6 +6,11 @@
 
 const std = @import("std");
 
+pub const package_json_version = "0.0.0";
+pub const package_json_version_with_sha = package_json_version;
+pub const package_json_version_with_revision = package_json_version;
+pub const user_agent = "Home/0.0.0";
+
 pub fn exit(code: u8) noreturn {
     std.process.exit(code);
 }

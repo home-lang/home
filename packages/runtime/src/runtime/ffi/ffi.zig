@@ -450,7 +450,8 @@ pub const FFI = struct {
 
             try this.errorCheck();
 
-            for (this.symbols.map.values()) |*symbol| {
+            var symbol_iter = this.symbols.map.valueIterator();
+            while (symbol_iter.next()) |symbol| {
                 if (symbol.needsNapiEnv()) {
                     state.addSymbol("Bun__thisFFIModuleNapiEnv", globalThis.makeNapiEnvForFFI()) catch return error.DeferredErrors;
                     break;
@@ -503,7 +504,10 @@ pub const FFI = struct {
             // if errors got added, we would have returned in the relocation catch.
             bun.debugAssert(this.deferred_errors.items.len == 0);
 
-            for (this.symbols.map.keys(), this.symbols.map.values()) |symbol, *function| {
+            var symbols_iter = this.symbols.map.iterator();
+            while (symbols_iter.next()) |entry| {
+                const symbol = entry.key_ptr.*;
+                const function = entry.value_ptr;
                 // FIXME: why are we duping here? can we at least use a stack
                 // fallback allocator?
                 const duped = bun.handleOom(bun.default_allocator.dupeZ(u8, symbol));
@@ -544,8 +548,9 @@ pub const FFI = struct {
     const SymbolsMap = struct {
         map: bun.StringArrayHashMapUnmanaged(Function) = .{},
         pub fn deinit(this: *SymbolsMap) void {
-            for (this.map.keys()) |key| {
-                bun.default_allocator.free(@constCast(key));
+            var iter = this.map.keyIterator();
+            while (iter.next()) |key| {
+                bun.default_allocator.free(@constCast(key.*));
             }
             this.map.clearAndFree(bun.default_allocator);
         }
@@ -775,10 +780,11 @@ pub const FFI = struct {
             if (tcc_state) |state| state.deinit();
         }
 
-        const napi_env = makeNapiEnvIfNeeded(compile_c.symbols.map.values(), globalThis);
+        const napi_env = makeNapiEnvIfNeeded(&compile_c.symbols.map, globalThis);
 
         var obj = jsc.JSValue.createEmptyObject(globalThis, compile_c.symbols.map.count());
-        for (compile_c.symbols.map.values()) |*function| {
+        var function_iter = compile_c.symbols.map.valueIterator();
+        while (function_iter.next()) |function| {
             const function_name = function.base_name.?;
 
             function.compile(napi_env) catch |err| {
@@ -910,7 +916,8 @@ pub const FFI = struct {
 
         const allocator = VirtualMachine.get().allocator;
 
-        for (this.functions.values()) |*val| {
+        var function_iter = this.functions.valueIterator();
+        while (function_iter.next()) |val| {
             val.deinit(globalThis);
         }
         this.functions.deinit(allocator);
@@ -957,10 +964,12 @@ pub const FFI = struct {
         var symbols = bun.StringArrayHashMapUnmanaged(Function){};
         if (generateSymbols(global, bun.default_allocator, &symbols, obj) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
-            for (symbols.keys()) |key| {
-                allocator.free(@constCast(key));
+            var key_iter = symbols.keyIterator();
+            while (key_iter.next()) |key| {
+                allocator.free(@constCast(key.*));
             }
-            for (symbols.values()) |*function_| {
+            var function_iter = symbols.valueIterator();
+            while (function_iter.next()) |function_| {
                 function_.arg_types.deinit(allocator);
             }
             symbols.clearAndFree(allocator);
@@ -974,15 +983,18 @@ pub const FFI = struct {
             }
             strs.deinit();
         }
-        for (symbols.values()) |*function| {
+        var function_iter = symbols.valueIterator();
+        while (function_iter.next()) |function| {
             var arraylist = std.array_list.Managed(u8).init(allocator);
             var writer = arraylist.writer();
             function.printSourceCode(&writer) catch {
                 // an error while generating source code
-                for (symbols.keys()) |key| {
-                    allocator.free(@constCast(key));
+                var key_iter = symbols.keyIterator();
+                while (key_iter.next()) |key| {
+                    allocator.free(@constCast(key.*));
                 }
-                for (symbols.values()) |*function_| {
+                var cleanup_iter = symbols.valueIterator();
+                while (cleanup_iter.next()) |function_| {
                     function_.arg_types.deinit(allocator);
                 }
 
@@ -994,10 +1006,12 @@ pub const FFI = struct {
 
         const ret = try bun.String.toJSArray(global, strs.items);
 
-        for (symbols.keys()) |key| {
-            allocator.free(@constCast(key));
+        var key_iter = symbols.keyIterator();
+        while (key_iter.next()) |key| {
+            allocator.free(@constCast(key.*));
         }
-        for (symbols.values()) |*function_| {
+        function_iter = symbols.valueIterator();
+        while (function_iter.next()) |function_| {
             function_.arg_types.deinit(allocator);
         }
         symbols.clearAndFree(allocator);
@@ -1052,10 +1066,12 @@ pub const FFI = struct {
         var symbols = bun.StringArrayHashMapUnmanaged(Function){};
         if (generateSymbols(global, bun.default_allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
-            for (symbols.keys()) |key| {
-                bun.default_allocator.free(@constCast(key));
+            var key_iter = symbols.keyIterator();
+            while (key_iter.next()) |key| {
+                bun.default_allocator.free(@constCast(key.*));
             }
-            for (symbols.values()) |*function_| {
+            var function_iter = symbols.valueIterator();
+            while (function_iter.next()) |function_| {
                 function_.arg_types.deinit(bun.default_allocator);
             }
             symbols.clearAndFree(bun.default_allocator);
@@ -1092,7 +1108,7 @@ pub const FFI = struct {
             };
         };
 
-        var size = symbols.values().len;
+        var size = symbols.count();
         if (size >= 63) {
             size = 0;
         }
@@ -1100,16 +1116,18 @@ pub const FFI = struct {
         obj.protect();
         defer obj.unprotect();
 
-        const napi_env = makeNapiEnvIfNeeded(symbols.values(), global);
+        const napi_env = makeNapiEnvIfNeeded(&symbols, global);
 
-        for (symbols.values()) |*function| {
+        var function_iter = symbols.valueIterator();
+        while (function_iter.next()) |function| {
             const function_name = function.base_name.?;
 
             // optional if the user passed "ptr"
             if (function.symbol_from_dynamic_library == null) {
                 const resolved_symbol = dylib.lookup(*anyopaque, function_name) orelse {
                     const ret = global.toInvalidArguments("Symbol \"{s}\" not found in \"{s}\"", .{ bun.asByteSlice(function_name), name });
-                    for (symbols.values()) |*value| {
+                    var cleanup_iter = symbols.valueIterator();
+                    while (cleanup_iter.next()) |value| {
                         bun.default_allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
                         value.arg_types.clearAndFree(bun.default_allocator);
                     }
@@ -1127,7 +1145,8 @@ pub const FFI = struct {
                     bun.asByteSlice(function_name),
                     name,
                 });
-                for (symbols.values()) |*value| {
+                var cleanup_iter = symbols.valueIterator();
+                while (cleanup_iter.next()) |value| {
                     value.deinit(global);
                 }
                 symbols.clearAndFree(bun.default_allocator);
@@ -1136,9 +1155,12 @@ pub const FFI = struct {
             };
             switch (function.step) {
                 .failed => |err| {
-                    defer for (symbols.values()) |*other_function| {
+                    defer {
+                        var cleanup_iter = symbols.valueIterator();
+                        while (cleanup_iter.next()) |other_function| {
                         other_function.deinit(global);
-                    };
+                        }
+                    }
 
                     const res = ZigString.init(err.msg).toErrorInstance(global);
                     symbols.clearAndFree(bun.default_allocator);
@@ -1146,7 +1168,8 @@ pub const FFI = struct {
                     return res;
                 },
                 .pending => {
-                    for (symbols.values()) |*other_function| {
+                    var cleanup_iter = symbols.valueIterator();
+                    while (cleanup_iter.next()) |other_function| {
                         other_function.deinit(global);
                     }
                     symbols.clearAndFree(bun.default_allocator);
@@ -1198,10 +1221,12 @@ pub const FFI = struct {
         var symbols = bun.StringArrayHashMapUnmanaged(Function){};
         if (generateSymbols(global, allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
-            for (symbols.keys()) |key| {
-                allocator.free(@constCast(key));
+            var key_iter = symbols.keyIterator();
+            while (key_iter.next()) |key| {
+                allocator.free(@constCast(key.*));
             }
-            for (symbols.values()) |*function_| {
+            var function_iter = symbols.valueIterator();
+            while (function_iter.next()) |function_| {
                 function_.arg_types.deinit(allocator);
             }
             symbols.clearAndFree(allocator);
@@ -1215,14 +1240,16 @@ pub const FFI = struct {
         obj.ensureStillAlive();
         defer obj.ensureStillAlive();
 
-        const napi_env = makeNapiEnvIfNeeded(symbols.values(), global);
+        const napi_env = makeNapiEnvIfNeeded(&symbols, global);
 
-        for (symbols.values()) |*function| {
+        var function_iter = symbols.valueIterator();
+        while (function_iter.next()) |function| {
             const function_name = function.base_name.?;
 
             if (function.symbol_from_dynamic_library == null) {
                 const ret = global.toInvalidArguments("Symbol \"{s}\" is missing a \"ptr\" field. When using linkSymbols() or CFunction(), you must provide a \"ptr\" field with the memory address of the native function.", .{bun.asByteSlice(function_name)});
-                for (symbols.values()) |*value| {
+                var cleanup_iter = symbols.valueIterator();
+                while (cleanup_iter.next()) |value| {
                     allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
                     value.arg_types.clearAndFree(allocator);
                 }
@@ -1235,7 +1262,8 @@ pub const FFI = struct {
                     bun.asByteSlice(@errorName(err)),
                     bun.asByteSlice(function_name),
                 });
-                for (symbols.values()) |*value| {
+                var cleanup_iter = symbols.valueIterator();
+                while (cleanup_iter.next()) |value| {
                     value.deinit(global);
                 }
                 symbols.clearAndFree(allocator);
@@ -1243,7 +1271,8 @@ pub const FFI = struct {
             };
             switch (function.step) {
                 .failed => |err| {
-                    for (symbols.values()) |*value| {
+                    var cleanup_iter = symbols.valueIterator();
+                    while (cleanup_iter.next()) |value| {
                         allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
                         value.arg_types.clearAndFree(allocator);
                     }
@@ -1254,7 +1283,8 @@ pub const FFI = struct {
                     return res;
                 },
                 .pending => {
-                    for (symbols.values()) |*value| {
+                    var cleanup_iter = symbols.valueIterator();
+                    while (cleanup_iter.next()) |value| {
                         allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
                         value.arg_types.clearAndFree(allocator);
                     }
@@ -1415,7 +1445,7 @@ pub const FFI = struct {
         }).init(global, object);
         defer symbols_iter.deinit();
 
-        try symbols.ensureTotalCapacity(allocator, symbols_iter.len);
+        try symbols.ensureTotalCapacity(allocator, @intCast(symbols_iter.len));
 
         while (try symbols_iter.next()) |prop| {
             const value = symbols_iter.value;
@@ -2428,8 +2458,9 @@ const CompilerRT = struct {
 
 pub const Bun__FFI__cc = FFI.Bun__FFI__cc;
 
-fn makeNapiEnvIfNeeded(functions: []const FFI.Function, globalThis: *JSGlobalObject) ?*napi.NapiEnv {
-    for (functions) |function| {
+fn makeNapiEnvIfNeeded(functions: *const bun.StringArrayHashMapUnmanaged(FFI.Function), globalThis: *JSGlobalObject) ?*napi.NapiEnv {
+    var iter = functions.valueIterator();
+    while (iter.next()) |function| {
         if (function.needsNapiEnv()) {
             return globalThis.makeNapiEnvForFFI();
         }

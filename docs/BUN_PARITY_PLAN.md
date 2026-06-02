@@ -73,17 +73,25 @@ Honest interpretation:
   HTTP/H2/H3 transport carriers, JSC identity helpers, WebCore/API
   object stubs, event-loop/file-poll shims, and Zig 0.17 stdlib
   compatibility.
+- Follow-up tranche folded in the parallel HTTP/H2/H3, install/path/
+  semver, JSC/test-runner, Node/std-drift, crypto/ffi/zlib/Valkey, and
+  WebCore/shell/io worker lanes. It added the real `home.http` export,
+  header-entry identity, H3 carrier unification, DotEnv/Environ map
+  adaptation, package-manager path/format helpers, Semver string helpers,
+  sys rename/vector/fstat exports, test-runner value/timespec shims, and
+  WebCore/Valkey compatibility glue.
 - Verified with
   `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
   The existing compiled test set still reports **48/48 tests passed**,
   but the `home_test` compile gate is not green: latest visible frontier
-  is **122 compile errors**.
+  is **59 compile errors**.
 - The current frontier is real integration work, not source presence:
-  remaining blockers are concentrated in HTTP/H3 identity, package-manager
-  directory/path helpers, tarball/libarchive exports, semver string
-  helpers, JSC promise/value identity, test-runner runner shape, node/fs
-  and N-API exports, WebCore fetch/body surfaces, Valkey JSC, socket/TLS
-  type identity, and N-API bootstrap symbol collisions.
+  remaining blockers are concentrated in install/libarchive filesystem
+  method drift, repository process spawning, package-manager env/path
+  helpers, JSC iterator/value/string-list shape, server/bake route
+  carriers, node/fs and N-API exports, shell parser/glob surfaces,
+  socket/TLS/uWS type identity, test-runner writer/close shims, Valkey
+  JSC follow-on method shapes, and N-API bootstrap symbol collisions.
 - Do not advance the audited **552 / 1193** integrated-file count from
   this checkpoint. Count only after the compile gate is green or after a
   fresh integration audit isolates tested build-wired files.

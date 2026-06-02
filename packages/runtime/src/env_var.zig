@@ -38,9 +38,18 @@ fn StringEnv(comptime name: []const u8) type {
 }
 
 pub const BUN_TMPDIR = StringEnv("BUN_TMPDIR");
+pub const BUN_INSTALL_GLOBAL_DIR = StringEnv("BUN_INSTALL_GLOBAL_DIR");
+pub const BUN_INSTALL = StringEnv("BUN_INSTALL");
 pub const TMPDIR = StringEnv("TMPDIR");
 pub const TMP = StringEnv("TMP");
 pub const TEMP = StringEnv("TEMP");
+
+pub const BUN_INSTALL_STREAMING_MIN_SIZE = struct {
+    pub fn get() usize {
+        const raw = rawGet("BUN_INSTALL_STREAMING_MIN_SIZE") orelse return 1024 * 1024;
+        return std.fmt.parseUnsigned(usize, raw, 10) catch 1024 * 1024;
+    }
+};
 
 pub const CI = struct {
     pub fn get() ?bool {

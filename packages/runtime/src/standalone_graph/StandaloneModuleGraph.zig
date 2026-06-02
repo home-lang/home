@@ -71,9 +71,24 @@ pub fn isBunStandaloneFilePath(str: []const u8) bool {
 
 pub const File = struct {
     name: []const u8 = "",
+    contents: []const u8 = "",
 };
 
+pub fn get() ?*const @This() {
+    return null;
+}
+
+pub fn find(this: *const @This(), name: []const u8) ?*const File {
+    return this.findAssumeStandalonePath(name);
+}
+
 pub fn findAssumeStandalonePath(this: *const @This(), name: []const u8) ?*const File {
+    _ = this;
+    _ = name;
+    return null;
+}
+
+pub fn stat(this: *const @This(), name: []const u8) ?std.c.Stat {
     _ = this;
     _ = name;
     return null;

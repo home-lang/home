@@ -44,16 +44,16 @@ pub fn scopeForPackageName(this: *const PackageManager, name: string) *const Npm
 
 pub fn getInstalledVersionsFromDiskCache(this: *PackageManager, tags_buf: *std.array_list.Managed(u8), package_name: []const u8, allocator: std.mem.Allocator) !std.array_list.Managed(Semver.Version) {
     var list = std.array_list.Managed(Semver.Version).init(allocator);
-    var dir = this.getCacheDirectory().openDir(package_name, .{
+    var dir = this.getCacheDirectory().openDir(std.Options.debug_io, package_name, .{
         .iterate = true,
     }) catch |err| switch (err) {
-        error.FileNotFound, error.NotDir, error.AccessDenied, error.DeviceBusy => return list,
+        error.FileNotFound, error.NotDir, error.AccessDenied => return list,
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(std.Options.debug_io);
     var iter = dir.iterate();
 
-    while (try iter.next()) |entry| {
+    while (try iter.next(std.Options.debug_io)) |entry| {
         if (entry.kind != .directory and entry.kind != .sym_link) continue;
         const name = entry.name;
         const sliced = SlicedString.init(name, name);
@@ -87,7 +87,7 @@ pub fn resolveFromDiskCache(this: *PackageManager, package_name: []const u8, ver
     var arena = bun.ArenaAllocator.init(this.allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
-    var stack_fallback = std.heap.stackFallback(4096, arena_alloc);
+    var stack_fallback = bun.stackFallback(4096, arena_alloc);
     const allocator = stack_fallback.get();
     var tags_buf = std.array_list.Managed(u8).init(allocator);
     const installed_versions = this.getInstalledVersionsFromDiskCache(&tags_buf, package_name, allocator) catch |err| {

@@ -1,5 +1,9 @@
 pub const PasswordObject = struct {
     pub const pwhash = std.crypto.pwhash;
+    fn cryptoIo() std.Io {
+        return std.Io.Threaded.global_single_threaded.io();
+    }
+
     pub const Algorithm = enum {
         argon2i,
         argon2d,
@@ -209,7 +213,7 @@ pub const PasswordObject = struct {
                 // we don't expose this option
                 // but since it parses from phc format, it's possible that it will be set
                 // eventually we should do something that about that.
-                const out_bytes = try pwhash.argon2.strHash(password, hash_options, &outbuf);
+                const out_bytes = try pwhash.argon2.strHash(password, hash_options, &outbuf, cryptoIo());
                 return try allocator.dupe(u8, out_bytes);
             },
             .bcrypt => |cost| {
@@ -235,7 +239,7 @@ pub const PasswordObject = struct {
                     .allocator = allocator,
                     .encoding = .crypt,
                 };
-                const out_bytes = try pwhash.bcrypt.strHash(password_to_use, hash_options, outbuf_slice);
+                const out_bytes = try pwhash.bcrypt.strHash(password_to_use, hash_options, outbuf_slice, cryptoIo());
                 return try allocator.dupe(u8, out_bytes);
             },
         }
@@ -267,7 +271,7 @@ pub const PasswordObject = struct {
     ) HashError!bool {
         switch (algorithm) {
             .argon2id, .argon2d, .argon2i => {
-                pwhash.argon2.strVerify(previous_hash, password, .{ .allocator = allocator }) catch |err| {
+                pwhash.argon2.strVerify(previous_hash, password, .{ .allocator = allocator }, cryptoIo()) catch |err| {
                     if (err == error.PasswordVerificationFailed) {
                         return false;
                     }

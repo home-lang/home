@@ -263,14 +263,14 @@ pub const FD = packed struct(backing_int) {
         const result: ?bun.sys.Error = switch (os) {
             .linux, .freebsd => result: {
                 bun.assert(fd.native() >= 0);
-                break :result switch (bun.sys.getErrno(bun.sys.syscall.close(fd.native()))) {
+                break :result switch (bun.sys.getErrno(std.c.close(fd.native()))) {
                     .BADF => .{ .errno = @intFromEnum(E.BADF), .syscall = .close, .fd = fd },
                     else => null,
                 };
             },
             .mac => result: {
                 bun.assert(fd.native() >= 0);
-                break :result switch (bun.sys.getErrno(bun.sys.syscall.@"close$NOCANCEL"(fd.native()))) {
+                break :result switch (bun.sys.getErrno(std.c.close(fd.native()))) {
                     .BADF => .{ .errno = @intFromEnum(E.BADF), .syscall = .close, .fd = fd },
                     else => null,
                 };
@@ -416,7 +416,7 @@ pub const FD = packed struct(backing_int) {
                     // support the standard library functions (since they would
                     // likely have run the Zig compiler, and it's not the end of
                     // the world if this fails.
-                    const path = std.os.getFdPath(fd_native, &path_buf) catch |err| switch (err) {
+                    const path = bun.getFdPath(.fromNative(fd_native), &path_buf) catch |err| switch (err) {
                         error.FileNotFound => {
                             try writer.writeAll("[BADF]");
                             break :print_with_path;

@@ -11,7 +11,7 @@ pub const SubscriptionCtx = struct {
         const callback_map = jsc.JSMap.create(valkey_parent.globalObject);
         const parent_this = valkey_parent.this_value.tryGet() orelse unreachable;
 
-        ParentJS.gc.set(.subscriptionCallbackMap, parent_this, valkey_parent.globalObject, callback_map);
+        ParentJS.gc.set(.subscriptionCallbackMap, parent_this, valkey_parent.globalObject, JSValue.cast(callback_map));
 
         const self = Self{
             .original_enable_offline_queue = valkey_parent.client.flags.enable_offline_queue,
@@ -34,9 +34,9 @@ pub const SubscriptionCtx = struct {
 
     /// Get the total number of channels that this subscription context is subscribed to.
     pub fn channelsSubscribedToCount(this: *Self, globalObject: *jsc.JSGlobalObject) bun.JSError!u32 {
-        const count = try this.subscriptionCallbackMap().size(globalObject);
+        const count = this.subscriptionCallbackMap().size(globalObject);
 
-        return count;
+        return @intCast(count);
     }
 
     /// Test whether this context has any subscriptions. It is mandatory to
@@ -55,7 +55,7 @@ pub const SubscriptionCtx = struct {
     }
 
     pub fn clearAllReceiveHandlers(this: *Self, globalObject: *jsc.JSGlobalObject) bun.JSError!void {
-        try this.subscriptionCallbackMap().clear(globalObject);
+        this.subscriptionCallbackMap().clear(globalObject);
     }
 
     /// Remove a specific receive handler.
@@ -127,14 +127,14 @@ pub const SubscriptionCtx = struct {
 
         var handlers_array: JSValue = .js_undefined;
         var is_new_channel = false;
-        const existing_handler_arr = try map.get(globalObject, channelName);
+        const existing_handler_arr = map.get(globalObject, channelName);
         if (existing_handler_arr != .js_undefined) {
             debug("Adding a new receive handler.", .{});
             // Note that we need to cover this case because maps in JSC can return undefined when the key has never been
             // set.
             if (existing_handler_arr.isUndefined()) {
                 // Create a new array if the existing_handler_arr is undefined/null
-                handlers_array = try jsc.JSArray.createEmpty(globalObject, 0);
+                handlers_array = jsc.JSArray.createEmpty(globalObject, 0);
                 is_new_channel = true;
             } else if (existing_handler_arr.isArray()) {
                 // Use the existing array
@@ -142,7 +142,7 @@ pub const SubscriptionCtx = struct {
             } else unreachable;
         } else {
             // No existing_handler_arr exists, create a new array
-            handlers_array = try jsc.JSArray.createEmpty(globalObject, 0);
+            handlers_array = jsc.JSArray.createEmpty(globalObject, 0);
             is_new_channel = true;
         }
 
@@ -150,7 +150,7 @@ pub const SubscriptionCtx = struct {
         try handlers_array.push(globalObject, callback);
 
         // Set the updated array back in the map
-        try map.set(globalObject, channelName, handlers_array);
+        map.set(globalObject, channelName, handlers_array);
     }
 
     pub fn getCallbacks(this: *Self, globalObject: *jsc.JSGlobalObject, channelName: JSValue) bun.JSError!?JSValue {

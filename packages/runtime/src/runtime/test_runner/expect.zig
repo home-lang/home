@@ -1854,7 +1854,7 @@ pub const ExpectMatcherUtils = struct {
 
         if (comptime color_or_null) |color| {
             if (Output.enable_ansi_colors_stderr) {
-                try writer.writeAll(Output.prettyFmt(color, true));
+                _ = try writer.writeAll(Output.prettyFmt(color, true));
             }
         }
 
@@ -1864,7 +1864,7 @@ pub const ExpectMatcherUtils = struct {
 
         if (comptime color_or_null) |_| {
             if (Output.enable_ansi_colors_stderr) {
-                try writer.writeAll(Output.prettyFmt("<r>", true));
+                _ = try writer.writeAll(Output.prettyFmt("<r>", true));
             }
         }
 

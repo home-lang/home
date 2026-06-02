@@ -34,6 +34,17 @@ pub const Output = @import("output.zig");
 pub const Progress = @import("bun_core/Progress.zig");
 pub const Global = @import("global.zig");
 pub const Environment = @import("environment.zig");
+pub const heap_breakdown = struct {
+    pub const enabled = false;
+
+    pub fn allocator(comptime _: type) std.mem.Allocator {
+        return default_allocator;
+    }
+
+    pub fn namedAllocator(comptime _: []const u8) std.mem.Allocator {
+        return default_allocator;
+    }
+};
 /// Whether to link Bun's real C++/JSC bindings (the `cpp.*`/`uws.*` externs) vs
 /// the curated no-C++ stubs. Driven by the build's `-Denable_jsc` flag so the
 /// `home_rt` module compiles both with the native link (true) and standalone
@@ -90,6 +101,31 @@ pub fn milliTimestamp() i64 {
     return @as(i64, @intCast(ts.sec)) * std.time.ms_per_s + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
 }
 
+/// Faithful to upstream `bun.selfExePath()`: cache the executable path as a
+/// null-terminated slice so copied CLI/install code can keep borrowing it.
+pub fn selfExePath() ![:0]u8 {
+    const memo = struct {
+        var set = false;
+        var value: [4096 + 1]u8 = undefined;
+        var len: usize = 0;
+        var lock: Mutex = .{};
+
+        pub fn load() ![:0]u8 {
+            @This().len = try std.process.executablePath(std.Options.debug_io, &value);
+            value[@This().len] = 0;
+            set = true;
+            return value[0..@This().len :0];
+        }
+    };
+
+    if (memo.set) return memo.value[0..memo.len :0];
+
+    memo.lock.lock();
+    defer memo.lock.unlock();
+    if (memo.set) return memo.value[0..memo.len :0];
+    return memo.load();
+}
+
 /// Forward-port: Home's Zig fork removed `std.time.Instant` (monotonic timing
 /// now goes through `std.Io`). Faithful re-impl of the old API — `now()` reads
 /// the monotonic clock; `since(earlier)` returns elapsed nanoseconds.
@@ -105,6 +141,10 @@ pub const Instant = struct {
     /// Elapsed nanoseconds since `earlier` (mirrors `std.time.Instant.since`).
     pub fn since(self: Instant, earlier: Instant) u64 {
         return self.timestamp - earlier.timestamp;
+    }
+
+    pub fn read(self: Instant) u64 {
+        return (Instant.now() catch unreachable).since(self);
     }
 };
 // Forward-port: Home's Zig fork moved IP addressing to `std.Io.net` with a
@@ -288,7 +328,6 @@ pub fn asByteSlice(buffer: anytype) []const u8 {
         else => buffer,
     };
 }
-
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -731,6 +770,10 @@ pub const timespec = extern struct {
         return std.math.order(a.nsec, b.nsec);
     }
 
+    pub fn eql(this: *const timespec, other: *const timespec) bool {
+        return this.sec == other.sec and this.nsec == other.nsec;
+    }
+
     pub fn greater(a: *const timespec, b: *const timespec) bool {
         return a.order(b) == .gt;
     }
@@ -769,6 +812,21 @@ pub const timespec = extern struct {
 
     pub fn min(a: timespec, b: timespec) timespec {
         return if (a.order(&b) == .lt) a else b;
+    }
+
+    pub fn max(a: timespec, b: timespec) timespec {
+        return if (a.order(&b) == .gt) a else b;
+    }
+
+    pub fn orderIgnoreEpoch(a: timespec, b: timespec) std.math.Order {
+        if (a.eql(&b)) return .eq;
+        if (a.eql(&.epoch)) return .gt;
+        if (b.eql(&.epoch)) return .lt;
+        return a.order(&b);
+    }
+
+    pub fn minIgnoreEpoch(a: timespec, b: timespec) timespec {
+        return if (a.orderIgnoreEpoch(b) == .lt) a else b;
     }
 
     /// Faithful to upstream `bun.zig` `timespec.addMs`.
@@ -1526,7 +1584,7 @@ pub const StringSet = struct {
                 }
             }
         }
-        return self.map.swapRemove(key);
+        return self.map.remove(key);
     }
 
     pub fn clearAndFree(self: *StringSet) void {
@@ -1708,6 +1766,7 @@ pub const jsc = struct {
         FORMDATA_PARSE_ERROR = 152,
         ENCODING_NOT_SUPPORTED = 153,
         ZSTD = 154,
+        ZLIB_INITIALIZATION_FAILED = 261,
         BORINGSSL = 155,
         HTTP2_INVALID_SETTING_VALUE_RangeError = 156,
         HTTP2_PING_CANCEL = 157,
@@ -1721,6 +1780,15 @@ pub const jsc = struct {
         INVALID_IP_ADDRESS = 165,
         DNS_SET_SERVERS_FAILED = 166,
         REDIS_INVALID_RESPONSE = 167,
+        REDIS_INVALID_INTEGER = 172,
+        REDIS_INVALID_SIMPLE_STRING = 173,
+        REDIS_INVALID_ERROR_STRING = 174,
+        REDIS_AUTHENTICATION_FAILED = 175,
+        REDIS_INVALID_COMMAND = 176,
+        REDIS_INVALID_ARGUMENT = 177,
+        REDIS_INVALID_RESPONSE_TYPE = 178,
+        REDIS_CONNECTION_TIMEOUT = 179,
+        REDIS_IDLE_TIMEOUT = 180,
         HTTP2_TOO_MANY_CUSTOM_SETTINGS = 168,
         HTTP2_HEADER_SINGLE_VALUE = 169,
         REDIS_INVALID_BULK_STRING = 170,
@@ -1869,34 +1937,8 @@ pub const jsc = struct {
     pub const MarkedArrayBuffer = @import("jsc/array_buffer.zig").MarkedArrayBuffer;
     pub const AnyPromise = @import("jsc/AnyPromise.zig").AnyPromise;
     pub const JSObject = @import("jsc/JSObject.zig").JSObject;
-    pub const Jest = struct {
-        pub const TestRunner = struct {
-            pub const File = struct {
-                pub const ID = u32;
-            };
-        };
-
-        pub const BunTestRoot = struct {
-            pub fn onBeforePrint(this: *BunTestRoot) void {
-                _ = this;
-            }
-        };
-
-        pub const Runner = struct {
-            bun_test_root: BunTestRoot = .{},
-            // Snapshot system (jest.zig:93). `undefined` keeps the stub all-default
-            // initialisable; the real Runner construction populates it.
-            snapshots: @import("runtime/test_runner/snapshot.zig").Snapshots = undefined,
-        };
-
-        pub const Jest = struct {
-            pub threadlocal var runner: ?*Runner = null;
-        };
-        pub const captureTestLineNumber = @import("runtime/test_runner/jest.zig").captureTestLineNumber;
-        // Faithful to upstream `runtime/test_runner/jest.zig` `bun_test` module
-        // (ScopeFunctions / DoneCallback consumed by the generated class registry).
-        pub const bun_test = @import("runtime/test_runner/bun_test.zig");
-    };
+    pub const Jest = @import("runtime/test_runner/jest.zig");
+    pub const Snapshot = @import("runtime/test_runner/snapshot.zig");
     // Faithful to upstream jsc/jsc.zig:169 (`Node = bun.api.node`). The whole
     // node module — supersedes the prior curated subset (types.Dirent.Kind now
     // compiles after the std.fs.File.Kind -> std.Io.File.Kind sweep).
@@ -2148,6 +2190,20 @@ pub const io = struct {
     pub const Loop = @import("io/stub_event_loop.zig").Loop;
     pub const KeepAlive = @import("io/stub_event_loop.zig").KeepAlive;
     pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
+    pub const Closer = struct {
+        pub fn close(fd: anytype, loop: anytype) void {
+            _ = loop;
+            const FdType = @TypeOf(fd);
+            switch (@typeInfo(FdType)) {
+                .int, .comptime_int => FD.fromNative(@intCast(fd)).close(),
+                else => if (@hasDecl(FdType, "close")) {
+                    fd.close();
+                } else {
+                    @compileError("unsupported fd type for Async.Closer.close: " ++ @typeName(FdType));
+                },
+            }
+        }
+    };
     // Fourth-wave port batch (2026-05-17). pipes.zig is enum-only;
     // the PollOrFd union re-attaches with the full Async substrate.
     pub const FileType = @import("io/pipes.zig").FileType;
@@ -2273,6 +2329,11 @@ pub const io = struct {
             _ = this;
         }
 
+        pub fn disableKeepingProcessAlive(this: *BufferedReader, ctx: anytype) void {
+            _ = this;
+            _ = ctx;
+        }
+
         pub fn deinit(this: *BufferedReader) void {
             this._buffer.deinit();
             this.* = .{};
@@ -2284,6 +2345,14 @@ pub const io = struct {
 
         pub fn write(this: *StreamBuffer, bytes: []const u8) OOM!void {
             try this.list.appendSlice(bytes);
+        }
+
+        pub fn writeAssumeCapacity(this: *StreamBuffer, bytes: []const u8) void {
+            this.list.appendSliceAssumeCapacity(bytes);
+        }
+
+        pub fn ensureUnusedCapacity(this: *StreamBuffer, capacity: usize) OOM!void {
+            try this.list.ensureUnusedCapacity(capacity);
         }
 
         pub fn size(this: *const StreamBuffer) usize {
@@ -2327,70 +2396,9 @@ pub const Async = io;
 pub const uws = @import("uws/uws.zig");
 
 // ---- src/http/ + src/http_types/ ---------------------------------------
-// HTTP value types (encoding tags, cert structs, header parsing). Pure
-// data; no JSC dependency. The full HTTP stack lands in Phase 12.5.
-pub const http = struct {
-    pub const NewHTTPContext = @import("http/HTTPContext.zig").NewHTTPContext;
-    pub const HTTPCertError = @import("http/HTTPCertError.zig");
-    pub const HTTPResponseMetadata = @import("http/http.zig").HTTPResponseMetadata;
-    pub const Headers = @import("http/Headers.zig");
-    pub const InitError = @import("http/InitError.zig").InitError;
-    pub const CertificateInfo = @import("http/CertificateInfo.zig");
-    pub const HeaderValueIterator = @import("http/HeaderValueIterator.zig");
-    pub const MimeType = @import("http_types/MimeType.zig");
-    // Faithful to upstream `bun.http` (`src/http/http.zig:3263`):
-    // `pub const Method = @import("../http_types/Method.zig").Method;`
-    pub const Method = @import("http_types/Method.zig").Method;
-    pub const Signals = @import("http/Signals.zig");
-    pub const H2FrameParser = @import("http/H2FrameParser.zig");
-    pub const H3 = struct {
-        pub const PendingConnect = opaque {
-            pub fn onDNSResolvedThreadsafe(_: *PendingConnect) void {}
-            pub fn onDNSResolved(_: *PendingConnect) void {}
-            pub fn loop(_: *PendingConnect) *uws.Loop {
-                return uws.Loop.get();
-            }
-        };
-    };
-    // Fourth-wave port batch (2026-05-17):
-    pub const HTTPRequestBody = @import("http/HTTPRequestBody.zig").HTTPRequestBody;
-    pub const SendFile = @import("http/HTTPRequestBody.zig").SendFile;
-    // Eighth-wave port (2026-05-18). Real `ThreadSafeStreamBuffer` landed —
-    // wraps `home_rt.threading.Mutex` + a local 2-thread refcount + a
-    // minimal `StreamBuffer` subset. Supersedes the in-file stub
-    // `HTTPRequestBody.ThreadSafeStreamBuffer`, which now stays only as
-    // backward-compat shim for the field type in `HTTPRequestBody.stream`.
-    pub const ThreadSafeStreamBuffer = @import("http/ThreadSafeStreamBuffer.zig");
-    pub const websocket = @import("http/websocket.zig");
-    pub const lshpack = @import("http/lshpack.zig");
-    // HTTP client surface required by the install/PM `NetworkTask` cone.
-    // Faithful to upstream `bun.http` = `src/http.zig`: the async client
-    // (`AsyncHTTP`), its completion result (`HTTPClientResult`), and the
-    // header builder live in `http/http.zig` / `http/HeaderBuilder.zig`.
-    pub const AsyncHTTP = @import("http/AsyncHTTP.zig");
-    pub const HeaderBuilder = @import("http/HeaderBuilder.zig");
-    pub const HTTPClientResult = @import("http/http.zig").HTTPClientResult;
-    pub const HTTPVerboseLevel = @import("http/http.zig").HTTPVerboseLevel;
-    pub const FetchRedirect = @import("http_types/FetchRedirect.zig").FetchRedirect;
-    // Sixth-wave port batch (2026-05-18):
-    pub const h3_client = struct {
-        pub const AltSvc = @import("http/h3_client/AltSvc.zig");
-        // Eighth-wave port batch (2026-05-18). Leaf data + lifecycle for
-        // an in-flight HTTP/3 request and a DNS-pending QUIC connect.
-        // ClientSession / ClientContext / callbacks / encode are parked
-        // (full lsquic state machine + bun.http back-edges).
-        pub const Stream = @import("http/h3_client/Stream.zig");
-        pub const PendingConnect = @import("http/h3_client/PendingConnect.zig");
-    };
-    // Eighth-wave port batch (2026-05-18). HTTP/2 client leaves — Stream
-    // (per-request) + PendingConnect (TLS-connect coalescer). Sibling
-    // ClientSession / dispatch / encode are parked alongside the full
-    // fetch() state machine.
-    pub const h2_client = struct {
-        pub const Stream = @import("http/h2_client/Stream.zig");
-        pub const PendingConnect = @import("http/h2_client/PendingConnect.zig");
-    };
-};
+// Full HTTP client surface. This needs to be the client struct module itself
+// because upstream code spells the request type and namespace as `bun.http`.
+pub const http = @import("http/http.zig");
 pub const http_types = struct {
     pub const Encoding = @import("http_types/Encoding.zig").Encoding;
     pub const Method = @import("http_types/Method.zig").Method;
@@ -2471,6 +2479,10 @@ pub const crash_handler = struct {
     };
 
     pub threadlocal var current_action: ?Action = null;
+
+    pub fn suppressReporting() void {}
+
+    pub fn dumpCurrentStackTrace(_: usize, _: anytype) void {}
 };
 
 // ---- src/core/ -----------------------------------------------------
@@ -2786,6 +2798,7 @@ pub const runtime = struct {
         pub const Result = @import("runtime/shell/Builtin.zig").Result;
         pub const escapeBunStr = @import("runtime/shell/shell.zig").escapeBunStr;
         pub const needsEscapeBunstr = @import("runtime/shell/shell.zig").needsEscapeBunstr;
+        pub const shellCmdFromJS = @import("runtime/shell/shell.zig").shellCmdFromJS;
         pub const ShellSubprocess = struct {
             pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
                 _ = this;
@@ -2796,6 +2809,8 @@ pub const runtime = struct {
         };
     };
 };
+
+pub const valkey = @import("runtime/valkey_jsc/index.zig");
 pub const api = runtime.api;
 pub const shell = runtime.shell;
 // ---- src/string/ -------------------------------------------------------
@@ -2923,9 +2938,13 @@ pub const O = switch (Environment.os) {
         pub const CREAT = 0x0200;
         pub const TRUNC = 0x0400;
         pub const EXCL = 0x0800;
+        pub const NOCTTY = 0x00020000;
         pub const NOFOLLOW = 0x0100;
         pub const DIRECTORY = 0x00100000;
         pub const CLOEXEC = 0x01000000;
+        pub const SYNC = 0x0080;
+        pub const DSYNC = 0x00400000;
+        pub const FSYNC = SYNC;
         pub const TMPFILE = 0x0000;
         pub const toPacked = toPackedO;
     },
@@ -2942,6 +2961,9 @@ pub const O = switch (Environment.os) {
         pub const DIRECTORY = 0o200000;
         pub const NOFOLLOW = 0o400000;
         pub const CLOEXEC = 0o2000000;
+        pub const SYNC = 0o4010000;
+        pub const DSYNC = 0o10000;
+        pub const FSYNC = SYNC;
         pub const TMPFILE = 0o20200000;
         pub const PATH = 0o10000000;
         pub const toPacked = toPackedO;
@@ -2959,6 +2981,9 @@ pub const O = switch (Environment.os) {
         pub const NOFOLLOW = 0;
         pub const DIRECTORY = 0;
         pub const CLOEXEC = 0;
+        pub const SYNC = 0;
+        pub const DSYNC = 0;
+        pub const FSYNC = 0;
         pub const TMPFILE = 0;
         pub const toPacked = toPackedO;
     },
@@ -3035,11 +3060,37 @@ pub fn getFdPathW(fd: FD, buf: *WPathBuffer) ![]u16 {
     return error.Unsupported;
 }
 
+pub const PlatformIOVec = std.posix.iovec;
 pub const PlatformIOVecConst = std.posix.iovec_const;
+
+pub fn platformIOVecCreate(input: []u8) PlatformIOVec {
+    return .{ .base = input.ptr, .len = input.len };
+}
 
 pub fn platformIOVecConstCreate(input: []const u8) PlatformIOVecConst {
     return .{ .base = input.ptr, .len = input.len };
 }
+
+pub fn makePath(dir: anytype, sub_path: []const u8) !void {
+    const DirType = @TypeOf(dir);
+    if (DirType == FD) return dir.makePath(u8, sub_path);
+    if (DirType == std.Io.Dir) return FD.fromStdDir(dir).makePath(u8, sub_path);
+    if (@hasField(DirType, "handle")) return FD.fromStdDir(dir).makePath(u8, sub_path);
+    @compileError("unsupported makePath dir type: " ++ @typeName(DirType));
+}
+
+pub const MakePath = struct {
+    pub fn makeOpenPath(dir: std.Io.Dir, sub_path: []const u8, opts: anytype) !std.Io.Dir {
+        _ = opts;
+        try @import("home").makePath(dir, sub_path);
+        return try openDirA(FD.fromStdDir(dir), sub_path);
+    }
+
+    pub fn makePath(comptime T: type, dir: std.Io.Dir, sub_path: []const T) !void {
+        if (comptime T != u8) return error.Unsupported;
+        return @import("home").makePath(dir, sub_path);
+    }
+};
 
 pub const Tmpfile = struct {
     destination_dir: FD = invalid_fd,
@@ -3359,6 +3410,15 @@ pub const allocators = struct {
                 return @constCast(try self.append(AppendType, value));
             }
 
+            pub fn printWithType(self: *Self, comptime fmt_: []const u8, comptime Args: type, args: Args) OOM![]const u8 {
+                const out = try self.allocator.alloc(u8, std.fmt.count(fmt_, args));
+                return std.fmt.bufPrint(out, fmt_, args) catch unreachable;
+            }
+
+            pub fn print(self: *Self, comptime fmt_: []const u8, args: anytype) OOM![]const u8 {
+                return try self.printWithType(fmt_, @TypeOf(args), args);
+            }
+
             pub fn appendLowerCase(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
                 const input = switch (@typeInfo(AppendType)) {
                     .pointer => value,
@@ -3657,6 +3717,10 @@ pub const threading = struct {
 pub const UnboundedQueue = threading.UnboundedQueue;
 pub const ThreadPool = threading.ThreadPool;
 pub const DotEnv = @import("dotenv/env_loader.zig");
+pub fn handleErrorReturnTrace(err: anytype, trace: anytype) void {
+    _ = @errorName(err);
+    _ = trace;
+}
 
 // Faithful to upstream `bun.c` (`bun.zig:193` → `@import("translated-c-headers")`):
 // the translated libc/system header surface. Home has no generated header bundle
@@ -3675,6 +3739,18 @@ pub const c = struct {
     pub const F_DUPFD_CLOEXEC = if (@hasDecl(std.c, "F_DUPFD_CLOEXEC")) std.c.F_DUPFD_CLOEXEC else 67;
     pub const getuid = std.c.getuid;
     pub const chmod = std.c.chmod;
+    pub extern fn clonefile(src: [*:0]const u8, dst: [*:0]const u8, flags: u32) c_int;
+    pub extern fn clonefileat(src_dir_fd: fd_t, src: [*:0]const u8, dst_dir_fd: fd_t, dst: [*:0]const u8, flags: u32) c_int;
+    pub extern fn copyfile(src: [*:0]const u8, dst: [*:0]const u8, state: ?*anyopaque, flags: u32) c_int;
+    pub extern fn lchmod(path: [*:0]const u8, mode: std.c.mode_t) c_int;
+    pub extern fn lchown(path: [*:0]const u8, uid: std.c.uid_t, gid: std.c.gid_t) c_int;
+    pub extern fn mkdtemp(template: [*]u8) ?[*:0]u8;
+    pub extern fn truncate(path: [*:0]const u8, length: std.c.off_t) c_int;
+    pub extern fn isatty(fd: fd_t) c_int;
+    pub const COPYFILE_ACL: u32 = 1 << 0;
+    pub const COPYFILE_DATA: u32 = 1 << 1;
+    pub const COPYFILE_EXCL: u32 = 1 << 2;
+    pub const COPYFILE_NOFOLLOW_SRC: u32 = 1 << 23;
     pub fn chown(file_path: [:0]const u8, uid: anytype, gid: anytype) c_int {
         _ = file_path;
         _ = uid;
@@ -3734,8 +3810,11 @@ pub const sys = struct {
     pub const munmap = @import("sys/sys.zig").munmap;
     pub const chmod = @import("sys/sys.zig").chmod;
     pub const chown = @import("sys/sys.zig").chown;
+    pub const access = @import("sys/sys.zig").access;
     pub const lstat = @import("sys/sys.zig").lstat;
     pub const lstatat = @import("sys/sys.zig").lstatat;
+    pub const fchmodat = @import("sys/sys.zig").fchmodat;
+    pub const fstatat = @import("sys/sys.zig").fstatat;
     pub const lutimes = @import("sys/sys.zig").lutimes;
     pub const mkdir = @import("sys/sys.zig").mkdir;
     pub const mkdirOSPath = @import("sys/sys.zig").mkdirOSPath;
@@ -3753,14 +3832,21 @@ pub const sys = struct {
     pub const pwrite = @import("sys/sys.zig").pwrite;
     pub const readlink = @import("sys/sys.zig").readlink;
     pub const rename = @import("sys/sys.zig").rename;
+    pub const renameat = @import("sys/sys.zig").renameat;
+    pub const renameatConcurrently = @import("sys/sys.zig").renameatConcurrently;
     pub const S = @import("sys/sys.zig").S;
+    pub const isPollable = @import("sys/sys.zig").isPollable;
     pub const statfs = @import("sys/sys.zig").statfs;
+    pub const existsOSPath = @import("sys/sys.zig").existsOSPath;
     pub const symlink = @import("sys/sys.zig").symlink;
     pub const symlinkat = @import("sys/sys.zig").symlinkat;
     pub const utimens = @import("sys/sys.zig").utimens;
     pub const write = @import("sys/sys.zig").write;
     pub const PosixStat = @import("sys/PosixStat.zig").PosixStat;
     pub const pread = @import("sys/sys.zig").pread;
+    pub const preadv = @import("sys/sys.zig").preadv;
+    pub const readv = @import("sys/sys.zig").readv;
+    pub const writev = @import("sys/sys.zig").writev;
     pub const ftruncate = @import("sys/sys.zig").ftruncate;
     pub const fchmod = @import("sys/sys.zig").fchmod;
     pub const updateNonblocking = @import("sys/sys.zig").updateNonblocking;
@@ -3831,6 +3917,8 @@ pub const sys = struct {
         };
         return openat(dir, &path_z, flags, mode);
     }
+
+    pub const openatOSPath = openatA;
 
     pub fn openA(path_: anytype, flags: i32, mode: Mode) Maybe(FD) {
         return openatA(.cwd(), path_, flags, mode);
@@ -3990,6 +4078,43 @@ pub const sys = struct {
 
         pub fn readAll(this: File, buf: []u8) Maybe(usize) {
             return Sys.readAll(this.handle, buf);
+        }
+
+        pub const ReadToEndResult = struct {
+            bytes: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(default_allocator),
+            err: ?Error = null,
+
+            pub fn unwrap(self: *const ReadToEndResult) ![]u8 {
+                if (self.err) |err| {
+                    try (Maybe(void){ .err = err }).unwrap();
+                }
+                return self.bytes.items;
+            }
+        };
+
+        pub fn readToEnd(this: File, allocator: std.mem.Allocator) ReadToEndResult {
+            var list = std.array_list.Managed(u8).init(allocator);
+            const size = switch (this.getEndPos()) {
+                .err => |err| return .{ .err = err, .bytes = list },
+                .result => |value| value,
+            };
+
+            list.ensureTotalCapacityPrecise(size + 16) catch |err| handleOom(err);
+            while (true) {
+                if (list.unusedCapacitySlice().len == 0) {
+                    list.ensureUnusedCapacity(16) catch |err| handleOom(err);
+                }
+
+                switch (this.read(list.unusedCapacitySlice())) {
+                    .err => |err| return .{ .err = err, .bytes = list },
+                    .result => |bytes_read| {
+                        if (bytes_read == 0) break;
+                        list.items.len += bytes_read;
+                    },
+                }
+            }
+
+            return .{ .bytes = list };
         }
 
         pub fn getEndPos(this: File) Maybe(usize) {
@@ -4152,8 +4277,55 @@ pub const OSPathSlice = paths.OSPathSlice;
 pub const OSPathSliceZ = paths.OSPathSliceZ;
 pub const OSPathBuffer = paths.OSPathBuffer;
 pub const path_buffer_pool = paths.path_buffer_pool;
+
+pub const isSliceInBuffer = allocators.isSliceInBuffer;
+pub const isSliceInBufferT = allocators.isSliceInBufferT;
+
+pub fn serializable(input: anytype) @TypeOf(input) {
+    const T = @TypeOf(input);
+    comptime {
+        if (trait.isExternContainer(T)) {
+            if (@typeInfo(T) == .@"union") {
+                @compileError("Extern unions must be serialized with serializableInto");
+            }
+        }
+    }
+    var zeroed: [@sizeOf(T)]u8 align(@alignOf(T)) = std.mem.zeroes([@sizeOf(T)]u8);
+    const result: *T = @ptrCast(&zeroed);
+
+    inline for (comptime std.meta.fieldNames(T)) |field_name| {
+        @field(result, field_name) = @field(input, field_name);
+    }
+
+    return result.*;
+}
+
+pub inline fn serializableInto(comptime T: type, init: anytype) T {
+    var zeroed: [@sizeOf(T)]u8 align(@alignOf(T)) = std.mem.zeroes([@sizeOf(T)]u8);
+    const result: *T = @ptrCast(&zeroed);
+
+    inline for (comptime std.meta.fieldNames(@TypeOf(init))) |field_name| {
+        @field(result, field_name) = @field(init, field_name);
+    }
+
+    return result.*;
+}
 pub const w_path_buffer_pool = paths.w_path_buffer_pool;
 pub const os_path_buffer_pool = paths.os_path_buffer_pool;
+
+pub inline fn OSPathLiteral(comptime literal: anytype) *const [literal.len:0]OSPathChar {
+    if (!Environment.isWindows) return @ptrCast(literal);
+    return comptime {
+        var buf: [literal.len:0]OSPathChar = undefined;
+        for (literal, 0..) |char, i| {
+            buf[i] = if (char == '/') '\\' else char;
+            assert(buf[i] != 0 and buf[i] < 128);
+        }
+        buf[literal.len] = 0;
+        const final = buf[0..buf.len :0].*;
+        return &final;
+    };
+}
 
 // ---- src/picohttp_sys/ -------------------------------------------------
 // Fifth-wave port batch (2026-05-18). Vendored picohttpparser FFI
@@ -4348,6 +4520,7 @@ pub const cares_sys = struct {
 pub const libarchive_sys = struct {
     pub const bindings = @import("libarchive_sys/bindings.zig");
 };
+pub const libarchive = @import("libarchive/libarchive.zig");
 
 // ---- src/zlib_sys/ -----------------------------------------------------
 // Wave-14 port batch (2026-05-18). Vendored zlib FFI shape: the shared

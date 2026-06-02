@@ -50,7 +50,7 @@ pub const PatchFile = struct {
 
     pub fn apply(this: *const PatchFile, allocator: Allocator, patch_dir: bun.FD) ?bun.sys.Error {
         var state: ApplyState = .{};
-        var sfb = std.heap.stackFallback(1024, allocator);
+        var sfb = bun.stackFallback(1024, allocator);
         var arena = bun.ArenaAllocator.init(sfb.get());
         defer arena.deinit();
 
@@ -1088,7 +1088,7 @@ const PatchLinesParser = struct {
         }
 
         const a_path = rest[a_path_start_index..a_path_end_index];
-        const b_path = std.mem.trimRight(u8, rest[b_path_start_index..], " \n\r\t");
+        const b_path = std.mem.trimEnd(u8, rest[b_path_start_index..], " \n\r\t");
         return .{ a_path, b_path };
     }
 };

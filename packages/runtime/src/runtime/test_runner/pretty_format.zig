@@ -755,7 +755,7 @@ pub const JestPrettyFormat = struct {
                 ) callconv(.c) void {
                     if (is_private_symbol) return;
 
-                    const key = key_.?[0];
+                    const key = key_[0];
                     if (key.eqlComptime("constructor")) return;
 
                     var ctx: *@This() = bun.cast(*@This(), ctx_ptr orelse return);

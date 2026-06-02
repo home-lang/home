@@ -196,7 +196,7 @@ fn scheduleDrain(this: *TarballStream) void {
 }
 
 fn drainCallback(task: *ThreadPool.Task) void {
-    const this: *TarballStream = @fieldParentPtr("drain_task", task);
+    const this: *TarballStream = @alignCast(@fieldParentPtr("drain_task", task));
     this.drain();
 }
 

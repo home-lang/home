@@ -42,7 +42,7 @@ pub fn deinit(str: *MutableString) void {
 }
 
 pub fn owns(this: *const MutableString, items: []const u8) bool {
-    return bun.isSliceInBuffer(items, this.list.items.ptr[0..this.list.capacity]);
+    return bun.allocators.isSliceInBuffer(items, this.list.items.ptr[0..this.list.capacity]);
 }
 
 pub inline fn growIfNeeded(self: *MutableString, amount: usize) Allocator.Error!void {
@@ -63,7 +63,7 @@ pub fn writableNBytes(self: *MutableString, amount: usize) Allocator.Error![]u8 
 }
 
 pub fn write(self: *MutableString, bytes: anytype) Allocator.Error!usize {
-    bun.debugAssert(bytes.len == 0 or !bun.isSliceInBuffer(bytes, self.list.allocatedSlice()));
+    bun.debugAssert(bytes.len == 0 or !bun.allocators.isSliceInBuffer(bytes, self.list.allocatedSlice()));
     try self.list.appendSlice(self.allocator, bytes);
     return bytes.len;
 }

@@ -162,7 +162,7 @@ pub fn check(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Ca
 pub fn rules(this: *@This(), globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
 
     // GC must be able to visit
-    var array = try jsc.JSArray.createEmpty(globalThis, 0);
+    var array = jsc.JSArray.createEmpty(globalThis, 0);
 
     this.mutex.lock();
     defer this.mutex.unlock();

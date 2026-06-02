@@ -1309,7 +1309,7 @@ pub const FetchTasklet = struct {
         var needs_schedule = false;
         defer if (needs_schedule) {
             // wakeup the http thread to write the data
-            http.http_thread.scheduleRequestWrite(this.http.?, .data);
+            scheduleRequestWrite(this.http.?, .data);
         };
 
         // dont have backpressure so we will schedule the data to be written
@@ -1354,10 +1354,10 @@ pub const FetchTasklet = struct {
                 const thread_safe_stream_buffer = this.request_body_streaming_buffer orelse return;
                 const stream_buffer = thread_safe_stream_buffer.acquire();
                 defer thread_safe_stream_buffer.release();
-                bun.handleOom(stream_buffer.write(http.end_of_chunked_http1_1_encoding_response_body));
+                bun.handleOom(stream_buffer.write("0\r\n\r\n"));
             }
             if (this.http) |http_| {
-                http.http_thread.scheduleRequestWrite(http_, .end);
+                scheduleRequestWrite(http_, .end);
             }
         }
     }
@@ -1367,7 +1367,23 @@ pub const FetchTasklet = struct {
         this.tracker.didCancel(this.global_this);
 
         if (this.http) |http_| {
+            scheduleShutdown(http_);
+        }
+    }
+
+    fn scheduleRequestWrite(http_: anytype, kind: anytype) void {
+        if (@hasDecl(http, "http_thread")) {
+            http.http_thread.scheduleRequestWrite(http_, kind);
+        } else {
+            unreachable;
+        }
+    }
+
+    fn scheduleShutdown(http_: anytype) void {
+        if (@hasDecl(http, "http_thread")) {
             http.http_thread.scheduleShutdown(http_);
+        } else {
+            unreachable;
         }
     }
 

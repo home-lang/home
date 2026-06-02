@@ -3,12 +3,10 @@
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`, `bun` enum tag → `home`.
 // Imports rewritten: @import("bun") → @import("home").
-//   - `bun.uws.{Loop, quic}` → opaque `Loop` stub + `home_rt.uws_sys.quic`.
+//   - `bun.uws.{Loop, quic}` → the ported `home_rt.uws` aggregator.
 //   - `bun.Mutex` → `home_rt.threading.Mutex`.
-//   - `bun.http.H3.ClientSession` and `bun.http.H3.ClientContext` (the
-//     sibling lsquic-driven state machines) are parked; opaque stubs and a
-//     minimal `H3` namespace mirror the upstream shape so this file's
-//     pointer types and the `live_sessions.fetchSub` call typecheck.
+//   - `bun.http.H3.ClientSession` and `bun.http.H3.ClientContext` now share
+//     the real sibling types used by ClientContext/callbacks/encode.
 //   - `bun.dns.internal.registerQuic` (the DNS-cache hand-off) is shimmed
 //     as a no-op extern reference guarded by `is_test`; the real DNS path
 //     lands once the dns subtree is ported.
@@ -126,62 +124,6 @@ const Mutex = struct {
 var resolved_mutex: Mutex = .{};
 var resolved_head: ?*PendingConnect = null;
 
-// ---------------------------------------------------------------------------
-// Local stubs (off-list bun.X symbols)
-// ---------------------------------------------------------------------------
-
-/// `bun.uws.Loop` — the libusockets event loop. Only `wakeup` is referenced
-/// from this file. Opaque pointer + a stub `wakeupLoop` keep the test
-/// build link-clean (see `wakeupLoop`).
-pub const uws = struct {
-    pub const Loop = opaque {};
-};
-
-/// Sibling `ClientSession.zig` is parked. Mirror exactly the methods +
-/// fields that this file dereferences so type-checks pass.
-///
-/// `closed`, `qsocket` and `pending` are accessed directly. `ref`/`deref`
-/// are method calls. `detach(*Stream)` removes a pending request.
-pub const ClientSession = struct {
-    closed: bool = false,
-    qsocket: ?*quic.Socket = null,
-    pending: std.ArrayListUnmanaged(*Stream) = .empty,
-
-    pub fn ref(_: *ClientSession) void {}
-    pub fn deref(_: *ClientSession) void {}
-    pub fn detach(this: *ClientSession, stream: *Stream) void {
-        if (std.mem.indexOfScalar(*Stream, this.pending.items, stream)) |i| {
-            _ = this.pending.orderedRemove(i);
-        }
-    }
-};
-
-/// Sibling `Stream.zig` (this directory) carries the `client` weak ref.
-/// Only that field + a back-method are touched here, so an opaque + the
-/// minimum struct shape is enough.
-pub const Stream = struct {
-    client: ?*HTTPClient,
-};
-
-/// Upstream `bun.http` (HTTPClient) — minimal struct so tests can take its
-/// address; `failFromH2` is the only method the failure path reaches.
-pub const HTTPClient = struct {
-    pub fn failFromH2(_: *HTTPClient, _: anyerror) void {}
-};
-
-/// `bun.http.H3.ClientContext` — process-global registry. Stub `get()` /
-/// `unregister()` so the failure path typechecks.
-const H3 = struct {
-    pub var live_sessions: std.atomic.Value(u32) = .init(0);
-
-    pub const ClientContext = struct {
-        pub fn get() ?*ClientContext {
-            return null;
-        }
-        pub fn unregister(_: *ClientContext, _: *ClientSession) void {}
-    };
-};
-
 /// `bun.dns.internal` — global DNS resolver cache. The only callsite needs
 /// `registerQuic(*anyopaque, *PendingConnect)` for the hand-off. The real
 /// impl lives behind a libusockets thread; stub it out in test builds.
@@ -234,9 +176,8 @@ inline fn sessionExt(qs: *quic.Socket) *?*ClientSession {
 /// `loop.wakeup()` indirection — extern in non-test builds, no-op in tests.
 inline fn wakeupLoop(l: *uws.Loop) void {
     if (comptime @import("builtin").is_test) return;
-    us_wakeup_loop(l);
+    l.wakeup();
 }
-extern fn us_wakeup_loop(*uws.Loop) void;
 
 /// `bun.new(T, value)` / `bun.destroy(ptr)` shims through
 /// `home_rt.default_allocator`.
@@ -251,6 +192,10 @@ fn destroy(ptr: anytype) void {
 }
 
 const quic = home_rt.uws_sys.quic;
+const H3 = home_rt.http.H3;
+const ClientSession = H3.ClientSession;
+const Stream = H3.Stream;
+const uws = home_rt.uws;
 const std = @import("std");
 const home_rt = @import("home");
 
@@ -262,8 +207,8 @@ test "PendingConnect linked-list push order is LIFO via onDNSResolvedThreadsafe"
         resolved_mutex.unlock();
     }
 
-    var session_a: ClientSession = .{};
-    var session_b: ClientSession = .{};
+    var session_a: ClientSession = undefined;
+    var session_b: ClientSession = undefined;
     var loop_storage: u8 = 0;
     const fake_loop: *uws.Loop = @ptrCast(&loop_storage);
     var fake_pc_storage: u8 = 0;
@@ -290,7 +235,7 @@ test "PendingConnect linked-list push order is LIFO via onDNSResolvedThreadsafe"
 }
 
 test "PendingConnect.loop returns the registered loop pointer" {
-    var session: ClientSession = .{};
+    var session: ClientSession = undefined;
     var loop_storage: u8 = 0;
     const fake_loop: *uws.Loop = @ptrCast(&loop_storage);
     var fake_pc_storage: u8 = 0;
@@ -305,30 +250,45 @@ test "PendingConnect.loop returns the registered loop pointer" {
 }
 
 test "ClientSession.detach removes the matching pending entry" {
-    var session: ClientSession = .{};
-    defer session.pending.deinit(home_rt.default_allocator);
+    const hostname = try home_rt.default_allocator.dupe(u8, "example.com");
+    const session = ClientSession.new(.{
+        .qsocket = null,
+        .hostname = hostname,
+        .port = 443,
+        .reject_unauthorized = true,
+    });
+    session.ref();
 
-    var client_a: HTTPClient = undefined;
-    var client_b: HTTPClient = undefined;
-    var stream_a: Stream = .{ .client = &client_a };
-    var stream_b: Stream = .{ .client = &client_b };
+    const stream_a = Stream.new(.{ .session = session, .client = null });
+    const stream_b = Stream.new(.{ .session = session, .client = null });
+    _ = H3.live_streams.fetchAdd(2, .monotonic);
 
-    try session.pending.append(home_rt.default_allocator, &stream_a);
-    try session.pending.append(home_rt.default_allocator, &stream_b);
+    try session.pending.append(home_rt.default_allocator, stream_a);
+    try session.pending.append(home_rt.default_allocator, stream_b);
     try std.testing.expectEqual(@as(usize, 2), session.pending.items.len);
 
-    session.detach(&stream_a);
+    session.detach(stream_a);
     try std.testing.expectEqual(@as(usize, 1), session.pending.items.len);
-    try std.testing.expectEqual(&stream_b, session.pending.items[0]);
+    try std.testing.expectEqual(stream_b, session.pending.items[0]);
+
+    session.detach(stream_b);
+    session.deref();
 }
 
 test "failSession: empties pending and decrements live_sessions" {
-    var session: ClientSession = .{};
-    defer session.pending.deinit(home_rt.default_allocator);
+    const hostname = try home_rt.default_allocator.dupe(u8, "example.com");
+    const session = ClientSession.new(.{
+        .qsocket = null,
+        .hostname = hostname,
+        .port = 443,
+        .reject_unauthorized = true,
+    });
+    session.ref();
+    session.ref();
 
-    var client: HTTPClient = undefined;
-    var stream: Stream = .{ .client = &client };
-    try session.pending.append(home_rt.default_allocator, &stream);
+    const stream = Stream.new(.{ .session = session, .client = null });
+    _ = H3.live_streams.fetchAdd(1, .monotonic);
+    try session.pending.append(home_rt.default_allocator, stream);
 
     // failSession decrements live_sessions; pre-bump so we don't underflow.
     _ = H3.live_sessions.fetchAdd(1, .monotonic);
@@ -339,4 +299,6 @@ test "failSession: empties pending and decrements live_sessions" {
     try std.testing.expect(session.closed);
     try std.testing.expectEqual(@as(usize, 0), session.pending.items.len);
     try std.testing.expectEqual(before - 1, H3.live_sessions.load(.monotonic));
+
+    session.deref();
 }

@@ -445,7 +445,7 @@ pub const Registry = struct {
             package_name,
             newly_last_modified,
             new_etag,
-            @as(u32, @truncate(@as(u64, @intCast(@max(0, std.time.timestamp()))))) + 300,
+            @as(u32, @truncate(@as(u64, @intCast(@max(0, @divFloor(bun.milliTimestamp(), 1000)))))) + 300,
             is_extended_manifest,
         )) |package| {
             if (package_manager.options.enable.manifest_cache) {

@@ -5,12 +5,9 @@
 // Imports rewritten: @import("bun") → @import("home").
 //   - `bun.uws.quic` → `home_rt.uws_sys.quic` (the lsquic opaque types
 //     already ported under uws_sys/quic/).
-//   - `bun.http` (HTTPClient) and the sibling `ClientSession` /
-//     `../H3Client.zig` are not yet ported; opaque/struct stubs let this
-//     file spell `*ClientSession` / `?*HTTPClient` and reference the
-//     `live_streams` counter the way the upstream module does.
-//   - `bun.picohttp.Header` is shimmed as a local struct mirroring its
-//     wire shape (name + value byte slices).
+//   - `bun.http` (HTTPClient), `bun.picohttp`, and the sibling
+//     `ClientSession` / `../H3Client.zig` are now real ports, so this file
+//     keeps those identities shared with callbacks/encode/ClientSession.
 
 //! One in-flight HTTP/3 request. Created when the request is enqueued on a
 //! `ClientSession`; the lsquic stream is bound later from
@@ -58,34 +55,6 @@ inline fn closeQuicStream(qs: *quic.Stream) void {
     qs.close();
 }
 
-// ---------------------------------------------------------------------------
-// Local stubs (off-list bun.X symbols)
-// ---------------------------------------------------------------------------
-
-/// Sibling `ClientSession.zig` is parked alongside `callbacks.zig` and
-/// `encode.zig` (the lsquic-driven state machine). Opaque is enough for
-/// the `session: *ClientSession` back-pointer to typecheck.
-pub const ClientSession = opaque {};
-
-/// Upstream `bun.http` (the HTTPClient struct) — opaque until the fetch()
-/// state machine ports.
-pub const HTTPClient = opaque {};
-
-/// `bun.picohttp.Header` — trivial name+value byte-slice pair.
-pub const picohttp = struct {
-    pub const Header = struct {
-        name: []const u8 = "",
-        value: []const u8 = "",
-    };
-};
-
-/// `../H3Client.zig` (module-level live-counts + retries) is parked. Only
-/// the `live_streams` atomic is touched from this file; stub it here so
-/// `fetchSub` resolves.
-const H3 = struct {
-    pub var live_streams: std.atomic.Value(u32) = .init(0);
-};
-
 /// `bun.TrivialNew` shim — allocates via `home_rt.default_allocator`.
 fn trivialNew(comptime T: type) fn (T) *T {
     return struct {
@@ -104,6 +73,10 @@ fn destroy(ptr: anytype) void {
 }
 
 const quic = home_rt.uws_sys.quic;
+const ClientSession = @import("./ClientSession.zig");
+const H3 = @import("../H3Client.zig");
+const HTTPClient = home_rt.http;
+const picohttp = home_rt.picohttp;
 const std = @import("std");
 const home_rt = @import("home");
 

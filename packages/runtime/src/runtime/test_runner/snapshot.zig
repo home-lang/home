@@ -197,10 +197,10 @@ pub const Snapshots = struct {
     pub fn writeSnapshotFile(this: *Snapshots) !void {
         if (this._current_file) |_file| {
             var file = _file;
-            file.file.writeAll(this.file_buf.items) catch {
+            file.file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), this.file_buf.items) catch {
                 return error.FailedToWriteSnapshotFile;
             };
-            file.file.close();
+            file.file.close(std.Io.Threaded.global_single_threaded.io());
             this.file_buf.clearAndFree();
 
             var value_itr = this.values.valueIterator();

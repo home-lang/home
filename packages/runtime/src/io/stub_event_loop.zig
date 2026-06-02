@@ -132,6 +132,10 @@ pub const FilePoll = struct {
         this.flags.insert(.closed);
     }
 
+    pub fn deinit(this: *FilePoll) void {
+        this.deinitForceUnregister();
+    }
+
     pub fn deinitWithVM(this: *FilePoll, _: anytype) void {
         this.deinitForceUnregister();
     }

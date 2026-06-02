@@ -651,7 +651,27 @@ const string = []const u8;
 
 const std = @import("std");
 const EventType = @import("./path_watcher.zig").PathWatcher.EventType;
-const Semaphore = std.Thread.Semaphore;
+const Semaphore = struct {
+    permits: std.atomic.Value(u32) = .init(0),
+
+    pub fn post(this: *Semaphore) void {
+        _ = this.permits.fetchAdd(1, .release);
+        bun.threading.Futex.wake(&this.permits, 1);
+    }
+
+    pub fn wait(this: *Semaphore) void {
+        while (true) {
+            var current = this.permits.load(.acquire);
+            while (current > 0) {
+                if (this.permits.cmpxchgWeak(current, current - 1, .acquire, .monotonic) == null) {
+                    return;
+                }
+                current = this.permits.load(.acquire);
+            }
+            bun.threading.Futex.waitForever(&this.permits, 0);
+        }
+    }
+};
 
 const bun = @import("bun");
 const Mutex = bun.Mutex;
