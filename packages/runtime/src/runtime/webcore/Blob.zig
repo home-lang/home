@@ -2011,7 +2011,7 @@ pub fn JSDOMFile__construct_(globalThis: *jsc.JSGlobalObject, callframe: *jsc.Ca
     if (!set_last_modified) {
         // `lastModified` should be the current date in milliseconds if unspecified.
         // https://developer.mozilla.org/en-US/docs/Web/API/File/lastModified
-        blob.last_modified = @floatFromInt(std.time.milliTimestamp());
+        blob.last_modified = @floatFromInt(bun.milliTimestamp());
     }
 
     if (blob.content_type.len == 0) {

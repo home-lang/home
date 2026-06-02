@@ -39,6 +39,33 @@ pub const fmt = @import("fmt.zig");
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 /// Faithful to upstream `bun.zig:196` (`sha = @import("./sha_hmac/sha.zig")`).
 pub const sha = @import("sha_hmac/sha.zig");
+/// Forward-port: Home's Zig fork removed `std.time.milliTimestamp` (wall-clock
+/// time now goes through `std.Io`). This is the old behavior — milliseconds since
+/// the Unix epoch via `clock_gettime(REALTIME)` — for the copied sites that used
+/// `std.time.milliTimestamp()` directly.
+pub fn milliTimestamp() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return @as(i64, @intCast(ts.sec)) * std.time.ms_per_s + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
+}
+
+/// Forward-port: Home's Zig fork removed `std.time.Instant` (monotonic timing
+/// now goes through `std.Io`). Faithful re-impl of the old API — `now()` reads
+/// the monotonic clock; `since(earlier)` returns elapsed nanoseconds.
+pub const Instant = struct {
+    timestamp: u64,
+
+    pub fn now() error{}!Instant {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return .{ .timestamp = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec)) };
+    }
+
+    /// Elapsed nanoseconds since `earlier` (mirrors `std.time.Instant.since`).
+    pub fn since(self: Instant, earlier: Instant) u64 {
+        return self.timestamp - earlier.timestamp;
+    }
+};
 // Forward-port: Home's Zig fork moved IP addressing to `std.Io.net` with a
 // different shape. `net_shim.zig` restores the `std.net.Address` surface (initIp4/
 // initIp6 + Ip4Address/Ip6Address.parse) Bun's socket cone uses.

@@ -36,7 +36,7 @@ pub fn writeEvents(watcher: *Watcher, events: []Watcher.WatchEvent, changed_file
     const writer = &buffered.new_interface;
 
     // Get current timestamp
-    const timestamp = std.time.milliTimestamp();
+    const timestamp = bun.milliTimestamp();
 
     // Write: { "timestamp": number, "files": { ... } }
     writer.writeAll("{\"timestamp\":") catch return;

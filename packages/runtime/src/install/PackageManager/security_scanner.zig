@@ -628,7 +628,7 @@ fn attemptSecurityScanWithRetry(manager: *PackageManager, security_scanner: []co
         Output.prettyErrorln("<d>[SecurityProvider]<r> top_level_dir: '{s}'", .{FileSystem.instance.top_level_dir});
         Output.prettyErrorln("<d>[SecurityProvider]<r> original_cwd: '{s}'", .{original_cwd});
     }
-    const start_time = std.time.milliTimestamp();
+    const start_time = bun.milliTimestamp();
 
     const finder = ScannerFinder{ .manager = manager, .scanner_name = security_scanner };
     try finder.validateNotInWorkspaces();
@@ -1108,7 +1108,7 @@ pub const SecurityScanSubprocess = struct {
         }
 
         // if we got here then we got a result message so we can continue like normal
-        const duration = std.time.milliTimestamp() - start_time;
+        const duration = bun.milliTimestamp() - start_time;
 
         if (this.manager.options.log_level == .verbose) {
             switch (status) {

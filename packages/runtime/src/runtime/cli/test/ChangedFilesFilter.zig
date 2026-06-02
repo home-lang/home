@@ -267,7 +267,7 @@ pub fn initWatchTrigger(allocator: std.mem.Allocator) void {
     const path: [:0]const u8 = if (bun.getenvZ(trigger_file_env_var)) |existing|
         bun.handleOom(allocator.dupeZ(u8, existing))
     else brk: {
-        var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(std.time.milliTimestamp())) ^
+        var rng = std.Random.DefaultPrng.init(@as(u64, @bitCast(bun.milliTimestamp())) ^
             @as(u64, @intCast(std.c.getpid())));
         const tmpdir = bun.fs.FileSystem.RealFS.tmpdirPath();
         const fresh = bun.handleOom(std.fmt.allocPrintSentinel(

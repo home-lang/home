@@ -478,7 +478,7 @@ pub fn crashHandler(
                 bun.auto_reload_on_crash = false;
 
                 Output.prettyErrorln("<d>--- Bun is auto-restarting due to crash <d>[time: <b>{d}<r><d>] ---<r>", .{
-                    @max(std.time.milliTimestamp(), 0),
+                    @max(bun.milliTimestamp(), 0),
                 });
                 Output.flush();
 

@@ -127,7 +127,7 @@ pub const Coordinator = struct {
     fn maybeScaleUp(this: *Coordinator) void {
         if (this.spawned_count >= this.parallel_limit) return;
         if (this.bailed or !this.hasUndispatchedFiles()) return;
-        const now = std.time.milliTimestamp();
+        const now = bun.milliTimestamp();
         for (this.workers[0..this.spawned_count]) |*w| {
             if (!w.alive) continue;
             if (w.inflight == null) return;

@@ -203,7 +203,7 @@ pub const HelpCommand = struct {
     ;
 
     pub fn printWithReason(comptime reason: Reason, show_all_flags: bool) void {
-        var rand_state = std.Random.DefaultPrng.init(@as(u64, @intCast(@max(std.time.milliTimestamp(), 0))));
+        var rand_state = std.Random.DefaultPrng.init(@as(u64, @intCast(@max(bun.milliTimestamp(), 0))));
         const rand = rand_state.random();
 
         const package_x_i = rand.uintAtMost(usize, packages_to_x_filler.len - 1);
