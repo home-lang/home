@@ -34,6 +34,11 @@ pub const Output = @import("output.zig");
 pub const Progress = @import("bun_core/Progress.zig");
 pub const Global = @import("global.zig");
 pub const Environment = @import("environment.zig");
+/// Whether to link Bun's real C++/JSC bindings (the `cpp.*`/`uws.*` externs) vs
+/// the curated no-C++ stubs. Driven by the build's `-Denable_jsc` flag so the
+/// `home_rt` module compiles both with the native link (true) and standalone
+/// (false). Resolves via `home_rt_pkg`'s build_options import.
+pub const enable_jsc_link = @import("build_options").enable_jsc;
 pub const fmt = @import("fmt.zig");
 /// Faithful to upstream `bun.zig:11` (`feature_flag = env_var.feature_flag`).
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
@@ -767,7 +772,9 @@ pub fn Once(comptime f: anytype) type {
 /// `string/wtf.zig` and `jsc/bun_string_jsc.zig`. When the C++
 /// side lands, replace each panic with the corresponding
 /// `pub extern fn` declaration.
-pub const cpp = struct {
+/// With `-Denable_jsc` the real generated extern layer (resolved by linking
+/// Bun's C++ objects + WebKit) replaces these no-C++ stub bodies.
+pub const cpp = if (enable_jsc_link) @import(".generated/cpp.zig") else struct {
     pub fn JSC__jsToNumber(bytes_ptr: [*]const u8, byte_len: usize) f64 {
         return std.fmt.parseFloat(f64, bytes_ptr[0..byte_len]) catch std.math.nan(f64);
     }
@@ -3499,6 +3506,13 @@ pub const c = struct {
     pub const UTIME_NOW = -1;
     pub const ZSTD_inBuffer = @import("zstd/zstd.zig").c.ZSTD_inBuffer;
     pub const ZSTD_outBuffer = @import("zstd/zstd.zig").c.ZSTD_outBuffer;
+    pub const ZSTD_createCCtx = @import("zstd/zstd.zig").c.ZSTD_createCCtx;
+    pub const ZSTD_freeCCtx = @import("zstd/zstd.zig").c.ZSTD_freeCCtx;
+    pub const ZSTD_CCtx_reset = @import("zstd/zstd.zig").c.ZSTD_CCtx_reset;
+    pub const ZSTD_CCtx_setParameter = @import("zstd/zstd.zig").c.ZSTD_CCtx_setParameter;
+    pub const ZSTD_compressStream2 = @import("zstd/zstd.zig").c.ZSTD_compressStream2;
+    pub const ZSTD_getErrorCode = @import("zstd/zstd.zig").c.ZSTD_getErrorCode;
+    pub const ZSTD_e_continue = @import("zstd/zstd.zig").c.ZSTD_e_continue;
     pub const AF_INET = std.c.AF.INET;
 };
 

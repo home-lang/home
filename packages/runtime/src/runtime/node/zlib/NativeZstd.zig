@@ -121,7 +121,9 @@ fn deinit(this: *@This()) void {
 }
 
 const Context = struct {
-    const c = bun.c;
+    // Home's zstd bindings live in the dedicated zstd module's `c` namespace
+    // (Bun's `bun.c` is a giant translate-c surface Home doesn't replicate).
+    const c = @import("../../../zstd/zstd.zig").c;
 
     mode: bun.zlib.NodeMode = .NONE,
     state: ?*anyopaque = null,
