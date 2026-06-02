@@ -39,8 +39,8 @@
 // it's pure-data lookup over `std.posix.S` constants. Mirrors the upstream
 // version at line 4435.
 //
-// PORT NOTE: upstream returns `std.fs.File.Kind`, which existed in Zig
-// 0.14. Zig 0.17 removed `std.fs.File.Kind` (only `std.fs.Dir.Entry.Kind`
+// PORT NOTE: upstream returns `std.Io.File.Kind`, which existed in Zig
+// 0.14. Zig 0.17 removed `std.Io.File.Kind` (only `std.fs.Dir.Entry.Kind`
 // survived, under `std/fs/Dir.zig`). We define an equivalent local
 // `FileKind` enum here with the same tag names so the signature reads the
 // same — when the runtime upgrades to a Zig that re-exposes the
@@ -62,7 +62,7 @@ const platform_errno = switch (Environment.os) {
 };
 const platformGetErrno = platform_errno.getErrno;
 
-/// Cross-version `std.fs.File.Kind` standin — see PORT NOTE in the file
+/// Cross-version `std.Io.File.Kind` standin — see PORT NOTE in the file
 /// banner. The variant names are exactly the ones Zig 0.14 used.
 pub const FileKind = enum {
     block_device,
@@ -344,7 +344,7 @@ fn asByteSlice(value: anytype) []const u8 {
     @compileError("asByteSlice: unsupported type " ++ @typeName(T));
 }
 
-/// Resolve a POSIX `mode_t` to `std.fs.File.Kind`. Mirrors upstream
+/// Resolve a POSIX `mode_t` to `std.Io.File.Kind`. Mirrors upstream
 /// `sys/sys.zig` at line 4435 — pure-data lookup over `S.IFMT`.
 pub fn kindFromMode(mode: posix.mode_t) FileKind {
     return switch (mode & posix.S.IFMT) {

@@ -956,7 +956,7 @@ pub const Archive = opaque {
     };
 };
 
-// `std.fs.File.Kind` was removed in Zig 0.17 (see PORT NOTE in
+// `std.Io.File.Kind` was removed in Zig 0.17 (see PORT NOTE in
 // `src/sys/maybe.zig`). We define a local `FileKind` with the same variant
 // names so the iterator API reads the same shape callers expected. When
 // the runtime upgrades to a Zig that re-exposes the canonical type, this

@@ -90,7 +90,7 @@ pub const IteratorResultW = struct {
 pub const PathType = enum { u8, u16 };
 
 /// Local stand-in for `jsc.Node.Dirent.Kind`. Upstream re-exports
-/// `std.fs.File.Kind` (a Zig 0.14 path that Zig 0.17 removed), so Home
+/// `std.Io.File.Kind` (a Zig 0.14 path that Zig 0.17 removed), so Home
 /// reuses `home_rt.sys.maybe.FileKind` — a same-tags shim already shipped
 /// for the Stat / lstat callers. The JSC bridge re-attaches against the
 /// same tag set.

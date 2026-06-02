@@ -1681,24 +1681,10 @@ pub const jsc = struct {
         // (ScopeFunctions / DoneCallback consumed by the generated class registry).
         pub const bun_test = @import("runtime/test_runner/bun_test.zig");
     };
-    pub const Node = struct {
-        pub const Encoding = @import("runtime/node/types.zig").Encoding;
-        pub const StringOrBuffer = @import("runtime/node/types.zig").StringOrBuffer;
-        pub const BlobOrStringOrBuffer = @import("runtime/node/types.zig").BlobOrStringOrBuffer;
-        pub const PathLike = @import("runtime/node/types.zig").PathLike;
-        pub const PathOrFileDescriptor = @import("runtime/node/types.zig").PathOrFileDescriptor;
-        pub const StatsSmall = @import("runtime/node/Stat.zig").StatsSmall;
-        pub const StatsBig = @import("runtime/node/Stat.zig").StatsBig;
-        pub const PathOrBlob = @import("runtime/node/types.zig").PathOrBlob;
-        pub const FSEvents = @import("runtime/node/fs_events.zig");
-        pub const Maybe = @import("runtime/node.zig").Maybe;
-        pub const fs = @import("runtime/node/node_fs.zig");
-        pub const FileSystemFlags = @import("runtime/node/types.zig").FileSystemFlags;
-        pub const VectorArrayBuffer = @import("runtime/node/types.zig").VectorArrayBuffer;
-        pub const Dirent = struct {
-            pub const Kind = std.Io.File.Kind;
-        };
-    };
+    // Faithful to upstream jsc/jsc.zig:169 (`Node = bun.api.node`). The whole
+    // node module — supersedes the prior curated subset (types.Dirent.Kind now
+    // compiles after the std.fs.File.Kind -> std.Io.File.Kind sweep).
+    pub const Node = @import("runtime/node.zig");
     // JSC bring-up: faithful to upstream `jsc/jsc.zig` (Expect:124, Codegen:203).
     pub const Expect = @import("runtime/test_runner/expect.zig");
     pub const Codegen = @import("ZigGeneratedClasses");
@@ -2510,6 +2496,7 @@ pub const runtime = struct {
         pub const interpret = @import("runtime/shell/interpreter.zig");
         pub const ExitCode = @import("runtime/shell/shell.zig").ExitCode;
         pub const ShellErr = @import("runtime/shell/shell.zig").ShellErr;
+        pub const IOReader = @import("runtime/shell/shell.zig").IOReader;
         pub const ShellSubprocess = struct {
             pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
                 _ = this;
