@@ -3545,8 +3545,11 @@ pub const sys = struct {
     // every syscall wrapper. `kindFromMode` and a Zig-0.17-compat
     // `FileKind` enum tag along for the ride.
     pub const maybe = @import("sys/maybe.zig");
+    // Unify on the canonical node factory (Bun: `sys.Maybe(T) = node.Maybe(T, Error)`)
+    // so `home.sys.Maybe`, `sys/sys.zig.Maybe`, and `node_fs`'s `runtime.node.Maybe`
+    // all produce the SAME type — avoids sys↔node boundary identity mismatches.
     pub fn Maybe(comptime ReturnTypeT: type) type {
-        return maybe.Maybe(ReturnTypeT, Error);
+        return @import("runtime/node.zig").Maybe(ReturnTypeT, Error);
     }
     pub const FileKind = maybe.FileKind;
     pub const kindFromMode = maybe.kindFromMode;
