@@ -54,6 +54,16 @@ pub const ZigString = jsc.ZigString;
 pub const AllocationScope = allocators.AllocationScope;
 pub const base64 = @import("base64/base64.zig");
 pub const simdutf = @import("simdutf_sys/simdutf.zig");
+pub const c_ares = @import("cares_sys/c_ares.zig");
+pub const zlib = @import("zlib/zlib.zig");
+/// Faithful to upstream bun.zig:1457.
+pub fn asByteSlice(buffer: anytype) []const u8 {
+    return switch (@TypeOf(buffer)) {
+        [*:0]u8, [*:0]const u8 => buffer[0..std.mem.len(buffer)],
+        [*c]const u8, [*c]u8 => std.mem.span(buffer),
+        else => buffer,
+    };
+}
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -1401,6 +1411,8 @@ pub const jsc = struct {
     pub const Task = struct {
         callback: ?*const fn (*Task) void = null,
     };
+    // Faithful to upstream jsc/jsc.zig:155 (= EventLoop.WorkPoolTask = work_pool.Task).
+    pub const WorkPoolTask = @import("threading/work_pool.zig").Task;
     // JSC bring-up: real VirtualMachine (was a 215-line stub). jsc/jsc.zig:99.
     pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
     pub const ModuleLoader = struct {

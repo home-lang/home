@@ -70,7 +70,7 @@ pub fn CompressionStream(comptime T: type) type {
                 return globalThis.ERR(.INVALID_ARG_VALUE, "flush value is required", .{}).throw();
             }
             flush = arguments[0].toU32();
-            _ = std.meta.intToEnum(bun.zlib.FlushValue, flush) catch {
+            _ = bun.meta.intToEnum(bun.zlib.FlushValue, flush) catch {
                 return globalThis.ERR(.INVALID_ARG_VALUE, "Invalid flush value", .{}).throw();
             };
 
@@ -191,7 +191,7 @@ pub fn CompressionStream(comptime T: type) type {
                 return globalThis.ERR(.INVALID_ARG_VALUE, "flush value is required", .{}).throw();
             }
             flush = arguments[0].toU32();
-            _ = std.meta.intToEnum(bun.zlib.FlushValue, flush) catch {
+            _ = bun.meta.intToEnum(bun.zlib.FlushValue, flush) catch {
                 return globalThis.ERR(.INVALID_ARG_VALUE, "Invalid flush value", .{}).throw();
             };
 
