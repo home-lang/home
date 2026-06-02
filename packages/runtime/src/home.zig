@@ -2256,6 +2256,7 @@ pub const runtime = struct {
     // shell surface lands once `bun.Output.scoped` + the shell parser port.
     pub const shell = struct {
         pub const RefCountedStr = @import("runtime/shell/RefCountedStr.zig");
+        pub const EnvMap = @import("runtime/shell/EnvMap.zig");
         pub const ShellSubprocess = struct {
             pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
                 _ = this;
@@ -3255,6 +3256,8 @@ pub const sys = struct {
 
     // Faithful to upstream `sys/sys.zig:35` (`getErrno = platform_defs.getErrno`).
     pub const getErrno = @import("sys/sys.zig").getErrno;
+    pub const unlink = @import("sys/sys.zig").unlink;
+    pub const munmap = @import("sys/sys.zig").munmap;
 
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const Error = @import("sys/Error.zig");
