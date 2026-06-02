@@ -639,6 +639,7 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // tsc expects at the failing attribute.
     if (!rawSourceHasNonCodeMarker(c.raw_source)) {
         if (parserSuiteNeedsVirtualFileBoundaries(c)) return true;
+        if (rawSourceHasRelativeModuleAugmentation(c.raw_source)) return true;
         if ((directiveBool(c.raw_source, "declaration") orelse false) and
             rawSourceHasNodeModulesCodeMarker(c.raw_source)) return true;
         return false;
@@ -775,6 +776,11 @@ fn rawSourceHasMultipleCodeMarkers(raw: []const u8) bool {
         if (count >= 2) return true;
     }
     return false;
+}
+
+fn rawSourceHasRelativeModuleAugmentation(raw: []const u8) bool {
+    return std.mem.indexOf(u8, raw, "declare module \"./") != null or
+        std.mem.indexOf(u8, raw, "declare module './") != null;
 }
 
 fn rawSourceHasNodeModulesCodeMarker(raw: []const u8) bool {
@@ -1217,6 +1223,32 @@ test "conformance: clean ancestor node_modules declaration fixture routes throug
     const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
     defer if (result.detail.len > 0) T.allocator.free(result.detail);
     try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: relative module augmentation virtual fixture routes through program" {
+    const raw =
+        \\// @filename: map.ts
+        \\import { Observable } from "./observable";
+        \\declare module "./observable" {
+        \\  interface Observable<T> { map<U>(proj: (e: T) => U): Observable<U>; }
+        \\}
+        \\// @filename: observable.ts
+        \\export declare class Observable<T> {}
+        \\// @filename: main.ts
+        \\import { Observable } from "./observable";
+        \\let x: Observable<number>;
+        \\x.map(x => x + 1);
+    ;
+    const c: Case = .{
+        .name = "moduleAugmentationExtendFileModule2",
+        .source = "",
+        .path = "main.ts",
+        .raw_source = raw,
+        .expected_errors = "main.ts(4,1): error TS2454: Variable 'x' is used before being assigned.",
+        .strict_flags = .{},
+    };
+    try T.expect(rawSourceHasRelativeModuleAugmentation(raw));
+    try T.expect(shouldRouteThroughProgram(c));
 }
 
 fn strategyFromLabel(label: []const u8) ?ts_resolver.Strategy {

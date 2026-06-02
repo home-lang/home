@@ -359,8 +359,43 @@ pub const Program = struct {
         for (self.files.items) |f| {
             try collectProgramExportedClassesFromSource(self.gpa, f.path, f.source, &out);
         }
+        var namespace_augmentations: std.ArrayListUnmanaged(ProgramNamespaceStaticAugmentation) = .empty;
+        defer {
+            for (namespace_augmentations.items) |aug| {
+                self.gpa.free(aug.target_path);
+                if (aug.members.len > 0) self.gpa.free(aug.members);
+            }
+            namespace_augmentations.deinit(self.gpa);
+        }
+        for (self.files.items) |f| {
+            try collectRelativeModuleNamespaceStaticAugmentationsFromSource(self.gpa, f.path, f.source, &namespace_augmentations);
+        }
+        for (out.items) |*class| {
+            var extra_count: usize = 0;
+            for (namespace_augmentations.items) |aug| {
+                if (!std.mem.eql(u8, aug.class_name, class.class_name)) continue;
+                if (!programModulePathMatches(aug.target_path, class.target_path)) continue;
+                extra_count += aug.members.len;
+            }
+            if (extra_count == 0) continue;
+            var merged: std.ArrayListUnmanaged(ts_driver.ProgramExportedClassMember) = .empty;
+            try merged.appendSlice(self.gpa, class.static_members);
+            for (namespace_augmentations.items) |aug| {
+                if (!std.mem.eql(u8, aug.class_name, class.class_name)) continue;
+                if (!programModulePathMatches(aug.target_path, class.target_path)) continue;
+                try merged.appendSlice(self.gpa, aug.members);
+            }
+            if (class.static_members.len > 0) self.gpa.free(class.static_members);
+            class.static_members = try merged.toOwnedSlice(self.gpa);
+        }
         return try out.toOwnedSlice(self.gpa);
     }
+
+    const ProgramNamespaceStaticAugmentation = struct {
+        target_path: []const u8,
+        class_name: []const u8,
+        members: []const ts_driver.ProgramExportedClassMember = &.{},
+    };
 
     fn collectProgramExportedClassesFromSource(
         gpa: std.mem.Allocator,
@@ -392,13 +427,190 @@ pub const Program = struct {
                     members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
                 }
             }
+            const static_members = try collectExportedNamespaceStaticMembers(gpa, source, source[cursor..name_end]);
             try out.append(gpa, .{
                 .target_path = path,
                 .class_name = source[cursor..name_end],
                 .members = members,
+                .static_members = static_members,
             });
             search_start = name_end;
         }
+    }
+
+    fn collectExportedNamespaceStaticMembers(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        class_name: []const u8,
+    ) ProgramError![]const ts_driver.ProgramExportedClassMember {
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClassMember) = .empty;
+        errdefer out.deinit(gpa);
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "export")) |export_pos| {
+            search_start = export_pos + "export".len;
+            if (!identifierKeywordAt(source, export_pos, "export")) continue;
+            var cursor = export_pos + "export".len;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            if (!identifierKeywordAt(source, cursor, "namespace")) continue;
+            cursor += "namespace".len;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            const name_end = parseIdentifierEnd(source, cursor, source.len) orelse continue;
+            if (!std.mem.eql(u8, source[cursor..name_end], class_name)) continue;
+            const ns_open = std.mem.indexOfScalarPos(u8, source, name_end, '{') orelse continue;
+            const ns_close = findMatchingBrace(source, ns_open) orelse continue;
+            try collectNamespaceStaticMembers(gpa, source, ns_open + 1, ns_close, &out);
+            search_start = ns_close + 1;
+        }
+        return try out.toOwnedSlice(gpa);
+    }
+
+    fn collectRelativeModuleNamespaceStaticAugmentationsFromSource(
+        gpa: std.mem.Allocator,
+        path: []const u8,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged(ProgramNamespaceStaticAugmentation),
+    ) ProgramError!void {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "declare")) |declare_pos| {
+            search_start = declare_pos + "declare".len;
+            if (!identifierKeywordAt(source, declare_pos, "declare")) continue;
+            var module_pos = declare_pos + "declare".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (!identifierKeywordAt(source, module_pos, "module")) continue;
+            module_pos += "module".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (module_pos >= source.len or (source[module_pos] != '"' and source[module_pos] != '\'')) continue;
+            const quote = source[module_pos];
+            const spec_start = module_pos + 1;
+            const spec_end = std.mem.indexOfScalarPos(u8, source, spec_start, quote) orelse continue;
+            const spec = source[spec_start..spec_end];
+            if (!std.mem.startsWith(u8, spec, ".")) continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, spec_end + 1, '{') orelse continue;
+            const body_close = findMatchingBrace(source, body_open) orelse continue;
+            const target_path = try resolveProgramRelativeModulePath(gpa, path, spec);
+            errdefer gpa.free(target_path);
+            try collectRelativeModuleNamespaceStaticAugmentationsFromBody(gpa, target_path, source, body_open + 1, body_close, out);
+            search_start = body_close + 1;
+        }
+    }
+
+    fn collectRelativeModuleNamespaceStaticAugmentationsFromBody(
+        gpa: std.mem.Allocator,
+        target_path: []const u8,
+        source: []const u8,
+        body_start: usize,
+        body_end: usize,
+        out: *std.ArrayListUnmanaged(ProgramNamespaceStaticAugmentation),
+    ) ProgramError!void {
+        var search_start = body_start;
+        var target_path_owned = false;
+        while (search_start < body_end) {
+            const ns_pos = std.mem.indexOfPos(u8, source, search_start, "namespace") orelse break;
+            if (ns_pos >= body_end) break;
+            search_start = ns_pos + "namespace".len;
+            if (!identifierKeywordAt(source, ns_pos, "namespace")) continue;
+            var name_start = ns_pos + "namespace".len;
+            while (name_start < body_end and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
+            const name_end = parseIdentifierEnd(source, name_start, body_end) orelse continue;
+            const ns_open = std.mem.indexOfScalarPos(u8, source, name_end, '{') orelse continue;
+            if (ns_open >= body_end) continue;
+            const ns_close = findMatchingBrace(source, ns_open) orelse continue;
+            if (ns_close > body_end) continue;
+            const members = try collectNamespaceStaticMembersOwned(gpa, source, ns_open + 1, ns_close);
+            if (members.len > 0) {
+                const stored_path = if (!target_path_owned) blk: {
+                    target_path_owned = true;
+                    break :blk target_path;
+                } else try gpa.dupe(u8, target_path);
+                try out.append(gpa, .{
+                    .target_path = stored_path,
+                    .class_name = source[name_start..name_end],
+                    .members = members,
+                });
+            }
+            search_start = ns_close + 1;
+        }
+        if (!target_path_owned) gpa.free(target_path);
+    }
+
+    fn collectNamespaceStaticMembersOwned(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        body_start: usize,
+        body_end: usize,
+    ) ProgramError![]const ts_driver.ProgramExportedClassMember {
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClassMember) = .empty;
+        errdefer out.deinit(gpa);
+        try collectNamespaceStaticMembers(gpa, source, body_start, body_end, &out);
+        return try out.toOwnedSlice(gpa);
+    }
+
+    fn collectNamespaceStaticMembers(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        body_start: usize,
+        body_end: usize,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClassMember),
+    ) ProgramError!void {
+        var i = body_start;
+        while (i < body_end and i < source.len) : (i += 1) {
+            if (!asciiIdentifierStart(source[i])) continue;
+            var cursor = i;
+            if (identifierKeywordAt(source, cursor, "export")) {
+                cursor += "export".len;
+                while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            }
+            const keyword_len: usize = if (identifierKeywordAt(source, cursor, "let"))
+                3
+            else if (identifierKeywordAt(source, cursor, "const"))
+                5
+            else if (identifierKeywordAt(source, cursor, "var"))
+                3
+            else
+                continue;
+            cursor += keyword_len;
+            while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            const name_start = cursor;
+            const name_end = parseIdentifierEnd(source, name_start, body_end) orelse continue;
+            cursor = name_end;
+            while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+            var type_name: []const u8 = "any";
+            if (cursor < body_end and source[cursor] == ':') {
+                cursor += 1;
+                while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+                const type_start = cursor;
+                if (parseIdentifierEnd(source, type_start, body_end)) |type_end| {
+                    type_name = source[type_start..type_end];
+                    cursor = type_end;
+                }
+            } else if (cursor < body_end and source[cursor] == '=') {
+                cursor += 1;
+                while (cursor < body_end and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
+                type_name = inferSimpleInitializerTypeName(source, cursor, body_end);
+            }
+            try out.append(gpa, .{ .name = source[name_start..name_end], .type_name = type_name, .is_method = false });
+            i = skipClassMemberRemainder(source, cursor, body_end);
+        }
+    }
+
+    fn resolveProgramRelativeModulePath(gpa: std.mem.Allocator, from_path: []const u8, spec: []const u8) ProgramError![]u8 {
+        const dir = std.fs.path.dirname(from_path) orelse "";
+        return std.fs.path.resolve(gpa, &[_][]const u8{ dir, spec }) catch return error.OutOfMemory;
+    }
+
+    fn programModulePathMatches(candidate: []const u8, target_path: []const u8) bool {
+        if (std.mem.eql(u8, candidate, target_path)) return true;
+        const candidate_base = stripProgramModuleExtension(candidate);
+        const target_base = stripProgramModuleExtension(target_path);
+        return std.mem.eql(u8, candidate_base, target_base);
+    }
+
+    fn stripProgramModuleExtension(path: []const u8) []const u8 {
+        const exts = [_][]const u8{ ".d.mts", ".d.cts", ".d.ts", ".tsx", ".mts", ".cts", ".ts", ".jsx", ".mjs", ".cjs", ".js" };
+        for (exts) |ext| {
+            if (std.mem.endsWith(u8, path, ext)) return path[0 .. path.len - ext.len];
+        }
+        return path;
     }
 
     fn collectExportedClassMembers(
@@ -2383,6 +2595,50 @@ test "Program: relative module augmentation summary adds methods to imported cla
 
     try p.compileAll(.{ .no_emit = true });
     const main_c = p.fileById(main_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(main_c, 2339);
+}
+
+test "Program: relative module augmentation merges namespace static members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const map_id = try p.add("/proj/map.ts",
+        \\import { Observable } from "./observable";
+        \\(<any>Observable.prototype).map = function() { };
+        \\declare module "./observable" {
+        \\  interface Observable<T> {
+        \\    map<U>(proj: (e: T) => U): Observable<U>;
+        \\  }
+        \\  namespace Observable {
+        \\    let someAnotherValue: string;
+        \\  }
+        \\}
+    );
+    _ = try p.add("/proj/observable.ts",
+        \\export declare class Observable<T> {
+        \\  filter(pred: (e: T) => boolean): Observable<T>;
+        \\}
+        \\export namespace Observable {
+        \\  export let someValue: number;
+        \\}
+    );
+    const main_id = try p.add("/proj/main.ts",
+        \\import { Observable } from "./observable";
+        \\import "./map";
+        \\declare const x: Observable<number>;
+        \\let y = x.map(x => x + 1);
+        \\let z1 = Observable.someValue.toFixed();
+        \\let z2 = Observable.someAnotherValue.toLowerCase();
+    );
+
+    try p.compileAll(.{ .no_emit = true });
+    const map_c = p.fileById(map_id).compilation.?;
+    const main_c = p.fileById(main_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(map_c, 2449);
     try expectCompilationLacksDiagnosticCode(main_c, 2339);
 }
 
