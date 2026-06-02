@@ -1672,6 +1672,9 @@ pub const jsc = struct {
 
         pub const Runner = struct {
             bun_test_root: BunTestRoot = .{},
+            // Snapshot system (jest.zig:93). `undefined` keeps the stub all-default
+            // initialisable; the real Runner construction populates it.
+            snapshots: @import("runtime/test_runner/snapshot.zig").Snapshots = undefined,
         };
 
         pub const Jest = struct {
