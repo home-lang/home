@@ -3333,6 +3333,7 @@ const StrictDirectiveState = struct {
     no_implicit_returns: ?bool = null,
     no_fallthrough_cases_in_switch: ?bool = null,
     use_unknown_in_catch_variables: ?bool = null,
+    isolated_declarations: ?bool = null,
     declaration: ?bool = null,
 };
 
@@ -3762,6 +3763,7 @@ fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.
         .no_implicit_returns = state.no_implicit_returns orelse false,
         .no_fallthrough_cases_in_switch = state.no_fallthrough_cases_in_switch orelse false,
         .use_unknown_in_catch_variables = state.use_unknown_in_catch_variables orelse strict_on,
+        .isolated_declarations = state.isolated_declarations orelse false,
         .declaration = state.declaration orelse false,
     };
 }
@@ -3810,6 +3812,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.no_fallthrough_cases_in_switch = value;
     } else if (std.mem.eql(u8, name, "useUnknownInCatchVariables")) {
         state.use_unknown_in_catch_variables = value;
+    } else if (std.mem.eql(u8, name, "isolatedDeclarations")) {
+        state.isolated_declarations = value;
     } else if (std.mem.eql(u8, name, "declaration")) {
         state.declaration = value;
     } else {
