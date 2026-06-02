@@ -558,6 +558,12 @@ pub const cpp = struct {
         _ = value;
         return false;
     }
+
+    // JSC bring-up: C++ bindings from the vendored generated `cpp.zig` (built
+    // from Bun). Extern-backed — these compile now and resolve at the C++/WebKit
+    // link step. Added on demand as the JSC cone references them.
+    pub const JSMockFunction__getCalls = @import(".generated/cpp.zig").JSMockFunction__getCalls;
+    pub const JSMockFunction__getReturns = @import(".generated/cpp.zig").JSMockFunction__getReturns;
 };
 
 const TestJSCExterns = struct {
@@ -1866,6 +1872,14 @@ pub const options_types = struct {
 pub const meta = struct {
     pub const typeBaseName = @import("meta/meta.zig").typeBaseName;
     pub const typeBaseNameT = @import("meta/meta.zig").typeBaseNameT;
+    // `std.meta.intToEnum` was removed in Zig 0.17; faithful drop-in replacement.
+    pub fn intToEnum(comptime Enum: type, tag_int: anytype) error{InvalidEnumTag}!Enum {
+        inline for (@typeInfo(Enum).@"enum".fields) |f| {
+            if (@as(@typeInfo(Enum).@"enum".tag_type, @intCast(tag_int)) == f.value)
+                return @field(Enum, f.name);
+        }
+        return error.InvalidEnumTag;
+    }
     pub const bits = @import("meta/bits.zig");
     pub const traits = @import("meta/traits.zig");
 

@@ -138,7 +138,7 @@ pub fn setModeFromJS(this: *@This(), globalObject: *jsc.JSGlobalObject, callfram
     }
 
     const mode_value = try js_mode.coerce(i32, globalObject);
-    const mode = std.meta.intToEnum(SQLQueryResultMode, mode_value) catch {
+    const mode = bun.meta.intToEnum(SQLQueryResultMode, mode_value) catch {
         return globalObject.throwInvalidArgumentTypeValue("mode", "Number", js_mode);
     };
     this._query.setResultMode(mode);

@@ -66,6 +66,12 @@ pub export fn mi_usable_size(p: ?*const anyopaque) callconv(.c) usize {
 // so it is a faithful no-op until the vendored allocator re-attaches.
 pub export fn mi_thread_set_in_threadpool() callconv(.c) void {}
 
+// Shim: with the libc-backed allocator there is no separate mimalloc heap
+// region, so report ownership of any non-null heap pointer it handed out.
+pub export fn mi_is_in_heap_region(p: ?*const anyopaque) callconv(.c) bool {
+    return p != null;
+}
+
 test "mimalloc shim libc fallback symbols compile" {
     _ = @typeName(@TypeOf(mi_malloc));
     _ = @typeName(@TypeOf(mi_calloc));
