@@ -3487,6 +3487,17 @@ pub const c = struct {
     ) ?[*]const u8;
     // libc memmove — overlap-safe copy used by the native `bun.memmove` path.
     pub extern fn memmove(dest: ?*anyopaque, src: ?*const anyopaque, n: usize) ?*anyopaque;
+    // libc fns + C types/constants the copied source spells as `bun.c.X`.
+    pub const getuid = std.c.getuid;
+    pub const fchown = std.c.fchown;
+    pub const fchmod = std.c.fchmod;
+    pub const strncasecmp = std.c.strncasecmp;
+    pub const sa_family_t = std.c.sa_family_t;
+    pub const in_port_t = std.c.in_port_t;
+    pub const INET6_ADDRSTRLEN = 46;
+    // macOS <sys/stat.h>: `#define UTIME_NOW -1` (Linux uses std.os.linux.UTIME.NOW).
+    pub const UTIME_NOW = -1;
+    pub const ZSTD_inBuffer = @import("zstd/zstd.zig").c.ZSTD_inBuffer;
 };
 
 // ---- src/sys/ ----------------------------------------------------------
