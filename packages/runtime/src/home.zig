@@ -1487,6 +1487,8 @@ pub const jsc = struct {
     pub const EventType = @import("jsc/EventType.zig").EventType;
     // JSC bring-up: real ArrayBuffer (jsc/jsc.zig:46). Was an inline stub.
     pub const ArrayBuffer = @import("jsc/array_buffer.zig").ArrayBuffer;
+    /// Faithful to upstream `jsc/jsc.zig:45` (`array_buffer = @import("./array_buffer.zig")`).
+    pub const array_buffer = @import("jsc/array_buffer.zig");
     /// Faithful to upstream `jsc/jsc.zig:47` (`array_buffer.MarkedArrayBuffer`).
     pub const MarkedArrayBuffer = @import("jsc/array_buffer.zig").MarkedArrayBuffer;
     pub const AnyPromise = @import("jsc/AnyPromise.zig").AnyPromise;
@@ -1526,6 +1528,10 @@ pub const jsc = struct {
     pub const Task = @import("jsc/Task.zig").Task;
     // Faithful to upstream jsc/jsc.zig:155 (= EventLoop.WorkPoolTask = work_pool.Task).
     pub const WorkPoolTask = @import("threading/work_pool.zig").Task;
+    // Faithful to upstream jsc/jsc.zig:154 (`WorkPool = EventLoop.WorkPool`).
+    pub const WorkPool = @import("threading/work_pool.zig").WorkPool;
+    // Faithful to upstream jsc/jsc.zig:112.
+    pub const ZigStackFrame = @import("jsc/ZigStackFrame.zig").ZigStackFrame;
     pub const ManagedTask = @import("event_loop/ManagedTask.zig");
     // JSC bring-up: real VirtualMachine (was a 215-line stub). jsc/jsc.zig:99.
     pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
@@ -1914,6 +1920,7 @@ pub const meta = struct {
     pub const typeBaseName = @import("meta/meta.zig").typeBaseName;
     pub const typeBaseNameT = @import("meta/meta.zig").typeBaseNameT;
     pub const enumFieldNames = @import("meta/meta.zig").enumFieldNames;
+    pub const Item = @import("meta/meta.zig").Item;
     // `std.meta.intToEnum` was removed in Zig 0.17; faithful drop-in replacement.
     pub fn intToEnum(comptime Enum: type, tag_int: anytype) error{InvalidEnumTag}!Enum {
         inline for (@typeInfo(Enum).@"enum".fields) |f| {
@@ -2096,6 +2103,8 @@ pub const ConfigVersion = install.ConfigVersion;
 // TaggedPointer family re-lands in a follow-up batch.
 pub const ptr = struct {
     pub const meta = @import("ptr/meta.zig");
+    // Faithful to upstream ptr/ptr.zig:27 (`RawRefCount = raw_ref_count.RawRefCount`).
+    pub const RawRefCount = @import("ptr/raw_ref_count.zig").RawRefCount;
     pub const Cow = @import("ptr/Cow.zig").Cow;
     pub const CowSlice = @import("ptr/CowSlice.zig").CowSlice;
     pub const CowSliceZ = @import("ptr/CowSlice.zig").CowSliceZ;
