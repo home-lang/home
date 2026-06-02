@@ -51,7 +51,7 @@ pub const collections = @import("collections/collections.zig");
 pub const SmallList = @import("css/small_list.zig").SmallList;
 // Faithful to upstream bun.zig:1934 (ZigString) and bun.zig:768 (AllocationScope).
 pub const ZigString = jsc.ZigString;
-pub const AllocationScope = @import("bun_alloc/allocation_scope.zig").AllocationScope;
+pub const AllocationScope = allocators.AllocationScope;
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -2171,292 +2171,9 @@ pub const runtime = struct {
         // Sixth-wave port batch (2026-05-18):
         pub const RangeRequest = @import("runtime/server/RangeRequest.zig");
     };
-    pub const webcore = struct {
-        pub const ScriptExecutionContext = struct {
-            pub const Identifier = enum(u32) {
-                _,
-            };
-        };
-
-        pub const s3 = struct {
-            pub const multipart_options = @import("runtime/webcore/s3/multipart_options.zig");
-        };
-        // Sixth-wave port batch (2026-05-18):
-        pub const EncodingLabel = @import("runtime/webcore/EncodingLabel.zig").EncodingLabel;
-        pub const AbortSignal = jsc.AbortSignal;
-        pub const encoding = struct {
-            pub const Encoding = enum {
-                utf8,
-            };
-
-            pub fn toBunStringComptime(bytes: []const u8, comptime encoding_: Encoding) String {
-                _ = encoding_;
-                return String.fromBytes(bytes);
-            }
-
-            pub fn encodeIntoFrom16(input: []const u16, out: []u8, comptime enc: anytype, comptime allow_partial_write: bool) !usize {
-                _ = enc;
-                _ = allow_partial_write;
-                var written: usize = 0;
-                for (input) |unit| {
-                    if (written >= out.len) break;
-                    out[written] = @truncate(unit);
-                    written += 1;
-                }
-                return written;
-            }
-
-            pub fn encodeIntoFrom8(input: []const u8, out: []u8, comptime enc: anytype) !usize {
-                _ = enc;
-                const len = @min(input.len, out.len);
-                @memcpy(out[0..len], input[0..len]);
-                return len;
-            }
-        };
-        // Thirteenth-wave port batch (2026-05-18). Pure-data webcore
-        // leaves — the JSC-bridged `Body`/`PendingValue`/`Mixin` /
-        // `AsyncFormData` / registry are parked until JSC lands.
-        pub const Body = @import("runtime/webcore/Body.zig");
-        pub const FormData = @import("runtime/webcore/FormData.zig").FormData;
-        pub const Blob = struct {
-            size: SizeType = 0,
-            content_type: []const u8 = "",
-
-            pub const SizeType = u52;
-            pub const Store = BlobStore;
-
-            pub fn new(blob: Blob) *Blob {
-                const created = handleOom(default_allocator.create(Blob));
-                created.* = blob;
-                return created;
-            }
-
-            pub fn fromJS(value: jsc.JSValue) ?*Blob {
-                _ = value;
-                return null;
-            }
-
-            pub fn dupeWithContentType(this: *const Blob, include_content_type: bool) Blob {
-                _ = include_content_type;
-                return this.*;
-            }
-
-            pub fn deinit(this: *Blob) void {
-                _ = this;
-            }
-
-            pub fn detach(this: *Blob) void {
-                _ = this;
-            }
-
-            pub fn resolveSize(this: *Blob) void {
-                _ = this;
-            }
-
-            pub fn toJS(this: *Blob, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-                _ = this;
-                _ = globalObject;
-                return .zero;
-            }
-
-            pub fn sharedView(this: *const Blob) []const u8 {
-                _ = this;
-                return "";
-            }
-        };
-
-        pub const BlobStore = struct {
-            data: Data = .bytes,
-
-            pub const Data = enum {
-                bytes,
-                file,
-                s3,
-            };
-        };
-
-        pub const FetchHeaders = struct {
-            pub fn cast(value: jsc.JSValue) ?*FetchHeaders {
-                _ = value;
-                return null;
-            }
-        };
-
-        pub const FileSink = opaque {};
-
-        pub const AnyBlob = struct {
-            Blob: Blob = .{},
-            store_ptr: ?*BlobStore = null,
-            bytes: []const u8 = "",
-
-            pub fn store(this: *AnyBlob) ?*BlobStore {
-                return this.store_ptr;
-            }
-
-            pub fn detach(this: *AnyBlob) void {
-                _ = this;
-            }
-
-            pub fn slice(this: *const AnyBlob) []const u8 {
-                return this.bytes;
-            }
-        };
-
-        pub const ReadableStream = struct {
-            value: jsc.JSValue = .zero,
-
-            pub fn fromJS(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject) JSError!?ReadableStream {
-                _ = globalThis;
-                if (value == .zero) return null;
-                return .{ .value = value };
-            }
-
-            pub fn fromBlobCopyRef(globalThis: *jsc.JSGlobalObject, blob: *Blob, size: Blob.SizeType) JSError!jsc.JSValue {
-                _ = globalThis;
-                _ = blob;
-                _ = size;
-                return .zero;
-            }
-
-            pub fn empty(globalThis: *jsc.JSGlobalObject) JSError!jsc.JSValue {
-                _ = globalThis;
-                return .js_undefined;
-            }
-
-            pub fn fromOwnedSlice(globalThis: *jsc.JSGlobalObject, bytes: []u8, offset: usize) JSError!jsc.JSValue {
-                _ = globalThis;
-                _ = bytes;
-                _ = offset;
-                return .zero;
-            }
-
-            pub fn fromPipe(globalThis: *jsc.JSGlobalObject, pipe: anytype, reader: anytype) jsc.JSValue {
-                _ = globalThis;
-                _ = pipe;
-                _ = reader;
-                return .zero;
-            }
-
-            pub fn cancel(this: *ReadableStream, globalThis: *jsc.JSGlobalObject) void {
-                _ = this;
-                _ = globalThis;
-            }
-        };
-
-        pub const Response = struct {
-            body: BodyValue = .Empty,
-
-            pub fn fromJS(value: jsc.JSValue) ?*Response {
-                _ = value;
-                return null;
-            }
-
-            pub fn getContentType(this: *Response) JSError!?String {
-                _ = this;
-                return null;
-            }
-
-            pub fn isOK(this: *const Response) bool {
-                _ = this;
-                return false;
-            }
-
-            pub fn statusCode(this: *const Response) u16 {
-                _ = this;
-                return 0;
-            }
-
-            pub fn getBodyUsed(this: *Response, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-                _ = this;
-                _ = globalObject;
-                return .false;
-            }
-
-            pub fn getBodyValue(this: *Response) *BodyValue {
-                return &this.body;
-            }
-
-            pub fn getBodyReadableStream(this: *Response, globalObject: *jsc.JSGlobalObject) ?ReadableStream {
-                _ = this;
-                _ = globalObject;
-                return null;
-            }
-
-            pub fn getBlobWithoutCallFrame(this: *Response, globalObject: *jsc.JSGlobalObject) JSError!jsc.JSValue {
-                _ = this;
-                _ = globalObject;
-                return .zero;
-            }
-
-            pub fn writeFormat(this: *Response, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
-                _ = this;
-                _ = formatter;
-                _ = enable_ansi_colors;
-                try writer.writeAll("Response");
-            }
-
-            pub const BodyValue = union(enum) {
-                Empty,
-                Error: ErrorValue,
-                Locked: LockedValue,
-                Blob: Blob,
-
-                pub fn toBlobIfPossible(this: *BodyValue) void {
-                    _ = this;
-                }
-
-                pub fn tryUseAsAnyBlob(this: *BodyValue) ?AnyBlob {
-                    _ = this;
-                    return null;
-                }
-
-                pub fn useAsAnyBlob(this: *BodyValue) AnyBlob {
-                    return switch (this.*) {
-                        .Blob => |blob| .{ .Blob = blob },
-                        else => .{},
-                    };
-                }
-
-                pub fn toReadableStream(this: *BodyValue, globalObject: *jsc.JSGlobalObject) JSError!jsc.JSValue {
-                    _ = this;
-                    _ = globalObject;
-                    return .zero;
-                }
-            };
-
-            pub const ErrorValue = struct {
-                pub fn toJS(this: ErrorValue, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-                    _ = this;
-                    _ = globalObject;
-                    return .zero;
-                }
-            };
-
-            pub const LockedValue = struct {};
-        };
-        pub const Request = struct {
-            pub fn fromJS(value: jsc.JSValue) ?*Request {
-                _ = value;
-                return null;
-            }
-
-            pub fn getBlobWithoutCallFrame(this: *Request, globalObject: *jsc.JSGlobalObject) JSError!jsc.JSValue {
-                _ = this;
-                _ = globalObject;
-                return .zero;
-            }
-
-            pub fn writeFormat(this: *Request, value: jsc.JSValue, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
-                _ = this;
-                _ = value;
-                _ = formatter;
-                _ = enable_ansi_colors;
-                try writer.writeAll("Request");
-            }
-        };
-        pub const ObjectURLRegistry = @import("runtime/webcore/ObjectURLRegistry.zig");
-        pub const Sink = @import("runtime/webcore/Sink.zig");
-    };
+    // JSC bring-up: real webcore (was a ~285-line hand-written stub).
+    // Faithful to upstream bun.webcore = @import("runtime/webcore.zig").
+    pub const webcore = @import("runtime/webcore.zig");
     pub const valkey = struct {
         // Per-VM Valkey state. JSC-bridge dispatch omitted — re-lands in Phase 12.2.
         pub const Context = @import("runtime/valkey_jsc/ValkeyContext.zig");
@@ -3355,14 +3072,14 @@ pub const allocators = struct {
                 }
             };
 
-            pub fn trackExternalAllocation(this: *AllocationScope, data: []const u8, ret_addr: usize, extra: Extra) void {
+            pub fn trackExternalAllocation(this: *@This(), data: []const u8, ret_addr: usize, extra: Extra) void {
                 _ = this;
                 _ = data;
                 _ = ret_addr;
                 _ = extra;
             }
 
-            pub fn trackExternalFree(this: *AllocationScope, data: []const u8, ret_addr: usize) !void {
+            pub fn trackExternalFree(this: *@This(), data: []const u8, ret_addr: usize) !void {
                 _ = this;
                 _ = data;
                 _ = ret_addr;
