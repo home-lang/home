@@ -49,6 +49,8 @@ pub const resolver = @import("resolver/resolver.zig");
 /// `bun.SmallList` (`src/bun.zig:236`, = `css.SmallList`).
 pub const collections = @import("collections/collections.zig");
 pub const SmallList = @import("css/small_list.zig").SmallList;
+/// Faithful to upstream `bun.zig:1934`: `pub const ZigString = jsc.ZigString;`.
+pub const ZigString = jsc.ZigString;
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -1189,102 +1191,8 @@ pub const jsc = struct {
     // Consumed by the vendored `ZigGeneratedClasses` module.
     pub const GeneratedClassesList = @import("jsc/generated_classes_list.zig").Classes;
     pub const JSGlobalObject = @import("jsc/JSGlobalObject.zig").JSGlobalObject;
-    pub const ConsoleObject = struct {
-        pub const MessageLevel = enum(u32) {
-            Log = 0,
-            Warning = 1,
-            Error = 2,
-            Debug = 3,
-            Info = 4,
-            _,
-        };
-
-        pub const MessageType = enum(u32) {
-            Log = 0,
-            Dir = 1,
-            DirXML = 2,
-            Table = 3,
-            Trace = 4,
-            Clear = 5,
-            StartGroup = 6,
-            StartGroupCollapsed = 7,
-            EndGroup = 8,
-            Assert = 9,
-            Timing = 10,
-            Profile = 11,
-            ProfileEnd = 12,
-            Image = 13,
-            _,
-        };
-
-        pub const Formatter = struct {
-            remaining_values: []const JSValue = &.{},
-            globalThis: ?*JSGlobalObject = null,
-            map_node: ?*anyopaque = null,
-            stack_check: StackCheck = .{},
-
-            pub fn deinit(this: *Formatter) void {
-                this.map_node = null;
-            }
-
-            pub const ZigFormatter = struct {
-                formatter: *Formatter,
-                value: JSValue,
-
-                pub fn format(this: ZigFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-                    _ = this.formatter;
-                    try writer.print("{d}", .{@intFromEnum(this.value)});
-                }
-            };
-
-            pub const Tag = enum {
-                Undefined,
-                Null,
-                Boolean,
-                Integer,
-                Double,
-                String,
-                Array,
-                Object,
-                Error,
-                Private,
-                Promise,
-                JSON,
-                toJSON,
-                Other,
-
-                pub const Result = struct {
-                    tag: Tag,
-                };
-
-                pub fn get(value: JSValue, globalThis: *JSGlobalObject) JSError!Tag.Result {
-                    _ = globalThis;
-                    return .{ .tag = switch (value) {
-                        .js_undefined => .Undefined,
-                        .null => .Null,
-                        .true, .false => .Boolean,
-                        else => .Other,
-                    } };
-                }
-            };
-        };
-
-        pub fn messageWithTypeAndLevel(
-            console: ?*ConsoleObject,
-            message_type: MessageType,
-            level: MessageLevel,
-            globalThis: *JSGlobalObject,
-            vals: [*]JSValue,
-            len: usize,
-        ) callconv(jsc.conv) void {
-            _ = console;
-            _ = message_type;
-            _ = level;
-            _ = globalThis;
-            _ = vals;
-            _ = len;
-        }
-    };
+    // JSC bring-up: real ConsoleObject (was a stub). Faithful to jsc/jsc.zig:116.
+    pub const ConsoleObject = @import("jsc/ConsoleObject.zig");
     pub const JSPromiseRejectionOperation = @import("jsc/JSPromiseRejectionOperation.zig").JSPromiseRejectionOperation;
     pub const ScriptExecutionStatus = @import("jsc/ScriptExecutionStatus.zig").ScriptExecutionStatus;
     pub const SourceType = @import("jsc/SourceType.zig").SourceType;
@@ -4976,7 +4884,7 @@ test {
     // from 1434 → 338 errors (now deep jsc-namespace gaps: jsc.Node.StringOrBuffer,
     // jsc.Expect, JSString methods, VirtualMachine.RareData fields). Parked here
     // so the rest stays green; un-comment to resume the grind.
-    // _ = @import("ZigGeneratedClasses"); // parked: ~410 structural (wholesale switch + C++ link)
+    _ = @import("ZigGeneratedClasses");
     // Bun-original foundational leaves (2026-06-01 integration sweep). These
     // are Bun's `bun_core/*` originals; Home's live code uses the reorganized
     // `core/*` + `string/immutable.zig` copies, but referencing the originals

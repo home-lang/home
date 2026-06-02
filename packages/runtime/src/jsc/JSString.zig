@@ -1,44 +1,20 @@
-// Copied from bun/src/jsc/JSString.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// JSC-bridge wrappers around `JSC::JSString*`. `JSGlobalObject`, `JSValue`,
-// `JSObject`, `ZigString`, and `bun.JSError` are not yet ported; we stub them
-// locally so the public surface stays usable. The real JSC types re-attach in
-// Phase 12.2.
-//
-// `toSlice` / `toSliceClone` / `toSliceZ` are omitted — they need
-// `ZigString.Slice` and an allocator-bound conversion path that lives in
-// `ZigString.zig` (not yet ported). The Iterator callback typedefs and struct
-// stay because callers spell them in signatures.
-
-const std = @import("std");
-
-// JSC bring-up: import the real shared types (not local opaque stubs) so the
-// jsc type graph is coherent — `jsc.JSString` signatures use the same
-// JSGlobalObject/JSValue/JSObject/ZigString identities as the rest of `jsc`.
-const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = @import("./JSValue.zig").JSValue;
-const JSObject = @import("./JSObject.zig").JSObject;
-const ZigString = @import("./ZigString.zig").ZigString;
-
 pub const JSString = opaque {
     extern fn JSC__JSString__toObject(this: *JSString, global: *JSGlobalObject) ?*JSObject;
-    extern fn JSC__JSString__toZigString(this: *JSString, global: *JSGlobalObject, zig_str: *ZigString) void;
+    extern fn JSC__JSString__toZigString(this: *JSString, global: *JSGlobalObject, zig_str: *jsc.ZigString) void;
     extern fn JSC__JSString__eql(this: *const JSString, global: *JSGlobalObject, other: *JSString) bool;
     extern fn JSC__JSString__iterator(this: *JSString, globalObject: *JSGlobalObject, iter: *anyopaque) void;
     extern fn JSC__JSString__length(this: *const JSString) usize;
     extern fn JSC__JSString__is8Bit(this: *const JSString) bool;
 
-    // `toJS` upstream calls `JSValue.fromCell(str)`. The real conversion
-    // re-lands once JSValue has the `fromCell` constructor — until then,
-    // callers wanting to go from `*JSString` to a JSValue must bottle the
-    // raw bits themselves.
+    pub fn toJS(str: *JSString) JSValue {
+        return JSValue.fromCell(str);
+    }
 
     pub fn toObject(this: *JSString, global: *JSGlobalObject) ?*JSObject {
         return JSC__JSString__toObject(this, global);
     }
 
-    pub fn toZigString(this: *JSString, global: *JSGlobalObject, zig_str: *ZigString) void {
+    pub fn toZigString(this: *JSString, global: *JSGlobalObject, zig_str: *jsc.ZigString) void {
         return JSC__JSString__toZigString(this, global, zig_str);
     }
 
@@ -46,13 +22,44 @@ pub const JSString = opaque {
         std.mem.doNotOptimizeAway(this);
     }
 
-    pub fn getZigString(this: *JSString, global: *JSGlobalObject) ZigString {
-        var out: ZigString = .{};
+    pub fn getZigString(this: *JSString, global: *JSGlobalObject) jsc.ZigString {
+        var out = jsc.ZigString.init("");
         this.toZigString(global, &out);
         return out;
     }
 
     pub const view = getZigString;
+
+    /// doesn't always allocate
+    pub fn toSlice(
+        this: *JSString,
+        global: *JSGlobalObject,
+        allocator: std.mem.Allocator,
+    ) ZigString.Slice {
+        var str = ZigString.init("");
+        this.toZigString(global, &str);
+        return str.toSlice(allocator);
+    }
+
+    pub fn toSliceClone(
+        this: *JSString,
+        global: *JSGlobalObject,
+        allocator: std.mem.Allocator,
+    ) JSError!ZigString.Slice {
+        var str = ZigString.init("");
+        this.toZigString(global, &str);
+        return str.toSliceClone(allocator);
+    }
+
+    pub fn toSliceZ(
+        this: *JSString,
+        global: *JSGlobalObject,
+        allocator: std.mem.Allocator,
+    ) ZigString.Slice {
+        var str = ZigString.init("");
+        this.toZigString(global, &str);
+        return str.toSliceZ(allocator);
+    }
 
     pub fn eql(this: *const JSString, global: *JSGlobalObject, other: *JSString) bool {
         return JSC__JSString__eql(this, global, other);
@@ -84,33 +91,13 @@ pub const JSString = opaque {
     };
 };
 
-test "JSString is an opaque pointer-only type" {
-    try std.testing.expect(@sizeOf(*JSString) == @sizeOf(usize));
-}
+const std = @import("std");
+const JSObject = @import("./JSObject.zig").JSObject;
+const ZigString = @import("./ZigString.zig").ZigString;
 
-test "JSString exposes the expected entrypoints" {
-    try std.testing.expect(@hasDecl(JSString, "toObject"));
-    try std.testing.expect(@hasDecl(JSString, "toZigString"));
-    try std.testing.expect(@hasDecl(JSString, "ensureStillAlive"));
-    try std.testing.expect(@hasDecl(JSString, "getZigString"));
-    try std.testing.expect(@hasDecl(JSString, "view"));
-    try std.testing.expect(@hasDecl(JSString, "eql"));
-    try std.testing.expect(@hasDecl(JSString, "iterator"));
-    try std.testing.expect(@hasDecl(JSString, "length"));
-    try std.testing.expect(@hasDecl(JSString, "is8Bit"));
-}
+const bun = @import("bun");
+const JSError = bun.JSError;
 
-test "JSString.Iterator has the expected C-ABI layout" {
-    // Six pointer-sized members (one is a u8 + padding, but we only check
-    // it carries the callbacks). Probe the field names so the layout is
-    // pinned against accidental reordering when callers across the FFI
-    // boundary rely on the same struct.
-    const info = @typeInfo(JSString.Iterator).@"struct";
-    try std.testing.expect(info.layout == .@"extern");
-    try std.testing.expectEqualStrings("data", info.fields[0].name);
-    try std.testing.expectEqualStrings("stop", info.fields[1].name);
-    try std.testing.expectEqualStrings("append8", info.fields[2].name);
-    try std.testing.expectEqualStrings("append16", info.fields[3].name);
-    try std.testing.expectEqualStrings("write8", info.fields[4].name);
-    try std.testing.expectEqualStrings("write16", info.fields[5].name);
-}
+const jsc = bun.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSValue = jsc.JSValue;

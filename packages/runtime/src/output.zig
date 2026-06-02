@@ -76,8 +76,87 @@ pub fn printElapsed(elapsed_ms: f64) void {
     std.debug.print("[{d:.2}ms]", .{elapsed_ms});
 }
 
-pub fn prettyFmt(comptime fmt: []const u8, comptime _: bool) []const u8 {
-    return fmt;
+const RESET: []const u8 = "\x1b[0m";
+
+// Faithful port of upstream `bun_core/output.zig` prettyFmt: strips `<color>`
+// tags (emitting ANSI codes when enabled) and returns a null-terminated
+// comptime format string. Replaces the earlier `[]const u8` stub so callers
+// like JSGlobalObject.throwPretty get the `[:0]const u8` they expect.
+pub fn prettyFmt(comptime fmt: []const u8, comptime is_enabled: bool) [:0]const u8 {
+    comptime var new_fmt: [fmt.len * 4]u8 = undefined;
+    comptime var new_fmt_i: usize = 0;
+
+    @setEvalBranchQuota(9999);
+    comptime var i: usize = 0;
+    comptime while (i < fmt.len) {
+        switch (fmt[i]) {
+            '\\' => {
+                i += 1;
+                if (i < fmt.len) {
+                    switch (fmt[i]) {
+                        '<', '>' => {
+                            new_fmt[new_fmt_i] = fmt[i];
+                            new_fmt_i += 1;
+                            i += 1;
+                        },
+                        else => {
+                            new_fmt[new_fmt_i] = '\\';
+                            new_fmt_i += 1;
+                            new_fmt[new_fmt_i] = fmt[i];
+                            new_fmt_i += 1;
+                            i += 1;
+                        },
+                    }
+                }
+            },
+            '>' => {
+                i += 1;
+            },
+            '{' => {
+                while (fmt.len > i and fmt[i] != '}') {
+                    new_fmt[new_fmt_i] = fmt[i];
+                    new_fmt_i += 1;
+                    i += 1;
+                }
+            },
+            '<' => {
+                i += 1;
+                var is_reset = fmt[i] == '/';
+                if (is_reset) i += 1;
+                const start: usize = i;
+                while (i < fmt.len and fmt[i] != '>') {
+                    i += 1;
+                }
+
+                const color_name = fmt[start..i];
+                const color_str = color_picker: {
+                    if (color_map.get(color_name)) |color_name_literal| {
+                        break :color_picker color_name_literal;
+                    } else if (std.mem.eql(u8, color_name, "r")) {
+                        is_reset = true;
+                        break :color_picker "";
+                    } else {
+                        @compileError("Invalid color name passed: " ++ color_name);
+                    }
+                };
+
+                if (is_enabled) {
+                    for (if (is_reset) RESET else color_str) |ch| {
+                        new_fmt[new_fmt_i] = ch;
+                        new_fmt_i += 1;
+                    }
+                }
+            },
+
+            else => {
+                new_fmt[new_fmt_i] = fmt[i];
+                new_fmt_i += 1;
+                i += 1;
+            },
+        }
+    };
+
+    return comptime (new_fmt[0..new_fmt_i].* ++ .{0})[0..new_fmt_i :0];
 }
 
 pub fn errorln(comptime fmt: []const u8, args: anytype) void {
