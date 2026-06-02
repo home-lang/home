@@ -333,6 +333,12 @@ pub const DebugTimer = struct {
 /// which is a no-op until Home routes through its own buffered writer.
 pub const Source = struct {
     pub fn configureThread() void {}
+
+    /// Faithful to upstream `bun_core/output.zig:93`.
+    pub fn configureNamedThread(name: [:0]const u8) void {
+        @import("bun_core/Global.zig").setThreadName(name);
+        configureThread();
+    }
 };
 
 

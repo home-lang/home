@@ -37,6 +37,8 @@ pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
 /// Faithful to upstream `bun.zig:11` (`feature_flag = env_var.feature_flag`).
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
+/// Faithful to upstream `bun.zig:196` (`sha = @import("./sha_hmac/sha.zig")`).
+pub const sha = @import("sha_hmac/sha.zig");
 /// Faithful to upstream `bun.zig:456`. Bun reimplements `std.mem.span`'s
 /// optional + sentinel handling verbatim; Home aliases the std version, which
 /// has identical semantics.
@@ -1545,6 +1547,8 @@ pub const jsc = struct {
     pub const hot_reloader = @import("jsc/hot_reloader.zig");
     // Faithful to upstream jsc/jsc.zig:246.
     pub const JSTimeType = u52;
+    // Faithful to upstream jsc/jsc.zig:150.
+    pub const PlatformEventLoop = if (Environment.isPosix) uws.Loop else Async.Loop;
     // NOTE: upstream jsc/jsc.zig:282 (`generated = @import("bindgen_generated")`)
     // is deferred — the vendored bindgen_generated.zig imports a
     // `bindgen_generated/` subtree that codegen has not emitted into the tree yet.
