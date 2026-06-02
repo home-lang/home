@@ -1355,6 +1355,7 @@ pub fn lookup(code: u32) ?DiagInfo {
         6193 => .{ .code = 6193, .category = .message, .key = "Found_1_error_Watching_for_file_changes_6193", .message = "Found 1 error. Watching for file changes." },
         6194 => .{ .code = 6194, .category = .message, .key = "Found_0_errors_Watching_for_file_changes_6194", .message = "Found {0} errors. Watching for file changes." },
         6195 => .{ .code = 6195, .category = .message, .key = "Resolve_keyof_to_string_valued_property_names_only_no_numbers_or_symbols_6195", .message = "Resolve 'keyof' to string valued property names only (no numbers or symbols)." },
+        6196 => .{ .code = 6196, .category = .err, .key = "_0_is_declared_but_never_used_6196", .message = "'{0}' is declared but never used." },
         6197 => .{ .code = 6197, .category = .message, .key = "Include_modules_imported_with_json_extension_6197", .message = "Include modules imported with '.json' extension" },
         6200 => .{ .code = 6200, .category = .err, .key = "Definitions_of_the_following_identifiers_conflict_with_those_in_another_file_Colon_0_6200", .message = "Definitions of the following identifiers conflict with those in another file: {0}" },
         6201 => .{ .code = 6201, .category = .message, .key = "Conflicts_are_in_this_file_6201", .message = "Conflicts are in this file." },
