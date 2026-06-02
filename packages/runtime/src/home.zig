@@ -1744,6 +1744,16 @@ pub const jsc = struct {
     pub const SavedSourceMap = @import("jsc/SavedSourceMap.zig");
     // Faithful to upstream jsc/jsc.zig:97.
     pub const Debugger = @import("jsc/Debugger.zig");
+    // Faithful to upstream jsc/jsc.zig:231-239.
+    pub const OpaqueCallback = *const fn (current: ?*anyopaque) callconv(.c) void;
+    pub fn OpaqueWrap(comptime Context: type, comptime Function: fn (this: *Context) void) OpaqueCallback {
+        return struct {
+            pub fn callback(ctx: ?*anyopaque) callconv(.c) void {
+                const context: *Context = @as(*Context, @ptrCast(@alignCast(ctx.?)));
+                Function(context);
+            }
+        }.callback;
+    }
     pub const ManagedTask = @import("event_loop/ManagedTask.zig");
     // JSC bring-up: real VirtualMachine (was a 215-line stub). jsc/jsc.zig:99.
     pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
@@ -1936,7 +1946,9 @@ pub const io = struct {
         };
 
         pub const Handle = struct {
-            poll: Poll = .{},
+            // Qualify to the nested Poll (the top-level `io.Poll` alias would
+            // otherwise make the unqualified `Poll` an ambiguous container ref).
+            poll: BufferedReader.Poll = .{},
         };
 
         pub const Poll = struct {
@@ -2157,6 +2169,8 @@ pub const meta = struct {
 pub const crash_handler = struct {
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
     pub const StoredTrace = @import("crash_handler/StoredTrace.zig").StoredTrace;
+    // NOTE: crash_handler/crash_handler.zig has fork-`**`-spacing issues; its
+    // suppressReporting re-export is deferred until that file is swept.
     // Wave-16 Tier-1 grinder (2026-05-18):
     pub const CPUFeatures = @import("crash_handler/CPUFeatures.zig");
 
