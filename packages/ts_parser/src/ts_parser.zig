@@ -14806,7 +14806,7 @@ pub const Parser = struct {
 
     /// Allocates the args slice; caller must `gpa.free` it.
     fn parseArgumentList(self: *Parser) ParseError![]NodeId {
-        _ = try self.expect(.open_paren, "'(' for argument list");
+        const arg_list_open = try self.expect(.open_paren, "'(' for argument list");
         // Reset `disallow_arrow_return_type` for argument expressions
         // (a fresh assignment-expression context). Mirrors TS's
         // `parseArgumentExpression` calling
@@ -14863,7 +14863,15 @@ pub const Parser = struct {
             if (close_tok.kind == .kw_return and !missing_arg_before_statement and args.items.len > 0) {
                 try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "',' expected.");
             } else if (!missing_arg_before_statement) {
-                try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+                try self.reportCodeAtWithMatchedPair(
+                    close_tok.span.start,
+                    close_tok.line,
+                    1005,
+                    "')' expected.",
+                    arg_list_open.span.start,
+                    "(",
+                    ")",
+                );
             }
         }
         return try args.toOwnedSlice(self.gpa);
