@@ -1891,6 +1891,7 @@ pub const Engine = struct {
         var signature_member_count: usize = 0;
         const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target));
         defer self.gpa.free(target_members);
+        const has_synthetic_call = self.objectMembersHaveSyntheticSignature(target_members);
         for (target_members) |tm| {
             if (tm.type >= self.interner.pool.typeCount()) continue;
             if (self.pool().flagsOf(tm.type).is_signature) signature_member_count += 1;
@@ -1899,6 +1900,12 @@ pub const Engine = struct {
             if (tm.type >= self.interner.pool.typeCount()) return false;
             const tf = self.pool().flagsOf(tm.type);
             if (tf.is_signature) {
+                if (has_synthetic_call and
+                    !self.isCallOrConstructMember(tm.name) and
+                    self.isFunctionPrototypeSignatureName(tm.name))
+                {
+                    continue;
+                }
                 saw_signature_member = true;
                 const ok = if (signature_member_count > 1)
                     try self.computeSignatureAssignableWithMode(source, tm.type, true)
@@ -1910,6 +1917,23 @@ pub const Engine = struct {
             if (!tm.is_optional) return false;
         }
         return saw_signature_member;
+    }
+
+    fn objectMembersHaveSyntheticSignature(self: *Engine, members: []const types.ObjectMember) bool {
+        for (members) |m| {
+            if (!self.isCallOrConstructMember(m.name)) continue;
+            if (m.type >= self.interner.pool.typeCount()) continue;
+            if (self.pool().flagsOf(m.type).is_signature) return true;
+        }
+        return false;
+    }
+
+    fn isFunctionPrototypeSignatureName(self: *Engine, name: types.StringId) bool {
+        const si = self.string_interner orelse return false;
+        const bytes = si.getOptional(name) orelse return false;
+        return std.mem.eql(u8, bytes, "call") or
+            std.mem.eql(u8, bytes, "apply") or
+            std.mem.eql(u8, bytes, "bind");
     }
 
     fn computeCallableObjectAssignableToSignature(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
@@ -2327,6 +2351,29 @@ test "Engine: plain array is not assignable to fixed tuple target" {
     });
 
     try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: signature is assignable to Function callable object" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const any_array = try ti.internArrayType(&sint, Primitive.any);
+    const source = try ti.internSignature(&.{}, Primitive.any, false);
+    const function_call = try ti.internSignature(&.{any_array}, Primitive.any, false);
+    const function_proto_call = try ti.internSignature(&.{ Primitive.any, any_array }, Primitive.any, false);
+    const call_id = try sint.intern("__call");
+    const proto_call_id = try sint.intern("call");
+    const function_t = try ti.internObjectType(&.{
+        .{ .name = call_id, .type = function_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = proto_call_id, .type = function_proto_call, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+
+    try T.expect(try e.isAssignableTo(source, function_t));
 }
 
 test "Engine: structural object — weak optional target requires common source property" {
