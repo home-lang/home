@@ -54,6 +54,7 @@ pub const allocateLatin1IntoUTF8WithList = @import("string/immutable.zig").alloc
 pub const toUTF8ListWithTypeBun = @import("string/immutable.zig").toUTF8ListWithTypeBun;
 pub const elementLengthUTF16IntoUTF8 = @import("string/immutable.zig").elementLengthUTF16IntoUTF8;
 pub const eqlCaseInsensitiveASCII = @import("string/immutable.zig").eqlCaseInsensitiveASCII;
+pub const eqlCaseInsensitiveASCIIIgnoreLength = @import("string/immutable.zig").eqlCaseInsensitiveASCIIIgnoreLength;
 pub const visible = @import("string/immutable.zig").visible;
 pub const copyLatin1IntoUTF8StopOnNonASCII = @import("string/immutable.zig").copyLatin1IntoUTF8StopOnNonASCII;
 pub const elementLengthCP1252IntoUTF16 = @import("string/immutable.zig").elementLengthCP1252IntoUTF16;

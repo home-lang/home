@@ -163,6 +163,89 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
             return null;
         }
 
+        /// Faithful to upstream `comptime_string_map.zig:129`.
+        pub fn getWithLengthAndEqlList(str: anytype, comptime len: usize, comptime eqls: anytype) ?V {
+            const end = comptime brk: {
+                var i = len_indexes[len];
+                @setEvalBranchQuota(99999);
+                while (i < kvs.len and kvs[i].key.len == len) : (i += 1) {}
+                break :brk i;
+            };
+            const start = comptime len_indexes[len];
+            const range = comptime keys()[start..end];
+            if (eqls(str, range)) |k| {
+                return kvs[start + k].value;
+            }
+            return null;
+        }
+
+        pub fn getWithEqlList(input: anytype, comptime eql: anytype) ?V {
+            const Input = @TypeOf(input);
+            const length = if (@hasField(Input, "len")) input.len else input.length();
+            if (length < precomputed.min_len or length > precomputed.max_len)
+                return null;
+            comptime var i: usize = precomputed.min_len;
+            inline while (i <= precomputed.max_len) : (i += 1) {
+                if (length == i) {
+                    return getWithLengthAndEqlList(input, i, eql);
+                }
+            }
+            return null;
+        }
+
+        pub fn getWithEqlLowercase(input: anytype, comptime eql: anytype) ?V {
+            const Input = @TypeOf(input);
+            const length = if (@hasField(Input, "len")) input.len else input.length();
+            if (length < precomputed.min_len or length > precomputed.max_len)
+                return null;
+            comptime var i: usize = precomputed.min_len;
+            inline while (i <= precomputed.max_len) : (i += 1) {
+                if (length == i) {
+                    const lowerbuf: [i]u8 = brk: {
+                        var buf: [i]u8 = undefined;
+                        for (input, &buf) |c, *j| {
+                            j.* = std.ascii.toLower(c);
+                        }
+                        break :brk buf;
+                    };
+                    return getWithLengthAndEql(&lowerbuf, i, eql);
+                }
+            }
+            return null;
+        }
+
+        pub fn getASCIIICaseInsensitive(input: anytype) ?V {
+            return getWithEqlLowercase(input, home_rt.strings.eqlComptimeIgnoreLen);
+        }
+
+        pub fn getCaseInsensitiveWithEql(input: anytype, comptime eql: anytype) ?V {
+            const Input = @TypeOf(input);
+            const length = if (@hasField(Input, "len")) input.len else input.length();
+            if (length < precomputed.min_len or length > precomputed.max_len)
+                return null;
+            comptime var i: usize = precomputed.min_len;
+            inline while (i <= precomputed.max_len) : (i += 1) {
+                if (length == i) {
+                    const lowercased: [i]u8 = brk: {
+                        var buf: [i]u8 = undefined;
+                        for (input[0..i], &buf) |c, *b| {
+                            b.* = switch (c) {
+                                'A'...'Z' => c + 32,
+                                else => c,
+                            };
+                        }
+                        break :brk buf;
+                    };
+                    return getWithLengthAndEql(&lowercased, i, eql);
+                }
+            }
+            return null;
+        }
+
+        pub fn getAnyCase(input: anytype) ?V {
+            return getCaseInsensitiveWithEql(input, home_rt.strings.eqlComptimeIgnoreLen);
+        }
+
         /// Returns the index of the key in the sorted list of keys.
         pub fn indexOf(str: []const KeyType) ?usize {
             if (str.len < precomputed.min_len or str.len > precomputed.max_len)
