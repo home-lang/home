@@ -37,6 +37,10 @@ pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
 /// Faithful to upstream `bun.zig:11` (`feature_flag = env_var.feature_flag`).
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
+/// Faithful to upstream `bun.zig:456`. Bun reimplements `std.mem.span`'s
+/// optional + sentinel handling verbatim; Home aliases the std version, which
+/// has identical semantics.
+pub const span = std.mem.span;
 
 /// Faithful to upstream `bun.zig:930`.
 pub fn getenvZ(key: [:0]const u8) ?[]const u8 {
@@ -1534,6 +1538,9 @@ pub const jsc = struct {
     pub const WorkTask = @import("jsc/WorkTask.zig").WorkTask;
     // Faithful to upstream jsc/jsc.zig:138 (`ConcurrentTask = EventLoop.ConcurrentTask`).
     pub const ConcurrentTask = @import("event_loop/ConcurrentTask.zig");
+    // Faithful to upstream jsc/jsc.zig:134-135 (`AnyTask = EventLoop.AnyTask`).
+    pub const AnyTask = @import("event_loop/AnyTask.zig");
+    pub const AnyTaskWithExtraContext = @import("event_loop/AnyTaskWithExtraContext.zig");
     // Faithful to upstream jsc/jsc.zig:119.
     pub const hot_reloader = @import("jsc/hot_reloader.zig");
     // Faithful to upstream jsc/jsc.zig:246.

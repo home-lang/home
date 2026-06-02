@@ -34,6 +34,9 @@ pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
 pub const allow_assert = isDebug;
 pub const enable_asan = false;
+/// Upstream `bun_core/env.zig:60` ties this to `build_options.enable_tinycc`.
+/// Home does not vendor TinyCC (the FFI JIT backend) yet, so this is off.
+pub const enable_tinycc = false;
 /// Upstream `bun_core/env.zig:39` ties this to `isDebug or enable_asan`, but the
 /// alloc-scope tracking is a debug-only *diagnostic* (it inlines a tracking
 /// allocator that grows struct layouts, e.g. PackedMap 40→48). Home's gate
