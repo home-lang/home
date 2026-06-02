@@ -1263,6 +1263,16 @@ pub const Interner = struct {
         return self.pool.mapped_payloads.items[self.pool.payloadOf(id)];
     }
 
+    pub fn typeSymbol(self: *const Interner, id: TypeId) u32 {
+        if (id >= self.pool.headers.items.len) return 0;
+        return self.pool.headers.items[id].symbol;
+    }
+
+    pub fn setTypeSymbol(self: *Interner, id: TypeId, symbol: u32) void {
+        if (id >= self.pool.headers.items.len) return;
+        self.pool.headers.items[id].symbol = symbol;
+    }
+
     pub fn templateLiteralPayload(self: *const Interner, id: TypeId) types.TemplateLiteralPayload {
         std.debug.assert(self.pool.flagsOf(id).is_template_literal);
         return self.pool.template_literal_payloads.items[self.pool.payloadOf(id)];

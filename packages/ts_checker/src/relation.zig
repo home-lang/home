@@ -336,6 +336,8 @@ pub const Engine = struct {
     /// limit we treat the in-flight comparison as related (optimistic,
     /// same as a detected cycle) rather than overflowing the stack.
     relate_depth: u32 = 0,
+    source_stack: std.ArrayListUnmanaged(TypeId) = .empty,
+    target_stack: std.ArrayListUnmanaged(TypeId) = .empty,
 
     pub fn init(gpa: std.mem.Allocator, ti: *Interner) !Engine {
         return .{
@@ -422,6 +424,8 @@ pub const Engine = struct {
 
     pub fn deinit(self: *Engine) void {
         self.cache.deinit();
+        self.source_stack.deinit(self.gpa);
+        self.target_stack.deinit(self.gpa);
     }
 
     fn pool(self: *const Engine) *const Pool {
@@ -534,16 +538,69 @@ pub const Engine = struct {
         // native stack. The limit is generous so genuine (finite)
         // deep object graphs still get a real structural answer.
         if (self.relate_depth >= max_relate_depth) return true;
+        if (self.isDeeplyNestedPair(source, target)) return true;
 
         try self.cache.put(.assignable, source, target, .pending);
+        try self.source_stack.append(self.gpa, source);
+        try self.target_stack.append(self.gpa, target);
         self.relate_depth += 1;
         const result = self.computeAssignable(source, target) catch |err| {
             self.relate_depth -= 1;
+            _ = self.source_stack.pop();
+            _ = self.target_stack.pop();
             return err;
         };
         self.relate_depth -= 1;
+        _ = self.source_stack.pop();
+        _ = self.target_stack.pop();
         try self.cache.put(.assignable, source, target, if (result) .yes else .no);
         return result;
+    }
+
+    fn isDeeplyNestedPair(self: *Engine, source: TypeId, target: TypeId) bool {
+        return self.isDeeplyNestedType(source, self.source_stack.items, 3) and
+            self.isDeeplyNestedType(target, self.target_stack.items, 3);
+    }
+
+    fn isDeeplyNestedType(self: *Engine, t: TypeId, stack: []const TypeId, max_depth: usize) bool {
+        if (max_depth == 0) return true;
+        if (stack.len + 1 < max_depth) return false;
+        const identity = self.recursionIdentity(t) orelse return false;
+        var count: usize = 1;
+        for (stack) |entry| {
+            if (!self.recursionIdentitiesMatch(entry, identity)) continue;
+            count += 1;
+            if (count >= max_depth) return true;
+        }
+        return false;
+    }
+
+    const RecursionIdentity = u32;
+
+    fn recursionIdentity(self: *Engine, t: TypeId) ?RecursionIdentity {
+        if (t < Primitive.first_dynamic or t >= self.pool().typeCount()) return null;
+        const flags = self.pool().flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.recursionIdentity(member)) |identity| return identity;
+            }
+            return null;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.recursionIdentity(member)) |identity| return identity;
+            }
+            return null;
+        }
+        if (!flags.is_object_type) return null;
+        const symbol = self.interner.typeSymbol(t);
+        if (symbol != 0) return symbol;
+        return null;
+    }
+
+    fn recursionIdentitiesMatch(self: *Engine, t: TypeId, identity: RecursionIdentity) bool {
+        const other = self.recursionIdentity(t) orelse return false;
+        return other == identity;
     }
 
     fn computeAssignable(self: *Engine, source: TypeId, target: TypeId) !bool {
@@ -2785,6 +2842,38 @@ fn buildNestedChain(ti: *Interner, x: types.StringId, leaf: TypeId, depth: usize
     return cur;
 }
 
+fn buildGeneratedNestedRecordLikeChain(
+    ti: *Interner,
+    names: []const types.StringId,
+    leaf: TypeId,
+    origin: u32,
+) !TypeId {
+    var cur = leaf;
+    var i: usize = names.len;
+    while (i > 0) {
+        i -= 1;
+        cur = try ti.internObjectType(&.{mkMember(names[i], cur, false)});
+        ti.setTypeSymbol(cur, origin);
+    }
+    return cur;
+}
+
+fn buildGeneratedRecursiveUnionIndexerChain(
+    ti: *Interner,
+    leaf: TypeId,
+    origin: u32,
+    depth: usize,
+) !TypeId {
+    var cur = leaf;
+    var i: usize = 0;
+    while (i < depth) : (i += 1) {
+        const obj = try ti.internObjectTypeWithIndex(&.{}, cur, Primitive.none);
+        ti.setTypeSymbol(obj, origin);
+        cur = try ti.internUnion(&.{ Primitive.string_t, obj });
+    }
+    return cur;
+}
+
 test "Engine: deeply-nested finite chain relates structurally (no false negative)" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
@@ -2844,4 +2933,44 @@ test "Engine: over-deep comparison unwinds via depth guard without overflow" {
     const src = try buildNestedChain(&ti, x, Primitive.number_t, deep, tag);
     const tgt = try buildNestedChain(&ti, x, Primitive.number_t, deep, tag);
     try T.expect(try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: same-origin generated recursive chains short-circuit when deeply nested" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const names = [_]types.StringId{
+        try sint.intern("x"),
+        try sint.intern("y"),
+        try sint.intern("z"),
+        try sint.intern("a"),
+        try sint.intern("b"),
+        try sint.intern("c"),
+    };
+    const origin: u32 = 4242;
+    const src = try buildGeneratedNestedRecordLikeChain(&ti, &names, Primitive.number_t, origin);
+    const tgt = try buildGeneratedNestedRecordLikeChain(&ti, &names, Primitive.string_t, origin);
+
+    try T.expect(try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: recursive union indexer aliases short-circuit through union identity" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    e.setStrictNullChecks(true);
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const src_alias = try buildGeneratedRecursiveUnionIndexerChain(&ti, Primitive.number_t, 701, 6);
+    const tgt_alias = try buildGeneratedRecursiveUnionIndexerChain(&ti, Primitive.string_t, 702, 6);
+
+    try T.expect(try e.isAssignableTo(src_alias, tgt_alias));
 }
