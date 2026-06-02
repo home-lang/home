@@ -963,8 +963,8 @@ pub fn parseTSConfig(source: *const logger.Source, log: *logger.Log, allocator: 
 }
 
 fn expectPrintedJSON(_contents: string, expected: string) !void {
-    Expr.Data.Store.create(default_allocator);
-    Stmt.Data.Store.create(default_allocator);
+    Expr.Data.Store.create();
+    Stmt.Data.Store.create();
     defer {
         Expr.Data.Store.reset();
         Stmt.Data.Store.reset();

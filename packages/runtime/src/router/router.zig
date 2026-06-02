@@ -948,8 +948,8 @@ pub const Test = struct {
         Output.initTest();
         try makeTest(testName, data);
         const JSAst = bun.ast;
-        JSAst.Expr.Data.Store.create(default_allocator);
-        JSAst.Stmt.Data.Store.create(default_allocator);
+        JSAst.Expr.Data.Store.create();
+        JSAst.Stmt.Data.Store.create();
         const fs = try FileSystem.init(null);
         const top_level_dir = fs.top_level_dir;
 
@@ -1003,8 +1003,8 @@ pub const Test = struct {
     pub fn make(comptime testName: string, data: anytype) !Router {
         try makeTest(testName, data);
         const JSAst = bun.ast;
-        JSAst.Expr.Data.Store.create(default_allocator);
-        JSAst.Stmt.Data.Store.create(default_allocator);
+        JSAst.Expr.Data.Store.create();
+        JSAst.Stmt.Data.Store.create();
         const fs = try FileSystem.initWithForce(null, true);
         const top_level_dir = fs.top_level_dir;
 

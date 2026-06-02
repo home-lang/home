@@ -177,8 +177,8 @@ export fn init(heapsize: u32) void {
         mimalloc.mi_option_set(.limit_os_alloc, 1);
         _ = mimalloc.mi_reserve_os_memory(heapsize, false, true);
 
-        JSAst.Stmt.Data.Store.create(default_allocator);
-        JSAst.Expr.Data.Store.create(default_allocator);
+        JSAst.Stmt.Data.Store.create();
+        JSAst.Expr.Data.Store.create();
         buffer_writer = JSPrinter.BufferWriter.init(default_allocator);
         buffer_writer.buffer.growBy(1024) catch unreachable;
         writer = JSPrinter.BufferPrinter.init(buffer_writer);
