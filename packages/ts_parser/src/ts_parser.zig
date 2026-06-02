@@ -2871,7 +2871,7 @@ pub const Parser = struct {
         const for_init_extras_base = self.for_init_extras.items.len;
         // Optional `await` modifier — `for await (... of asyncIter)`.
         const is_await = self.match(.kw_await);
-        _ = try self.expect(.open_paren, "'(' after 'for'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'for'");
 
         // Parse the init slot. Three shapes:
         //   for (;;) ...                  — empty init
@@ -2933,7 +2933,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(empty_pos, binding_start.line, 1123, "Variable declaration list cannot be empty.");
                 if (binding_start.kind == .kw_in) {
                     const source_expr = try self.parseExpression();
-                    _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                    _ = try self.expectClosingMatch(.close_paren, "')' to close for-in/of header", open_paren.span.start, "(", ")");
                     self.loop_depth += 1;
                     defer self.loop_depth -= 1;
                     self.loop_switch_depth += 1;
@@ -3014,7 +3014,7 @@ pub const Parser = struct {
                     );
                 };
                 const source_expr = try self.parseExpression();
-                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                _ = try self.expectClosingMatch(.close_paren, "')' to close for-in/of header", open_paren.span.start, "(", ")");
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 self.loop_switch_depth += 1;
@@ -3121,7 +3121,7 @@ pub const Parser = struct {
                     multiple_decl_token,
                 );
                 const source_expr = try self.parseExpression();
-                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                _ = try self.expectClosingMatch(.close_paren, "')' to close for-in/of header", open_paren.span.start, "(", ")");
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 self.loop_switch_depth += 1;
@@ -3161,7 +3161,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(kind_tok.span.start, kind_tok.line, 1005, "'of' expected.");
                 }
                 const source_expr = try self.parseExpression();
-                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                _ = try self.expectClosingMatch(.close_paren, "')' to close for-in/of header", open_paren.span.start, "(", ")");
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 self.loop_switch_depth += 1;
@@ -3185,7 +3185,7 @@ pub const Parser = struct {
         _ = try self.expect(.semicolon, "';' after for-condition");
         var update: NodeId = hir_mod.none_node_id;
         if (self.peek().kind != .close_paren) update = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' to close for header");
+        _ = try self.expectClosingMatch(.close_paren, "')' to close for header", open_paren.span.start, "(", ")");
         self.loop_depth += 1;
         defer self.loop_depth -= 1;
         self.loop_switch_depth += 1;
@@ -3457,10 +3457,10 @@ pub const Parser = struct {
 
     fn parseSwitchStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // switch
-        _ = try self.expect(.open_paren, "'(' after 'switch'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'switch'");
         const discriminant = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' after switch discriminant");
-        _ = try self.expect(.open_brace, "'{' to open switch body");
+        _ = try self.expectClosingMatch(.close_paren, "')' after switch discriminant", open_paren.span.start, "(", ")");
+        const open_brace = try self.expect(.open_brace, "'{' to open switch body");
         self.loop_switch_depth += 1;
         defer self.loop_switch_depth -= 1;
 
@@ -3501,7 +3501,7 @@ pub const Parser = struct {
             }, value, stmts.items);
             try cases.append(self.gpa, case);
         }
-        const close = try self.expect(.close_brace, "'}' to close switch body");
+        const close = try self.expectClosingMatch(.close_brace, "'}' to close switch body", open_brace.span.start, "{", "}");
         return try self.builder.addSwitch(.{ .start = start.span.start, .end = close.span.end }, discriminant, cases.items);
     }
 
@@ -8489,7 +8489,7 @@ pub const Parser = struct {
             const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else open.span.end;
             return try self.builder.addBlock(.{ .start = open.span.start, .end = end_pos }, stmts.items);
         }
-        const close = try self.expect(.close_brace, "'}' to close block");
+        const close = try self.expectClosingMatch(.close_brace, "'}' to close block", open.span.start, "{", "}");
         // tsc: a `{...}` parsed as a statement block immediately
         // followed by `=` is almost certainly a destructuring
         // assignment missing its wrapping parentheses (`{a} = b` should
