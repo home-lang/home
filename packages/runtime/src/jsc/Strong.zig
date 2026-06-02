@@ -18,7 +18,7 @@ const Strong = @This();
 
 // ── local stubs ─────────────────────────────────────────────────────────────
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 
 // JSC bridge JSValue stubbed — re-attaches in Phase 12.2. Carries the same
 // shape upstream code expects: an `i64`-backed enum with `.zero` and

@@ -20,7 +20,7 @@
 const std = @import("std");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = enum(i64) { zero = 0, _ };
 const String = extern struct {
     tag: u8 = 0,

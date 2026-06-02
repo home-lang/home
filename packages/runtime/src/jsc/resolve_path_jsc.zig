@@ -19,7 +19,7 @@ const std = @import("std");
 // opaque global pointer (so the C ABI is `*JSGlobalObject`) and the
 // 5-variant tagged `bun.String` payload C++ uses; here we just preserve the
 // extern name and a stand-in shape so callers can spell it.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const String = extern struct {
     tag: u8 = 0,
     _padding: [7]u8 = @splat(0),

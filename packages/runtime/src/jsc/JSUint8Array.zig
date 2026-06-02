@@ -15,7 +15,7 @@ const home_rt = @import("home_rt");
 const Sizes = home_rt.jsc.sizes;
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = enum(i64) { zero = 0, _ };
 
 pub const JSUint8Array = opaque {

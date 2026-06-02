@@ -20,9 +20,9 @@ const std = @import("std");
 const home_rt = @import("home_rt");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = enum(i64) { zero = 0, _ };
-const VM = opaque {};
+const VM = @import("./VM.zig").VM;
 
 /// `ZigString` C ABI stub: `{ptr, len}` view. Real ZigString uses the high
 /// bit of len to flag UTF-16; the bits don't matter for pass-through shims.

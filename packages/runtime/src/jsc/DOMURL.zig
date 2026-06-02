@@ -19,7 +19,7 @@ const std = @import("std");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSValue = enum(i64) { zero = 0, _ };
-const VM = opaque {};
+const VM = @import("./VM.zig").VM;
 
 // `bun.String` C ABI stub. Real layout `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
 // We expose just enough surface (the `tag` field — callers check it against

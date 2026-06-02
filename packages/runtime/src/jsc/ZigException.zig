@@ -35,7 +35,7 @@ const String = extern struct {
 };
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = enum(i64) { zero = 0, _ };
 const VirtualMachine = opaque {};
 

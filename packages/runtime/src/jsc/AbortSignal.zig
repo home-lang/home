@@ -24,7 +24,7 @@ const std = @import("std");
 const CommonAbortReason = @import("./CommonAbortReason.zig").CommonAbortReason;
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = enum(i64) {
     zero = 0,
     _,

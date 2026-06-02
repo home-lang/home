@@ -9,7 +9,7 @@
 const std = @import("std");
 
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 // JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
 // JSValue is ABI-compatible with i64 / encoded ptr, so we model it as enum(i64)
 // so it can be passed by value across the extern boundary.

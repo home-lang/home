@@ -10,7 +10,7 @@
 const std = @import("std");
 
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 // JSC bridge bun.JSTerminated stubbed — re-attaches in Phase 12.2.
 const JSTerminated = error{JSTerminated};
 

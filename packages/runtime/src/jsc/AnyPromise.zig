@@ -20,7 +20,7 @@ const std = @import("std");
 const home_rt = @import("home_rt");
 
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 
 // JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
 pub const JSValue = enum(i64) {
