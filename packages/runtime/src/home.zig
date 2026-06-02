@@ -1896,6 +1896,10 @@ pub const io = struct {
     // Forward-port: Home's Zig fork removed `std.io.GenericWriter`; this restores
     // it (faithful old API + `adaptToNewApi` bridge to the new `std.Io.Writer`).
     pub const GenericWriter = @import("io_shim.zig").GenericWriter;
+    // Faithful to upstream io/io.zig (Poll:438, BufferedWriter:724, StreamingWriter:727).
+    pub const Poll = @import("io/io.zig").Poll;
+    pub const BufferedWriter = @import("io/PipeWriter.zig").BufferedWriter;
+    pub const StreamingWriter = @import("io/PipeWriter.zig").StreamingWriter;
     // Faithful to upstream `bun.io.heap` (`src/io/io.zig`): the intrusive
     // binary-heap used by the install/PM lifecycle-script scheduler.
     pub const heap = @import("io/heap.zig");
@@ -2032,6 +2036,7 @@ pub const uws = @import("uws/uws.zig");
 // data; no JSC dependency. The full HTTP stack lands in Phase 12.5.
 pub const http = struct {
     pub const HTTPCertError = @import("http/HTTPCertError.zig");
+    pub const HTTPResponseMetadata = @import("http/http.zig").HTTPResponseMetadata;
     pub const InitError = @import("http/InitError.zig").InitError;
     pub const CertificateInfo = @import("http/CertificateInfo.zig");
     pub const HeaderValueIterator = @import("http/HeaderValueIterator.zig");
