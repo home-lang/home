@@ -10534,7 +10534,9 @@ pub const Parser = struct {
                 }
                 break :blk @as(hir_mod.StringId, 0);
             }
-            try self.reportCannotFindNameNode(key_expr, start_tok.line);
+            if (!self.computedTypeMemberIdentifierIsDeclaredValue(key_expr)) {
+                try self.reportCannotFindNameNode(key_expr, start_tok.line);
+            }
             break :blk @as(hir_mod.StringId, 0);
         };
         if (self.computedSymbolMemberIsNonPropertySymbol(key_expr)) {
@@ -10768,6 +10770,29 @@ pub const Parser = struct {
             const type_end = std.mem.indexOfAnyPos(u8, line, colon_pos + 1, "=;") orelse line.len;
             const type_text = std.mem.trim(u8, line[colon_pos + 1 .. type_end], " \t\r");
             if (std.mem.eql(u8, type_text, "unique symbol")) return true;
+        }
+        return false;
+    }
+
+    fn computedTypeMemberIdentifierIsDeclaredValue(self: *Parser, key_expr: NodeId) bool {
+        if (self.hir.kindOf(key_expr) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, key_expr);
+        const raw = self.interner.get(id.name);
+        const keywords = [_][]const u8{ "var", "let", "const", "function", "class" };
+        for (keywords) |kw| {
+            var search_start: usize = 0;
+            while (std.mem.indexOfPos(u8, self.source, search_start, kw)) |kw_pos| {
+                search_start = kw_pos + kw.len;
+                if (kw_pos > 0 and sourceIdentChar(self.source[kw_pos - 1])) continue;
+                if (search_start < self.source.len and sourceIdentChar(self.source[search_start])) continue;
+                var p = search_start;
+                while (p < self.source.len and
+                    (self.source[p] == ' ' or self.source[p] == '\t' or self.source[p] == '\r' or self.source[p] == '\n')) : (p += 1)
+                {}
+                if (!std.mem.startsWith(u8, self.source[p..], raw)) continue;
+                if (p + raw.len < self.source.len and sourceIdentChar(self.source[p + raw.len])) continue;
+                return true;
+            }
         }
         return false;
     }
