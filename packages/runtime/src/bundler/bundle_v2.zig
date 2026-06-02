@@ -131,7 +131,7 @@ pub const BundleV2 = struct {
 
     /// See the comment in `Chunk.OutputPiece`
     unique_key: u64 = 0,
-    dynamic_import_entry_points: std.AutoArrayHashMap(Index.Int, void) = undefined,
+    dynamic_import_entry_points: bun.AutoArrayHashMap(Index.Int, void) = undefined,
     has_on_parse_plugins: bool = false,
 
     finalizers: std.ArrayListUnmanaged(CacheEntry.ExternalFreeFunction) = .empty,
@@ -284,7 +284,7 @@ pub const BundleV2 = struct {
         all_urls_for_css: []const []const u8,
         redirects: []u32,
         redirect_map: PathToSourceIndexMap,
-        dynamic_import_entry_points: *std.AutoArrayHashMap(Index.Int, void),
+        dynamic_import_entry_points: *bun.AutoArrayHashMap(Index.Int, void),
         /// Files which are Server Component Boundaries
         scb_bitset: ?bun.bit_set.DynamicBitSetUnmanaged,
         scb_list: ServerComponentBoundary.List.Slice,
@@ -402,7 +402,7 @@ pub const BundleV2 = struct {
             additional_files_imported_by_css_and_inlined.deinit(stack_alloc);
         }
 
-        this.dynamic_import_entry_points = std.AutoArrayHashMap(Index.Int, void).init(this.allocator());
+        this.dynamic_import_entry_points = bun.AutoArrayHashMap(Index.Int, void).init(this.allocator());
 
         const all_urls_for_css = this.graph.ast.items(.url_for_css);
 

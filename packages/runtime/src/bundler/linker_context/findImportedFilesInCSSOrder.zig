@@ -237,7 +237,7 @@ pub fn findImportedFilesInCSSOrder(this: *LinkerContext, temp_allocator: std.mem
     // file. This works because in CSS, the last instance of a declaration
     // overrides all previous instances of that declaration.
     {
-        var source_index_duplicates = std.AutoArrayHashMap(u32, BabyList(u32)).init(temp_allocator);
+        var source_index_duplicates = bun.AutoArrayHashMap(u32, BabyList(u32)).init(temp_allocator);
         var external_path_duplicates = std.StringArrayHashMap(BabyList(u32)).init(temp_allocator);
 
         var i: u32 = visitor.order.len;

@@ -1417,7 +1417,7 @@ pub fn Package(comptime SemverIntType: type) type {
             // `peerDependencies`. Track the original key string so the
             // post-build pass can emit a real `Dependency` for any meta-only
             // names that nothing in the build loop consumed.
-            var optional_peer_dependencies = std.ArrayHashMap(PackageNameHash, []const u8, ArrayIdentityContext.U64, false).init(allocator);
+            var optional_peer_dependencies = bun.ArrayHashMap(PackageNameHash, []const u8, ArrayIdentityContext.U64, false).init(allocator);
             defer optional_peer_dependencies.deinit();
 
             if (features.peer_dependencies) if (json.asProperty("peerDependenciesMeta")) |peer_dependencies_meta| {

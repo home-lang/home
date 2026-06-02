@@ -52,7 +52,7 @@ pub const Store = struct {
     pub const Installer = @import("./Installer.zig").Installer;
 
     /// Called from multiple threads. `parent_dedupe` should not be shared between threads.
-    pub fn isCycle(this: *const Store, id: Entry.Id, maybe_parent_id: Entry.Id, parent_dedupe: *std.AutoArrayHashMap(Entry.Id, void)) bool {
+    pub fn isCycle(this: *const Store, id: Entry.Id, maybe_parent_id: Entry.Id, parent_dedupe: *bun.AutoArrayHashMap(Entry.Id, void)) bool {
         var i: usize = 0;
         var len: usize = 0;
 

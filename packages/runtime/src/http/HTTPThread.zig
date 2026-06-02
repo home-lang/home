@@ -11,7 +11,7 @@ const SslContextCacheEntry = struct {
 };
 const ssl_context_cache_max_size = 60;
 const ssl_context_cache_ttl_ns = 30 * std.time.ns_per_min;
-var custom_ssl_context_map = std.AutoArrayHashMap(*SSLConfig, SslContextCacheEntry).init(bun.default_allocator);
+var custom_ssl_context_map = bun.AutoArrayHashMap(*SSLConfig, SslContextCacheEntry).init(bun.default_allocator);
 
 loop: *jsc.MiniEventLoop,
 http_context: NewHTTPContext(false),

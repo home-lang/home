@@ -7,7 +7,7 @@ pub const ThreadPool = struct {
     io_pool: *ThreadPoolLib,
     worker_pool: *ThreadPoolLib,
     worker_pool_is_owned: bool = false,
-    workers_assignments: std.AutoArrayHashMap(std.Thread.Id, *Worker) = std.AutoArrayHashMap(std.Thread.Id, *Worker).init(bun.default_allocator),
+    workers_assignments: bun.AutoArrayHashMap(std.Thread.Id, *Worker) = bun.AutoArrayHashMap(std.Thread.Id, *Worker).init(bun.default_allocator),
     workers_assignments_lock: bun.Mutex = .{},
     v2: *BundleV2,
 

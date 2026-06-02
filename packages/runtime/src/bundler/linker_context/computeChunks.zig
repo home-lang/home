@@ -17,7 +17,7 @@ pub noinline fn computeChunks(
     try js_chunks.ensureUnusedCapacity(this.graph.entry_points.len);
 
     // Key is the hash of the CSS order. This deduplicates identical CSS files.
-    var css_chunks = std.AutoArrayHashMap(u64, Chunk).init(temp_allocator);
+    var css_chunks = bun.AutoArrayHashMap(u64, Chunk).init(temp_allocator);
     var js_chunks_with_css: usize = 0;
 
     // Maps entry point IDs to their index in js_chunks.values().

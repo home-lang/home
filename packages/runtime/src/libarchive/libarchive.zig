@@ -214,7 +214,7 @@ pub const Archiver = struct {
         pluckers: []Plucker = &[_]Plucker{},
         overwrite_list: bun.StringArrayHashMap(void),
         all_files: EntryMap,
-        pub const EntryMap = std.ArrayHashMap(u64, [*c]u8, U64Context, false);
+        pub const EntryMap = bun.ArrayHashMap(u64, [*c]u8, U64Context, false);
 
         pub const U64Context = struct {
             pub fn hash(_: @This(), k: u64) u32 {

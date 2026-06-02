@@ -46,12 +46,12 @@ pub fn generateCodeForLazyExport(this: *LinkerContext, source_index: Index.Int) 
 
             var inner_visited = try BitSet.initEmpty(this.allocator(), size);
             defer inner_visited.deinit(this.allocator());
-            var composes_visited = std.AutoArrayHashMap(bun.bundle_v2.Ref, void).init(this.allocator());
+            var composes_visited = bun.AutoArrayHashMap(bun.bundle_v2.Ref, void).init(this.allocator());
             defer composes_visited.deinit();
 
             const Visitor = struct {
                 inner_visited: *BitSet,
-                composes_visited: *std.AutoArrayHashMap(bun.bundle_v2.Ref, void),
+                composes_visited: *bun.AutoArrayHashMap(bun.bundle_v2.Ref, void),
                 parts: *std.array_list.Managed(E.TemplatePart),
                 all_import_records: []const BabyList(bun.css.ImportRecord),
                 all_css_asts: []?*bun.css.BundlerStyleSheet,

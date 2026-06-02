@@ -295,7 +295,7 @@ pub const Installer = struct {
         // fix: check if the task is unblocked after the task returns blocked, and only set/unset
         // blocked from the main thread.
 
-        var parent_dedupe: std.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
+        var parent_dedupe: bun.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
         defer parent_dedupe.deinit();
 
         if (!this.isTaskBlocked(entry_id, &parent_dedupe)) {
@@ -311,7 +311,7 @@ pub const Installer = struct {
 
     /// Called from both the main thread (via `onTaskBlocked` and `resumeUnblockedTasks`) and the
     /// task thread (via `run`). `parent_dedupe` should not be shared between threads.
-    fn isTaskBlocked(this: *Installer, entry_id: Store.Entry.Id, parent_dedupe: *std.AutoArrayHashMap(Store.Entry.Id, void)) bool {
+    fn isTaskBlocked(this: *Installer, entry_id: Store.Entry.Id, parent_dedupe: *bun.AutoArrayHashMap(Store.Entry.Id, void)) bool {
         const entries = this.store.entries.slice();
         const entry_deps = entries.items(.dependencies);
         const entry_steps = entries.items(.step);
@@ -400,7 +400,7 @@ pub const Installer = struct {
         const entries = this.store.entries.slice();
         const entry_steps = entries.items(.step);
 
-        var parent_dedupe: std.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
+        var parent_dedupe: bun.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
         defer parent_dedupe.deinit();
 
         for (0..this.store.entries.len) |id_int| {
@@ -1049,7 +1049,7 @@ pub const Installer = struct {
                     // preinstall scripts need to run before binaries can be linked. Block here if any dependencies
                     // of this entry are not finished. Do not count cycles towards blocking.
 
-                    var parent_dedupe: std.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
+                    var parent_dedupe: bun.AutoArrayHashMap(Store.Entry.Id, void) = .init(bun.default_allocator);
                     defer parent_dedupe.deinit();
 
                     if (installer.isTaskBlocked(this.entry_id, &parent_dedupe)) {

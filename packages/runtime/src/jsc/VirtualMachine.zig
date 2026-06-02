@@ -86,7 +86,7 @@ resolved_count: usize = 0,
 had_errors: bool = false,
 
 macros: MacroMap,
-macro_entry_points: std.AutoArrayHashMap(i32, *MacroEntryPoint),
+macro_entry_points: bun.AutoArrayHashMap(i32, *MacroEntryPoint),
 macro_mode: bool = false,
 no_macros: bool = false,
 auto_killer: ProcessAutoKiller = .{ .enabled = false },
@@ -1049,7 +1049,7 @@ pub fn waitForTasks(this: *VirtualMachine) void {
     }
 }
 
-pub const MacroMap = std.AutoArrayHashMap(i32, jsc.C.JSObjectRef);
+pub const MacroMap = bun.AutoArrayHashMap(i32, jsc.C.JSObjectRef);
 
 pub fn enableMacroMode(this: *VirtualMachine) void {
     jsc.markBinding(@src());

@@ -216,7 +216,7 @@ const RouteLoader = struct {
     config: Options.RouteConfig,
     route_dirname_len: u16 = 0,
 
-    dedupe_dynamic: std.AutoArrayHashMap(u32, string),
+    dedupe_dynamic: bun.AutoArrayHashMap(u32, string),
     log: *Logger.Log,
     index: ?*Route = null,
     static_list: bun.StringHashMap(*Route),
@@ -326,7 +326,7 @@ const RouteLoader = struct {
             .fs = resolver.fs,
             .config = config,
             .static_list = bun.StringHashMap(*Route).init(allocator),
-            .dedupe_dynamic = std.AutoArrayHashMap(u32, string).init(allocator),
+            .dedupe_dynamic = bun.AutoArrayHashMap(u32, string).init(allocator),
             .all_routes = .{},
             .route_dirname_len = route_dirname_len,
         };

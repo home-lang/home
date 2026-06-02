@@ -336,9 +336,9 @@ pub fn promptForWarnings() bool {
 
 const PackageCollector = struct {
     manager: *PackageManager,
-    dedupe: std.AutoArrayHashMap(PackageID, void),
+    dedupe: bun.AutoArrayHashMap(PackageID, void),
     queue: bun.LinearFifo(QueueItem, .Dynamic),
-    package_paths: std.AutoArrayHashMap(PackageID, PackagePath),
+    package_paths: bun.AutoArrayHashMap(PackageID, PackagePath),
 
     const QueueItem = struct {
         pkg_id: PackageID,
@@ -350,9 +350,9 @@ const PackageCollector = struct {
     pub fn init(manager: *PackageManager) PackageCollector {
         return .{
             .manager = manager,
-            .dedupe = std.AutoArrayHashMap(PackageID, void).init(bun.default_allocator),
+            .dedupe = bun.AutoArrayHashMap(PackageID, void).init(bun.default_allocator),
             .queue = bun.LinearFifo(QueueItem, .Dynamic).init(bun.default_allocator),
-            .package_paths = std.AutoArrayHashMap(PackageID, PackagePath).init(manager.allocator),
+            .package_paths = bun.AutoArrayHashMap(PackageID, PackagePath).init(manager.allocator),
         };
     }
 
@@ -968,7 +968,7 @@ pub const SecurityScanSubprocess = struct {
         }
     }
 
-    pub fn handleResults(this: *SecurityScanSubprocess, package_paths: *std.AutoArrayHashMap(PackageID, PackagePath), start_time: i64, packages_scanned: usize, security_scanner: []const u8, security_scanner_pkg_id: ?PackageID, command_ctx: bun.cli.Command.Context, original_cwd: []const u8, is_retry: bool) !ScanAttemptResult {
+    pub fn handleResults(this: *SecurityScanSubprocess, package_paths: *bun.AutoArrayHashMap(PackageID, PackagePath), start_time: i64, packages_scanned: usize, security_scanner: []const u8, security_scanner_pkg_id: ?PackageID, command_ctx: bun.cli.Command.Context, original_cwd: []const u8, is_retry: bool) !ScanAttemptResult {
         _ = command_ctx; // Reserved for future use
         _ = original_cwd; // Reserved for future use
         defer {
@@ -1182,7 +1182,7 @@ pub const SecurityScanSubprocess = struct {
     }
 };
 
-fn parseSecurityAdvisoriesFromExpr(manager: *PackageManager, advisories_expr: bun.js_parser.Expr, package_paths: *std.AutoArrayHashMap(PackageID, PackagePath)) ![]SecurityAdvisory {
+fn parseSecurityAdvisoriesFromExpr(manager: *PackageManager, advisories_expr: bun.js_parser.Expr, package_paths: *bun.AutoArrayHashMap(PackageID, PackagePath)) ![]SecurityAdvisory {
     var advisories_list: std.ArrayList(SecurityAdvisory) = .{};
     defer advisories_list.deinit(manager.allocator);
 

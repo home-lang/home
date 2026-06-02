@@ -251,7 +251,7 @@ pub fn Builder(comptime method: BuilderMethod) type {
         // builder.resolutions[peer.dep_id] to the resolved pkg_id. A dependency ID set is used because there
         // can be multiple instances of the same package in the tree, so the same unresolved dependency ID
         // could be visited multiple times before it's resolved.
-        pending_optional_peers: std.AutoArrayHashMap(PackageNameHash, std.AutoArrayHashMap(DependencyID, void)),
+        pending_optional_peers: bun.AutoArrayHashMap(PackageNameHash, bun.AutoArrayHashMap(DependencyID, void)),
         manager: if (method == .filter) *const PackageManager else void,
         sort_buf: std.ArrayListUnmanaged(DependencyID) = .empty,
         workspace_filters: if (method == .filter) []const WorkspaceFilter else void = if (method == .filter) &.{},
