@@ -17,15 +17,11 @@ const std = @import("std");
 const home_rt = @import("home");
 const BoringSSL = home_rt.boringssl_sys.boringssl;
 
-// JSC stubs — re-attach when `home_rt.jsc.{JSGlobalObject,JSValue,JSError,
-// fromJSHostCall}` lands in Phase 12.2.
+// JSC bridge: the real jsc types are present; reference them so JSValue shares
+// identity with callers (was local enum/error stubs).
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = @import("home").JSError;
 
 pub inline fn isSafeAltName(name: []const u8, utf8: bool) bool {
     for (name) |c| {

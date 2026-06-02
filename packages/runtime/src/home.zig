@@ -1857,6 +1857,9 @@ pub const jsc = struct {
         pub const Bun = runtime.api.Bun;
         pub const SocketAddress = runtime.api.SocketAddress;
         pub const TLSSocket = runtime.api.TLSSocket;
+        pub const Image = runtime.api.Image;
+        pub const JSBundler = runtime.api.JSBundler;
+        pub const JSTranspiler = runtime.api.JSTranspiler;
 
         pub const BuildArtifact = struct {
             blob: WebCore.Blob = .{},
