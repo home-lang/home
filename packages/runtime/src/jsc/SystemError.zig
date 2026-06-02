@@ -23,23 +23,9 @@ const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = @import("home").jsc.JSValue;
 const JSPromise = @import("./JSPromise.zig").JSPromise;
 
-// `bun.String` C ABI stub — re-attaches in Phase 12.2.
-// Real layout is `{tag: u8, _padding: 7 bytes, impl: *anyopaque}` (see
-// upstream src/string/BunString.h). The methods callers see in this file
-// are `ref` / `deref` / `isEmpty` and the `.empty` sentinel.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const empty: String = .{};
-
-    pub fn ref(_: *const String) void {}
-    pub fn deref(_: *const String) void {}
-    pub fn isEmpty(this: *const String) bool {
-        return this.tag == 0 and this.impl == null;
-    }
-};
+// JSC bridge: the real `bun.String` (WTF-backed BunString) is now present;
+// reference it directly so SystemError fields share its type identity.
+const String = @import("home").String;
 
 // `bun.sys.E` errno enum stubbed — re-attaches with the sys layer.
 const SysE = enum(i32) {
