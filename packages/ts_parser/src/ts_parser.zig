@@ -2034,6 +2034,39 @@ pub const Parser = struct {
             },
             .kw_interface => blk: {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
+                if (self.peekAt(1).kind == .open_brace) {
+                    const brace = self.peekAt(1);
+                    try self.reportCodeAt(brace.span.start, brace.line, 1438, "Interface must be given a name.");
+                    const iface = self.advance();
+                    try self.reportCodeAt(iface.span.start, iface.line, 2693, "'interface' only refers to a type, but is being used as a value here.");
+                    const name = try self.internToken(iface);
+                    break :blk try self.builder.addIdentifier(tokenSpan(iface), name);
+                }
+                if (!(self.peekAt(1).kind == .identifier or
+                    self.peekAt(1).kind.isContextualKeyword() or
+                    self.peekAt(1).kind == .kw_interface or
+                    self.peekAt(1).kind.isPrimitiveTypeKeyword()))
+                {
+                    if (self.peekAt(1).kind == .ampersand) {
+                        const iface = self.advance();
+                        try self.reportCodeAt(iface.span.start, iface.line, 2693, "'interface' only refers to a type, but is being used as a value here.");
+                        const left = try self.builder.addLiteralNumber(tokenSpan(iface), 0);
+                        const amp = self.advance();
+                        const right = try self.parseUnaryExpression();
+                        const expr = try self.builder.addBinaryOp(
+                            .{ .start = iface.span.start, .end = self.hir.spanOf(right).end },
+                            .bit_and,
+                            left,
+                            right,
+                        );
+                        if (amp.flags.preceded_by_newline) {
+                            try self.reportCodeAt(amp.span.start, amp.line, 1005, "';' expected.");
+                        }
+                        try self.consumeStatementTerminator();
+                        break :blk expr;
+                    }
+                    break :blk try self.parseExpressionStatement();
+                }
                 break :blk try self.parseInterfaceDeclaration();
             },
             .kw_public, .kw_private, .kw_protected, .kw_static => blk: {
@@ -4917,6 +4950,22 @@ pub const Parser = struct {
                 }
                 continue;
             }
+            if (self.peek().kind.isModifierKeyword() and
+                self.peekAt(1).kind == .open_brace and
+                !self.peekAt(1).flags.preceded_by_newline)
+            {
+                _ = self.advance();
+                const open = self.advance();
+                const missing_pos = if (open.span.start > 0) open.span.start - 1 else open.span.start;
+                try self.reportCodeAt(missing_pos, open.line, 1146, "Declaration expected.");
+                if (self.peek().kind == .close_brace) {
+                    _ = self.advance();
+                    try self.reportCodeAt(open.span.start, open.line, 1005, "';' expected.");
+                }
+                _ = self.match(.semicolon);
+                recovered_nested_declaration = true;
+                break;
+            }
             if (self.peek().kind == .open_bracket) {
                 if (try self.tryParseIndexSignature(&members, mods.is_static, mods.is_readonly)) {
                     if (invalid_index_modifier) |bad| {
@@ -5381,7 +5430,16 @@ pub const Parser = struct {
                     // so existing TS1442 tests are unaffected.
                     const bad = self.peek();
                     if (name_tok.kind.isModifierKeyword() and type_anno == hir_mod.none_node_id) {
-                        try self.reportCodeAt(bad.span.start, bad.line, 1146, "Declaration expected.");
+                        const missing_pos = if (bad.span.start > 0) bad.span.start - 1 else bad.span.start;
+                        try self.reportCodeAt(missing_pos, bad.line, 1146, "Declaration expected.");
+                        if (bad.kind == .open_brace) {
+                            try self.reportCodeAt(bad.span.start, bad.line, 1005, "';' expected.");
+                            _ = self.advance();
+                            _ = self.match(.close_brace);
+                            _ = self.match(.semicolon);
+                            recovered_nested_declaration = true;
+                            break;
+                        }
                     } else {
                         try self.reportCodeAt(bad.span.start, bad.line, 1442, "Expected '=' for property initializer.");
                     }
@@ -6389,6 +6447,7 @@ pub const Parser = struct {
                 break :name_blk try self.missingIdentifierAt(brace.span.start);
             }
             const name_tok = if (self.peek().kind == .identifier or
+                self.peek().kind == .kw_interface or
                 self.peek().kind.isContextualKeyword() or
                 self.peek().kind.isPrimitiveTypeKeyword())
                 self.advance()
@@ -19451,7 +19510,7 @@ test "parser: TS1438 for interface without a name" {
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
-    try T.expectEqual(hir_mod.NodeKind.interface_decl, s.hir.kindOf(top));
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(top));
 
     var found = false;
     for (s.parser.diagnostics.items) |d| {
@@ -25328,6 +25387,23 @@ test "parser: module modifiers before interface report TS1044 and recover" {
 }
 
 test "parser: malformed interface header reports upstream diagnostics" {
+    var naming = try newTestSetup(
+        \\interface { }
+        \\interface interface{ }
+        \\interface & { }
+    );
+    defer destroyTestSetup(naming);
+    naming.parser.setTargetEs2015OrLater(true);
+    const naming_root = try naming.parser.parseSourceFile();
+    const naming_stmts = hir_mod.blockStmts(&naming.hir, naming_root);
+    try T.expect(naming_stmts.len >= 4);
+    try T.expectEqual(hir_mod.NodeKind.identifier, naming.hir.kindOf(naming_stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.interface_decl, naming.hir.kindOf(naming_stmts[2]));
+    try T.expectEqual(hir_mod.NodeKind.binary_op, naming.hir.kindOf(naming_stmts[3]));
+    try T.expectEqual(@as(u32, 1), countDiag(naming, 1438));
+    try T.expectEqual(@as(u32, 2), countDiag(naming, 2693));
+    try T.expectEqual(@as(u32, 0), countDiag(naming, 1109));
+
     var duplicate_extends = try newTestSetup("interface I extends A extends B {}");
     defer destroyTestSetup(duplicate_extends);
     duplicate_extends.parser.setTargetEs2015OrLater(true);
@@ -26624,6 +26700,8 @@ test "parser: TS1146 fires for a modifier-keyword class member with no name" {
     };
     const d = findDiag(s, 1146) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Declaration expected.", d.message);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1005));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1128));
     // TS1442 must NOT also fire for the same site — the swap is
     // not additive.
     try T.expectEqual(@as(u32, 0), countDiag(s, 1442));
