@@ -1161,6 +1161,8 @@ pub const ObjectPool = object_pool.ObjectPool;
 pub const cli = struct {
     pub const which_npm_client = @import("cli/which_npm_client.zig");
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
+    // Faithful to upstream `cli/cli.zig:5`: process-title override slot.
+    pub var Bun__Node__ProcessTitle: ?[]const u8 = null;
 };
 
 // ---- src/jsc/ ----------------------------------------------------------
