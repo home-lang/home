@@ -20928,7 +20928,18 @@ test "parser: type annotation — leading | accepted" {
 // ====================================================================
 
 fn newTsxTestSetup(source: []const u8) !*TestSetup {
-    const s = try newTestSetup(source);
+    const s = try T.allocator.create(TestSetup);
+    errdefer T.allocator.destroy(s);
+    s.interner = try string_interner.Interner.init(T.allocator);
+    errdefer s.interner.deinit();
+    s.hir = try hir_mod.Hir.init(T.allocator);
+    errdefer s.hir.deinit();
+    s.scanner = ts_lexer.Scanner.init(T.allocator, source);
+    errdefer s.scanner.deinit(T.allocator);
+    s.scanner.setInJsxContext(true);
+    s.tokens = try s.scanner.tokenize(T.allocator);
+    errdefer s.tokens.deinit(T.allocator);
+    s.parser = Parser.init(T.allocator, &s.hir, &s.interner, source, s.tokens.items);
     s.parser.setTsx(true);
     return s;
 }
@@ -21027,6 +21038,23 @@ test "parser: jsx element with attribute" {
     try T.expectEqual(@as(usize, 1), attrs.len);
     const a = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
     try T.expectEqualStrings("bar", s.interner.get(a.name));
+}
+
+test "parser: jsx string attributes may span lines" {
+    var s = try newTsxTestSetup(
+        \\let v = <input value="
+        \\foo: 23
+        \\" />;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.scanner.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 1), attrs.len);
+    const a = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
+    try T.expectEqual(hir_mod.NodeKind.literal_string, s.hir.kindOf(a.value));
 }
 
 test "parser: jsx element with expression attribute" {

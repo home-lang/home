@@ -860,10 +860,28 @@ pub const Scanner = struct {
         };
     }
 
+    fn stringStartsInJsxAttribute(self: *const Scanner, start: u32) bool {
+        if (!self.jsx_context) return false;
+        var i: usize = @intCast(start);
+        while (i > 0 and std.ascii.isWhitespace(self.source[i - 1])) : (i -= 1) {}
+        if (i == 0 or self.source[i - 1] != '=') return false;
+        i -= 1;
+        while (i > 0) {
+            i -= 1;
+            switch (self.source[i]) {
+                '<' => return true,
+                '>', ';', '{', '}' => return false,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     fn scanString(self: *Scanner, gpa: std.mem.Allocator, quote: u8, start: u32, line: u32, flags: TokenFlags) ScanError!Token {
         // Fresh literal — clear any suppression flag left over from a
         // prior scan so it only affects the literal that set it.
         self.suppress_unterminated_literal = false;
+        const allow_jsx_attribute_newlines = self.stringStartsInJsxAttribute(start);
         while (!self.isAtEnd()) {
             const c = self.source[self.pos];
             if (c == quote) {
@@ -876,6 +894,13 @@ pub const Scanner = struct {
                 };
             }
             if (c == '\n' or c == '\r') {
+                if (allow_jsx_attribute_newlines) {
+                    self.pos += 1;
+                    if (c == '\r' and !self.isAtEnd() and self.source[self.pos] == '\n') self.pos += 1;
+                    self.line += 1;
+                    self.line_start = self.pos;
+                    continue;
+                }
                 if (!self.suppress_unterminated_literal) {
                     self.report(gpa, "unterminated string literal");
                 }
@@ -1024,7 +1049,10 @@ pub const Scanner = struct {
         try self.skipTrivia(gpa);
         const start = self.pos;
         const line = self.line;
-        const flags: TokenFlags = .{ .preceded_by_newline = self.saw_newline };
+        const flags: TokenFlags = .{
+            .preceded_by_newline = self.saw_newline,
+            .in_jsx_context = self.jsx_context,
+        };
 
         if (self.isAtEnd()) {
             return .{

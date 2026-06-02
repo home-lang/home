@@ -1268,6 +1268,7 @@ pub fn compileSource(
     defer if (tsx_lex_source) |buf| gpa.free(buf);
     const lex_source = tsx_lex_source orelse source;
     var scanner = ts_lexer.Scanner.init(gpa, lex_source);
+    if (options.is_tsx) scanner.setInJsxContext(true);
     defer scanner.deinit(gpa);
     c.tokens = scanner.tokenize(gpa) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -3487,6 +3488,33 @@ test "driver: tsx jsx text entities do not surface lex diagnostics" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.phase != .lex);
     }
+}
+
+test "driver: tsx multiline string attribute parses before JSX intrinsic diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\declare var React: any;
+        \\const a = <input value="
+        \\foo: 23
+        \\"></input>;
+    , .{
+        .is_tsx = true,
+        .jsx_option_present = true,
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true },
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_jsx_intrinsic = false;
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.phase != .lex);
+        try T.expect(d.code != 1002);
+        if (d.code == ts_checker.check.TsCodes.jsx_element_implicit_any_no_intrinsic) {
+            saw_jsx_intrinsic = true;
+        }
+    }
+    try T.expect(saw_jsx_intrinsic);
 }
 
 test "driver: automatic jsx import source reports missing runtime module" {
