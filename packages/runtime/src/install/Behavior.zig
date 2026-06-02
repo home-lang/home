@@ -8,7 +8,7 @@
 // until those are ported.
 // Imports rewritten: @import("bun") → @import("home_rt"); `bun.assert`
 // becomes `home_rt.assert`. `Features` is brought in from the sibling
-// `./Features.zig` extraction. The upstream `@Type(.enum_literal)` builtin
+// `./Features.zig` extraction. The upstream `@TypeOf(.enum_literal)` builtin
 // spelling was removed in Zig 0.17-dev; `@TypeOf(.enum_literal)` is the
 // 0.17 replacement and produces an identical type at use-sites.
 

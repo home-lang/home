@@ -881,7 +881,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return .js_undefined;
             }
 
-            var buf: [64]u8 = [_]u8{0} ** 64;
+            var buf: [64]u8 = @splat(0);
             const address_bytes: []const u8 = this.socket.localAddress(&buf) orelse return .js_undefined;
             return switch (address_bytes.len) {
                 4 => globalThis.commonStrings().IPv4(),
@@ -895,7 +895,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return .js_undefined;
             }
 
-            var buf: [64]u8 = [_]u8{0} ** 64;
+            var buf: [64]u8 = @splat(0);
             var text_buf: [512]u8 = undefined;
 
             const address_bytes: []const u8 = this.socket.localAddress(&buf) orelse return .js_undefined;
@@ -922,7 +922,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return .js_undefined;
             }
 
-            var buf: [64]u8 = [_]u8{0} ** 64;
+            var buf: [64]u8 = @splat(0);
             const address_bytes: []const u8 = this.socket.remoteAddress(&buf) orelse return .js_undefined;
             return switch (address_bytes.len) {
                 4 => globalThis.commonStrings().IPv4(),
@@ -936,7 +936,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 return .js_undefined;
             }
 
-            var buf: [64]u8 = [_]u8{0} ** 64;
+            var buf: [64]u8 = @splat(0);
             var text_buf: [512]u8 = undefined;
 
             const address_bytes: []const u8 = this.socket.remoteAddress(&buf) orelse return .js_undefined;
@@ -1839,7 +1839,7 @@ pub const DuplexUpgradeContext = struct {
     /// on success, freed in `deinit` if Close races ahead of StartTLS.
     owned_ctx: ?*BoringSSL.SSL_CTX = null,
     is_open: bool = false,
-    #mode: SocketMode = .client,
+    _mode: SocketMode = .client,
 
     pub const EventState = enum(u8) {
         StartTLS,
@@ -1951,8 +1951,8 @@ pub const DuplexUpgradeContext = struct {
                     this.deinit();
                     return;
                 }
-                log("DuplexUpgradeContext.startTLS mode={s}", .{@tagName(this.#mode)});
-                const is_client = this.#mode == .client;
+                log("DuplexUpgradeContext.startTLS mode={s}", .{@tagName(this._mode)});
+                const is_client = this._mode == .client;
                 const started: anyerror!void = if (this.owned_ctx) |ctx| blk: {
                     // Transfer the ref into SSLWrapper; null first so the
                     // failure path / deinit don't double-free it.
@@ -2135,7 +2135,7 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
         // legacy build path.
         .ssl_config = if (owned_ctx == null) if (socket_config) |c| c.* else null else null,
         .owned_ctx = owned_ctx,
-        .#mode = if (is_server) .duplex_server else .client,
+        ._mode = if (is_server) .duplex_server else .client,
     });
     // Ownership of the SSL_CTX ref transferred to DuplexUpgradeContext.
     owned_ctx = null;

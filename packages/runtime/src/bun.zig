@@ -1658,7 +1658,7 @@ pub fn reloadProcess(
                 }
                 Output.panic("Unexpected error while reloading: {d} {s}", .{ err.errno, @tagName(err.getErrno()) });
             },
-            .result => |_| {
+            .result => {
                 if (may_return) {
                     Output.errGeneric("Failed to reload process", .{});
                     return;

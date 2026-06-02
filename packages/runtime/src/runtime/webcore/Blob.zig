@@ -371,7 +371,7 @@ const FormDataContext = struct {
                                 },
                             }
                         },
-                        .bytes => |_| {
+                        .bytes => {
                             joiner.pushStatic(blob.sharedView());
                         },
                     }

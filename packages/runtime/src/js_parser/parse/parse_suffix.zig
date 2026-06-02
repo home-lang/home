@@ -48,8 +48,8 @@ pub fn ParseSuffix(
             const target = left.*;
 
             if (p.lexer.token == .t_private_identifier and p.allow_private_identifiers) {
-                // "a.#b"
-                // "a?.b.#c"
+                // "a._b"
+                // "a?.b._c"
                 switch (left.data) {
                     .e_super => {
                         try p.lexer.expected(.t_identifier);
@@ -167,7 +167,7 @@ pub fn ParseSuffix(
                 },
                 else => {
                     if (p.lexer.token == .t_private_identifier and p.allow_private_identifiers) {
-                        // "a?.#b"
+                        // "a?._b"
                         const name = p.lexer.identifier;
                         const name_loc = p.lexer.loc();
                         try p.lexer.next();

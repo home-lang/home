@@ -84,7 +84,7 @@ import_item_status: ImportItemStatus = ImportItemStatus.none,
 ///
 ///   class Foo {
 ///     #foo = 123
-///     bar = this.#foo
+///     bar = this._foo
 ///   }
 ///
 /// If "useDefineForClassFields: false" is set in "tsconfig.json", then "bar"
@@ -93,8 +93,8 @@ import_item_status: ImportItemStatus = ImportItemStatus.none,
 ///
 ///   class Foo {
 ///     constructor() {
-///       this.#foo = 123;
-///       this.bar = this.#foo;
+///       this._foo = 123;
+///       this.bar = this._foo;
 ///     }
 ///     #foo;
 ///   }
@@ -103,7 +103,7 @@ import_item_status: ImportItemStatus = ImportItemStatus.none,
 ///
 ///   class Foo {
 ///     static #foo = 123
-///     static bar = this.#foo
+///     static bar = this._foo
 ///   }
 ///
 /// Compiling these static fields to something like this would be invalid:
@@ -111,8 +111,8 @@ import_item_status: ImportItemStatus = ImportItemStatus.none,
 ///   class Foo {
 ///     static #foo;
 ///   }
-///   Foo.#foo = 123;
-///   Foo.bar = Foo.#foo;
+///   Foo._foo = 123;
+///   Foo.bar = Foo._foo;
 ///
 /// Thus "#foo" must be lowered even though it's supported. Another case is
 /// when we're converting top-level class declarations to class expressions
@@ -128,7 +128,7 @@ import_item_status: ImportItemStatus = ImportItemStatus.none,
 ///   var Foo = class {
 ///     static #foo;
 ///   };
-///   Foo.#foo = Foo;
+///   Foo._foo = Foo;
 ///
 /// --- Not actually used yet -----------------------------------------------
 private_symbol_must_be_lowered: bool = false,

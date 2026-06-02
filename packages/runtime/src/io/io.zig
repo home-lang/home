@@ -538,7 +538,7 @@ pub const Poll = struct {
         }
 
         pub fn applyKQueue(
-            comptime action: @Type(.enum_literal),
+            comptime action: @TypeOf(.enum_literal),
             tag: Pollable.Tag,
             poll: *Poll,
             fd: bun.FD,
