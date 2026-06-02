@@ -1694,6 +1694,7 @@ pub const jsc = struct {
         pub const Maybe = @import("sys/maybe.zig").Maybe;
         pub const fs = @import("runtime/node/node_fs.zig");
         pub const FileSystemFlags = @import("runtime/node/types.zig").FileSystemFlags;
+        pub const VectorArrayBuffer = @import("runtime/node/types.zig").VectorArrayBuffer;
         pub const Dirent = struct {
             pub const Kind = std.Io.File.Kind;
         };
@@ -1751,6 +1752,8 @@ pub const jsc = struct {
     pub const ZigStackFrame = @import("jsc/ZigStackFrame.zig").ZigStackFrame;
     // Faithful to upstream jsc/jsc.zig:98.
     pub const SavedSourceMap = @import("jsc/SavedSourceMap.zig");
+    // Faithful to upstream jsc/jsc.zig:97.
+    pub const Debugger = @import("jsc/Debugger.zig");
     pub const ManagedTask = @import("event_loop/ManagedTask.zig");
     // JSC bring-up: real VirtualMachine (was a 215-line stub). jsc/jsc.zig:99.
     pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
@@ -2688,6 +2691,22 @@ pub const FD = packed struct(fd_t) {
         return jsc.JSValue.jsNumberFromInt32(uv_owned_fd.uv());
     }
 
+    /// Faithful to upstream `sys_jsc/fd_jsc.zig:21`.
+    pub fn fromJSValidated(value: jsc.JSValue, global: *jsc.JSGlobalObject) JSError!?FD {
+        if (!value.isNumber())
+            return null;
+        const float = value.asNumber();
+        if (@mod(float, 1) != 0) {
+            return global.throwRangeError(float, .{ .field_name = "fd", .msg = "an integer" });
+        }
+        if (float < 0 or float > @as(f64, @floatFromInt(std.math.maxInt(i32)))) {
+            return global.throwRangeError(float, .{ .field_name = "fd", .min = 0, .max = std.math.maxInt(i32) });
+        }
+        const int: i64 = @intFromFloat(float);
+        const fd: fd_t = @intCast(int);
+        return .fromUV(fd);
+    }
+
     /// Faithful to upstream `sys_jsc/fd_jsc.zig:60`. Posix-only path.
     pub fn toJSWithoutMakingLibUVOwned(any_fd: FD) jsc.JSValue {
         if (!any_fd.isValid()) {
@@ -3510,6 +3529,9 @@ pub const sys = struct {
     pub const unlink = @import("sys/sys.zig").unlink;
     pub const munmap = @import("sys/sys.zig").munmap;
     pub const PosixStat = @import("sys/PosixStat.zig").PosixStat;
+    pub const pread = @import("sys/sys.zig").pread;
+    pub const ftruncate = @import("sys/sys.zig").ftruncate;
+    pub const fchmod = @import("sys/sys.zig").fchmod;
 
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const Error = @import("sys/Error.zig");
