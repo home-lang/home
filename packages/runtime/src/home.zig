@@ -1855,6 +1855,8 @@ pub const jsc = struct {
         pub const ServerConfig = runtime.api.server.ServerConfig;
         pub const Valkey = runtime.api.Valkey;
         pub const Bun = runtime.api.Bun;
+        pub const SocketAddress = runtime.api.SocketAddress;
+        pub const TLSSocket = runtime.api.TLSSocket;
 
         pub const BuildArtifact = struct {
             blob: WebCore.Blob = .{},
@@ -3519,6 +3521,8 @@ pub const sys = struct {
     pub const pread = @import("sys/sys.zig").pread;
     pub const ftruncate = @import("sys/sys.zig").ftruncate;
     pub const fchmod = @import("sys/sys.zig").fchmod;
+    pub const fchown = @import("sys/sys.zig").fchown;
+    pub const futimens = @import("sys/sys.zig").futimens;
 
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const Error = @import("sys/Error.zig");
