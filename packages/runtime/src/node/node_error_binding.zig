@@ -32,13 +32,9 @@ const Code = home_rt.node.error_code.Code;
 
 // JSC stubs --------------------------------------------------------------
 
-const JSGlobalObject = opaque {};
-const CallFrame = opaque {};
-const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
+const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
+const CallFrame = @import("home_rt").jsc.CallFrame;
+const JSValue = @import("home_rt").jsc.JSValue;
 pub const JSError = error{JSError};
 
 /// Upstream: `pub const JS2NativeFunctionType = *const fn (*JSGlobalObject) JSError!JSValue`.

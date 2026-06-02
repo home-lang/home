@@ -20,7 +20,7 @@ const std = @import("std");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = enum(i64) { zero = 0, _ };
+const JSValue = @import("home_rt").jsc.JSValue;
 const JSPromise = @import("./JSPromise.zig").JSPromise;
 
 // `bun.String` C ABI stub — re-attaches in Phase 12.2.

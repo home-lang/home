@@ -19,7 +19,7 @@ const BoringSSL = home_rt.boringssl_sys.boringssl;
 
 // JSC stubs — re-attach when `home_rt.jsc.{JSGlobalObject,JSValue,JSError,
 // fromJSHostCall}` lands in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
 pub const JSValue = enum(i64) {
     zero = 0,
     js_undefined = 0xa,

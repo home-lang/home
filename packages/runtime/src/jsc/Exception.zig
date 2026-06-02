@@ -10,7 +10,7 @@ const std = @import("std");
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 // JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-const JSValue = opaque {};
+const JSValue = @import("home_rt").jsc.JSValue;
 // JSC bridge ZigStackTrace stubbed — re-attaches in Phase 12.2.
 const ZigStackTrace = opaque {};
 

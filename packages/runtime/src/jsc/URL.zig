@@ -26,7 +26,7 @@ const JSGlobalObject = opaque {
         return false;
     }
 };
-const JSValue = enum(i64) { zero = 0, _ };
+const JSValue = @import("home_rt").jsc.JSValue;
 
 // The real `bun.String` (`BunString`, `string/string.zig`) is now ported, so
 // the URL extern shims return / accept it directly — matching upstream, where

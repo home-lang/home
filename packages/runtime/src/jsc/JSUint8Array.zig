@@ -16,7 +16,7 @@ const Sizes = home_rt.jsc.sizes;
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = enum(i64) { zero = 0, _ };
+const JSValue = @import("home_rt").jsc.JSValue;
 
 pub const JSUint8Array = opaque {
     pub fn ptr(this: *JSUint8Array) [*]u8 {

@@ -28,15 +28,11 @@ const std = @import("std");
 const home_rt = @import("home_rt");
 
 // JSC stubs — re-attach when home_rt.jsc grows the matching surface.
-const JSGlobalObject = opaque {};
-const CallFrame = opaque {};
+const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
+const CallFrame = @import("home_rt").jsc.CallFrame;
 const ArgumentsSlice = opaque {};
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home_rt").jsc.JSValue;
+pub const JSError = @import("home_rt").JSError;
 
 const Glob = @This();
 

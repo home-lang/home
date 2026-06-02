@@ -20,7 +20,7 @@ const std = @import("std");
 const home_rt = @import("home_rt");
 
 // JSC + webcore stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
 pub const Blob = opaque {};
 
 /// Field shape mirrors `bun.StandaloneModuleGraph.File` only insofar as the

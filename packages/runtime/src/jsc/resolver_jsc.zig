@@ -21,7 +21,7 @@ const std = @import("std");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = enum(i64) { zero = 0, _ };
+const JSValue = @import("home_rt").jsc.JSValue;
 const String = extern struct {
     tag: u8 = 0,
     _padding: [7]u8 = @splat(0),
@@ -44,7 +44,7 @@ pub extern fn Resolver__nodeModulePathsJSValue(
 // C++-visible export: host fn shape (takes a *CallFrame, returns a
 // JSValue, may throw). The Zig wrapper around this re-attaches with
 // `jsc.toJSHostFn` in Phase 12.2.
-const CallFrame = opaque {};
+const CallFrame = @import("home_rt").jsc.CallFrame;
 pub extern fn Resolver__nodeModulePathsForJS(
     globalThis: *JSGlobalObject,
     callframe: *CallFrame,

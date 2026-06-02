@@ -19,7 +19,7 @@ const std = @import("std");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = enum(i64) { zero = 0, _ };
+const JSValue = @import("home_rt").jsc.JSValue;
 
 // `bun.String` C ABI stub: `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
 // See upstream src/string/BunString.h.

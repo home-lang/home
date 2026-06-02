@@ -20,7 +20,7 @@ const home_rt = @import("home_rt");
 const HTMLString = home_rt.lolhtml_sys.lol_html.HTMLString;
 
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
 // `JSValue` is ABI-compatible with `i64` (encoded ptr). Using `enum(i64)`
 // matches the convention used by `home_rt/jsc/JSArray.zig`.
 pub const JSValue = enum(i64) {
