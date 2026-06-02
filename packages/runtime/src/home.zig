@@ -1680,6 +1680,7 @@ pub const jsc = struct {
         pub const Jest = struct {
             pub threadlocal var runner: ?*Runner = null;
         };
+        pub const captureTestLineNumber = @import("runtime/test_runner/jest.zig").captureTestLineNumber;
         // Faithful to upstream `runtime/test_runner/jest.zig` `bun_test` module
         // (ScopeFunctions / DoneCallback consumed by the generated class registry).
         pub const bun_test = @import("runtime/test_runner/bun_test.zig");
@@ -1748,6 +1749,7 @@ pub const jsc = struct {
     pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
     pub const ModuleLoader = struct {
         pub const HardcodedModule = @import("resolve_builtins/HardcodedModule.zig").HardcodedModule;
+        pub const RuntimeTranspilerStore = @import("jsc/RuntimeTranspilerStore.zig").RuntimeTranspilerStore;
     };
     pub const URL = @import("jsc/URL.zig").URL;
     pub const DOMFormData = @import("jsc/DOMFormData.zig").DOMFormData;
@@ -3900,6 +3902,7 @@ pub const platform = struct {
 // values/rules/properties tree re-attaches once `css_parser.zig`
 // lands. Strategy A (self-contained-only) per agent #5's analysis.
 pub const css = struct {
+    pub const CssColor = @import("css/css_parser.zig").CssColor;
     pub const logical = @import("css/logical.zig");
     pub const sourcemap = @import("css/sourcemap.zig");
     pub const css_parser_stub = @import("css/css_parser_stub.zig");
