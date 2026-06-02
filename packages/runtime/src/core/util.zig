@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6.
 //
 // Imports rewritten:
-//   * `@import("bun")` → `@import("home_rt")`.
+//   * `@import("bun")` → `@import("home")`.
 //   * `bun.trait.{isContainer, isIndexable, isSlice, isConstPtr}` →
 //     `home_rt.meta.traits.{isContainer, isIndexable, isSlice, isConstPtr}`.
 //
@@ -283,5 +283,5 @@ test "util: needsAllocator distinguishes ArrayList styles" {
     try std.testing.expect(needsAllocator(WithAllocCtx.ensureUnusedCapacity));
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");

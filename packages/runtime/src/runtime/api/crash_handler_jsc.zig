@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //   - `bun.Environment.isMac`         → `home_rt.Environment.isMac`
 //   - `bun.BoundedArray`              → `home_rt.BoundedArray`
 //
@@ -151,7 +151,7 @@ pub const js_bindings = struct {
 };
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "crash_handler_jsc: generate returns the stubbed JSValue.zero" {
     var dummy: u8 = 0;

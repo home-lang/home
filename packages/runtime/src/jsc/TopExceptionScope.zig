@@ -21,7 +21,7 @@
 //     bridge lands the upstream body re-attaches verbatim.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 const Exception = home_rt.jsc.Exception;
 

@@ -33,7 +33,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 const assert = std.debug.assert;
 

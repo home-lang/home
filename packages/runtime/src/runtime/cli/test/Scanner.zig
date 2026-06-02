@@ -257,7 +257,7 @@ const std = @import("std");
 const BundleOptions = @import("../../../bundler/options.zig").BundleOptions;
 const Allocator = std.mem.Allocator;
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const Transpiler = bun.Transpiler;
 const FileSystem = bun.fs.FileSystem;
 

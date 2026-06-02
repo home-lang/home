@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
 // Aggregator module that re-exports the safety substrate so callers can
-// `@import("home_rt").safety.{alloc, CheckedAllocator, CriticalSection,
+// `@import("home").safety.{alloc, CheckedAllocator, CriticalSection,
 // ThreadLock}` exactly the way upstream does.
 
 pub const alloc = @import("./alloc.zig");

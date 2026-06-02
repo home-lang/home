@@ -12,7 +12,7 @@
 // argument-marshalling, not the JSC bridge itself.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
 const JSGlobalObject = opaque {

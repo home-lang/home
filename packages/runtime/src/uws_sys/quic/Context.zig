@@ -1,6 +1,6 @@
 // Copied from bun/src/uws_sys/quic/Context.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The upstream
+// Imports rewritten: @import("bun") → @import("home"). The upstream
 // `uws.Loop` opaque has the same forward-decl pattern as the sibling
 // `uws_sys/{Timer,ConnectingSocket,SocketGroup}.zig` files — `Loop` is
 // declared locally as `opaque {}` until the full `uws_sys/Loop.zig` lands

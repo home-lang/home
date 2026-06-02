@@ -20,7 +20,7 @@
 //! Everything else re-attaches in a later phase when the surrounding
 //! substrate lands.
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 /// Mount prefix for the in-binary virtual filesystem. POSIX uses

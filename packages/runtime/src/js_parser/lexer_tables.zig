@@ -3,7 +3,7 @@
 // Pinned SHA: fd0b6f1a271fca0b8124b69f230b100f4d636af6
 //
 // Renames applied (per packages/runtime/README.md naming convention):
-//   - `@import("bun")` -> `@import("home_rt")`
+//   - `@import("bun")` -> `@import("home")`
 //   - `bun.strings.CodePoint` does not exist in `home_rt.strings` yet.
 //     Upstream defines `pub const CodePoint = i32;` in `src/strings.zig`;
 //     mirror that as a local alias until the strings module is ported.
@@ -820,7 +820,7 @@ const string = []const u8;
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const ComptimeStringMap = home_rt.ComptimeStringMap;
 
 // Upstream defines `pub const CodePoint = i32;` in `src/strings.zig`.

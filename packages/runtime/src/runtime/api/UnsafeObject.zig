@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //
 // Stubs (re-attach in Phase 12.2 when home_rt.jsc grows JSGlobalObject /
 // CallFrame / JSFunction / ZigString / ArrayBuffer / heap_breakdown /
@@ -21,11 +21,11 @@
 //! string view, mimalloc heap dump) gated behind a JSC bridge.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
-const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
-const CallFrame = @import("home_rt").jsc.CallFrame;
+const JSGlobalObject = @import("home").jsc.JSGlobalObject;
+const CallFrame = @import("home").jsc.CallFrame;
 pub const JSValue = enum(i64) {
     zero = 0,
     js_undefined = 0xa,

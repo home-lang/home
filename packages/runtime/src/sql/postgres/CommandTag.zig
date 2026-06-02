@@ -1,7 +1,7 @@
 // Copied from bun/src/sql/postgres/CommandTag.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 // Rewrites:
-//   - @import("bun") -> @import("home_rt")
+//   - @import("bun") -> @import("home")
 //   - bun.ComptimeEnumMap -> home_rt.ComptimeEnumMap
 //   - bun.strings.indexOfChar -> home_rt.strings.indexOfChar
 //   - bun.Output.scoped -> home_rt.Output.scoped
@@ -88,7 +88,7 @@ pub const CommandTag = union(enum) {
 
 const debug = home_rt.Output.scoped(.Postgres, .visible);
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "CommandTag parses known row-count tags" {

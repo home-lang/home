@@ -1,6 +1,6 @@
 // Copied from bun/src/install/ConfigVersion.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The original
+// Imports rewritten: @import("bun") → @import("home"). The original
 // `fromExpr(bun.ast.Expr)` constructor is omitted because `home_rt.ast` is
 // not yet ported; callers should funnel through `fromInt` until the AST
 // surface lands. `fromInt` matches upstream semantics byte-for-byte.

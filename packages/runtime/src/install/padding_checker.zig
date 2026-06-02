@@ -1,6 +1,6 @@
 // Copied from bun/src/install/padding_checker.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). This file is pure
+// Imports rewritten: @import("bun") → @import("home"). This file is pure
 // `std` and has no actual bun.X references, so the rewrite is a no-op; the
 // banner is here so the provenance trail matches sibling files.
 

@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun")                              → @import("home_rt")
+//   - @import("bun")                              → @import("home")
 //   - bun.Mutex                                   → home_rt.threading.Mutex
 //   - bun.strings.eqlLong                         → local `eqlLong` substitute
 //   - bun.handleOom / bun.new / bun.destroy       → local fallbacks
@@ -237,7 +237,7 @@ fn destroyEntry(p: *Entry) void {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // ============================================================================
 // Local stubs for the bun.uws / bun.BoringSSL / bun.jsc surface

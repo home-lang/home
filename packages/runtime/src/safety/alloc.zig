@@ -26,7 +26,7 @@
 //! match upstream behavior bit-for-bit.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Allocator = std.mem.Allocator;
 
 /// Mirror of upstream `bun.Environment.ci_assert`. Home's environment.zig

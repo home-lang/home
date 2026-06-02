@@ -39,7 +39,7 @@ pub const KnownGlobal = enum {
     }
 };
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const std = @import("std");
 
 fn ComptimeEnumMap(comptime T: type) type {

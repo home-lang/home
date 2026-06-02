@@ -1,6 +1,6 @@
 // Copied from bun/src/uws_sys/quic/PendingConnect.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). Bun upstream
+// Imports rewritten: @import("bun") → @import("home"). Bun upstream
 // imports `uws.quic.Socket` through the `bun.uws` aggregator; we use
 // the sibling Socket directly since `uws.quic` doesn't exist in home_rt
 // until Phase 12 brings the rest of the uws bindings across.

@@ -605,7 +605,7 @@ const bv2 = @import("../bundler/bundle_v2.zig");
 const BundleThread = bv2.BundleThread;
 const BundleV2 = bv2.BundleV2;
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const Async = bun.Async;
 const Environment = bun.Environment;
 const Logger = bun.logger;

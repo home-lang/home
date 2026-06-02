@@ -1,6 +1,6 @@
 // Copied from bun/src/http_jsc/method_jsc.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"); bun.jsc → home_rt.jsc.
+// Imports rewritten: @import("bun") → @import("home"); bun.jsc → home_rt.jsc.
 // JSC-bridge `Bun__HTTPMethod__toJS` stays as an extern decl — the C++
 // definition re-lands in Phase 12.2 alongside the rest of the JSC engine.
 

@@ -3,7 +3,7 @@
 // ../../../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   @import("bun")          → @import("home_rt")
+//   @import("bun")          → @import("home")
 //   bun.handleOom           → home_rt.handleOom
 //   bun.assert              → home_rt.assert
 //   bun.default_allocator   → home_rt.default_allocator
@@ -100,7 +100,7 @@ pub const Reader = struct {
     }
 };
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "Frame.begin + finish encodes empty payload with kind byte" {

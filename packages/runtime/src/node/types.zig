@@ -30,11 +30,11 @@
 //   * `VectorArrayBuffer` / `Dirent` / `modeFromJS` / `CallbackTask` /
 //     `jsAssertEncodingValid` / `PathOrFileDescriptor` — JSC-bound.
 //
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const strings = home_rt.strings;
 const ComptimeStringMap = home_rt.ComptimeStringMap;
 const O = home_rt.node.node_fs_constant.O;

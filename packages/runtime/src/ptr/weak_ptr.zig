@@ -72,7 +72,7 @@ pub fn WeakPtr(comptime T: type, data_field: []const u8) type {
     };
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "WeakPtrData: onFinalize sets finalized + reports zero-ref state" {
     var d = WeakPtrData.empty;

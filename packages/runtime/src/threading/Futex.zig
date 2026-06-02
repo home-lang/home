@@ -1,6 +1,6 @@
 // Copied from bun/src/threading/Futex.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 // Rewrites:
 //   * `bun.assert` → `home_rt.assert` (Global.assert).
 //   * `bun.Output.panic(...)` inside LinuxImpl.wait → `std.debug.panic(...)`.
@@ -395,7 +395,7 @@ test "Futex: wake with 0 waiters is a no-op" {
 
 const builtin = @import("builtin");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const assert = home_rt.assert;
 
 const std = @import("std");

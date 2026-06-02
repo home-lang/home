@@ -66,7 +66,7 @@ pub fn readZ(this: StackReader) AnyPostgresError!Data {
     return error.ShortRead;
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const AnyPostgresError = @import("../AnyPostgresError.zig").AnyPostgresError;
 const Data = @import("../../shared/Data.zig").Data;
 const NewReader = @import("./NewReader.zig").NewReader;

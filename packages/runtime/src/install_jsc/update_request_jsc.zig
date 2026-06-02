@@ -55,7 +55,7 @@ pub fn fromJS(globalThis: *jsc.JSGlobalObject, input: jsc.JSValue) bun.JSError!j
 
 const std = @import("std");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const jsc = bun.jsc;
 const logger = bun.logger;
 const UpdateRequest = bun.install.PackageManager.UpdateRequest;

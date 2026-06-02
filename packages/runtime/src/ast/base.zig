@@ -3,7 +3,7 @@
 // Pinned SHA: fd0b6f1a271fca0b8124b69f230b100f4d636af6
 //
 // Renames applied (per packages/runtime/README.md naming convention):
-//   - `@import("bun")` -> `@import("home_rt")`
+//   - `@import("bun")` -> `@import("home")`
 //   - `bun.Environment.allow_assert` -> `home_rt.Environment.allow_assert`
 //   - `bun.hash(...)` -> local `wyhashU64` wrapper around the Home wyhash.
 //
@@ -232,7 +232,7 @@ fn wyhashU64(bytes: []const u8) u64 {
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "Index sentinels round-trip" {
     try std.testing.expect(Index.runtime.isRuntime());

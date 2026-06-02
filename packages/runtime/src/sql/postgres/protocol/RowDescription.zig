@@ -4,7 +4,7 @@
 //
 // Postgres RowDescription ('T') backend packet — top-level wrapper
 // around a heap-allocated slice of `FieldDescription`. Imports
-// rewritten: `@import("bun")` → `@import("home_rt")` (only used for
+// rewritten: `@import("bun")` → `@import("home")` (only used for
 // `default_allocator`). Decoder body delegates each field record to
 // `FieldDescription.decodeInternal`, which trips the wave-16 NewReader
 // stub method surface if exercised today.
@@ -60,6 +60,6 @@ test "RowDescription deinit of an empty slice is a no-op" {
 }
 
 const FieldDescription = @import("./FieldDescription.zig");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const NewReader = @import("./NewReader.zig").NewReader;

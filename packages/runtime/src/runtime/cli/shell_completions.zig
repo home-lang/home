@@ -4,7 +4,7 @@
 // Wave-16 Tier-1 grinder.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //   - bun.Output → home_rt.Output
 //   - bun.strings → home_rt.strings
 //
@@ -16,7 +16,7 @@
 //     re-attach when the completions tree ports.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const Output = home_rt.Output;
 const strings = home_rt.strings;

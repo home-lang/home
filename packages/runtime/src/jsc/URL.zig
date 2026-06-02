@@ -16,7 +16,7 @@
 //     in case a follow-up needs it.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSGlobalObject = opaque {
@@ -26,7 +26,7 @@ const JSGlobalObject = opaque {
         return false;
     }
 };
-const JSValue = @import("home_rt").jsc.JSValue;
+const JSValue = @import("home").jsc.JSValue;
 
 // The real `bun.String` (`BunString`, `string/string.zig`) is now ported, so
 // the URL extern shims return / accept it directly — matching upstream, where

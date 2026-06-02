@@ -1,7 +1,7 @@
 // Copied from bun/src/bun_alloc/maybe_owned.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
 //
-// Imports rewritten: `@import("bun")` -> `@import("home_rt")`.
+// Imports rewritten: `@import("bun")` -> `@import("home")`.
 // The generic allocator facade is exposed through `home_rt.allocators` so this
 // Bun allocator leaf participates in Home's runtime module graph.
 
@@ -121,7 +121,7 @@ const null_vtable: std.mem.Allocator.VTable = .{
     .free = std.mem.Allocator.noFree,
 };
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 const Alignment = std.mem.Alignment;
 

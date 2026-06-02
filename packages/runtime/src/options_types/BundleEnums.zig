@@ -1,6 +1,6 @@
 // Copied from bun/src/options_types/BundleEnums.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The JSC-bridge
+// Imports rewritten: @import("bun") → @import("home"). The JSC-bridge
 // reference `Format.fromJS` (re-exported from `bundler_jsc/options_jsc.zig`)
 // is intentionally omitted — it re-lands under `src/bundler_jsc/` once JSC
 // bindings exist (Phase 12.2). `BundlePackage.Map` uses `std`'s
@@ -133,4 +133,4 @@ test "WindowsOptions defaults are all unset" {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");

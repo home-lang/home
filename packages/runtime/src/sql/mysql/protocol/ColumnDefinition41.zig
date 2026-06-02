@@ -126,7 +126,7 @@ test "ColumnDefinition41 defaults to MYSQL_TYPE_NULL with empty name" {
 
 const debug = home_rt.Output.scoped(.ColumnDefinition41, .hidden);
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const types = @import("../MySQLTypes.zig");
 const ColumnIdentifier = @import("../../shared/ColumnIdentifier.zig").ColumnIdentifier;
 const Data = @import("../../shared/Data.zig").Data;

@@ -1,6 +1,6 @@
 // Copied from bun/src/threading/unbounded_queue.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 // Rewrites:
 //   * `bun.assertf(cond, fmt, args)` → local `assertf` helper that delegates
 //     to `std.debug.assert`. `home_rt` does not yet expose an `assertf`
@@ -229,7 +229,7 @@ test "UnboundedQueue: popBatch drains all pushed entries" {
     try std.testing.expect(it.next() == null);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const std = @import("std");
 const atomic = std.atomic;

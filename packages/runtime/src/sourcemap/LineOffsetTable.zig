@@ -1,7 +1,7 @@
 // Copied from bun/src/sourcemap/LineOffsetTable.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 // Imports rewritten:
-//   `@import("bun")`  → `@import("home_rt")`
+//   `@import("bun")`  → `@import("home")`
 //   `bun.assert`      → `home_rt.assert`
 //   `bun.MultiArrayList` → `home_rt.collections.MultiArrayList`
 //
@@ -224,7 +224,7 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 // Upstream spells this `bun.MultiArrayList`, which is a near-verbatim
 // copy of `std.MultiArrayList` with two extra methods (`zero` + `memoryCost`).
 // The ported home_rt copy at `collections/multi_array_list.zig` is not

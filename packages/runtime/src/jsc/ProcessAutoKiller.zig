@@ -17,7 +17,7 @@
 //     with a no-op stub so the call sites compile.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const ProcessAutoKiller = @This();
 

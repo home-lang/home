@@ -2,7 +2,7 @@
 //! (upstream SHA pinned in `home_rt.upstream_sha`). Near-verbatim copy;
 //! the only surface deltas are:
 //!
-//!   * `@import("bun")` rewritten to `@import("home_rt")` (Home aggregator).
+//!   * `@import("bun")` rewritten to `@import("home")` (Home aggregator).
 //!   * `bun.copy` / `bun.strings.eqlLong` / `bun.hash` inlined as private
 //!     `bunCompat*` helpers — see the bottom of the file. Keeps this leaf
 //!     self-contained without forcing `home_rt.zig` to grow new top-level
@@ -1978,7 +1978,7 @@ fn testStaticBitSet(comptime Set: type, comptime Container: @TypeOf(.enum_litera
     try testPureBitSet(Set);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 const std = @import("std");

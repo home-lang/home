@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`, `bun` enum tag → `home`.
-// Imports rewritten: @import("bun") → @import("home_rt"). Local opaque
+// Imports rewritten: @import("bun") → @import("home"). Local opaque
 // stubs stand in for `HTTPClient` (upstream's fetch() state machine),
 // `NewHTTPContext` (the per-thread connection pool), and `SSLConfig`
 // (which lives under `bun.api.server.ServerConfig` and pulls in JSC).
@@ -90,7 +90,7 @@ fn destroy(ptr: anytype) void {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "PendingConnect.matches: same hostname + port + ssl_config" {
     const hostname = "example.com";

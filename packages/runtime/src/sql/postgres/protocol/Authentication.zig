@@ -203,7 +203,7 @@ test "Authentication MD5Password preserves the 4-byte salt" {
 
 const debug = home_rt.Output.scoped(.Postgres, .hidden);
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 const Data = @import("../../shared/Data.zig").Data;
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;

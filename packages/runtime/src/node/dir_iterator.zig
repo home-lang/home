@@ -33,12 +33,12 @@
 // over these types without changing the public surface — that's why this
 // file ports the shapes first.
 //
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 
 const std = @import("std");
 const posix = std.posix;
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 /// `PathString` payload Home doesn't yet expose at top-level. Upstream's
 /// `bun.PathString` is a 16-byte SOA (path + length) used to thread

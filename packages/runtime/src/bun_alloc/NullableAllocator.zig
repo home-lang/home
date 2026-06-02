@@ -7,7 +7,7 @@
 // uses this in places where an allocator is sometimes absent (e.g. a
 // `String` that may or may not own its bytes).
 //
-// Imports rewritten: `@import("bun")` → `@import("home_rt")`.
+// Imports rewritten: `@import("bun")` → `@import("home")`.
 // `bun.String.isWTFAllocator` is stubbed to always return false until
 // `home_rt.String` lands in Phase 12.2 (the WTF allocator is the JSC
 // engine's per-thread `WTF::StringImpl` allocator; until that bridge is
@@ -60,7 +60,7 @@ comptime {
     }
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "NullableAllocator: null and round-trip" {

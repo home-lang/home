@@ -625,7 +625,7 @@ const t = std.testing;
 const assert = std.debug.assert;
 // `bun.stackFallback` was dropped from the pinned Zig 0.17 stdlib; route
 // through Home's drop-in replacement (same `.get()` -> Allocator shape).
-const stackFallback = @import("home_rt").stackFallback;
+const stackFallback = @import("home").stackFallback;
 
 const mem = std.mem;
 const Allocator = mem.Allocator;

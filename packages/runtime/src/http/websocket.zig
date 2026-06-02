@@ -1,5 +1,5 @@
 // Copied from bun/src/http/websocket.zig at upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"); upstream
+// Imports rewritten: @import("bun") → @import("home"); upstream
 // `bun.Environment`, `bun.assert` map 1:1 to `home_rt.Environment`,
 // `home_rt.assert`.
 
@@ -92,7 +92,7 @@ pub const WebsocketHeader = packed struct(u16) {
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 test "websocket.Opcode.isControl flags control frames" {

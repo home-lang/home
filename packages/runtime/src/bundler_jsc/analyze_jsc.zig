@@ -252,7 +252,7 @@ const JSModuleRecord = opaque {
     pub const addImportEntryNamespace = JSC_JSModuleRecord__addImportEntryNamespace;
 };
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const DiffFormatter = @import("../runtime/test_runner/diff_format.zig").DiffFormatter;
 
 const analyze = @import("../bundler/analyze_transpiled_module.zig");

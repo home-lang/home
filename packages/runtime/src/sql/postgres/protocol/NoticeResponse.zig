@@ -41,7 +41,7 @@ test "NoticeResponse defaults to empty messages list" {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const FieldMessage = @import("./FieldMessage.zig").FieldMessage;
 const NewReader = @import("./NewReader.zig").NewReader;

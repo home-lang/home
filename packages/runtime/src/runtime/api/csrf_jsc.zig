@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //
 // Stubs (re-attach in Phase 12.2 when home_rt grows the matching surface):
 //   - `jsc.JSGlobalObject`, `jsc.CallFrame`, `JSValue`, `JSError`,
@@ -178,7 +178,7 @@ pub fn csrf__verify(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFram
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // BoringSSL's `EVP_MAX_MD_SIZE` is 64 across all currently supported digests
 // (SHA-512 + a `+32` salt). Swap for the real symbol when boringssl_sys

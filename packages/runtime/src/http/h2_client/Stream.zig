@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`, `bun` enum tag → `home`.
-// Imports rewritten: @import("bun") → @import("home_rt"). The sibling
+// Imports rewritten: @import("bun") → @import("home"). The sibling
 // `ClientSession` / `H2Client` modules and the `HTTPClient` / `picohttp.Header`
 // types are not yet ported — local opaque/struct stubs stand in for the
 // pointer-typed fields so callers can spell `*Stream`. The actual frame
@@ -184,7 +184,7 @@ fn destroy(ptr: anytype) void {
 
 const wire = home_rt.http.H2FrameParser;
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "Stream.State transitions: sentEndStream open -> half_closed_local" {
     var s: @This() = .{

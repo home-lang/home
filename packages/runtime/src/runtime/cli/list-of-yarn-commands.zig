@@ -76,7 +76,7 @@ pub const all_yarn_commands = home_rt.ComptimeStringMap(void, .{
     .{"workspaces"},
 });
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "runtime cli yarn command table recognizes yarn v1 and v2 commands" {
     const std = @import("std");

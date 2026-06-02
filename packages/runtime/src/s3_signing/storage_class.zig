@@ -1,6 +1,6 @@
 // Copied from bun/src/s3_signing/storage_class.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 
 //! S3 storage class enum + lookup table. Pure data — no JSC, no I/O.
 //! Mirrors the `x-amz-storage-class` header values accepted by the S3 REST API.
@@ -65,4 +65,4 @@ test "StorageClass.Map rejects unknown strings" {
     try std.testing.expect(StorageClass.Map.get("FROZEN") == null);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");

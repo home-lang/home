@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun")                              → @import("home_rt")
+//   - @import("bun")                              → @import("home")
 //   - bun.strings.{indexOfChar,eql}               → home_rt.strings.*
 //   - bun.ComptimeStringMap                       → home_rt.ComptimeStringMap
 //   - bun.assert / bun.debugAssert                → home_rt.assert
@@ -353,7 +353,7 @@ fn getNamedValueCaseInsensitiveAscii(comptime M: type, str: []const u8) ?u7 {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // JSC stub — re-attaches when `home_rt.jsc.JSGlobalObject` grows
 // `msToGregorianDateTimeUTC` / `gregorianDateTimeToMSUTC` (Phase 12.2).

@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt") (via `home_rt.lolhtml_sys.lol_html.HTMLString`)
+//   - @import("bun") → @import("home") (via `home_rt.lolhtml_sys.lol_html.HTMLString`)
 //
 // Stubs:
 //   - `bun.JSError`, `bun.jsc.JSGlobalObject`, `bun.jsc.JSValue`,
@@ -16,11 +16,11 @@
 //! JSC bridge for lol-html `HTMLString`. Keeps `src/lolhtml_sys/` free of JSC types.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const HTMLString = home_rt.lolhtml_sys.lol_html.HTMLString;
 
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
-const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
+const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 // `JSValue` is ABI-compatible with `i64` (encoded ptr). Using `enum(i64)`
 // matches the convention used by `home_rt/jsc/JSArray.zig`.
 pub const JSValue = enum(i64) {

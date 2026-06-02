@@ -1,6 +1,6 @@
 // Copied from bun/src/event_loop/AutoFlusher.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The JSC
+// Imports rewritten: @import("bun") → @import("home"). The JSC
 // `VirtualMachine` type is a local opaque stub — re-attaches to the real
 // JSC bridge in Phase 12.2. The body of the helpers is kept verbatim;
 // callers reach `vm.eventLoop().deferred_tasks.{post,unregister}Task`
@@ -35,7 +35,7 @@ pub fn registerDeferredMicrotaskWithTypeUnchecked(comptime Type: type, this: *Ty
 // JSC bridge VirtualMachine stubbed — re-attaches in Phase 12.2.
 pub const VirtualMachine = opaque {};
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 // ---- Inline tests -----------------------------------------------------

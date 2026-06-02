@@ -24,7 +24,7 @@
 // main thread, one for the http thread). We mirror that exact bootstrap.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const Mutex = home_rt.threading.Mutex;
 const default_allocator = home_rt.default_allocator;

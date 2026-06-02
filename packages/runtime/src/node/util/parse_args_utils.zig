@@ -13,12 +13,12 @@
 //   * `classifyToken` / `findOptionByShortName` — they take `[]const
 //     OptionDefinition` slices, so they wait on the same substrate.
 //
-// Imports rewritten: @import("bun") → @import("home_rt"). Only `std` and
+// Imports rewritten: @import("bun") → @import("home"). Only `std` and
 // `home_rt.strings` are actually pulled in by what's ported.
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const strings = home_rt.strings;
 
 pub const OptionValueType = enum { boolean, string };

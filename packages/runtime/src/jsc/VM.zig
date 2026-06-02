@@ -16,7 +16,7 @@
 //     on the still-unported `TopExceptionScope`.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const JSGlobalObject = home_rt.jsc.JSGlobalObject;
 const JSValue = home_rt.jsc.JSValue;

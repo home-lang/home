@@ -15,7 +15,7 @@
 // Method bodies re-attach in Phase 12.2.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 /// Discriminant for the `EventLoopHandle` union. Upstream lives in
 /// `jsc.EventLoopKind`; we inline it here so this leaf compiles in

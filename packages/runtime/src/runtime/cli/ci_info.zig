@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun")                  → @import("home_rt")
+//   - @import("bun")                  → @import("home")
 //   - bun.env_var.CI.get()            → home_rt.env_var.CI.get()
 //     (upstream returns bool-or-null and was treated as a fall-through
 //     gate; Home's `env_var.CI` returns `?bool` already, so the gate
@@ -58,7 +58,7 @@ const generated = struct {
     }
 };
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "ci_info.isCI does not crash" {

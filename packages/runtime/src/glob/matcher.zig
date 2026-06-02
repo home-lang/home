@@ -491,7 +491,7 @@ const BraceIndex = struct {
     end: u32 = 0,
 };
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const std = @import("std");
 
 // ---------------------------------------------------------------------------
@@ -499,7 +499,7 @@ const std = @import("std");
 //
 // These exercise the faithful upstream Bun glob matcher now that it is wired
 // into Home as `home_rt.glob.match`. The matcher is byte-identical to Bun's
-// `src/glob/matcher.zig` apart from the `@import("bun") -> @import("home_rt")`
+// `src/glob/matcher.zig` apart from the `@import("bun") -> @import("home")`
 // rewrite above; the assertions below cover every documented pattern feature
 // (`?`, `*`, `**`, `[...]`, ranges, `[!..]`/`[^..]`, `{a,b}` braces, negation,
 // escapes, and UTF-8) so a regression in the wiring or the underlying string

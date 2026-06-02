@@ -4,7 +4,7 @@
 // Wave-16 Tier-1 grinder.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //   - bun.Environment → home_rt.Environment
 //
 // The entire `FuzzilliCommand` body lives behind the
@@ -17,7 +17,7 @@
 // and the file ships only the comptime scaffolding + tests.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 pub const FuzzilliCommand = if (home_rt.Environment.enable_fuzzilli) struct {
     // Body parked — see `bun/src/runtime/cli/fuzzilli_command.zig` upstream.

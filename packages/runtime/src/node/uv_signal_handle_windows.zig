@@ -32,7 +32,7 @@
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 /// Stand-in for `bun.windows.libuv.uv_signal_t`. The libuv handle is a

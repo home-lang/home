@@ -129,7 +129,7 @@ pub fn dependencyFromJS(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFra
 
 const std = @import("std");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const jsc = bun.jsc;
 const logger = bun.logger;
 const Dependency = bun.install.Dependency;

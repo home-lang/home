@@ -3,7 +3,7 @@
 // Pinned SHA: fd0b6f1a271fca0b8124b69f230b100f4d636af6
 //
 // Renames applied (per packages/runtime/README.md naming convention):
-//   - `@import("bun")` -> `@import("home_rt")`
+//   - `@import("bun")` -> `@import("home")`
 //   - removed the unused `Flags` re-export pulled from `bun.ast`.
 //   - Zig 0.17 compat: `std.mem.trimLeft` -> `std.mem.trimStart`.
 //
@@ -70,7 +70,7 @@ pub const UseDirective = enum(u2) {
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const strings = home_rt.strings;
 
 test "UseDirective.parse recognises 'use client' / 'use server'" {

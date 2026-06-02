@@ -109,7 +109,7 @@ pub const libuv_error_map = brk: {
     break :brk map;
 };
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 const SystemErrno = @import("../errno/errno.zig").SystemErrno;
 

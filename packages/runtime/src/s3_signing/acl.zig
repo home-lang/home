@@ -1,6 +1,6 @@
 // Copied from bun/src/s3_signing/acl.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 
 //! S3 canned ACLs. Pure enum + lookup table — no JSC, no I/O.
 //! Maps the canned ACL header values defined by the S3 REST API.
@@ -71,4 +71,4 @@ test "ACL.Map rejects unknown strings" {
     try std.testing.expect(ACL.Map.get("") == null);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");

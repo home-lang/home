@@ -1,6 +1,6 @@
 // Copied from bun/src/threading/WaitGroup.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 // Rewrites:
 //   * `bun.threading.Condition` / `.Mutex` → local
 //     `@import("./Condition.zig")` / `@import("./Mutex.zig")`.
@@ -82,7 +82,7 @@ test "WaitGroup: addUnsynchronized + finish drains to zero" {
     wg.wait(); // should not block
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 const Condition = @import("./Condition.zig");

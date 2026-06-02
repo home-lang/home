@@ -4,7 +4,7 @@
 // Zig wrapper around the vendored google/boringssl C library. The TLS/crypto
 // C ABI surface (SSL_*, BIO_*, X509_*, EVP_*, RSA_*, EC_*, …) is the link-time
 // contract with libcrypto/libssl and must not be renamed. Verbatim copy
-// except: `@import("bun")` → `@import("home_rt")`, and
+// except: `@import("bun")` → `@import("home")`, and
 // `bun.uws.us_bun_verify_error_t` is inlined as a local extern struct
 // (`SSL.us_bun_verify_error_t`) because `uws.zig` carries a JSC-tied
 // `verifyErrorToJS` decl that hasn't been ported yet.
@@ -19309,7 +19309,7 @@ pub fn getError(this: *SSL, rc: c_int) SSL.Error!u32 {
     };
 }
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const std = @import("std");
 
 test "boringssl extern symbol signatures compile" {

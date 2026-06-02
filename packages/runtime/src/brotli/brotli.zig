@@ -5,7 +5,7 @@
 // google/brotli C ABI surface (`brotli_sys.brotli_c`). Mirrors upstream's
 // `BunBrotli` module verbatim minus three rewrites:
 //
-//   1. `@import("bun")` collapses to `@import("home_rt")` — `BrotliDecoder`/
+//   1. `@import("bun")` collapses to `@import("home")` — `BrotliDecoder`/
 //      `BrotliEncoder` come from `home_rt.brotli_sys.brotli_c`.
 //   2. The optional `bun.heap_breakdown` zone fallback is dropped (no
 //      heap-breakdown substrate in home_rt yet); allocations go straight
@@ -20,7 +20,7 @@
 //   6. `bun.Output.debugWarn` falls back to `home_rt.Output.errorln`
 //      since the debug-only warn channel hasn't landed yet.
 
-pub const c = @import("home_rt").brotli_sys.brotli_c;
+pub const c = @import("home").brotli_sys.brotli_c;
 const BrotliDecoder = c.BrotliDecoder;
 const BrotliEncoder = c.BrotliEncoder;
 
@@ -307,7 +307,7 @@ pub const BrotliCompressionStream = struct {
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const mimalloc = home_rt.mimalloc_sys.mimalloc;
 
 test "brotli wrapper compiles" {

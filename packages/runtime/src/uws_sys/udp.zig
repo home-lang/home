@@ -1,6 +1,6 @@
 // Copied from bun/src/uws_sys/udp.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"); bun.assert →
+// Imports rewritten: @import("bun") → @import("home"); bun.assert →
 // home_rt.assert. Upstream pulls `Loop` from `bun.uws`; we declare a local
 // opaque forward-decl until `uws_sys/Loop.zig` ports (Loop carries
 // InternalLoopData + jsc.EventLoopHandle, so it can't be a leaf today).
@@ -125,7 +125,7 @@ pub const PacketBuffer = opaque {
 /// it, so a local opaque is shape-compatible with the future real type.
 pub const Loop = opaque {};
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "udp.Socket / PacketBuffer expose the us_udp_* API surface" {

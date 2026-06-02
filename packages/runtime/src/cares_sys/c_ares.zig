@@ -24,7 +24,7 @@
 //   stubbed to a `@panic` until `libuv_sys` lands. POSIX/Linux/glibc paths
 //   port cleanly; `isGlibc` is inlined via `builtin.target.abi`.
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 pub const socklen_t = c.socklen_t;
 pub const ares_ssize_t = isize;

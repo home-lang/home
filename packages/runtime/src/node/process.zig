@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;

@@ -8,14 +8,14 @@
 // the three private converters (`fromSeconds`, `fromMilliseconds`,
 // `fromNow`) are pure and ported verbatim.
 //
-// Imports rewritten: @import("bun") → @import("home_rt") for the
+// Imports rewritten: @import("bun") → @import("home") for the
 // `Environment` namespace. `bun.c.UTIME_NOW` (macOS sys/stat.h) is inlined
 // as a private constant — Home doesn't yet vendor the `bun.c.*` libc shim.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 /// On windows, this is what libuv expects.

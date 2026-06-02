@@ -1,7 +1,7 @@
 // Copied verbatim from bun/src/core/bounded_array.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// Rewrites: `@import("bun")` → `@import("home_rt")` for the assert reference.
+// Rewrites: `@import("bun")` → `@import("home")` for the assert reference.
 
 /// Removed from the Zig standard library in https://github.com/ziglang/zig/pull/24699/
 ///
@@ -303,7 +303,7 @@ pub fn BoundedArrayAligned(
     };
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const assert = home_rt.assert;
 
 const std = @import("std");

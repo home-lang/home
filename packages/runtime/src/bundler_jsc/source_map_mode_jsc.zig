@@ -23,5 +23,5 @@ pub fn sourceMapModeFromJS(global: *bun.jsc.JSGlobalObject, value: bun.jsc.JSVal
     return null;
 }
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const SourceMapMode = bun.schema.api.SourceMapMode;

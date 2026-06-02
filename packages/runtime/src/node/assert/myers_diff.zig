@@ -3,7 +3,7 @@
 //!
 //! Do _NOT_ import from "home_rt" in this file! Do _NOT_ use the home_rt namespace in this file!
 //!
-//! This file has tests defined in it which _cannot_ be run if `@import("home_rt")` is used!
+//! This file has tests defined in it which _cannot_ be run if `@import("home")` is used!
 //!
 //! Run tests with `:zig test %`
 

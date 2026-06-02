@@ -112,7 +112,7 @@ pub const ServerConfig = struct {
 };
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const bake = @import("../bake/bake.zig");
 const server = @import("server.zig");
 const HTMLBundleModule = @import("HTMLBundle.zig");

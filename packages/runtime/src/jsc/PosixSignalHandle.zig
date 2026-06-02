@@ -11,7 +11,7 @@
 // + `Task` re-attach in Phase 12.2.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const PosixSignalHandle = @This();
 

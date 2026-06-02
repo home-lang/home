@@ -36,10 +36,10 @@ const String = extern struct {
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = @import("home_rt").jsc.JSValue;
+const JSValue = @import("home").jsc.JSValue;
 const VirtualMachine = opaque {};
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Exception = home_rt.jsc.Exception;
 const JSRuntimeType = home_rt.jsc.JSRuntimeType;
 

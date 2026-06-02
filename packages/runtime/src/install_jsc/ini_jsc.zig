@@ -119,7 +119,7 @@ pub const IniTestingAPIs = struct {
 
 const std = @import("std");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const jsc = bun.jsc;
 const Registry = bun.install.Npm.Registry;
 

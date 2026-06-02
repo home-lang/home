@@ -105,5 +105,5 @@ pub fn jsFromUrl(go: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError
 
 const hgi = @import("../install/hosted_git_info.zig");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const jsc = bun.jsc;

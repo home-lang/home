@@ -1,7 +1,7 @@
 // Copied from bun/src/jsc/EventType.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// Imports rewritten: `@import("bun")` → `@import("home_rt")` so
+// Imports rewritten: `@import("bun")` → `@import("home")` so
 // `bun.ComptimeStringMap` is `home_rt.ComptimeStringMap`. No semantic edits.
 
 pub const EventType = enum(u8) {
@@ -35,7 +35,7 @@ pub const EventType = enum(u8) {
 
 const string = []const u8;
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "EventType.map round-trips canonical labels" {
     const std = @import("std");

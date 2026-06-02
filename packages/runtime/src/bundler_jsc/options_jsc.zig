@@ -64,7 +64,7 @@ pub fn compileTargetFromSlice(global: *jsc.JSGlobalObject, slice_with_bun_prefix
 
 const CompileTarget = @import("../options_types/CompileTarget.zig");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const jsc = bun.jsc;
 const options = bun.options;
 const strings = bun.strings;

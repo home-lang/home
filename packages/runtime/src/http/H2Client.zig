@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`. Imports rewritten:
-// @import("bun") → @import("home_rt"); sibling `ClientSession` and the
+// @import("bun") → @import("home"); sibling `ClientSession` and the
 // `H2TestingAPIs` JSC bridge (`../http_jsc/headers_jsc.zig`) are not yet
 // ported. `Stream` and `PendingConnect` already live under `h2_client/` and
 // re-export verbatim. `ClientSession` is stubbed as an opaque so the alias

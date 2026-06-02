@@ -12,7 +12,7 @@
 //! For a strong that may be empty (to reuse allocation), use `Strong.Optional`.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const Strong = @This();
 

@@ -45,7 +45,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 pub const constants = home_rt.node.os_constants;

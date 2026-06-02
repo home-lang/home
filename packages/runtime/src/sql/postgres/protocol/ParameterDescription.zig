@@ -5,7 +5,7 @@
 // Postgres extended-query ParameterDescription ('t') backend packet.
 // Carries the OID for each `$N` parameter the server has bound to a
 // prepared statement. Imports rewritten:
-//   `@import("bun")` → `@import("home_rt")` (bun.default_allocator
+//   `@import("bun")` → `@import("home")` (bun.default_allocator
 //   becomes home_rt.default_allocator). The decoder body reaches into
 //   the wave-16 NewReader stub method surface (reader.length / .short /
 //   .read) and trips a natural compile error until the real reader
@@ -56,7 +56,7 @@ test "ParameterDescription toInt32Slice big-endian round-trip" {
     try std_local.testing.expectEqual(@as(int4, @byteSwap(@as(int4, 0x00000001))), ints[0]);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const NewReader = @import("./NewReader.zig").NewReader;
 

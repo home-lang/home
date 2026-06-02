@@ -71,7 +71,7 @@ pub fn lockOrAssert(self: *Self) void {
 
 pub const enabled = home_rt.Environment.allow_assert;
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const invalid_thread_id = @import("./thread_id.zig").invalid;
 /// stubbed: re-attaches when home_rt.crash_handler.StoredTrace lands.
 const StoredTrace = void;

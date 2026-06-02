@@ -96,7 +96,7 @@ test "HandshakeV10 default fields match the protocol-version-10 marker" {
 }
 
 const Capabilities = @import("../Capabilities.zig");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const CharacterSet = @import("./CharacterSet.zig").CharacterSet;
 const Data = @import("../../shared/Data.zig").Data;
 const StatusFlags = @import("../StatusFlags.zig").StatusFlags;

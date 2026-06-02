@@ -18,7 +18,7 @@
 const std = @import("std");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSValue = @import("home_rt").jsc.JSValue;
+const JSValue = @import("home").jsc.JSValue;
 const VM = @import("./VM.zig").VM;
 
 // `bun.String` C ABI stub. Real layout `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.

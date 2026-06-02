@@ -1,7 +1,7 @@
 // Copied from bun/src/options_types/CodeCoverageOptions.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// Rewrites: @import("bun") → @import("home_rt"); bun.SourceMap.coverage.Fraction
+// Rewrites: @import("bun") → @import("home"); bun.SourceMap.coverage.Fraction
 // is upstream-located in sourcemap_jsc/CodeCoverage.zig (JSC-bridge file, not
 // yet ported), so the tiny POD `Fraction` struct it defines is inlined here.
 // Defaults match upstream byte-for-byte. Re-attach to the real symbol once
@@ -48,7 +48,7 @@ pub const Fraction = struct {
     failing: bool = false,
 };
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "CodeCoverageOptions defaults match upstream" {
     const std = @import("std");

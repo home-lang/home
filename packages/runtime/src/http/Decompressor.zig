@@ -8,7 +8,7 @@
 // the ArrayList the reader populates.
 //
 // Rewrites versus upstream:
-//   1. `@import("bun")` collapses to `@import("home_rt")`. `Brotli` /
+//   1. `@import("bun")` collapses to `@import("home")`. `Brotli` /
 //      `zstd` / `Zlib` resolve to `home_rt.brotli.brotli` /
 //      `home_rt.zstd.zstd` / `home_rt.zlib.zlib`.
 //   2. `bun.http.default_allocator` falls back to
@@ -129,7 +129,7 @@ pub const Decompressor = union(enum) {
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const default_allocator = home_rt.default_allocator;
 const Zlib = @import("../zlib/zlib.zig");
 const Brotli = @import("../brotli/brotli.zig");

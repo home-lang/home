@@ -53,7 +53,7 @@ fn freeStr(this: *RefCountedStr) void {
     home_rt.default_allocator.free(this.ptr[0..this.len]);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "RefCountedStr: init/ref/deref balances refcount" {
     // The string buffer must be owned by the same allocator that

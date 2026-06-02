@@ -6,7 +6,7 @@
 // almost-pure data, so it lands on its own with a surgical Ordinal stub.
 //
 // Imports rewritten:
-//   `@import("bun")`         → `@import("home_rt")`
+//   `@import("bun")`         → `@import("home")`
 //   `bun.Ordinal`            → the local `Ordinal` stub below (verbatim shape
 //                              clone of upstream `OrdinalT(c_int)`)
 //   `bun.strings.indexOfNewlineOrNonASCII` → pure-Zig fallback (Highway is a
@@ -124,7 +124,7 @@ pub fn cmp(_: void, a: LineColumnOffset, b: LineColumnOffset) std.math.Order {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // ---- Local stubs ------------------------------------------------------
 

@@ -4,7 +4,7 @@
 // Wave-16 Tier-1 grinder.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //   - bun.ComptimeEnumMap → home_rt.ComptimeEnumMap
 //
 // Parks:
@@ -15,7 +15,7 @@
 //     Auth port.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // MySQL authentication methods
 pub const AuthMethod = enum {

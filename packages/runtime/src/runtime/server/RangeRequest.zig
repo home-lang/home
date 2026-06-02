@@ -98,7 +98,7 @@ inline fn trim(s: []const u8, comptime chars: []const u8) []const u8 {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "RangeRequest.parseRaw: empty header is .none" {
     try std.testing.expectEqual(Raw.none, parseRaw(""));

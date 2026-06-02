@@ -1,7 +1,7 @@
 // Copied verbatim from bun/src/sourcemap/VLQ.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 // Imports rewritten:
-//   `@import("bun")`  → `@import("home_rt")`
+//   `@import("bun")`  → `@import("home")`
 //   `bun.assert`      → `home_rt.assert`
 
 //! Variable-length quantity encoding, limited to i32 as per source map spec.
@@ -170,7 +170,7 @@ pub fn decodeAssumeValid(encoded: []const u8, start: usize) VLQResult {
     return .{ .start = start + encoded_.len, .value = 0 };
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "VLQ.encode + decode round-trip across the lookup-table boundary" {

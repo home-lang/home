@@ -891,7 +891,7 @@ pub const Encoding = enum {
     };
 };
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const std = @import("std");
 
 test "lol_html extern symbol signatures compile" {

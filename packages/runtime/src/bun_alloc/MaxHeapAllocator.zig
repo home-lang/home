@@ -8,7 +8,7 @@
 // buffers where the caller never needs more than one live allocation at
 // a time.
 //
-// Imports rewritten: `@import("bun")` → `@import("home_rt")`,
+// Imports rewritten: `@import("bun")` → `@import("home")`,
 // `bun.assert` → `home_rt.assert`, `bun.cast` → `home_rt.cast`.
 // No JSC bridge.
 
@@ -68,7 +68,7 @@ pub fn isInstance(allocator: std.mem.Allocator) bool {
     return allocator.vtable == &vtable;
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "MaxHeapAllocator: single-allocation arena reuses storage" {

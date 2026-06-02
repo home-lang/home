@@ -1,6 +1,6 @@
 // Copied from bun/src/sql/shared/Data.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../../cli/LICENSE.bun.md.
-// Imports rewritten: `@import("bun")` -> `@import("home_rt")`.
+// Imports rewritten: `@import("bun")` -> `@import("home")`.
 
 // Represents data that can be either owned or temporary
 pub const Data = union(enum) {
@@ -126,5 +126,5 @@ test "Data.substring returns temporary views" {
     try std.testing.expectEqualStrings("gres", part.slice());
 }
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const std = @import("std");

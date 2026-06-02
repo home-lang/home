@@ -21,12 +21,12 @@
 // declared locally so callers that only need pure conversion can use
 // this file today. The JSC bridge is kept as `extern fn` decls.
 //
-// Imports rewritten: @import("bun") → @import("home_rt") for the
+// Imports rewritten: @import("bun") → @import("home") for the
 // `Environment` namespace.
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 // ---- StatFS payload shape (stubbed) ---------------------------------------

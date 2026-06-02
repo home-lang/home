@@ -308,7 +308,7 @@ pub const UUID5 = struct {
 };
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Mutex = home_rt.threading.Mutex;
 
 test "uuid: v4 sets version + variant bits" {

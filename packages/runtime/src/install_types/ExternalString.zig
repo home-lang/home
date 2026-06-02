@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
 // Imports rewritten:
-//   `@import("bun")`        → `@import("home_rt")`
+//   `@import("bun")`        → `@import("home")`
 //   `bun.Semver.String`     → sibling `@import("SemverString.zig").String`
 //   `bun.Wyhash.hash`        → `std.hash.Wyhash.hash` (stdlib equivalent)
 //

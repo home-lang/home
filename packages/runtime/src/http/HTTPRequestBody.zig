@@ -1,5 +1,5 @@
 // Copied from bun/src/http/HTTPRequestBody.zig at upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The internal
+// Imports rewritten: @import("bun") → @import("home"). The internal
 // `SendFile` and `ThreadSafeStreamBuffer` deps are inlined here as local
 // opaque stub types — upstream's SendFile pulls in `bun.FD`/`bun.sys`/
 // `bun.http.NewHTTPContext` and ThreadSafeStreamBuffer pulls in

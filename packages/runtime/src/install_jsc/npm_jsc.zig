@@ -119,7 +119,7 @@ pub const ManifestBindings = struct {
 
 const std = @import("std");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const jsc = bun.jsc;
 const strings = bun.strings;
 const npm = bun.install.Npm;

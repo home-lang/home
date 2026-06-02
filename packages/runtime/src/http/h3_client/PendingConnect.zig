@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`, `bun` enum tag → `home`.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 //   - `bun.uws.{Loop, quic}` → opaque `Loop` stub + `home_rt.uws_sys.quic`.
 //   - `bun.Mutex` → `home_rt.threading.Mutex`.
 //   - `bun.http.H3.ClientSession` and `bun.http.H3.ClientContext` (the
@@ -252,7 +252,7 @@ fn destroy(ptr: anytype) void {
 
 const quic = home_rt.uws_sys.quic;
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "PendingConnect linked-list push order is LIFO via onDNSResolvedThreadsafe" {
     // Reset state so a parallel test doesn't see stale entries.

@@ -1,6 +1,6 @@
 // Copied from bun/src/bundler/IndexStringMap.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"); bun.ast → home_rt.ast.
+// Imports rewritten: @import("bun") → @import("home"); bun.ast → home_rt.ast.
 
 const IndexStringMap = @This();
 
@@ -25,7 +25,7 @@ pub fn put(self: *IndexStringMap, allocator: std.mem.Allocator, index: Index.Int
     try self.map.put(allocator, index, duped);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "IndexStringMap: put then get round-trips" {

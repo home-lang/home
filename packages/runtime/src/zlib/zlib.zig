@@ -5,7 +5,7 @@
 // zlib-ng (zlib-compat) C ABI surface. Mirrors upstream's `BunZlib`
 // module modulo:
 //
-//   1. `@import("bun")` collapses to `@import("home_rt")`. Upstream pulled
+//   1. `@import("bun")` collapses to `@import("home")`. Upstream pulled
 //      `z_stream` / `z_streamp` / `DataType` / `FlushValue` / `ReturnCode`
 //      from a build-graph package named `zlib-internal`. We inline the
 //      POSIX subset of those decls directly in the `internal` block below
@@ -528,7 +528,7 @@ pub const ZlibCompressorArrayList = struct {
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const mimalloc = home_rt.mimalloc_sys.mimalloc;
 
 const DataType = internal.i_DataType;

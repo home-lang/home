@@ -28,7 +28,7 @@ pub extern fn libdeflate_free_compressor(compressor: *Compressor) void;
 // libc shim in mimalloc_shim.zig (mi_malloc -> std.c.malloc, etc.). When
 // Phase 12.2 lands mimalloc-bun the shim is swapped back to the real wrapper
 // and these call sites unchanged.
-const mimalloc = @import("home_rt").mimalloc_sys.mimalloc;
+const mimalloc = @import("home").mimalloc_sys.mimalloc;
 
 fn load_once() void {
     libdeflate_set_memory_allocator(mimalloc.mi_malloc, mimalloc.mi_free);

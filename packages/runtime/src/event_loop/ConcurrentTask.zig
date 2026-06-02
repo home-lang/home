@@ -1,6 +1,6 @@
 // Copied from bun/src/event_loop/ConcurrentTask.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt") and
+// Imports rewritten: @import("bun") → @import("home") and
 // `bun.UnboundedQueue` → `home_rt.threading.UnboundedQueue`. The JSC
 // `Task` type (must remain exactly 8 bytes to satisfy the
 // `@sizeOf(ConcurrentTask) == 16` invariant), `ManagedTask`, `TrivialNew`,
@@ -174,7 +174,7 @@ fn markBinding(comptime _: std.builtin.SourceLocation) void {}
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const UnboundedQueue = home_rt.threading.UnboundedQueue;
 const ManagedTask = home_rt.event_loop.ManagedTask;
 

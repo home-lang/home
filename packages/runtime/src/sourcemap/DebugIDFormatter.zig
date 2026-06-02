@@ -26,7 +26,7 @@ pub const DebugIDFormatter = struct {
 };
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "DebugIDFormatter renders 32 hex chars with constant suffix" {
     var buf: [128]u8 = undefined;

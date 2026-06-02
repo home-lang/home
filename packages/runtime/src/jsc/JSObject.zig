@@ -11,7 +11,7 @@
 // `host_fn.zig` in Phase 12.2.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 extern const JSC__JSObject__maxInlineCapacity: c_uint;
 

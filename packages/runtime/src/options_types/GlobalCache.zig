@@ -1,6 +1,6 @@
 // Copied from bun/src/options_types/GlobalCache.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 
 pub const GlobalCache = enum {
     allow_install,
@@ -78,4 +78,4 @@ test "GlobalCache classifier predicates" {
     try std.testing.expect(!GlobalCache.auto.allowVersionSpecifier());
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");

@@ -178,7 +178,7 @@ test "HiveArray" {
     }
 }
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const OOM = bun.OOM;
 const assert = bun.assert;
 

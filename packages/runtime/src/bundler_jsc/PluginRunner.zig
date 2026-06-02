@@ -233,7 +233,7 @@ const string = []const u8;
 
 const std = @import("std");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const Environment = bun.Environment;
 const Fs = bun.fs;
 const jsc = bun.jsc;

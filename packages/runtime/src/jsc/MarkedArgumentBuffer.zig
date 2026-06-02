@@ -9,7 +9,7 @@ const std = @import("std");
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 // JSC bridge CallFrame stubbed — re-attaches in Phase 12.2.
-const CallFrame = @import("home_rt").jsc.CallFrame;
+const CallFrame = @import("home").jsc.CallFrame;
 // JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
 // Modeled as an extern struct preserving the 64-bit EncodedJSValue C ABI.
 const JSValue = extern struct {

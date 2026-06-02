@@ -16,12 +16,12 @@
 // struct (not raw integer decls) and `node:fs.constants` ships raw integer
 // values to JS.
 //
-// Imports rewritten: @import("bun") → @import("home_rt") for `Environment`.
+// Imports rewritten: @import("bun") → @import("home") for `Environment`.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 /// Plain-integer mirror of `bun.O` (Bun's `src/sys/sys.zig` per-OS struct of

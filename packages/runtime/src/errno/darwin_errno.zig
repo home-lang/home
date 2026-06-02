@@ -17,7 +17,7 @@ pub const S = std.posix.S;
 /// (where `UV_E* = -<positive>`); `UV_E` below negates them again to get
 /// the positive errno-shaped integer Bun stores.
 /// Once `libuv_sys/libuv.zig` is ported, these will be replaced by
-/// `@import("home_rt").libuv_sys.libuv.UV_E*`.
+/// `@import("home").libuv_sys.libuv.UV_E*`.
 const uv_constants = struct {
     pub const UV_ECHARSET: c_int = -4080;
     pub const UV_ENONET: c_int = -4056;

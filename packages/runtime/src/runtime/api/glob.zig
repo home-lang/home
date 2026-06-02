@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun")                              → @import("home_rt")
+//   - @import("bun")                              → @import("home")
 //
 // This is an aggressive skeleton port. The upstream file is a thin JSC
 // wrapper around `home_rt.glob.BunGlobWalker` (already ported in
@@ -25,14 +25,14 @@
 //   - `JSError` — single-variant `error{JSError}`.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // JSC stubs — re-attach when home_rt.jsc grows the matching surface.
-const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
-const CallFrame = @import("home_rt").jsc.CallFrame;
+const JSGlobalObject = @import("home").jsc.JSGlobalObject;
+const CallFrame = @import("home").jsc.CallFrame;
 const ArgumentsSlice = opaque {};
-pub const JSValue = @import("home_rt").jsc.JSValue;
-pub const JSError = @import("home_rt").JSError;
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = @import("home").JSError;
 
 const Glob = @This();
 

@@ -1,6 +1,6 @@
 // Copied from bun/src/event_loop/DeferredTaskQueue.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 
 //! Sometimes, you have work that will be scheduled, cancelled, and rescheduled multiple times
 //! The order of that work may not particularly matter.
@@ -68,7 +68,7 @@ pub fn deinit(this: *DeferredTaskQueue) void {
     this.map.deinit(home_rt.default_allocator);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 // ---- Inline tests -----------------------------------------------------

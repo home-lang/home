@@ -21,7 +21,7 @@
 //   Re-attaches once `home_rt.sys.File` lands (Phase 12.3).
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const OOM = home_rt.OOM;
 // `bun.Mode` is `std.posix.mode_t` upstream; mirror that.

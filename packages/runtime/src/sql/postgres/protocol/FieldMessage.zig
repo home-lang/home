@@ -131,5 +131,5 @@ test "FieldMessage.init returns UnknownFieldType for unmapped tags" {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const FieldType = @import("./FieldType.zig").FieldType;

@@ -1,7 +1,7 @@
 // Copied from bun/src/bun_core/feature_flags.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6.
 //
-// Imports rewritten: @import("bun") → @import("home_rt"); local
+// Imports rewritten: @import("bun") → @import("home"); local
 // `./env.zig` references replaced by `home_rt.Environment`.
 //
 // Deviations from upstream:
@@ -17,7 +17,7 @@
 //! If you are adding feature-flags to this file, you are in the wrong spot. Go to env_var.zig
 //! instead.
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 const build_options = @import("build_options");
 const env = home_rt.Environment;

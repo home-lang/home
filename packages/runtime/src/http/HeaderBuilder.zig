@@ -1,7 +1,7 @@
 // Copied from bun/src/http/HeaderBuilder.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// Imports rewritten: `@import("bun")` → `@import("home_rt")`. Two ancillary
+// Imports rewritten: `@import("bun")` → `@import("home")`. Two ancillary
 // rewrites:
 //
 //   * `StringBuilder = bun.StringBuilder` (i.e. `bun.string.StringBuilder`, a
@@ -26,7 +26,7 @@
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const StringBuilder = @import("../core/string/StringBuilder.zig");
 const multi_array_list = @import("../collections/multi_array_list.zig");
 

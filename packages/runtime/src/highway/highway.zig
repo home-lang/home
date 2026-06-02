@@ -1,7 +1,7 @@
 // Copied from bun/src/highway/highway.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 // Imports rewritten:
-//   `@import("bun")`           → `@import("home_rt")`
+//   `@import("bun")`           → `@import("home")`
 //   `bun.debugAssert`          → `home_rt.assert`   (same semantics: debug-only)
 //   `bun.Environment.isDebug`  → `home_rt.Environment.isDebug`
 //   The unused `bun.strings` alias was dropped (upstream imports it but
@@ -463,7 +463,7 @@ const string = []const u8;
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 test "highway symbols and wrappers have well-formed type signatures" {

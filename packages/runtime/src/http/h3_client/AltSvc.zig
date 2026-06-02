@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`, `bun` enum tag → `home`.
-// Imports rewritten: @import("bun") → @import("home_rt"). Local stubs
+// Imports rewritten: @import("bun") → @import("home"). Local stubs
 // stand in for `bun.strings.{eqlLong,trim}` (not yet in home_rt.strings),
 // `bun.Output.scoped` (Home's Output namespace lacks scoped/Visibility),
 // and `bun.StringHashMapUnmanaged` (re-exports the std HashMap with the
@@ -208,7 +208,7 @@ fn StringHashMapUnmanaged(comptime V: type) type {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "AltSvc.parse handles same-host h3 alternative" {
     const entry = (try parse("h3=\":443\"; ma=3600")).?;

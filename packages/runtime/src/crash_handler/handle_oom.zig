@@ -8,7 +8,7 @@
 // have a stable `crash_handler.handle_oom.handleOom` entry point that
 // matches the upstream module path.
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 /// If `result` is `error.OutOfMemory`, panics. Otherwise returns the

@@ -48,7 +48,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const strings = home_rt.strings;
 const Environment = home_rt.Environment;
 

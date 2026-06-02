@@ -71,7 +71,7 @@ test "NegotiateProtocolVersion deinit releases cloned option strings" {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const NewReader = @import("./NewReader.zig").NewReader;
 const String = @import("./FieldMessage.zig").FieldMessage.String;

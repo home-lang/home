@@ -1,7 +1,7 @@
 // Copied from bun/src/bun_alloc/memory.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
 //
-// Imports rewritten: `@import("bun")` -> `@import("home_rt")`.
+// Imports rewritten: `@import("bun")` -> `@import("home")`.
 // The allocator helpers are wired through Home's runtime facade while keeping
 // the same public memory utility surface for downstream Bun leaves.
 
@@ -205,7 +205,7 @@ fn DropSentinel(comptime Ptr: type) type {
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "memory: create initializes and destroy frees" {
     const Payload = struct {

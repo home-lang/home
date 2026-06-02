@@ -8,7 +8,7 @@
 // `home_rt.MAX_PATH_BYTES`. This keeps PathString at 64 bits on macOS /
 // Linux (a single register) instead of a 128-bit struct on Windows.
 //
-// Imports rewritten: `@import("bun")` → `@import("home_rt")`,
+// Imports rewritten: `@import("bun")` → `@import("home")`,
 // `bun.MAX_PATH_BYTES` → `home_rt.MAX_PATH_BYTES`,
 // `bun.Environment.isWasm` → `home_rt.Environment.isWasm`. The original
 // `const jsc = bun.jsc;` line is dropped (it was unused inside the
@@ -74,7 +74,7 @@ pub const PathString = packed struct(PathStringBackingIntType) {
     }
 };
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "PathString: init round-trips a borrowed slice" {

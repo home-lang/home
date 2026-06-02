@@ -3,7 +3,7 @@
 // Pinned SHA: fd0b6f1a271fca0b8124b69f230b100f4d636af6
 //
 // Renames applied (per packages/runtime/README.md naming convention):
-//   - `@import("bun")` -> `@import("home_rt")`
+//   - `@import("bun")` -> `@import("home")`
 //   - `bun.assert` -> `home_rt.assert`
 //   - `bun.unsafeAssert` -> `home_rt.assert` (no separate "unsafe" variant
 //     exists on Home yet; the upstream's `unsafeAssert` is identical in
@@ -129,7 +129,7 @@ pub const List = struct {
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const base = @import("base.zig");
 const Index = base.Index;

@@ -1,6 +1,6 @@
 // Copied from bun/src/http_jsc/fetch_enums_jsc.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). Upstream spells
+// Imports rewritten: @import("bun") → @import("home"). Upstream spells
 // the Fetch* enums as `bun.http.FetchRedirect` (a re-export of
 // `http_types/Fetch*`); Home keeps them only under `http_types/` so the
 // references resolve to `home_rt.http_types.Fetch*`.
@@ -29,7 +29,7 @@ pub fn fetchCacheModeToJS(this: home_rt.http_types.FetchCacheMode, global: *anyo
     return Bun__FetchCacheMode__toJS(@intFromEnum(this), global);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "fetch_enums_jsc: bridges name all three Fetch* enums" {
     _ = fetchRedirectToJS;

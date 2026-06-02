@@ -1,7 +1,7 @@
 // Copied from bun/src/sql/postgres/protocol/NewWriter.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../../../cli/LICENSE.bun.md.
 //
-// Import rewrite: `@import("bun")` -> `@import("home_rt")`.
+// Import rewrite: `@import("bun")` -> `@import("home")`.
 
 pub fn NewWriterWrap(
     comptime Context: type,
@@ -144,7 +144,7 @@ fn canWrapContext(comptime Context: type) bool {
         @hasDecl(Context, "pwrite");
 }
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const std = @import("std");
 const AnyPostgresError = @import("../AnyPostgresError.zig").AnyPostgresError;
 

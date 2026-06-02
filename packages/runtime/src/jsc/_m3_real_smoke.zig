@@ -25,7 +25,7 @@
 // that M3 actually links + runs.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const build_options = @import("build_options");
 
 const extern_fns = home_rt.jsc.extern_fns;

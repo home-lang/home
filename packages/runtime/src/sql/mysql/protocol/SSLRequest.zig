@@ -60,7 +60,7 @@ test "SSLRequest defaults max_packet_size to 16MB and charset to default" {
 const debug = home_rt.Output.scoped(.MySQLConnection, .hidden);
 
 const Capabilities = @import("../Capabilities.zig");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const CharacterSet = @import("./CharacterSet.zig").CharacterSet;
 
 const NewWriter = @import("./NewWriter.zig").NewWriter;

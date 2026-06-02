@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun")                              → @import("home_rt")
+//   - @import("bun")                              → @import("home")
 //   - bun.default_allocator                        → std.heap.c_allocator
 //     (matches the `std.heap.c_allocator` re-export but works in
 //     standalone `zig test` mode where the home_rt module isn't wired up)

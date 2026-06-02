@@ -6,7 +6,7 @@
 // color-depth environment rules, and lightweight stream state.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const core_tty = home_rt.tty;
 
 pub const Mode = core_tty.Mode;

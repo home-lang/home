@@ -1,6 +1,6 @@
 // Copied from bun/src/s3_signing/error.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 //
 // Stubs vs. upstream: the JSC-facing helpers (`getJSSignError`, `throwSignError`,
 // `S3Error.toJS`, `S3Error.toJSWithAsyncStack`) live in
@@ -82,5 +82,5 @@ test "S3Error struct fields" {
 comptime {
     // Touch home_rt to mirror upstream's `@import("bun")` wiring even though
     // the pure-data subset compiled here has no runtime dependency on it.
-    _ = @import("home_rt");
+    _ = @import("home");
 }

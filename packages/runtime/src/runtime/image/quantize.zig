@@ -240,7 +240,7 @@ fn shrink(rgba: []const u8, order: []const u32, lo: u32, hi: u32) Box {
     return .{ .lo = lo, .hi = hi, .min = min, .max = max };
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "quantize.Box.widestChannel: picks the largest range" {

@@ -4,7 +4,7 @@
 // Wave-16 Tier-1 grinder.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //   - bun.strings.eql → home_rt.strings.eql
 //   - bun.debugAssert → home_rt.debugAssert
 //   - bun.Environment.isX64 → home_rt.Environment.isX64
@@ -87,7 +87,7 @@ pub fn get() CPUFeatures {
     return .{ .flags = flags };
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "CPUFeatures: Flags packs into u8 (per-arch layout)" {

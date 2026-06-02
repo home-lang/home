@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../../../cli/LICENSE.bun.md.
 //
 // Generic MySQL packet reader wrapper. Import rewrites:
-// `@import("bun")` -> `@import("home_rt")`. The upstream file has no direct
+// `@import("bun")` -> `@import("home")`. The upstream file has no direct
 // Bun namespace references; the rewrite is recorded here for provenance.
 
 pub fn NewReaderWrap(

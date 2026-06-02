@@ -651,7 +651,7 @@ pub const safety_checks = Environment.ci_assert;
 
 const std = @import("std");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const OOM = bun.OOM;
 const strings = bun.strings;
 const StoredTrace = bun.crash_handler.StoredTrace;

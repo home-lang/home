@@ -15,13 +15,13 @@
 //   * the `Bun__createJSStatsObject` / `…BigIntStats…` extern bridges
 //     (those live in node/Stat.zig).
 //
-// Imports rewritten: @import("bun") → @import("home_rt") for the
+// Imports rewritten: @import("bun") → @import("home") for the
 // `Environment` namespace.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 /// Tag for the four "shape" buckets upstream's `__defineConstant` switches on.

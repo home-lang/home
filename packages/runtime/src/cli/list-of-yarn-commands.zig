@@ -1,6 +1,6 @@
 // Copied from bun/src/cli/list-of-yarn-commands.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 
 pub const all_yarn_commands = home_rt.ComptimeStringMap(void, .{
     // yarn v2.3 commands
@@ -77,4 +77,4 @@ pub const all_yarn_commands = home_rt.ComptimeStringMap(void, .{
     .{"workspaces"},
 });
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");

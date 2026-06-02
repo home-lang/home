@@ -209,6 +209,6 @@ const string = []const u8;
 const OutputFile = @import("../bundler/OutputFile.zig");
 const std = @import("std");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const Output = bun.Output;
 const jsc = bun.jsc;

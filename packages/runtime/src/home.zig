@@ -2,7 +2,7 @@
 //
 // This module is the single import surface used by every other Home Runtime
 // subsystem. Copied-from-Bun source files have their `@import("bun")` calls
-// rewritten to `@import("home_rt")` at copy time, so this aggregator is the
+// rewritten to `@import("home")` at copy time, so this aggregator is the
 // canonical replacement for Bun's `bun.zig` namespace inside Home.
 //
 // Each sub-phase appends its public surface here as the matching directory
@@ -1519,7 +1519,7 @@ pub const jsc = struct {
     pub const promise = @import("jsc/promise.zig");
     pub const iterator = @import("jsc/iterator.zig");
     pub const global = @import("jsc/global.zig");
-    pub const WebCore = @import("home_rt").runtime.webcore;
+    pub const WebCore = @import("home").runtime.webcore;
     pub const API = struct {
         pub const Subprocess = runtime.api.Subprocess;
 
@@ -1659,12 +1659,12 @@ pub const io = struct {
             _ = this;
         }
 
-        pub fn startWithCurrentPipe(this: *BufferedReader) @import("home_rt").sys.Maybe(void) {
+        pub fn startWithCurrentPipe(this: *BufferedReader) @import("home").sys.Maybe(void) {
             _ = this;
             return .success;
         }
 
-        pub fn start(this: *BufferedReader, fd: FD, is_pollable: bool) @import("home_rt").sys.Maybe(void) {
+        pub fn start(this: *BufferedReader, fd: FD, is_pollable: bool) @import("home").sys.Maybe(void) {
             _ = this;
             _ = fd;
             _ = is_pollable;
@@ -2324,15 +2324,15 @@ pub const FD = packed struct(fd_t) {
     }
 
     pub fn getFdPath(fd: FD, buf: *PathBuffer) ![]u8 {
-        return @import("home_rt").getFdPath(fd, buf);
+        return @import("home").getFdPath(fd, buf);
     }
 
     pub fn getFdPathZ(fd: FD, buf: *PathBuffer) ![:0]u8 {
-        return @import("home_rt").getFdPathZ(fd, buf);
+        return @import("home").getFdPathZ(fd, buf);
     }
 
     pub fn getFdPathW(fd: FD, buf: *WPathBuffer) ![]u16 {
-        return @import("home_rt").getFdPathW(fd, buf);
+        return @import("home").getFdPathW(fd, buf);
     }
 
     pub fn isValid(fd: FD) bool {
@@ -3283,7 +3283,7 @@ pub const sys = struct {
     }
 
     pub fn getFdPath(fd: FD, out_buffer: *PathBuffer) Maybe([]u8) {
-        return .{ .result = @import("home_rt").getFdPath(fd, out_buffer) catch |err| {
+        return .{ .result = @import("home").getFdPath(fd, out_buffer) catch |err| {
             return .{ .err = errnoFromPosix(.readlink, err).withFd(fd) };
         } };
     }

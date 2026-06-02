@@ -45,7 +45,7 @@ pub fn decodeInternal(this: *AuthSwitchRequest, comptime Context: type, reader: 
 
 pub const decode = decoderWrap(AuthSwitchRequest, decodeInternal).decode;
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Data = @import("../../shared/Data.zig").Data;
 
 const NewReader = @import("./NewReader.zig").NewReader;

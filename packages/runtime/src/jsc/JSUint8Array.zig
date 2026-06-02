@@ -11,12 +11,12 @@
 // JSC bridge re-attaches in Phase 12.2.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Sizes = home_rt.jsc.sizes;
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = @import("home_rt").jsc.JSValue;
+const JSValue = @import("home").jsc.JSValue;
 
 pub const JSUint8Array = opaque {
     pub fn ptr(this: *JSUint8Array) [*]u8 {

@@ -2,7 +2,7 @@
 //! (upstream SHA pinned in `home_rt.upstream_sha`). Near-verbatim copy
 //! with two surface deltas:
 //!
-//!   * `@import("bun")` rewritten to `@import("home_rt")`.
+//!   * `@import("bun")` rewritten to `@import("home")`.
 //!   * `bun.safety.CheckedAllocator` rewritten to the local sibling
 //!     `safety/alloc.zig`'s `CheckedAllocator`. Today's port runs the
 //!     allocator-equality check in **disabled mode** (zero-sized field,
@@ -659,7 +659,7 @@ pub fn MultiArrayList(comptime T: type) type {
 
 const builtin = @import("builtin");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const assert = home_rt.assert;
 
 const std = @import("std");

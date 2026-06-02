@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //
 // Stubs (re-attach in Phase 12.2 when home_rt grows the matching surface):
 //   - `jsc.JSGlobalObject`, `jsc.JSValue`, `jsc.Task`, `jsc.VirtualMachine`
@@ -159,7 +159,7 @@ pub const DeferredDerefTask = struct {
 };
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 // ============================================================================
 // Local stubs (re-attach when the matching home_rt surfaces land)

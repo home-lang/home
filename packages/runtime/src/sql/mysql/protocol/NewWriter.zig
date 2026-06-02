@@ -2,7 +2,7 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../../../cli/LICENSE.bun.md.
 //
 // Import rewrites:
-// `@import("bun")` -> `@import("home_rt")`.
+// `@import("bun")` -> `@import("home")`.
 
 pub fn NewWriterWrap(
     comptime Context: type,
@@ -235,7 +235,7 @@ const debug = home_rt.Output.scoped(.NewWriter, .hidden);
 
 const AnyMySQLError = @import("./AnyMySQLError.zig");
 const PacketHeader = @import("./PacketHeader.zig");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 const encodeLengthInt = @import("./EncodeInt.zig").encodeLengthInt;
 

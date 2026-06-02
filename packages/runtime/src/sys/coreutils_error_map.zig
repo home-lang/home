@@ -379,7 +379,7 @@ pub const coreutils_error_map = brk: {
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 const SystemErrno = @import("../errno/errno.zig").SystemErrno;
 

@@ -13,7 +13,7 @@
 //     pointing the user at the URL) is inlined here so the CLI command
 //     still works end-to-end on Home; the spawn-based opener re-attaches
 //     in Phase 12.5 once the spawn substrate lands.
-//   - @import("bun") → @import("home_rt").
+//   - @import("bun") → @import("home").
 
 pub const DiscordCommand = struct {
     const discord_url = "https://home.lang/discord";
@@ -28,7 +28,7 @@ pub const DiscordCommand = struct {
     }
 };
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "DiscordCommand.exec emits the discord URL without crashing" {

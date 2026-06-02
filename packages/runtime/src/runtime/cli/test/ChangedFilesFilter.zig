@@ -532,7 +532,7 @@ fn appendPaths(
 
 const std = @import("std");
 
-const bun = @import("home_rt");
+const bun = @import("home");
 const Environment = bun.Environment;
 const Global = bun.Global;
 const Output = bun.Output;

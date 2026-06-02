@@ -47,7 +47,7 @@ pub fn str(this: HashedString) []const u8 {
     return this.ptr[0..this.len];
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "HashedString: init + str round-trip" {
     const s = HashedString.init("hello");

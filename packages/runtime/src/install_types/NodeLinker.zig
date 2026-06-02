@@ -1,6 +1,6 @@
 // Copied from bun/src/install_types/NodeLinker.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 
 //! Extracted from `install/PackageManager/PackageManagerOptions.zig` so
 //! `options_types/schema.zig`, `cli/bunfig.zig`, and `ini/` can name the
@@ -33,5 +33,5 @@ test "NodeLinker.fromStr maps canonical strings" {
     try std.testing.expect(NodeLinker.fromStr("nope") == null);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const strings = home_rt.strings;

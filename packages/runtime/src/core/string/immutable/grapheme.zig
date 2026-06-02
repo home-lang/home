@@ -1,7 +1,7 @@
 // Copied from bun/src/bun_core/string/immutable/grapheme.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6.
 //
-// Imports rewritten: @import("bun") → @import("home_rt"); `bun.assert`
+// Imports rewritten: @import("bun") → @import("home"); `bun.assert`
 // → `home_rt.assert`. Algorithm + types are upstream-verbatim.
 
 // Grapheme break implementation using uucode's approach.
@@ -360,6 +360,6 @@ test "grapheme: regional indicator pairs cluster, third breaks (GB12/GB13)" {
     try std.testing.expect(st == .default);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const grapheme_tables = @import("grapheme_tables.zig");
 const std = @import("std");

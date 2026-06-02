@@ -264,7 +264,7 @@ inline fn clamp8(v: f32) u8 {
     return @intFromFloat(std.math.clamp(v, 0, 1) * 255);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "thumbhash.max_len matches worst-case packing budget" {

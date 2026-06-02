@@ -77,7 +77,7 @@ pub fn decodeLengthInt(bytes: []const u8) ?struct { value: u64, bytes_read: usiz
     }
 }
 
-const bun = @import("home_rt");
+const bun = @import("home");
 
 test "EncodeInt: tiny values use the 1-byte encoding" {
     const std = @import("std");

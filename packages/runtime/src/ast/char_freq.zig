@@ -3,7 +3,7 @@
 // Pinned SHA: fd0b6f1a271fca0b8124b69f230b100f4d636af6
 //
 // Renames/adaptations:
-//   - `@import("bun")` -> `@import("home_rt")`
+//   - `@import("bun")` -> `@import("home")`
 //   - `bun.assert` -> `home_rt.assert`
 //   - `js_ast.CharFreq` -> local `@This()`
 //   - `js_ast.NameMinifier` -> local pure-data copy from
@@ -193,7 +193,7 @@ pub fn compile(this: *const CharFreq, allocator: std.mem.Allocator) NameMinifier
 const CharFreq = @This();
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "CharFreq.scan counts identifier characters" {
     var freq = CharFreq.initEmpty();

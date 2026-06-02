@@ -65,7 +65,7 @@ pub fn execute(query: []const u8, writer: anytype) !void {
 
 const debug = home_rt.Output.scoped(.MySQLQuery, .visible);
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 const AnyMySQLError = @import("./AnyMySQLError.zig");
 const CommandType = @import("./CommandType.zig").CommandType;

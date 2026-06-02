@@ -1,7 +1,7 @@
 // Copied from bun/src/analytics/analytics.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// Rewritten imports: `@import("bun")` → `@import("home_rt")`.
+// Rewritten imports: `@import("bun")` → `@import("home")`.
 // Three upstream chunks are intentionally omitted from this leaf:
 //
 //   1. `pub const Features = struct { ... }` — the `builtin_modules`
@@ -23,7 +23,7 @@
 // consume on the JSC-free side.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const assert = home_rt.assert;
 

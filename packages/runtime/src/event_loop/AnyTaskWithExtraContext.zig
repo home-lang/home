@@ -1,6 +1,6 @@
 // Copied from bun/src/event_loop/AnyTaskWithExtraContext.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The JSC `Task`
+// Imports rewritten: @import("bun") → @import("home"). The JSC `Task`
 // type is a local stub — re-attaches in Phase 12.2. `callmod_inline`
 // mirrors upstream Bun (Debug → .auto, otherwise → .always_inline).
 
@@ -77,7 +77,7 @@ pub fn New(comptime Type: type, comptime ContextType: type, comptime Callback: a
 const builtin = @import("builtin");
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 // ---- Inline tests -----------------------------------------------------

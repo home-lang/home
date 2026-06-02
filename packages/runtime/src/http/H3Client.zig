@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`. Imports rewritten:
-// @import("bun") → @import("home_rt"). `AltSvc`, `Stream`, `PendingConnect`
+// @import("bun") → @import("home"). `AltSvc`, `Stream`, `PendingConnect`
 // already live under `h3_client/` and re-export verbatim. The sibling
 // `ClientSession` / `ClientContext` modules drive the lsquic state machine
 // + bun.http back-edges and aren't ported yet — opaque stubs keep the alias

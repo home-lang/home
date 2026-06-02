@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`, `bun` enum tag → `home`.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 //   - `bun.uws.quic` → `home_rt.uws_sys.quic` (the lsquic opaque types
 //     already ported under uws_sys/quic/).
 //   - `bun.http` (HTTPClient) and the sibling `ClientSession` /
@@ -105,7 +105,7 @@ fn destroy(ptr: anytype) void {
 
 const quic = home_rt.uws_sys.quic;
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "Stream defaults: no qstream, zero status, body not done" {
     const s: Stream = .{

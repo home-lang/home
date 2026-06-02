@@ -7,7 +7,7 @@
 // The JSC bridge re-attaches in Phase 12.2.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Strong = home_rt.jsc.Strong;
 
 const JSGlobalObject = home_rt.jsc.JSGlobalObject;

@@ -4,7 +4,7 @@
 // Wave-16 Tier-1 grinder.
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt")
+//   - @import("bun") → @import("home")
 //   - bun.strings → home_rt.strings
 //   - bun.Output → home_rt.Output
 //   - bun.Global → home_rt.Global
@@ -21,7 +21,7 @@
 //     port is byte-identical once both surfaces re-attach.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 const string = []const u8;
 

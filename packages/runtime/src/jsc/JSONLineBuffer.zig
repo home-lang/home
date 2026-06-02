@@ -15,7 +15,7 @@
 // re-attaches in Phase 12.2 by swapping the alias to `home_rt.ByteList`.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Allocator = std.mem.Allocator;
 
 /// Stub for `bun.ByteList`. Real upstream is a packed `{ ptr, len, cap }`

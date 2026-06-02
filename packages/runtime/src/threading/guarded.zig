@@ -1,6 +1,6 @@
 // Copied from bun/src/threading/guarded.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 // Rewrites:
 //   * `bun.threading.Mutex` → local `@import("./Mutex.zig")`.
 //   * `bun.safety.ThreadLock` → `home_rt.safety.ThreadLock`.
@@ -132,6 +132,6 @@ test "GuardedBy: deinit dispatches to inner T.deinit when present" {
     try std.testing.expect(did_run);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Mutex = @import("./Mutex.zig");
 const std = @import("std");

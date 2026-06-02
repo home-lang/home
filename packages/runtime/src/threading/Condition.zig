@@ -1,6 +1,6 @@
 // Copied from bun/src/threading/Condition.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → @import("home").
 // Rewrites:
 //   * `bun.Futex` / `bun.Mutex` → local `@import("./Futex.zig")` /
 //     `@import("./Mutex.zig")`.
@@ -220,7 +220,7 @@ test "Condition: timedWait returns Timeout when nothing wakes us" {
 
 const builtin = @import("builtin");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Futex = @import("./Futex.zig");
 const Mutex = @import("./Mutex.zig");
 const assert = home_rt.assert;

@@ -1,6 +1,6 @@
 // Copied from bun/src/http/H2FrameParser.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"); upstream
+// Imports rewritten: @import("bun") → @import("home"); upstream
 // `bun.debugAssert` (Debug-mode invariant check) is rerouted through
 // `home_rt.assert`, which has identical Debug-build semantics.
 
@@ -156,7 +156,7 @@ pub const SettingsPayloadUnit = packed struct(u48) {
     }
 };
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 test "H2FrameParser.u32FromBytes decodes big-endian u32" {

@@ -41,12 +41,12 @@
 // helpers are inlined verbatim — when Home lands `bun.timespec`, swap
 // the inline block for `home_rt.timespec`.
 //
-// Imports rewritten: @import("bun") → @import("home_rt") for the
+// Imports rewritten: @import("bun") → @import("home") for the
 // `Environment` namespace.
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 // ---- Minimal PosixStat / timespec shape -----------------------------------

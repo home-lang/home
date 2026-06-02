@@ -1,6 +1,6 @@
 // Copied from bun/src/uws_sys/SocketKind.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"); bun.assert →
+// Imports rewritten: @import("bun") → @import("home"); bun.assert →
 // home_rt.assert. The `BUN_SOCKET_KIND_*` export ordinals are public C ABI
 // symbols read from `packages/bun-uws/src/SocketKinds.h`, so they stay
 // verbatim (same convention as `Bun__lock` in threading/Mutex.zig).
@@ -105,7 +105,7 @@ comptime {
     _ = exported_ordinals;
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "SocketKind ordinals fit in a u8 and start at zero" {
     const std = @import("std");

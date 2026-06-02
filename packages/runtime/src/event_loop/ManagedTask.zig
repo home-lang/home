@@ -1,6 +1,6 @@
 // Copied from bun/src/event_loop/ManagedTask.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The JSC `Task`
+// Imports rewritten: @import("bun") → @import("home"). The JSC `Task`
 // type and `JSError` error set are local stubs — they re-attach to the
 // real JSC bridge in Phase 12.2. `callmod_inline` mirrors upstream Bun.
 
@@ -65,7 +65,7 @@ pub const Task = struct {
 const builtin = @import("builtin");
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 
 // ---- Inline tests -----------------------------------------------------

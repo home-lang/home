@@ -58,7 +58,7 @@ test "prepareRequest writes a COM_STMT_PREPARE packet" {
 
 const debug = home_rt.Output.scoped(.MySQLRequest, .visible);
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 const AnyMySQLError = @import("./protocol/AnyMySQLError.zig");
 const CommandType = @import("./protocol/CommandType.zig").CommandType;

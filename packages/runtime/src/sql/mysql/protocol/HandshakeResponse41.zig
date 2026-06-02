@@ -164,7 +164,7 @@ test "HandshakeResponse41 writes a secure connection packet" {
 const debug = home_rt.Output.scoped(.MySQLConnection, .hidden);
 
 const Capabilities = @import("../Capabilities.zig");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const std = @import("std");
 const CharacterSet = @import("./CharacterSet.zig").CharacterSet;
 const Data = @import("../../shared/Data.zig").Data;

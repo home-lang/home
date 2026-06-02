@@ -1,5 +1,5 @@
 // Copied from bun/src/http/lshpack.zig at upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"); upstream
+// Imports rewritten: @import("bun") → @import("home"); upstream
 // `bun.mimalloc.mi_malloc` / `bun.mimalloc.mi_free` (mimalloc-backed alloc
 // hooks passed to the C wrapper) are replaced with libc `malloc`/`free`
 // until the mimalloc surface lands on home_rt. `bun.outOfMemory()` →
@@ -91,7 +91,7 @@ fn c_free(ptr: ?*anyopaque) callconv(.c) void {
     free(ptr);
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 
 test "lshpack.HPACK extern surface compiles" {
     // The lshpack_wrapper_* symbols are resolved at link time against the C

@@ -4,7 +4,7 @@
 // **Skeleton port — exposes only the `Code` typed bridge.**
 //
 // Rewrites:
-//   - @import("bun") → @import("home_rt") (only `home_rt.node.error_code`
+//   - @import("bun") → @import("home") (only `home_rt.node.error_code`
 //     is actually pulled).
 //
 // Stubs (re-attach when home_rt.jsc grows the matching surface):
@@ -27,14 +27,14 @@
 // the JSC substrate.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Code = home_rt.node.error_code.Code;
 
 // JSC stubs --------------------------------------------------------------
 
-const JSGlobalObject = @import("home_rt").jsc.JSGlobalObject;
-const CallFrame = @import("home_rt").jsc.CallFrame;
-const JSValue = @import("home_rt").jsc.JSValue;
+const JSGlobalObject = @import("home").jsc.JSGlobalObject;
+const CallFrame = @import("home").jsc.CallFrame;
+const JSValue = @import("home").jsc.JSValue;
 pub const JSError = error{JSError};
 
 /// Upstream: `pub const JS2NativeFunctionType = *const fn (*JSGlobalObject) JSError!JSValue`.

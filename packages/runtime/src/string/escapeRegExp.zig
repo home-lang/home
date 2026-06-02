@@ -83,7 +83,7 @@ pub fn escapeRegExpForPackageNameMatching(input: []const u8, writer: *std.Io.Wri
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 const strings = home_rt.strings;
 

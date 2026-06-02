@@ -1,6 +1,6 @@
 // Copied from bun/src/options_types/CommandTag.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The `params()` /
+// Imports rewritten: @import("bun") → @import("home"). The `params()` /
 // `printHelp()` aliases at the bottom of upstream point at `runtime/cli/cli.zig`
 // (`Command.tagParams` / `Command.tagPrintHelp`) and are intentionally omitted
 // — they re-land alongside the broader CLI command surface in Phase 12.10.

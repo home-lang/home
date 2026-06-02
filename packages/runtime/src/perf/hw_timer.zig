@@ -181,7 +181,7 @@ fn osMonotonicNs() u64 {
 }
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Environment = home_rt.Environment;
 
 test "hw_timer: nowNs is non-zero and weakly monotonic on supported targets" {

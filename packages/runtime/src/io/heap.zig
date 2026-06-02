@@ -223,7 +223,7 @@ pub fn IntrusiveField(comptime T: type) type {
     };
 }
 
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const assert = home_rt.assert;
 
 test "io.heap.Intrusive: insert + deleteMin yields sorted output" {

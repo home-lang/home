@@ -6,14 +6,14 @@
 // file co-locates this with the `Dependency` extern struct; the rest of
 // `dependency.zig` pulls in Semver/Repository/HostedGitInfo and can't move
 // until those are ported.
-// Imports rewritten: @import("bun") → @import("home_rt"); `bun.assert`
+// Imports rewritten: @import("bun") → @import("home"); `bun.assert`
 // becomes `home_rt.assert`. `Features` is brought in from the sibling
 // `./Features.zig` extraction. The upstream `@TypeOf(.enum_literal)` builtin
 // spelling was removed in Zig 0.17-dev; `@TypeOf(.enum_literal)` is the
 // 0.17 replacement and produces an identical type at use-sites.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
+const home_rt = @import("home");
 const Features = @import("Features.zig").Features;
 
 /// Bit-packed view of *which dependency categories a single dependency
