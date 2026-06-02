@@ -6,8 +6,8 @@ pub const LOLHTMLContext = struct {
 
     ref_count: RefCount,
     selectors: SelectorMap = .{},
-    element_handlers: std.ArrayListUnmanaged(*ElementHandler) = .{},
-    document_handlers: std.ArrayListUnmanaged(*DocumentHandler) = .{},
+    element_handlers: std.ArrayListUnmanaged(*ElementHandler) = .empty,
+    document_handlers: std.ArrayListUnmanaged(*DocumentHandler) = .empty,
 
     fn deinit(this: *LOLHTMLContext) void {
         for (this.selectors.items) |selector| {
@@ -1701,7 +1701,7 @@ pub const Element = struct {
     /// from `element`. They must be detached in `invalidate()` when the
     /// handler returns so that JS cannot dereference the freed lol-html
     /// attribute buffer.
-    attribute_iterators: std.ArrayListUnmanaged(*AttributeIterator) = .{},
+    attribute_iterators: std.ArrayListUnmanaged(*AttributeIterator) = .empty,
 
     pub const js = jsc.Codegen.JSElement;
     pub const toJS = js.toJS;

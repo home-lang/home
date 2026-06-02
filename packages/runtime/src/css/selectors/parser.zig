@@ -1085,7 +1085,7 @@ pub const SelectorParser = struct {
                 })));
             }
 
-            var args = std.ArrayListUnmanaged(css.css_properties.custom.TokenOrValue){};
+            var args = std.ArrayListUnmanaged(css.css_properties.custom.TokenOrValue).empty;
             if (css.TokenList.parseRaw(input, &args, this.options, 0).asErr()) |e| return .{ .err = e };
 
             return .{ .result = .{ .custom_function = .{

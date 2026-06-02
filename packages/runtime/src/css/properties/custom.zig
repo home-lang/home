@@ -32,7 +32,7 @@ const ColorFallbackKind = css.ColorFallbackKind;
 
 /// PERF: nullable optimization
 pub const TokenList = struct {
-    v: std.ArrayListUnmanaged(TokenOrValue) = .{},
+    v: std.ArrayListUnmanaged(TokenOrValue) = .empty,
 
     const This = @This();
 

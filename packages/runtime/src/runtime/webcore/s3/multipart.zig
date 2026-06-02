@@ -121,7 +121,7 @@ pub const MultiPartUpload = struct {
     upload_id: []const u8 = "",
     uploadid_buffer: bun.MutableString = .{ .allocator = bun.default_allocator, .list = .{} },
 
-    multipart_etags: std.ArrayListUnmanaged(UploadPart.UploadPartResult) = .{},
+    multipart_etags: std.ArrayListUnmanaged(UploadPart.UploadPartResult) = .empty,
     multipart_upload_list: bun.ByteList = .{},
 
     state: enum {

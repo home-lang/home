@@ -35,6 +35,8 @@ pub const Progress = @import("bun_core/Progress.zig");
 pub const Global = @import("global.zig");
 pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
+/// Faithful to upstream `bun.zig:11` (`feature_flag = env_var.feature_flag`).
+pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 pub const Generation = u16;
 pub const Wyhash11 = std.hash.Wyhash;
 pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
@@ -66,6 +68,7 @@ pub fn asByteSlice(buffer: anytype) []const u8 {
         else => buffer,
     };
 }
+
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -649,6 +652,15 @@ pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     // aliasing slices, which `@memcpy` treats as UB (it panics
     // "@memcpy arguments alias" in safe builds). `@memmove` handles overlap.
     @memmove(dest[0..src.len], src);
+}
+
+/// Faithful to upstream `bun.zig:3468`. Overlap-safe byte copy. Bun routes the
+/// native path through `c.memmove`; Home uses the `@memmove` builtin (identical
+/// overlap semantics) so it needs no libc extern.
+pub fn memmove(output: []u8, input: []const u8) void {
+    if (output.len == 0) return;
+    if (comptime Environment.allow_assert) assert(output.len >= input.len);
+    @memmove(output[0..input.len], input);
 }
 
 pub fn concat(comptime T: type, dest: []T, src: []const []const T) void {
@@ -1415,6 +1427,7 @@ pub const jsc = struct {
     };
     // Faithful to upstream jsc/jsc.zig:155 (= EventLoop.WorkPoolTask = work_pool.Task).
     pub const WorkPoolTask = @import("threading/work_pool.zig").Task;
+    pub const ManagedTask = @import("event_loop/ManagedTask.zig");
     // JSC bring-up: real VirtualMachine (was a 215-line stub). jsc/jsc.zig:99.
     pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
     pub const ModuleLoader = struct {
@@ -1524,6 +1537,8 @@ pub const jsc = struct {
     pub const WebCore = @import("home").runtime.webcore;
     pub const API = struct {
         pub const Subprocess = runtime.api.Subprocess;
+        pub const ServerConfig = runtime.api.server.ServerConfig;
+        pub const Valkey = runtime.api.Valkey;
 
         pub const BuildArtifact = struct {
             blob: WebCore.Blob = .{},
@@ -2302,6 +2317,32 @@ pub const FD = packed struct(fd_t) {
         comptime _: enum { close_on_fail, leak_fd_on_fail },
     ) sys.Maybe(FD) {
         return .{ .result = fd };
+    }
+
+    /// Faithful to upstream `sys_jsc/fd_jsc.zig:40`. Home's FD is posix-only
+    /// (no Windows handle kind), so `makeLibUVOwned` is a no-op and `uv()`
+    /// returns the native fd.
+    pub fn toJS(any_fd: FD, global: *jsc.JSGlobalObject) jsc.JSValue {
+        if (!any_fd.isValid()) {
+            return jsc.JSValue.jsNumberFromInt32(-1);
+        }
+        const uv_owned_fd = any_fd.makeLibUVOwned() catch {
+            any_fd.close();
+            const err_instance = (jsc.SystemError{
+                .message = String.static("EMFILE, too many open files"),
+                .code = String.static("EMFILE"),
+            }).toErrorInstance(global);
+            return global.vm().throwError(global, err_instance) catch .zero;
+        };
+        return jsc.JSValue.jsNumberFromInt32(uv_owned_fd.uv());
+    }
+
+    /// Faithful to upstream `sys_jsc/fd_jsc.zig:60`. Posix-only path.
+    pub fn toJSWithoutMakingLibUVOwned(any_fd: FD) jsc.JSValue {
+        if (!any_fd.isValid()) {
+            return jsc.JSValue.jsNumberFromInt32(-1);
+        }
+        return jsc.JSValue.jsNumberFromInt32(any_fd.value);
     }
 
     pub fn toOptional(fd: FD) Optional {
@@ -3096,6 +3137,8 @@ pub const c = struct {
         needle: ?[*]const u8,
         needlelen: usize,
     ) ?[*]const u8;
+    // libc memmove — overlap-safe copy used by the native `bun.memmove` path.
+    pub extern fn memmove(dest: ?*anyopaque, src: ?*const anyopaque, n: usize) ?*anyopaque;
 };
 
 // ---- src/sys/ ----------------------------------------------------------
@@ -3109,6 +3152,9 @@ pub const sys = struct {
     // (`src/sys/sys.zig:20`): the platform-selected stat/memmem shims from
     // `workaround_missing_symbols.zig`. `strings.memmem` routes through this.
     pub const workaround_symbols = @import("workaround_missing_symbols.zig").current;
+
+    // Faithful to upstream `sys/sys.zig:35` (`getErrno = platform_defs.getErrno`).
+    pub const getErrno = @import("sys/sys.zig").getErrno;
 
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const Error = @import("sys/Error.zig");

@@ -12,7 +12,7 @@
 
 const ErrorResponse = @This();
 
-messages: std.ArrayListUnmanaged(FieldMessage) = .{},
+messages: std.ArrayListUnmanaged(FieldMessage) = .empty,
 
 pub fn format(formatter: ErrorResponse, writer: *std.Io.Writer) !void {
     for (formatter.messages.items) |message| {

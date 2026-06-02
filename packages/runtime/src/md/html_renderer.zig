@@ -7,7 +7,7 @@ pub const HtmlRenderer = struct {
     tag_filter: bool = false,
     tag_filter_raw_depth: u32 = 0,
     autolink_headings: bool = false,
-    heading_buf: std.ArrayListUnmanaged(u8) = .{},
+    heading_buf: std.ArrayListUnmanaged(u8) = .empty,
     heading_tracker: helpers.HeadingIdTracker = helpers.HeadingIdTracker.init(false),
 
     pub const OutputBuffer = struct {

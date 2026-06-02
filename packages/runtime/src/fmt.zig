@@ -173,6 +173,26 @@ fn isIdentifierContinue(codepoint: i32) bool {
     };
 }
 
+/// Faithful to upstream `bun_core/fmt.zig:1670`.
+pub fn double(number: f64) FormatDouble {
+    return .{ .number = number };
+}
+
+/// Faithful to upstream `bun_core/fmt.zig:257`. Streams a UTF-16 slice to the
+/// writer as UTF-8 in chunks. Bun reuses a shared temp buffer with recursion
+/// guards; Home uses a fixed stack chunk — identical observable behavior.
+pub fn formatUTF16Type(slice_: []const u16, writer: *std.Io.Writer) !void {
+    var chunk: [256]u8 = undefined;
+    var slice = slice_;
+    while (slice.len > 0) {
+        const result = strings.copyUTF16IntoUTF8(&chunk, slice);
+        if (result.read == 0 or result.written == 0)
+            break;
+        try writer.writeAll(chunk[0..result.written]);
+        slice = slice[result.read..];
+    }
+}
+
 pub const FormatDouble = struct {
     number: f64,
 

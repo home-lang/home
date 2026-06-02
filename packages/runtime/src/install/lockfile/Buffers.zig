@@ -289,7 +289,7 @@ pub fn legacyPackageToDependencyID(this: Buffers, dependency_visited: ?*Bitset, 
 
 pub fn load(stream: *Stream, allocator: Allocator, log: *logger.Log, pm_: ?*PackageManager) !Buffers {
     var this = Buffers{};
-    var external_dependency_list_: std.ArrayListUnmanaged(Dependency.External) = std.ArrayListUnmanaged(Dependency.External){};
+    var external_dependency_list_: std.ArrayListUnmanaged(Dependency.External) = std.ArrayListUnmanaged(Dependency.External).empty;
 
     inline for (sizes.names) |name| {
         const Type = @TypeOf(@field(this, name));

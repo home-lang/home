@@ -79,7 +79,7 @@ pub const FieldMessage = union(FieldType) {
     }
 
     pub fn decodeList(comptime Context: type, reader: anytype) !std.ArrayListUnmanaged(FieldMessage) {
-        var messages = std.ArrayListUnmanaged(FieldMessage){};
+        var messages = std.ArrayListUnmanaged(FieldMessage).empty;
         _ = Context;
         while (true) {
             const field_int = try reader.int(u8);

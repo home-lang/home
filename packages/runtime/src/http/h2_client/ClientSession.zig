@@ -34,7 +34,7 @@ write_buffer: bun.io.StreamBuffer = .{},
 
 /// Inbound bytes until a full 9-byte header + declared payload is
 /// available, so frame handlers always see complete frames.
-read_buffer: std.ArrayListUnmanaged(u8) = .{},
+read_buffer: std.ArrayListUnmanaged(u8) = .empty,
 
 streams: std.AutoArrayHashMapUnmanaged(u31, *Stream) = .{},
 next_stream_id: u31 = 1,
@@ -43,7 +43,7 @@ expecting_continuation: u31 = 0,
 
 /// Cold-start coalesced requests parked until the server's first SETTINGS
 /// frame arrives so the real MAX_CONCURRENT_STREAMS cap can be honoured.
-pending_attach: std.ArrayListUnmanaged(*HTTPClient) = .{},
+pending_attach: std.ArrayListUnmanaged(*HTTPClient) = .empty,
 
 preface_sent: bool = false,
 settings_received: bool = false,
@@ -69,10 +69,10 @@ fatal_error: ?anyerror = null,
 /// in flight when we RST'd it). RFC 9113 §4.3 still requires the block be
 /// fed to the HPACK decoder so the connection-level dynamic table stays
 /// in sync.
-orphan_header_block: std.ArrayListUnmanaged(u8) = .{},
+orphan_header_block: std.ArrayListUnmanaged(u8) = .empty,
 /// Reused HPACK-encode scratch for `writeRequest` so each request doesn't
 /// alloc/free its own header-block buffer.
-encode_scratch: std.ArrayListUnmanaged(u8) = .{},
+encode_scratch: std.ArrayListUnmanaged(u8) = .empty,
 
 remote_max_frame_size: u24 = wire.DEFAULT_MAX_FRAME_SIZE,
 remote_max_concurrent_streams: u32 = 100,

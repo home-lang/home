@@ -177,6 +177,14 @@ pub fn flush() void {
 
 pub fn resetTerminal() void {}
 
+/// Faithful to upstream `Output.initTest`: enables ANSI color detection for
+/// test runs so prettyfmt paths exercise the colored branch. Safe to call
+/// repeatedly (idempotent).
+pub fn initTest() void {
+    enable_ansi_colors_stderr = false;
+    enable_ansi_colors_stdout = false;
+}
+
 pub fn errorWriter() *std.Io.Writer {
     if (error_file_writer == null) {
         error_file_writer = std.Io.File.Writer.initStreaming(.stderr(), debugIo(), &error_writer_buffer);

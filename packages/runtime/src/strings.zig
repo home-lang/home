@@ -48,6 +48,7 @@ pub const copyLatin1IntoUTF8 = @import("string/immutable.zig").copyLatin1IntoUTF
 pub const copyUTF16IntoUTF8 = @import("string/immutable.zig").copyUTF16IntoUTF8;
 pub const copyLatin1IntoUTF8StopOnNonASCII = @import("string/immutable.zig").copyLatin1IntoUTF8StopOnNonASCII;
 pub const elementLengthCP1252IntoUTF16 = @import("string/immutable.zig").elementLengthCP1252IntoUTF16;
+pub const literal = @import("string/immutable.zig").literal;
 pub const wtf8ByteSequenceLengthWithInvalid = @import("string/immutable.zig").wtf8ByteSequenceLengthWithInvalid;
 pub const copyLowercase = @import("string/immutable.zig").copyLowercase;
 pub const copyLowercaseIfNeeded = @import("string/immutable.zig").copyLowercaseIfNeeded;

@@ -43,7 +43,7 @@ pub const Stringifier = struct {
         const pkg_metas: []BinaryLockfile.Package.Meta = pkgs.items(.meta);
         const pkg_bins = pkgs.items(.bin);
 
-        var temp_buf: std.ArrayListUnmanaged(u8) = .{};
+        var temp_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer temp_buf.deinit(allocator);
         const temp_writer = temp_buf.writer(allocator);
 
@@ -120,7 +120,7 @@ pub const Stringifier = struct {
                     &path_buf,
                 );
 
-                var workspace_sort_buf: std.ArrayListUnmanaged(PackageID) = .{};
+                var workspace_sort_buf: std.ArrayListUnmanaged(PackageID) = .empty;
                 defer workspace_sort_buf.deinit(allocator);
 
                 for (0..pkgs.len) |_pkg_id| {
@@ -190,7 +190,7 @@ pub const Stringifier = struct {
                 }
             };
 
-            var tree_sort_buf: std.ArrayListUnmanaged(TreeSortCtx.Item) = .{};
+            var tree_sort_buf: std.ArrayListUnmanaged(TreeSortCtx.Item) = .empty;
             defer tree_sort_buf.deinit(allocator);
 
             // find trusted and patched dependencies. also overrides
@@ -379,10 +379,10 @@ pub const Stringifier = struct {
                 try writer.writeAll("},\n");
             }
 
-            var tree_deps_sort_buf: std.ArrayListUnmanaged(DependencyID) = .{};
+            var tree_deps_sort_buf: std.ArrayListUnmanaged(DependencyID) = .empty;
             defer tree_deps_sort_buf.deinit(allocator);
 
-            var pkg_deps_sort_buf: std.ArrayListUnmanaged(DependencyID) = .{};
+            var pkg_deps_sort_buf: std.ArrayListUnmanaged(DependencyID) = .empty;
             defer pkg_deps_sort_buf.deinit(allocator);
 
             try writeIndent(writer, indent);
