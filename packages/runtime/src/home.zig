@@ -1438,6 +1438,8 @@ pub const cli = struct {
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
     // Faithful to upstream `cli/cli.zig:5`: process-title override slot.
     pub var Bun__Node__ProcessTitle: ?[]const u8 = null;
+    // Faithful to upstream `cli.Command` (`runtime/cli/cli.zig:306`).
+    pub const Command = @import("runtime/cli/cli.zig").Command;
 };
 
 // ---- src/jsc/ ----------------------------------------------------------
@@ -1837,6 +1839,7 @@ pub const jsc = struct {
         pub const Subprocess = runtime.api.Subprocess;
         pub const ServerConfig = runtime.api.server.ServerConfig;
         pub const Valkey = runtime.api.Valkey;
+        pub const Bun = runtime.api.Bun;
 
         pub const BuildArtifact = struct {
             blob: WebCore.Blob = .{},
