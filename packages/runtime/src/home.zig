@@ -48,6 +48,36 @@ pub const sha = @import("sha_hmac/sha.zig");
 pub const dns = @import("dns/dns.zig");
 /// Faithful to upstream `bun.zig:222` (`trait = @import("./meta/traits.zig")`).
 pub const trait = @import("meta/traits.zig");
+// Top-level bun.zig members (modules + small helpers) the copied source spells
+// as `bun.X`. Faithful to upstream bun.zig.
+pub const brotli = @import("brotli/brotli.zig");
+pub const ci = @import("runtime/cli/ci_info.zig");
+pub const darwin = @import("platform/darwin.zig");
+pub const FormData = @import("runtime/webcore/FormData.zig").FormData;
+pub const LOLHTML = @import("lolhtml_sys/lol_html.zig");
+pub const MovableIfWindowsFd = @import("sys/fd.zig").MovableIfWindowsFd;
+pub const validators = @import("runtime/node/util/validators.zig");
+pub const windows = @import("sys/windows/windows.zig");
+pub const mach_port = if (Environment.isMac) std.c.mach_port_t else u32;
+pub var argv: [][:0]const u8 = &[_][:0]const u8{};
+/// Faithful to upstream `bun.zig:3492`.
+pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
+    return inline for (@typeInfo(Enum).@"enum".fields) |f| {
+        if (@intFromEnum(value) == f.value) break f.name;
+    } else null;
+}
+/// Faithful to upstream `bun.zig:3676`.
+pub inline fn take(val: anytype) ?@typeInfo(@typeInfo(@TypeOf(val)).pointer.child).optional.child {
+    if (val.*) |v| {
+        val.* = null;
+        return v;
+    }
+    return null;
+}
+/// Faithful to upstream `bun.zig:510`.
+pub fn DebugOnly(comptime Type: type) type {
+    return if (comptime Environment.isDebug) Type else void;
+}
 /// Forward-port: Home's Zig fork removed `std.time.milliTimestamp` (wall-clock
 /// time now goes through `std.Io`). This is the old behavior — milliseconds since
 /// the Unix epoch via `clock_gettime(REALTIME)` — for the copied sites that used
