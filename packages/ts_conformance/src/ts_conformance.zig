@@ -617,6 +617,12 @@ fn shouldRouteThroughProgram(c: Case) bool {
         // package.json/tsconfig and then reports a spurious TS2307 for
         // the package's own name.
         if (rawSourceHasProjectSelfNameOutputMapping(c.raw_source)) return true;
+        // Clean virtual fixtures with declaration files under an
+        // ancestor node_modules directory and bare imports need the
+        // resolver-backed VFS. The legacy concatenated path cannot
+        // model the containing-file-specific node_modules walk, so it
+        // reports spurious TS2307s. Mirrors cachedModuleResolution2.
+        if (rawSourceHasNodeModulesDeclarationAndBareImport(c.raw_source)) return true;
         return false;
     }
     if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
@@ -779,6 +785,66 @@ fn rawSourceHasNodeModulesCodeMarker(raw: []const u8) bool {
         if (isCodeVirtualFile(path) and isNodeModulesVirtualPath(path)) return true;
     }
     return false;
+}
+
+fn rawSourceHasNodeModulesDeclarationAndBareImport(raw: []const u8) bool {
+    var saw_node_modules_dts = false;
+    var saw_non_node_modules_bare_import = false;
+    var current_non_node_modules_code = false;
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        if (virtualFilename(line)) |path| {
+            const is_code = isCodeVirtualFile(path);
+            const in_node_modules = isNodeModulesVirtualPath(path);
+            if (is_code and in_node_modules and std.mem.endsWith(u8, path, ".d.ts")) {
+                saw_node_modules_dts = true;
+            }
+            current_non_node_modules_code = is_code and !in_node_modules;
+            continue;
+        }
+        if (!current_non_node_modules_code) continue;
+        if (sourceLineHasBareImportSpecifier(line)) saw_non_node_modules_bare_import = true;
+    }
+    return saw_node_modules_dts and saw_non_node_modules_bare_import;
+}
+
+fn sourceLineHasBareImportSpecifier(line: []const u8) bool {
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, line, search_start, "from")) |idx| {
+        search_start = idx + "from".len;
+        if (idx > 0 and isIdentifierContinue(line[idx - 1])) continue;
+        const after = idx + "from".len;
+        if (after < line.len and isIdentifierContinue(line[after])) continue;
+        if (quotedBareSpecifierAfter(line[after..])) return true;
+    }
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (std.mem.startsWith(u8, trimmed, "import")) {
+        if (quotedBareSpecifierAfter(trimmed["import".len..])) return true;
+    }
+    return false;
+}
+
+fn quotedBareSpecifierAfter(text: []const u8) bool {
+    var i: usize = 0;
+    while (i < text.len and (text[i] == ' ' or text[i] == '\t')) : (i += 1) {}
+    if (i >= text.len or (text[i] != '"' and text[i] != '\'')) return false;
+    const quote = text[i];
+    i += 1;
+    const start = i;
+    while (i < text.len and text[i] != quote) : (i += 1) {}
+    if (i >= text.len) return false;
+    const spec = text[start..i];
+    if (spec.len == 0) return false;
+    return spec[0] != '.' and spec[0] != '/';
+}
+
+fn isIdentifierContinue(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '_' or
+        c == '$';
 }
 
 /// Split the raw multi-file source into virtual file entries — one
@@ -1124,6 +1190,33 @@ test "conformance: clean package self-name output mappings route through program
         .expected_errors = "",
         .strict_flags = .{},
     }));
+}
+
+test "conformance: clean ancestor node_modules declaration fixture routes through program" {
+    const raw =
+        \\// @target: es2015
+        \\// @moduleResolution: bundler
+        \\// @traceResolution: true
+        \\// @filename: /a/b/node_modules/foo.d.ts
+        \\export declare let x: number
+        \\// @filename: /a/b/c/lib.ts
+        \\import {x} from "foo";
+        \\// @filename: /a/b/c/d/e/app.ts
+        \\import {x} from "foo";
+    ;
+    const c: Case = .{
+        .name = "cachedModuleResolution2",
+        .source = "",
+        .path = "/a/b/c/d/e/app.ts",
+        .raw_source = raw,
+        .expected_errors = "",
+        .strict_flags = .{},
+    };
+    try T.expect(rawSourceHasNodeModulesDeclarationAndBareImport(raw));
+    try T.expect(shouldRouteThroughProgram(c));
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
 }
 
 fn strategyFromLabel(label: []const u8) ?ts_resolver.Strategy {
@@ -2355,7 +2448,8 @@ fn isNodeModulesVirtualPath(path: []const u8) bool {
     var p = path;
     while (std.mem.startsWith(u8, p, "/")) p = p[1..];
     while (std.mem.startsWith(u8, p, "./")) p = p[2..];
-    return std.mem.startsWith(u8, p, "node_modules/");
+    return std.mem.startsWith(u8, p, "node_modules/") or
+        std.mem.indexOf(u8, p, "/node_modules/") != null;
 }
 
 fn isJsLikeVirtualFile(path: []const u8) bool {

@@ -1893,6 +1893,24 @@ test "Resolver: node_modules walk" {
     try T.expectEqual(Resolution.Source.node_modules, res.source);
 }
 
+test "Resolver: ancestor node_modules direct declaration file" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/a/b/node_modules/foo.d.ts", "export declare let x: number");
+    try vfs.addFile("/a/b/c/lib.ts", "");
+    try vfs.addFile("/a/b/c/d/e/app.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .bundler });
+    defer r.deinit();
+    const lib_res = try r.resolve("foo", "/a/b/c/lib.ts");
+    try T.expectEqualStrings("/a/b/node_modules/foo.d.ts", lib_res.path);
+    try T.expect(lib_res.is_declaration);
+
+    const app_res = try r.resolve("foo", "/a/b/c/d/e/app.ts");
+    try T.expectEqualStrings("/a/b/node_modules/foo.d.ts", app_res.path);
+    try T.expect(app_res.is_declaration);
+}
+
 test "Resolver: prefers types over main" {
     var vfs = VirtualFs.init(T.allocator);
     defer vfs.deinit();
