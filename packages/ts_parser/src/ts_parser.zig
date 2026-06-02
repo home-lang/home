@@ -3393,7 +3393,8 @@ pub const Parser = struct {
         var catch_param: NodeId = hir_mod.none_node_id;
         var catch_block: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_catch)) {
-            if (self.match(.open_paren)) {
+            if (self.peek().kind == .open_paren) {
+                const catch_open = self.advance();
                 catch_param = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                     break :blk try self.parseBindingPattern();
                 } else blk: {
@@ -3436,7 +3437,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(init_tok.span.start, init_tok.line, 1197, "Catch clause variable cannot have an initializer.");
                     _ = try self.parseAssignmentExpression();
                 }
-                _ = try self.expect(.close_paren, "')' to close catch param");
+                _ = try self.expectClosingMatch(.close_paren, "')' to close catch param", catch_open.span.start, "(", ")");
             }
             catch_block = try self.parseBlockStatement();
         }
@@ -3767,7 +3768,7 @@ pub const Parser = struct {
     /// Parse a parenthesized parameter list. Allocates the result slice;
     /// caller frees with `gpa.free`.
     fn parseParameterList(self: *Parser) ParseError![]NodeId {
-        _ = try self.expect(.open_paren, "'(' for parameter list");
+        const open_paren = try self.expect(.open_paren, "'(' for parameter list");
         var params: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer params.deinit(self.gpa);
         var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, Span) = .empty;
@@ -4210,7 +4211,7 @@ pub const Parser = struct {
                 if (self.peek().kind == .close_paren) break; // trailing comma
             }
         }
-        if (!missing_close_reported) _ = try self.expect(.close_paren, "')' to close parameter list");
+        if (!missing_close_reported) _ = try self.expectClosingMatch(.close_paren, "')' to close parameter list", open_paren.span.start, "(", ")");
         return try params.toOwnedSlice(self.gpa);
     }
 
@@ -6999,7 +7000,8 @@ pub const Parser = struct {
             }
         }
         // Named imports: `{ a, b as c, type d }`?
-        else if (self.match(.open_brace)) {
+        else if (self.peek().kind == .open_brace) {
+            const named_imports_open = self.advance();
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
                 const spec_type_only = self.match(.kw_type);
@@ -7090,7 +7092,7 @@ pub const Parser = struct {
                 try named.append(self.gpa, spec);
                 if (!self.match(.comma)) break;
             }
-            _ = try self.expect(.close_brace, "'}' to close named imports");
+            _ = try self.expectClosingMatch(.close_brace, "'}' to close named imports", named_imports_open.span.start, "{", "}");
         }
         if (default_binding_had_comma and
             namespace_binding == hir_mod.none_node_id and
@@ -7627,7 +7629,8 @@ pub const Parser = struct {
         }
 
         // export { a, b as c } [from "m"];
-        if (self.match(.open_brace)) {
+        if (self.peek().kind == .open_brace) {
+            const named_exports_open = self.advance();
             if (self.moduleElementContextIsIllegal()) {
                 // TS1233 / TS1474: `export { ... }` nested inside a block
                 // or control-flow body. JavaScript files use the
@@ -7675,7 +7678,7 @@ pub const Parser = struct {
                 try named.append(self.gpa, spec);
                 if (!self.match(.comma)) break;
             }
-            _ = try self.expect(.close_brace, "'}' to close named exports");
+            _ = try self.expectClosingMatch(.close_brace, "'}' to close named exports", named_exports_open.span.start, "{", "}");
             var module_id = empty_string;
             var module_tok_start: u32 = 0;
             var module_tok_line: u32 = 0;
@@ -9585,8 +9588,7 @@ pub const Parser = struct {
         }
 
         const inner = try self.parseTypeAnnotation();
-        const close = try self.expect(.close_paren, "')' to close grouped type");
-        _ = open_tok;
+        const close = try self.expectClosingMatch(.close_paren, "')' to close grouped type", open_tok.span.start, "(", ")");
         _ = close;
         return inner;
     }
@@ -10033,14 +10035,14 @@ pub const Parser = struct {
                 defer stray_members.deinit(self.gpa);
                 try self.parseTypeMemberList(&stray_members);
             }
-            const close = try self.expect(.close_brace, "'}' to close mapped type");
+            const close = try self.expectClosingMatch(.close_brace, "'}' to close mapped type", open.span.start, "{", "}");
             const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0, false);
             return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, remap, readonly_mod, optional_mod);
         }
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         try self.parseTypeMemberList(&members);
-        const close = try self.expect(.close_brace, "'}' to close object type");
+        const close = try self.expectClosingMatch(.close_brace, "'}' to close object type", open.span.start, "{", "}");
         return try self.builder.addObjectType(
             .{ .start = open.span.start, .end = close.span.end },
             members.items,
@@ -14938,7 +14940,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(op_tok.span.start, op_tok.line, 1005, "')' expected.");
                     return e;
                 }
-                _ = try self.expect(.close_paren, "')' to close parenthesized expression");
+                _ = try self.expectClosingMatch(.close_paren, "')' to close parenthesized expression", t.span.start, "(", ")");
                 return e;
             },
             .less_than => {
@@ -16067,7 +16069,7 @@ pub const Parser = struct {
             }
             break;
         }
-        const close = try self.expect(.close_bracket, "']' to close array literal");
+        const close = try self.expectClosingMatch(.close_bracket, "']' to close array literal", start.span.start, "[", "]");
         return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = close.span.end }, elements.items);
     }
 
@@ -16536,7 +16538,7 @@ pub const Parser = struct {
             try self.reportCodeAt(semi.span.end, semi.line, 1005, "'}' expected.");
             return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = semi.span.end }, props.items);
         }
-        const close = try self.expect(.close_brace, "'}' to close object literal");
+        const close = try self.expectClosingMatch(.close_brace, "'}' to close object literal", start.span.start, "{", "}");
         return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = close.span.end }, props.items);
     }
 
