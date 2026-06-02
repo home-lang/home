@@ -1024,6 +1024,10 @@ fn sourceMentionsValue(source: []const u8, name: []const u8) bool {
     return std.mem.indexOf(u8, source, name) != null;
 }
 
+fn sourceHasReactJsxReference(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "/.lib/react") != null;
+}
+
 fn appendJsxDirectiveDiagnostics(
     gpa: std.mem.Allocator,
     c: *Compilation,
@@ -1056,7 +1060,8 @@ fn appendJsxDirectiveDiagnostics(
     if (jsx_mode) |mode| {
         if (std.mem.eql(u8, mode, "react") and
             directiveValue(source, "jsxFactory") == null and
-            !sourceMentionsValue(source, "React"))
+            !sourceMentionsValue(source, "React") and
+            !sourceHasReactJsxReference(source))
         {
             try appendDriverDiagnostic(gpa, c, 0, 2874, "This JSX tag requires 'React' to be in scope, but it could not be found.");
         }
@@ -3473,6 +3478,38 @@ test "driver: tsconfig jsx option suppresses TS17004" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != ts_checker.check.TsCodes.jsx_without_jsx_flag);
     }
+}
+
+test "driver: React lib reference satisfies classic JSX React scope" {
+    var c = try compileSource(T.allocator,
+        \\// @jsx: react
+        \\/// <reference path="/.lib/react18/react18.d.ts" />
+        \\/// <reference path="/.lib/react18/global.d.ts" />
+        \\const a = <main />;
+    , .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2874);
+    }
+}
+
+test "driver: classic JSX without React scope still reports TS2874" {
+    var c = try compileSource(T.allocator,
+        \\// @jsx: react
+        \\const a = <main />;
+    , .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2874) found = true;
+    }
+    try T.expect(found);
 }
 
 test "driver: tsx jsx text entities do not surface lex diagnostics" {
