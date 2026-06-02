@@ -2190,13 +2190,13 @@ pub const Parser = struct {
                     const start = self.advance(); // global
                     const name_id = try self.internToken(start);
                     const name_node = try self.builder.addIdentifier(tokenSpan(start), name_id);
-                    _ = try self.expect(.open_brace, "'{' to open global body");
+                    const global_body_open = try self.expect(.open_brace, "'{' to open global body");
                     var body: std.ArrayListUnmanaged(NodeId) = .empty;
                     defer body.deinit(self.gpa);
                     while (self.hasPendingStatement() or (self.peek().kind != .close_brace and self.peek().kind != .eof)) {
                         try body.append(self.gpa, try self.parseStatement());
                     }
-                    const close = try self.expect(.close_brace, "'}' to close global body");
+                    const close = try self.expectClosingMatch(.close_brace, "'}' to close global body", global_body_open.span.start, "{", "}");
                     break :blk try self.builder.addNamespace(
                         .{ .start = start.span.start, .end = close.span.end },
                         name_node,
@@ -3269,9 +3269,9 @@ pub const Parser = struct {
         } else if (self.unsupported_with_body_depth == 0) {
             try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         }
-        _ = try self.expect(.open_paren, "'(' after 'with'");
+        const with_open = try self.expect(.open_paren, "'(' after 'with'");
         const object_expr = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' after with expression");
+        _ = try self.expectClosingMatch(.close_paren, "')' after with expression", with_open.span.start, "(", ")");
         self.unsupported_with_body_depth += 1;
         defer self.unsupported_with_body_depth -= 1;
         const body = try self.parseNestedStatement();
@@ -4362,7 +4362,7 @@ pub const Parser = struct {
                     if (self.match(.open_bracket)) {
                         const key_start = self.tokens[self.cursor - 1];
                         const key_expr = try self.parseExpression();
-                        _ = try self.expect(.close_bracket, "']' to close computed binding key");
+                        _ = try self.expectClosingMatch(.close_bracket, "']' to close computed binding key", key_start.span.start, "[", "]");
                         _ = try self.expect(.colon, "':' after computed binding key");
                         const key_elem = try self.builder.addParameter(
                             .{ .start = key_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -4982,9 +4982,9 @@ pub const Parser = struct {
                 try self.reportInvalidClassElementModifier(mods);
                 _ = self.advance(); // consume `get` / `set`
                 const name_node = if (self.peek().kind == .open_bracket) blk: {
-                    _ = self.advance();
+                    const ob = self.advance();
                     const key = try self.parseExpression();
-                    _ = try self.expect(.close_bracket, "']' to close computed accessor name");
+                    _ = try self.expectClosingMatch(.close_bracket, "']' to close computed accessor name", ob.span.start, "[", "]");
                     break :blk key;
                 } else blk: {
                     const name_tok = self.advance();
@@ -6238,14 +6238,14 @@ pub const Parser = struct {
         is_generator: bool,
         key_generator_depth: u32,
     ) ParseError!NodeId {
-        _ = try self.expect(.open_bracket, "'[' to start computed class member");
+        const class_computed_open = try self.expect(.open_bracket, "'[' to start computed class member");
         const key = blk: {
             const prev_generator_depth = self.generator_depth;
             self.generator_depth = key_generator_depth;
             defer self.generator_depth = prev_generator_depth;
             break :blk try self.parseExpression();
         };
-        _ = try self.expect(.close_bracket, "']' to close computed class member name");
+        _ = try self.expectClosingMatch(.close_bracket, "']' to close computed class member name", class_computed_open.span.start, "[", "]");
 
         var value: NodeId = hir_mod.none_node_id;
         var type_anno: NodeId = hir_mod.none_node_id;
@@ -6571,7 +6571,7 @@ pub const Parser = struct {
             const name_node = if (self.peek().kind == .open_bracket) blk: {
                 const open = self.advance();
                 const key = try self.parseExpression();
-                _ = try self.expect(.close_bracket, "']' to close computed enum member name");
+                _ = try self.expectClosingMatch(.close_bracket, "']' to close computed enum member name", open.span.start, "[", "]");
                 // Record the full `[name]` width so a colocated TS1357
                 // (single-`[` width) at the same `(line,col)` sorts
                 // before this wider TS1164 per tsc's
@@ -6870,7 +6870,7 @@ pub const Parser = struct {
             if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren and self.peekAt(2).kind == .string_literal) {
                 is_require_equals = true;
                 _ = self.advance(); // require
-                _ = self.advance(); // (
+                const require_open = self.advance(); // (
                 const mod_tok = self.advance();
                 module_id = try self.internStringLiteral(mod_tok);
                 // TS1147: `import name = require("…")` inside an internal
@@ -6890,7 +6890,7 @@ pub const Parser = struct {
                     );
                 }
                 try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
-                _ = try self.expect(.close_paren, "')' after require module specifier");
+                _ = try self.expectClosingMatch(.close_paren, "')' after require module specifier", require_open.span.start, "(", ")");
                 try self.consumeStatementTerminator();
             } else if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren) {
                 try self.consumeImportEqualsTail();
@@ -7850,8 +7850,8 @@ pub const Parser = struct {
                         defer self.gpa.free(args);
                         node = try self.builder.addOptionalCall(.{ .start = self.hir.spanOf(node).start, .end = self.tokens[self.cursor - 1].span.end }, node, args);
                     } else if (self.peek().kind == .open_bracket) {
-                        _ = self.advance();
-                        node = try self.finishElementAccess(node, true);
+                        const ob = self.advance();
+                        node = try self.finishElementAccess(node, true, ob.span.start);
                     } else {
                         const name_tok = try self.expectIdentifierLike();
                         const name_id = try self.internToken(name_tok);
@@ -9145,7 +9145,7 @@ pub const Parser = struct {
             // emitting a spurious TS1109 / dropping the index member.
             // Matches `taggedTemplateStringsWithTypedTags` family.
             if (self.peek().kind == .open_bracket and !self.peek().flags.preceded_by_newline) {
-                _ = self.advance();
+                const idx_open = self.advance();
                 if (self.match(.close_bracket)) {
                     // `T[]`
                     const sp: Span = .{
@@ -9157,7 +9157,7 @@ pub const Parser = struct {
                 }
                 // `T[K]` — indexed access type.
                 const index = try self.parseTypeAnnotation();
-                _ = try self.expect(.close_bracket, "']' to close indexed access type");
+                _ = try self.expectClosingMatch(.close_bracket, "']' to close indexed access type", idx_open.span.start, "[", "]");
                 const sp: Span = .{
                     .start = self.hir.spanOf(node).start,
                     .end = self.tokens[self.cursor - 1].span.end,
@@ -9479,7 +9479,7 @@ pub const Parser = struct {
         var is_constructor = false;
         var constructor_return: NodeId = hir_mod.none_node_id;
 
-        _ = try self.expect(.open_paren, "'(' after JSDoc function type");
+        const jsdoc_fn_open = try self.expect(.open_paren, "'(' after JSDoc function type");
         if (self.peek().kind != .close_paren) {
             var index: usize = 0;
             while (true) : (index += 1) {
@@ -9521,7 +9521,7 @@ pub const Parser = struct {
                 if (self.peek().kind == .close_paren) break;
             }
         }
-        const close_tok = try self.expect(.close_paren, "')' after JSDoc function type");
+        const close_tok = try self.expectClosingMatch(.close_paren, "')' after JSDoc function type", jsdoc_fn_open.span.start, "(", ")");
         var ret: NodeId = if (constructor_return != hir_mod.none_node_id)
             constructor_return
         else
@@ -9605,7 +9605,7 @@ pub const Parser = struct {
 
     /// Parse `(p1: T1, p2: T2)` and return parameter HIR nodes.
     fn parseTypeParameterList(self: *Parser) ParseError![]NodeId {
-        _ = try self.expect(.open_paren, "'(' for fn-type parameter list");
+        const fn_type_open = try self.expect(.open_paren, "'(' for fn-type parameter list");
         var params: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer params.deinit(self.gpa);
         var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, Span) = .empty;
@@ -9724,7 +9724,7 @@ pub const Parser = struct {
                 }
             }
         }
-        _ = try self.expect(.close_paren, "')' to close fn-type params");
+        _ = try self.expectClosingMatch(.close_paren, "')' to close fn-type params", fn_type_open.span.start, "(", ")");
         return try params.toOwnedSlice(self.gpa);
     }
 
@@ -9983,7 +9983,7 @@ pub const Parser = struct {
             // Consume any leading readonly modifier tokens.
             var c: usize = 0;
             while (c < lead_consumed) : (c += 1) _ = self.advance();
-            _ = self.advance(); // `[`
+            const mapped_key_open = self.advance(); // `[`
             const k_tok = try self.expect(.identifier, "key in mapped type");
             const k_id = try self.internToken(k_tok);
             _ = try self.expect(.kw_in, "'in' in mapped type");
@@ -9998,7 +9998,7 @@ pub const Parser = struct {
                 _ = self.advance();
                 remap = try self.parseTypeAnnotation();
             }
-            _ = try self.expect(.close_bracket, "']' to close mapped type key");
+            _ = try self.expectClosingMatch(.close_bracket, "']' to close mapped type key", mapped_key_open.span.start, "[", "]");
             // Optional `?` / `+?` / `-?` modifier
             var optional_mod: u8 = 0;
             if (self.match(.minus)) {
@@ -10849,7 +10849,7 @@ pub const Parser = struct {
             return false;
         }
         // Commit to parsing the index signature.
-        _ = self.advance(); // [
+        const index_sig_open = self.advance(); // [
         _ = self.advance(); // key name
         var key_type: NodeId = hir_mod.none_node_id;
         if (has_param_type) {
@@ -10926,7 +10926,7 @@ pub const Parser = struct {
             // list aligned with upstream's grammar-check phase.
             try self.reportCodeAt(id1.span.start, id1.line, 1268, "An index signature parameter type must be 'string', 'number', 'symbol', or a template literal type.");
         }
-        _ = try self.expect(.close_bracket, "']' to close index signature");
+        _ = try self.expectClosingMatch(.close_bracket, "']' to close index signature", index_sig_open.span.start, "[", "]");
         const value_type: NodeId = if (self.match(.colon)) blk: {
             break :blk try self.parseTypeAnnotation();
         } else blk: {
@@ -11221,7 +11221,7 @@ pub const Parser = struct {
     /// generic args, never a comparison.
     fn parseImportTypeReference(self: *Parser) ParseError!NodeId {
         const import_tok = self.advance();
-        _ = try self.expect(.open_paren, "'(' after import in import type");
+        const import_type_open = try self.expect(.open_paren, "'(' after import in import type");
         // tsc emits TS1141 "String literal expected." at the offending
         // token when `import(<non-string>)` appears in type position.
         // Mirror that exact code+phrasing so baselines line up
@@ -11260,7 +11260,7 @@ pub const Parser = struct {
                 _ = self.advance();
             }
         }
-        _ = try self.expect(.close_paren, "')' to close import type");
+        _ = try self.expectClosingMatch(.close_paren, "')' to close import type", import_type_open.span.start, "(", ")");
 
         var qualifier: std.ArrayListUnmanaged(NodeId) = .empty;
         defer qualifier.deinit(self.gpa);
@@ -14373,8 +14373,8 @@ pub const Parser = struct {
                     node = try self.builder.addMemberAccess(sp, node, name_id, false);
                 },
                 .open_bracket => {
-                    _ = self.advance();
-                    node = try self.finishElementAccess(node, false);
+                    const open_bracket = self.advance();
+                    node = try self.finishElementAccess(node, false, open_bracket.span.start);
                 },
                 else => break,
             }
@@ -14414,8 +14414,8 @@ pub const Parser = struct {
                         const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
                         node = try self.builder.addOptionalCall(sp, node, args);
                     } else if (self.peek().kind == .open_bracket) {
-                        _ = self.advance();
-                        node = try self.finishElementAccess(node, true);
+                        const ob = self.advance();
+                        node = try self.finishElementAccess(node, true, ob.span.start);
                     } else if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
                         try self.reportCodeAt(self.peek().span.start, self.peek().line, 1358, "Tagged template expressions are not permitted in an optional chain.");
                         node = try self.parseTaggedTemplateWithTypeArgs(node, &.{});
@@ -14482,8 +14482,8 @@ pub const Parser = struct {
                     } else break;
                 },
                 .open_bracket => {
-                    _ = self.advance();
-                    node = try self.finishElementAccess(node, false);
+                    const ob = self.advance();
+                    node = try self.finishElementAccess(node, false, ob.span.start);
                 },
                 .bang => {
                     // Postfix `!` — non-null assertion. TS only
@@ -14563,13 +14563,13 @@ pub const Parser = struct {
         };
     }
 
-    fn finishElementAccess(self: *Parser, object: NodeId, optional: bool) ParseError!NodeId {
+    fn finishElementAccess(self: *Parser, object: NodeId, optional: bool, open_bracket_pos: u32) ParseError!NodeId {
         const idx = if (self.peek().kind == .close_bracket) blk: {
             const close = self.peek();
             try self.reportCodeAt(close.span.start, close.line, 1011, "An element access expression should take an argument.");
             break :blk try self.builder.addLiteralNumber(.{ .start = close.span.start, .end = close.span.start }, 0);
         } else try self.parseExpression();
-        const close = try self.expect(.close_bracket, "']' to close index access");
+        const close = try self.expectClosingMatch(.close_bracket, "']' to close index access", open_bracket_pos, "[", "]");
         const sp: Span = .{ .start = self.hir.spanOf(object).start, .end = close.span.end };
         return try self.builder.addElementAccess(sp, object, idx, optional);
     }
@@ -15633,7 +15633,7 @@ pub const Parser = struct {
                     _ = self.advance();
                     _ = try self.expect(.dot_dot_dot, "'...' in JSX spread attribute");
                     const expr = try self.parseAssignmentExpression();
-                    const close = try self.expect(.close_brace, "'}' to close JSX spread attribute");
+                    const close = try self.expectClosingMatch(.close_brace, "'}' to close JSX spread attribute", t.span.start, "{", "}");
                     const node = try self.builder.addJsxSpreadAttribute(
                         .{ .start = t.span.start, .end = close.span.end },
                         expr,
@@ -15663,10 +15663,10 @@ pub const Parser = struct {
                             const str_id = try self.internStringLiteral(str_tok);
                             value = try self.builder.addLiteralString(tokenSpan(str_tok), str_id);
                         } else if (self.peek().kind == .open_brace) {
-                            _ = self.advance();
+                            const jsx_attr_open = self.advance();
                             const expr = try self.parseExpression();
                             try self.reportJsxCommaExpressionIfNeeded(expr);
-                            _ = try self.expect(.close_brace, "'}' to close JSX expression value");
+                            _ = try self.expectClosingMatch(.close_brace, "'}' to close JSX expression value", jsx_attr_open.span.start, "{", "}");
                             value = try self.builder.addJsxExpression(name.span, expr);
                         } else if (self.peek().kind == .less_than) {
                             // JSX-as-attribute-value: `prop={…}` is canonical
@@ -15939,7 +15939,7 @@ pub const Parser = struct {
                     }
                     const expr = try self.parseExpression();
                     try self.reportJsxCommaExpressionIfNeeded(expr);
-                    const close = try self.expect(.close_brace, "'}' to close JSX child expression");
+                    const close = try self.expectClosingMatch(.close_brace, "'}' to close JSX child expression", t.span.start, "{", "}");
                     const node = try self.builder.addJsxExpression(
                         .{ .start = t.span.start, .end = close.span.end },
                         expr,
@@ -16211,9 +16211,10 @@ pub const Parser = struct {
             {
                 const accessor_kw = self.advance();
                 var is_computed_key = false;
-                const key = if (self.match(.open_bracket)) blk: {
+                const key = if (self.peek().kind == .open_bracket) blk: {
+                    const ob = self.advance();
                     const expr = try self.parseAssignmentExpression();
-                    _ = try self.expect(.close_bracket, "']' to close computed accessor key");
+                    _ = try self.expectClosingMatch(.close_bracket, "']' to close computed accessor key", ob.span.start, "[", "]");
                     is_computed_key = true;
                     break :blk expr;
                 } else blk: {
