@@ -1692,6 +1692,8 @@ pub const jsc = struct {
         pub const PathOrBlob = @import("runtime/node/types.zig").PathOrBlob;
         pub const FSEvents = @import("runtime/node/fs_events.zig");
         pub const Maybe = @import("sys/maybe.zig").Maybe;
+        pub const fs = @import("runtime/node/node_fs.zig");
+        pub const FileSystemFlags = @import("runtime/node/types.zig").FileSystemFlags;
         pub const Dirent = struct {
             pub const Kind = std.Io.File.Kind;
         };
@@ -2502,6 +2504,9 @@ pub const runtime = struct {
         pub const SmolList = @import("runtime/shell/shell.zig").SmolList;
         pub const Interpreter = @import("runtime/shell/shell.zig").Interpreter;
         pub const AST = @import("runtime/shell/shell.zig").AST;
+        pub const interpret = @import("runtime/shell/interpreter.zig");
+        pub const ExitCode = @import("runtime/shell/shell.zig").ExitCode;
+        pub const ShellErr = @import("runtime/shell/shell.zig").ShellErr;
         pub const ShellSubprocess = struct {
             pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
                 _ = this;
