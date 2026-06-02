@@ -625,6 +625,23 @@ pub const Interner = struct {
         return try self.internKey(key, .{ .is_conditional = true });
     }
 
+    pub fn internMapped(
+        self: *Interner,
+        constraint: TypeId,
+        template: TypeId,
+        readonly: types.ModifierState,
+        optional: types.ModifierState,
+    ) !TypeId {
+        const payload: types.MappedPayload = .{
+            .constraint = constraint,
+            .template = template,
+            .readonly = readonly,
+            .optional = optional,
+        };
+        const key: TypeKey = .{ .mapped = payload };
+        return try self.internKey(key, .{ .is_mapped = true });
+    }
+
     pub fn internTypeParameter(self: *Interner, name: StringId, constraint: TypeId, default: TypeId) !TypeId {
         return self.internTypeParameterWithVariance(name, constraint, default, .bivariant);
     }

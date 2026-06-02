@@ -1020,12 +1020,50 @@ fn jsxFragmentFactoryCompilerOptionPresent(source: []const u8, options: CompileO
     return !std.mem.eql(u8, options.emit.jsx_fragment_factory, "React.Fragment");
 }
 
-fn sourceMentionsValue(source: []const u8, name: []const u8) bool {
-    return std.mem.indexOf(u8, source, name) != null;
+fn sourceMentionsIdentifierOutsideComments(source: []const u8, name: []const u8) bool {
+    if (name.len == 0) return false;
+    var i: usize = 0;
+    var in_block_comment = false;
+    while (i < source.len) {
+        if (in_block_comment) {
+            if (i + 1 < source.len and source[i] == '*' and source[i + 1] == '/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if (i + 1 < source.len and source[i] == '/' and source[i + 1] == '/') {
+            i = std.mem.indexOfScalarPos(u8, source, i + 2, '\n') orelse source.len;
+            continue;
+        }
+        if (i + 1 < source.len and source[i] == '/' and source[i + 1] == '*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+        if (i + name.len <= source.len and std.mem.eql(u8, source[i .. i + name.len], name)) {
+            const before_ok = i == 0 or !isIdentifierContinue(source[i - 1]);
+            const after = i + name.len;
+            const after_ok = after == source.len or !isIdentifierContinue(source[after]);
+            if (before_ok and after_ok) return true;
+        }
+        i += 1;
+    }
+    return false;
 }
 
 fn sourceHasReactJsxReference(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "/.lib/react") != null;
+}
+
+fn classicJsxScopeName(source: []const u8, options: CompileOptions) []const u8 {
+    if (compilerOptionDirectiveValue(source, "reactNamespace")) |name| return name;
+    if (options.pub_tsconfig) |cfg| {
+        if (cfg.compiler_options.react_namespace) |name| return name;
+    }
+    return "React";
 }
 
 fn appendJsxDirectiveDiagnostics(
@@ -1058,12 +1096,19 @@ fn appendJsxDirectiveDiagnostics(
     }
 
     if (jsx_mode) |mode| {
+        const classic_scope_name = classicJsxScopeName(source, options);
         if (std.mem.eql(u8, mode, "react") and
             directiveValue(source, "jsxFactory") == null and
-            !sourceMentionsValue(source, "React") and
+            !sourceMentionsIdentifierOutsideComments(source, classic_scope_name) and
             !sourceHasReactJsxReference(source))
         {
-            try appendDriverDiagnostic(gpa, c, 0, 2874, "This JSX tag requires 'React' to be in scope, but it could not be found.");
+            const msg = try std.fmt.allocPrint(
+                gpa,
+                "This JSX tag requires '{s}' to be in scope, but it could not be found.",
+                .{classic_scope_name},
+            );
+            defer gpa.free(msg);
+            try appendDriverDiagnostic(gpa, c, 0, 2874, msg);
         }
         if (!std.mem.eql(u8, mode, "preserve") and
             !std.mem.eql(u8, mode, "react") and
@@ -1345,7 +1390,8 @@ pub fn compileSource(
     // ------ Parse ------
     var parser = ts_parser.Parser.init(gpa, &c.hir, &c.interner, source, c.tokens.items);
     parser.setTsx(options.is_tsx);
-    parser.setDeclarationFile(options.is_declaration_file);
+    const is_declaration_file = options.is_declaration_file or pathIsDeclarationLike(options.importer_path);
+    parser.setDeclarationFile(is_declaration_file);
     parser.setJavaScriptFile(pathIsJsLike(options.importer_path));
     parser.setStrictMode(options.always_strict);
     parser.setTargetEs2015OrLater(options.syntax_target_es2015);
@@ -1438,7 +1484,7 @@ pub fn compileSource(
     defer checker.deinit();
     checker.setModule(c.module);
     checker.setSource(source);
-    checker.setIsDeclarationFile(options.is_declaration_file);
+    checker.setIsDeclarationFile(is_declaration_file);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
     checker.setJsxFragmentFactoryContext(
         jsxTransformEnabled(options),
@@ -2197,6 +2243,15 @@ fn pathIsJsLike(path: []const u8) bool {
         std.mem.endsWith(u8, path, ".jsx") or
         std.mem.endsWith(u8, path, ".mjs") or
         std.mem.endsWith(u8, path, ".cjs");
+}
+
+fn pathIsDeclarationLike(path: []const u8) bool {
+    if (std.mem.endsWith(u8, path, ".d.ts")) return true;
+    if (std.mem.endsWith(u8, path, ".d.mts")) return true;
+    if (std.mem.endsWith(u8, path, ".d.cts")) return true;
+    if (std.mem.endsWith(u8, path, ".d.hm")) return true;
+    if (std.mem.endsWith(u8, path, ".d.home")) return true;
+    return std.mem.endsWith(u8, path, ".ts") and std.mem.indexOf(u8, path, ".d.") != null;
 }
 
 fn virtualPathIsNodeModules(path: []const u8) bool {
@@ -3493,6 +3548,58 @@ test "driver: React lib reference satisfies classic JSX React scope" {
     }
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 2874);
+    }
+}
+
+test "driver: reactNamespace satisfies classic JSX scope" {
+    var c = try compileSource(T.allocator,
+        \\// @jsx: react
+        \\// @reactNamespace: Element
+        \\import Element = require("react");
+        \\export const FooComponent = <div></div>;
+    , .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2874);
+    }
+}
+
+test "driver: missing reactNamespace classic JSX scope reports TS2874" {
+    var c = try compileSource(T.allocator,
+        \\// @jsx: react
+        \\// @reactNamespace: Element
+        \\export const FooComponent = <div></div>;
+    , .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2874 and
+            std.mem.eql(u8, d.message, "This JSX tag requires 'Element' to be in scope, but it could not be found."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: declaration importer path permits export as namespace" {
+    var c = try compileSource(T.allocator,
+        \\export = React;
+        \\export as namespace React;
+        \\declare namespace React {}
+    , .{ .importer_path = "node_modules/@types/react/index.d.ts", .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1315);
     }
 }
 

@@ -5893,8 +5893,13 @@ pub const Parser = struct {
     }
 
     fn reportMissingClassMemberImplementation(self: *Parser, member_start: Token, mods: ClassModifiers) ParseError!void {
-        if (self.isAmbientContextAt(member_start.span.start) or mods.is_abstract) return;
-        try self.reportCodeAt(member_start.span.start, member_start.line, 2391, "Function implementation is missing or not immediately following the declaration.");
+        _ = self;
+        _ = member_start;
+        _ = mods;
+        // Class-member missing implementation diagnostics are handled by
+        // the checker, which has the full overload group. Reporting here
+        // double-emits TS2391 once checker diagnostics are merged with
+        // parser diagnostics.
     }
 
     fn isAmbientContext(self: *const Parser) bool {
@@ -7416,7 +7421,7 @@ pub const Parser = struct {
             const span_len: u32 = end_pos - start.span.start;
             if (self.block_depth > 0 or self.namespace_depth > 0 or self.ambient_depth > 0) {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1316, "Global module exports may only appear at top level.");
-            } else if (!self.is_declaration_file) {
+            } else if (!self.isAmbientContextAt(start.span.start)) {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1315, "Global module exports may only appear in declaration files.");
             } else if (!self.hasNonNamespaceExportModuleIndicator()) {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1314, "Global module exports may only appear in module files.");
@@ -23072,6 +23077,23 @@ test "parser: declaration-file top-level var check respects virtual filenames" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1046), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: export as namespace respects virtual declaration filename" {
+    var s = try newTestSetup(
+        \\// @filename: main.tsx
+        \\import React = require("react");
+        \\// @filename: node_modules/@types/react/index.d.ts
+        \\export = React;
+        \\export as namespace React;
+        \\declare namespace React {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1315);
+    }
 }
 
 test "parser: invalid class-body var reports TS1068" {
