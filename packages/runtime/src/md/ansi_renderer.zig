@@ -199,7 +199,7 @@ pub const AnsiRenderer = struct {
 
     pub fn init(allocator: Allocator, src_text: []const u8, theme: Theme) AnsiRenderer {
         var r: AnsiRenderer = .{
-            .out = .{ .list = .{}, .allocator = allocator, .oom = false },
+            .out = .{ .list = .empty, .allocator = allocator, .oom = false },
             .allocator = allocator,
             .src_text = src_text,
             .theme = theme,

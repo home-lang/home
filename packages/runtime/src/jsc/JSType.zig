@@ -489,8 +489,25 @@ pub const JSType = enum(u8) {
         };
     }
 
-    // JSC-bridge method `toTypedArrayType` omitted — re-lands in Phase 12.2
-    // when `bun.jsc.ArrayBuffer.TypedArrayType` exists.
+    /// Faithful to upstream `jsc/JSType.zig:690`.
+    pub fn toTypedArrayType(this: JSType) @import("array_buffer.zig").ArrayBuffer.TypedArrayType {
+        return switch (this) {
+            .Int8Array => .TypeInt8,
+            .Int16Array => .TypeInt16,
+            .Int32Array => .TypeInt32,
+            .Uint8Array => .TypeUint8,
+            .Uint8ClampedArray => .TypeUint8Clamped,
+            .Uint16Array => .TypeUint16,
+            .Uint32Array => .TypeUint32,
+            .Float16Array => .TypeFloat16,
+            .Float32Array => .TypeFloat32,
+            .Float64Array => .TypeFloat64,
+            .BigInt64Array => .TypeBigInt64,
+            .BigUint64Array => .TypeBigUint64,
+            .DataView => .TypeDataView,
+            else => .TypeNone,
+        };
+    }
 
     pub fn isHidden(this: JSType) bool {
         return switch (this) {

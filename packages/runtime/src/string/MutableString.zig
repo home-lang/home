@@ -254,7 +254,7 @@ pub inline fn lenI(self: *MutableString) i32 {
 
 pub fn takeSlice(self: *MutableString) []u8 {
     const out = self.list.items;
-    self.list = .{};
+    self.list = .empty;
     return out;
 }
 

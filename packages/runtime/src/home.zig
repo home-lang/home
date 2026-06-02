@@ -178,6 +178,17 @@ pub const env_var = @import("env_var.zig");
 // `bun.OOM` namespace).
 pub const assert = Global.assert;
 pub const unsafeAssert = Global.assert;
+/// Faithful to upstream `bun.zig:3182`.
+pub inline fn assertWithLocation(value: bool, src: std.builtin.SourceLocation) void {
+    if (comptime !Environment.allow_assert) {
+        return;
+    }
+    if (!value) {
+        if (comptime Environment.isDebug)
+            unreachable; // ASSERTION FAILURE
+        std.debug.panic("Internal assertion failure at {s}:{d}:{d}", .{ src.file, src.line, src.column });
+    }
+}
 pub const OOM = Global.OOM;
 pub const JSError = error{ JSError, OutOfMemory, JSTerminated };
 pub const JSTerminated = error{JSTerminated};
@@ -1344,6 +1355,7 @@ pub const jsc = struct {
         OUT_OF_RANGE = 5,
         WEBASSEMBLY_RESPONSE = 6,
         // Values from the generated ErrorCode enum (faithful to upstream).
+        ENCODING_INVALID_ENCODED_DATA = 56,
         INVALID_STATE = 136,
         INVALID_URL = 142,
         UNKNOWN_ENCODING = 255,
@@ -1509,9 +1521,8 @@ pub const jsc = struct {
     // JSC bring-up: faithful to upstream `jsc/jsc.zig` (Expect:124, Codegen:203).
     pub const Expect = @import("runtime/test_runner/expect.zig");
     pub const Codegen = @import("ZigGeneratedClasses");
-    pub const Task = struct {
-        callback: ?*const fn (*Task) void = null,
-    };
+    // Faithful to upstream jsc/jsc.zig:153 (`Task = EventLoop.Task`).
+    pub const Task = @import("jsc/Task.zig").Task;
     // Faithful to upstream jsc/jsc.zig:155 (= EventLoop.WorkPoolTask = work_pool.Task).
     pub const WorkPoolTask = @import("threading/work_pool.zig").Task;
     pub const ManagedTask = @import("event_loop/ManagedTask.zig");
