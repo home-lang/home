@@ -1689,6 +1689,9 @@ pub const jsc = struct {
         pub const PathOrFileDescriptor = @import("runtime/node/types.zig").PathOrFileDescriptor;
         pub const StatsSmall = @import("runtime/node/Stat.zig").StatsSmall;
         pub const StatsBig = @import("runtime/node/Stat.zig").StatsBig;
+        pub const PathOrBlob = @import("runtime/node/types.zig").PathOrBlob;
+        pub const FSEvents = @import("runtime/node/fs_events.zig");
+        pub const Maybe = @import("sys/maybe.zig").Maybe;
         pub const Dirent = struct {
             pub const Kind = std.Io.File.Kind;
         };
@@ -2497,6 +2500,8 @@ pub const runtime = struct {
         pub const EnvMap = @import("runtime/shell/EnvMap.zig");
         pub const EnvStr = @import("runtime/shell/EnvStr.zig").EnvStr;
         pub const SmolList = @import("runtime/shell/shell.zig").SmolList;
+        pub const Interpreter = @import("runtime/shell/shell.zig").Interpreter;
+        pub const AST = @import("runtime/shell/shell.zig").AST;
         pub const ShellSubprocess = struct {
             pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
                 _ = this;
