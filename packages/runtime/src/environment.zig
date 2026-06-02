@@ -46,9 +46,9 @@ pub const enableAllocScopes = false;
 pub const export_cpp_apis = false;
 /// Faithful to upstream `bun_core/env.zig:50-52` (`git_sha = build_options.sha`).
 /// Home's gate has no embedded SHA, so these are the empty-SHA branch.
-pub const git_sha: []const u8 = "";
-pub const git_sha_short: []const u8 = "";
-pub const git_sha_shorter: []const u8 = "";
+pub const git_sha: [:0]const u8 = "";
+pub const git_sha_short: [:0]const u8 = "";
+pub const git_sha_shorter: [:0]const u8 = "";
 pub const enable_logs = false;
 pub const is_canary = false;
 pub const ci_assert = false;
