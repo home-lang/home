@@ -39,6 +39,11 @@ pub const fmt = @import("fmt.zig");
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 /// Faithful to upstream `bun.zig:196` (`sha = @import("./sha_hmac/sha.zig")`).
 pub const sha = @import("sha_hmac/sha.zig");
+// Forward-port: Home's Zig fork removed the *managed* array hash maps from std
+// (unmanaged-only). These shims restore the managed `.init(alloc)` API so the
+// copied Bun maps (`std.AutoArrayHashMap`/`std.ArrayHashMap`) compile unchanged.
+pub const AutoArrayHashMap = @import("collections/managed_array_hash_map.zig").AutoArrayHashMap;
+pub const ArrayHashMap = @import("collections/managed_array_hash_map.zig").ArrayHashMap;
 /// Faithful to upstream `bun.zig:456`. Bun reimplements `std.mem.span`'s
 /// optional + sentinel handling verbatim; Home aliases the std version, which
 /// has identical semantics.
@@ -4408,6 +4413,7 @@ test {
     _ = @import("io/pipes.zig");
     _ = @import("collections/hive_array.zig");
     _ = @import("collections/pool.zig");
+    _ = @import("collections/managed_array_hash_map.zig");
     // Fifth-wave port batch (2026-05-18, 6-agent parallel dispatch):
     _ = @import("jsc/CachedBytecode.zig");
     _ = @import("jsc/JSMap.zig");

@@ -1975,7 +1975,7 @@ pub const Resolver = struct {
     pub const fromJS = js.fromJS;
     pub const fromJSDirect = js.fromJSDirect;
 
-    const PollsMap = std.AutoArrayHashMap(c_ares.ares_socket_t, *PollType);
+    const PollsMap = bun.AutoArrayHashMap(c_ares.ares_socket_t, *PollType);
 
     const PollType = if (Environment.isWindows)
         UvDnsPoll

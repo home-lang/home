@@ -4,7 +4,7 @@ map: MapType,
 
 pub const Iterator = MapType.Iterator;
 
-const MapType = std.ArrayHashMap(EnvStr, EnvStr, struct {
+const MapType = bun.ArrayHashMap(EnvStr, EnvStr, struct {
     pub fn hash(self: @This(), s: EnvStr) u32 {
         _ = self;
         if (bun.Environment.isWindows) {
