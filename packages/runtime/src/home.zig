@@ -1850,51 +1850,10 @@ pub const jsc = struct {
     pub const iterator = @import("jsc/iterator.zig");
     pub const global = @import("jsc/global.zig");
     pub const WebCore = @import("home").runtime.webcore;
-    pub const API = struct {
-        pub const Subprocess = runtime.api.Subprocess;
-        pub const ServerConfig = runtime.api.server.ServerConfig;
-        pub const Valkey = runtime.api.Valkey;
-        pub const Bun = runtime.api.Bun;
-        pub const SocketAddress = runtime.api.SocketAddress;
-        pub const TLSSocket = runtime.api.TLSSocket;
-        pub const Image = runtime.api.Image;
-        pub const JSBundler = runtime.api.JSBundler;
-        pub const JSTranspiler = runtime.api.JSTranspiler;
-
-        pub const BuildArtifact = struct {
-            blob: WebCore.Blob = .{},
-
-            // Faithful to upstream `jsc.API.BuildArtifact.OutputKind`
-            // (`runtime/api/JSBundler.zig:1799`). The bundler's `OutputFile`
-            // tags each emitted artifact with this kind.
-            pub const OutputKind = enum {
-                chunk,
-                asset,
-                @"entry-point",
-                sourcemap,
-                bytecode,
-                module_info,
-                @"metafile-json",
-                @"metafile-markdown",
-
-                pub fn isFileInStandaloneMode(this: OutputKind) bool {
-                    return this != .sourcemap and this != .bytecode and this != .module_info and this != .@"metafile-json" and this != .@"metafile-markdown";
-                }
-            };
-
-            pub fn fromJS(value: JSValue) ?*BuildArtifact {
-                _ = value;
-                return null;
-            }
-
-            pub fn writeFormat(this: *BuildArtifact, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
-                _ = this;
-                _ = formatter;
-                _ = enable_ansi_colors;
-                try writer.writeAll("BuildArtifact");
-            }
-        };
-    };
+    // Faithful to upstream jsc/jsc.zig:167 (`API = bun.api`). The whole api
+    // module — supersedes the prior curated subset + stub BuildArtifact (the
+    // real one comes from runtime/api/JSBundler.zig).
+    pub const API = @import("runtime/api.zig");
     pub const Subprocess = API.Subprocess;
     pub const host_fn = @import("jsc/host_fn.zig");
     pub const JSHostFn = host_fn.JSHostFn;
