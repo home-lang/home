@@ -41,6 +41,8 @@ pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 pub const sha = @import("sha_hmac/sha.zig");
 /// Faithful to upstream `bun.zig:3218` (`dns = @import("./dns/dns.zig")`).
 pub const dns = @import("dns/dns.zig");
+/// Faithful to upstream `bun.zig:222` (`trait = @import("./meta/traits.zig")`).
+pub const trait = @import("meta/traits.zig");
 /// Forward-port: Home's Zig fork removed `std.time.milliTimestamp` (wall-clock
 /// time now goes through `std.Io`). This is the old behavior — milliseconds since
 /// the Unix epoch via `clock_gettime(REALTIME)` — for the copied sites that used
@@ -593,6 +595,78 @@ pub const timespec = extern struct {
     nsec: i64,
 
     pub const epoch: timespec = .{ .sec = 0, .nsec = 0 };
+
+    /// Faithful to upstream `bun.zig:3263`.
+    pub const MockMode = enum {
+        allow_mocked_time,
+        force_real_time,
+    };
+
+    /// Faithful to upstream `bun.zig:3222` (`getRoughTickCount`). Home reads the
+    /// monotonic clock directly; the jest `FakeTimers` mock path re-attaches with
+    /// the fake-timers subsystem, so `.allow_mocked_time` falls through to real.
+    pub fn now(comptime mock_mode: MockMode) timespec {
+        _ = mock_mode;
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return .{ .sec = @intCast(ts.sec), .nsec = @intCast(ts.nsec) };
+    }
+
+    /// Faithful to upstream `bun.zig:3273`.
+    pub fn duration(this: *const timespec, other: *const timespec) timespec {
+        var sec_diff = this.sec -% other.sec;
+        var nsec_diff = this.nsec -% other.nsec;
+        if (nsec_diff < 0) {
+            sec_diff -%= 1;
+            nsec_diff +%= std.time.ns_per_s;
+        }
+        return timespec{ .sec = sec_diff, .nsec = nsec_diff };
+    }
+
+    pub fn order(a: *const timespec, b: *const timespec) std.math.Order {
+        const sec_order = std.math.order(a.sec, b.sec);
+        if (sec_order != .eq) return sec_order;
+        return std.math.order(a.nsec, b.nsec);
+    }
+
+    pub fn greater(a: *const timespec, b: *const timespec) bool {
+        return a.order(b) == .gt;
+    }
+
+    /// Faithful to upstream `bun.zig:3299`.
+    pub fn ns(this: *const timespec) u64 {
+        if (this.sec <= 0) {
+            return @max(this.nsec, 0);
+        }
+        const s_ns = std.math.mul(u64, @as(u64, @intCast(@max(this.sec, 0))), std.time.ns_per_s) catch
+            return std.math.maxInt(u64);
+        return std.math.add(u64, s_ns, @as(u64, @intCast(@max(this.nsec, 0)))) catch
+            return std.math.maxInt(u64);
+    }
+
+    pub fn ms(this: *const timespec) i64 {
+        const ms_from_sec = this.sec *% 1000;
+        const ms_from_nsec = @divFloor(this.nsec, 1_000_000);
+        return ms_from_sec +% ms_from_nsec;
+    }
+
+    pub fn msUnsigned(this: *const timespec) u64 {
+        return this.ns() / std.time.ns_per_ms;
+    }
+
+    /// Faithful to upstream `bun.zig` `timespec.addMs`.
+    pub fn addMs(this: *const timespec, interval: i64) timespec {
+        const sec_inc = @divTrunc(interval, std.time.ms_per_s);
+        const nsec_inc = @rem(interval, std.time.ms_per_s) * std.time.ns_per_ms;
+        var new_timespec = this.*;
+        new_timespec.sec +%= sec_inc;
+        new_timespec.nsec +%= nsec_inc;
+        if (new_timespec.nsec >= std.time.ns_per_s) {
+            new_timespec.sec +%= 1;
+            new_timespec.nsec -%= std.time.ns_per_s;
+        }
+        return new_timespec;
+    }
 };
 
 /// Top-level RFC 4122 UUID type, re-exported from the JSC subtree so
