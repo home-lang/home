@@ -62,21 +62,9 @@ const platform_errno = switch (Environment.os) {
 };
 const platformGetErrno = platform_errno.getErrno;
 
-/// Cross-version `std.Io.File.Kind` standin — see PORT NOTE in the file
-/// banner. The variant names are exactly the ones Zig 0.14 used.
-pub const FileKind = enum {
-    block_device,
-    character_device,
-    directory,
-    named_pipe,
-    sym_link,
-    file,
-    unix_domain_socket,
-    whiteout,
-    door,
-    event_port,
-    unknown,
-};
+/// The fork re-exposes the canonical file-kind type as `std.Io.File.Kind`;
+/// alias it so `kindFromMode` results unify with callers expecting that type.
+pub const FileKind = std.Io.File.Kind;
 
 /// Generic `Maybe(T, E)` factory mirroring upstream `bun.api.node.Maybe`.
 ///

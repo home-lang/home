@@ -60,6 +60,8 @@ pub const validators = @import("runtime/node/util/validators.zig");
 pub const windows = @import("sys/windows/windows.zig");
 pub const mach_port = if (Environment.isMac) std.c.mach_port_t else u32;
 pub var argv: [][:0]const u8 = &[_][:0]const u8{};
+/// Faithful to upstream `bun.zig:1422`; std.mem.sliceTo has matching semantics.
+pub const sliceTo = std.mem.sliceTo;
 /// Faithful to upstream `bun.zig:3492`.
 pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
     return inline for (@typeInfo(Enum).@"enum".fields) |f| {
@@ -149,10 +151,24 @@ pub fn len(value: anytype) usize {
     };
 }
 
-/// Faithful to upstream `bun.zig:456`. Bun reimplements `std.mem.span`'s
-/// optional + sentinel handling verbatim; Home aliases the std version, which
-/// has identical semantics.
-pub const span = std.mem.span;
+/// Faithful to upstream `bun.zig:456`. Unlike `std.mem.span` (which rejects
+/// slices), Bun's `span` passes slices through unchanged and resolves sentinel
+/// many/c pointers + arrays to slices.
+fn SpanT(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .optional => |o| ?SpanT(o.child),
+        .pointer => |p| if (p.size == .slice) T else @TypeOf(std.mem.span(@as(T, undefined))),
+        else => T,
+    };
+}
+pub fn span(pointer: anytype) SpanT(@TypeOf(pointer)) {
+    const T = @TypeOf(pointer);
+    if (@typeInfo(T) == .optional) {
+        return if (pointer) |non_null| span(non_null) else null;
+    }
+    if (comptime @typeInfo(T) == .pointer and @typeInfo(T).pointer.size == .slice) return pointer;
+    return std.mem.span(pointer);
+}
 
 /// Faithful to upstream `bun.zig:930`.
 pub fn getenvZ(key: [:0]const u8) ?[]const u8 {
@@ -3567,6 +3583,23 @@ pub const sys = struct {
     pub const getErrno = @import("sys/sys.zig").getErrno;
     pub const unlink = @import("sys/sys.zig").unlink;
     pub const munmap = @import("sys/sys.zig").munmap;
+    pub const chmod = @import("sys/sys.zig").chmod;
+    pub const chown = @import("sys/sys.zig").chown;
+    pub const lstat = @import("sys/sys.zig").lstat;
+    pub const lstatat = @import("sys/sys.zig").lstatat;
+    pub const lutimes = @import("sys/sys.zig").lutimes;
+    pub const mkdir = @import("sys/sys.zig").mkdir;
+    pub const mkdirOSPath = @import("sys/sys.zig").mkdirOSPath;
+    pub const open = @import("sys/sys.zig").open;
+    pub const preallocate_supported = @import("sys/sys.zig").preallocate_supported;
+    pub const pwrite = @import("sys/sys.zig").pwrite;
+    pub const readlink = @import("sys/sys.zig").readlink;
+    pub const rename = @import("sys/sys.zig").rename;
+    pub const S = @import("sys/sys.zig").S;
+    pub const statfs = @import("sys/sys.zig").statfs;
+    pub const symlink = @import("sys/sys.zig").symlink;
+    pub const utimens = @import("sys/sys.zig").utimens;
+    pub const write = @import("sys/sys.zig").write;
     pub const PosixStat = @import("sys/PosixStat.zig").PosixStat;
     pub const pread = @import("sys/sys.zig").pread;
     pub const ftruncate = @import("sys/sys.zig").ftruncate;
