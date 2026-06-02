@@ -6847,7 +6847,7 @@ pub const Parser = struct {
                 &.{},
             );
         }
-        _ = try self.expect(.open_brace, "'{' to open namespace body");
+        const ns_body_open = try self.expect(.open_brace, "'{' to open namespace body");
         self.namespace_depth += 1;
         defer self.namespace_depth -= 1;
         const old_in_string_named_module = self.in_string_named_module;
@@ -6865,7 +6865,15 @@ pub const Parser = struct {
             if (close.kind == .eof and self.enum_recovered_missing_close_at_eof) {
                 self.enum_recovered_missing_close_at_eof = false;
             } else {
-                try self.reportCodeAt(close.span.start, close.line, 1005, "'}' expected.");
+                try self.reportCodeAtWithMatchedPair(
+                    close.span.start,
+                    close.line,
+                    1005,
+                    "'}' expected.",
+                    ns_body_open.span.start,
+                    "{",
+                    "}",
+                );
             }
             break :blk close.span.start;
         };
@@ -7421,7 +7429,15 @@ pub const Parser = struct {
                 open_brace_tok.line
             else
                 next_tok.line;
-            try self.reportCodeAt(anchor_pos, anchor_line, 1005, "'}' expected.");
+            try self.reportCodeAtWithMatchedPair(
+                anchor_pos,
+                anchor_line,
+                1005,
+                "'}' expected.",
+                open_brace_tok.span.start,
+                "{",
+                "}",
+            );
             return;
         }
         _ = self.advance(); // closing `}`
@@ -10023,7 +10039,15 @@ pub const Parser = struct {
             break :blk close.span.end;
         } else blk: {
             const pos = self.peek().span.start;
-            try self.reportCodeAt(pos, self.peek().line, 1005, "']' expected.");
+            try self.reportCodeAtWithMatchedPair(
+                pos,
+                self.peek().line,
+                1005,
+                "']' expected.",
+                open.span.start,
+                "[",
+                "]",
+            );
             break :blk pos;
         };
         return try self.builder.addTupleType(.{ .start = open.span.start, .end = end_pos }, elems.items);
@@ -11891,7 +11915,15 @@ pub const Parser = struct {
         }
         const body = try self.parseArrowBody();
         const close = self.peek();
-        try self.reportCodeAt(close.span.start, close.line, 1005, "')' expected.");
+        try self.reportCodeAtWithMatchedPair(
+            close.span.start,
+            close.line,
+            1005,
+            "')' expected.",
+            start_tok.span.start,
+            "(",
+            ")",
+        );
         const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
         _ = type_params;
         return try self.builder.addFnDecl(
@@ -16408,7 +16440,8 @@ pub const Parser = struct {
             var key: NodeId = undefined;
             var is_computed = false;
             var can_be_shorthand_property = false;
-            if (self.match(.open_bracket)) {
+            if (self.peek().kind == .open_bracket) {
+                const obj_key_open = self.advance();
                 key = try self.parseAssignmentExpression();
                 // tsc parses the full Expression inside the brackets so it
                 // can recognize a comma expression as a key. TS1171 is
@@ -16429,7 +16462,15 @@ pub const Parser = struct {
                 if (self.peek().kind == .close_bracket) {
                     _ = self.advance();
                 } else {
-                    try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "']' expected.");
+                    try self.reportCodeAtWithMatchedPair(
+                        self.peek().span.start,
+                        self.peek().line,
+                        1005,
+                        "']' expected.",
+                        obj_key_open.span.start,
+                        "[",
+                        "]",
+                    );
                 }
                 is_computed = true;
             } else {
