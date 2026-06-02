@@ -186,8 +186,8 @@ fn stdIoWriteQuietDebug(this: File, bytes: []const u8) WriteError!usize {
     return bytes.len;
 }
 
-pub const Writer = std.Io.GenericWriter(File, anyerror, stdIoWrite);
-pub const QuietWriter = if (Environment.isDebug) std.Io.GenericWriter(File, anyerror, stdIoWriteQuietDebug) else Writer;
+pub const Writer = bun.io.GenericWriter(File, anyerror, stdIoWrite);
+pub const QuietWriter = if (Environment.isDebug) bun.io.GenericWriter(File, anyerror, stdIoWriteQuietDebug) else Writer;
 
 pub fn writer(self: File) Writer {
     return Writer{ .context = self };

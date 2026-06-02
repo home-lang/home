@@ -199,7 +199,7 @@ const StructuredCloneWriter = struct {
     ctx: *anyopaque,
     impl: *const fn (*anyopaque, ptr: [*]const u8, len: u32) callconv(jsc.conv) void,
 
-    pub const Writer = std.Io.GenericWriter(@This(), Error, write);
+    pub const Writer = bun.io.GenericWriter(@This(), Error, write);
     pub const Error = error{};
 
     fn write(this: StructuredCloneWriter, bytes: []const u8) Error!usize {
@@ -210,13 +210,14 @@ const StructuredCloneWriter = struct {
 
 pub fn onStructuredCloneDeserialize(globalThis: *jsc.JSGlobalObject, ptr: *[*]u8, end: [*]u8) bun.JSError!jsc.JSValue {
     const total_length: usize = @intFromPtr(end) - @intFromPtr(ptr.*);
-    var buffer_stream = std.io.fixedBufferStream(ptr.*[0..total_length]);
-    const reader = buffer_stream.reader();
+    // std-0.17: `std.io.fixedBufferStream(buf).reader()` → `std.Io.Reader.fixed(buf)`
+    // (`readInt`→`takeInt`, `.pos`→`.seek` for the consumed-byte count).
+    var buffer_stream = std.Io.Reader.fixed(ptr.*[0..total_length]);
 
-    const int = reader.readInt(usize, .little) catch return globalThis.throw("BlockList.onStructuredCloneDeserialize failed", .{});
+    const int = buffer_stream.takeInt(usize, .little) catch return globalThis.throw("BlockList.onStructuredCloneDeserialize failed", .{});
 
     // Advance the pointer by the number of bytes consumed
-    ptr.* = ptr.* + buffer_stream.pos;
+    ptr.* = ptr.* + buffer_stream.seek;
 
     const this: *@This() = @ptrFromInt(int);
     // A single SerializedScriptValue can be deserialized multiple times

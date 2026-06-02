@@ -1773,6 +1773,9 @@ pub const jsc = struct {
 // are kept so callers can spell their function signatures; full impls
 // land in Phase 12.3.
 pub const io = struct {
+    // Forward-port: Home's Zig fork removed `std.io.GenericWriter`; this restores
+    // it (faithful old API + `adaptToNewApi` bridge to the new `std.Io.Writer`).
+    pub const GenericWriter = @import("io_shim.zig").GenericWriter;
     // Faithful to upstream `bun.io.heap` (`src/io/io.zig`): the intrusive
     // binary-heap used by the install/PM lifecycle-script scheduler.
     pub const heap = @import("io/heap.zig");

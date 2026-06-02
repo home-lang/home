@@ -3020,8 +3020,8 @@ pub const H2FrameParser = struct {
             // empty origin frame
             var buffer: [FrameHeader.byteSize]u8 = undefined;
             @memset(&buffer, 0);
-            var stream = std.io.fixedBufferStream(&buffer);
-            const writer = stream.writer();
+            // std-0.17: `std.io.fixedBufferStream(&buf).writer()` → `std.Io.Writer.fixed(&buf)`.
+            var writer = std.Io.Writer.fixed(&buffer);
 
             var frame: FrameHeader = .{
                 .type = @intFromEnum(FrameType.HTTP_FRAME_ORIGIN),
@@ -3029,7 +3029,7 @@ pub const H2FrameParser = struct {
                 .streamIdentifier = 0,
                 .length = 0,
             };
-            _ = frame.write(@TypeOf(writer), writer);
+            _ = frame.write(@TypeOf(&writer), &writer);
             _ = this.write(&buffer);
             return .js_undefined;
         }

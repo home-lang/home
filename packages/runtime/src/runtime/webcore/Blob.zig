@@ -453,7 +453,7 @@ pub fn onStructuredCloneSerialize(
 ) void {
     _ = globalThis;
 
-    const Writer = std.Io.GenericWriter(StructuredCloneWriter, StructuredCloneWriter.WriteError, StructuredCloneWriter.write);
+    const Writer = bun.io.GenericWriter(StructuredCloneWriter, StructuredCloneWriter.WriteError, StructuredCloneWriter.write);
     const writer = Writer{
         .context = .{
             .ctx = ctx,
@@ -508,7 +508,7 @@ fn readSlice(
 ) ![]u8 {
     const slice = try allocator.alloc(u8, len);
     errdefer allocator.free(slice);
-    const n = try reader.read(slice);
+    const n = try reader.readSliceShort(slice);
     if (n != len) return error.TooSmall;
     return slice;
 }
@@ -520,11 +520,11 @@ fn _onStructuredCloneDeserialize(
 ) !JSValue {
     const allocator = bun.default_allocator;
 
-    const version = try reader.readInt(u8, .little);
+    const version = try reader.takeInt(u8, .little);
 
-    const offset = try reader.readInt(u64, .little);
+    const offset = try reader.takeInt(u64, .little);
 
-    const content_type_len = try reader.readInt(u32, .little);
+    const content_type_len = try reader.takeInt(u32, .little);
 
     var content_type: []u8 = try readSlice(reader, content_type_len, allocator);
     // Ownership transfers to `blob.content_type` at the end of the success
@@ -535,13 +535,13 @@ fn _onStructuredCloneDeserialize(
     // via both this errdefer and `blob.deinit()`.
     errdefer allocator.free(content_type);
 
-    const content_type_was_set: bool = try reader.readInt(u8, .little) != 0;
+    const content_type_was_set: bool = try reader.takeInt(u8, .little) != 0;
 
-    const store_tag = try reader.readEnum(Store.SerializeTag, .little);
+    const store_tag = try reader.takeEnum(Store.SerializeTag, .little);
 
     const blob: *Blob = switch (store_tag) {
         .bytes => bytes: {
-            const bytes_len = try reader.readInt(u32, .little);
+            const bytes_len = try reader.takeInt(u32, .little);
             const bytes = try readSlice(reader, bytes_len, allocator);
 
             var blob = Blob.init(bytes, allocator, globalThis);
@@ -553,7 +553,7 @@ fn _onStructuredCloneDeserialize(
             versions: {
                 if (version == 1) break :versions;
 
-                const name_len = try reader.readInt(u32, .little);
+                const name_len = try reader.takeInt(u32, .little);
                 const name = try readSlice(reader, name_len, allocator);
 
                 var name_consumed = false;
@@ -572,7 +572,7 @@ fn _onStructuredCloneDeserialize(
             break :bytes Blob.new(blob);
         },
         .file => file: {
-            const pathlike_tag = try reader.readEnum(jsc.Node.PathOrFileDescriptor.SerializeTag, .little);
+            const pathlike_tag = try reader.takeEnum(jsc.Node.PathOrFileDescriptor.SerializeTag, .little);
 
             switch (pathlike_tag) {
                 .fd => {
@@ -590,7 +590,7 @@ fn _onStructuredCloneDeserialize(
                     break :file blob;
                 },
                 .path => {
-                    const path_len = try reader.readInt(u32, .little);
+                    const path_len = try reader.takeInt(u32, .little);
 
                     const path = try readSlice(reader, path_len, default_allocator);
                     var dest = jsc.Node.PathOrFileDescriptor{
@@ -621,14 +621,14 @@ fn _onStructuredCloneDeserialize(
     versions: {
         if (version == 1) break :versions;
 
-        blob.is_jsdom_file = try reader.readInt(u8, .little) != 0;
+        blob.is_jsdom_file = try reader.takeInt(u8, .little) != 0;
         blob.last_modified = try readFloat(f64, Reader, reader);
 
         if (version == 2) break :versions;
 
         // Version 3: Read File name if this is a File object
         if (blob.is_jsdom_file) {
-            const name_len = try reader.readInt(u32, .little);
+            const name_len = try reader.takeInt(u32, .little);
             const name_bytes = try readSlice(reader, name_len, allocator);
             blob.name = bun.String.cloneUTF8(name_bytes);
             allocator.free(name_bytes);
@@ -668,10 +668,11 @@ fn _onStructuredCloneDeserialize(
 
 pub fn onStructuredCloneDeserialize(globalThis: *jsc.JSGlobalObject, ptr: *[*]u8, end: [*]u8) bun.JSError!JSValue {
     const total_length: usize = @intFromPtr(end) - @intFromPtr(ptr.*);
-    var buffer_stream = std.io.fixedBufferStream(ptr.*[0..total_length]);
-    const reader = buffer_stream.reader();
+    // std-0.17: `std.io.fixedBufferStream(buf).reader()` → `std.Io.Reader.fixed(buf)`
+    // (read chain uses `takeInt`/`takeEnum`/`readSliceShort`, `.pos`→`.seek`).
+    var buffer_stream = std.Io.Reader.fixed(ptr.*[0..total_length]);
 
-    const result = _onStructuredCloneDeserialize(globalThis, @TypeOf(reader), reader) catch |err| switch (err) {
+    const result = _onStructuredCloneDeserialize(globalThis, @TypeOf(&buffer_stream), &buffer_stream) catch |err| switch (err) {
         error.EndOfStream, error.TooSmall, error.InvalidValue => {
             return globalThis.throw("Blob.onStructuredCloneDeserialize failed", .{});
         },
@@ -681,7 +682,7 @@ pub fn onStructuredCloneDeserialize(globalThis: *jsc.JSGlobalObject, ptr: *[*]u8
     };
 
     // Advance the pointer by the number of bytes consumed
-    ptr.* = ptr.* + buffer_stream.pos;
+    ptr.* = ptr.* + buffer_stream.seek;
 
     return result;
 }

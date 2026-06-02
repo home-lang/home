@@ -329,7 +329,7 @@ pub const TablePrinter = struct {
 
         pub const WriteError = error{};
 
-        pub const Writer = std.Io.GenericWriter(
+        pub const Writer = bun.io.GenericWriter(
             VisibleCharacterCounter,
             VisibleCharacterCounter.WriteError,
             VisibleCharacterCounter.write,

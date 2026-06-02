@@ -242,7 +242,7 @@ pub fn writeToHandle(handle: w.HANDLE, data: []const u8) error{}!usize {
     return io.Information;
 }
 
-const NtWriter = std.Io.GenericWriter(w.HANDLE, error{}, writeToHandle);
+const NtWriter = bun.io.GenericWriter(w.HANDLE, error{}, writeToHandle);
 
 var failure_reason_data: [512]u8 = undefined;
 var failure_reason_argument: ?[]const u8 = null;

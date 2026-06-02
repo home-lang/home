@@ -610,8 +610,8 @@ pub const MatchedRoute = struct {
         globalThis: *jsc.JSGlobalObject,
     ) jsc.JSValue {
         var buf: bun.PathBuffer = undefined;
-        var stream = std.io.fixedBufferStream(&buf);
-        var writer = stream.writer();
+        // std-0.17: `std.io.fixedBufferStream(&buf).writer()` → `std.Io.Writer.fixed(&buf)`.
+        var writer = std.Io.Writer.fixed(&buf);
         jsc.API.Bun.getPublicPathWithAssetPrefix(
             this.route.file_path,
             if (this.base_dir) |base_dir| base_dir.slice() else jsc.VirtualMachine.get().transpiler.fs.top_level_dir,
@@ -621,7 +621,7 @@ pub const MatchedRoute = struct {
             &writer,
             .posix,
         );
-        return ZigString.init(buf[0..writer.context.pos])
+        return ZigString.init(buf[0..writer.end])
             .withEncoding()
             .toJS(globalThis);
     }
