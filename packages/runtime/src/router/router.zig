@@ -917,11 +917,15 @@ pub const MockServer = struct {
 fn makeTest(cwd_path: string, data: anytype) !void {
     Output.initTest();
     bun.assert(cwd_path.len > 1 and !strings.eql(cwd_path, "/") and !strings.endsWith(cwd_path, "bun"));
-    const bun_tests_dir = try std.fs.cwd().makeOpenPath("bun-test-scratch", .{});
-    bun_tests_dir.deleteTree(cwd_path) catch {};
+    // std-0.17: the std.fs.Dir API moved to std.Io.Dir (io-parameterized;
+    // makeOpenPath -> createDirPathOpen, makePath -> createDirPath, writeAll ->
+    // writeStreamingAll, setAsCwd -> fchdir). Use the global blocking io.
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const bun_tests_dir = try std.Io.Dir.cwd().createDirPathOpen(io, "bun-test-scratch", .{});
+    bun_tests_dir.deleteTree(io, cwd_path) catch {};
 
-    const cwd = try bun_tests_dir.makeOpenPath(cwd_path, .{});
-    try cwd.setAsCwd();
+    const cwd = try bun_tests_dir.createDirPathOpen(io, cwd_path, .{});
+    _ = std.c.fchdir(cwd.handle);
 
     const Data = @TypeOf(data);
     const fields: []const std.builtin.Type.StructField = comptime std.meta.fields(Data);
@@ -930,12 +934,12 @@ fn makeTest(cwd_path: string, data: anytype) !void {
         const value = @field(data, field.name);
 
         if (std.fs.path.dirname(field.name)) |dir| {
-            try cwd.makePath(dir);
+            try cwd.createDirPath(io, dir);
         }
-        var file = try cwd.createFile(field.name, .{ .truncate = true });
-        try file.writeAll(value);
+        var file = try cwd.createFile(io, field.name, .{ .truncate = true });
+        try file.writeStreamingAll(io, value);
 
-        file.close();
+        file.close(io);
     }
 }
 
