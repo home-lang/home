@@ -1514,6 +1514,7 @@ pub const jsc = struct {
         pub const StringOrBuffer = @import("runtime/node/types.zig").StringOrBuffer;
         pub const BlobOrStringOrBuffer = @import("runtime/node/types.zig").BlobOrStringOrBuffer;
         pub const PathLike = @import("runtime/node/types.zig").PathLike;
+        pub const PathOrFileDescriptor = @import("runtime/node/types.zig").PathOrFileDescriptor;
         pub const Dirent = struct {
             pub const Kind = std.Io.File.Kind;
         };
