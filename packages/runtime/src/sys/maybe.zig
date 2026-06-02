@@ -48,6 +48,19 @@
 
 const std = @import("std");
 const posix = std.posix;
+const bun = @import("home");
+const jsc = bun.jsc;
+const Environment = @import("../environment.zig");
+// Mirror `sys/sys.zig`'s platform errno selection so `errnoSys*` can call the
+// real `getErrno` (faithful to upstream) instead of a caller-supplied fn.
+const platform_errno = switch (Environment.os) {
+    .windows => @import("../errno/windows_errno.zig"),
+    .linux => @import("../errno/linux_errno.zig"),
+    .mac => @import("../errno/darwin_errno.zig"),
+    .freebsd => @import("../errno/freebsd_errno.zig"),
+    .wasm => @import("../errno/linux_errno.zig"),
+};
+const platformGetErrno = platform_errno.getErrno;
 
 /// Cross-version `std.fs.File.Kind` standin — see PORT NOTE in the file
 /// banner. The variant names are exactly the ones Zig 0.14 used.
@@ -183,6 +196,42 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
             };
         }
 
+        /// Faithful to upstream `runtime/node.zig:187`. Lowers a `Maybe` to a
+        /// JS value (result by type) or throws/returns the error instance.
+        pub fn toJS(this: @This(), globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+            return switch (this) {
+                .result => |r| switch (ReturnType) {
+                    jsc.JSValue => r,
+
+                    void => .js_undefined,
+                    bool => jsc.JSValue.jsBoolean(r),
+
+                    jsc.ArrayBuffer => r.toJS(globalObject),
+                    []u8 => jsc.ArrayBuffer.fromBytes(r, .ArrayBuffer).toJS(globalObject),
+
+                    else => switch (@typeInfo(ReturnType)) {
+                        .int, .float, .comptime_int, .comptime_float => jsc.JSValue.jsNumber(r),
+                        .@"struct", .@"enum", .@"opaque", .@"union" => r.toJS(globalObject),
+                        .pointer => {
+                            if (bun.trait.isZigString(ReturnType))
+                                jsc.ZigString.init(bun.asByteSlice(r)).withEncoding().toJS(globalObject);
+
+                            return r.toJS(globalObject);
+                        },
+                        else => @compileError("Maybe.toJS: unsupported ReturnType " ++ @typeName(ReturnType)),
+                    },
+                },
+                .err => |e| e.toJS(globalObject),
+            };
+        }
+
+        pub fn toArrayBuffer(this: @This(), globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+            return switch (this) {
+                .result => |r| jsc.ArrayBuffer.fromBytes(r, .ArrayBuffer).toJS(globalObject, null),
+                .err => |e| e.toJS(globalObject),
+            };
+        }
+
         /// Build an `.err` payload from a raw errno value + syscall tag.
         /// Mirrors upstream `Maybe.errno` (note the truncation pattern).
         pub fn errno(err: anytype, syscall: anytype) @This() {
@@ -194,13 +243,10 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
             };
         }
 
-        /// Build a syscall-error from a return code. `getErrnoFn` is a
-        /// caller-supplied `fn (anytype) std.posix.E` — upstream binds
-        /// `bun.sys.getErrno`, which delegates to libc's `errno` global on
-        /// POSIX or NTSTATUS translation on Windows. Until those land,
-        /// callers pass in whichever variant is appropriate.
-        pub fn errnoSys(rc: anytype, syscall: anytype, comptime getErrnoFn: anytype) ?@This() {
-            return switch (getErrnoFn(rc)) {
+        /// Build a syscall-error from a return code. Faithful to upstream
+        /// `runtime/node.zig:227` — calls the real `sys.getErrno`.
+        pub fn errnoSys(rc: anytype, syscall: anytype) ?@This() {
+            return switch (platformGetErrno(rc)) {
                 .SUCCESS => null,
                 else => |e| @This(){
                     .err = .{
@@ -211,8 +257,8 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
             };
         }
 
-        pub fn errnoSysFd(rc: anytype, syscall: anytype, fd: anytype, getErrnoFn: *const fn (anytype) posix.E) ?@This() {
-            return switch (getErrnoFn(rc)) {
+        pub fn errnoSysFd(rc: anytype, syscall: anytype, fd: anytype) ?@This() {
+            return switch (platformGetErrno(rc)) {
                 .SUCCESS => null,
                 else => |e| @This(){
                     .err = .{
@@ -224,8 +270,8 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
             };
         }
 
-        pub fn errnoSysP(rc: anytype, syscall: anytype, file_path: anytype, getErrnoFn: *const fn (anytype) posix.E) ?@This() {
-            return switch (getErrnoFn(rc)) {
+        pub fn errnoSysP(rc: anytype, syscall: anytype, file_path: anytype) ?@This() {
+            return switch (platformGetErrno(rc)) {
                 .SUCCESS => null,
                 else => |e| @This(){
                     .err = .{
@@ -237,8 +283,8 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
             };
         }
 
-        pub fn errnoSysFP(rc: anytype, syscall: anytype, fd: anytype, file_path: anytype, getErrnoFn: *const fn (anytype) posix.E) ?@This() {
-            return switch (getErrnoFn(rc)) {
+        pub fn errnoSysFP(rc: anytype, syscall: anytype, fd: anytype, file_path: anytype) ?@This() {
+            return switch (platformGetErrno(rc)) {
                 .SUCCESS => null,
                 else => |e| @This(){
                     .err = .{
@@ -251,8 +297,8 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
             };
         }
 
-        pub fn errnoSysPD(rc: anytype, syscall: anytype, file_path: anytype, dest: anytype, getErrnoFn: *const fn (anytype) posix.E) ?@This() {
-            return switch (getErrnoFn(rc)) {
+        pub fn errnoSysPD(rc: anytype, syscall: anytype, file_path: anytype, dest: anytype) ?@This() {
+            return switch (platformGetErrno(rc)) {
                 .SUCCESS => null,
                 else => |e| @This(){
                     .err = .{
