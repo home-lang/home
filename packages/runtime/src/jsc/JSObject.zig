@@ -30,6 +30,57 @@ pub const JSObject = opaque {
         return @enumFromInt(@as(i64, @bitCast(@as(u64, @intCast(@intFromPtr(this))))));
     }
 
+    /// Faithful to upstream `jsc/JSObject.zig:24`. Marshall a struct into a
+    /// JSObject (each field encoded via `jsc.JSValue.fromAny`).
+    pub fn create(pojo: anytype, global: *home_rt.jsc.JSGlobalObject) home_rt.JSError!*JSObject {
+        return createFromStructWithPrototype(@TypeOf(pojo), pojo, global, false);
+    }
+
+    pub fn createNullProto(pojo: anytype, global: *home_rt.jsc.JSGlobalObject) home_rt.JSError!*JSObject {
+        return createFromStructWithPrototype(@TypeOf(pojo), pojo, global, true);
+    }
+
+    fn createFromStructWithPrototype(comptime T: type, pojo: T, global: *home_rt.jsc.JSGlobalObject, comptime null_prototype: bool) home_rt.JSError!*JSObject {
+        const JSValue = home_rt.jsc.JSValue;
+        const info: std.builtin.Type.Struct = @typeInfo(T).@"struct";
+
+        const obj = obj: {
+            const val = if (comptime null_prototype)
+                JSValue.createEmptyObjectWithNullPrototype(global)
+            else
+                JSValue.createEmptyObject(global, comptime info.fields.len);
+            if (home_rt.Environment.isDebug)
+                home_rt.assert(val.isObject());
+            break :obj val.uncheckedPtrCast(JSObject);
+        };
+
+        const cell = toJS(obj);
+        inline for (info.fields) |field| {
+            const property = @field(pojo, field.name);
+            cell.put(
+                global,
+                field.name,
+                try .fromAny(global, @TypeOf(property), property),
+            );
+        }
+
+        return obj;
+    }
+
+    pub fn get(obj: *JSObject, global: *home_rt.jsc.JSGlobalObject, prop: anytype) home_rt.JSError!?home_rt.jsc.JSValue {
+        return obj.toJS().get(global, prop);
+    }
+
+    pub inline fn put(obj: *JSObject, global: *home_rt.jsc.JSGlobalObject, key: anytype, value: home_rt.jsc.JSValue) !void {
+        obj.toJS().put(global, key, value);
+    }
+
+    pub inline fn putAllFromStruct(obj: *JSObject, global: *home_rt.jsc.JSGlobalObject, properties: anytype) !void {
+        inline for (comptime std.meta.fieldNames(@TypeOf(properties))) |field| {
+            try obj.put(global, field, @field(properties, field));
+        }
+    }
+
     pub fn getIndex(value: home_rt.jsc.JSValue, globalThis: *home_rt.jsc.JSGlobalObject, index: u32) home_rt.JSError!home_rt.jsc.JSValue {
         _ = value;
         _ = globalThis;

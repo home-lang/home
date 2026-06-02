@@ -39,6 +39,8 @@ pub const fmt = @import("fmt.zig");
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 /// Faithful to upstream `bun.zig:196` (`sha = @import("./sha_hmac/sha.zig")`).
 pub const sha = @import("sha_hmac/sha.zig");
+/// Faithful to upstream `bun.zig:3218` (`dns = @import("./dns/dns.zig")`).
+pub const dns = @import("dns/dns.zig");
 /// Forward-port: Home's Zig fork removed `std.time.milliTimestamp` (wall-clock
 /// time now goes through `std.Io`). This is the old behavior — milliseconds since
 /// the Unix epoch via `clock_gettime(REALTIME)` — for the copied sites that used
