@@ -40,6 +40,7 @@ pub const enable_asan = false;
 /// locks the non-tracking (release) layout via the existing `@sizeOf`
 /// assertions, so this stays off here; it does not change ported behavior.
 pub const enableAllocScopes = false;
+pub const export_cpp_apis = false;
 /// Faithful to upstream `bun_core/env.zig:50-52` (`git_sha = build_options.sha`).
 /// Home's gate has no embedded SHA, so these are the empty-SHA branch.
 pub const git_sha: []const u8 = "";

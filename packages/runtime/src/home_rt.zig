@@ -52,6 +52,8 @@ pub const SmallList = @import("css/small_list.zig").SmallList;
 // Faithful to upstream bun.zig:1934 (ZigString) and bun.zig:768 (AllocationScope).
 pub const ZigString = jsc.ZigString;
 pub const AllocationScope = allocators.AllocationScope;
+pub const base64 = @import("base64/base64.zig");
+pub const simdutf = @import("simdutf_sys/simdutf.zig");
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -1235,6 +1237,7 @@ pub const jsc = struct {
         // Values from the generated ErrorCode enum (faithful to upstream).
         INVALID_STATE = 136,
         INVALID_URL = 142,
+        UNKNOWN_ENCODING = 255,
         _,
 
         pub fn fmt(this: Error, globalThis: *JSGlobalObject, comptime fmt_: [:0]const u8, args: anytype) JSValue {
@@ -1361,31 +1364,8 @@ pub const jsc = struct {
     pub const JSPromise = @import("jsc/JSPromise.zig").JSPromise;
     pub const JSInternalPromise = @import("jsc/JSInternalPromise.zig").JSInternalPromise;
     pub const EventType = @import("jsc/EventType.zig").EventType;
-    pub const ArrayBuffer = struct {
-        bytes: []const u8 = "",
-        shared: bool = false,
-        typed_array_type: TypedArrayType = .ArrayBuffer,
-
-        pub const TypedArrayType = enum {
-            ArrayBuffer,
-            Int8Array,
-            Uint8Array,
-            Uint8ClampedArray,
-            Int16Array,
-            Uint16Array,
-            Int32Array,
-            Uint32Array,
-            Float32Array,
-            Float64Array,
-            BigInt64Array,
-            BigUint64Array,
-            DataView,
-        };
-
-        pub fn byteSlice(this: ArrayBuffer) []const u8 {
-            return this.bytes;
-        }
-    };
+    // JSC bring-up: real ArrayBuffer (jsc/jsc.zig:46). Was an inline stub.
+    pub const ArrayBuffer = @import("jsc/array_buffer.zig").ArrayBuffer;
     pub const AnyPromise = @import("jsc/AnyPromise.zig").AnyPromise;
     pub const JSObject = @import("jsc/JSObject.zig").JSObject;
     pub const Jest = struct {
@@ -1410,6 +1390,7 @@ pub const jsc = struct {
         pub const Encoding = @import("runtime/node/types.zig").Encoding;
         pub const StringOrBuffer = @import("runtime/node/types.zig").StringOrBuffer;
         pub const BlobOrStringOrBuffer = @import("runtime/node/types.zig").BlobOrStringOrBuffer;
+        pub const PathLike = @import("runtime/node/types.zig").PathLike;
         pub const Dirent = struct {
             pub const Kind = std.Io.File.Kind;
         };

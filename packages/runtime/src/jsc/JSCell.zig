@@ -1,35 +1,64 @@
-// Copied from bun/src/jsc/JSCell.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// JSC-bridge methods omitted:
-//   - getObject / toObject  (need *JSObject, *JSGlobalObject)
-//   - toJS                  (needs JSValue.fromCell)
-//   - getGetterSetter       (needs JSValue.fromCell + bun.Environment + bun.assert)
-//   - getCustomGetterSetter (same)
-// These re-land alongside the rest of the JSC binding surface in Phase 12.2.
-//
-// What survives: the opaque type itself, `getType` (which returns a raw u8 from
-// the JSCell header — no JSType cast yet, since `JSType` is in a sibling file
-// and we don't want a hard dep from JSCell to it), and `ensureStillAlive`.
-
-const std = @import("std");
-
 pub const JSCell = opaque {
+    /// Statically cast a cell to a JSObject. Returns null for non-objects.
+    /// Use `toObject` to mutate non-objects into objects.
+    pub fn getObject(this: *JSCell) ?*jsc.JSObject {
+        jsc.markMemberBinding(JSCell, @src());
+        return JSC__JSCell__getObject(this);
+    }
+
+    /// Convert a cell to a JSObject.
+    ///
+    /// Statically casts cells that are already objects, otherwise mutates them
+    /// into objects.
+    ///
+    /// ## References
+    /// - [ECMA-262 §7.1.18 ToObject](https://tc39.es/ecma262/#sec-toobject)
+    pub fn toObject(this: *JSCell, global: *jsc.JSGlobalObject) *jsc.JSObject {
+        jsc.markMemberBinding(JSCell, @src());
+        return JSC__JSCell__toObject(this, global);
+    }
+
     pub fn getType(this: *const JSCell) u8 {
-        return JSC__JSCell__getType(this);
+        jsc.markMemberBinding(JSCell, @src());
+        return @enumFromInt(JSC__JSCell__getType(this));
+    }
+
+    pub fn toJS(this: *JSCell) jsc.JSValue {
+        return jsc.JSValue.fromCell(this);
+    }
+
+    pub fn getGetterSetter(this: *JSCell) *GetterSetter {
+        if (comptime bun.Environment.allow_assert) {
+            bun.assert(JSValue.fromCell(this).isGetterSetter());
+        }
+        return @as(*GetterSetter, @ptrCast(@alignCast(this)));
+    }
+
+    pub fn getCustomGetterSetter(this: *JSCell) *CustomGetterSetter {
+        if (comptime bun.Environment.allow_assert) {
+            bun.assert(JSValue.fromCell(this).isCustomGetterSetter());
+        }
+        return @as(*CustomGetterSetter, @ptrCast(@alignCast(this)));
     }
 
     pub fn ensureStillAlive(this: *JSCell) void {
         std.mem.doNotOptimizeAway(this);
     }
 
+    extern fn JSC__JSCell__getObject(this: *JSCell) *jsc.JSObject;
+    extern fn JSC__JSCell__toObject(this: *JSCell, *JSGlobalObject) *jsc.JSObject;
     // NOTE: this function always returns a JSType, but by using `u8` then
     // casting it via `@enumFromInt` we can ensure our `JSType` enum matches
     // WebKit's. This protects us from possible future breaking changes made
     // when upgrading WebKit.
-    extern fn JSC__JSCell__getType(this: *const JSCell) u8;
+    extern fn JSC__JSCell__getType(this: *JSCell) u8;
 };
 
-test "JSCell is an opaque pointer-only type" {
-    try std.testing.expect(@sizeOf(*JSCell) == @sizeOf(usize));
-}
+const bun = @import("bun");
+const std = @import("std");
+const CustomGetterSetter = @import("./CustomGetterSetter.zig").CustomGetterSetter;
+const GetterSetter = @import("./GetterSetter.zig").GetterSetter;
+
+const jsc = bun.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSValue = jsc.JSValue;
