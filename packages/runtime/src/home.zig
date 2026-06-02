@@ -644,6 +644,12 @@ pub const timespec = extern struct {
             return std.math.maxInt(u64);
     }
 
+    pub fn nsSigned(this: *const timespec) i64 {
+        const ns_per_sec = this.sec *% std.time.ns_per_s;
+        const ns_from_nsec = @divFloor(this.nsec, 1_000_000);
+        return ns_per_sec +% ns_from_nsec;
+    }
+
     pub fn ms(this: *const timespec) i64 {
         const ms_from_sec = this.sec *% 1000;
         const ms_from_nsec = @divFloor(this.nsec, 1_000_000);
@@ -3015,6 +3021,7 @@ pub const alloc = struct {
 };
 pub const memory = @import("bun_alloc/memory.zig");
 pub const allocators = struct {
+    pub const MimallocArena = @import("bun_alloc/MimallocArena.zig");
     pub const IndexType = packed struct(u32) {
         index: u31,
         is_overflow: bool = false,
