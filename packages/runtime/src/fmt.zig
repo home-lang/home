@@ -6,6 +6,21 @@
 const std = @import("std");
 
 const strings = @import("strings.zig");
+const bun = @import("home");
+
+/// Faithful to upstream `bun_core/fmt.zig:214`.
+const JSONFormatter = struct {
+    input: []const u8,
+
+    pub fn format(self: JSONFormatter, writer: *std.Io.Writer) !void {
+        try bun.js_printer.writeJSONString(self.input, @TypeOf(writer), writer, .latin1);
+    }
+};
+
+/// Expects latin1. Faithful to upstream `bun_core/fmt.zig:240`.
+pub fn formatJSONStringLatin1(text: []const u8) JSONFormatter {
+    return .{ .input = text };
+}
 
 /// `std.fmt` formatter that prints a quoted string with backslash escapes.
 /// Used by Bun source as `bun.fmt.quote(some_string)` -> `"...escaped..."`.

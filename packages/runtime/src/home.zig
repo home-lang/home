@@ -62,6 +62,9 @@ pub fn getenvZAnyCase(key: [:0]const u8) ?[]const u8 {
     return null;
 }
 
+/// Faithful to upstream `bun.zig:1936` (`string.SliceWithUnderlyingString`).
+pub const SliceWithUnderlyingString = @import("string/string.zig").SliceWithUnderlyingString;
+
 /// Faithful to upstream `bun.zig:1946`. WebKit WTF String impl handles.
 pub const WTF = struct {
     /// The String type from WebKit's WTF library.
@@ -77,6 +80,47 @@ pub fn TrivialDeinit(comptime T: type) fn (*T) void {
             destroy(self);
         }
     }.deinit;
+}
+
+/// Faithful to upstream `bun.zig:2841`. Maps a `SystemErrno` value to the
+/// matching Zig error (built at comptime from the enum tag names).
+const errno_map = errno_map: {
+    var max_value = 0;
+    for (std.enums.values(sys.SystemErrno)) |v|
+        max_value = @max(max_value, @intFromEnum(v));
+
+    var map: [max_value + 1]anyerror = undefined;
+    @memset(&map, error.Unexpected);
+    for (std.enums.values(sys.SystemErrno)) |v|
+        map[@intFromEnum(v)] = @field(anyerror, @tagName(v));
+
+    break :errno_map map;
+};
+
+/// Faithful to upstream `bun.zig:2854`.
+pub fn errnoToZigErr(err: anytype) anyerror {
+    var num = if (@typeInfo(@TypeOf(err)) == .@"enum")
+        @intFromEnum(err)
+    else
+        err;
+
+    if (Environment.allow_assert) {
+        assert(num != 0);
+    }
+
+    if (Environment.os == .windows) {
+        // uv errors are negative, normalizing it will make this more resilient
+        num = @abs(num);
+    } else {
+        if (Environment.allow_assert) {
+            assert(num > 0);
+        }
+    }
+
+    if (num > 0 and num < errno_map.len)
+        return errno_map[num];
+
+    return error.Unexpected;
 }
 pub const Generation = u16;
 pub const Wyhash11 = std.hash.Wyhash;
@@ -1857,6 +1901,7 @@ pub const options_types = struct {
 pub const meta = struct {
     pub const typeBaseName = @import("meta/meta.zig").typeBaseName;
     pub const typeBaseNameT = @import("meta/meta.zig").typeBaseNameT;
+    pub const enumFieldNames = @import("meta/meta.zig").enumFieldNames;
     // `std.meta.intToEnum` was removed in Zig 0.17; faithful drop-in replacement.
     pub fn intToEnum(comptime Enum: type, tag_int: anytype) error{InvalidEnumTag}!Enum {
         inline for (@typeInfo(Enum).@"enum".fields) |f| {
