@@ -1761,7 +1761,9 @@ pub const jsc = struct {
     pub const ProcessAutoKiller = @import("jsc/ProcessAutoKiller.zig");
     pub const JSONLineBuffer = @import("jsc/JSONLineBuffer.zig").JSONLineBuffer;
     pub const event_loop_handle = @import("jsc/EventLoopHandle.zig");
-    pub const EventLoop = event_loop_handle.EventLoop;
+    // Faithful to upstream jsc/jsc.zig: `EventLoop = event_loop.EventLoop` (the
+    // real loop with the concurrent-task queue), not the EventLoopHandle stub.
+    pub const EventLoop = @import("jsc/event_loop.zig").EventLoop;
     pub const MiniEventLoop = event_loop_handle.MiniEventLoop;
     // Faithful to upstream `jsc.AnyEventLoop` (`jsc.zig:133`):
     // the `union(EventLoopKind)` over js/mini event loops.
