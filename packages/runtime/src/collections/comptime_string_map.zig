@@ -113,13 +113,52 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
             return null;
         }
 
-        pub fn getWithEql(str: []const KeyType, eql: anytype) ?V {
-            if (str.len < precomputed.min_len or str.len > precomputed.max_len)
+        /// Faithful to upstream `comptime_string_map.zig:195`. Delegates to the
+        /// JSC helper now that `src/jsc/comptime_string_map_jsc.zig` is present.
+        pub fn fromJS(globalThis: anytype, input: anytype) home_rt.JSError!?V {
+            return @import("../jsc/comptime_string_map_jsc.zig").fromJS(@This(), globalThis, input);
+        }
+
+        /// Throws if toString() throws.
+        pub fn fromJSCaseInsensitive(globalThis: anytype, input: anytype) home_rt.JSError!?V {
+            return @import("../jsc/comptime_string_map_jsc.zig").fromJSCaseInsensitive(@This(), globalThis, input);
+        }
+
+        pub fn fromString(str: home_rt.String) ?V {
+            return getWithEql(str, home_rt.String.eqlComptime);
+        }
+
+        /// Faithful to upstream `comptime_string_map.zig:108`.
+        pub fn getWithLengthAndEql(str: anytype, comptime len: usize, comptime eqls: anytype) ?V {
+            const end = comptime brk: {
+                var i = len_indexes[len];
+                @setEvalBranchQuota(99999);
+                while (i < kvs.len and kvs[i].key.len == len) : (i += 1) {}
+                break :brk i;
+            };
+            // This benchmarked faster for both small and large lists of strings than using a big switch statement
+            // But only so long as the keys are a sorted list.
+            inline for (len_indexes[len]..end) |i| {
+                if (eqls(str, kvs[i].key)) {
+                    return kvs[i].value;
+                }
+            }
+            return null;
+        }
+
+        /// Faithful to upstream `comptime_string_map.zig:236`. Accepts a `[]const u8`
+        /// slice or any type with a `len` field / `length()` method (e.g. `bun.String`).
+        pub fn getWithEql(input: anytype, comptime eql: anytype) ?V {
+            const Input = @TypeOf(input);
+            const length = if (@hasField(Input, "len")) input.len else input.length();
+            if (length < precomputed.min_len or length > precomputed.max_len)
                 return null;
-            const start = len_indexes[str.len];
-            var i = start;
-            while (i < kvs.len and kvs[i].key.len == str.len) : (i += 1) {
-                if (eql(str, kvs[i].key)) return kvs[i].value;
+
+            comptime var i: usize = precomputed.min_len;
+            inline while (i <= precomputed.max_len) : (i += 1) {
+                if (length == i) {
+                    return getWithLengthAndEql(input, i, eql);
+                }
             }
             return null;
         }

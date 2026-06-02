@@ -19,14 +19,11 @@
 /// ************************************
 const std = @import("std");
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const jsc = struct {
-    pub const JSGlobalObject = opaque {};
-    pub const JSValue = enum(i64) {
-        _,
-        pub const backing_int = i64;
-    };
-};
+// Faithful to upstream (`const bun = @import("bun"); const jsc = bun.jsc;`).
+// The real JSC `JSGlobalObject` / `JSValue` types are now present, so reference
+// them directly to keep type identity unified across the jsc cone.
+const bun = @import("home");
+const jsc = bun.jsc;
 
 const generic = opaque {
     pub fn value(this: *const generic) jsc.JSValue {

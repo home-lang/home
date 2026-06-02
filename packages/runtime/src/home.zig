@@ -61,6 +61,23 @@ pub fn getenvZAnyCase(key: [:0]const u8) ?[]const u8 {
     }
     return null;
 }
+
+/// Faithful to upstream `bun.zig:1946`. WebKit WTF String impl handles.
+pub const WTF = struct {
+    /// The String type from WebKit's WTF library.
+    pub const StringImpl = @import("string/string.zig").WTFStringImpl;
+    pub const _StringImplStruct = @import("string/string.zig").WTFStringImplStruct;
+};
+
+/// Faithful to upstream `bun.zig:2790`. Returns a `deinit` fn that simply
+/// `destroy`s the value (for structs holding no owned pointers).
+pub fn TrivialDeinit(comptime T: type) fn (*T) void {
+    return struct {
+        pub fn deinit(self: *T) void {
+            destroy(self);
+        }
+    }.deinit;
+}
 pub const Generation = u16;
 pub const Wyhash11 = std.hash.Wyhash;
 pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
