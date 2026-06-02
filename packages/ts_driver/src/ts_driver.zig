@@ -1410,6 +1410,23 @@ pub fn compileSource(
     };
     for (parser.diagnostics.items) |d| {
         if (diagnosticLineHasTsIgnore(source, d.pos)) continue;
+        // Copy parser-level related-info anchors (TS1007 matched-pair
+        // hints, etc.) into the unified driver diagnostic. Parser
+        // entries live in `diag_arena`; we dup each message to gpa so
+        // it outlives the parser.
+        const related: []const RelatedInfo = blk: {
+            if (d.related.len == 0) break :blk &.{};
+            const out = try gpa.alloc(RelatedInfo, d.related.len);
+            for (d.related, 0..) |r, i| {
+                out[i] = .{
+                    .code = r.code,
+                    .message = try gpa.dupe(u8, r.message),
+                    .pos = r.pos,
+                    .span_len = r.span_len,
+                };
+            }
+            break :blk out;
+        };
         try c.diagnostics.append(gpa, .{
             .phase = .parse,
             .pos = d.pos,
@@ -1417,6 +1434,7 @@ pub fn compileSource(
             .code = d.code,
             .span_len = d.span_len,
             .message = try gpa.dupe(u8, d.message),
+            .related = related,
         });
         c.has_errors = true;
     }
@@ -2814,6 +2832,40 @@ test "driver: checker related-info propagates across the boundary (TS1380 carrie
         }
     }
     try T.expect(saw_1380);
+}
+
+test "driver: parser related-info propagates across the boundary (TS1005 carries TS1007 matched-pair anchor)" {
+    // `if (x { ...` — parser hits an unexpected `{` while looking for
+    // the close paren; tsc emits TS1005 `')' expected.` with a TS1007
+    // `The parser expected to find a ')' to match the '(' token here.`
+    // related anchor pointing at the opening paren. The driver must
+    // carry that related-info through (parser previously had no related
+    // channel at all).
+    var c = try compileSource(
+        T.allocator,
+        "if (x { console.log(); }\n",
+        .{ .no_emit = true },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_1005_with_1007 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 1005) continue;
+        if (!std.mem.eql(u8, d.message, "')' expected.")) continue;
+        for (d.related) |r| {
+            if (r.code == 1007 and
+                std.mem.indexOf(u8, r.message, "to match the '(' token here") != null)
+            {
+                saw_1005_with_1007 = true;
+                // anchor resolved at the opening paren — column 4 in
+                // `if (x {` (0-indexed 3).
+                try T.expect(r.pos > 0);
+            }
+        }
+    }
+    try T.expect(saw_1005_with_1007);
 }
 
 test "driver: control flow round-trips" {

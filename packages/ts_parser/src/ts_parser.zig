@@ -49,6 +49,20 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
+/// One "related information" anchor on a parser diagnostic — tsc's
+/// `relatedInformation[]`. Used for TS1007 (matched-pair recovery
+/// anchored at the opening `(`/`{`/`[` token) and similar
+/// parser-level same-file pointers. The driver copies this through
+/// to its `Diagnostic.related` channel. `message` is borrowed from
+/// `diag_arena` (same lifetime as the primary diagnostic message);
+/// the driver owns the gpa copy once it crosses the boundary.
+pub const RelatedInfo = struct {
+    code: u32,
+    message: []const u8,
+    pos: u32,
+    span_len: u32 = 0,
+};
+
 pub const Diagnostic = struct {
     pos: u32,
     line: u32,
@@ -64,6 +78,10 @@ pub const Diagnostic = struct {
     /// sort-by-code-when-zero behavior for all the existing call sites
     /// that don't carry width.
     span_len: u32 = 0,
+    /// Optional related-information anchors (tsc `relatedInformation`).
+    /// Empty by default. Borrowed from `diag_arena` (same lifetime as
+    /// `message`); driver dup'd to gpa-owned at the boundary.
+    related: []const RelatedInfo = &.{},
 };
 
 /// One active labeled statement on the parse-time label scope stack.
@@ -550,6 +568,44 @@ pub const Parser = struct {
         return false;
     }
 
+    /// Like `expect`, but on a missing matched-closer (e.g. `)`/`}`/`]`)
+    /// also emits a TS1007 related-info anchor pointing at the opening
+    /// token (`open_pos`). The opener/closer punctuator strings are the
+    /// literal characters the related-info message substitutes into
+    /// "The parser expected to find a '{close}' to match the '{open}'
+    /// token here." — matching tsc's `tokenToString` substitution.
+    fn expectClosingMatch(
+        self: *Parser,
+        kind: TokenKind,
+        what: []const u8,
+        open_pos: u32,
+        open_text: []const u8,
+        close_text: []const u8,
+    ) ParseError!Token {
+        if (self.peek().kind != kind) {
+            if (extractLeadingQuotedToken(what)) |tok| {
+                const tok_msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' expected.",
+                    .{tok},
+                );
+                try self.reportCodeAtWithMatchedPair(
+                    self.peek().span.start,
+                    self.peek().line,
+                    1005,
+                    tok_msg,
+                    open_pos,
+                    open_text,
+                    close_text,
+                );
+            } else {
+                try self.report("expected ", what);
+            }
+            return error.UnexpectedToken;
+        }
+        return self.advance();
+    }
+
     fn expect(self: *Parser, kind: TokenKind, what: []const u8) ParseError!Token {
         if (self.peek().kind != kind) {
             // Upstream tsc emits TS1005 `'X' expected.` whenever the
@@ -607,6 +663,44 @@ pub const Parser = struct {
             .span_len = span_len,
             .code = code,
             .message = msg,
+        });
+    }
+
+    /// Emit a TS1005-style primary diagnostic with a TS1007 related-info
+    /// anchor pointing at the matching opening token. Mirrors tsc's
+    /// `addRelatedInfo(lastError, ...Diagnostics.The_parser_expected_to_find_a_1_to_match_the_0_token_here, openKind, closeKind)`
+    /// pattern in parser.ts. `open_text` and `close_text` are the literal
+    /// punctuator strings ('(' / ')' / '{' / '}' / '[' / ']') — tsc
+    /// substitutes the same kind text via `tokenToString`.
+    fn reportCodeAtWithMatchedPair(
+        self: *Parser,
+        pos: u32,
+        line: u32,
+        code: u32,
+        message: []const u8,
+        open_pos: u32,
+        open_text: []const u8,
+        close_text: []const u8,
+    ) ParseError!void {
+        const msg = try self.diag_arena.allocator().dupe(u8, message);
+        const related_msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "The parser expected to find a '{s}' to match the '{s}' token here.",
+            .{ close_text, open_text },
+        );
+        const related = try self.diag_arena.allocator().alloc(RelatedInfo, 1);
+        related[0] = .{
+            .code = 1007,
+            .message = related_msg,
+            .pos = open_pos,
+            .span_len = 1,
+        };
+        try self.diagnostics.append(self.gpa, .{
+            .pos = pos,
+            .line = line,
+            .code = code,
+            .message = msg,
+            .related = related,
         });
     }
 
@@ -2693,14 +2787,22 @@ pub const Parser = struct {
 
     fn parseIfStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // if
-        _ = try self.expect(.open_paren, "'(' after 'if'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'if'");
         const cond = try self.parseExpression();
         var missing_close_paren = false;
         if (self.peek().kind == .close_paren) {
             _ = self.advance();
         } else {
             const close_tok = self.peek();
-            try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+            try self.reportCodeAtWithMatchedPair(
+                close_tok.span.start,
+                close_tok.line,
+                1005,
+                "')' expected.",
+                open_paren.span.start,
+                "(",
+                ")",
+            );
             missing_close_paren = true;
         }
         // TS1313: `if (cond);` — the body is an empty statement.
@@ -2733,9 +2835,9 @@ pub const Parser = struct {
 
     fn parseWhileStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // while
-        _ = try self.expect(.open_paren, "'(' after 'while'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'while'");
         const cond = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' after while condition");
+        _ = try self.expectClosingMatch(.close_paren, "')' after while condition", open_paren.span.start, "(", ")");
         self.loop_depth += 1;
         defer self.loop_depth -= 1;
         self.loop_switch_depth += 1;
@@ -2753,9 +2855,9 @@ pub const Parser = struct {
         defer self.loop_switch_depth -= 1;
         const body = try self.parseNestedStatement();
         _ = try self.expect(.kw_while, "'while' after do-block");
-        _ = try self.expect(.open_paren, "'(' after 'while'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'while'");
         const cond = try self.parseExpression();
-        const close = try self.expect(.close_paren, "')' after do-while condition");
+        const close = try self.expectClosingMatch(.close_paren, "')' after do-while condition", open_paren.span.start, "(", ")");
         _ = self.match(.semicolon);
         return try self.builder.addDoWhile(.{ .start = start.span.start, .end = close.span.end }, body, cond);
     }
