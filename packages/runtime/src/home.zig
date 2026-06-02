@@ -56,6 +56,8 @@ pub const base64 = @import("base64/base64.zig");
 pub const simdutf = @import("simdutf_sys/simdutf.zig");
 pub const c_ares = @import("cares_sys/c_ares.zig");
 pub const zlib = @import("zlib/zlib.zig");
+pub const NullableAllocator = allocators.NullableAllocator;
+pub const HashedString = @import("string/HashedString.zig");
 /// Faithful to upstream bun.zig:1457.
 pub fn asByteSlice(buffer: anytype) []const u8 {
     return switch (@TypeOf(buffer)) {
