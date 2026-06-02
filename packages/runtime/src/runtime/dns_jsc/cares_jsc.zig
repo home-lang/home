@@ -54,9 +54,9 @@ pub fn hostentWithTtlsToJSResponse(this: *c_ares.hostent_with_ttls, _: std.mem.A
 
         while (this.hostent.h_addr_list.?[count]) |addr| : (count += 1) {
             const addrString = (if (this.hostent.h_addrtype == c_ares.AF.INET6)
-                bun.dns.addressToJS(&std.net.Address.initIp6(addr[0..16].*, 0, 0, 0), globalThis)
+                bun.dns.addressToJS(&bun.net.Address.initIp6(addr[0..16].*, 0, 0, 0), globalThis)
             else
-                bun.dns.addressToJS(&std.net.Address.initIp4(addr[0..4].*, 0), globalThis)) catch return globalThis.throwOutOfMemoryValue();
+                bun.dns.addressToJS(&bun.net.Address.initIp4(addr[0..4].*, 0), globalThis)) catch return globalThis.throwOutOfMemoryValue();
 
             const ttl: ?c_int = if (count < this.ttls.len) this.ttls[count] else null;
             const resultObject = try jsc.JSValue.createObject2(globalThis, &addressKey, &ttlKey, addrString, if (ttl) |val| .jsNumber(val) else .js_undefined);
@@ -107,8 +107,8 @@ pub fn addrInfoToJSArray(addr_info: *c_ares.AddrInfo, globalThis: *jsc.JSGlobalO
                 try GetAddrInfo.Result.toJS(
                     &.{
                         .address = switch (this_node.family) {
-                            c_ares.AF.INET => std.net.Address{ .in = .{ .sa = bun.cast(*const std.posix.sockaddr.in, this_node.addr.?).* } },
-                            c_ares.AF.INET6 => std.net.Address{ .in6 = .{ .sa = bun.cast(*const std.posix.sockaddr.in6, this_node.addr.?).* } },
+                            c_ares.AF.INET => bun.net.Address{ .in = .{ .sa = bun.cast(*const std.posix.sockaddr.in, this_node.addr.?).* } },
+                            c_ares.AF.INET6 => bun.net.Address{ .in6 = .{ .sa = bun.cast(*const std.posix.sockaddr.in6, this_node.addr.?).* } },
                             else => unreachable,
                         },
                         .ttl = this_node.ttl,

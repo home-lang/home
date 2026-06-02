@@ -191,7 +191,7 @@ pub const GetAddrInfo = struct {
     };
 
     pub const Result = struct {
-        address: std.net.Address,
+        address: bun.net.Address,
         ttl: i32 = 0,
 
         pub const List = std.array_list.Managed(Result);
@@ -230,7 +230,7 @@ pub const GetAddrInfo = struct {
 
         pub fn fromAddrInfo(addrinfo: *std.c.addrinfo) ?Result {
             return Result{
-                .address = std.net.Address.initPosix(@alignCast(addrinfo.addr orelse return null)),
+                .address = bun.net.Address.initPosix(@alignCast(addrinfo.addr orelse return null)),
                 // no TTL in POSIX getaddrinfo()
                 .ttl = 0,
             };
@@ -239,7 +239,7 @@ pub const GetAddrInfo = struct {
         pub const toJS = options_jsc.resultToJS;
     };
 };
-pub fn addressToString(address: *const std.net.Address) bun.OOM!bun.String {
+pub fn addressToString(address: *const bun.net.Address) bun.OOM!bun.String {
     switch (address.any.family) {
         std.posix.AF.INET => {
             var self = address.in;

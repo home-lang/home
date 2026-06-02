@@ -14,7 +14,7 @@ pub const fromJSDirect = js.fromJSDirect;
 
 pub const new = bun.TrivialNew(SocketAddress);
 
-// NOTE: not std.net.Address b/c .un is huge and we don't use it.
+// NOTE: not bun.net.Address b/c .un is huge and we don't use it.
 // NOTE: not C.sockaddr_storage b/c it's _huge_. we need >= 28 bytes for sockaddr_in6,
 // but sockaddr_storage is 128 bytes.
 /// @internal

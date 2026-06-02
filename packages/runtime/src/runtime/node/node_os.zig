@@ -602,8 +602,8 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
         if (helpers.skip(iface) or helpers.isLinkLayer(iface)) continue;
 
         const interface_name = std.mem.sliceTo(iface.ifa_name, 0);
-        const addr = std.net.Address.initPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_addr))));
-        const netmask = std.net.Address.initPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_netmask))));
+        const addr = bun.net.Address.initPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_addr))));
+        const netmask = bun.net.Address.initPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_netmask))));
 
         var interface = jsc.JSValue.createEmptyObject(globalThis, 0);
 
@@ -761,8 +761,8 @@ fn networkInterfacesWindows(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSV
             //  the address and cidr values can be slices into this same buffer
             // e.g. addr_str = "192.168.88.254", cidr_str = "192.168.88.254/24"
             const addr_str = bun.fmt.formatIp(
-                // std.net.Address will do ptrCast depending on the family so this is ok
-                std.net.Address.initPosix(@ptrCast(&iface.address.address4)),
+                // bun.net.Address will do ptrCast depending on the family so this is ok
+                bun.net.Address.initPosix(@ptrCast(&iface.address.address4)),
                 &ip_buf,
             ) catch unreachable;
             if (maybe_suffix) |suffix| {
@@ -781,8 +781,8 @@ fn networkInterfacesWindows(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSV
         // netmask
         {
             const str = bun.fmt.formatIp(
-                // std.net.Address will do ptrCast depending on the family so this is ok
-                std.net.Address.initPosix(@ptrCast(&iface.netmask.netmask4)),
+                // bun.net.Address will do ptrCast depending on the family so this is ok
+                bun.net.Address.initPosix(@ptrCast(&iface.netmask.netmask4)),
                 &ip_buf,
             ) catch unreachable;
             interface.put(globalThis, jsc.ZigString.static("netmask"), jsc.ZigString.init(str).withEncoding().toJS(globalThis));
