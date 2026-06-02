@@ -313,6 +313,82 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
     return count;
 }
 
+fn runnerDirectiveKey(trimmed_line: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, trimmed_line, "//")) return null;
+    const after_slashes = std.mem.trim(u8, trimmed_line[2..], " \t");
+    if (!std.mem.startsWith(u8, after_slashes, "@")) return null;
+    const body = after_slashes[1..];
+    var name_end: usize = 0;
+    while (name_end < body.len and (std.ascii.isAlphanumeric(body[name_end]) or
+        body[name_end] == '_' or body[name_end] == '-')) : (name_end += 1)
+    {}
+    if (name_end == 0) return null;
+    const key = body[0..name_end];
+    if (std.mem.startsWith(u8, key, "ts-")) return null;
+    const rest = body[name_end..];
+    if (rest.len > 0 and rest[0] != ':' and !std.ascii.isWhitespace(rest[0])) return null;
+    return key;
+}
+
+fn countLeadingDirectiveCommentLines(source: []const u8) u32 {
+    var count: u32 = 0;
+    var directive_seen = false;
+    const after_bom = if (source.len >= 3 and source[0] == 0xEF and source[1] == 0xBB and source[2] == 0xBF)
+        source[3..]
+    else
+        source;
+    var lines = std.mem.splitScalar(u8, after_bom, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0) {
+            if (!directive_seen) break;
+            continue;
+        }
+        if (!std.mem.startsWith(u8, trimmed, "//")) break;
+        const key = runnerDirectiveKey(trimmed) orelse {
+            if (!directive_seen) continue;
+            break;
+        };
+        if (std.ascii.eqlIgnoreCase(key, "filename")) break;
+        count += 1;
+        directive_seen = true;
+    }
+    return count;
+}
+
+fn countDirectiveCommentLinesBefore(source: []const u8, target_line: u32) u32 {
+    var count: u32 = 0;
+    var line_no: u32 = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i <= source.len) : (i += 1) {
+        const at_end = i == source.len;
+        if (at_end or source[i] == '\n') {
+            if (line_no >= target_line) break;
+            const raw_line = source[line_start..i];
+            const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+            if (runnerDirectiveKey(trimmed)) |key| {
+                if (!std.ascii.eqlIgnoreCase(key, "filename")) count += 1;
+            }
+            if (at_end) break;
+            line_no += 1;
+            line_start = i + 1;
+        }
+    }
+    return count;
+}
+
+fn baselineDirectiveOffsetBeforeLine(source: []const u8, target_line: u32) u32 {
+    const leading_offset = countLeadingDirectiveLines(source);
+    const leading_directives = countLeadingDirectiveCommentLines(source);
+    const all_directives_before = countDirectiveCommentLinesBefore(source, target_line);
+    const extra_directives = if (all_directives_before > leading_directives)
+        all_directives_before - leading_directives
+    else
+        0;
+    return leading_offset + extra_directives;
+}
+
 /// Run a single conformance case. Returns the outcome and writes
 /// human-readable detail when the case fails.
 pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
@@ -352,9 +428,11 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     // For exact baseline comparison, two harness-layer normalizations
     // bring our output in line with how upstream TS renders baselines:
     //
-    // 1. `// @key: value` directive comments at the file head are
-    //    stripped from line counting. We subtract that count from each
-    //    diagnostic's line number when comparing.
+    // 1. `// @key: value` directive comments are stripped from line
+    //    counting. The file-head block also strips its runner-owned
+    //    blank lines; later directives (for example `// @strict: true`
+    //    after `export {}`) strip only their own lines. We subtract
+    //    the per-diagnostic count when comparing.
     // 2. The same `(line, col, code, message)` tuple may fire from
     //    multiple checker visits (e.g. once per binding-element walk
     //    when the same generic name is referenced N times). Upstream
@@ -416,8 +494,12 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         // sits inside a `@filename:` block; otherwise fall back to the
         // case-level path with the leading-directive line offset.
         var diag_file: []const u8 = c.path;
-        var diag_line: u32 = if (pos.line > directive_offset)
-            pos.line - directive_offset
+        const diag_offset: u32 = if (exact_mode)
+            baselineDirectiveOffsetBeforeLine(c.source, pos.line)
+        else
+            directive_offset;
+        var diag_line: u32 = if (pos.line > diag_offset)
+            pos.line - diag_offset
         else
             pos.line;
         if (virtualMarkerForByte(virtual_markers.items, d.pos)) |m| {
@@ -51384,6 +51466,31 @@ test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
         \\// @strict: true
         \\const x = 1;
     ));
+}
+
+test "conformance: baselineDirectiveOffsetBeforeLine strips later runner directives" {
+    const strict_function_shape =
+        \\// @target: es2015
+        \\export {}
+        \\
+        \\// @strict: true
+        \\
+        \\declare let f1: (x: Object) => Object;
+        \\declare let f3: (x: string) => Object;
+        \\f1 = f3;
+    ;
+    try T.expectEqual(@as(u32, 1), countLeadingDirectiveLines(strict_function_shape));
+    try T.expectEqual(@as(u32, 2), baselineDirectiveOffsetBeforeLine(strict_function_shape, 8));
+    try T.expectEqual(@as(u32, 6), 8 - baselineDirectiveOffsetBeforeLine(strict_function_shape, 8));
+
+    const banner_shape =
+        \\// Conformance for emitting ES6
+        \\// @target: es6
+        \\
+        \\function f() {}
+    ;
+    try T.expectEqual(@as(u32, 1), countLeadingDirectiveLines(banner_shape));
+    try T.expectEqual(@as(u32, 1), baselineDirectiveOffsetBeforeLine(banner_shape, 4));
 }
 
 test "conformance: directiveTargetDeprecated detects es3 / es5 targets" {

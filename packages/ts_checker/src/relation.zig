@@ -1343,7 +1343,7 @@ pub const Engine = struct {
     /// mapped to the source tp at the matching position, and that
     /// substitution is honoured when comparing the return types.
     fn computeSignatureAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
-        return self.computeSignatureAssignableWithMode(source, target, false);
+        return self.computeSignatureAssignableWithMode(source, target, false, false);
     }
 
     fn computeSignatureAssignableWithMode(
@@ -1351,6 +1351,7 @@ pub const Engine = struct {
         source: TypeId,
         target: TypeId,
         force_strict_params: bool,
+        force_bivariant_params: bool,
     ) anyerror!bool {
         const source_payload = self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(source)];
         const target_payload = self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(target)];
@@ -1434,7 +1435,7 @@ pub const Engine = struct {
             // Strict mode: target's param must be assignable to
             // source's (contravariant). Non-strict: bivariant —
             // accept either direction.
-            if (force_strict_params or self.strict_function_types) {
+            if (!force_bivariant_params and (force_strict_params or self.strict_function_types)) {
                 if (!try self.isAssignableTo(t_param, s_param_ctx)) return false;
             } else {
                 const ct = try self.isAssignableTo(t_param, s_param_ctx);
@@ -1965,7 +1966,7 @@ pub const Engine = struct {
                 }
                 saw_signature_member = true;
                 const ok = if (signature_member_count > 1)
-                    try self.computeSignatureAssignableWithMode(source, tm.type, true)
+                    try self.computeSignatureAssignableWithMode(source, tm.type, true, false)
                 else
                     try self.isAssignableTo(source, tm.type);
                 if (!ok) return false;
@@ -2039,6 +2040,13 @@ pub const Engine = struct {
             // (covariant). Mutable on target with readonly source is
             // still allowed for now to match the current default flag
             // surface.
+            if (sm.is_method and target_member.is_method and
+                self.pool().flagsOf(sm.type).is_signature and
+                self.pool().flagsOf(effective_target).is_signature)
+            {
+                if (try self.computeSignatureAssignableWithMode(sm.type, effective_target, false, true)) return true;
+                continue;
+            }
             if (try self.isAssignableTo(sm.type, effective_target)) return true;
         }
         return false;
@@ -2490,6 +2498,64 @@ test "Engine: structural object — depth-checked" {
     });
     const tgt = try ti.internObjectType(&.{
         .{ .name = wrap, .type = inner_tgt, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: structural object — method signatures compare bivariantly under strictFunctionTypes" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    e.setStrictFunctionTypes(true);
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const compare = try sint.intern("compare");
+    const animal_prop = try sint.intern("animal");
+    const dog_prop = try sint.intern("dog");
+    const animal = try ti.internObjectType(&.{
+        .{ .name = animal_prop, .type = Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const dog = try ti.internObjectType(&.{
+        .{ .name = animal_prop, .type = Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = dog_prop, .type = Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const animal_sig = try ti.internSignature(&.{ animal, animal }, Primitive.number_t, false);
+    const dog_sig = try ti.internSignature(&.{ dog, dog }, Primitive.number_t, false);
+    const src = try ti.internObjectType(&.{
+        .{ .name = compare, .type = dog_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = compare, .type = animal_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    try T.expect(try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: structural object — function properties stay strict under strictFunctionTypes" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    e.setStrictFunctionTypes(true);
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const compare = try sint.intern("compare");
+    const animal_prop = try sint.intern("animal");
+    const dog_prop = try sint.intern("dog");
+    const animal = try ti.internObjectType(&.{
+        .{ .name = animal_prop, .type = Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const dog = try ti.internObjectType(&.{
+        .{ .name = animal_prop, .type = Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = dog_prop, .type = Primitive.void_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const animal_sig = try ti.internSignature(&.{ animal, animal }, Primitive.number_t, false);
+    const dog_sig = try ti.internSignature(&.{ dog, dog }, Primitive.number_t, false);
+    const src = try ti.internObjectType(&.{
+        .{ .name = compare, .type = dog_sig, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = compare, .type = animal_sig, .is_optional = false, .is_readonly = false, .is_method = false },
     });
     try T.expect(!try e.isAssignableTo(src, tgt));
 }
