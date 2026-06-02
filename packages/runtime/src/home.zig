@@ -1898,6 +1898,7 @@ pub const io = struct {
     pub const GenericWriter = @import("io_shim.zig").GenericWriter;
     // Faithful to upstream io/io.zig (Poll:438, BufferedWriter:724, StreamingWriter:727).
     pub const Poll = @import("io/io.zig").Poll;
+    pub const Request = @import("io/io.zig").Request;
     pub const BufferedWriter = @import("io/PipeWriter.zig").BufferedWriter;
     pub const StreamingWriter = @import("io/PipeWriter.zig").StreamingWriter;
     // Faithful to upstream `bun.io.heap` (`src/io/io.zig`): the intrusive
@@ -2037,6 +2038,7 @@ pub const uws = @import("uws/uws.zig");
 pub const http = struct {
     pub const HTTPCertError = @import("http/HTTPCertError.zig");
     pub const HTTPResponseMetadata = @import("http/http.zig").HTTPResponseMetadata;
+    pub const Headers = @import("http/Headers.zig");
     pub const InitError = @import("http/InitError.zig").InitError;
     pub const CertificateInfo = @import("http/CertificateInfo.zig");
     pub const HeaderValueIterator = @import("http/HeaderValueIterator.zig");
@@ -3488,6 +3490,7 @@ pub const sys = struct {
     pub const pread = @import("sys/sys.zig").pread;
     pub const ftruncate = @import("sys/sys.zig").ftruncate;
     pub const fchmod = @import("sys/sys.zig").fchmod;
+    pub const updateNonblocking = @import("sys/sys.zig").updateNonblocking;
     pub const fchown = @import("sys/sys.zig").fchown;
     pub const futimens = @import("sys/sys.zig").futimens;
 
