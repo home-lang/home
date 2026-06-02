@@ -22,6 +22,23 @@ pub fn formatJSONStringLatin1(text: []const u8) JSONFormatter {
     return .{ .input = text };
 }
 
+/// Faithful to upstream `bun_core/fmt.zig:1361`. Formats an IP address to a bare
+/// Node-style presentation string (no `:port`, no IPv6 brackets) by formatting
+/// then stripping. `address` is Home's `net.Address` shim (backed by std.Io.net).
+pub fn formatIp(address: bun.net.Address, into: []u8) ![]u8 {
+    var result = try std.fmt.bufPrint(into, "{f}", .{address});
+
+    // Strip `:<port>`
+    if (std.mem.lastIndexOfScalar(u8, result, ':')) |colon| {
+        result = result[0..colon];
+    }
+    // Strip brackets
+    if (result[0] == '[' and result[result.len - 1] == ']') {
+        result = result[1 .. result.len - 1];
+    }
+    return result;
+}
+
 /// `std.fmt` formatter that prints a quoted string with backslash escapes.
 /// Used by Bun source as `bun.fmt.quote(some_string)` -> `"...escaped..."`.
 pub const QuotedFormatter = struct {

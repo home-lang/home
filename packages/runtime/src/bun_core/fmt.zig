@@ -1358,7 +1358,7 @@ pub fn enumTagList(comptime Enum: type, comptime separator: @TypeOf(.enum_litera
     return EnumTagListFormatter(Enum, separator){};
 }
 
-pub fn formatIp(address: std.net.Address, into: []u8) ![]u8 {
+pub fn formatIp(address: bun.net.Address, into: []u8) ![]u8 {
     // std.net.Address.format includes `:<port>` and square brackets (IPv6)
     //  while Node does neither.  This uses format then strips these to bring
     //  the result into conformance with Node.

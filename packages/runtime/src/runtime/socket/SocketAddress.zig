@@ -131,12 +131,15 @@ pub fn parse(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError
     // - "[::1]" -> "::1"
     // - "0x.0x.0" -> "0.0.0.0"
     const paddr = host.latin1(); // presentation address
+    // Home's Zig fork moved IP parsing to `std.Io.net`, whose Ip4/Ip6Address
+    // expose `.bytes`/`.port`/`.flow` rather than the old `.sa` sockaddr field;
+    // route through the existing `initIPv4`/`initIPv6` sockaddr builders.
     const addr = if (paddr[0] == '[' and paddr[paddr.len - 1] == ']') v6: {
         const v6 = net.Ip6Address.parse(paddr[1 .. paddr.len - 1], port_) catch return .js_undefined;
-        break :v6 SocketAddress{ ._addr = .{ .sin6 = v6.sa } };
+        break :v6 SocketAddress.initIPv6(v6.bytes, port_, v6.flow, 0);
     } else v4: {
         const v4 = net.Ip4Address.parse(paddr, port_) catch return .js_undefined;
-        break :v4 SocketAddress{ ._addr = .{ .sin = v4.sa } };
+        break :v4 SocketAddress.initIPv4(v4.bytes, port_);
     };
 
     return SocketAddress.new(addr).toJS(global);
@@ -690,4 +693,4 @@ const CallFrame = jsc.CallFrame;
 const JSValue = jsc.JSValue;
 
 const std = @import("std");
-const net = std.net;
+const net = bun.net;

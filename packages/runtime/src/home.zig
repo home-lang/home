@@ -39,6 +39,10 @@ pub const fmt = @import("fmt.zig");
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 /// Faithful to upstream `bun.zig:196` (`sha = @import("./sha_hmac/sha.zig")`).
 pub const sha = @import("sha_hmac/sha.zig");
+// Forward-port: Home's Zig fork moved IP addressing to `std.Io.net` with a
+// different shape. `net_shim.zig` restores the `std.net.Address` surface (initIp4/
+// initIp6 + Ip4Address/Ip6Address.parse) Bun's socket cone uses.
+pub const net = @import("net_shim.zig");
 // Forward-port: Home's Zig fork removed the *managed* array hash maps from std
 // (unmanaged-only). These shims restore the managed `.init(alloc)` API so the
 // copied Bun maps (`std.AutoArrayHashMap`/`std.ArrayHashMap`) compile unchanged.
@@ -4414,6 +4418,7 @@ test {
     _ = @import("collections/hive_array.zig");
     _ = @import("collections/pool.zig");
     _ = @import("collections/managed_array_hash_map.zig");
+    _ = @import("net_shim.zig");
     // Fifth-wave port batch (2026-05-18, 6-agent parallel dispatch):
     _ = @import("jsc/CachedBytecode.zig");
     _ = @import("jsc/JSMap.zig");
