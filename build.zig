@@ -64,6 +64,55 @@ fn dependOnTest(
     }
 }
 
+// Native JSC link: instead of Apple's system JavaScriptCore.framework (which
+// lacks Bun's custom `Bun__*`/`JSC__*` bindings), link Bun's own built C++
+// objects + the vendored WebKit static libs (+ Rust lib + macOS frameworks).
+// Paths point at a local Bun release build (`bun scripts/build.ts --profile=release`).
+// Gated: if the artifacts are absent we fall back to the system framework so the
+// non-native build still works. Only exercised once the home_rt module compiles.
+const bun_obj_root = "/Users/chrisbreuer/Code/bun/build/release/obj";
+const bun_webkit_lib = "/Users/chrisbreuer/.bun/build-cache/webkit-5488984d20e0dbfe-arm64/lib";
+const bun_rust_lib = "/Users/chrisbreuer/Code/bun/build/release/rust-target/aarch64-apple-darwin/release/libbun_rust.a";
+
+fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    m.linkSystemLibrary("c++", .{});
+
+    // Fork std: filesystem moved to `std.Io.Dir` (io-parameterized).
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    // If Bun's objects aren't present, fall back to the system framework.
+    var dir = std.Io.Dir.openDirAbsolute(io, bun_obj_root, .{ .iterate = true }) catch {
+        if (target.result.os.tag == .macos) m.linkFramework("JavaScriptCore", .{});
+        std.debug.print("warn: Bun native objects not found at {s}; using system JavaScriptCore\n", .{bun_obj_root});
+        return;
+    };
+    defer dir.close(io);
+
+    var walker = dir.walk(b.allocator) catch return;
+    defer walker.deinit();
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".o")) continue;
+        m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/{s}", .{ bun_obj_root, entry.path }) });
+    }
+
+    // WebKit static libs (JavaScriptCore engine + WTF + bmalloc).
+    m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libJavaScriptCore.a", .{bun_webkit_lib}) });
+    m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libWTF.a", .{bun_webkit_lib}) });
+    m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libbmalloc.a", .{bun_webkit_lib}) });
+
+    // Bun's Rust static lib (bun_css/clap/etc.).
+    m.addObjectFile(.{ .cwd_relative = bun_rust_lib });
+
+    if (target.result.os.tag == .macos) {
+        for ([_][]const u8{
+            "CoreFoundation", "Security",     "SystemConfiguration",
+            "IOKit",          "CoreServices", "Foundation",
+            "CoreText",       "CoreGraphics", "Metal",
+        }) |fw| m.linkFramework(fw, .{});
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -629,8 +678,7 @@ pub fn build(b: *std.Build) void {
     home_rt_pkg.addImport("build_options", build_options_module);
     home_test_pkg.addImport("build_options", build_options_module);
     if (enable_jsc) {
-        exe.root_module.linkSystemLibrary("c++", .{});
-        if (target.result.os.tag == .macos) exe.root_module.linkFramework("JavaScriptCore", .{});
+        linkBunNative(b, exe.root_module, target);
     }
 
     // Link Craft if enabled
@@ -1031,8 +1079,7 @@ pub fn build(b: *std.Build) void {
     home_rt_tests.root_module.linkSystemLibrary("zstd", .{});
     // Phase 12.2 M3 prep: opt-in JSC linkage. See `enable_jsc` decl above.
     if (enable_jsc) {
-        home_rt_tests.root_module.linkSystemLibrary("c++", .{});
-        if (target.result.os.tag == .macos) home_rt_tests.root_module.linkFramework("JavaScriptCore", .{});
+        linkBunNative(b, home_rt_tests.root_module, target);
     }
     const run_home_rt_tests = b.addRunArtifact(home_rt_tests);
     dependOnTest(test_step, &run_home_rt_tests.step, test_filter, "home_rt");
@@ -1231,8 +1278,7 @@ pub fn build(b: *std.Build) void {
     // home_test: only the public facade is wired in.
     const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });
     if (enable_jsc) {
-        home_test_tests.root_module.linkSystemLibrary("c++", .{});
-        if (target.result.os.tag == .macos) home_test_tests.root_module.linkFramework("JavaScriptCore", .{});
+        linkBunNative(b, home_test_tests.root_module, target);
     }
     const run_home_test_tests = b.addRunArtifact(home_test_tests);
     dependOnTest(test_step, &run_home_test_tests.step, test_filter, "home_test");

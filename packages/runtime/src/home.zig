@@ -542,6 +542,7 @@ pub const ImportRecord = @import("options_types/import_record.zig").ImportRecord
 pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
 pub const schema = @import("options_types/schema.zig");
 pub const bake = struct {
+    pub const FrameworkRouter = @import("runtime/bake/FrameworkRouter.zig");
     pub const DevServer = opaque {
         // Faithful to upstream `bun.bake.DevServer.DevAllocator`
         // (`src/runtime/bake/DevServer.zig:754-755`):
@@ -1533,6 +1534,7 @@ pub const jsc = struct {
         WEBASSEMBLY_RESPONSE = 6,
         // Values from the generated ErrorCode enum (faithful to upstream).
         ENCODING_INVALID_ENCODED_DATA = 56,
+        SOCKET_BAD_PORT = 218,
         INVALID_STATE = 136,
         INVALID_URL = 142,
         UNKNOWN_ENCODING = 255,
@@ -3037,6 +3039,8 @@ pub const alloc = struct {
 pub const memory = @import("bun_alloc/memory.zig");
 pub const allocators = struct {
     pub const MimallocArena = @import("bun_alloc/MimallocArena.zig");
+    pub const AllocationScope = @import("bun_alloc/allocation_scope.zig").AllocationScope;
+    pub const AllocationScopeIn = @import("bun_alloc/allocation_scope.zig").AllocationScopeIn;
     pub const IndexType = packed struct(u32) {
         index: u31,
         is_overflow: bool = false,
@@ -3514,6 +3518,7 @@ pub const c = struct {
     pub const ZSTD_getErrorCode = @import("zstd/zstd.zig").c.ZSTD_getErrorCode;
     pub const ZSTD_e_continue = @import("zstd/zstd.zig").c.ZSTD_e_continue;
     pub const AF_INET = std.c.AF.INET;
+    pub const AF_INET6 = std.c.AF.INET6;
 };
 
 // ---- src/sys/ ----------------------------------------------------------
