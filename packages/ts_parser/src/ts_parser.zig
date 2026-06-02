@@ -2117,6 +2117,34 @@ pub const Parser = struct {
                 // forms are declarations.
                 const next = self.peekAt(1).kind;
                 if (next == .dot or next == .open_paren) break :blk try self.parseExpressionStatement();
+                if (next == .comma) {
+                    const import_tok = self.advance();
+                    try self.reportCodeAt(import_tok.span.start, import_tok.line, 1128, "Declaration or statement expected.");
+                    const comma = self.advance();
+                    try self.reportCodeAt(comma.span.start, comma.line, 1128, "Declaration or statement expected.");
+                    if (self.peek().kind == .open_brace) {
+                        var depth: i32 = 0;
+                        while (self.peek().kind != .eof) {
+                            const tok = self.peek();
+                            switch (tok.kind) {
+                                .open_brace => depth += 1,
+                                .close_brace => {
+                                    _ = self.advance();
+                                    depth -= 1;
+                                    if (depth <= 0) break;
+                                    continue;
+                                },
+                                else => {},
+                            }
+                            _ = self.advance();
+                        }
+                    }
+                    if (self.peek().kind == .kw_from) {
+                        const from_tok = self.peek();
+                        try self.reportCodeAt(from_tok.span.start, from_tok.line, 1434, "Unexpected keyword or identifier.");
+                    }
+                    break :blk try self.builder.addBlock(.{ .start = import_tok.span.start, .end = comma.span.end }, &.{});
+                }
                 break :blk try self.parseImportDeclaration();
             },
             .kw_export => blk: {
@@ -6695,6 +6723,7 @@ pub const Parser = struct {
         var namespace_binding: NodeId = hir_mod.none_node_id;
         var named: std.ArrayListUnmanaged(NodeId) = .empty;
         defer named.deinit(self.gpa);
+        var default_binding_had_comma = false;
 
         if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
             self.tokenTextEquals(self.peek(), "defer") and
@@ -6816,6 +6845,8 @@ pub const Parser = struct {
             default_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
             if (!self.match(.comma)) {
                 // Only default — proceed to from clause.
+            } else {
+                default_binding_had_comma = true;
             }
         }
 
@@ -6872,7 +6903,36 @@ pub const Parser = struct {
                 if (is_type_only and spec_type_only) {
                     try self.reportCodeAt(spec_start.span.start, spec_start.line, 2206, "The 'type' modifier cannot be used on a named import when 'import type' is used on its import statement.");
                 }
-                const imported_tok = try self.expectModuleExportName();
+                if (!self.tokenCanStartModuleExportName(self.peek())) {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                    if (bad.kind == .asterisk) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1141, "String literal expected.");
+                        _ = self.advance();
+                        if (self.peek().kind == .close_brace) {
+                            const close = self.advance();
+                            try self.reportCodeAt(close.span.start, close.line, 1109, "Expression expected.");
+                        }
+                        if (self.peek().kind == .kw_from) {
+                            const from_tok = self.peek();
+                            try self.reportCodeAt(from_tok.span.start, from_tok.line, 1434, "Unexpected keyword or identifier.");
+                        }
+                        const mod_id = self.interner.intern("") catch return error.OutOfMemory;
+                        return try self.builder.addImport(
+                            .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                            mod_id,
+                            default_binding,
+                            namespace_binding,
+                            hir_mod.none_node_id,
+                            named.items,
+                            is_type_only,
+                        );
+                    }
+                    _ = self.advance();
+                    if (!self.match(.comma)) break;
+                    continue;
+                }
+                const imported_tok = self.advance();
                 const imported_is_string_literal = imported_tok.kind == .string_literal;
                 var local_id = try self.internModuleExportName(imported_tok);
                 const imported_id = local_id;
@@ -6925,6 +6985,14 @@ pub const Parser = struct {
             }
             _ = try self.expect(.close_brace, "'}' to close named imports");
         }
+        if (default_binding_had_comma and
+            namespace_binding == hir_mod.none_node_id and
+            named.items.len == 0 and
+            self.peek().kind == .kw_from)
+        {
+            const from_tok = self.peek();
+            try self.reportCodeAt(from_tok.span.start, from_tok.line, 1005, "'{' expected.");
+        }
 
         if (is_type_only and default_binding != hir_mod.none_node_id and
             (namespace_binding != hir_mod.none_node_id or named.items.len != 0))
@@ -6946,6 +7014,7 @@ pub const Parser = struct {
         } else {
             _ = self.advance();
         }
+        var recovered_comma_from_tail = false;
         const mod_tok: Token = blk: {
             if (self.peek().kind == .string_literal) {
                 break :blk self.advance();
@@ -6959,11 +7028,21 @@ pub const Parser = struct {
             // "./0"`) get their own `';' expected.` diagnostic.
             const here = self.peek();
             try self.reportCodeAt(here.span.start, here.line, 1141, "String literal expected.");
+            if (here.kind == .comma and self.peekAt(1).kind == .kw_from) {
+                _ = self.advance();
+                _ = self.advance();
+                if (self.peek().kind == .string_literal) {
+                    const string_tok = self.advance();
+                    try self.reportCodeAt(string_tok.span.start, string_tok.line, 1005, "';' expected.");
+                }
+                _ = self.match(.semicolon);
+                recovered_comma_from_tail = true;
+            }
             const advance_over: bool = switch (here.kind) {
                 .identifier => true,
                 else => false,
             };
-            if (advance_over) _ = self.advance();
+            if (!recovered_comma_from_tail and advance_over) _ = self.advance();
             const synth = Token{
                 .kind = .string_literal,
                 .span = .{ .start = here.span.start, .end = here.span.start },
@@ -6975,7 +7054,7 @@ pub const Parser = struct {
         // Optional import attributes: `with { type: "json" }` (TS 5.3+)
         // or legacy `assert { type: "json" }` — parsed and discarded.
         try self.skipImportAttributesClause();
-        try self.consumeStatementTerminator();
+        if (!recovered_comma_from_tail) try self.consumeStatementTerminator();
         try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
         const mod_id = if (mod_tok.span.start == mod_tok.span.end)
             (self.interner.intern("") catch return error.OutOfMemory)
@@ -8405,6 +8484,14 @@ pub const Parser = struct {
             }
         }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
+        if (t.kind == .string_literal and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .kw_from)
+        {
+            _ = self.advance();
+            _ = self.match(.semicolon);
+            return;
+        }
         if (t.kind == .identifier and self.cursor > 0 and self.tokens[self.cursor - 1].kind == .number_literal) {
             if (t.flags.has_escape) {
                 try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
@@ -15026,8 +15113,17 @@ pub const Parser = struct {
                 return try self.builder.addLiteralNumber(.{ .start = t.span.start, .end = t.span.start }, 0);
             },
             else => {
+                if (t.kind == .kw_from) {
+                    _ = self.advance();
+                    try self.reportCodeAt(t.span.start, t.line, 1434, "Unexpected keyword or identifier.");
+                    const id = try self.internToken(t);
+                    return try self.builder.addIdentifier(tokenSpan(t), id);
+                }
                 if (t.kind.isContextualKeyword()) {
                     _ = self.advance();
+                    if (t.kind == .kw_from and self.peek().kind == .string_literal and !self.peek().flags.preceded_by_newline) {
+                        try self.reportCodeAt(t.span.start, t.line, 1434, "Unexpected keyword or identifier.");
+                    }
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
@@ -16378,11 +16474,15 @@ pub const Parser = struct {
 
     fn expectModuleExportName(self: *Parser) ParseError!Token {
         const t = self.peek();
-        if (t.kind == .string_literal or t.kind == .identifier or t.kind.isKeyword()) {
+        if (self.tokenCanStartModuleExportName(t)) {
             return self.advance();
         }
         try self.reportCodeAt(t.span.start, t.line, 1003, "Identifier expected.");
         return error.UnexpectedToken;
+    }
+
+    fn tokenCanStartModuleExportName(_: *Parser, tok: Token) bool {
+        return tok.kind == .string_literal or tok.kind == .identifier or tok.kind.isKeyword();
     }
 
     fn internModuleExportName(self: *Parser, tok: Token) ParseError!hir_mod.StringId {
@@ -19320,6 +19420,41 @@ test "parser: import named string-literal module export name" {
     try T.expect(!spec.local_is_string_literal);
     try T.expectEqualStrings("str-name", s.interner.get(spec.imported));
     try T.expectEqualStrings("imported", s.interner.get(spec.local));
+}
+
+test "parser: malformed named imports recover like es6ImportNamedImportParsingError" {
+    var s = try newTestSetup(
+        \\import { * } from "./m";
+        \\import defaultBinding, from "./m";
+        \\import , { a } from "./m";
+        \\import { a }, from "./m";
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1003 = false;
+    var saw_1109 = false;
+    var saw_missing_brace = false;
+    var saw_unexpected_from: usize = 0;
+    var line3_1128_count: usize = 0;
+    var saw_missing_from = false;
+    var saw_1141 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1003 and d.line == 1) saw_1003 = true;
+        if (d.code == 1109 and d.line == 1) saw_1109 = true;
+        if (d.code == 1005 and d.line == 2 and std.mem.eql(u8, d.message, "'{' expected.")) saw_missing_brace = true;
+        if (d.code == 1434 and (d.line == 1 or d.line == 3)) saw_unexpected_from += 1;
+        if (d.code == 1128 and d.line == 3) line3_1128_count += 1;
+        if (d.code == 1005 and d.line == 4 and std.mem.eql(u8, d.message, "'from' expected.")) saw_missing_from = true;
+        if (d.code == 1141) saw_1141 = true;
+    }
+    try T.expect(saw_1003);
+    try T.expect(saw_1109);
+    try T.expect(saw_missing_brace);
+    try T.expectEqual(@as(usize, 2), saw_unexpected_from);
+    try T.expectEqual(@as(usize, 2), line3_1128_count);
+    try T.expect(saw_missing_from);
+    try T.expect(saw_1141);
 }
 
 test "parser: deferred import cannot use named bindings" {

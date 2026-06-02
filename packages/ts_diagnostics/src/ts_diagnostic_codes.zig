@@ -543,6 +543,7 @@ pub fn lookup(code: u32) ?DiagInfo {
         2343 => .{ .code = 2343, .category = .err, .key = "This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_ve_2343", .message = "This syntax requires an imported helper named '{1}' which does not exist in '{0}'. Consider upgrading your version of '{0}'." },
         2344 => .{ .code = 2344, .category = .err, .key = "Type_0_does_not_satisfy_the_constraint_1_2344", .message = "Type '{0}' does not satisfy the constraint '{1}'." },
         2345 => .{ .code = 2345, .category = .err, .key = "Argument_of_type_0_is_not_assignable_to_parameter_of_type_1_2345", .message = "Argument of type '{0}' is not assignable to parameter of type '{1}'." },
+        2346 => .{ .code = 2346, .category = .err, .key = "Call_target_does_not_contain_any_signatures_2346", .message = "Call target does not contain any signatures." },
         2347 => .{ .code = 2347, .category = .err, .key = "Untyped_function_calls_may_not_accept_type_arguments_2347", .message = "Untyped function calls may not accept type arguments." },
         2348 => .{ .code = 2348, .category = .err, .key = "Value_of_type_0_is_not_callable_Did_you_mean_to_include_new_2348", .message = "Value of type '{0}' is not callable. Did you mean to include 'new'?" },
         2349 => .{ .code = 2349, .category = .err, .key = "This_expression_is_not_callable_2349", .message = "This expression is not callable." },
