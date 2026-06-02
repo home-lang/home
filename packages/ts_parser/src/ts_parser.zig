@@ -4765,7 +4765,7 @@ pub const Parser = struct {
                 _ = self.advance();
             }
         }
-        _ = try self.expect(.open_brace, "'{' to open class body");
+        const class_body_open = try self.expect(.open_brace, "'{' to open class body");
         const class_body_generator_depth = self.generator_depth;
         self.generator_depth = 0;
         defer self.generator_depth = class_body_generator_depth;
@@ -5487,7 +5487,15 @@ pub const Parser = struct {
             self.advance()
         else blk: {
             const at = self.peek();
-            try self.reportCodeAt(at.span.start, at.line, 1005, "'}' expected.");
+            try self.reportCodeAtWithMatchedPair(
+                at.span.start,
+                at.line,
+                1005,
+                "'}' expected.",
+                class_body_open.span.start,
+                "{",
+                "}",
+            );
             break :blk at;
         };
         return try self.builder.addClass(
@@ -6498,7 +6506,7 @@ pub const Parser = struct {
             try self.reportCodeAt(impl.span.start, impl.line, 1176, "Interface declaration cannot have 'implements' clause.");
             while (self.peek().kind != .open_brace and self.peek().kind != .eof) _ = self.advance();
         }
-        _ = try self.expect(.open_brace, "'{' to open interface body");
+        const iface_body_open = try self.expect(.open_brace, "'{' to open interface body");
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         const saved_in_iface = self.parsing_interface_body;
@@ -6514,7 +6522,15 @@ pub const Parser = struct {
                 self.diagnostics.items[self.diagnostics.items.len - 1].code == 1005 and
                 std.mem.eql(u8, self.diagnostics.items[self.diagnostics.items.len - 1].message, "'>' expected.");
             if (!suppress_after_unterminated_type_args) {
-                try self.reportCodeAt(at.span.start, at.line, 1005, "'}' expected.");
+                try self.reportCodeAtWithMatchedPair(
+                    at.span.start,
+                    at.line,
+                    1005,
+                    "'}' expected.",
+                    iface_body_open.span.start,
+                    "{",
+                    "}",
+                );
             }
             break :blk at;
         };
@@ -6610,7 +6626,7 @@ pub const Parser = struct {
             try self.reportReservedWordCannotBeUsedHere(tok);
             break :blk tok;
         } else try self.expect(.identifier, "enum name");
-        _ = try self.expect(.open_brace, "'{' to open enum body");
+        const enum_body_open = try self.expect(.open_brace, "'{' to open enum body");
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
@@ -6707,7 +6723,15 @@ pub const Parser = struct {
                 self.tokens[self.cursor - 1].span.start + 1
             else
                 close.span.start;
-            try self.reportCodeAt(diag_pos, close.line, 1005, "'}' expected.");
+            try self.reportCodeAtWithMatchedPair(
+                diag_pos,
+                close.line,
+                1005,
+                "'}' expected.",
+                enum_body_open.span.start,
+                "{",
+                "}",
+            );
             if (close.kind == .eof) self.enum_recovered_missing_close_at_eof = true;
             break :blk diag_pos;
         };
