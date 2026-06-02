@@ -75,6 +75,41 @@ pub const net = @import("net_shim.zig");
 // copied Bun maps (`std.AutoArrayHashMap`/`std.ArrayHashMap`) compile unchanged.
 pub const AutoArrayHashMap = @import("collections/managed_array_hash_map.zig").AutoArrayHashMap;
 pub const ArrayHashMap = @import("collections/managed_array_hash_map.zig").ArrayHashMap;
+/// Faithful to upstream `bun.zig:393`. Generic length over arrays/vectors/
+/// pointers/tuples (sentinel-terminated many/c pointers scan to the sentinel).
+pub fn len(value: anytype) usize {
+    return switch (@typeInfo(@TypeOf(value))) {
+        .array => |info| info.len,
+        .vector => |info| info.len,
+        .pointer => |info| switch (info.size) {
+            .one => switch (@typeInfo(info.child)) {
+                .array => |array| brk: {
+                    if (array.sentinel_ptr != null) {
+                        @compileError("use bun.sliceTo");
+                    }
+                    break :brk array.len;
+                },
+                else => @compileError("invalid type given to std.mem.len"),
+            },
+            .many => {
+                const sentinel_ptr = info.sentinel_ptr orelse
+                    @compileError("length of pointer with no sentinel");
+                const sentinel = @as(*align(1) const info.child, @ptrCast(sentinel_ptr)).*;
+                return std.mem.indexOfSentinel(info.child, sentinel, value);
+            },
+            .c => {
+                assert(value != null);
+                return std.mem.indexOfSentinel(info.child, 0, value);
+            },
+            .slice => value.len,
+        },
+        .@"struct" => |info| if (info.is_tuple) {
+            return info.fields.len;
+        } else @compileError("invalid type given to std.mem.len"),
+        else => @compileError("invalid type given to std.mem.len"),
+    };
+}
+
 /// Faithful to upstream `bun.zig:456`. Bun reimplements `std.mem.span`'s
 /// optional + sentinel handling verbatim; Home aliases the std version, which
 /// has identical semantics.
@@ -642,8 +677,8 @@ pub fn Once(comptime f: anytype) type {
 /// side lands, replace each panic with the corresponding
 /// `pub extern fn` declaration.
 pub const cpp = struct {
-    pub fn JSC__jsToNumber(bytes_ptr: [*]const u8, len: usize) f64 {
-        return std.fmt.parseFloat(f64, bytes_ptr[0..len]) catch std.math.nan(f64);
+    pub fn JSC__jsToNumber(bytes_ptr: [*]const u8, byte_len: usize) f64 {
+        return std.fmt.parseFloat(f64, bytes_ptr[0..byte_len]) catch std.math.nan(f64);
     }
 
     pub fn JSC__JSValue__coerceToInt32(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject) JSError!i32 {
@@ -661,11 +696,11 @@ pub const cpp = struct {
         return false;
     }
 
-    pub fn JSC__JSValue__getIfPropertyExistsImpl(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject, bytes_ptr: [*]const u8, len: usize) JSError!jsc.JSValue {
+    pub fn JSC__JSValue__getIfPropertyExistsImpl(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject, bytes_ptr: [*]const u8, byte_len: usize) JSError!jsc.JSValue {
         _ = value;
         _ = globalThis;
         _ = bytes_ptr;
-        _ = len;
+        _ = byte_len;
         return .property_does_not_exist_on_object;
     }
 
@@ -679,10 +714,10 @@ pub const cpp = struct {
         @panic("home_rt.cpp.Bun__WTFStringImpl__ref needs the C++ FFI bridge (Phase 12.2)");
     }
 
-    pub fn Bun__WTFStringImpl__hasPrefix(self: anytype, text: [*]const u8, len: usize) bool {
+    pub fn Bun__WTFStringImpl__hasPrefix(self: anytype, text: [*]const u8, byte_len: usize) bool {
         _ = self;
         _ = text;
-        _ = len;
+        _ = byte_len;
         @panic("home_rt.cpp.Bun__WTFStringImpl__hasPrefix needs the C++ FFI bridge (Phase 12.2)");
     }
 
@@ -693,19 +728,19 @@ pub const cpp = struct {
         @panic("home_rt.cpp.BunString__fromJS needs the C++ FFI bridge (Phase 12.2)");
     }
 
-    pub fn BunString__fromLatin1(bytes: [*]const u8, len: usize) String {
+    pub fn BunString__fromLatin1(bytes: [*]const u8, byte_len: usize) String {
         _ = bytes;
-        _ = len;
+        _ = byte_len;
         return .dead;
     }
 
-    pub fn BunString__fromLatin1Unitialized(len: usize) String {
-        _ = len;
+    pub fn BunString__fromLatin1Unitialized(byte_len: usize) String {
+        _ = byte_len;
         return .dead;
     }
 
-    pub fn BunString__fromUTF16Unitialized(len: usize) String {
-        _ = len;
+    pub fn BunString__fromUTF16Unitialized(byte_len: usize) String {
+        _ = byte_len;
         return .dead;
     }
 
@@ -2687,8 +2722,8 @@ pub fn getFdPath(fd: FD, buf: *PathBuffer) ![]u8 {
                 else => return error.Unexpected,
             }
         }
-        const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
-        return buf[0..len];
+        const nul_len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+        return buf[0..nul_len];
     } else {
         var proc_buf: ["/proc/self/fd/-2147483648".len + 1:0]u8 = undefined;
         const proc_path = std.fmt.bufPrintZ(&proc_buf, "/proc/self/fd/{d}", .{fd.native()}) catch unreachable;
@@ -3495,10 +3530,10 @@ pub const sys = struct {
         var total_read: usize = 0;
         while (rest.len > 0) {
             switch (read(fd, rest)) {
-                .result => |len| {
-                    if (len == 0) break;
-                    rest = rest[len..];
-                    total_read += len;
+                .result => |n| {
+                    if (n == 0) break;
+                    rest = rest[n..];
+                    total_read += n;
                 },
                 .err => |err| return .{ .err = err },
             }

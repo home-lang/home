@@ -36,31 +36,9 @@ pub const AF = std.posix.AF;
 
 // JSC bridge stubs — re-attaches in Phase 12.2 once `runtime/dns_jsc/cares_jsc.zig`
 // is ported. Each opaque type stands in for a `fn (...) JSValue` upstream.
-const cares_jsc = struct {
-    pub const hostentToJSResponse = opaque {};
-    pub const hostentWithTtlsToJSResponse = opaque {};
-    pub const nameinfoToJSResponse = opaque {};
-    pub const addrInfoToJSArray = opaque {};
-    pub const caaReplyToJSResponse = opaque {};
-    pub const caaReplyToJS = opaque {};
-    pub const srvReplyToJSResponse = opaque {};
-    pub const srvReplyToJS = opaque {};
-    pub const mxReplyToJSResponse = opaque {};
-    pub const mxReplyToJS = opaque {};
-    pub const txtReplyToJSResponse = opaque {};
-    pub const txtReplyToJS = opaque {};
-    pub const txtReplyToJSForAny = opaque {};
-    pub const naptrReplyToJSResponse = opaque {};
-    pub const naptrReplyToJS = opaque {};
-    pub const soaReplyToJSResponse = opaque {};
-    pub const soaReplyToJS = opaque {};
-    pub const anyReplyToJSResponse = opaque {};
-    pub const anyReplyToJS = opaque {};
-    pub const ErrorDeferred = opaque {};
-    pub const errorToDeferred = opaque {};
-    pub const errorToJSWithSyscall = opaque {};
-    pub const errorToJSWithSyscallAndHostname = opaque {};
-};
+// JSC bridge: the real response/error converters now exist; point at them
+// instead of the inline opaque stubs (they were parked while jsc/String were).
+const cares_jsc = @import("../runtime/dns_jsc/cares_jsc.zig");
 
 // Local `Maybe(T, Error)` to avoid importing the JSC-tied
 // `jsc.Node.Maybe` while it's parked.

@@ -355,31 +355,11 @@ fn getNamedValueCaseInsensitiveAscii(comptime M: type, str: []const u8) ?u7 {
 const std = @import("std");
 const home_rt = @import("home");
 
-// JSC stub — re-attaches when `home_rt.jsc.JSGlobalObject` grows
-// `msToGregorianDateTimeUTC` / `gregorianDateTimeToMSUTC` (Phase 12.2).
-const JSError = error{JSError};
-const jsc = struct {
-    pub const GregorianDateTime = struct {
-        year: i32,
-        month: u8,
-        day: u8,
-        hour: u8,
-        minute: u8,
-        second: u8,
-        weekday: u8,
-    };
-    pub const JSGlobalObject = opaque {
-        pub extern fn JSC__JSGlobalObject__msToGregorianDateTimeUTC(this: *JSGlobalObject, ms: f64) GregorianDateTime;
-        pub extern fn JSC__JSGlobalObject__gregorianDateTimeToMSUTC(this: *JSGlobalObject, year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8, ms: u16) f64;
-
-        pub fn msToGregorianDateTimeUTC(this: *JSGlobalObject, ms: f64) GregorianDateTime {
-            return JSC__JSGlobalObject__msToGregorianDateTimeUTC(this, ms);
-        }
-        pub fn gregorianDateTimeToMSUTC(this: *JSGlobalObject, year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8, ms: u16) JSError!f64 {
-            return JSC__JSGlobalObject__gregorianDateTimeToMSUTC(this, year, month, day, hour, minute, second, ms);
-        }
-    };
-};
+// JSC bridge: the real `jsc.JSGlobalObject` now carries
+// `msToGregorianDateTimeUTC` / `gregorianDateTimeToMSUTC` + `GregorianDateTime`,
+// so reference it directly (was a local opaque stub).
+const JSError = home_rt.JSError;
+const jsc = home_rt.jsc;
 
 // ============================================================================
 // Tests
