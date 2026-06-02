@@ -1681,6 +1681,8 @@ pub const jsc = struct {
         pub const BlobOrStringOrBuffer = @import("runtime/node/types.zig").BlobOrStringOrBuffer;
         pub const PathLike = @import("runtime/node/types.zig").PathLike;
         pub const PathOrFileDescriptor = @import("runtime/node/types.zig").PathOrFileDescriptor;
+        pub const StatsSmall = @import("runtime/node/Stat.zig").StatsSmall;
+        pub const StatsBig = @import("runtime/node/Stat.zig").StatsBig;
         pub const Dirent = struct {
             pub const Kind = std.Io.File.Kind;
         };
@@ -1736,6 +1738,8 @@ pub const jsc = struct {
     };
     // Faithful to upstream jsc/jsc.zig:112.
     pub const ZigStackFrame = @import("jsc/ZigStackFrame.zig").ZigStackFrame;
+    // Faithful to upstream jsc/jsc.zig:98.
+    pub const SavedSourceMap = @import("jsc/SavedSourceMap.zig");
     pub const ManagedTask = @import("event_loop/ManagedTask.zig");
     // JSC bring-up: real VirtualMachine (was a 215-line stub). jsc/jsc.zig:99.
     pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
@@ -2483,6 +2487,7 @@ pub const runtime = struct {
     pub const shell = struct {
         pub const RefCountedStr = @import("runtime/shell/RefCountedStr.zig");
         pub const EnvMap = @import("runtime/shell/EnvMap.zig");
+        pub const EnvStr = @import("runtime/shell/EnvStr.zig").EnvStr;
         pub const SmolList = @import("runtime/shell/shell.zig").SmolList;
         pub const ShellSubprocess = struct {
             pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
