@@ -37,6 +37,30 @@ pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
 /// Faithful to upstream `bun.zig:11` (`feature_flag = env_var.feature_flag`).
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
+
+/// Faithful to upstream `bun.zig:930`.
+pub fn getenvZ(key: [:0]const u8) ?[]const u8 {
+    if (comptime !Environment.isNative) {
+        return null;
+    }
+    if (comptime Environment.isWindows) {
+        return getenvZAnyCase(key);
+    }
+    const pointer = std.c.getenv(key.ptr) orelse return null;
+    return std.mem.sliceTo(pointer, 0);
+}
+
+/// Faithful to upstream `bun.zig:913`.
+pub fn getenvZAnyCase(key: [:0]const u8) ?[]const u8 {
+    for (std.os.environ) |lineZ| {
+        const line = std.mem.sliceTo(lineZ, 0);
+        const key_end = strings.indexOfCharUsize(line, '=') orelse line.len;
+        if (strings.eqlCaseInsensitiveASCII(line[0..key_end], key, true)) {
+            return line[@min(key_end + 1, line.len)..];
+        }
+    }
+    return null;
+}
 pub const Generation = u16;
 pub const Wyhash11 = std.hash.Wyhash;
 pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
@@ -1390,6 +1414,8 @@ pub const jsc = struct {
     pub const EventType = @import("jsc/EventType.zig").EventType;
     // JSC bring-up: real ArrayBuffer (jsc/jsc.zig:46). Was an inline stub.
     pub const ArrayBuffer = @import("jsc/array_buffer.zig").ArrayBuffer;
+    /// Faithful to upstream `jsc/jsc.zig:47` (`array_buffer.MarkedArrayBuffer`).
+    pub const MarkedArrayBuffer = @import("jsc/array_buffer.zig").MarkedArrayBuffer;
     pub const AnyPromise = @import("jsc/AnyPromise.zig").AnyPromise;
     pub const JSObject = @import("jsc/JSObject.zig").JSObject;
     pub const Jest = struct {
