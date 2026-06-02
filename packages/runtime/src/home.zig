@@ -1532,6 +1532,15 @@ pub const jsc = struct {
     pub const WorkPool = @import("threading/work_pool.zig").WorkPool;
     // Faithful to upstream jsc/jsc.zig:156 (`WorkTask = EventLoop.WorkTask`).
     pub const WorkTask = @import("jsc/WorkTask.zig").WorkTask;
+    // Faithful to upstream jsc/jsc.zig:138 (`ConcurrentTask = EventLoop.ConcurrentTask`).
+    pub const ConcurrentTask = @import("event_loop/ConcurrentTask.zig");
+    // Faithful to upstream jsc/jsc.zig:119.
+    pub const hot_reloader = @import("jsc/hot_reloader.zig");
+    // Faithful to upstream jsc/jsc.zig:246.
+    pub const JSTimeType = u52;
+    // NOTE: upstream jsc/jsc.zig:282 (`generated = @import("bindgen_generated")`)
+    // is deferred — the vendored bindgen_generated.zig imports a
+    // `bindgen_generated/` subtree that codegen has not emitted into the tree yet.
     // Faithful to upstream jsc/jsc.zig:101.
     pub const RareData = @import("jsc/rare_data.zig");
     // Faithful to upstream jsc/jsc.zig:209.
@@ -3153,7 +3162,7 @@ pub const allocators = struct {
 
     pub fn Nullable(comptime Allocator: type) type {
         return if (comptime Allocator == std.mem.Allocator)
-            NullableAllocator
+            allocators.NullableAllocator
         else if (comptime @hasDecl(Allocator, "Nullable"))
             Allocator.Nullable
         else
