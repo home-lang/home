@@ -9,9 +9,8 @@
 //   - `jsc.JSGlobalObject`, `jsc.CallFrame`, `jsc.JSFunction`,
 //     `jsc.ZigString`, `jsc.MarkedArgumentBuffer`, `jsc.wtf.StringBuilder`,
 //     `bun.JSError`, `bun.String`, `bun.StackCheck`, `bun.AllocationScope`,
-//     `bun.StringHashMap`, `bun.default_allocator` — opaque locals + an
-//     `enum(i64)` for `JSValue`. Same pattern as `TOMLObject.zig` /
-//     `JSON5Object.zig`.
+//     `bun.StringHashMap`, `bun.default_allocator`. Same pattern as
+//     `TOMLObject.zig` / `JSON5Object.zig`.
 //   - `bun.interchange.yaml.YAML`, `bun.ast.{Expr, ASTMemoryAllocator}`,
 //     `bun.logger.{Log, Source}` — parser surface parked. The upstream
 //     parse/stringify bodies are kept verbatim as comments so re-attachment
@@ -29,12 +28,8 @@ const home_rt = @import("home");
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 const CallFrame = @import("home").jsc.CallFrame;
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = home_rt.JSError;
 
 // Upstream `create()` parked verbatim — depends on `JSValue.createEmptyObject`,
 // `ZigString.static`, and `jsc.JSFunction.create`. None on home_rt yet.

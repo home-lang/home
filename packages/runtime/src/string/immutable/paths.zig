@@ -391,7 +391,7 @@ pub fn withoutTrailingSlashWindowsPath(input: string) []const u8 {
 }
 
 pub fn withoutLeadingSlash(this: string) []const u8 {
-    return std.mem.trimLeft(u8, this, "/");
+    return std.mem.trimStart(u8, this, "/");
 }
 
 pub fn withoutLeadingPathSeparator(this: string) []const u8 {

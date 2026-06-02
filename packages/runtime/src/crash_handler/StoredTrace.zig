@@ -21,16 +21,8 @@ pub const StoredTrace = struct {
     }
 
     pub fn capture(begin: ?usize) StoredTrace {
-        var stored: StoredTrace = StoredTrace.empty;
-        var frame = stored.trace();
-        std.debug.captureStackTrace(begin orelse @returnAddress(), &frame);
-        stored.index = frame.index;
-        for (frame.instruction_addresses[0..frame.index], 0..) |addr, i| {
-            if (addr == 0) {
-                stored.index = i;
-                break;
-            }
-        }
+        _ = begin;
+        const stored: StoredTrace = StoredTrace.empty;
         return stored;
     }
 

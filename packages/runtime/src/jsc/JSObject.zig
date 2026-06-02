@@ -88,6 +88,16 @@ pub const JSObject = opaque {
         return .js_undefined;
     }
 
+    pub fn createWithInitializer(
+        comptime Initializer: type,
+        initializer: *Initializer,
+        global: *home_rt.jsc.JSGlobalObject,
+        count: usize,
+    ) home_rt.jsc.JSValue {
+        _ = initializer;
+        return home_rt.jsc.JSValue.createEmptyObject(global, count);
+    }
+
     /// The discriminated `(tag, index|name)` payload SQL bindings pass into
     /// `JSC__createStructure`. `name` carries a `bun.String` upstream; we keep
     /// the same memory layout (a single `usize` cell) so the extern call site
@@ -109,6 +119,8 @@ pub const JSObject = opaque {
                 else => null,
             };
         }
+
+        pub fn deinit(_: *ExternColumnIdentifier) void {}
     };
 };
 

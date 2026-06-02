@@ -151,12 +151,8 @@ const home_rt = @import("home");
 
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 const CallFrame = @import("home").jsc.CallFrame;
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = @import("home").JSError;
 
 const BoringSSL = struct {
     pub const SSL_CTX = opaque {};

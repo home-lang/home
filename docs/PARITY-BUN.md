@@ -7,17 +7,15 @@ row is in the
 section. Execution planning, source/test gates, and agent-sized
 workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 
-> **Status:** Substrate + JSC M6 landed. `packages/runtime/src/`
+> **Status:** Substrate + JSC bring-up are active, but integrated parity
+> credit is still intentionally conservative. `packages/runtime/src/`
 > currently contains 1,392 Zig source files. Of the audited 1,193-file
 > Bun baseline, 552 files are integrated into Home (~46.3%): rewritten
 > for Home imports, Zig 0.17-clean, build-wired, and tested. The remaining
-> staged Bun files are an integration backlog, not parity credit; the
-> runtime is not yet JavaScript-callable end-to-end, but Phase 12.2
-> (JSC bring-up) has reached the M6
-> milestone — JSON + Promise + Iterator + Global helpers — across
-> 128 files in `packages/runtime/src/jsc/`, including a live
-> `JSEvaluateScript` smoke and the public JavaScriptCore
-> `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
+> staged Bun files are an integration backlog, not parity credit. The
+> runtime now has JavaScript-callable Home JSC surfaces through `home eval`,
+> opt-in native `home run`, and the corpus bootstrap, but the full
+> bun-corpus gate is not yet a no-skip native runtime acceptance gate.
 > Bun's WebCore runtime source is now copied verbatim from
 > `/Users/chrisbreuer/Code/bun/src/runtime/webcore*.zig` into
 > `packages/runtime/src/runtime/webcore*.zig` as source-first backlog;
@@ -34,6 +32,16 @@ Home-import-rewritten, Zig 0.17-clean, build-wired, and tested. Runtime
 API rows below move only when the behavior is callable through Home's JS
 runtime or a native Home corpus gate; dormant source copies and bootstrap
 harness shims do not count as JS-visible parity.
+
+2026-06-02 compile-frontier note: a broad Bun Zig integration checkpoint
+is in progress across runtime root aliases, package-manager/patch
+substrate, HTTP/H2/H3 carriers, JSC/webcore/API object surfaces, DNS/file
+poll shims, and Zig 0.17 compatibility. The latest focused gate,
+`/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`,
+still has the existing compiled **48/48 tests passing**, but fails the
+`home_test` compile step at **122 visible compile errors**. This does not
+raise the audited integrated parity count; remaining blockers are tracked
+in the plan checkpoint.
 
 Legend:
 
@@ -253,6 +261,13 @@ subset (`320` passed, `0` failed, `2` todo across 20 files), plus
 unsupported). The copied corpus itself is exact against upstream Bun for
 `.test.ts` / `.test.js` files, with 1720 upstream paths, 1720 copied
 paths, zero missing, and zero extras. The remaining bundler file frontier is:
+
+2026-06-02 bookkeeping check on `origin/main` `100a9d94`: the subset
+allowlists still contain **86 unique** bundler files, and
+`bundler/native-plugin.test.ts` remains a separate single-file promotion,
+not a subset-array member. That keeps the **87 green / 2 frontier**
+ledger accurate while clarifying why a raw allowlist diff still reports
+`native-plugin.test.ts` as unlisted.
 
 | Tranche | Files |
 |---|---|
@@ -540,9 +555,9 @@ coverage for default and named `util` imports, compact/non-compact object
 formatting, numeric separators, circular references, error causes, and
 proxy-safe data-property inspection plus the long-running custom-inspect
 regression, HTTP leak/header smokes, imported Jest-global fixture registration,
-and default class export static-initializer coverage,
-plus one snapshot `test.todo` fixture whose
-snapshot body remains intentionally unexecuted. The bootstrap harness is installed once
+and default class export static-initializer coverage, plus three snapshot
+fixture paths, one of which is an upstream `test.todo` whose snapshot
+body remains intentionally unexecuted. The bootstrap harness is installed once
 per JSC engine, resets counters before each file, lowers supported
 `bun:test` imports through a virtual
 `globalThis.__home_import("bun:test")` module shim, exposes `spyOn` /

@@ -10,10 +10,235 @@
 
 const std = @import("std");
 const bake = @import("../bake/bake.zig");
-const HTMLBundle = @import("HTMLBundle.zig");
+pub const HTMLBundleModule = @import("HTMLBundle.zig");
+pub const HTMLBundle = HTMLBundleModule.HTMLBundle;
+
+const bun = @import("home");
+const jsc = bun.jsc;
+
+pub const ServerJSStub = struct {
+    js_value: jsc.Strong.Optional = .empty,
+
+    pub const js = struct {
+        pub fn routeListSetCached(_: jsc.JSValue, _: *jsc.JSGlobalObject, _: jsc.JSValue) void {}
+    };
+
+    pub fn init(_: *ServerConfig, _: *jsc.JSGlobalObject) !*ServerJSStub {
+        return bun.new(ServerJSStub, .{});
+    }
+
+    pub fn listen(_: *ServerJSStub) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn toJS(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn onReloadFromZig(_: *ServerJSStub, _: *ServerConfig, _: *jsc.JSGlobalObject) void {}
+
+    pub fn memoryCost(_: *ServerJSStub) usize {
+        return @sizeOf(ServerJSStub);
+    }
+
+    pub fn finalize(_: *ServerJSStub) void {}
+
+    pub fn dispose(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getAddress(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn closeIdleConnections(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getDevelopment(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doFetch(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getHostname(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getId(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getPendingRequests(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getPendingWebSockets(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getPort(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getProtocol(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doPublish(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doRef(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doReload(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doRequestIP(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doStop(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doSubscriberCount(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doTimeout(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doUnref(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn doUpgrade(_: *ServerJSStub, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn getURL(_: *ServerJSStub, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+};
+
+pub const DebugHTTPSServer = ServerJSStub;
+pub const DebugHTTPServer = ServerJSStub;
+pub const HTTPSServer = ServerJSStub;
+pub const HTTPServer = ServerJSStub;
+pub const NodeHTTPResponse = struct {
+    pub fn finalize(_: *NodeHTTPResponse) void {}
+    pub fn abort(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn cork(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn drainRequestBody(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn dumpRequestBody(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame, _: jsc.JSValue) jsc.JSValue { return .zero; }
+    pub fn end(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn flushHeaders(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn getBytesWritten(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn doPause(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame, _: jsc.JSValue) jsc.JSValue { return .zero; }
+    pub fn jsRef(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn doResume(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn jsUnref(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn write(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn writeContinue(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn writeHead(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+
+    pub fn getAborted(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getBufferedAmount(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getEnded(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getFinished(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getFlags(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getHasBody(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getHasCustomOnData(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getOnAbort(_: *NodeHTTPResponse, _: jsc.JSValue, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getOnData(_: *NodeHTTPResponse, _: jsc.JSValue, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getOnWritable(_: *NodeHTTPResponse, _: jsc.JSValue, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getUpgraded(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn setHasCustomOnData(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: jsc.JSValue) void {}
+    pub fn setOnAbort(_: *NodeHTTPResponse, _: jsc.JSValue, _: *jsc.JSGlobalObject, _: jsc.JSValue) void {}
+    pub fn setOnData(_: *NodeHTTPResponse, _: jsc.JSValue, _: *jsc.JSGlobalObject, _: jsc.JSValue) void {}
+    pub fn setOnWritable(_: *NodeHTTPResponse, _: jsc.JSValue, _: *jsc.JSGlobalObject, _: jsc.JSValue) void {}
+
+    pub fn onAborted(_: *NodeHTTPResponse) void {}
+    pub fn onData(_: *NodeHTTPResponse) void {}
+    pub fn onWritable(_: *NodeHTTPResponse) void {}
+};
+
+pub const ServerWebSocket = struct {
+    pub fn memoryCost(_: *ServerWebSocket) usize { return @sizeOf(ServerWebSocket); }
+    pub fn finalize(_: *ServerWebSocket) void {}
+    pub fn constructor(_: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!*ServerWebSocket { return error.OutOfMemory; }
+    pub fn close(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame, _: jsc.JSValue) jsc.JSValue { return .zero; }
+    pub fn cork(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame, _: jsc.JSValue) jsc.JSValue { return .zero; }
+    pub fn isSubscribed(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn ping(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn pong(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn publish(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn publishBinary(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn publishText(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn remoteAddress(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn send(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn sendBinary(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn sendText(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn subscribe(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn terminate(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame, _: jsc.JSValue) jsc.JSValue { return .zero; }
+    pub fn unsubscribe(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+
+    pub fn getBinaryType(_: *ServerWebSocket, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getBufferedAmount(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }
+    pub fn getData(_: *ServerWebSocket, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getReadyState(_: *ServerWebSocket, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getRemoteAddress(_: *ServerWebSocket, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn getSubscriptions(_: *ServerWebSocket, _: *jsc.JSGlobalObject) jsc.JSValue { return .zero; }
+    pub fn setBinaryType(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: jsc.JSValue) void {}
+    pub fn setData(_: *ServerWebSocket, _: *jsc.JSGlobalObject, _: jsc.JSValue) void {}
+
+    pub fn data(_: *ServerWebSocket) jsc.JSValue { return .zero; }
+    pub fn socket(_: *ServerWebSocket) jsc.JSValue { return .zero; }
+};
+
+pub const ServerConfig = struct {
+    allow_hot: bool = false,
+    id: []const u8 = "",
+    ssl_config: ?SSLConfig = null,
+
+    pub const SSLConfig = struct {
+        pub const SharedPtr = SSLConfig;
+
+        pub fn fromJS(_: anytype, _: *jsc.JSGlobalObject, _: jsc.JSValue) !?SSLConfig {
+            return .{};
+        }
+
+        pub fn deinit(_: *SSLConfig) void {}
+
+        pub fn clone(_: *const SSLConfig) SSLConfig {
+            return .{};
+        }
+    };
+
+    pub fn fromJS(_: *jsc.JSGlobalObject, config: *ServerConfig, _: anytype, _: anytype) !void {
+        config.* = .{};
+    }
+
+    pub fn deinit(_: *ServerConfig) void {}
+
+    pub fn computeID(_: *ServerConfig, _: std.mem.Allocator) []const u8 {
+        return "";
+    }
+
+    pub fn isDevelopment(_: *const ServerConfig) bool {
+        return false;
+    }
+};
 
 pub const AnyRoute = union(enum) {
-    html: *HTMLBundle.Route,
+    html: *HTMLBundleModule.Route,
 
     pub fn ref(this: AnyRoute) void {
         switch (this) {
@@ -40,7 +265,7 @@ pub const AnyRoute = union(enum) {
     }
 };
 
-pub fn applyHTMLRouteToDevServer(dev: *bake.DevServer, path: []const u8, route: *HTMLBundle.Route) !void {
+pub fn applyHTMLRouteToDevServer(dev: *bake.DevServer, path: []const u8, route: *HTMLBundleModule.Route) !void {
     const route_index = try dev.registerRoutePattern(path, .{});
     route.dev_server_id = route_index.toOptional();
     try dev.html_router.put(dev.allocator, path, route);
@@ -188,7 +413,7 @@ test "server AnyRoute.html mirrors into DevServer HTML router" {
     var dev = bake.DevServer.init(std.testing.allocator);
     defer dev.deinit();
 
-    var bundle = try HTMLBundle.HTMLBundle.init(std.testing.allocator, "index.html");
+    var bundle = try HTMLBundle.init(std.testing.allocator, "index.html");
     defer bundle.deinit();
     var route = bundle.route();
     defer route.deinit(std.testing.allocator);

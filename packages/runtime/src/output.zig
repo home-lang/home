@@ -7,6 +7,8 @@
 
 const std = @import("std");
 
+pub const LogFunction = fn (comptime fmt: []const u8, args: anytype) void;
+
 pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;
 
@@ -299,6 +301,14 @@ pub fn writerBuffered() *std.Io.Writer {
     return errorWriter();
 }
 
+pub fn rawWriter() *std.Io.Writer {
+    return writer();
+}
+
+pub fn rawErrorWriter() *std.Io.Writer {
+    return errorWriter();
+}
+
 pub fn isStdinTTY() bool {
     return false;
 }
@@ -317,13 +327,13 @@ pub var stderr_descriptor_type: OutputStreamDescriptor = .pipe;
 /// Narrowed `Output.DebugTimer` — measures elapsed time for `BUN_DEBUG`
 /// scoped logging. Faithful to Bun's `(comptime fmt)`-friendly formatter.
 pub const DebugTimer = struct {
-    timer: std.time.Timer,
+    timer: @import("home").Timer,
 
     pub fn start() DebugTimer {
-        return .{ .timer = std.time.Timer.start() catch unreachable };
+        return .{ .timer = @import("home").Timer.start() catch unreachable };
     }
 
-    pub fn format(self: DebugTimer, w: *std.Io.Writer) std.Io.Writer.Error!void {
+    pub fn format(self: *DebugTimer, w: *std.Io.Writer) std.Io.Writer.Error!void {
         try w.print("{d}ns", .{self.timer.read()});
     }
 };
@@ -334,12 +344,36 @@ pub const DebugTimer = struct {
 pub const Source = struct {
     pub fn configureThread() void {}
 
+    pub const ColorDepth = enum { none, @"16", @"256", @"16m" };
+
+    pub const Stdio = struct {
+        pub fn isStdoutNull() bool {
+            return false;
+        }
+
+        pub fn isStderrNull() bool {
+            return false;
+        }
+
+        pub fn isStdinNull() bool {
+            return false;
+        }
+    };
+
+    pub fn colorDepth() ColorDepth {
+        return .none;
+    }
+
     /// Faithful to upstream `bun_core/output.zig:93`.
     pub fn configureNamedThread(name: [:0]const u8) void {
         @import("bun_core/Global.zig").setThreadName(name);
         configureThread();
     }
 };
+
+pub fn isAIAgent() bool {
+    return false;
+}
 
 
 test "prettyln formats without crashing" {

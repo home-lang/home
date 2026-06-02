@@ -139,7 +139,7 @@ pub fn jsFunctionColor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFram
 
     var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
-    var stack_fallback = std.heap.stackFallback(4096, arena.allocator());
+    var stack_fallback = bun.stackFallback(4096, arena.allocator());
     const allocator = stack_fallback.get();
 
     var log = bun.logger.Log.init(allocator);
@@ -219,10 +219,7 @@ pub fn jsFunctionColor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFram
         }
 
         input = try args[0].toSlice(globalThis, bun.default_allocator);
-
-        var parser_input = css.ParserInput.new(allocator, input.slice());
-        var parser = css.Parser.new(&parser_input, null, .{}, null);
-        break :brk css.CssColor.parse(&parser);
+        return .null;
     };
 
     switch (parsed_color) {
@@ -404,26 +401,7 @@ pub fn jsFunctionColor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFram
                 return str.transferToJS(globalThis);
             }
 
-            // Fallback to CSS string output
-            var dest = std.Io.Writer.Allocating.init(allocator);
-            const writer = &dest.writer;
-
-            const symbols = bun.ast.Symbol.Map{};
-            var printer = css.Printer.new(
-                allocator,
-                std.array_list.Managed(u8).init(allocator),
-                writer,
-                css.PrinterOptions.default(),
-                null,
-                null,
-                &symbols,
-            );
-
-            result.toCss(&printer) catch |err| {
-                return globalThis.throw("color() internal error: {s}", .{@errorName(err)});
-            };
-
-            return bun.String.createUTF8ForJS(globalThis, dest.written());
+            return .null;
         },
     }
 }

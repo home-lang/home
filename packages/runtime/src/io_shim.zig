@@ -60,6 +60,10 @@ pub fn GenericWriter(
             return self.writeAll(&bytes);
         }
 
+        pub fn writeStruct(self: Self, value: anytype) Error!void {
+            return self.writeAll(std.mem.asBytes(&value));
+        }
+
         /// Bridge to the new `std.Io.Writer` API. The returned `Adapter` owns a
         /// `new_interface: std.Io.Writer` whose drain forwards every byte to
         /// `writeFn` (mirrors the transitional `GenericWriter.adaptToNewApi`).

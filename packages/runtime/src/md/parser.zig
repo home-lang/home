@@ -22,7 +22,7 @@ pub const Parser = struct {
     // Dynamic arrays
     marks: std.ArrayListUnmanaged(Mark) = .empty,
     containers: std.ArrayListUnmanaged(Container) = .empty,
-    block_bytes: std.ArrayListAlignedUnmanaged(u8, .@"4") = .{},
+    block_bytes: std.ArrayListAlignedUnmanaged(u8, .@"4") = .empty,
     buffer: std.ArrayListUnmanaged(u8) = .empty,
     emph_delims: std.ArrayListUnmanaged(EmphDelim) = .empty,
 
@@ -34,8 +34,11 @@ pub const Parser = struct {
     current_block_lines: std.ArrayListUnmanaged(VerbatimLine) = .empty,
 
     // Opener stacks
-    opener_stacks: [types.NUM_OPENER_STACKS]types.OpenerStack =
-        [_]types.OpenerStack{.{}} ** types.NUM_OPENER_STACKS,
+    opener_stacks: [types.NUM_OPENER_STACKS]types.OpenerStack = brk: {
+        var stacks: [types.NUM_OPENER_STACKS]types.OpenerStack = undefined;
+        for (&stacks) |*stack| stack.* = .{};
+        break :brk stacks;
+    },
 
     // Linked lists through marks
     unresolved_link_head: i32 = -1,
@@ -50,7 +53,11 @@ pub const Parser = struct {
 
     // Table column alignments
     table_col_count: u32 = 0,
-    table_alignments: [types.TABLE_MAXCOLCOUNT]Align = [_]Align{.default} ** types.TABLE_MAXCOLCOUNT,
+    table_alignments: [types.TABLE_MAXCOLCOUNT]Align = brk: {
+        var alignments: [types.TABLE_MAXCOLCOUNT]Align = undefined;
+        for (&alignments) |*alignment| alignment.* = .default;
+        break :brk alignments;
+    },
 
     // Ref defs
     ref_defs: std.ArrayListUnmanaged(RefDef) = .empty,

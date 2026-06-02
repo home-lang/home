@@ -3,9 +3,8 @@
 // Imports rewritten: @import("../css_parser.zig") dropped. Upstream re-imports
 // many sibling value modules (angle, ident, color, image, number, calc,
 // percentage, length, position, syntax, alpha, ratio, size, rect, time,
-// easing, url, resolution, gradient) — none of those are ported yet, so the
-// re-exports are stripped here. Only the pure-data `css_modules.Specifier`
-// union travels with this leaf; the rest re-lands as each sibling is ported.
+// easing, url, resolution, gradient). Those leaves now exist in Home's copied
+// tree, so keep the aggregator shape faithful to upstream.
 
 pub const css_modules = struct {
     /// Defines where the class names referenced in the `composes` property are located.
@@ -20,6 +19,27 @@ pub const css_modules = struct {
         source_index: u32,
     };
 };
+
+pub const angle = @import("./angle.zig");
+pub const ident = @import("./ident.zig");
+pub const string = @import("./css_string.zig");
+pub const color = @import("./color.zig");
+pub const image = @import("./image.zig");
+pub const number = @import("./number.zig");
+pub const calc = @import("./calc.zig");
+pub const percentage = @import("./percentage.zig");
+pub const length = @import("./length.zig");
+pub const position = @import("./position.zig");
+pub const syntax = @import("./syntax.zig");
+pub const alpha = @import("./alpha.zig");
+pub const ratio = @import("./ratio.zig");
+pub const size = @import("./size.zig");
+pub const rect = @import("./rect.zig");
+pub const time = @import("./time.zig");
+pub const easing = @import("./easing.zig");
+pub const url = @import("./url.zig");
+pub const resolution = @import("./resolution.zig");
+pub const gradient = @import("./gradient.zig");
 
 test "Specifier.global is a tag-only variant" {
     const s: css_modules.Specifier = .global;

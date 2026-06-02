@@ -378,7 +378,11 @@ pub fn parse(
 
             while (strings.hasPrefixComptime(
                 remain,
-                comptime [_]u8{';'}**(@sizeOf(usize) / 2),
+                comptime brk: {
+                    var semicolons: [@sizeOf(usize) / 2]u8 = undefined;
+                    @memset(&semicolons, ';');
+                    break :brk semicolons;
+                },
             )) {
                 generated.lines = generated.lines.addScalar(@sizeOf(usize) / 2);
                 remain = remain[@sizeOf(usize) / 2 ..];

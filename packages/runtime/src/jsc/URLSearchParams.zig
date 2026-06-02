@@ -5,24 +5,11 @@
 // intact — the JSC bridge re-attaches in Phase 12.2.
 
 const std = @import("std");
-
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-// Modeled as an extern struct to preserve pass-by-value FFI semantics.
-const JSValue = extern struct {
-    bits: u64 = 0,
-};
-// JSC bridge ZigString stubbed — re-attaches in Phase 12.2. Layout mirrors the
-// real ZigString slice header (ptr + len, with the high bit of len encoding
-// the UTF-16 flag).
-const ZigString = extern struct {
-    _ptr: ?[*]const u8 = null,
-    _len: usize = 0,
-};
-
-// JSC bridge markBinding stubbed — re-attaches in Phase 12.2.
-fn markBinding(_: std.builtin.SourceLocation) void {}
+const bun = @import("home");
+const jsc = bun.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSValue = jsc.JSValue;
+const ZigString = jsc.ZigString;
 
 // `bun.cast` stubbed — `@ptrCast(@alignCast(...))` is the equivalent.
 fn castPtr(comptime T: type, p: *anyopaque) T {
@@ -32,13 +19,13 @@ fn castPtr(comptime T: type, p: *anyopaque) T {
 pub const URLSearchParams = opaque {
     extern fn URLSearchParams__create(globalObject: *JSGlobalObject, *const ZigString) JSValue;
     pub fn create(globalObject: *JSGlobalObject, init: ZigString) JSValue {
-        markBinding(@src());
+        jsc.markBinding(@src());
         return URLSearchParams__create(globalObject, &init);
     }
 
     extern fn URLSearchParams__fromJS(JSValue) ?*URLSearchParams;
     pub fn fromJS(value: JSValue) ?*URLSearchParams {
-        markBinding(@src());
+        jsc.markBinding(@src());
         return URLSearchParams__fromJS(value);
     }
 
@@ -54,7 +41,7 @@ pub const URLSearchParams = opaque {
         ctx: *Ctx,
         comptime callback: *const fn (ctx: *Ctx, str: ZigString) void,
     ) void {
-        markBinding(@src());
+        jsc.markBinding(@src());
         const Wrap = struct {
             const cb_ = callback;
             pub fn cb(c: *anyopaque, str: *const ZigString) callconv(.c) void {

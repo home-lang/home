@@ -10,10 +10,8 @@
 
 const std = @import("std");
 
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-pub const JSValue = enum(i64) { zero = 0, _ };
+const JSGlobalObject = @import("home").jsc.JSGlobalObject;
+pub const JSValue = @import("home").jsc.JSValue;
 // JSC bridge bun.String stubbed — re-attaches in Phase 12.2.
 pub const String = opaque {};
 // JSC bridge jsc.Node.ErrorCode stubbed — re-attaches in Phase 12.2 once

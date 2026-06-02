@@ -20,6 +20,26 @@ const MAX_HEADER_TABLE_SIZE = std.math.maxInt(u32);
 const MAX_STREAM_ID = std.math.maxInt(i32);
 const MAX_FRAME_SIZE = std.math.maxInt(u24);
 const DEFAULT_WINDOW_SIZE = std.math.maxInt(u16);
+
+fn fixedWriter(buffer: []u8) std.Io.Writer {
+    return .fixed(buffer);
+}
+
+fn writeBytes(writer: anytype, bytes: []const u8) bool {
+    return (writer.write(bytes) catch 0) == bytes.len;
+}
+
+fn writeBig(comptime T: type, writer: anytype, value: T) bool {
+    var encoded: [@sizeOf(T)]u8 = undefined;
+    std.mem.writeInt(T, &encoded, value, .big);
+    return writeBytes(writer, &encoded);
+}
+
+fn readBig(comptime T: type, bytes: []const u8) !T {
+    if (bytes.len < @sizeOf(T)) return error.EndOfStream;
+    return std.mem.readInt(T, bytes[0..@sizeOf(T)], .big);
+}
+
 // Float versions for range validation before integer conversion
 const MAX_WINDOW_SIZE_F64: f64 = @floatFromInt(MAX_WINDOW_SIZE);
 const MAX_HEADER_TABLE_SIZE_F64: f64 = @floatFromInt(MAX_HEADER_TABLE_SIZE);
@@ -140,9 +160,7 @@ const UInt31WithReserved = packed struct(u32) {
             value |= 0x80000000;
         }
 
-        value = @byteSwap(value);
-
-        return (writer.write(std.mem.asBytes(&value)) catch 0) != 0;
+        return writeBig(u32, writer, value);
     }
 };
 
@@ -155,7 +173,7 @@ const StreamPriority = packed struct(u40) {
         var swap = this.*;
         std.mem.byteSwapAllFields(StreamPriority, &swap);
 
-        return (writer.write(std.mem.asBytes(&swap)[0..StreamPriority.byteSize]) catch 0) != 0;
+        return writeBytes(writer, std.mem.asBytes(&swap)[0..StreamPriority.byteSize]);
     }
 
     pub inline fn from(dst: *StreamPriority, src: []const u8) void {
@@ -175,7 +193,7 @@ const FrameHeader = packed struct(u72) {
         var swap = this.*;
         std.mem.byteSwapAllFields(FrameHeader, &swap);
 
-        return (writer.write(std.mem.asBytes(&swap)[0..FrameHeader.byteSize]) catch 0) != 0;
+        return writeBytes(writer, std.mem.asBytes(&swap)[0..FrameHeader.byteSize]);
     }
 
     pub inline fn from(dst: *FrameHeader, src: []const u8, offset: usize, comptime end: bool) void {
@@ -243,7 +261,7 @@ const FullSettingsPayload = packed struct(u336) {
         var swap = this.*;
 
         std.mem.byteSwapAllFields(FullSettingsPayload, &swap);
-        return (writer.write(std.mem.asBytes(&swap)[0..FullSettingsPayload.byteSize]) catch 0) != 0;
+        return writeBytes(writer, std.mem.asBytes(&swap)[0..FullSettingsPayload.byteSize]);
     }
 };
 
@@ -829,7 +847,7 @@ pub const H2FrameParser = struct {
                 self.len = 0;
                 var data = self.data;
                 if (data.capacity > 0) {
-                    self.data = .{};
+                    self.data = .empty;
                     data.clearAndFree(allocator);
                 }
             }
@@ -1285,20 +1303,19 @@ pub const H2FrameParser = struct {
 
         var buffer: [FrameHeader.byteSize + FullSettingsPayload.byteSize]u8 = undefined;
         @memset(&buffer, 0);
-        var stream = std.io.fixedBufferStream(&buffer);
-        const writer = stream.writer();
+        var writer = fixedWriter(&buffer);
         var settingsHeader: FrameHeader = .{
             .type = @intFromEnum(FrameType.HTTP_FRAME_SETTINGS),
             .flags = 0,
             .streamIdentifier = 0,
             .length = FullSettingsPayload.byteSize,
         };
-        _ = settingsHeader.write(@TypeOf(writer), writer);
+        _ = settingsHeader.write(@TypeOf(&writer), &writer);
 
         this.outstandingSettings += 1;
 
         this.localSettings = settings;
-        _ = this.localSettings.write(@TypeOf(writer), writer);
+        _ = this.localSettings.write(@TypeOf(&writer), &writer);
         _ = this.write(&buffer);
         return true;
     }
@@ -1309,8 +1326,7 @@ pub const H2FrameParser = struct {
         abortReason.ensureStillAlive();
         var buffer: [FrameHeader.byteSize + 4]u8 = undefined;
         @memset(&buffer, 0);
-        var writerStream = std.io.fixedBufferStream(&buffer);
-        const writer = writerStream.writer();
+        var writer = fixedWriter(&buffer);
 
         var frame: FrameHeader = .{
             .type = @intFromEnum(FrameType.HTTP_FRAME_RST_STREAM),
@@ -1318,11 +1334,11 @@ pub const H2FrameParser = struct {
             .streamIdentifier = stream.id,
             .length = 4,
         };
-        _ = frame.write(@TypeOf(writer), writer);
+        _ = frame.write(@TypeOf(&writer), &writer);
         var value: u32 = @intFromEnum(ErrorCode.CANCEL);
         stream.rstCode = value;
         value = @byteSwap(value);
-        _ = writer.write(std.mem.asBytes(&value)) catch 0;
+        _ = writeBig(u32, &writer, value);
         const old_state = stream.state;
         stream.state = .CLOSED;
         const identifier = stream.getIdentifier();
@@ -1339,8 +1355,7 @@ pub const H2FrameParser = struct {
         }
         var buffer: [FrameHeader.byteSize + 4]u8 = undefined;
         @memset(&buffer, 0);
-        var writerStream = std.io.fixedBufferStream(&buffer);
-        const writer = writerStream.writer();
+        var writer = fixedWriter(&buffer);
 
         var frame: FrameHeader = .{
             .type = @intFromEnum(FrameType.HTTP_FRAME_RST_STREAM),
@@ -1348,11 +1363,11 @@ pub const H2FrameParser = struct {
             .streamIdentifier = stream.id,
             .length = 4,
         };
-        _ = frame.write(@TypeOf(writer), writer);
+        _ = frame.write(@TypeOf(&writer), &writer);
         var value: u32 = @intFromEnum(rstCode);
         stream.rstCode = value;
         value = @byteSwap(value);
-        _ = writer.write(std.mem.asBytes(&value)) catch 0;
+        _ = writeBig(u32, &writer, value);
 
         stream.state = .CLOSED;
         const identifier = stream.getIdentifier();
@@ -1371,8 +1386,7 @@ pub const H2FrameParser = struct {
         log("HTTP_FRAME_GOAWAY {} code {} debug_data {s} emitError {}", .{ streamIdentifier, rstCode, debug_data, emitError });
         var buffer: [FrameHeader.byteSize + 8]u8 = undefined;
         @memset(&buffer, 0);
-        var stream = std.io.fixedBufferStream(&buffer);
-        const writer = stream.writer();
+        var writer = fixedWriter(&buffer);
 
         var frame: FrameHeader = .{
             .type = @intFromEnum(FrameType.HTTP_FRAME_GOAWAY),
@@ -1380,12 +1394,12 @@ pub const H2FrameParser = struct {
             .streamIdentifier = streamIdentifier,
             .length = @intCast(8 + debug_data.len),
         };
-        _ = frame.write(@TypeOf(writer), writer);
+        _ = frame.write(@TypeOf(&writer), &writer);
         var last_id = UInt31WithReserved.init(@truncate(lastStreamID), false);
-        _ = last_id.write(@TypeOf(writer), writer);
+        _ = last_id.write(@TypeOf(&writer), &writer);
         var value: u32 = @intFromEnum(rstCode);
         value = @byteSwap(value);
-        _ = writer.write(std.mem.asBytes(&value)) catch 0;
+        _ = writeBig(u32, &writer, value);
 
         _ = this.write(&buffer);
         if (debug_data.len > 0) {
@@ -1409,8 +1423,7 @@ pub const H2FrameParser = struct {
 
         var buffer: [FrameHeader.byteSize + 2]u8 = undefined;
         @memset(&buffer, 0);
-        var stream = std.io.fixedBufferStream(&buffer);
-        const writer = stream.writer();
+        var writer = fixedWriter(&buffer);
 
         var frame: FrameHeader = .{
             .type = @intFromEnum(FrameType.HTTP_FRAME_ALTSVC),
@@ -1418,8 +1431,8 @@ pub const H2FrameParser = struct {
             .streamIdentifier = streamIdentifier,
             .length = @intCast(origin_str.len + alt.len + 2),
         };
-        _ = frame.write(@TypeOf(writer), writer);
-        _ = writer.writeInt(u16, @intCast(origin_str.len), .big) catch 0;
+        _ = frame.write(@TypeOf(&writer), &writer);
+        _ = writeBig(u16, &writer, @intCast(origin_str.len));
         _ = this.write(&buffer);
         if (origin_str.len > 0) {
             _ = this.write(origin_str);
@@ -1434,8 +1447,7 @@ pub const H2FrameParser = struct {
 
         var buffer: [FrameHeader.byteSize + 8]u8 = undefined;
         @memset(&buffer, 0);
-        var stream = std.io.fixedBufferStream(&buffer);
-        const writer = stream.writer();
+        var writer = fixedWriter(&buffer);
         if (!ack) {
             this.outStandingPings += 1;
         }
@@ -1445,8 +1457,8 @@ pub const H2FrameParser = struct {
             .streamIdentifier = 0,
             .length = 8,
         };
-        _ = frame.write(@TypeOf(writer), writer);
-        _ = writer.write(payload) catch 0;
+        _ = frame.write(@TypeOf(&writer), &writer);
+        _ = writeBytes(&writer, payload);
         _ = this.write(&buffer);
     }
 
@@ -1455,9 +1467,8 @@ pub const H2FrameParser = struct {
         // PREFACE + Settings Frame
         var preface_buffer: [24 + FrameHeader.byteSize + FullSettingsPayload.byteSize]u8 = undefined;
         @memset(&preface_buffer, 0);
-        var preface_stream = std.io.fixedBufferStream(&preface_buffer);
-        const writer = preface_stream.writer();
-        _ = writer.write("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") catch 0;
+        var writer = fixedWriter(&preface_buffer);
+        _ = writeBytes(&writer, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
         var settingsHeader: FrameHeader = .{
             .type = @intFromEnum(FrameType.HTTP_FRAME_SETTINGS),
             .flags = 0,
@@ -1465,8 +1476,8 @@ pub const H2FrameParser = struct {
             .length = FullSettingsPayload.byteSize,
         };
         this.outstandingSettings += 1;
-        _ = settingsHeader.write(@TypeOf(writer), writer);
-        _ = this.localSettings.write(@TypeOf(writer), writer);
+        _ = settingsHeader.write(@TypeOf(&writer), &writer);
+        _ = this.localSettings.write(@TypeOf(&writer), &writer);
         _ = this.write(&preface_buffer);
     }
 
@@ -1474,15 +1485,14 @@ pub const H2FrameParser = struct {
         log("send HTTP_FRAME_SETTINGS ack true", .{});
         var buffer: [FrameHeader.byteSize]u8 = undefined;
         @memset(&buffer, 0);
-        var stream = std.io.fixedBufferStream(&buffer);
-        const writer = stream.writer();
+        var writer = fixedWriter(&buffer);
         var settingsHeader: FrameHeader = .{
             .type = @intFromEnum(FrameType.HTTP_FRAME_SETTINGS),
             .flags = @intFromEnum(SettingsFlags.ACK),
             .streamIdentifier = 0,
             .length = 0,
         };
-        _ = settingsHeader.write(@TypeOf(writer), writer);
+        _ = settingsHeader.write(@TypeOf(&writer), &writer);
         _ = this.write(&buffer);
     }
 
@@ -1490,16 +1500,15 @@ pub const H2FrameParser = struct {
         log("HTTP_FRAME_WINDOW_UPDATE stream {} size {}", .{ streamIdentifier, windowSize.uint31 });
         var buffer: [FrameHeader.byteSize + 4]u8 = undefined;
         @memset(&buffer, 0);
-        var stream = std.io.fixedBufferStream(&buffer);
-        const writer = stream.writer();
+        var writer = fixedWriter(&buffer);
         var settingsHeader: FrameHeader = .{
             .type = @intFromEnum(FrameType.HTTP_FRAME_WINDOW_UPDATE),
             .flags = 0,
             .streamIdentifier = streamIdentifier,
             .length = 4,
         };
-        _ = settingsHeader.write(@TypeOf(writer), writer);
-        _ = windowSize.write(@TypeOf(writer), writer);
+        _ = settingsHeader.write(@TypeOf(&writer), &writer);
+        _ = windowSize.write(@TypeOf(&writer), &writer);
         _ = this.write(&buffer);
     }
 
@@ -2152,8 +2161,7 @@ pub const H2FrameParser = struct {
             this.readBuffer.reset();
 
             while (payload.len > 0) {
-                var stream = std.io.fixedBufferStream(payload);
-                const origin_length = stream.reader().readInt(u16, .big) catch |err| {
+                const origin_length = readBig(u16, payload) catch |err| {
                     log("error reading ORIGIN frame size: {s}", .{@errorName(err)});
                     // origin length is the first 2 bytes of the payload
                     this.sendGoAway(frame.streamIdentifier, ErrorCode.FRAME_SIZE_ERROR, "invalid ORIGIN frame size", this.lastStreamID, true);
@@ -2199,10 +2207,9 @@ pub const H2FrameParser = struct {
         if (handleIncommingPayload(this, data, frame.streamIdentifier)) |content| {
             const payload = content.data;
 
-            var stream = std.io.fixedBufferStream(payload);
             this.readBuffer.reset();
 
-            const origin_length = stream.reader().readInt(u16, .big) catch {
+            const origin_length = readBig(u16, payload) catch {
                 // origin length is the first 2 bytes of the payload
                 this.sendGoAway(frame.streamIdentifier, ErrorCode.FRAME_SIZE_ERROR, "invalid ALTSVC frame size", this.lastStreamID, true);
                 return content.end;
@@ -3045,8 +3052,7 @@ pub const H2FrameParser = struct {
 
             var buffer: [FrameHeader.byteSize + 2]u8 = undefined;
             @memset(&buffer, 0);
-            var stream = std.io.fixedBufferStream(&buffer);
-            const writer = stream.writer();
+            var writer = fixedWriter(&buffer);
 
             var frame: FrameHeader = .{
                 .type = @intFromEnum(FrameType.HTTP_FRAME_ORIGIN),
@@ -3054,8 +3060,8 @@ pub const H2FrameParser = struct {
                 .streamIdentifier = 0,
                 .length = @intCast(slice.len + 2),
             };
-            _ = frame.write(@TypeOf(writer), writer);
-            _ = writer.writeInt(u16, @intCast(slice.len), .big) catch 0;
+            _ = frame.write(@TypeOf(&writer), &writer);
+            _ = writeBig(u16, &writer, @intCast(slice.len));
             _ = this.write(&buffer);
             if (slice.len > 0) {
                 _ = this.write(slice);
@@ -3063,9 +3069,8 @@ pub const H2FrameParser = struct {
         } else if (origin_arg.isArray()) {
             var buffer: [FrameHeader.byteSize + 16384]u8 = undefined;
             @memset(&buffer, 0);
-            var stream = std.io.fixedBufferStream(&buffer);
-            const writer = stream.writer();
-            stream.seekTo(FrameHeader.byteSize) catch {};
+            var writer = fixedWriter(&buffer);
+            writer.end = FrameHeader.byteSize;
             var value_iter = try origin_arg.arrayIterator(globalObject);
 
             while (try value_iter.next()) |item| {
@@ -3075,26 +3080,26 @@ pub const H2FrameParser = struct {
                 const origin_string = try item.toSlice(globalObject, bun.default_allocator);
                 defer origin_string.deinit();
                 const slice = origin_string.slice();
-                _ = writer.writeInt(u16, @intCast(slice.len), .big) catch {
+                if (!writeBig(u16, &writer, @intCast(slice.len))) {
                     const exception = globalObject.toTypeError(.HTTP2_ORIGIN_LENGTH, "HTTP/2 ORIGIN frames are limited to 16382 bytes", .{});
                     return globalObject.throwValue(exception);
-                };
+                }
 
-                _ = writer.write(slice) catch {
+                if (!writeBytes(&writer, slice)) {
                     const exception = globalObject.toTypeError(.HTTP2_ORIGIN_LENGTH, "HTTP/2 ORIGIN frames are limited to 16382 bytes", .{});
                     return globalObject.throwValue(exception);
-                };
+                }
             }
 
-            const total_length: u32 = @intCast(stream.getPos() catch FrameHeader.byteSize);
+            const total_length: u32 = @intCast(writer.end);
             var frame: FrameHeader = .{
                 .type = @intFromEnum(FrameType.HTTP_FRAME_ORIGIN),
                 .flags = 0,
                 .streamIdentifier = 0,
                 .length = @intCast(total_length - FrameHeader.byteSize), // payload length
             };
-            stream.reset();
-            _ = frame.write(@TypeOf(writer), writer);
+            writer.end = 0;
+            _ = frame.write(@TypeOf(&writer), &writer);
             _ = this.write(buffer[0..total_length]);
         }
         return .js_undefined;

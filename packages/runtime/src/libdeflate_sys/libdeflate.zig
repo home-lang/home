@@ -34,10 +34,13 @@ fn load_once() void {
     libdeflate_set_memory_allocator(mimalloc.mi_malloc, mimalloc.mi_free);
 }
 
-var loaded_once = std.once(load_once);
+var loaded_once = false;
 
 pub fn load() void {
-    loaded_once.call();
+    if (!loaded_once) {
+        loaded_once = true;
+        load_once();
+    }
 }
 
 pub const Compressor = opaque {

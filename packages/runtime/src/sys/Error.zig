@@ -269,29 +269,35 @@ pub fn toSystemError(this: Error) SystemError {
     // search keyword: `Local<Value> UVException(Isolate* isolate,`
     var message_buf: [4096]u8 = @splat(0);
     const message = message: {
-        var stream = std.io.fixedBufferStream(&message_buf);
-        const writer = stream.writer();
+        var len: usize = 0;
+        const append = struct {
+            fn run(buf: []u8, written: *usize, bytes: []const u8) !void {
+                if (written.* + bytes.len > buf.len) return error.NoSpaceLeft;
+                @memcpy(buf[written.*..][0..bytes.len], bytes);
+                written.* += bytes.len;
+            }
+        }.run;
         brk: {
             if (maybe_code) |code| {
-                writer.writeAll(code) catch break :brk;
-                writer.writeAll(": ") catch break :brk;
+                append(&message_buf, &len, code) catch break :brk;
+                append(&message_buf, &len, ": ") catch break :brk;
             }
-            writer.writeAll(label orelse "Unknown Error") catch break :brk;
-            writer.writeAll(", ") catch break :brk;
-            writer.writeAll(@tagName(this.syscall)) catch break :brk;
+            append(&message_buf, &len, label orelse "Unknown Error") catch break :brk;
+            append(&message_buf, &len, ", ") catch break :brk;
+            append(&message_buf, &len, @tagName(this.syscall)) catch break :brk;
             if (this.path.len > 0) {
-                writer.writeAll(" '") catch break :brk;
-                writer.writeAll(this.path) catch break :brk;
-                writer.writeAll("'") catch break :brk;
+                append(&message_buf, &len, " '") catch break :brk;
+                append(&message_buf, &len, this.path) catch break :brk;
+                append(&message_buf, &len, "'") catch break :brk;
 
                 if (this.dest.len > 0) {
-                    writer.writeAll(" -> '") catch break :brk;
-                    writer.writeAll(this.dest) catch break :brk;
-                    writer.writeAll("'") catch break :brk;
+                    append(&message_buf, &len, " -> '") catch break :brk;
+                    append(&message_buf, &len, this.dest) catch break :brk;
+                    append(&message_buf, &len, "'") catch break :brk;
                 }
             }
         }
-        break :message stream.getWritten();
+        break :message message_buf[0..len];
     };
     err.message = bun.String.cloneUTF8(message);
 

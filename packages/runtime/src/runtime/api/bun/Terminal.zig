@@ -28,6 +28,18 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const home_rt = @import("home");
+
+const jsc = home_rt.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSValue = jsc.JSValue;
+const CallFrame = jsc.CallFrame;
+const JSError = home_rt.JSError;
+
+pub const js = jsc.Codegen.JSTerminal;
+pub const toJS = js.toJS;
+pub const fromJS = js.fromJS;
+pub const fromJSDirect = js.fromJSDirect;
 
 // ---- Public leaf types ------------------------------------------------
 
@@ -87,10 +99,108 @@ pub const CreatePtyError = error{ OpenPtyFailed, DupFailed, NotSupported };
 /// known terminfo names are ~23 chars; 128 allows for custom terminals.
 pub const max_term_name_len = 128;
 
+flags: Flags = .{},
+cols: u16 = 80,
+rows: u16 = 24,
+
 /// COORD.X/Y are i16 on Windows; clamp the u16 cols/rows passed in from
 /// JS to the COORD range. Pure helper — no platform check needed.
 pub inline fn clampToCoord(v: u16) i16 {
     return @intCast(@min(v, std.math.maxInt(i16)));
+}
+
+pub fn constructor(
+    globalObject: *JSGlobalObject,
+    callframe: *CallFrame,
+    this_value: JSValue,
+) JSError!*@This() {
+    _ = globalObject;
+    _ = callframe;
+    _ = this_value;
+    return home_rt.new(@This(), .{});
+}
+
+pub fn finalize(this: *@This()) callconv(.c) void {
+    this.flags.finalized = true;
+    this.flags.closed = true;
+    home_rt.destroy(this);
+}
+
+pub fn getClosed(this: *@This(), _: *JSGlobalObject) JSValue {
+    return JSValue.jsBoolean(this.flags.closed);
+}
+
+fn getTermiosFlag(_: *@This(), comptime _: enum { iflag, oflag, lflag, cflag }) JSValue {
+    return JSValue.jsNumber(0);
+}
+
+fn setTermiosFlag(_: *@This(), _: *JSGlobalObject, comptime _: enum { iflag, oflag, lflag, cflag }, _: JSValue) JSError!void {}
+
+pub fn getInputFlags(this: *@This(), _: *JSGlobalObject) JSValue {
+    return this.getTermiosFlag(.iflag);
+}
+
+pub fn setInputFlags(this: *@This(), globalObject: *JSGlobalObject, value: JSValue) JSError!void {
+    try this.setTermiosFlag(globalObject, .iflag, value);
+}
+
+pub fn getOutputFlags(this: *@This(), _: *JSGlobalObject) JSValue {
+    return this.getTermiosFlag(.oflag);
+}
+
+pub fn setOutputFlags(this: *@This(), globalObject: *JSGlobalObject, value: JSValue) JSError!void {
+    try this.setTermiosFlag(globalObject, .oflag, value);
+}
+
+pub fn getLocalFlags(this: *@This(), _: *JSGlobalObject) JSValue {
+    return this.getTermiosFlag(.lflag);
+}
+
+pub fn setLocalFlags(this: *@This(), globalObject: *JSGlobalObject, value: JSValue) JSError!void {
+    try this.setTermiosFlag(globalObject, .lflag, value);
+}
+
+pub fn getControlFlags(this: *@This(), _: *JSGlobalObject) JSValue {
+    return this.getTermiosFlag(.cflag);
+}
+
+pub fn setControlFlags(this: *@This(), globalObject: *JSGlobalObject, value: JSValue) JSError!void {
+    try this.setTermiosFlag(globalObject, .cflag, value);
+}
+
+pub fn write(this: *@This(), _: *JSGlobalObject, _: *CallFrame) JSError!JSValue {
+    if (this.flags.closed) return error.JSError;
+    return JSValue.jsNumber(0);
+}
+
+pub fn resize(this: *@This(), _: *JSGlobalObject, _: *CallFrame) JSError!JSValue {
+    if (this.flags.closed) return error.JSError;
+    return .js_undefined;
+}
+
+pub fn setRawMode(this: *@This(), _: *JSGlobalObject, _: *CallFrame) JSError!JSValue {
+    if (this.flags.closed) return error.JSError;
+    this.flags.raw_mode = true;
+    return .js_undefined;
+}
+
+pub fn doRef(_: *@This(), _: *JSGlobalObject, _: *CallFrame) JSError!JSValue {
+    return .js_undefined;
+}
+
+pub fn doUnref(_: *@This(), _: *JSGlobalObject, _: *CallFrame) JSError!JSValue {
+    return .js_undefined;
+}
+
+pub fn close(this: *@This(), _: *JSGlobalObject, _: *CallFrame) JSError!JSValue {
+    this.flags.closed = true;
+    return .js_undefined;
+}
+
+pub fn asyncDispose(this: *@This(), _: *JSGlobalObject, _: *CallFrame) JSError!JSValue {
+    this.flags.finalized = true;
+    this.flags.closed = true;
+    return .js_undefined;
 }
 
 // ---- Parked surfaces -------------------------------------------------

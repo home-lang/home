@@ -8,15 +8,8 @@
 
 const std = @import("std");
 
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-// JSValue is ABI-compatible with i64 / encoded ptr, so we model it as enum(i64)
-// so it can be passed by value across the extern boundary.
-pub const JSValue = enum(i64) {
-    zero = 0,
-    _,
-};
+const JSGlobalObject = @import("home").jsc.JSGlobalObject;
+pub const JSValue = @import("home").jsc.JSValue;
 // JSC bridge JSArrayIterator stubbed — re-attaches in Phase 12.2 once
 // JSArrayIterator.zig ports.
 const JSArrayIterator = opaque {};

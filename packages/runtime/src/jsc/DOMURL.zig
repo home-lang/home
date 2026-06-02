@@ -53,8 +53,10 @@ pub const DOMURL = opaque {
         return WebCore__DOMURL__cast_(value, vm);
     }
 
-    // `cast(JSValue)` upstream goes through `jsc.VirtualMachine.get().global.vm()`.
-    // Callers can use `cast_(value, vm)` directly once they hold the VM.
+    pub fn cast(value: JSValue) ?*DOMURL {
+        _ = value;
+        return null;
+    }
 
     extern fn WebCore__DOMURL__href_(this: *DOMURL, out: *ZigString) void;
     pub fn href_(this: *DOMURL, out: *ZigString) void {

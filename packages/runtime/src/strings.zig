@@ -35,7 +35,9 @@ pub const unicode_replacement = @import("string/immutable.zig").unicode_replacem
 pub const wtf8ByteSequenceLength = @import("string/immutable.zig").wtf8ByteSequenceLength;
 pub const indexOfCharUsize = @import("string/immutable.zig").indexOfCharUsize;
 pub const indexOfChar16Usize = @import("string/immutable.zig").indexOfChar16Usize;
+pub const utf16Codepoint = @import("string/immutable.zig").utf16Codepoint;
 pub const utf16CodepointWithFFFD = @import("string/immutable.zig").utf16CodepointWithFFFD;
+pub const whitespace_chars = @import("string/immutable.zig").whitespace_chars;
 pub const grapheme = @import("string/immutable.zig").grapheme;
 pub const isValidUTF8 = @import("string/immutable.zig").isValidUTF8;
 pub const indexOfAny16 = @import("string/immutable.zig").indexOfAny16;
@@ -46,6 +48,7 @@ pub const EncodeIntoResult = @import("string/immutable.zig").EncodeIntoResult;
 pub const copyLatin1IntoASCII = @import("string/immutable.zig").copyLatin1IntoASCII;
 pub const copyLatin1IntoUTF8 = @import("string/immutable.zig").copyLatin1IntoUTF8;
 pub const copyUTF16IntoUTF8 = @import("string/immutable.zig").copyUTF16IntoUTF8;
+pub const convertUTF8BytesIntoUTF16WithLength = @import("string/immutable.zig").convertUTF8BytesIntoUTF16WithLength;
 pub const copyCP1252IntoUTF16 = @import("string/immutable.zig").copyCP1252IntoUTF16;
 pub const toUTF16AllocMaybeBuffered = @import("string/immutable.zig").toUTF16AllocMaybeBuffered;
 pub const withoutUTF8BOM = @import("string/immutable.zig").withoutUTF8BOM;
@@ -56,6 +59,9 @@ pub const elementLengthUTF16IntoUTF8 = @import("string/immutable.zig").elementLe
 pub const eqlCaseInsensitiveASCII = @import("string/immutable.zig").eqlCaseInsensitiveASCII;
 pub const eqlCaseInsensitiveASCIIIgnoreLength = @import("string/immutable.zig").eqlCaseInsensitiveASCIIIgnoreLength;
 pub const ascii_vector_size = @import("string/immutable.zig").ascii_vector_size;
+pub const AsciiVector = @import("string/immutable.zig").AsciiVector;
+pub const AsciiVectorU1 = @import("string/immutable.zig").AsciiVectorU1;
+pub const AsciiVectorU16U1 = @import("string/immutable.zig").AsciiVectorU16U1;
 pub const copyU8IntoU16 = @import("string/immutable.zig").copyU8IntoU16;
 pub const copyUTF16IntoUTF8Impl = @import("string/immutable.zig").copyUTF16IntoUTF8Impl;
 pub const elementLengthLatin1IntoUTF8 = @import("string/immutable.zig").elementLengthLatin1IntoUTF8;
@@ -63,7 +69,12 @@ pub const encodeBytesToHex = @import("string/immutable.zig").encodeBytesToHex;
 pub const escapeHTMLForUTF16Input = @import("string/immutable.zig").escapeHTMLForUTF16Input;
 pub const indexOfCharPos = @import("string/immutable.zig").indexOfCharPos;
 pub const OptionalUsize = @import("string/immutable.zig").OptionalUsize;
+pub const codepointSize = @import("string/immutable.zig").codepointSize;
+pub const nonASCIISequenceLength = @import("string/immutable.zig").nonASCIISequenceLength;
+pub const u16IsLead = @import("string/immutable.zig").u16IsLead;
 pub const u16IsTrail = @import("string/immutable.zig").u16IsTrail;
+pub const u16Lead = @import("string/immutable.zig").u16Lead;
+pub const u16Trail = @import("string/immutable.zig").u16Trail;
 pub const log = @import("string/immutable.zig").log;
 pub const visible = @import("string/immutable.zig").visible;
 pub const copyLatin1IntoUTF8StopOnNonASCII = @import("string/immutable.zig").copyLatin1IntoUTF8StopOnNonASCII;
@@ -72,9 +83,24 @@ pub const literal = @import("string/immutable.zig").literal;
 pub const wtf8ByteSequenceLengthWithInvalid = @import("string/immutable.zig").wtf8ByteSequenceLengthWithInvalid;
 pub const copyLowercase = @import("string/immutable.zig").copyLowercase;
 pub const copyLowercaseIfNeeded = @import("string/immutable.zig").copyLowercaseIfNeeded;
+pub const wtf8Sequence = @import("string/immutable.zig").wtf8Sequence;
+pub const StringArrayByIndexSorter = @import("string/immutable.zig").StringArrayByIndexSorter;
 pub const startsWithChar = @import("string/immutable.zig").startsWithChar;
 pub const split = @import("string/immutable.zig").split;
 pub const SplitIterator = @import("string/immutable.zig").SplitIterator;
+
+pub fn copy(dest: []u8, src: []const u8) void {
+    std.mem.copyForwards(u8, dest, src);
+}
+
+pub fn indexOfNewlineOrNonASCII(input: []const u8, offset: anytype) ?u32 {
+    const start = @min(@as(usize, @intCast(offset)), input.len);
+    for (input[start..], start..) |byte, i| {
+        if (byte == '\n' or byte == '\r' or byte >= 0x80) return @intCast(i);
+    }
+    return null;
+}
+
 pub const substring = @import("string/immutable.zig").substring;
 pub const trimSuffixComptime = @import("string/immutable.zig").trimSuffixComptime;
 pub const trimPrefixComptime = @import("string/immutable.zig").trimPrefixComptime;

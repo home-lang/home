@@ -41,6 +41,14 @@ pub fn configureTransformOptionsForHomeVM(allocator: std.mem.Allocator, _args: a
     return try configureTransformOptionsForHome(allocator, args);
 }
 
+pub fn configureTransformOptionsForBunVM(_: std.mem.Allocator, _args: anytype) !@TypeOf(_args) {
+    var args = _args;
+    if (@hasField(@TypeOf(args), "write")) args.write = false;
+    if (@hasField(@TypeOf(args), "resolve")) args.resolve = .lazy;
+    if (@hasField(@TypeOf(args), "target")) args.target = .bun;
+    return args;
+}
+
 pub fn configureTransformOptionsForHome(_: std.mem.Allocator, _args: api.TransformOptions) !api.TransformOptions {
     var args = _args;
     args.target = api.Target.home;

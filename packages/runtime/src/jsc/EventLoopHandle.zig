@@ -25,17 +25,8 @@ pub const EventLoopKind = enum(u8) {
     mini,
 };
 
-/// Sized placeholder for the JS event loop (`jsc.EventLoop`). Upstream the
-/// real type carries `virtual_machine`, `global`, `signal_handler`, and the
-/// uSockets loop — all of which re-attach with `VirtualMachine` in 12.2.
-pub const EventLoop = struct {
-    virtual_machine: *home_rt.jsc.VirtualMachine = undefined,
-    global: *home_rt.jsc.JSGlobalObject = undefined,
-};
-
-/// Opaque placeholder for the headless mini event loop (`jsc.MiniEventLoop`).
-/// Used by build / install commands when no JS runtime is around.
-pub const MiniEventLoop = opaque {};
+pub const EventLoop = @import("./event_loop.zig").EventLoop;
+pub const MiniEventLoop = @import("../event_loop/MiniEventLoop.zig");
 
 /// Plain-data placeholder for `jsc.ConcurrentTask`. Real one lives in
 /// `Task.zig` once it lands; it's a tagged-pointer union, 8 bytes wide.
@@ -53,11 +44,40 @@ pub const EventLoopHandle = union(EventLoopKind) {
     js: *EventLoop,
     mini: *MiniEventLoop,
 
+    pub fn globalObject(this: EventLoopHandle) ?*home_rt.jsc.JSGlobalObject {
+        return switch (this) {
+            .js => this.js.global,
+            .mini => null,
+        };
+    }
+
+    pub fn bunVM(this: EventLoopHandle) ?*home_rt.jsc.VirtualMachine {
+        return switch (this) {
+            .js => this.js.virtual_machine,
+            .mini => null,
+        };
+    }
+
     pub fn cast(this: EventLoopHandle, comptime tag: EventLoopKind) switch (tag) {
         .js => *EventLoop,
         .mini => *MiniEventLoop,
     } {
         return @field(this, @tagName(tag));
+    }
+
+    pub fn init(context: anytype) EventLoopHandle {
+        const Context = @TypeOf(context);
+        return switch (Context) {
+            *home_rt.jsc.VirtualMachine => .{ .js = context.eventLoop() },
+            *EventLoop => .{ .js = context },
+            *MiniEventLoop => .{ .mini = context },
+            *home_rt.jsc.AnyEventLoop => switch (context.*) {
+                .js => .{ .js = context.js },
+                .mini => .{ .mini = &context.mini },
+            },
+            EventLoopHandle => context,
+            else => @compileError("Invalid context type for EventLoopHandle.init " ++ @typeName(Context)),
+        };
     }
 };
 

@@ -620,20 +620,12 @@ pub const HTMLString = extern struct {
         lol_html_str_free(.{ .ptr = @as([*]const u8, @ptrCast(ptr)), .len = len });
     }
 
-    // PORT NOTE: upstream returns a `bun.String` (the FFI-shared tagged-union
-    // string). `bun.String`, `bun.strings.isAllASCII`, and the `lolhtml_jsc`
-    // bridge haven't been ported yet (JSC-tied). The body is preserved
-    // verbatim under a comptime gate so the surface compiles standalone; the
-    // callable path re-attaches alongside the JSC port.
-    pub fn toString(this: HTMLString) void {
-        _ = this;
-        // Upstream body (commented out — depends on bun.String + bun.strings.isAllASCII):
-        //   const bytes = this.slice();
-        //   if (bytes.len > 0 and bun.strings.isAllASCII(bytes)) {
-        //       return bun.String.createExternal([*]u8, bytes, true, @constCast(bytes.ptr), &deinit_external);
-        //   }
-        //   defer this.deinit();
-        //   return bun.String.cloneUTF8(bytes);
+    pub fn toString(this: HTMLString) bun.String {
+        return bun.String.fromBytes(this.slice());
+    }
+
+    pub fn toJS(this: HTMLString, globalThis: *bun.jsc.JSGlobalObject) bun.JSError!bun.jsc.JSValue {
+        return this.toString().toJS(globalThis);
     }
 
     // pub const toJS = @import("../runtime/api/lolhtml_jsc.zig").htmlStringToJS;

@@ -385,8 +385,10 @@ pub fn BabyList(comptime Type: type) type {
         ) OOM!void {
             if ((comptime safety_checks) and this.len == this.cap) this.assertOwned();
             var list_ = this.listManaged(allocator);
-            const writer = list_.writer();
-            try writer.print(fmt, args);
+            var allocating = std.Io.Writer.Allocating.init(allocator);
+            defer allocating.deinit();
+            allocating.writer.print(fmt, args) catch return error.OutOfMemory;
+            try list_.appendSlice(allocating.written());
             this.update(list_);
         }
 

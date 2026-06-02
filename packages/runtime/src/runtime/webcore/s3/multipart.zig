@@ -465,7 +465,7 @@ pub const MultiPartUpload = struct {
                 bun.default_allocator.free(tag.etag);
             }
             this.multipart_etags.deinit(bun.default_allocator);
-            this.multipart_etags = .{};
+            this.multipart_etags = .empty;
             bun.handleOom(this.multipart_upload_list.appendSlice(
                 bun.default_allocator,
                 "</CompleteMultipartUpload>",

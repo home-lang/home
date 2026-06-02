@@ -166,12 +166,8 @@ const home_rt = @import("home");
 // ============================================================================
 
 const jsc = struct {
-    pub const JSGlobalObject = opaque {};
-    pub const JSValue = enum(i64) {
-        zero = 0,
-        js_undefined = 0xa,
-        _,
-    };
+    pub const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+    pub const JSValue = home_rt.jsc.JSValue;
 
     /// 8-byte-aligned task struct, big enough that the low 3 bits of its
     /// embedded data slot are free for the tag pack.

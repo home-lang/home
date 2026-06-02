@@ -124,7 +124,8 @@ noinline fn ensureCacheDirectory(this: *PackageManager) std.Io.Dir {
             const cache_dir = fetchCacheDirectoryPath(this.env, &this.options);
             this.cache_directory_path = bun.handleOom(this.allocator.dupeZ(u8, cache_dir.path));
 
-            return std.fs.cwd().makeOpenPath(cache_dir.path, .{}) catch {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            return std.Io.Dir.cwd().createDirPathOpen(io, cache_dir.path, .{}) catch {
                 this.options.enable.cache = false;
                 this.allocator.free(this.cache_directory_path);
                 continue :loop;

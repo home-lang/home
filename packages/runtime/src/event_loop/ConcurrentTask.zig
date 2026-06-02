@@ -103,7 +103,7 @@ pub fn createFrom(task: anytype) *ConcurrentTask {
 pub fn fromCallback(ptr: anytype, comptime callback: anytype) *ConcurrentTask {
     markBinding(@src());
 
-    return create(ManagedTask.New(std.meta.Child(@TypeOf(ptr)), callback).init(ptr));
+    return create(Task.init(ManagedTask.New(std.meta.Child(@TypeOf(ptr)), callback).init(ptr)));
 }
 
 pub fn from(this: *ConcurrentTask, of: anytype, auto_deinit: AutoDeinit) *ConcurrentTask {
@@ -135,7 +135,14 @@ pub const Task = extern struct {
     ptr: ?*anyopaque = null,
 
     pub fn init(ctx: anytype) Task {
-        return .{ .ptr = @ptrCast(ctx) };
+        const T = @TypeOf(ctx);
+        if (@typeInfo(T) == .pointer) {
+            return .{ .ptr = @ptrCast(ctx) };
+        }
+
+        const ptr = home_rt.handleOom(home_rt.default_allocator.create(T));
+        ptr.* = ctx;
+        return .{ .ptr = @ptrCast(ptr) };
     }
 };
 

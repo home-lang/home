@@ -8,9 +8,8 @@
 // CallFrame / JSFunction / ZigString / ArrayBuffer / heap_breakdown /
 // VirtualMachine.arena.dumpStats):
 //   - `jsc.JSGlobalObject`, `jsc.CallFrame`, `jsc.JSFunction`,
-//     `jsc.ArrayBuffer`, `jsc.ZigString`, `jsc.JSValue`, `bun.JSError`
-//     are modelled as local opaques + `enum(i64)`. The hot bodies
-//     (`gcAggressionLevel`, `arrayBufferToString`, `dump_mimalloc`)
+//     `jsc.ArrayBuffer`, `jsc.ZigString`, `jsc.JSValue`, `bun.JSError`.
+//     The hot bodies (`gcAggressionLevel`, `arrayBufferToString`, `dump_mimalloc`)
 //     are parked under the same comptime gate used by
 //     `home_rt/jsc/JSArray.zig` so the file compiles standalone.
 //   - `create()` returns `.zero` instead of building a JS object; the
@@ -26,16 +25,8 @@ const home_rt = @import("home");
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 const CallFrame = @import("home").jsc.CallFrame;
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-
-    pub fn jsNumber(_: anytype) JSValue {
-        return .zero;
-    }
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = home_rt.JSError;
 
 extern fn dump_zone_malloc_stats() void;
 

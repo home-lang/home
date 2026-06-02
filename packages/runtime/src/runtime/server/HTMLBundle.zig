@@ -12,11 +12,15 @@
 
 const std = @import("std");
 const bake = @import("../bake/bake.zig");
+const jsc = @import("home").jsc;
 
 pub const HTMLBundle = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
     ref_count: usize = 1,
+
+    pub const Route = @import("HTMLBundle.zig").Route;
+    pub const HTMLBundleRoute = @import("HTMLBundle.zig").Route;
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !HTMLBundle {
         return .{
@@ -38,11 +42,19 @@ pub const HTMLBundle = struct {
         if (this.ref_count > 0) this.ref_count -= 1;
     }
 
-    pub fn getIndex(this: *const HTMLBundle) []const u8 {
+    pub fn getIndexForRoute(this: *const HTMLBundle) []const u8 {
         return this.path;
     }
 
-    pub fn route(this: *HTMLBundle) Route {
+    pub fn getIndex(_: *HTMLBundle, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn finalize(this: *HTMLBundle) void {
+        this.deinit();
+    }
+
+    pub fn route(this: *HTMLBundle) @import("HTMLBundle.zig").Route {
         this.ref();
         return .{
             .bundle = this,
@@ -327,7 +339,7 @@ test "HTMLBundle init owns the imported path" {
     var bundle = try HTMLBundle.init(std.testing.allocator, "index.html");
     defer bundle.deinit();
 
-    try std.testing.expectEqualStrings("index.html", bundle.getIndex());
+    try std.testing.expectEqualStrings("index.html", bundle.getIndexForRoute());
     try std.testing.expectEqual(@as(usize, 1), bundle.ref_count);
 }
 

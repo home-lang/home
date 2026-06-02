@@ -7,27 +7,8 @@
 // JSC bridge re-attaches in Phase 12.2.
 
 const std = @import("std");
-
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-const JSValue = opaque {
-    extern fn JSValue__jsTypeLoose(JSValue) u8;
-    pub fn jsTypeLoose(self: *const JSValue) JSType {
-        return @enumFromInt(JSValue__jsTypeLoose(self.*));
-    }
-
-    extern fn JSValue__asPtr(JSValue) ?*anyopaque;
-    pub fn asEncodedPtr(self: *const JSValue) ?*anyopaque {
-        return JSValue__asPtr(self.*);
-    }
-};
-
-// JSC bridge JSType stubbed (only the .Map tag is referenced) —
-// re-attaches in Phase 12.2.
-const JSType = enum(u8) {
-    Unknown = 0,
-    Map = 1,
-    _,
-};
+const bun = @import("home");
+const JSValue = bun.jsc.JSValue;
 
 /// Opaque type for working with JavaScript `Map` objects.
 pub const JSMap = opaque {
@@ -64,8 +45,8 @@ pub const JSMap = opaque {
     ///
     /// Returns `null` if the value is not a Map.
     pub fn fromJS(value: *const JSValue) ?*JSMap {
-        if (value.jsTypeLoose() == .Map) {
-            const ptr = value.asEncodedPtr() orelse return null;
+        if (value.*.jsTypeLoose() == .Map) {
+            const ptr = value.*.asEncoded().asPtr orelse return null;
             return @ptrCast(@alignCast(ptr));
         }
         return null;
@@ -74,9 +55,4 @@ pub const JSMap = opaque {
 
 test "JSMap is an opaque pointer-only type" {
     try std.testing.expect(@sizeOf(*JSMap) == @sizeOf(usize));
-}
-
-test "JSType.Map tag is reachable" {
-    const t: JSType = .Map;
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(t));
 }

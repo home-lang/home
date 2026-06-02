@@ -68,7 +68,7 @@ pub const FD = packed struct(backing_int) {
     }
 
     pub fn cwd() FD {
-        return .fromNative(std.fs.cwd().fd);
+        return .fromNative(std.Io.Dir.cwd().handle);
     }
 
     pub fn stdin() FD {
@@ -92,20 +92,20 @@ pub const FD = packed struct(backing_int) {
         return windows_cached_stderr;
     }
 
-    pub fn fromStdFile(file: std.fs.File) FD {
+    pub fn fromStdFile(file: anytype) FD {
         return .fromNative(file.handle);
     }
 
-    pub fn fromStdDir(dir: std.fs.Dir) FD {
-        return .fromNative(dir.fd);
+    pub fn fromStdDir(dir: std.Io.Dir) FD {
+        return .fromNative(dir.handle);
     }
 
-    pub fn stdFile(fd: FD) std.fs.File {
+    pub fn stdFile(fd: FD) std.Io.File {
+        return .{ .handle = fd.native(), .flags = .{ .nonblocking = false } };
+    }
+
+    pub fn stdDir(fd: FD) std.Io.Dir {
         return .{ .handle = fd.native() };
-    }
-
-    pub fn stdDir(fd: FD) std.fs.Dir {
-        return .{ .fd = fd.native() };
     }
 
     /// Perform different logic for each kind of windows file descriptor
@@ -488,11 +488,29 @@ pub const FD = packed struct(backing_int) {
     }
 
     pub fn makePath(dir: FD, comptime T: type, subpath: []const T) !void {
-        return switch (T) {
-            u8 => bun.makePath(dir.stdDir(), subpath),
-            u16 => bun.makePathW(dir.stdDir(), subpath),
-            else => @compileError("unexpected type"),
-        };
+        if (comptime T != u8) return error.Unsupported;
+        if (subpath.len == 0) return;
+        if (subpath.len >= std.Io.Dir.max_path_bytes) return error.NameTooLong;
+
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        @memcpy(buf[0..subpath.len], subpath);
+
+        var end: usize = 0;
+        while (end < subpath.len) {
+            while (end < subpath.len and (buf[end] == '/' or buf[end] == '\\')) end += 1;
+            while (end < subpath.len and buf[end] != '/' and buf[end] != '\\') end += 1;
+            if (end == 0) continue;
+
+            const has_separator = end < subpath.len;
+            const saved = if (has_separator) buf[end] else 0;
+            buf[end] = 0;
+            const rc = std.c.mkdirat(dir.native(), @ptrCast(&buf), 0o777);
+            switch (std.c.errno(rc)) {
+                .SUCCESS, .EXIST => {},
+                else => |err| return bun.errnoToZigErr(err),
+            }
+            if (has_separator) buf[end] = saved;
+        }
     }
 
     // TODO: make our own version of deleteTree

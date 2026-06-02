@@ -18,15 +18,8 @@
 const std = @import("std");
 const home_rt = @import("home");
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {
-    // Real upstream has `hasException(): bool` which checks the VM. The
-    // local fromJS/hrefFromJS paths defer the check to the JSC bridge.
-    pub fn hasException(_: *JSGlobalObject) bool {
-        return false;
-    }
-};
-const JSValue = @import("home").jsc.JSValue;
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+const JSValue = home_rt.jsc.JSValue;
 
 // The real `bun.String` (`BunString`, `string/string.zig`) is now ported, so
 // the URL extern shims return / accept it directly — matching upstream, where
@@ -34,7 +27,7 @@ const JSValue = @import("home").jsc.JSValue;
 // placeholder while `bun.String` was unported.)
 const String = home_rt.String;
 
-const JSError = error{JSError};
+const JSError = home_rt.JSError;
 
 pub const URL = opaque {
     extern fn URL__fromJS(JSValue, *JSGlobalObject) ?*URL;

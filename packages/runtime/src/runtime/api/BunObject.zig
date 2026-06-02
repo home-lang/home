@@ -766,7 +766,12 @@ pub fn sleepSync(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
         return globalObject.throwInvalidArguments("argument to sleepSync must not be negative, got {d}", .{milliseconds});
     }
 
-    std.Thread.sleep(@as(u64, @intCast(milliseconds)) * std.time.ns_per_ms);
+    const sleep_ns = @as(u64, @intCast(milliseconds)) * std.time.ns_per_ms;
+    var req = std.c.timespec{
+        .sec = @intCast(sleep_ns / std.time.ns_per_s),
+        .nsec = @intCast(sleep_ns % std.time.ns_per_s),
+    };
+    _ = nanosleep(&req, null);
     return .js_undefined;
 }
 
@@ -852,14 +857,13 @@ fn doResolveWithArgs(ctx: *jsc.JSGlobalObject, specifier: bun.String, from: bun.
     if (!query_string.isEmpty()) {
         var stack = bun.stackFallback(1024, ctx.allocator());
         const allocator = stack.get();
-        var arraylist = std.array_list.Managed(u8).initCapacity(allocator, 1024) catch unreachable;
-        defer arraylist.deinit();
-        try arraylist.writer().print("{f}{f}", .{
+        const resolved = try std.fmt.allocPrint(allocator, "{f}{f}", .{
             errorable.result.value,
             query_string,
         });
+        defer allocator.free(resolved);
 
-        return ZigString.initUTF8(arraylist.items).toJS(ctx);
+        return ZigString.initUTF8(resolved).toJS(ctx);
     }
 
     return errorable.result.value.toJS(ctx);
@@ -1688,8 +1692,7 @@ pub const JSZlib = struct {
                     defer reader.deinit();
                     return globalThis.throwValue(ZigString.init(reader.errorMessage() orelse "Zlib returned an error").toErrorInstance(globalThis));
                 };
-                reader.list = .{ .items = reader.list.items };
-                reader.list.capacity = reader.list.items.len;
+                reader.list = std.ArrayListUnmanaged(u8).fromOwnedSlice(reader.list.items);
                 reader.list_ptr = &reader.list;
 
                 var array_buffer = jsc.ArrayBuffer.fromBytes(reader.list.items, .Uint8Array);
@@ -1795,8 +1798,7 @@ pub const JSZlib = struct {
                     defer reader.deinit();
                     return globalThis.throwValue(ZigString.init(reader.errorMessage() orelse "Zlib returned an error").toErrorInstance(globalThis));
                 };
-                reader.list = .{ .items = bun.handleOom(reader.list.toOwnedSlice(allocator)) };
-                reader.list.capacity = reader.list.items.len;
+                reader.list = std.ArrayListUnmanaged(u8).fromOwnedSlice(bun.handleOom(reader.list.toOwnedSlice(allocator)));
                 reader.list_ptr = &reader.list;
 
                 var array_buffer = jsc.ArrayBuffer.fromBytes(reader.list.items, .Uint8Array);
@@ -2174,3 +2176,5 @@ const host_fn = bun.jsc.host_fn;
 
 const JSBundler = bun.jsc.API.JSBundler;
 const Transpiler = bun.jsc.API.JSTranspiler;
+
+extern "c" fn nanosleep(req: *const std.c.timespec, rem: ?*std.c.timespec) c_int;

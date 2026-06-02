@@ -38,7 +38,7 @@ pub const Snapshots = struct {
 
     const File = struct {
         id: TestRunner.File.ID,
-        file: std.fs.File,
+        file: std.Io.File,
     };
 
     /// Reset per-run snapshot counters to 0. Keys stay owned by the map until

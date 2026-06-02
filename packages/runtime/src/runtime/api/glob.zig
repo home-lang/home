@@ -36,8 +36,30 @@ pub const JSError = @import("home").JSError;
 
 const Glob = @This();
 
+pub const js = home_rt.jsc.Codegen.JSGlob;
+pub const toJS = js.toJS;
+pub const fromJS = js.fromJS;
+pub const fromJSDirect = js.fromJSDirect;
+
 pattern: []const u8,
 has_pending_activity: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+pub const WalkTask = struct {
+    has_pending_activity: ?*std.atomic.Value(usize) = null,
+
+    pub const AsyncGlobWalkTask = home_rt.jsc.ConcurrentPromiseTask(WalkTask);
+
+    pub fn run(this: *WalkTask) void {
+        if (this.has_pending_activity) |pending| {
+            decrPendingActivityFlag(pending);
+        }
+    }
+
+    pub fn then(this: *WalkTask, promise: anytype) home_rt.JSTerminated!void {
+        _ = this;
+        _ = promise;
+    }
+};
 
 /// GC accessor — wired into JSC's `hasPendingActivity` for the Glob class
 /// so the engine knows when the object is safe to finalize.
@@ -59,6 +81,11 @@ pub fn decrPendingActivityFlag(has_pending_activity: *std.atomic.Value(usize)) v
 /// outer struct lifetime under the skeleton surface.
 pub fn finalizePattern(this: *Glob, allocator: std.mem.Allocator) void {
     allocator.free(this.pattern);
+}
+
+pub fn finalize(this: *Glob) callconv(.c) void {
+    finalizePattern(this, home_rt.default_allocator);
+    home_rt.destroy(this);
 }
 
 // ---- Parked JSC entry points -----------------------------------------

@@ -1,4 +1,4 @@
-const EventLoop = @This();
+pub const EventLoop = @This();
 
 tasks: Queue = undefined,
 
@@ -397,7 +397,7 @@ pub fn autoTick(this: *EventLoop) void {
 
     if (loop.isActive()) {
         this.processGCTimer();
-        var event_loop_sleep_timer = if (comptime Environment.isDebug) std.time.Timer.start() catch unreachable;
+        var event_loop_sleep_timer = if (comptime Environment.isDebug) bun.Timer.start() catch unreachable;
         // for the printer, this is defined:
         var timespec: bun.timespec = if (Environment.isDebug) .{ .sec = 0, .nsec = 0 } else undefined;
         loop.tickWithTimeout(if (ctx.timer.getTimeout(&timespec, ctx)) &timespec else null);

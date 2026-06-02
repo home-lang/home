@@ -1062,9 +1062,6 @@ fn namedExportsToJS(global: *JSGlobalObject, named_exports: *JSAst.Ast.NamedExpo
         named_exports.count(),
     ) catch unreachable;
     defer allocator.free(names);
-    named_exports.sort(strings.StringArrayByIndexSorter{
-        .keys = named_exports.keys(),
-    });
     var i: usize = 0;
     while (named_exports_iter.next()) |entry| {
         names[i] = bun.String.fromBytes(entry.key_ptr.*);

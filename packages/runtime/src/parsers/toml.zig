@@ -138,7 +138,7 @@ pub const TOML = struct {
         var root = p.e(E.Object{}, p.lexer.loc());
         var head = root.data.e_object;
 
-        var stack = std.heap.stackFallback(@sizeOf(Rope) * 6, p.allocator);
+        var stack = bun.stackFallback(@sizeOf(Rope) * 6, p.allocator);
         const key_allocator = stack.get();
 
         while (true) {
@@ -220,7 +220,7 @@ pub const TOML = struct {
                         const loc = rope.head.loc;
                         assert(loc.start > 0);
                         const start: u32 = @intCast(loc.start);
-                        const key_name = std.mem.trimRight(u8, p.source().contents[start..rope_end], &std.ascii.whitespace);
+                        const key_name = std.mem.trimEnd(u8, p.source().contents[start..rope_end], &std.ascii.whitespace);
                         p.lexer.addError(start, "Cannot redefine key '{s}'", .{key_name});
                         return error.SyntaxError;
                     },
@@ -287,7 +287,7 @@ pub const TOML = struct {
             .t_open_brace => {
                 try p.lexer.next();
                 var is_single_line = !p.lexer.has_newline_before;
-                var stack = std.heap.stackFallback(@sizeOf(Rope) * 6, p.allocator);
+                var stack = bun.stackFallback(@sizeOf(Rope) * 6, p.allocator);
                 const key_allocator = stack.get();
                 const expr = p.e(E.Object{}, loc);
                 const obj = expr.data.e_object;

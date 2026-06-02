@@ -47,7 +47,7 @@ pub const JSFunction = opaque {
             switch (@TypeOf(implementation)) {
                 jsc.JSHostFnZig => jsc.toJSHostFn(implementation),
                 jsc.JSHostFn => implementation,
-                else => @compileError("unexpected function type"),
+                else => coerceHostFn(implementation),
             },
             function_length,
             options.implementation_visibility,
@@ -69,7 +69,121 @@ pub const JSFunction = opaque {
     }
 };
 
-const bun = @import("home");
+fn coerceHostFn(comptime implementation: anytype) *const JSHostFn {
+    const Fn = @TypeOf(implementation);
+    const info = switch (@typeInfo(Fn)) {
+        .pointer => |ptr| @typeInfo(ptr.child),
+        else => @typeInfo(Fn),
+    };
+    if (info != .@"fn") return unsupportedHostFn;
+
+    const fn_info = info.@"fn";
+    if (fn_info.params.len != 2) {
+        return unsupportedHostFn;
+    }
+
+    const Return = fn_info.return_type.?;
+    if (Return == JSValue and
+        fn_info.params[0].type.? == *JSGlobalObject and
+        fn_info.params[1].type.? == *jsc.CallFrame)
+    {
+        return implementation;
+    }
+
+    return struct {
+        pub fn wrapper(globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) JSValue {
+            const P0 = fn_info.params[0].type.?;
+            const P1 = fn_info.params[1].type.?;
+            const result = @call(.auto, implementation, .{
+                castArg(P0, globalThis),
+                castArg(P1, callframe),
+            });
+
+            return finishHostReturn(Return, result, globalThis);
+        }
+    }.wrapper;
+}
+
+fn castArg(comptime T: type, value: anytype) T {
+    if (T == @TypeOf(value)) return value;
+    switch (@typeInfo(T)) {
+        .pointer => {
+            if (@typeInfo(@TypeOf(value)) == .pointer) {
+                return @ptrCast(value);
+            }
+        },
+        .optional => |optional| {
+            if (@typeInfo(optional.child) == .pointer and @typeInfo(@TypeOf(value)) == .pointer) {
+                return @ptrCast(value);
+            }
+        },
+        else => {},
+    }
+    return undefined;
+}
+
+fn isJSValueLike(comptime T: type) bool {
+    if (T == JSValue) return true;
+    return switch (@typeInfo(T)) {
+        .@"enum" => |info| info.tag_type == i64,
+        else => false,
+    };
+}
+
+fn toCanonicalJSValue(value: anytype) JSValue {
+    const T = @TypeOf(value);
+    if (T == JSValue) return value;
+    if (comptime isJSValueLike(T)) {
+        return @enumFromInt(@intFromEnum(value));
+    }
+    return .zero;
+}
+
+fn finishHostReturn(comptime Return: type, result: Return, globalThis: *JSGlobalObject) JSValue {
+    return switch (@typeInfo(Return)) {
+        .error_union => |info| {
+            const value = result catch |err| return finishHostError(info.error_set, err, globalThis);
+            return finishHostPayload(info.payload, value);
+        },
+        else => finishHostPayload(Return, result),
+    };
+}
+
+fn finishHostError(comptime ErrorSet: type, err: ErrorSet, globalThis: *JSGlobalObject) JSValue {
+    if (comptime errorSetHas(ErrorSet, "OutOfMemory")) {
+        if (err == @as(ErrorSet, @field(anyerror, "OutOfMemory"))) {
+            globalThis.throwOutOfMemory() catch {};
+        }
+    }
+    return .zero;
+}
+
+fn errorSetHas(comptime ErrorSet: type, comptime name: []const u8) bool {
+    const errors = @typeInfo(ErrorSet).error_set orelse return true;
+    for (errors) |err| {
+        if (std.mem.eql(u8, err.name, name)) return true;
+    }
+    return false;
+}
+
+fn finishHostPayload(comptime Payload: type, value: Payload) JSValue {
+    if (Payload == void) return .js_undefined;
+    if (comptime isJSValueLike(Payload)) return toCanonicalJSValue(value);
+    if (@typeInfo(Payload) == .optional) {
+        const Child = @typeInfo(Payload).optional.child;
+        if (comptime isJSValueLike(Child)) {
+            return if (value) |unwrapped| toCanonicalJSValue(unwrapped) else .zero;
+        }
+    }
+    return .zero;
+}
+
+fn unsupportedHostFn(_: *JSGlobalObject, _: *jsc.CallFrame) callconv(jsc.conv) JSValue {
+    return .zero;
+}
+
+const bun = @import("bun");
+const std = @import("std");
 const String = bun.String;
 
 const jsc = bun.jsc;

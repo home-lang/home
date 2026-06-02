@@ -30,11 +30,7 @@ const String = extern struct {
     pub const empty: String = .{};
 };
 
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-pub const JSValue = enum(i64) {
-    zero = 0,
-    _,
-};
+pub const JSValue = @import("home").jsc.JSValue;
 
 /// Mirrors `build/*/codegen/ResolvedSourceTag.zig`. The full `(1 << 9) | id`
 /// hardcoded-module half is generated at build time from `HardcodedModule`

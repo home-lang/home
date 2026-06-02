@@ -252,7 +252,7 @@ pub fn addressToString(address: *const bun.net.Address) bun.OOM!bun.String {
             });
         },
         std.posix.AF.INET6 => {
-            var stack = std.heap.stackFallback(512, default_allocator);
+            var stack = bun.stackFallback(512, default_allocator);
             const allocator = stack.get();
             var out = try std.fmt.allocPrint(allocator, "{f}", .{address.*});
             defer allocator.free(out);
@@ -262,10 +262,6 @@ pub fn addressToString(address: *const bun.net.Address) bun.OOM!bun.String {
             return String.cloneLatin1(out[1 .. out.len - 1 - std.fmt.count("{d}", .{address.in6.getPort()}) - 1]);
         },
         std.posix.AF.UNIX => {
-            if (comptime std.net.has_unix_sockets) {
-                return String.cloneLatin1(&address.un.path);
-            }
-
             return String.empty;
         },
         else => return String.empty,

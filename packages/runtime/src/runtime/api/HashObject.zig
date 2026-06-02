@@ -7,8 +7,8 @@
 //
 // Stubs (re-attach in Phase 12.2 when home_rt grows the matching surface):
 //   - `jsc.JSGlobalObject`, `jsc.CallFrame`, `jsc.JSFunction`,
-//     `jsc.ZigString`, `jsc.WebCore.Blob`, `bun.JSError` — opaques + an
-//     `enum(i64)` for `JSValue`. The `hashWrap` JS-bridge body is parked;
+//     `jsc.ZigString`, `jsc.WebCore.Blob`, `bun.JSError` — the `hashWrap`
+//     JS-bridge body is parked;
 //     the `create()` registry is kept as a comment so re-attachment is
 //     mechanical.
 //   - `bun.zlib.crc32` — zlib_sys hasn't landed in home_rt yet, so the
@@ -125,12 +125,8 @@ const home_rt = @import("home");
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 const CallFrame = @import("home").jsc.CallFrame;
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = home_rt.JSError;
 const JsHostFn = *const fn (*JSGlobalObject, *CallFrame) JSError!JSValue;
 
 test "HashObject: pure Wyhash dispatches via std.hash.Wyhash" {

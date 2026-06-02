@@ -19,19 +19,10 @@
 const std = @import("std");
 const home_rt = @import("home");
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = @import("home").jsc.JSValue;
-const VM = @import("./VM.zig").VM;
-
-/// `ZigString` C ABI stub: `{ptr, len}` view. Real ZigString uses the high
-/// bit of len to flag UTF-16; the bits don't matter for pass-through shims.
-const ZigString = extern struct {
-    _ptr: ?[*]const u8 = null,
-    _len: usize = 0,
-
-    pub const Empty: ZigString = .{};
-};
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+const JSValue = home_rt.jsc.JSValue;
+const VM = home_rt.jsc.VM;
+const ZigString = home_rt.jsc.ZigString;
 
 pub const DOMFormData = opaque {
     extern fn WebCore__DOMFormData__cast_(JSValue0: JSValue, arg1: *VM) ?*DOMFormData;

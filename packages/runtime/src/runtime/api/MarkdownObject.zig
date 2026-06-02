@@ -8,8 +8,7 @@
 // in-tree markdown renderer):
 //   - `jsc.JSGlobalObject`, `jsc.CallFrame`, `jsc.JSFunction`,
 //     `jsc.ZigString`, `jsc.Node.StringOrBuffer`, `bun.JSError`,
-//     `bun.String`, `bun.ArenaAllocator`, `bun.default_allocator` —
-//     opaque locals + an `enum(i64)` for `JSValue`. Same pattern as
+//     `bun.String`, `bun.ArenaAllocator`, `bun.default_allocator`. Same pattern as
 //     `TOMLObject.zig` / `JSON5Object.zig` / `YAMLObject.zig`.
 //   - `bun.md.{Options, BlockType, SpanType, AnsiTheme, renderToHtmlWithOptions,
 //     renderToAnsi, detectLightBackground}` — the in-tree markdown
@@ -34,12 +33,8 @@ const home_rt = @import("home");
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 const CallFrame = @import("home").jsc.CallFrame;
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = home_rt.JSError;
 
 // Upstream `create()` parked verbatim — depends on `JSValue.createEmptyObject`,
 // `ZigString.static`, and `jsc.JSFunction.create`. None on home_rt yet.

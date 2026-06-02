@@ -1,20 +1,11 @@
 // Copied from bun/src/jsc/DecodedJSValue.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// `jsc.JSCell`, `jsc.JSValue`, `ffi.NotCellMask`, `bun.assertf`, and the
-// `bun.bun_js.jsc` namespace are not yet ported. `JSCell` becomes a local
-// opaque stub; `JSValue` is the ABI-matching `enum(i64)` stub; the
-// `NotCellMask` constant is inlined from `FFI.zig` (the full FFI port lands
-// in Phase 12.2).
+// `bun.bun_js.jsc` is spelled `bun.jsc` in Home while the runtime port is
+// macros-off. The type identity and mask logic otherwise follow upstream.
 
 const std = @import("std");
 const builtin = @import("builtin");
-
-// JSC bridge JSCell stubbed — re-attaches in Phase 12.2.
-pub const JSCell = opaque {};
-
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-pub const JSValue = enum(i64) { zero = 0, _ };
 
 /// Inlined from upstream `FFI.zig`:
 ///   const NumberTag: c_longlong = 0xfffe_0000_0000_0000;
@@ -31,7 +22,7 @@ pub const DecodedJSValue = extern struct {
     /// ABI-compatible with `JSC::EncodedValueDescriptor`.
     pub const EncodedValueDescriptor = extern union {
         asInt64: i64,
-        ptr: ?*JSCell,
+        ptr: ?*jsc.JSCell,
         asBits: extern struct {
             payload: i32,
             tag: i32,
@@ -39,7 +30,7 @@ pub const DecodedJSValue = extern struct {
     };
 
     /// Equivalent to `JSC::JSValue::encode`.
-    pub fn encode(self: Self) JSValue {
+    pub fn encode(self: Self) jsc.JSValue {
         return @enumFromInt(self.u.asInt64);
     }
 
@@ -53,7 +44,7 @@ pub const DecodedJSValue = extern struct {
     }
 
     /// Equivalent to `JSC::JSValue::asCell`.
-    pub fn asCell(self: Self) ?*JSCell {
+    pub fn asCell(self: Self) ?*jsc.JSCell {
         std.debug.assert(self.isCell());
         return self.u.ptr;
     }
@@ -82,3 +73,6 @@ test "DecodedJSValue.encode round-trips" {
     const v: DecodedJSValue = .{ .u = .{ .asInt64 = 42 } };
     try std.testing.expectEqual(@as(i64, 42), @intFromEnum(v.encode()));
 }
+
+const bun = @import("home");
+const jsc = bun.jsc;

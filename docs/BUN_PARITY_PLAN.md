@@ -1,6 +1,6 @@
 # Bun Parity Plan - Home
 
-> **Status:** Planning baseline refreshed 2026-05-26. This is the
+> **Status:** Planning baseline refreshed 2026-06-02. This is the
 > agent-facing execution plan for Bun runtime parity. Detailed API status
 > remains in [`PARITY-BUN.md`](./PARITY-BUN.md), Node status in
 > [`PARITY-NODE.md`](./PARITY-NODE.md), and shim status in
@@ -66,6 +66,28 @@ Honest interpretation:
   parity is not a goal; Bun package-management behavior maps to Pantry
   gates instead.
 
+## 2026-06-02 Compile-Frontier Checkpoint
+
+- Broad Bun Zig integration work is active in `packages/runtime/src/`
+  across root `bun` aliases, install/patch/package-manager substrate,
+  HTTP/H2/H3 transport carriers, JSC identity helpers, WebCore/API
+  object stubs, event-loop/file-poll shims, and Zig 0.17 stdlib
+  compatibility.
+- Verified with
+  `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
+  The existing compiled test set still reports **48/48 tests passed**,
+  but the `home_test` compile gate is not green: latest visible frontier
+  is **122 compile errors**.
+- The current frontier is real integration work, not source presence:
+  remaining blockers are concentrated in HTTP/H3 identity, package-manager
+  directory/path helpers, tarball/libarchive exports, semver string
+  helpers, JSC promise/value identity, test-runner runner shape, node/fs
+  and N-API exports, WebCore fetch/body surfaces, Valkey JSC, socket/TLS
+  type identity, and N-API bootstrap symbol collisions.
+- Do not advance the audited **552 / 1193** integrated-file count from
+  this checkpoint. Count only after the compile gate is green or after a
+  fresh integration audit isolates tested build-wired files.
+
 ## Definition Of Parity
 
 Bun parity has four separate ledgers. Keep them separate in docs and PR
@@ -125,6 +147,30 @@ plugin corpus file established green Home-run bootstrap slices. The next
 work is intentionally split across big independent agent chunks:
 decorator semantics, `Bun.Transpiler` and macro surface, then
 Bake/server-heavy corpus.
+
+**Bookkeeping reconciliation (2026-06-02, `origin/main` `100a9d94`):**
+the copied bundler corpus is still **89** files. The committed subset
+allowlists cover **86 unique** bundler files (`66` in `minimal-js`, `5`
+more in `bundler-core-itbundled`, and `15` more unique files in the
+20-file `bundler-transpiler-bootstrap` tranche; several transpiler files
+intentionally overlap the minimal subset). `bundler/native-plugin.test.ts`
+is not in those subset arrays, but remains promoted by its single-file
+native-plugin evidence. Therefore the bundler parity ledger still has an
+exact **2-file** frontier:
+`bundler/transpiler/decorators.test.ts` and
+`bundler/transpiler/transpiler.test.js`.
+
+When the next parser-probe frontier shrink lands, update the docs by
+replacing the stale three-item compile-frontier wording
+(`PackageInstall` / `ThreadPool.Task` / `bun.sys.File`) with the new
+exact blockers, reproduction flags, and whether the probe is compile-only
+or behavioral. Do not move the two-file bundler ledger unless the exact
+copied corpus file passes through Home without a corpus-only semantic
+mock. Snapshot bookkeeping is still accurate: the minimal subset
+allowlists three snapshot fixture paths, and only
+`js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts`
+is an upstream `test.todo` whose snapshot matcher body is intentionally
+not executed.
 
 ### Phase 0 - Measurement And Audit Hygiene
 
@@ -409,13 +455,13 @@ Current corpus scale for the next ratchet:
 | Outside minimal-JS subset | 3621 | Remaining copied-corpus frontier after the bootstrap subset |
 
 Next large slice: **bundler corpus completion**. A local audit on
-2026-05-26 finds **89** copied `bundler/**/*.test.{ts,js}` files. The
-current green evidence covers **87 unique files**: 66 unique bundler
-files inside `minimal-js`, 5 more in `bundler-core-itbundled`, and 15
-more from the executable 20-file `bundler-transpiler-bootstrap`
-subset, plus `bundler/native-plugin.test.ts`. Promote the remaining
-exact **2** files into native Home corpus gates before expanding into
-more Bake or server-heavy tests.
+2026-06-02 finds **89** copied `bundler/**/*.test.{ts,js}` files. The
+current green evidence covers **87 unique files**: 86 files from the
+committed subset allowlists, plus the separately promoted
+`bundler/native-plugin.test.ts` single-file native-plugin gate. The
+remaining exact **2** files are
+`bundler/transpiler/decorators.test.ts` and
+`bundler/transpiler/transpiler.test.js`.
 
 First agent-sized chunk: **ordinary `itBundled` execution tranche**.
 Start with these broad, high-value files because they mostly exercise
@@ -1084,8 +1130,8 @@ normalization can stay as scaffolding, but they are not parity credit.
 
 Bundler tranche exit criteria:
 
-- The bundler ledger names every remaining unallowlisted `bundler/` file
-  and records its latest Home result.
+- The bundler ledger names every remaining not-yet-promoted `bundler/`
+  file and records its latest Home result.
 - Ordinary bundler tests pass natively with no local rewrites and no Home
   skip entries.
 - Any platform-specific exclusion exactly matches an upstream Bun skip or
@@ -1194,8 +1240,8 @@ dependency chain in the PR description before editing.
 ## Next Bulk Tranches
 
 1. **Bundler corpus completion.** Promote the remaining exact 2
-   unallowlisted upstream Bun `bundler/` corpus files as the next large
-   test slice before moving into Bake/server-heavy tests. The files are
+   not-yet-promoted upstream Bun `bundler/` corpus files as the next
+   native bundler slice. The files are
    `bundler/transpiler/decorators.test.ts`,
    `bundler/transpiler/transpiler.test.js`. The native-plugin fixture is
    already promoted with explicit node-gyp / `.node` / Node-API evidence.

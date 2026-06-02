@@ -210,6 +210,130 @@ pub fn double(number: f64) FormatDouble {
     return .{ .number = number };
 }
 
+pub const FormatLatin1 = struct {
+    text: []const u8,
+
+    pub fn format(self: FormatLatin1, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.writeAll(self.text);
+    }
+};
+
+pub fn latin1(text: []const u8) FormatLatin1 {
+    return .{ .text = text };
+}
+
+pub fn formatLatin1(text: []const u8, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    try writer.writeAll(text);
+}
+
+pub inline fn utf16(slice: []const u16) FormatUTF16 {
+    return .{ .buf = slice };
+}
+
+pub const FormatUTF16 = struct {
+    buf: []const u16,
+
+    pub fn format(self: FormatUTF16, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try formatUTF16Type(self.buf, writer);
+    }
+};
+
+pub const HostFormatter = struct {
+    host: []const u8,
+    port: ?u16 = null,
+    is_https: bool = false,
+
+    pub fn format(self: HostFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.writeAll(self.host);
+        const is_port_optional = self.port == null or
+            (self.is_https and self.port.? == 443) or
+            (!self.is_https and self.port.? == 80);
+        if (!is_port_optional) try writer.print(":{d}", .{self.port.?});
+    }
+};
+
+pub const SizeFormatter = struct {
+    value: usize = 0,
+    opts: Options = .{},
+
+    pub const Options = struct {
+        space_between_number_and_unit: bool = true,
+    };
+
+    pub fn format(self: SizeFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        const suffixes = " KMGTPE";
+        if (self.value == 0) {
+            return if (self.opts.space_between_number_and_unit) writer.writeAll("0 KB") else writer.writeAll("0KB");
+        }
+        if (self.value < 512) {
+            if (self.opts.space_between_number_and_unit) {
+                return writer.print("{d} bytes", .{self.value});
+            }
+            return writer.print("{d}B", .{self.value});
+        }
+
+        var value: f64 = @floatFromInt(self.value);
+        var suffix_index: usize = 0;
+        while (value >= 1000.0 and suffix_index + 1 < suffixes.len) : (suffix_index += 1) {
+            value /= 1000.0;
+        }
+        if (suffixes[suffix_index] == ' ') {
+            value /= 1000.0;
+            suffix_index = 1;
+        }
+        if (self.opts.space_between_number_and_unit) {
+            try writer.print("{d:.2} {c}B", .{ value, suffixes[suffix_index] });
+        } else {
+            try writer.print("{d:.2}{c}B", .{ value, suffixes[suffix_index] });
+        }
+    }
+};
+
+pub fn size(bytes: anytype, opts: SizeFormatter.Options) SizeFormatter {
+    return .{
+        .value = switch (@typeInfo(@TypeOf(bytes))) {
+            .float, .comptime_float => @intFromFloat(@max(bytes, 0)),
+            .int, .comptime_int => @intCast(@max(bytes, 0)),
+            else => @intCast(bytes),
+        },
+        .opts = opts,
+    };
+}
+
+pub const OutOfRangeOptions = struct {
+    min: i64 = std.math.maxInt(i64),
+    max: i64 = std.math.maxInt(i64),
+    field_name: []const u8,
+    msg: []const u8 = "",
+};
+
+pub fn outOfRange(value: anytype, options: OutOfRangeOptions) OutOfRangeFormatter(@TypeOf(value)) {
+    return .{ .value = value, .options = options };
+}
+
+pub fn OutOfRangeFormatter(comptime T: type) type {
+    return struct {
+        value: T,
+        options: OutOfRangeOptions,
+
+        pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
+            if (self.options.msg.len > 0) {
+                try writer.print("{s}: ", .{self.options.msg});
+            }
+            if (self.options.min != std.math.maxInt(i64) or self.options.max != std.math.maxInt(i64)) {
+                try writer.print("The value of \"{s}\" is out of range. It must be >= {d} and <= {d}. Received {d}", .{
+                    self.options.field_name,
+                    self.options.min,
+                    self.options.max,
+                    self.value,
+                });
+            } else {
+                try writer.print("The value of \"{s}\" is out of range. Received {d}", .{ self.options.field_name, self.value });
+            }
+        }
+    };
+}
+
 /// Faithful to upstream `bun_core/fmt.zig:257`. Streams a UTF-16 slice to the
 /// writer as UTF-8 in chunks. Bun reuses a shared temp buffer with recursion
 /// guards; Home uses a fixed stack chunk — identical observable behavior.

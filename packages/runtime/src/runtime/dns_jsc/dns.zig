@@ -1,4 +1,5 @@
 const dns = @This();
+const bun_env_var = @import("../../bun_core/env_var.zig");
 
 const GetAddrInfoAsyncCallback = fn (i32, ?*std.c.addrinfo, ?*anyopaque) callconv(.c) void;
 const INET6_ADDRSTRLEN = if (bun.Environment.isWindows) 65 else 46;
@@ -32,7 +33,7 @@ const LibInfo = struct {
 
     pub const getaddrinfo_async_start = struct {
         pub fn get() ?*const GetaddrinfoAsyncStart {
-            bun.Environment.onlyMac();
+            if (comptime !Environment.isMac) return null;
 
             return bun.sys.dlsymWithHandle(*const GetaddrinfoAsyncStart, "getaddrinfo_async_start", getHandle);
         }
@@ -40,20 +41,20 @@ const LibInfo = struct {
 
     pub const getaddrinfo_async_handle_reply = struct {
         pub fn get() ?*const GetaddrinfoAsyncHandleReply {
-            bun.Environment.onlyMac();
+            if (comptime !Environment.isMac) return null;
 
             return bun.sys.dlsymWithHandle(*const GetaddrinfoAsyncHandleReply, "getaddrinfo_async_handle_reply", getHandle);
         }
     }.get;
 
     pub fn get() ?*const GetaddrinfoAsyncCancel {
-        bun.Environment.onlyMac();
+        if (comptime !Environment.isMac) return null;
 
         return bun.C.dlsymWithHandle(*const GetaddrinfoAsyncCancel, "getaddrinfo_async_cancel", getHandle);
     }
 
     pub fn lookup(this: *Resolver, query: GetAddrInfo, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-        bun.Environment.onlyMac();
+        if (comptime !Environment.isMac) return LibC.lookup(this, query, globalThis);
 
         const getaddrinfo_async_start_ = LibInfo.getaddrinfo_async_start() orelse return LibC.lookup(this, query, globalThis);
 
@@ -1187,7 +1188,7 @@ pub const internal = struct {
     pub fn getMaxDNSTimeToLiveSeconds() u32 {
         // This is racy, but it's okay because the number won't be invalid, just stale.
         return __max_dns_time_to_live_seconds orelse {
-            const value = bun.env_var.BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS.get();
+            const value = bun_env_var.BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS.get();
             __max_dns_time_to_live_seconds = @truncate(@as(u64, @intCast(value)));
             return __max_dns_time_to_live_seconds.?;
         };
@@ -1562,7 +1563,7 @@ pub const internal = struct {
         };
         var notify = req.notify;
         defer notify.deinit(bun.default_allocator);
-        req.notify = .{};
+        req.notify = .empty;
         req.refcount -= 1;
 
         // is this correct, or should it go after the loop?
@@ -1653,7 +1654,7 @@ pub const internal = struct {
         }
 
         var poll = bun.Async.FilePoll.init(loop, .fromNative(@bitCast(machport)), .{}, InternalDNSRequest, req);
-        const rc = poll.register(loop.loop(), .machport, true);
+        const rc = poll.register(loop, .machport, true);
 
         if (rc == .err) {
             poll.deinit();

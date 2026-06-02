@@ -247,7 +247,7 @@ pub fn enqueuePackageForDownload(
     const task_id = Task.Id.forNPMPackage(name, version);
     var task_queue = try this.task_queue.getOrPut(this.allocator, task_id);
     if (!task_queue.found_existing) {
-        task_queue.value_ptr.* = .{};
+        task_queue.value_ptr.* = .empty;
     }
 
     try task_queue.value_ptr.append(

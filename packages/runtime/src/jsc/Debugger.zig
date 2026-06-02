@@ -43,7 +43,7 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) void {
     if (comptime Environment.enable_logs)
         Debugger.log("waitForDebugger: {f}", .{Output.ElapsedFormatter{
             .colors = Output.enable_ansi_colors_stderr,
-            .duration_ns = @truncate(@as(u128, @intCast(std.time.nanoTimestamp() - bun.cli.start_time))),
+            .duration_ns = @truncate(@as(u128, @intCast(nanoTimestamp() - bun.cli.start_time))),
         }});
 
     Bun__ensureDebugger(debugger.script_execution_context_id, debugger.wait_for_connection != .off);
@@ -83,7 +83,7 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) void {
                 this.eventLoop().autoTickActive();
 
                 if (comptime Environment.enable_logs)
-                    log("waited: {D}", .{@as(i64, @truncate(std.time.nanoTimestamp() - bun.cli.start_time))});
+                    log("waited: {D}", .{@as(i64, @truncate(nanoTimestamp() - bun.cli.start_time))});
             },
             .shortly => {
                 // Handle .incrementRefConcurrently
@@ -98,7 +98,7 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) void {
                 this.uwsLoop().tickWithTimeout(&deadline);
 
                 if (comptime Environment.enable_logs)
-                    log("waited: {D}", .{@as(i64, @truncate(std.time.nanoTimestamp() - bun.cli.start_time))});
+                    log("waited: {D}", .{@as(i64, @truncate(nanoTimestamp() - bun.cli.start_time))});
 
                 const elapsed = bun.timespec.now(.force_real_time);
                 if (elapsed.order(&deadline) != .lt) {
@@ -533,3 +533,9 @@ const Debugger = jsc.Debugger;
 const JSGlobalObject = jsc.JSGlobalObject;
 const VirtualMachine = jsc.VirtualMachine;
 const ZigException = jsc.ZigException;
+
+fn nanoTimestamp() i128 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return @as(i128, @intCast(ts.sec)) * std.time.ns_per_s + @as(i128, @intCast(ts.nsec));
+}

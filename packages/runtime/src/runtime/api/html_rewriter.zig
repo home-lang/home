@@ -5,7 +5,7 @@ pub const LOLHTMLContext = struct {
     pub const deref = RefCount.deref;
 
     ref_count: RefCount,
-    selectors: SelectorMap = .{},
+    selectors: SelectorMap = .empty,
     element_handlers: std.ArrayListUnmanaged(*ElementHandler) = .empty,
     document_handlers: std.ArrayListUnmanaged(*DocumentHandler) = .empty,
 
@@ -14,21 +14,21 @@ pub const LOLHTMLContext = struct {
             selector.deinit();
         }
         this.selectors.deinit(bun.default_allocator);
-        this.selectors = .{};
+        this.selectors = .empty;
 
         for (this.element_handlers.items) |handler| {
             handler.deinit();
             bun.default_allocator.destroy(handler);
         }
         this.element_handlers.deinit(bun.default_allocator);
-        this.element_handlers = .{};
+        this.element_handlers = .empty;
 
         for (this.document_handlers.items) |handler| {
             handler.deinit();
             bun.default_allocator.destroy(handler);
         }
         this.document_handlers.deinit(bun.default_allocator);
-        this.document_handlers = .{};
+        this.document_handlers = .empty;
 
         bun.destroy(this);
     }

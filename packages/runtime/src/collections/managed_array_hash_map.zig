@@ -49,6 +49,14 @@ pub fn ArrayHashMap(
             self.unmanaged.clearRetainingCapacity();
         }
 
+        pub fn capacity(self: Self) usize {
+            return self.unmanaged.capacity();
+        }
+
+        pub fn shrinkAndFree(self: *Self, new_len: usize) void {
+            self.unmanaged.shrinkAndFree(self.allocator, new_len);
+        }
+
         pub fn clearAndFree(self: *Self) void {
             self.unmanaged.clearAndFree(self.allocator);
         }

@@ -35,9 +35,8 @@ pub const CowString = CowSlice(u8);
 // pub const raw_ref_count = @import("./raw_ref_count.zig");
 // pub const RawRefCount = raw_ref_count.RawRefCount;
 
-// TODO(phase-12.1): port TaggedPointer / TaggedPointerUnion in a follow-up batch.
-// pub const TaggedPointer = @import("./tagged_pointer.zig").TaggedPointer;
-// pub const TaggedPointerUnion = @import("./tagged_pointer.zig").TaggedPointerUnion;
+pub const TaggedPointer = @import("./tagged_pointer.zig").TaggedPointer;
+pub const TaggedPointerUnion = @import("./tagged_pointer.zig").TaggedPointerUnion;
 
 // TODO(phase-12.1): port WeakPtr in a follow-up batch.
 // pub const WeakPtr = @import("./weak_ptr.zig").WeakPtr;

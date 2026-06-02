@@ -173,6 +173,12 @@ pub const Method = enum(u8) {
         return Map.get(str);
     }
 
+    pub fn fromJS(globalThis: *@import("home").jsc.JSGlobalObject, value: @import("home").jsc.JSValue) @import("home").JSError!?Method {
+        _ = globalThis;
+        _ = value;
+        return null;
+    }
+
     pub const Optional = union(enum) {
         any: void,
         method: Set,

@@ -45,8 +45,7 @@ pub fn New(comptime Type: type, comptime Callback: anytype) type {
 // (Phase 12.2). Keeping them inline here avoids polluting the aggregator
 // before the rest of the JSC surface is in place.
 
-// JSC bridge JSError stubbed — re-attaches in Phase 12.2.
-pub const JSError = error{ JSError, OutOfMemory };
+pub const JSError = home_rt.JSError;
 
 // JSC bridge Task stubbed — re-attaches in Phase 12.2.
 pub const Task = struct {

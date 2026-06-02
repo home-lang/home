@@ -31,11 +31,15 @@ const JSPromise = opaque {
 
     pub const Strong = struct {
         strong: StrongInner = .{},
+        value_: JSValueOpaque = .{},
 
         const StrongInner = struct {
             pub fn set(_: *StrongInner, _: *JSGlobalObject, _: JSValueOpaque) void {}
         };
 
+        pub fn value(this: *Strong) JSValueOpaque {
+            return this.value_;
+        }
         pub fn swap(_: *Strong) *JSPromise {
             unreachable; // stub
         }
@@ -43,9 +47,7 @@ const JSPromise = opaque {
     };
 };
 
-// Placeholder for JSValue's role in `promise.toJS()`. The real type is
-// `jsc.JSValue`; we just need *something* the strong handle can swallow.
-const JSValueOpaque = extern struct { bits: u64 = 0 };
+const JSValueOpaque = @import("./JSValue.zig").JSValue;
 
 // JSC bridge VirtualMachine stubbed — re-attaches in Phase 12.2.
 const VirtualMachine = opaque {

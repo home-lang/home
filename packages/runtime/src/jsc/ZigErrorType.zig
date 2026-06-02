@@ -6,11 +6,7 @@
 
 const std = @import("std");
 const ErrorCode = @import("ErrorCode.zig").ErrorCode;
-
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-const JSValue = extern struct {
-    bits: u64 = 0,
-};
+const JSValue = @import("home").jsc.JSValue;
 
 pub const ZigErrorType = extern struct {
     code: ErrorCode,

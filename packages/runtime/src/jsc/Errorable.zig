@@ -1,16 +1,13 @@
 // Copied from bun/src/jsc/Errorable.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// `ZigErrorType` and `bun.jsc.JSValue` are not yet ported. We inline the
-// `ZigErrorType` definition here as the source file is tiny (it's literally
-// `extern struct { code, value }`) and stub `JSValue` as an `i64`-shaped
-// enum to preserve ABI. Full JSValue wiring lands in Phase 12.2.
+// Home now exposes the canonical `bun.jsc.JSValue`; keep Errorable's ABI tied
+// to that identity instead of a local enum clone.
 
 const std = @import("std");
 const ErrorCode = @import("./ErrorCode.zig").ErrorCode;
 
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-pub const JSValue = enum(i64) { zero = 0, _ };
+pub const JSValue = @import("home").jsc.JSValue;
 
 /// Inlined from upstream `ZigErrorType.zig` (5-line file) so Errorable can be
 /// a leaf port. Phase 12.2 promotes this to its own file alongside JSValue.

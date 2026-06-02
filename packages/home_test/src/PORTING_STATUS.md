@@ -33,6 +33,18 @@ synthetic `native-js-test-runner-missing` blocker; delegated
 instead of Home's parser. It remains red until the native `bun:test` port
 and JSC host-call bridge close the unsupported surface.
 
+2026-06-02 `home_test` compile-frontier checkpoint: the current broad Bun
+runtime integration batch was verified with
+`/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
+The already-compiled test set still reports **48/48 tests passed**, but
+the `home_test` compile step remains red at **122 visible compile
+errors**. The dominant remaining surfaces are HTTP/H3 identity,
+package-manager/path/tarball helpers, JSC promise/value identity,
+test-runner runner state, node/fs and N-API exports, WebCore fetch/body,
+Valkey JSC, socket/TLS type identity, and bootstrap N-API symbol
+collisions. Treat this as a compile-frontier checkpoint, not as
+JS-visible `bun:test` parity.
+
 The `bundler-core-itbundled` tranche now executes all five selected
 bundler files through the bootstrap layer and passes: 295 passed, 0
 failed, 16 upstream todo on 2026-05-26. This tranche covers
@@ -67,6 +79,14 @@ after the transpiler/CLI/resolver tranche and native-plugin promotion is:
 |---|---|---|
 | Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` | Top-level legacy decorator lowering; next observed blocker is `SyntaxError: Invalid character: '@'` after import/type erasure |
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler` and broader transpiler API behavior |
+
+2026-06-02 source-inventory check: the committed subset arrays currently
+cover 86 unique bundler files; `native-plugin.test.ts` remains outside
+those arrays but is already promoted by the exact single-file
+node-gyp / `.node` / Node-API evidence below. The two-file frontier above
+is therefore still the right parity ledger, while the raw allowlist diff
+is expected to show `bundler/native-plugin.test.ts` beside the two
+not-yet-promoted transpiler files.
 
 Read-only corpus inventory on 2026-05-26, counted from
 `packages/runtime/test/bun-corpus` using `*.test.{ts,js,mjs,cjs}` and
@@ -1348,7 +1368,14 @@ tests through the `Bun.Transpiler` bootstrap model. It covers the
 upstream class-field parser crash regression for ZWJ and ZWNJ identifier
 continuation characters plus the invalid control-character field name
 diagnostic prefix from `transformSync()`.
-One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
+Snapshot corpus bookkeeping is still accurate as of the 2026-06-02
+inventory check. The minimal subset allowlists three snapshot fixture
+paths:
+`js/bun/test/snapshot-tests/existing-snapshots.test.ts`,
+`js/bun/test/snapshot-tests/snapshots/more.test.ts`, and
+`js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts`.
+Only the last one is an upstream `test.todo`, so only that snapshot
+matcher body is intentionally not executed. The source
 rewrite lowers named `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
 `import.meta.dir/path` to the same per-file metadata used for the

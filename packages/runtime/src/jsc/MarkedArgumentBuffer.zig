@@ -5,21 +5,13 @@
 // intact — the JSC bridge re-attaches in Phase 12.2.
 
 const std = @import("std");
-
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-// JSC bridge CallFrame stubbed — re-attaches in Phase 12.2.
-const CallFrame = @import("home").jsc.CallFrame;
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-// Modeled as an extern struct preserving the 64-bit EncodedJSValue C ABI.
-const JSValue = extern struct {
-    bits: u64 = 0,
-};
-// JSC bridge bun.JSError stubbed — re-attaches in Phase 12.2.
-const JSError = error{JSError};
-// JSC bridge JSHostFnZig stubbed — re-attaches in Phase 12.2. The real type is
-// `*const fn (*JSGlobalObject, *CallFrame) JSError!JSValue`.
-const JSHostFnZig = *const fn (*JSGlobalObject, *CallFrame) JSError!JSValue;
+const bun = @import("home");
+const jsc = bun.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const CallFrame = jsc.CallFrame;
+const JSValue = jsc.JSValue;
+const JSError = bun.JSError;
+const JSHostFnZig = jsc.JSHostFnZig;
 
 pub const MarkedArgumentBuffer = opaque {
     extern fn MarkedArgumentBuffer__append(args: *MarkedArgumentBuffer, value: JSValue) callconv(.c) void;

@@ -9,9 +9,8 @@
 //   - `jsc.JSGlobalObject`, `jsc.CallFrame`, `jsc.JSFunction`,
 //     `jsc.ZigString`, `jsc.JSPropertyIterator`, `jsc.wtf.StringBuilder`,
 //     `bun.JSError`, `bun.String`, `bun.StackCheck`, `bun.ArenaAllocator`,
-//     `bun.handleOom`, `bun.default_allocator` — opaque locals + an
-//     `enum(i64)` for `JSValue`. Same pattern as `TOMLObject.zig` /
-//     `JSONCObject.zig` / `lolhtml_jsc.zig`.
+//     `bun.handleOom`, `bun.default_allocator`. Same pattern as
+//     `TOMLObject.zig` / `JSONCObject.zig` / `lolhtml_jsc.zig`.
 //   - `bun.interchange.json5.JSON5Parser`, `bun.ast.Expr` / `Stmt`,
 //     `bun.ast.ASTMemoryAllocator`, `bun.logger.{Log, Source}`,
 //     `bun.js_lexer.{isIdentifierStart, isIdentifierContinue}` — every
@@ -33,12 +32,8 @@ const home_rt = @import("home");
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 const CallFrame = @import("home").jsc.CallFrame;
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = home_rt.JSError;
 
 // Upstream `create()` body parked verbatim — depends on
 // `JSValue.createEmptyObject`, `ZigString.static`, and

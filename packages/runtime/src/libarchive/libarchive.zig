@@ -334,7 +334,7 @@ pub const Archiver = struct {
 
     pub fn extractToDir(
         file_buffer: []const u8,
-        dir: std.fs.Dir,
+        dir: std.Io.Dir,
         ctx: ?*Archiver.Context,
         comptime ContextType: type,
         appender: ContextType,
@@ -656,20 +656,19 @@ pub const Archiver = struct {
         appender: FilePathAppender,
         comptime options: ExtractOptions,
     ) !u32 {
-        var dir: std.fs.Dir = brk: {
-            const cwd = std.fs.cwd();
-            cwd.makePath(
-                root,
-            ) catch {};
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var dir: std.Io.Dir = brk: {
+            const cwd = std.Io.Dir.cwd();
+            cwd.createDirPath(io, root) catch {};
 
             if (std.fs.path.isAbsolute(root)) {
-                break :brk try std.fs.openDirAbsolute(root, .{});
+                break :brk try std.Io.Dir.openDirAbsolute(io, root, .{});
             } else {
-                break :brk try cwd.openDir(root, .{});
+                break :brk try cwd.openDir(io, root, .{});
             }
         };
 
-        defer if (comptime options.close_handles) dir.close();
+        defer if (comptime options.close_handles) dir.close(io);
         return try extractToDir(file_buffer, dir, ctx, FilePathAppender, appender, options);
     }
 };

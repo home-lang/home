@@ -8,7 +8,6 @@
 const std = @import("std");
 
 pub const basename = std.fs.path.basename;
-pub const dirname = std.fs.path.dirname;
 pub const extension = std.fs.path.extension;
 pub const stem = std.fs.path.stem;
 pub const Platform = @import("paths/resolve_path.zig").Platform;
@@ -27,8 +26,14 @@ pub const joinStringBufZ = @import("paths/resolve_path.zig").joinStringBufZ;
 pub const lastIndexOfSep = @import("paths/resolve_path.zig").lastIndexOfSep;
 pub const lastIndexOfSepT = @import("paths/resolve_path.zig").lastIndexOfSepT;
 pub const PosixToWinNormalizer = @import("paths/resolve_path.zig").PosixToWinNormalizer;
+pub const z = @import("paths/resolve_path.zig").z;
 
-pub fn join(parts: []const []const u8, sep: std.fs.path.Style) []const u8 {
+pub fn dirname(path: []const u8, style: anytype) []const u8 {
+    _ = style;
+    return std.fs.path.dirname(path) orelse "";
+}
+
+pub fn join(parts: []const []const u8, sep: anytype) []const u8 {
     _ = sep;
     // Bun's `path.join(parts, .auto)` returns a comptime-flattened slice
     // that lives in a process-arena. Until the arena substrate lands we

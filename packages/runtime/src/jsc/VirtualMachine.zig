@@ -121,7 +121,7 @@ remap_stack_frames_mutex: bun.Mutex = .{},
 ///          []
 argv: []const []const u8 = &[_][]const u8{},
 
-origin_timer: std.time.Timer = undefined,
+origin_timer: bun.Timer = undefined,
 origin_timestamp: u64 = 0,
 /// For fake timers: override performance.now() with a specific value (in nanoseconds)
 /// When null, use the real timer. When set, return this value instead.
@@ -1087,6 +1087,12 @@ pub fn isWatcherEnabled(this: *VirtualMachine) bool {
 /// Instead of storing timestamp as a i128, we store it as a u64.
 /// We subtract the timestamp from Jan 1, 2000 (Y2K)
 pub const origin_relative_epoch = 946684800 * std.time.ns_per_s;
+fn nanoTimestamp() i128 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return @as(i128, @intCast(ts.sec)) * std.time.ns_per_s + @as(i128, @intCast(ts.nsec));
+}
+
 fn getOriginTimestamp() u64 {
     return @as(
         u64,
@@ -1094,7 +1100,7 @@ fn getOriginTimestamp() u64 {
             u128,
             // handle if they set their system clock to be before epoch
             @intCast(@max(
-                std.time.nanoTimestamp(),
+                nanoTimestamp(),
                 origin_relative_epoch,
             )),
         ) - origin_relative_epoch),
@@ -1135,7 +1141,7 @@ pub fn initWithModuleGraph(
         .source_mappings = undefined,
         .macros = MacroMap.init(allocator),
         .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
-        .origin_timer = std.time.Timer.start() catch @panic("Timers are not supported on this system."),
+        .origin_timer = bun.Timer.start() catch @panic("Timers are not supported on this system."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1264,7 +1270,7 @@ pub fn init(opts: Options) !*VirtualMachine {
         .source_mappings = undefined,
         .macros = MacroMap.init(allocator),
         .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = bun.Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1432,7 +1438,7 @@ pub fn initWorker(
         .source_mappings = undefined,
         .macros = MacroMap.init(allocator),
         .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = bun.Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1528,7 +1534,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .source_mappings = undefined,
         .macros = MacroMap.init(allocator),
         .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = bun.Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},

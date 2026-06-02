@@ -513,6 +513,14 @@ fn readSlice(
     return slice;
 }
 
+fn readStructFromReader(reader: anytype, comptime T: type) !T {
+    var value: T = undefined;
+    const bytes = std.mem.asBytes(&value);
+    const n = try reader.readSliceShort(bytes);
+    if (n != bytes.len) return error.TooSmall;
+    return value;
+}
+
 fn _onStructuredCloneDeserialize(
     globalThis: *jsc.JSGlobalObject,
     comptime Reader: type,
@@ -576,7 +584,7 @@ fn _onStructuredCloneDeserialize(
 
             switch (pathlike_tag) {
                 .fd => {
-                    const fd = try reader.readStruct(bun.FD);
+                    const fd = try readStructFromReader(reader, bun.FD);
 
                     var path_or_fd = jsc.Node.PathOrFileDescriptor{
                         .fd = fd,
@@ -673,7 +681,7 @@ pub fn onStructuredCloneDeserialize(globalThis: *jsc.JSGlobalObject, ptr: *[*]u8
     var buffer_stream = std.Io.Reader.fixed(ptr.*[0..total_length]);
 
     const result = _onStructuredCloneDeserialize(globalThis, @TypeOf(&buffer_stream), &buffer_stream) catch |err| switch (err) {
-        error.EndOfStream, error.TooSmall, error.InvalidValue => {
+        error.EndOfStream, error.TooSmall, error.ReadFailed, error.InvalidEnumTag => {
             return globalThis.throw("Blob.onStructuredCloneDeserialize failed", .{});
         },
         error.OutOfMemory => {

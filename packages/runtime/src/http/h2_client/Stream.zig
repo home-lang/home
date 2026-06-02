@@ -2,22 +2,14 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`, `bun` enum tag → `home`.
-// Imports rewritten: @import("bun") → @import("home"). The sibling
-// `ClientSession` / `H2Client` modules and the `HTTPClient` / `picohttp.Header`
-// types are not yet ported — local opaque/struct stubs stand in for the
-// pointer-typed fields so callers can spell `*Stream`. The actual frame
-// dispatch (which would dereference the stubs) re-lands alongside the full
-// h2 client port in a later wave.
+// Imports rewritten: @import("bun") → @import("home").
 
 //! One in-flight request on a multiplexed HTTP/2 `ClientSession`. Owned by the
 //! session's `streams` map; `client` is a weak back-pointer to the `HTTPClient`
 //! that the request belongs to (cleared before any terminal callback so the
 //! deliver loop never dereferences a freed client).
 
-// `bun.TrivialNew` / `bun.destroy` aren't in home_rt yet; the helper below
-// allocates from `home_rt.default_allocator` with the matching contract so
-// the upstream call sites compile unchanged.
-pub const new = trivialNew(@This());
+pub const new = home_rt.TrivialNew(@This());
 
 id: u31,
 session: *ClientSession,
@@ -80,7 +72,7 @@ pub fn deinit(this: *@This()) void {
     this.body_buffer.deinit(home_rt.default_allocator);
     this.decoded_bytes.deinit(home_rt.default_allocator);
     this.decoded_headers.deinit(home_rt.default_allocator);
-    destroy(this);
+    home_rt.destroy(this);
 }
 
 pub fn rst(this: *@This(), code: wire.ErrorCode) void {
@@ -118,73 +110,13 @@ pub inline fn remoteClosed(this: *const @This()) bool {
     return this.state == .half_closed_remote or this.state == .closed;
 }
 
-// ---------------------------------------------------------------------------
-// Local stubs (off-list bun.X symbols)
-// ---------------------------------------------------------------------------
-
-/// Sibling `ClientSession.zig` is parked alongside `dispatch.zig` /
-/// `encode.zig` (the frame state machine that the full client needs).
-/// An opaque stand-in lets `*ClientSession` typecheck; methods that route
-/// through it (`writeFrame`) are only reachable from `rst()` callers that
-/// have a real session in hand.
-pub const ClientSession = opaque {
-    pub fn writeFrame(
-        _: *ClientSession,
-        _: wire.FrameType,
-        _: u8,
-        _: u31,
-        _: []const u8,
-    ) void {}
-};
-
-/// Upstream `bun.http` (the HTTPClient struct) isn't ported yet — it's the
-/// fetch() state machine + its connection lookup tables. Use an opaque
-/// pointer so this file can spell `?*HTTPClient` for the weak back-ref.
-pub const HTTPClient = opaque {};
-
-/// `bun.picohttp.Header` is the trivial name+value byte-slice struct used
-/// by picohttpparser for parsed response headers. Mirror its shape here
-/// until the wider picohttp wrapper lands on `home_rt`.
-pub const picohttp = struct {
-    pub const Header = struct {
-        name: []const u8 = "",
-        value: []const u8 = "",
-    };
-};
-
-/// `../H2Client.zig` (the module-level live-counts + tuning constants) is
-/// also parked — only `live_streams` is touched from this file. Define a
-/// minimal stub so `H2.live_streams.fetchSub` still compiles; the same
-/// symbol will resolve through the home_rt re-export once H2Client lands.
-const H2 = struct {
-    pub var live_streams: std.atomic.Value(u32) = .init(0);
-};
-
-/// Shim for `bun.TrivialNew` — upstream's helper that returns a `fn(T)
-/// *T` closure allocating from `bun.default_allocator`. The home_rt
-/// substrate hasn't re-attached the smart-pointer helpers yet
-/// (TaggedPointer family is parked); mirror the signature so call sites
-/// (`Stream.new(.{...})`) typecheck unchanged.
-fn trivialNew(comptime T: type) fn (T) *T {
-    return struct {
-        fn create(value: T) *T {
-            const ptr = home_rt.default_allocator.create(T) catch
-                @panic("OOM in Stream.new");
-            ptr.* = value;
-            return ptr;
-        }
-    }.create;
-}
-
-/// Shim for `bun.destroy` — frees a heap pointer allocated via
-/// `home_rt.default_allocator.create`.
-fn destroy(ptr: anytype) void {
-    home_rt.default_allocator.destroy(ptr);
-}
-
-const wire = home_rt.http.H2FrameParser;
 const std = @import("std");
 const home_rt = @import("home");
+const ClientSession = @import("./ClientSession.zig");
+const HTTPClient = @import("../http.zig");
+const H2 = @import("../H2Client.zig");
+const picohttp = home_rt.picohttp;
+const wire = @import("../H2FrameParser.zig");
 
 test "Stream.State transitions: sentEndStream open -> half_closed_local" {
     var s: @This() = .{

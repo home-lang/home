@@ -23,24 +23,15 @@
 const std = @import("std");
 const CommonAbortReason = @import("./CommonAbortReason.zig").CommonAbortReason;
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = enum(i64) {
-    zero = 0,
-    _,
-
-    pub fn isUndefined(_: JSValue) bool {
-        return false;
-    }
-};
+const bun = @import("bun");
+const jsc = bun.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSValue = jsc.JSValue;
 
 // `bun.cast(*T, ptr)` is equivalent to `@ptrCast(@alignCast(ptr))`.
 fn castPtr(comptime T: type, p: *anyopaque) T {
     return @ptrCast(@alignCast(p));
 }
-
-// `jsc.markBinding` stubbed — re-attaches in Phase 12.2.
-inline fn markBinding(_: std.builtin.SourceLocation) void {}
 
 pub const AbortSignal = opaque {
     extern fn WebCore__AbortSignal__aborted(arg0: *AbortSignal) bool;
@@ -139,9 +130,9 @@ pub const AbortSignal = opaque {
         var reason: u8 = 0;
         const js_reason = WebCore__AbortSignal__reasonIfAborted(this, global, &reason);
         if (reason > 0) {
-            // Upstream: bun.debugAssert(js_reason.isUndefined()). The stubbed
-            // JSValue here always reports false, so we skip the assert until
-            // the real JSValue API lands.
+            if (comptime bun.Environment.allow_assert) {
+                bun.debugAssert(js_reason.isUndefined());
+            }
             return .{ .common = @enumFromInt(reason) };
         }
         if (js_reason == .zero) {
@@ -177,7 +168,7 @@ pub const AbortSignal = opaque {
 
     extern fn WebCore__AbortSignal__new(*JSGlobalObject) *AbortSignal;
     pub fn new(global: *JSGlobalObject) *AbortSignal {
-        markBinding(@src());
+        jsc.markBinding(@src());
         return WebCore__AbortSignal__new(global);
     }
 

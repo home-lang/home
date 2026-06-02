@@ -90,7 +90,7 @@ pub const ZigString = extern struct {
         if (this.is16Bit()) {
             return strings.indexOfAny16(this.utf16SliceAligned(), chars);
         } else {
-            return strings.indexOfAny(this.slice(), chars);
+            return @intCast(strings.indexOfAny(this.slice(), chars) orelse return null);
         }
     }
 

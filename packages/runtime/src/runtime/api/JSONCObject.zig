@@ -7,8 +7,8 @@
 // Stubs (re-attach in Phase 12.2 when home_rt grows the JS bridge +
 // JSONC parser deps):
 //   - `jsc.JSGlobalObject`, `jsc.CallFrame`, `jsc.JSFunction`,
-//     `jsc.ZigString`, `bun.JSError` — opaque locals + an `enum(i64)`
-//     for `JSValue`. Same pattern as `lolhtml_jsc.zig` / `x509.zig`.
+//     `jsc.ZigString`, `bun.JSError`. Same pattern as `lolhtml_jsc.zig` /
+//     `x509.zig`.
 //   - `bun.ArenaAllocator`, `bun.ast.ASTMemoryAllocator`,
 //     `bun.interchange.json.parseTSConfig`, `bun.logger.{Log,Source}` —
 //     the parser surface itself is parked. The `parse()` body is kept
@@ -23,12 +23,8 @@ const home_rt = @import("home");
 // JSC stubs — re-attach when the matching home_rt.jsc surface lands.
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 const CallFrame = @import("home").jsc.CallFrame;
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-pub const JSError = error{JSError};
+pub const JSValue = @import("home").jsc.JSValue;
+pub const JSError = home_rt.JSError;
 
 // Upstream body, parked verbatim — depends on `ASTMemoryAllocator`,
 // `logger.{Log,Source}`, `json.parseTSConfig`, plus the JSC bridge methods on

@@ -3642,14 +3642,14 @@ fn utimensWithFlags(path: bun.OSPathSliceZ, atime: jsc.Node.TimeLike, mtime: jsc
             .{ .sec = @intCast(mtime.sec), .nsec = mtime.nsec },
         };
         const rc = syscall.utimensat(
-            std.fs.cwd().fd,
+            std.Io.Dir.cwd().handle,
             path,
             // this var should be a const, the zig type definition is wrong.
             &times,
             flags,
         );
 
-        log("utimensat({d}, atime=({d}, {d}), mtime=({d}, {d})) = {d}", .{ std.fs.cwd().fd, atime.sec, atime.nsec, mtime.sec, mtime.nsec, rc });
+        log("utimensat({d}, atime=({d}, {d}), mtime=({d}, {d})) = {d}", .{ std.Io.Dir.cwd().handle, atime.sec, atime.nsec, mtime.sec, mtime.nsec, rc });
 
         if (rc == 0) {
             return .success;

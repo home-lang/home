@@ -22,6 +22,7 @@ pub const isWasm = switch (builtin.cpu.arch) {
     else => false,
 };
 pub const isNative = !isWasm;
+pub const isBrowser = false;
 // Wave-19 unmined-corner port (2026-05-19). CPU-arch flags pulled in to
 // satisfy `bun/src/perf/hw_timer.zig`'s `Environment.isAarch64` /
 // `Environment.isX64` predicates. Mirrors upstream `Environment.isAarch64`.
@@ -37,6 +38,18 @@ pub const enable_asan = false;
 /// Upstream `bun_core/env.zig:60` ties this to `build_options.enable_tinycc`.
 /// Home does not vendor TinyCC (the FFI JIT backend) yet, so this is off.
 pub const enable_tinycc = false;
+
+pub inline fn onlyMac() void {
+    if (comptime !isMac) unreachable;
+}
+
+pub inline fn onlyLinux() void {
+    if (comptime !isLinux) unreachable;
+}
+
+pub inline fn onlyWindows() void {
+    if (comptime !isWindows) unreachable;
+}
 /// Upstream `bun_core/env.zig:39` ties this to `isDebug or enable_asan`, but the
 /// alloc-scope tracking is a debug-only *diagnostic* (it inlines a tracking
 /// allocator that grows struct layouts, e.g. PackedMap 40→48). Home's gate

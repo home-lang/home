@@ -1,6 +1,12 @@
 /// Emphasis delimiter entry for CommonMark emphasis algorithm.
 pub const MAX_EMPH_MATCHES = 6;
 
+fn emptyEmphMatches() [MAX_EMPH_MATCHES]u2 {
+    var matches: [MAX_EMPH_MATCHES]u2 = undefined;
+    for (&matches) |*match| match.* = 0;
+    return matches;
+}
+
 pub const EmphDelim = struct {
     pos: usize, // start position in content
     count: usize, // original run length
@@ -11,9 +17,9 @@ pub const EmphDelim = struct {
     open_count: usize = 0, // total chars consumed as opener
     close_count: usize = 0, // total chars consumed as closer
     // Individual match sizes in order (each is 1 for em, 2 for strong)
-    open_sizes: [MAX_EMPH_MATCHES]u2 = [_]u2{0} ** MAX_EMPH_MATCHES,
+    open_sizes: [MAX_EMPH_MATCHES]u2 = emptyEmphMatches(),
     open_num: u4 = 0, // number of open matches
-    close_sizes: [MAX_EMPH_MATCHES]u2 = [_]u2{0} ** MAX_EMPH_MATCHES,
+    close_sizes: [MAX_EMPH_MATCHES]u2 = emptyEmphMatches(),
     close_num: u4 = 0, // number of close matches
     active: bool = true, // false if deactivated between matched pairs
 };

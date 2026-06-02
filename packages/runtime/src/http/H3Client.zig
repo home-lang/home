@@ -3,12 +3,9 @@
 //
 // Naming convention (2026-05-18): `BunXxx` → `Xxx`. Imports rewritten:
 // @import("bun") → @import("home"). `AltSvc`, `Stream`, `PendingConnect`
-// already live under `h3_client/` and re-export verbatim. The sibling
-// `ClientSession` / `ClientContext` modules drive the lsquic state machine
-// + bun.http back-edges and aren't ported yet — opaque stubs keep the alias
-// name surface so downstream `*ClientSession` / `*ClientContext` field types
-// still compile. `H3TestingAPIs` lives behind the JSC bridge in
-// `../http_jsc/headers_jsc.zig` and is parked alongside the JSC layer.
+// already live under `h3_client/` and re-export verbatim. `H3TestingAPIs`
+// lives behind the JSC bridge in `../http_jsc/headers_jsc.zig` and is parked
+// alongside the JSC layer.
 
 //! HTTP/3 client over lsquic via packages/bun-usockets/src/quic.c.
 //!
@@ -28,17 +25,10 @@
 //!   - `PendingConnect` — DNS-pending connect resolution
 
 pub const Stream = @import("./h3_client/Stream.zig");
+pub const ClientSession = @import("./h3_client/ClientSession.zig");
+pub const ClientContext = @import("./h3_client/ClientContext.zig");
 pub const PendingConnect = @import("./h3_client/PendingConnect.zig");
 pub const AltSvc = @import("./h3_client/AltSvc.zig");
-
-/// Parked: `h3_client/ClientSession.zig` upstream owns the lsquic_conn_t,
-/// session-wide HEADERS/SETTINGS state, and the back-edge to `HTTPClient`.
-/// Opaque stub preserves the alias name for `*ClientSession` field types.
-pub const ClientSession = opaque {};
-
-/// Parked: `h3_client/ClientContext.zig` upstream wraps the lsquic engine,
-/// the per-loop wakeup timer, and the (origin → session) registry.
-pub const ClientContext = opaque {};
 
 /// Live-object counters for the leak test in fetch-http3-client.test.ts.
 /// Incremented at allocation, decremented in deinit. Read from the JS thread
@@ -64,13 +54,4 @@ test "H3Client live counters start at zero" {
     try std.testing.expectEqual(@as(u32, 1), live_streams.load(.monotonic));
     _ = live_streams.fetchSub(1, .monotonic);
     try std.testing.expectEqual(@as(u32, 0), live_streams.load(.monotonic));
-}
-
-test "H3Client parked stubs are distinct opaque types" {
-    // ClientSession / ClientContext / TestingAPIs are opaque stubs so their
-    // field-type spelling stays stable. Verify they're distinct so a
-    // `*ClientSession` doesn't accidentally accept a `*ClientContext`.
-    try std.testing.expect(ClientSession != ClientContext);
-    try std.testing.expect(ClientSession != TestingAPIs);
-    try std.testing.expect(ClientContext != TestingAPIs);
 }

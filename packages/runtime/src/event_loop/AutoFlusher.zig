@@ -9,23 +9,23 @@
 
 registered: bool = false,
 
-pub fn registerDeferredMicrotaskWithType(comptime Type: type, this: *Type, vm: *VirtualMachine) void {
+pub fn registerDeferredMicrotaskWithType(comptime Type: type, this: *Type, vm: anytype) void {
     if (this.auto_flusher.registered) return;
     registerDeferredMicrotaskWithTypeUnchecked(Type, this, vm);
 }
 
-pub fn unregisterDeferredMicrotaskWithType(comptime Type: type, this: *Type, vm: *VirtualMachine) void {
+pub fn unregisterDeferredMicrotaskWithType(comptime Type: type, this: *Type, vm: anytype) void {
     if (!this.auto_flusher.registered) return;
     unregisterDeferredMicrotaskWithTypeUnchecked(Type, this, vm);
 }
 
-pub fn unregisterDeferredMicrotaskWithTypeUnchecked(comptime Type: type, this: *Type, vm: *VirtualMachine) void {
+pub fn unregisterDeferredMicrotaskWithTypeUnchecked(comptime Type: type, this: *Type, vm: anytype) void {
     home_rt.assert(this.auto_flusher.registered);
     home_rt.assert(vm.eventLoop().deferred_tasks.unregisterTask(this));
     this.auto_flusher.registered = false;
 }
 
-pub fn registerDeferredMicrotaskWithTypeUnchecked(comptime Type: type, this: *Type, vm: *VirtualMachine) void {
+pub fn registerDeferredMicrotaskWithTypeUnchecked(comptime Type: type, this: *Type, vm: anytype) void {
     home_rt.assert(!this.auto_flusher.registered);
     this.auto_flusher.registered = true;
     home_rt.assert(!vm.eventLoop().deferred_tasks.postTask(this, @ptrCast(&Type.onAutoFlush)));

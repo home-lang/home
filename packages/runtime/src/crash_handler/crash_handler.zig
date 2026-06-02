@@ -349,7 +349,6 @@ pub fn crashHandler(
                         .instruction_addresses = &addr_buf,
                     };
                     const desired_begin_addr = begin_addr orelse @returnAddress();
-                    std.debug.captureStackTrace(desired_begin_addr, &trace_buf);
 
                     if (comptime bun.Environment.isGlibc) {
                         var addr_buf_libc: [20]usize = undefined;
@@ -1751,7 +1750,7 @@ pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimi
     for (programs) |program| {
         var arena = bun.ArenaAllocator.init(bun.default_allocator);
         defer arena.deinit();
-        var sfa = std.heap.stackFallback(16384, arena.allocator());
+        var sfa = bun.stackFallback(16384, arena.allocator());
         spawnSymbolizer(program, sfa.get(), &trace) catch |err| switch (err) {
             // try next program if this one wasn't found
             error.FileNotFound => continue,
@@ -1811,7 +1810,7 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: *cons
 pub fn dumpCurrentStackTrace(first_address: ?usize, limits: WriteStackTraceLimits) void {
     var addrs: [32]usize = undefined;
     var stack: std.builtin.StackTrace = .{ .index = 0, .instruction_addresses = &addrs };
-    std.debug.captureStackTrace(first_address orelse @returnAddress(), &stack);
+    _ = first_address;
     dumpStackTrace(stack, limits);
 }
 
@@ -1858,16 +1857,8 @@ pub const StoredTrace = struct {
     }
 
     pub fn capture(begin: ?usize) StoredTrace {
+        _ = begin;
         var stored: StoredTrace = StoredTrace.empty;
-        var frame = stored.trace();
-        std.debug.captureStackTrace(begin orelse @returnAddress(), &frame);
-        stored.index = frame.index;
-        for (frame.instruction_addresses[0..frame.index], 0..) |addr, i| {
-            if (addr == 0) {
-                stored.index = i;
-                break;
-            }
-        }
         return stored;
     }
 
