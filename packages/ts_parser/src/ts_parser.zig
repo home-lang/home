@@ -682,6 +682,24 @@ pub const Parser = struct {
         open_text: []const u8,
         close_text: []const u8,
     ) ParseError!void {
+        try self.reportCodeAtWithMatchedPairSpan(pos, line, 0, code, message, open_pos, open_text, close_text);
+    }
+
+    /// Variant that records a non-zero `span_len` for the primary
+    /// diagnostic. Mirrors `reportCodeAtWithSpan` plus the TS1007
+    /// related-info pair — needed for JSDoc and other recovery paths
+    /// where the primary diagnostic underlines multiple characters.
+    fn reportCodeAtWithMatchedPairSpan(
+        self: *Parser,
+        pos: u32,
+        line: u32,
+        primary_span_len: u32,
+        code: u32,
+        message: []const u8,
+        open_pos: u32,
+        open_text: []const u8,
+        close_text: []const u8,
+    ) ParseError!void {
         const msg = try self.diag_arena.allocator().dupe(u8, message);
         const related_msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -698,6 +716,7 @@ pub const Parser = struct {
         try self.diagnostics.append(self.gpa, .{
             .pos = pos,
             .line = line,
+            .span_len = primary_span_len,
             .code = code,
             .message = msg,
             .related = related,
@@ -1001,7 +1020,16 @@ pub const Parser = struct {
                     8024,
                     "JSDoc '@param' tag has name '', but there is no parameter with that name.",
                 );
-                try self.reportCodeAtWithSpan(pos, self.lineAt(pos), 2, 1005, "'}' expected.");
+                try self.reportCodeAtWithMatchedPairSpan(
+                    pos,
+                    self.lineAt(pos),
+                    2,
+                    1005,
+                    "'}' expected.",
+                    @intCast(open),
+                    "{",
+                    "}",
+                );
                 continue;
             }
             if (jsdoc.isValidRestType(type_text) and self.hasFollowingJSDocParamTag(close_after, end)) {
@@ -3815,7 +3843,15 @@ pub const Parser = struct {
                 {
                     _ = self.advance();
                     const close = self.peek();
-                    try self.reportCodeAt(close.span.end, close.line, 1005, "')' expected.");
+                    try self.reportCodeAtWithMatchedPair(
+                        close.span.end,
+                        close.line,
+                        1005,
+                        "')' expected.",
+                        open_paren.span.start,
+                        "(",
+                        ")",
+                    );
                     missing_close_reported = true;
                     self.parameter_list_recovered_body_as_missing_close = true;
                     if (self.peek().kind == .close_brace) _ = self.advance();
@@ -4192,7 +4228,15 @@ pub const Parser = struct {
                     try self.reportCodeAt(open.span.start, open.line, 1005, "',' expected.");
                     if (self.peek().kind == .close_brace) {
                         const close = self.advance();
-                        try self.reportCodeAt(close.span.end, close.line, 1005, "')' expected.");
+                        try self.reportCodeAtWithMatchedPair(
+                            close.span.end,
+                            close.line,
+                            1005,
+                            "')' expected.",
+                            open_paren.span.start,
+                            "(",
+                            ")",
+                        );
                         missing_close_reported = true;
                         self.parameter_list_recovered_body_as_missing_close = true;
                     }
@@ -4215,7 +4259,15 @@ pub const Parser = struct {
                     try self.reportCodeAt(stop_tok.span.start, stop_tok.line, 1005, "',' expected.");
                     if (self.peek().kind == .semicolon) _ = self.advance();
                     const close_tok = self.peek();
-                    try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+                    try self.reportCodeAtWithMatchedPair(
+                        close_tok.span.start,
+                        close_tok.line,
+                        1005,
+                        "')' expected.",
+                        open_paren.span.start,
+                        "(",
+                        ")",
+                    );
                     missing_close_reported = true;
                     break;
                 }
@@ -15085,7 +15137,15 @@ pub const Parser = struct {
                     self.peek().kind == .question_question)
                 {
                     const op_tok = self.peek();
-                    try self.reportCodeAt(op_tok.span.start, op_tok.line, 1005, "')' expected.");
+                    try self.reportCodeAtWithMatchedPair(
+                        op_tok.span.start,
+                        op_tok.line,
+                        1005,
+                        "')' expected.",
+                        t.span.start,
+                        "(",
+                        ")",
+                    );
                     return e;
                 }
                 _ = try self.expectClosingMatch(.close_paren, "')' to close parenthesized expression", t.span.start, "(", ")");
@@ -16693,7 +16753,15 @@ pub const Parser = struct {
         }
         if (self.peek().kind == .semicolon) {
             const semi = self.advance();
-            try self.reportCodeAt(semi.span.end, semi.line, 1005, "'}' expected.");
+            try self.reportCodeAtWithMatchedPair(
+                semi.span.end,
+                semi.line,
+                1005,
+                "'}' expected.",
+                start.span.start,
+                "{",
+                "}",
+            );
             return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = semi.span.end }, props.items);
         }
         const close = try self.expectClosingMatch(.close_brace, "'}' to close object literal", start.span.start, "{", "}");
