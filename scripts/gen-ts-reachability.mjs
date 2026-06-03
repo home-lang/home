@@ -19,7 +19,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import cp from "node:child_process";
 
 const root = process.cwd();
 const statusPath = path.join(root, "docs/TS_DIAGNOSTIC_CODE_STATUS.md");
@@ -36,20 +35,33 @@ for (const m of statusText.matchAll(
   catalogOnly.push({ code: m[1], category: m[2], key, name: key.replace(/_\d+$/, "") });
 }
 
+function walkGo(dir, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkGo(full, out);
+    } else if (entry.isFile() && entry.name.endsWith(".go") && entry.name !== "diagnostics_generated.go") {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
 // --- names referenced in tsgo source (excluding the generated table) ------
 // Drop fully-commented lines (`// …diagnostics.X…`) so a reference that
 // only survives in dead/commented code (e.g. TS5012) isn't counted as
 // reachable. Inline trailing comments are rare for emission sites and are
 // left in; this catches the common commented-out-statement case.
-const grep = cp
-  .execSync(
-    `grep -rho --include=*.go -E '^[^/]*diagnostics\\.[A-Za-z0-9_]+' ${JSON.stringify(refInternal)} | grep -v diagnostics_generated.go | grep -oE 'diagnostics\\.[A-Za-z0-9_]+' | sort -u`,
-    { maxBuffer: 1 << 28 },
-  )
-  .toString();
-const referenced = new Set(
-  grep.split("\n").map((s) => s.replace("diagnostics.", "").trim()).filter(Boolean),
-);
+const referenced = new Set();
+for (const file of walkGo(refInternal)) {
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  for (const line of lines) {
+    if (/^\s*\/\//.test(line)) continue;
+    for (const m of line.matchAll(/\bdiagnostics\.([A-Za-z0-9_]+)\b/g)) {
+      referenced.add(m[1]);
+    }
+  }
+}
 
 // Go identifiers for generated diagnostics may be prefixed to avoid invalid
 // or awkward exported names, while the catalogue key keeps the plain message

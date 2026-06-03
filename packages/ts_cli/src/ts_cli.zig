@@ -374,6 +374,7 @@ pub fn renderHelp(gpa: std.mem.Allocator, all: bool) ![]u8 {
         const specified_files_code: u32 = 6924;
         const build_project_code: u32 = 6925;
         const init_project_code: u32 = 6926;
+        const project_path_code: u32 = 6927;
         const expanded_help_code: u32 = 6928;
         const additional_settings_code: u32 = 6929;
         const learn_more_code: u32 = 6913;
@@ -382,6 +383,7 @@ pub fn renderHelp(gpa: std.mem.Allocator, all: bool) ![]u8 {
         try appendHelpExample(gpa, &buf, "tsc app.ts util.ts", specified_files_code);
         try appendHelpExample(gpa, &buf, "tsc -b", build_project_code);
         try appendHelpExample(gpa, &buf, "tsc --init", init_project_code);
+        try appendHelpExample(gpa, &buf, "tsc -p ./path/to/tsconfig.json", project_path_code);
         try appendHelpExample(gpa, &buf, "tsc --help --all", expanded_help_code);
         try appendHelpExample(gpa, &buf, "tsc --noEmit\n  tsc --target esnext", additional_settings_code);
         try appendHelpSectionMessage(gpa, &buf, command_line_flags_code);
@@ -1478,6 +1480,7 @@ test "renderHelp: simplified view renders simplified option descriptions" {
     try T.expect(std.mem.indexOf(u8, help, "Usage:") != null);
     try T.expect(std.mem.indexOf(u8, help, "COMMON COMMANDS") != null);
     try T.expect(std.mem.indexOf(u8, help, "Compiles the current project (tsconfig.json in the working directory.)") != null);
+    try T.expect(std.mem.indexOf(u8, help, "Compiles the TypeScript project located at the specified path.") != null);
     try T.expect(std.mem.indexOf(u8, help, "COMMAND LINE FLAGS") != null);
     try T.expect(std.mem.indexOf(u8, help, "COMMON COMPILER OPTIONS") != null);
     try T.expect(std.mem.indexOf(u8, help, "You can learn about all of the compiler options at https://aka.ms/tsc") != null);

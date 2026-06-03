@@ -14,19 +14,19 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 813 |
-| reachable (parity targets) | 345 |
-| dead in tsgo (leave catalog-only) | 468 |
+| catalog-only total | 812 |
+| reachable (parity targets) | 347 |
+| dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
-| 1xxx — parser / syntactic + program file-inclusion | 65 |
+| 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
-| 9xxxx — editor code-fix / refactor (language service) | 17 |
+| 9xxxx — editor code-fix / refactor (language service) | 18 |
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
 | 5xxx — tsconfig / build-option validation | 5 |
@@ -191,9 +191,10 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 1xxx — parser / syntactic + program file-inclusion (65)
+### 1xxx — parser / syntactic + program file-inclusion (66)
 
 - TS1012 `Unexpected_token_1012`
+- TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
 - TS1059 `A_promise_must_have_a_then_method_1059`
 - TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060`
 - TS1062 `Type_is_referenced_directly_or_indirectly_in_the_fulfillment_callback_of_its_own_then_method_1062`
@@ -340,7 +341,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS4125 `Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125`
 - TS4126 `One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126`
 
-### 9xxxx — editor code-fix / refactor (language service) (17)
+### 9xxxx — editor code-fix / refactor (language service) (18)
 
 - TS90014 `Change_0_to_1_90014`
 - TS90055 `Remove_type_from_import_declaration_from_0_90055`
@@ -358,6 +359,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS90070 `Mark_array_literal_as_const_90070`
 - TS90071 `Annotate_types_of_properties_expando_function_in_a_namespace_90071`
 - TS95064 `Add_all_missing_imports_95064`
+- TS95110 `Visit_https_Colon_Slash_Slashaka_ms_Slashtsconfig_to_read_more_about_this_file_95110`
 - TS95174 `Use_0_95174`
 
 ### other (15)
@@ -422,13 +424,12 @@ dead. Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully catalog-only)
 
-468 codes. Listed for auditability; none should be `emitted`.
+465 codes. Listed for auditability; none should be `emitted`.
 
 <details><summary>Show dead codes</summary>
 
 - TS1055 `Type_0_is_not_a_valid_async_function_return_type_in_ES5_because_it_does_not_refer_to_a_Promise_compa_1055`
 - TS1056 `Accessors_are_only_available_when_targeting_ECMAScript_5_and_higher_1056`
-- TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
 - TS1236 `The_return_type_of_a_property_decorator_function_must_be_either_void_or_any_1236`
 - TS1237 `The_return_type_of_a_parameter_decorator_function_must_be_either_void_or_any_1237`
 - TS1259 `Module_0_can_only_be_default_imported_using_the_1_flag_1259`
@@ -645,7 +646,6 @@ dead. Confirm against this list before picking one:
 - TS6907 `node_modules_bower_components_jspm_packages_plus_the_value_of_outDir_if_one_is_specified_6907`
 - TS6908 `if_files_is_specified_otherwise_Asterisk_Asterisk_Slash_Asterisk_6908`
 - TS6909 `true_if_composite_false_otherwise_6909`
-- TS6927 `Compiles_the_TypeScript_project_located_at_the_specified_path_6927`
 - TS7037 `Enables_emit_interoperability_between_CommonJS_and_ES_Modules_via_creation_of_namespace_objects_for__7037`
 - TS7048 `Property_0_implicitly_has_type_any_but_a_better_type_for_its_get_accessor_may_be_inferred_from_usage_7048`
 - TS7049 `Property_0_implicitly_has_type_any_but_a_better_type_for_its_set_accessor_may_be_inferred_from_usage_7049`
@@ -807,7 +807,6 @@ dead. Confirm against this list before picking one:
 - TS95107 `Fix_all_implicit_this_errors_95107`
 - TS95108 `Wrap_invalid_character_in_an_expression_container_95108`
 - TS95109 `Wrap_all_invalid_characters_in_an_expression_container_95109`
-- TS95110 `Visit_https_Colon_Slash_Slashaka_ms_Slashtsconfig_to_read_more_about_this_file_95110`
 - TS95111 `Add_a_return_statement_95111`
 - TS95112 `Remove_braces_from_arrow_function_body_95112`
 - TS95113 `Wrap_the_following_body_with_parentheses_which_should_be_an_object_literal_95113`
