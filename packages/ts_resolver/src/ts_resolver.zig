@@ -137,6 +137,9 @@ pub const Resolution = struct {
     /// elaboration on TS7016. Null when there is no such alternate.
     /// Borrowed from the resolver's arena like `path`.
     alternate_result: ?[]const u8 = null,
+    /// tsc's package identity string for node_modules resolutions when
+    /// the owning package.json has both `name` and `version`.
+    package_id: ?[]const u8 = null,
 
     pub const Source = enum {
         relative,
@@ -349,7 +352,11 @@ pub const Resolver = struct {
         self.traceMsg(6086, "======== Resolving module '{s}' from '{s}'. ========", .{ specifier, containing_file });
         const result = self.resolveImpl(specifier, containing_file);
         if (result) |r| {
-            self.traceMsg(6089, "======== Module name '{s}' was successfully resolved to '{s}'. ========", .{ specifier, r.path });
+            if (r.package_id) |package_id| {
+                self.traceMsg(6218, "======== Module name '{s}' was successfully resolved to '{s}' with Package ID '{s}'. ========", .{ specifier, r.path, package_id });
+            } else {
+                self.traceMsg(6089, "======== Module name '{s}' was successfully resolved to '{s}'. ========", .{ specifier, r.path });
+            }
         } else |_| {
             self.traceMsg(6090, "======== Module name '{s}' was not resolved. ========", .{specifier});
         }
@@ -886,17 +893,72 @@ pub const Resolver = struct {
         pkg_dir: []const u8,
         obj: std.json.ObjectMap,
     ) ResolveError!void {
-        if (self.trace == null) return;
-        const peer_v = obj.get("peerDependencies") orelse return;
-        if (peer_v != .object or peer_v.object.count() == 0) return;
+        _ = try self.packagePeerDependenciesSuffix(pkg_dir, obj, true);
+    }
 
-        self.traceMsg(6281, "'package.json' has a 'peerDependencies' field.", .{});
+    fn withPackageId(
+        self: *Resolver,
+        resolution: Resolution,
+        pkg_dir: []const u8,
+        pkg_json: []const u8,
+        trace_peers: bool,
+    ) ResolveError!Resolution {
+        var out = resolution;
+        out.package_id = try self.packageIdFor(pkg_dir, pkg_json, resolution.path, trace_peers);
+        return out;
+    }
+
+    fn packageIdFor(
+        self: *Resolver,
+        pkg_dir: []const u8,
+        pkg_json: []const u8,
+        resolved_path: []const u8,
+        trace_peers: bool,
+    ) ResolveError!?[]const u8 {
+        const bytes = self.fs.readFile(self.gpa, pkg_json) catch return null;
+        defer self.gpa.free(bytes);
+        var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return null;
+        defer parsed.deinit();
+        if (parsed.value != .object) return null;
+        const obj = parsed.value.object;
+        const name_v = obj.get("name") orelse return null;
+        const version_v = obj.get("version") orelse return null;
+        if (name_v != .string or version_v != .string) return null;
+
+        const submodule = if (resolved_path.len > pkg_dir.len and
+            std.mem.startsWith(u8, resolved_path, pkg_dir) and
+            resolved_path[pkg_dir.len] == '/')
+            resolved_path[pkg_dir.len + 1 ..]
+        else
+            "";
+        const peer_suffix = try self.packagePeerDependenciesSuffix(pkg_dir, obj, trace_peers);
+        if (submodule.len == 0) {
+            return try std.fmt.allocPrint(self.ar(), "{s}@{s}{s}", .{ name_v.string, version_v.string, peer_suffix });
+        }
+        return try std.fmt.allocPrint(self.ar(), "{s}/{s}@{s}{s}", .{ name_v.string, submodule, version_v.string, peer_suffix });
+    }
+
+    fn packagePeerDependenciesSuffix(
+        self: *Resolver,
+        pkg_dir: []const u8,
+        obj: std.json.ObjectMap,
+        trace_peers: bool,
+    ) ResolveError![]const u8 {
+        const should_trace = trace_peers and self.trace != null;
+        const peer_v = obj.get("peerDependencies") orelse return "";
+        if (peer_v != .object or peer_v.object.count() == 0) return "";
+
+        if (should_trace) {
+            self.traceMsg(6281, "'package.json' has a 'peerDependencies' field.", .{});
+        }
         const marker = "/node_modules";
-        const nm_end = (std.mem.lastIndexOf(u8, pkg_dir, marker) orelse return) + marker.len;
+        const nm_end = (std.mem.lastIndexOf(u8, pkg_dir, marker) orelse return "") + marker.len;
         const node_modules = pkg_dir[0..nm_end];
 
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
         defer names.deinit(self.gpa);
+        var suffix: std.ArrayListUnmanaged(u8) = .empty;
+        defer suffix.deinit(self.gpa);
         var it = peer_v.object.iterator();
         while (it.next()) |entry| {
             try names.append(self.gpa, entry.key_ptr.*);
@@ -912,11 +974,21 @@ pub const Resolver = struct {
             const peer_pkg_json = try self.joinPath(peer_root, "package.json");
             const version = try self.packageJsonVersion(peer_pkg_json);
             if (version) |v| {
-                self.traceMsg(6282, "Found peerDependency '{s}' with '{s}' version.", .{ name, v });
+                try suffix.append(self.gpa, '+');
+                try suffix.appendSlice(self.gpa, name);
+                try suffix.append(self.gpa, '@');
+                try suffix.appendSlice(self.gpa, v);
+                if (should_trace) {
+                    self.traceMsg(6282, "Found peerDependency '{s}' with '{s}' version.", .{ name, v });
+                }
             } else {
-                self.traceMsg(6283, "Failed to find peerDependency '{s}'.", .{name});
+                if (should_trace) {
+                    self.traceMsg(6283, "Failed to find peerDependency '{s}'.", .{name});
+                }
             }
         }
+        if (suffix.items.len == 0) return "";
+        return try self.ar().dupe(u8, suffix.items);
     }
 
     fn packageJsonVersion(self: *Resolver, pkg_json: []const u8) ResolveError!?[]const u8 {
@@ -1103,6 +1175,8 @@ pub const Resolver = struct {
                 // package.json `exports` / `typesVersions` before falling
                 // back to direct file probing on the joined candidate.
                 const pkg_root = try self.joinPath(nm, split.name);
+                const root_pkg_json = try self.joinPath(pkg_root, "package.json");
+                const has_root_pkg_json = self.fs.fileExists(root_pkg_json);
                 if (split.subpath.len > 0) {
                     // Subpath import: try a nested package.json in the
                     // subpath directory first (e.g. @restart/hooks/useMergedRefs
@@ -1122,11 +1196,10 @@ pub const Resolver = struct {
                     }
                     // Then consult the package root's package.json for
                     // `exports`/`typesVersions` rewrites of the subpath.
-                    const root_pkg_json = try self.joinPath(pkg_root, "package.json");
-                    if (self.fs.fileExists(root_pkg_json)) {
+                    if (has_root_pkg_json) {
                         const sub_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, split.subpath);
                         switch (sub_outcome) {
-                            .resolved => |r| return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration },
+                            .resolved => |r| return try self.withPackageId(.{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration }, pkg_root, root_pkg_json, false),
                             .blocked => {
                                 if (try self.tryAtTypesFallback(nm, split.name, split.subpath)) |r| return r;
                                 return null;
@@ -1137,11 +1210,10 @@ pub const Resolver = struct {
                 } else {
                     // Bare package: `package.json` `exports["."]` first,
                     // then fall back to `main`/`types` via tryDirectoryIndex.
-                    const root_pkg_json = try self.joinPath(pkg_root, "package.json");
-                    if (self.fs.fileExists(root_pkg_json)) {
+                    if (has_root_pkg_json) {
                         const root_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, ".");
                         switch (root_outcome) {
-                            .resolved => |r| return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration },
+                            .resolved => |r| return try self.withPackageId(.{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration }, pkg_root, root_pkg_json, false),
                             .blocked => {
                                 if (try self.tryAtTypesFallback(nm, split.name, "")) |r| return r;
                                 return null;
@@ -1163,10 +1235,14 @@ pub const Resolver = struct {
                 // package.json metadata steers the lookup.
                 const candidate = try self.joinPath(nm, specifier);
                 if (try self.tryFileWithExtensions(candidate)) |r| {
-                    return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+                    const out: Resolution = .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+                    if (has_root_pkg_json) return try self.withPackageId(out, pkg_root, root_pkg_json, true);
+                    return out;
                 }
                 if (try self.tryDirectoryIndex(candidate)) |r| {
-                    return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+                    const out: Resolution = .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+                    if (has_root_pkg_json) return try self.withPackageId(out, pkg_root, root_pkg_json, true);
+                    return out;
                 }
             }
             if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
@@ -3531,6 +3607,73 @@ test "Resolver: untypedModuleImport — bare JS package without types still reso
     const res = try r.resolve("foo", "/a.ts");
     try T.expectEqualStrings("/node_modules/foo/index.js", res.path);
     try T.expect(!res.is_declaration);
+}
+
+test "Resolver: package ID trace uses TS6218 for package resolution" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{ "name": "foo", "version": "1.2.3" }
+    );
+    try vfs.addFile("/node_modules/foo/index.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("foo", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/index.js", res.path);
+    try T.expectEqualStrings("foo/index.js@1.2.3", res.package_id.?);
+
+    var saw_6218 = false;
+    var saw_plain_6089 = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6218 and
+            std.mem.indexOf(u8, entry.text, "foo/index.js@1.2.3") != null) saw_6218 = true;
+        if (entry.code == 6089) saw_plain_6089 = true;
+    }
+    try T.expect(saw_6218);
+    try T.expect(!saw_plain_6089);
+}
+
+test "Resolver: package ID includes peer dependency suffix" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "name": "foo",
+        \\  "version": "1.2.3",
+        \\  "types": "./index.d.ts",
+        \\  "peerDependencies": { "react": "*" }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/index.d.ts", "");
+    try vfs.addFile("/node_modules/react/package.json",
+        \\{ "name": "react", "version": "18.2.0" }
+    );
+    try vfs.addFile("/a.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("foo", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/index.d.ts", res.path);
+    try T.expectEqualStrings("foo/index.d.ts@1.2.3+react@18.2.0", res.package_id.?);
+
+    var saw_peer_field = false;
+    var saw_peer_version = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6281) saw_peer_field = true;
+        if (entry.code == 6282 and std.mem.indexOf(u8, entry.text, "react") != null) saw_peer_version = true;
+    }
+    try T.expect(saw_peer_field);
+    try T.expect(saw_peer_version);
 }
 
 test "Resolver: untypedModuleImport_noImplicitAny_scoped — scoped JS-only package resolves" {
