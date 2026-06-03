@@ -344,7 +344,50 @@ pub fn renderHelp(gpa: std.mem.Allocator, all: bool) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
 
+    const tsc_header_code: u32 = 6922;
+    if (codes.lookup(tsc_header_code)) |ci| {
+        try buf.appendSlice(gpa, ci.message);
+        try buf.appendSlice(gpa, " - ");
+        try buf.appendSlice(gpa, versionText);
+        try buf.appendSlice(gpa, "\n\n");
+    }
     try buf.appendSlice(gpa, "Usage: home tsc [files...] [options]\n\n");
+
+    if (all) {
+        const all_options_code: u32 = 6917;
+        const watch_options_code: u32 = 6918;
+        const build_options_code: u32 = 6919;
+        const watch_intro_code: u32 = 6914;
+        const build_intro_code: u32 = 6915;
+        const learn_more_code: u32 = 6913;
+        try appendHelpSectionMessage(gpa, &buf, all_options_code);
+        try appendHelpMessageWithUrl(gpa, &buf, learn_more_code, "https://aka.ms/tsc");
+        try appendHelpSectionMessage(gpa, &buf, watch_options_code);
+        try appendHelpMessage(gpa, &buf, watch_intro_code);
+        try appendHelpSectionMessage(gpa, &buf, build_options_code);
+        try appendHelpMessageWithUrl(gpa, &buf, build_intro_code, "https://aka.ms/tsc-composite-builds");
+    } else {
+        const common_commands_code: u32 = 6916;
+        const command_line_flags_code: u32 = 6921;
+        const common_compiler_options_code: u32 = 6920;
+        const current_project_code: u32 = 6923;
+        const specified_files_code: u32 = 6924;
+        const build_project_code: u32 = 6925;
+        const init_project_code: u32 = 6926;
+        const expanded_help_code: u32 = 6928;
+        const additional_settings_code: u32 = 6929;
+        const learn_more_code: u32 = 6913;
+        try appendHelpSectionMessage(gpa, &buf, common_commands_code);
+        try appendHelpExample(gpa, &buf, "tsc", current_project_code);
+        try appendHelpExample(gpa, &buf, "tsc app.ts util.ts", specified_files_code);
+        try appendHelpExample(gpa, &buf, "tsc -b", build_project_code);
+        try appendHelpExample(gpa, &buf, "tsc --init", init_project_code);
+        try appendHelpExample(gpa, &buf, "tsc --help --all", expanded_help_code);
+        try appendHelpExample(gpa, &buf, "tsc --noEmit\n  tsc --target esnext", additional_settings_code);
+        try appendHelpSectionMessage(gpa, &buf, command_line_flags_code);
+        try appendHelpSectionMessage(gpa, &buf, common_compiler_options_code);
+        try appendHelpMessageWithUrl(gpa, &buf, learn_more_code, "https://aka.ms/tsc");
+    }
 
     // Collect distinct category codes in first-appearance order so the
     // grouped listing mirrors the reference compiler's decl order.
@@ -388,6 +431,58 @@ pub fn renderHelp(gpa: std.mem.Allocator, all: bool) ![]u8 {
         }
     }
     return buf.toOwnedSlice(gpa);
+}
+
+fn appendHelpSectionMessage(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), code: u32) !void {
+    if (codes.lookup(code)) |ci| {
+        try buf.appendSlice(gpa, ci.message);
+        try buf.appendSlice(gpa, "\n\n");
+    }
+}
+
+fn appendHelpMessage(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), code: u32) !void {
+    if (codes.lookup(code)) |ci| {
+        try buf.appendSlice(gpa, ci.message);
+        try buf.appendSlice(gpa, "\n\n");
+    }
+}
+
+fn appendHelpMessageWithUrl(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    code: u32,
+    url: []const u8,
+) !void {
+    if (codes.lookup(code)) |ci| {
+        try appendDiagnosticMessageReplacingZero(gpa, buf, ci.message, url);
+        try buf.appendSlice(gpa, "\n\n");
+    }
+}
+
+fn appendHelpExample(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), example: []const u8, code: u32) !void {
+    try buf.appendSlice(gpa, "  ");
+    try buf.appendSlice(gpa, example);
+    try buf.append(gpa, '\n');
+    if (codes.lookup(code)) |ci| {
+        try buf.appendSlice(gpa, "  ");
+        try buf.appendSlice(gpa, ci.message);
+        try buf.appendSlice(gpa, "\n\n");
+    }
+}
+
+fn appendDiagnosticMessageReplacingZero(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    message: []const u8,
+    replacement: []const u8,
+) !void {
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, message, start, "{0}")) |pos| {
+        try buf.appendSlice(gpa, message[start..pos]);
+        try buf.appendSlice(gpa, replacement);
+        start = pos + 3;
+    }
+    try buf.appendSlice(gpa, message[start..]);
 }
 
 fn renderOption(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), opt: options_table.OptionDecl) !void {
@@ -1341,7 +1436,13 @@ test "options_table: every description/category code resolves in the catalogue" 
 test "renderHelp: simplified view renders simplified option descriptions" {
     const help = try renderHelp(T.allocator, false);
     defer T.allocator.free(help);
+    try T.expect(std.mem.indexOf(u8, help, "tsc: The TypeScript Compiler") != null);
     try T.expect(std.mem.indexOf(u8, help, "Usage:") != null);
+    try T.expect(std.mem.indexOf(u8, help, "COMMON COMMANDS") != null);
+    try T.expect(std.mem.indexOf(u8, help, "Compiles the current project (tsconfig.json in the working directory.)") != null);
+    try T.expect(std.mem.indexOf(u8, help, "COMMAND LINE FLAGS") != null);
+    try T.expect(std.mem.indexOf(u8, help, "COMMON COMPILER OPTIONS") != null);
+    try T.expect(std.mem.indexOf(u8, help, "You can learn about all of the compiler options at https://aka.ms/tsc") != null);
     // `--watch` / `--strict` are ShowInSimplifiedHelpView; their catalogue
     // descriptions must appear in the default view.
     try T.expect(std.mem.indexOf(u8, help, "Watch input files.") != null);
@@ -1354,6 +1455,11 @@ test "renderHelp: simplified view renders simplified option descriptions" {
 test "renderHelp: --all view includes advanced options and category headers" {
     const help = try renderHelp(T.allocator, true);
     defer T.allocator.free(help);
+    try T.expect(std.mem.indexOf(u8, help, "ALL COMPILER OPTIONS") != null);
+    try T.expect(std.mem.indexOf(u8, help, "WATCH OPTIONS") != null);
+    try T.expect(std.mem.indexOf(u8, help, "BUILD OPTIONS") != null);
+    try T.expect(std.mem.indexOf(u8, help, "Including --watch, -w will start watching the current project for the file changes.") != null);
+    try T.expect(std.mem.indexOf(u8, help, "https://aka.ms/tsc-composite-builds") != null);
     // `traceResolution` is advanced-only; it appears under --all.
     try T.expect(std.mem.indexOf(u8, help, "--traceResolution") != null);
     try T.expect(std.mem.indexOf(u8, help, "Log paths used during the 'moduleResolution' process.") != null);

@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 832 |
-| reachable (parity targets) | 364 |
+| catalog-only total | 816 |
+| reachable (parity targets) | 348 |
 | dead in tsgo (leave catalog-only) | 468 |
 
 ## Reachable worklist by range
@@ -23,8 +23,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 72 |
 | 1xxx — parser / syntactic + program file-inclusion | 65 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 56 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -191,81 +191,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (72)
-
-- TS6041 `Errors_Files_6041`
-- TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
-- TS6119 `Type_reference_directive_0_was_successfully_resolved_to_1_primary_Colon_2_6119`
-- TS6120 `Type_reference_directive_0_was_not_resolved_6120`
-- TS6121 `Resolving_with_primary_search_path_0_6121`
-- TS6122 `Root_directory_cannot_be_determined_skipping_primary_search_paths_6122`
-- TS6130 `Resolving_real_path_for_0_result_1_6130`
-- TS6140 `Auto_discovery_for_typings_is_enabled_in_project_0_Running_extra_resolution_pass_for_module_1_using__6140`
-- TS6210 `An_argument_for_0_was_not_provided_6210`
-- TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
-- TS6212 `Did_you_mean_to_call_this_expression_6212`
-- TS6213 `Did_you_mean_to_use_new_with_this_expression_6213`
-- TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
-- TS6219 `Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219`
-- TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
-- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
-- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
-- TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
-- TS6236 `Arguments_for_the_rest_parameter_0_were_not_provided_6236`
-- TS6239 `File_0_exists_according_to_earlier_cached_lookups_6239`
-- TS6240 `File_0_does_not_exist_according_to_earlier_cached_lookups_6240`
-- TS6242 `Resolving_type_reference_directive_0_containing_file_1_6242`
-- TS6245 `File_Management_6245`
-- TS6253 `Backwards_Compatibility_6253`
-- TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`
-- TS6302 `Enable_project_compilation_6302`
-- TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
-- TS6306 `Referenced_project_0_must_have_setting_composite_Colon_true_6306`
-- TS6307 `File_0_is_not_listed_within_the_file_list_of_project_1_Projects_must_list_all_files_or_use_an_includ_6307`
-- TS6310 `Referenced_project_0_may_not_disable_emit_6310`
-- TS6351 `Project_0_is_up_to_date_because_newest_input_1_is_older_than_output_2_6351`
-- TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
-- TS6356 `A_non_dry_build_would_delete_the_following_files_Colon_0_6356`
-- TS6357 `A_non_dry_build_would_build_project_0_6357`
-- TS6359 `Updating_output_timestamps_of_project_0_6359`
-- TS6362 `Skipping_build_of_project_0_because_its_dependency_1_has_errors_6362`
-- TS6363 `Project_0_can_t_be_built_because_its_dependency_1_has_errors_6363`
-- TS6364 `Build_one_or_more_projects_and_their_dependencies_if_out_of_date_6364`
-- TS6371 `Updating_unchanged_output_timestamps_of_project_0_6371`
-- TS6374 `A_non_dry_build_would_update_timestamps_for_output_of_project_0_6374`
-- TS6377 `Cannot_write_file_0_because_it_will_overwrite_tsbuildinfo_file_generated_by_referenced_project_1_6377`
-- TS6381 `Project_0_is_out_of_date_because_output_for_it_was_generated_with_version_1_that_differs_with_curren_6381`
-- TS6382 `Skipping_build_of_project_0_because_its_dependency_1_was_not_built_6382`
-- TS6383 `Project_0_can_t_be_built_because_its_dependency_1_was_not_built_6383`
-- TS6399 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_some_of_the_changes_were_not_emitte_6399`
-- TS6400 `Project_0_is_up_to_date_but_needs_to_update_timestamps_of_output_files_that_are_older_than_input_fil_6400`
-- TS6406 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_there_is_change_in_compilerOptions_6406`
-- TS6412 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_file_2_was_root_file_of_compilation_6412`
-- TS6419 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_program_needs_to_report_errors_6419`
-- TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
-- TS6501 `The_expected_type_comes_from_this_index_signature_6501`
-- TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
-- TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
-- TS6900 `one_of_Colon_6900`
-- TS6901 `one_or_more_Colon_6901`
-- TS6902 `type_Colon_6902`
-- TS6913 `You_can_learn_about_all_of_the_compiler_options_at_0_6913`
-- TS6914 `Including_watch_w_will_start_watching_the_current_project_for_the_file_changes_Once_set_you_can_conf_6914`
-- TS6915 `Using_build_b_will_make_tsc_behave_more_like_a_build_orchestrator_than_a_compiler_This_is_used_to_tr_6915`
-- TS6916 `COMMON_COMMANDS_6916`
-- TS6917 `ALL_COMPILER_OPTIONS_6917`
-- TS6918 `WATCH_OPTIONS_6918`
-- TS6919 `BUILD_OPTIONS_6919`
-- TS6920 `COMMON_COMPILER_OPTIONS_6920`
-- TS6921 `COMMAND_LINE_FLAGS_6921`
-- TS6922 `tsc_Colon_The_TypeScript_Compiler_6922`
-- TS6923 `Compiles_the_current_project_tsconfig_json_in_the_working_directory_6923`
-- TS6924 `Ignoring_tsconfig_json_compiles_the_specified_files_with_default_compiler_options_6924`
-- TS6925 `Build_a_composite_project_in_the_working_directory_6925`
-- TS6926 `Creates_a_tsconfig_json_with_the_recommended_settings_in_the_working_directory_6926`
-- TS6928 `An_expanded_version_of_this_information_showing_all_possible_compiler_options_6928`
-- TS6929 `Compiles_the_current_project_with_additional_settings_6929`
-
 ### 1xxx — parser / syntactic + program file-inclusion (65)
 
 - TS1012 `Unexpected_token_1012`
@@ -333,6 +258,65 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 - TS1543 `Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543`
 - TS1544 `Named_imports_from_a_JSON_file_into_an_ECMAScript_module_are_not_allowed_when_module_is_set_to_0_1544`
+
+### 6xxx — CLI / build / watch / resolution-trace messages (56)
+
+- TS6041 `Errors_Files_6041`
+- TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
+- TS6119 `Type_reference_directive_0_was_successfully_resolved_to_1_primary_Colon_2_6119`
+- TS6120 `Type_reference_directive_0_was_not_resolved_6120`
+- TS6121 `Resolving_with_primary_search_path_0_6121`
+- TS6122 `Root_directory_cannot_be_determined_skipping_primary_search_paths_6122`
+- TS6130 `Resolving_real_path_for_0_result_1_6130`
+- TS6140 `Auto_discovery_for_typings_is_enabled_in_project_0_Running_extra_resolution_pass_for_module_1_using__6140`
+- TS6210 `An_argument_for_0_was_not_provided_6210`
+- TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
+- TS6212 `Did_you_mean_to_call_this_expression_6212`
+- TS6213 `Did_you_mean_to_use_new_with_this_expression_6213`
+- TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
+- TS6219 `Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219`
+- TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
+- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
+- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
+- TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
+- TS6236 `Arguments_for_the_rest_parameter_0_were_not_provided_6236`
+- TS6239 `File_0_exists_according_to_earlier_cached_lookups_6239`
+- TS6240 `File_0_does_not_exist_according_to_earlier_cached_lookups_6240`
+- TS6242 `Resolving_type_reference_directive_0_containing_file_1_6242`
+- TS6245 `File_Management_6245`
+- TS6253 `Backwards_Compatibility_6253`
+- TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`
+- TS6302 `Enable_project_compilation_6302`
+- TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
+- TS6306 `Referenced_project_0_must_have_setting_composite_Colon_true_6306`
+- TS6307 `File_0_is_not_listed_within_the_file_list_of_project_1_Projects_must_list_all_files_or_use_an_includ_6307`
+- TS6310 `Referenced_project_0_may_not_disable_emit_6310`
+- TS6351 `Project_0_is_up_to_date_because_newest_input_1_is_older_than_output_2_6351`
+- TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
+- TS6356 `A_non_dry_build_would_delete_the_following_files_Colon_0_6356`
+- TS6357 `A_non_dry_build_would_build_project_0_6357`
+- TS6359 `Updating_output_timestamps_of_project_0_6359`
+- TS6362 `Skipping_build_of_project_0_because_its_dependency_1_has_errors_6362`
+- TS6363 `Project_0_can_t_be_built_because_its_dependency_1_has_errors_6363`
+- TS6364 `Build_one_or_more_projects_and_their_dependencies_if_out_of_date_6364`
+- TS6371 `Updating_unchanged_output_timestamps_of_project_0_6371`
+- TS6374 `A_non_dry_build_would_update_timestamps_for_output_of_project_0_6374`
+- TS6377 `Cannot_write_file_0_because_it_will_overwrite_tsbuildinfo_file_generated_by_referenced_project_1_6377`
+- TS6381 `Project_0_is_out_of_date_because_output_for_it_was_generated_with_version_1_that_differs_with_curren_6381`
+- TS6382 `Skipping_build_of_project_0_because_its_dependency_1_was_not_built_6382`
+- TS6383 `Project_0_can_t_be_built_because_its_dependency_1_was_not_built_6383`
+- TS6399 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_some_of_the_changes_were_not_emitte_6399`
+- TS6400 `Project_0_is_up_to_date_but_needs_to_update_timestamps_of_output_files_that_are_older_than_input_fil_6400`
+- TS6406 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_there_is_change_in_compilerOptions_6406`
+- TS6412 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_file_2_was_root_file_of_compilation_6412`
+- TS6419 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_program_needs_to_report_errors_6419`
+- TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
+- TS6501 `The_expected_type_comes_from_this_index_signature_6501`
+- TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
+- TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
+- TS6900 `one_of_Colon_6900`
+- TS6901 `one_or_more_Colon_6901`
+- TS6902 `type_Colon_6902`
 
 ### 4xxx — declaration-emit (privacy / serialization) (22)
 
