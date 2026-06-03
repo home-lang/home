@@ -10,6 +10,7 @@ const std = @import("std");
 pub const string = []const u8;
 
 pub const CodepointIterator = @import("string/immutable.zig").CodepointIterator;
+pub const trimSubsequentLeadingChars = @import("string/immutable.zig").trimSubsequentLeadingChars;
 pub const Encoding = @import("string/immutable.zig").Encoding;
 pub const EncodingNonAscii = @import("string/immutable.zig").EncodingNonAscii;
 pub const AsciiStatus = @import("string/immutable.zig").AsciiStatus;

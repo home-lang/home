@@ -64,6 +64,8 @@ pub const sha = @import("sha_hmac/sha.zig");
 pub const dns = @import("dns/dns.zig");
 /// Faithful to upstream `bun.zig:1442` (`Watcher = @import("./watcher/Watcher.zig")`).
 pub const Watcher = @import("watcher/Watcher.zig");
+pub const SliceIterator = @import("bun.zig").SliceIterator;
+pub const which = @import("bun.zig").which;
 /// Faithful to upstream `bun.zig:222` (`trait = @import("./meta/traits.zig")`).
 pub const trait = @import("meta/traits.zig");
 // Top-level bun.zig members (modules + small helpers) the copied source spells
@@ -2242,6 +2244,7 @@ pub const jsc = struct {
     pub const ManagedTask = @import("event_loop/ManagedTask.zig");
     // JSC bring-up: real VirtualMachine (was a 215-line stub). jsc/jsc.zig:99.
     pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
+    pub const ResolvedSource = @import("jsc/jsc.zig").ResolvedSource;
     pub const ModuleLoader = struct {
         pub const HardcodedModule = @import("resolve_builtins/HardcodedModule.zig").HardcodedModule;
         pub const RuntimeTranspilerStore = @import("jsc/RuntimeTranspilerStore.zig").RuntimeTranspilerStore;
@@ -3027,6 +3030,8 @@ pub const runtime = struct {
         pub const IOWriter = @import("runtime/shell/shell.zig").IOWriter;
         pub const Subprocess = @import("runtime/shell/shell.zig").Subprocess;
         pub const Test = @import("runtime/shell/shell.zig").Test;
+        pub const isValidVarName = @import("runtime/shell/shell.zig").isValidVarName;
+        pub const unreachableState = @import("runtime/shell/shell.zig").unreachableState;
         pub const AST = @import("runtime/shell/shell.zig").AST;
         pub const interpret = @import("runtime/shell/interpreter.zig");
         pub const ParsedShellScript = @import("runtime/shell/ParsedShellScript.zig");
