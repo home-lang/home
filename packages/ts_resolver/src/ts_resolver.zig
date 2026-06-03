@@ -835,6 +835,8 @@ pub const Resolver = struct {
                             };
                         }
                     }
+                } else {
+                    self.traceMsg(6105, "Expected type of '{s}' field in 'package.json' to be 'string', got '{s}'.", .{ key, jsonValueTypeName(v) });
                 }
             }
         }
@@ -1461,6 +1463,17 @@ fn looksLikeAbsoluteUriSpecifier(s: []const u8) bool {
     return std.mem.indexOfScalar(u8, s, ':') != null;
 }
 
+fn jsonValueTypeName(value: std.json.Value) []const u8 {
+    return switch (value) {
+        .null => "null",
+        .bool => "boolean",
+        .integer, .float, .number_string => "number",
+        .string => "string",
+        .array => "array",
+        .object => "object",
+    };
+}
+
 fn hasKnownExtension(s: []const u8) bool {
     const exts = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts", ".hm", ".home", ".d.hm", ".d.home", ".js", ".jsx", ".mjs", ".cjs" };
     for (exts) |e| if (std.mem.endsWith(u8, s, e)) return true;
@@ -1756,6 +1769,29 @@ test "Resolver: node_modules + package.json resolution traces TS6098/6125/6099/6
     try T.expect(saw_6098);
     try T.expect(saw_6125);
     try T.expect(saw_6101);
+}
+
+test "Resolver: invalid package.json path field traces TS6105" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/node_modules/dep/package.json", "{\"types\":123,\"main\":\"./lib.js\"}");
+    try vfs.addFile("/proj/node_modules/dep/lib.js", "module.exports = {};");
+    try vfs.addFile("/proj/src/app.ts", "import 'dep';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("dep", "/proj/src/app.ts");
+    try T.expectEqualStrings("/proj/node_modules/dep/lib.js", res.path);
+
+    var saw_6105 = false;
+    for (sink.entries.items) |e| {
+        if (e.code == 6105) saw_6105 = true;
+    }
+    try T.expect(saw_6105);
 }
 
 test "Resolver: paths mapping traces TS6091/6092/6093" {

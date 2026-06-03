@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 873 |
-| reachable (parity targets) | 371 |
+| catalog-only total | 872 |
+| reachable (parity targets) | 370 |
 | dead in tsgo (leave catalog-only) | 502 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 146 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 95 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 94 |
 | 1xxx — parser / syntactic + program file-inclusion | 64 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -180,11 +180,10 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (95)
+### 6xxx — CLI / build / watch / resolution-trace messages (94)
 
 - TS6041 `Errors_Files_6041`
 - TS6104 `Checking_if_0_is_the_longest_matching_prefix_for_1_2_6104`
-- TS6105 `Expected_type_of_0_field_in_package_json_to_be_1_got_2_6105`
 - TS6108 `Longest_matching_prefix_for_0_is_1_6108`
 - TS6109 `Loading_0_from_the_root_dir_1_candidate_location_2_6109`
 - TS6110 `Trying_other_entries_in_rootDirs_6110`
