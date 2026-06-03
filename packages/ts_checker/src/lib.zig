@@ -346,9 +346,10 @@ pub fn numberProto(
 ///
 /// Generic callback methods are inferred at the call site: `map<U>` /
 /// `flatMap<U>` carry a fresh result type-parameter `U` (bound from the
-/// callback's return type), and `reduce<U>` infers `U` from its
-/// initial-value argument. `filter` / `slice` / `concat` / `reverse` /
-/// `sort` preserve `T[]`; `flat` / `splice` / `entries` stay loose
+/// callback's return type), `reduce(cb)` returns `T`, and `reduce<U>`
+/// infers `U` from its initial-value argument. `filter` / `slice` /
+/// `concat` / `reverse` / `sort` preserve `T[]`; `flat` / `splice` /
+/// `entries` stay loose
 /// (`any[]`) pending depth-typed / tuple machinery.
 pub fn arrayProto(
     cache: *LibCache,
@@ -409,7 +410,11 @@ pub fn arrayProto(
     const cb_t_void = try ti.internSignature(&[_]TypeId{elem}, void_t, false);
     // `(a: T, b: T) => number` — used by sort.
     const cb_tt_num = try ti.internSignature(&[_]TypeId{ elem, elem }, number_t, false);
-    // `(prev: any, cur: T) => any` — reducer callback for reduce /
+    // `(prev: T, cur: T) => T` — no-initial-value reducer callback
+    // for reduce / reduceRight. This overload returns the array element
+    // type, matching lib.d.ts and the compiler corpus' `genericReduce`.
+    const cb_reduce_no_init = try ti.internSignature(&[_]TypeId{ elem, elem }, elem, false);
+    // `(prev: U, cur: T) => U` — reducer callback for reduce /
     // reduceRight. lib.d.ts declares 4 params (prev, cur, idx, arr); we
     // model the loose 2-param head — callbacks with more params remain
     // assignable (contravariant), matching how map / filter callbacks
@@ -468,12 +473,13 @@ pub fn arrayProto(
     const sig_iterator = sig_values;
 
     // `reduce<U>(cb: (acc: U, cur: T) => U, init: U): U` (and
-    // reduceRight). Single generic signature: U is inferred from the
-    // initial-value argument and reinforced by the callback's
-    // accumulator/return positions. The no-initial-value overload that
-    // returns T (and throws on an empty array) is intentionally not
-    // modeled; the two-arg form is the common, precisely-inferable one.
+    // reduceRight). U is inferred from the initial-value argument and
+    // reinforced by the callback's accumulator/return positions. Keep
+    // this first so plain member lookup still exposes the generic
+    // signature for explicit `reduce<T>(..., init)` calls; overloaded
+    // member-call resolution walks the duplicate member entries below.
     const sig_reduce = try ti.internSignature(&[_]TypeId{ cb_reduce, u_tp }, u_tp, false);
+    const sig_reduce_no_init = try ti.internSignature(&[_]TypeId{cb_reduce_no_init}, elem, false);
     // `findIndex(pred): number` / `findLastIndex(pred): number`.
     const sig_find_index = try ti.internSignature(&[_]TypeId{cb_t_unknown}, number_t, false);
     // `findLast(pred): T | undefined` (es2023).
@@ -550,7 +556,9 @@ pub fn arrayProto(
         .{ .name = try sint.intern("Symbol.iterator"), .type = sig_iterator, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toArray"), .type = sig_to_array, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reduce"), .type = sig_reduce, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("reduce"), .type = sig_reduce_no_init, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reduceRight"), .type = sig_reduce, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("reduceRight"), .type = sig_reduce_no_init, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("findIndex"), .type = sig_find_index, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("findLast"), .type = sig_find_last, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("findLastIndex"), .type = sig_find_index, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -1089,10 +1097,10 @@ test "lib: stringProto exposes replace/padStart/at/matchAll and friends" {
     defer rest_set.deinit(T.allocator);
     const proto = try stringProto(&cache, &ti, &sint, T.allocator, &rest_set);
     for ([_][]const u8{
-        "replace",   "replaceAll", "match",         "matchAll", "search",
-        "padStart",  "padEnd",     "trimStart",     "trimEnd",  "at",
-        "codePointAt", "normalize", "localeCompare", "lastIndexOf",
-        "substr",    "valueOf",    "toString",
+        "replace",     "replaceAll", "match",         "matchAll",    "search",
+        "padStart",    "padEnd",     "trimStart",     "trimEnd",     "at",
+        "codePointAt", "normalize",  "localeCompare", "lastIndexOf", "substr",
+        "valueOf",     "toString",
     }) |name| {
         try T.expect(ti.objectMember(proto, try sint.intern(name)) != null);
     }
@@ -1185,9 +1193,9 @@ test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {
     const fm_ret = ti.signatureReturn(fm_sig).?;
     try T.expect(ti.pool.flagsOf(ti.objectNumberIndex(fm_ret)).is_type_parameter);
 
-    // `reduce<U>(cb, init: U): U`: the return is a free `U`, equal to the
-    // second parameter (initial value) type, so init-value inference
-    // resolves the result precisely.
+    // `reduce<U>(cb, init: U): U`: the first reduce member stays the
+    // generic initial-value overload so explicit `reduce<T>(..., init)`
+    // calls keep the existing member-lookup path.
     const red_sig = ti.objectMember(proto, try sint.intern("reduce")).?;
     const red_ret = ti.signatureReturn(red_sig).?;
     try T.expect(ti.pool.flagsOf(red_ret).is_type_parameter);
@@ -1196,6 +1204,20 @@ test "lib: arrayProto map/flatMap/reduce signatures are generic over U" {
     try T.expectEqual(red_ret, red_params[1]);
     // The reducer callback returns the same `U`.
     try T.expectEqual(red_ret, ti.signatureReturn(red_params[0]).?);
+
+    // The duplicate named overload covers `reduce(cb): T`.
+    var reduce_count: usize = 0;
+    var saw_no_init = false;
+    for (ti.objectMembers(proto)) |member| {
+        if (member.name != try sint.intern("reduce")) continue;
+        reduce_count += 1;
+        const params = ti.signatureParams(member.type);
+        if (params.len == 1 and ti.signatureReturn(member.type).? == types.Primitive.number_t) {
+            saw_no_init = true;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), reduce_count);
+    try T.expect(saw_no_init);
 }
 
 test "lib: arrayProto exposes iterator helper toArray" {
@@ -1294,12 +1316,11 @@ test "lib: objectGlobal exposes freeze/getOwnPropertyNames/fromEntries/is" {
 
     const og = try objectGlobal(&cache, &ti, &sint);
     for ([_][]const u8{
-        "freeze",                "isFrozen",          "seal",
-        "isSealed",              "preventExtensions", "isExtensible",
-        "getOwnPropertyNames",   "getOwnPropertySymbols",
-        "getOwnPropertyDescriptor", "getOwnPropertyDescriptors",
-        "getPrototypeOf",        "setPrototypeOf",    "fromEntries",
-        "defineProperties",      "is",
+        "freeze",                    "isFrozen",              "seal",
+        "isSealed",                  "preventExtensions",     "isExtensible",
+        "getOwnPropertyNames",       "getOwnPropertySymbols", "getOwnPropertyDescriptor",
+        "getOwnPropertyDescriptors", "getPrototypeOf",        "setPrototypeOf",
+        "fromEntries",               "defineProperties",      "is",
     }) |name| {
         try T.expect(ti.objectMember(og, try sint.intern(name)) != null);
     }
