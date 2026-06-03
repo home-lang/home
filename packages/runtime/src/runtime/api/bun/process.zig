@@ -1441,7 +1441,7 @@ pub fn spawnProcessPosix(
     attr.resetSignals() catch {};
 
     if (options.ipc) |ipc| {
-        try actions.inherit(ipc);
+        try actions.inherit(ipc.native());
         spawned.ipc = ipc;
     }
 
