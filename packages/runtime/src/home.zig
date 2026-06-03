@@ -4077,6 +4077,7 @@ pub const sys = struct {
     pub const isExecutableFilePath = @import("sys/sys.zig").isExecutableFilePath;
     pub const unlinkatWithFlags = @import("sys/sys.zig").unlinkatWithFlags;
     pub const rmdirat = @import("sys/sys.zig").rmdirat;
+    pub const setNonblocking = @import("sys/sys.zig").setNonblocking;
 
     // Faithful to upstream `bun.sys.workaround_symbols`
     // (`src/sys/sys.zig:20`): the platform-selected stat/memmem shims from
