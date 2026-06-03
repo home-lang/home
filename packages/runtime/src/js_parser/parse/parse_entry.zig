@@ -599,7 +599,7 @@ pub const Parser = struct {
                         try p.appendPart(&parts, sliced.items);
 
                         if (should_move) {
-                            before.append(parts.getLast().?) catch unreachable;
+                            before.append(parts.getLast()) catch unreachable;
                             parts.items.len -= 1;
                         }
                     },
@@ -614,7 +614,7 @@ pub const Parser = struct {
                         try p.appendPart(&parts, sliced.items);
 
                         if (should_move) {
-                            before.append(parts.getLast().?) catch unreachable;
+                            before.append(parts.getLast()) catch unreachable;
                             parts.items.len -= 1;
                         }
                     },

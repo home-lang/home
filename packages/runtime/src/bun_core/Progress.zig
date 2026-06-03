@@ -452,9 +452,9 @@ test "basic functionality" {
     {
         var node = root_node.start("this is a really long name designed to activate the truncation code. let's find out if it works", 0);
         node.activate();
-        std.Thread.sleep(10 * speed_factor);
+        std.Thread.yield() catch {};
         progress.refresh();
-        std.Thread.sleep(10 * speed_factor);
+        std.Thread.yield() catch {};
         node.end();
     }
 }

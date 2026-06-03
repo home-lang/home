@@ -209,9 +209,9 @@ test "PendingConnect linked-list push order is LIFO via onDNSResolvedThreadsafe"
 
     var session_a: ClientSession = undefined;
     var session_b: ClientSession = undefined;
-    var loop_storage: u8 = 0;
+    var loop_storage: u8 align(@alignOf(uws.Loop)) = 0;
     const fake_loop: *uws.Loop = @ptrCast(&loop_storage);
-    var fake_pc_storage: u8 = 0;
+    var fake_pc_storage: u8 align(@alignOf(quic.PendingConnect)) = 0;
     const fake_pc: *quic.PendingConnect = @ptrCast(&fake_pc_storage);
 
     var pc_a: PendingConnect = .{
@@ -236,9 +236,9 @@ test "PendingConnect linked-list push order is LIFO via onDNSResolvedThreadsafe"
 
 test "PendingConnect.loop returns the registered loop pointer" {
     var session: ClientSession = undefined;
-    var loop_storage: u8 = 0;
+    var loop_storage: u8 align(@alignOf(uws.Loop)) = 0;
     const fake_loop: *uws.Loop = @ptrCast(&loop_storage);
-    var fake_pc_storage: u8 = 0;
+    var fake_pc_storage: u8 align(@alignOf(quic.PendingConnect)) = 0;
     const fake_pc: *quic.PendingConnect = @ptrCast(&fake_pc_storage);
 
     var pc: PendingConnect = .{

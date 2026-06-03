@@ -975,7 +975,7 @@ pub const Test = struct {
             .loaders = undefined,
             .define = undefined,
             .log = &logger,
-            .routes = router.config,
+            // `.routes` was removed from BundleOptions in the bundler migration.
             .entry_points = &.{},
             .out_extensions = bun.StringHashMap(string).init(default_allocator),
             .transform_options = std.mem.zeroes(api.TransformOptions),
@@ -1030,7 +1030,7 @@ pub const Test = struct {
             .loaders = undefined,
             .define = undefined,
             .log = &logger,
-            .routes = router.config,
+            // `.routes` was removed from BundleOptions in the bundler migration.
             .entry_points = &.{},
             .out_extensions = bun.StringHashMap(string).init(default_allocator),
             .transform_options = std.mem.zeroes(api.TransformOptions),
