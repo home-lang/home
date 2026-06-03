@@ -1193,6 +1193,7 @@ const TsconfigResolverOptions = struct {
     root_dir: []const u8 = "",
     config_file_path: []const u8 = "",
     module: []const u8 = "",
+    type_roots: []const []const u8 = &.{},
 
     fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
         if (self.out_dir.len != 0) gpa.free(self.out_dir);
@@ -1200,6 +1201,7 @@ const TsconfigResolverOptions = struct {
         if (self.root_dir.len != 0) gpa.free(self.root_dir);
         if (self.config_file_path.len != 0) gpa.free(self.config_file_path);
         if (self.module.len != 0) gpa.free(self.module);
+        freeStringList(gpa, self.type_roots);
     }
 };
 
@@ -1221,6 +1223,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
             .declaration_dir = try dupeJsonStringField(gpa, obj, "declarationDir"),
             .root_dir = try dupeJsonStringField(gpa, obj, "rootDir"),
             .module = try dupeJsonStringField(gpa, obj, "module"),
+            .type_roots = try dupeJsonStringArrayField(gpa, obj, "typeRoots"),
             .config_file_path = try canonicalVfsPath(gpa, f.path),
         };
     }
@@ -1237,6 +1240,58 @@ fn dupeJsonStringField(
     return try gpa.dupe(u8, value.string);
 }
 
+fn dupeJsonStringArrayField(
+    gpa: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+) ![]const []const u8 {
+    const value = obj.get(key) orelse return &.{};
+    if (value != .array) return &.{};
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (out.items) |item| gpa.free(item);
+        out.deinit(gpa);
+    }
+    for (value.array.items) |item| {
+        if (item != .string) continue;
+        const duped = try gpa.dupe(u8, item.string);
+        out.append(gpa, duped) catch |err| {
+            gpa.free(duped);
+            return err;
+        };
+    }
+    return try out.toOwnedSlice(gpa);
+}
+
+fn dupeDirectiveStringList(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    directive_name: []const u8,
+) ![]const []const u8 {
+    const raw = directiveValue(source, directive_name) orelse return &.{};
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (out.items) |item| gpa.free(item);
+        out.deinit(gpa);
+    }
+    var it = std.mem.splitScalar(u8, raw, ',');
+    while (it.next()) |part| {
+        const trimmed = std.mem.trim(u8, part, " \t\r");
+        if (trimmed.len == 0) continue;
+        const duped = try gpa.dupe(u8, trimmed);
+        out.append(gpa, duped) catch |err| {
+            gpa.free(duped);
+            return err;
+        };
+    }
+    return try out.toOwnedSlice(gpa);
+}
+
+fn freeStringList(gpa: std.mem.Allocator, list: []const []const u8) void {
+    for (list) |item| gpa.free(item);
+    if (list.len != 0) gpa.free(list);
+}
+
 test "conformance: virtual tsconfig feeds resolver output mapping options" {
     const files = [_]VirtualFile{
         .{
@@ -1247,6 +1302,7 @@ test "conformance: virtual tsconfig feeds resolver output mapping options" {
             \\    "module": "nodenext",
             \\    "outDir": "./dist",
             \\    "declarationDir": "./types",
+            \\    "typeRoots": ["/a/types"],
             \\    "composite": true
             \\  }
             \\}
@@ -1259,6 +1315,8 @@ test "conformance: virtual tsconfig feeds resolver output mapping options" {
     try T.expectEqualStrings("./dist", opts.out_dir);
     try T.expectEqualStrings("./types", opts.declaration_dir);
     try T.expectEqualStrings("nodenext", opts.module);
+    try T.expectEqual(@as(usize, 1), opts.type_roots.len);
+    try T.expectEqualStrings("/a/types", opts.type_roots[0]);
     try T.expectEqualStrings("/tsconfig.json", opts.config_file_path);
 }
 
@@ -1306,6 +1364,7 @@ test "conformance: resolver config resolves package self-name through declaratio
         .declaration_dir = opts.declaration_dir,
         .root_dir = opts.root_dir,
         .config_file_path = opts.config_file_path,
+        .type_roots = opts.type_roots,
     });
     defer resolver.deinit();
     const resolved = try resolver.resolve("@this/package", "/src/thing.ts");
@@ -1590,7 +1649,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     // no spurious TS2307 leaks. Mirrors `APISample_*`.
     try synthesizeAbsoluteTypesStubs(gpa, virtual_files.items, &vfs);
 
-    const tsconfig_options = try resolverConfigOptionsFromVirtualTsconfig(gpa, virtual_files.items);
+    var tsconfig_options = try resolverConfigOptionsFromVirtualTsconfig(gpa, virtual_files.items);
+    if (tsconfig_options.type_roots.len == 0) {
+        tsconfig_options.type_roots = try dupeDirectiveStringList(gpa, c.raw_source, "typeRoots");
+    }
     defer tsconfig_options.deinit(gpa);
     var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
         .strategy = resolverStrategyFromCase(c, tsconfig_options.module),
@@ -1598,6 +1660,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .declaration_dir = tsconfig_options.declaration_dir,
         .root_dir = tsconfig_options.root_dir,
         .config_file_path = tsconfig_options.config_file_path,
+        .type_roots = tsconfig_options.type_roots,
     });
     defer resolver.deinit();
 

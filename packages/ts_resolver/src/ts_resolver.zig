@@ -83,6 +83,11 @@ pub const Config = struct {
     declaration_dir: []const u8 = "",
     root_dir: []const u8 = "",
     config_file_path: []const u8 = "",
+    /// `compilerOptions.typeRoots` or harness `@typeRoots` roots.
+    /// These are custom package-root directories such as `/a/types`;
+    /// explicit `node_modules/@types` roots still use TypeScript's
+    /// scoped-name mangling.
+    type_roots: []const []const u8 = &.{},
 
     pub const PathEntry = struct {
         pattern: []const u8,
@@ -138,6 +143,7 @@ pub const Resolution = struct {
         package_exports,
         package_main,
         index_file,
+        type_roots,
     };
 };
 
@@ -366,7 +372,7 @@ pub const Resolver = struct {
             return error.NotFound;
         }
 
-        // Bare specifier — paths mapping → `#imports` → self-name → node_modules.
+        // Bare specifier — paths mapping → `#imports` → self-name → node_modules → typeRoots.
         if (try self.tryPathsMapping(specifier)) |r| return r;
         // The modern resolvers (node16/nodenext/bundler) honor a few
         // package.json-scope-relative lookups BEFORE walking node_modules,
@@ -391,6 +397,7 @@ pub const Resolver = struct {
         if (try self.tryNodeModules(specifier, containing_file)) |r| {
             return try self.attachExportsAlternateResult(r, specifier, containing_file);
         }
+        if (try self.tryTypeRoots(specifier)) |r| return r;
         return error.NotFound;
     }
 
@@ -941,6 +948,49 @@ pub const Resolver = struct {
             const parent = dirname(dir);
             if (std.mem.eql(u8, parent, dir)) break;
             dir = parent;
+        }
+        return null;
+    }
+
+    fn tryTypeRoots(self: *Resolver, specifier: []const u8) ResolveError!?Resolution {
+        if (self.config.type_roots.len == 0) return null;
+        for (self.config.type_roots) |root| {
+            if (root.len == 0) continue;
+            if (std.mem.endsWith(u8, root, "/node_modules/@types") or
+                std.mem.eql(u8, root, "node_modules/@types"))
+            {
+                if (try self.tryAtTypesRoot(root, specifier)) |r| return r;
+                continue;
+            }
+            const candidate = try self.joinPath(root, specifier);
+            if (try self.tryTypeRootCandidate(candidate)) |r| return r;
+        }
+        return null;
+    }
+
+    fn tryAtTypesRoot(self: *Resolver, root: []const u8, specifier: []const u8) ResolveError!?Resolution {
+        const split = packageNameSplit(specifier);
+        if (split.name.len == 0) return null;
+        const pkg_dir: []const u8 = if (split.name[0] == '@') blk: {
+            const slash = std.mem.indexOfScalar(u8, split.name, '/') orelse return null;
+            const scope = split.name[1..slash];
+            const tail = split.name[slash + 1 ..];
+            const mangled = try std.fmt.allocPrint(self.ar(), "{s}__{s}", .{ scope, tail });
+            break :blk try self.joinPath(root, mangled);
+        } else try self.joinPath(root, split.name);
+        const candidate = if (split.subpath.len == 0)
+            pkg_dir
+        else
+            try self.joinPath(pkg_dir, split.subpath);
+        return self.tryTypeRootCandidate(candidate);
+    }
+
+    fn tryTypeRootCandidate(self: *Resolver, candidate: []const u8) ResolveError!?Resolution {
+        if (try self.tryFileWithExtensions(candidate)) |r| {
+            if (r.is_declaration) return .{ .path = r.path, .source = .type_roots, .is_declaration = true };
+        }
+        if (try self.tryDirectoryIndex(candidate)) |r| {
+            if (r.is_declaration) return .{ .path = r.path, .source = .type_roots, .is_declaration = true };
         }
         return null;
     }
@@ -1909,6 +1959,30 @@ test "Resolver: ancestor node_modules direct declaration file" {
     const app_res = try r.resolve("foo", "/a/b/c/d/e/app.ts");
     try T.expectEqualStrings("/a/b/node_modules/foo.d.ts", app_res.path);
     try T.expect(app_res.is_declaration);
+}
+
+test "Resolver: custom typeRoots resolve scoped packages literally" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/a/types/@scoped/typescache/index.d.ts", "export const typesCache: number;");
+    try vfs.addFile("/a/types/mangled__typescache/index.d.ts", "export const mangledTypes: number;");
+    try vfs.addFile("/a/node_modules/@types/@scoped/attypescache/index.d.ts", "export const atTypesCache: number;");
+    try vfs.addFile("/a/node_modules/@types/mangled__attypescache/index.d.ts", "export const mangledAtTypesCache: number;");
+    try vfs.addFile("/a.ts", "import { typesCache } from '@scoped/typescache';");
+
+    const roots = [_][]const u8{ "/a/types", "/a/node_modules/@types" };
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .type_roots = &roots });
+    defer r.deinit();
+
+    const scoped = try r.resolve("@scoped/typescache", "/a.ts");
+    try T.expectEqualStrings("/a/types/@scoped/typescache/index.d.ts", scoped.path);
+    try T.expectEqual(Resolution.Source.type_roots, scoped.source);
+    try T.expectError(error.NotFound, r.resolve("@mangled/typescache", "/a.ts"));
+    try T.expectError(error.NotFound, r.resolve("@scoped/attypescache", "/a.ts"));
+
+    const at_types = try r.resolve("@mangled/attypescache", "/a.ts");
+    try T.expectEqualStrings("/a/node_modules/@types/mangled__attypescache/index.d.ts", at_types.path);
+    try T.expectEqual(Resolution.Source.type_roots, at_types.source);
 }
 
 test "Resolver: prefers types over main" {
