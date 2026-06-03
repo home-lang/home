@@ -500,6 +500,17 @@ fn renderOption(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), opt: o
             try buf.append(gpa, '\n');
         }
     }
+    if (shouldRenderValueCandidate(opt)) {
+        if (valueCandidateLabelCode(opt)) |label_code| {
+            if (codes.lookup(label_code)) |label_ci| {
+                try buf.appendSlice(gpa, "      ");
+                try buf.appendSlice(gpa, label_ci.message);
+                try buf.append(gpa, ' ');
+                try buf.appendSlice(gpa, opt.possible_values);
+                try buf.append(gpa, '\n');
+            }
+        }
+    }
     if (opt.default_code != 0) {
         if (codes.lookup(opt.default_code)) |default_ci| {
             const default_label_code: u32 = 6903;
@@ -512,6 +523,33 @@ fn renderOption(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), opt: o
             try buf.append(gpa, '\n');
         }
     }
+}
+
+fn shouldRenderValueCandidate(opt: options_table.OptionDecl) bool {
+    const command_line_category_code: u32 = 6171;
+    if (opt.category == command_line_category_code) return false;
+    if (opt.possible_values.len == 0) return false;
+    if (std.mem.eql(u8, opt.possible_values, "string") and opt.default_code == 0) return false;
+    return true;
+}
+
+fn valueCandidateLabelCode(opt: options_table.OptionDecl) ?u32 {
+    if (std.mem.eql(u8, opt.kind, "string") or
+        std.mem.eql(u8, opt.kind, "number") or
+        std.mem.eql(u8, opt.kind, "boolean"))
+    {
+        const type_label_code: u32 = 6902;
+        return type_label_code;
+    }
+    if (std.mem.eql(u8, opt.kind, "list")) {
+        const one_or_more_label_code: u32 = 6901;
+        return one_or_more_label_code;
+    }
+    if (std.mem.eql(u8, opt.kind, "enum")) {
+        const one_of_label_code: u32 = 6900;
+        return one_of_label_code;
+    }
+    return null;
 }
 
 /// TS6044: a non-boolean compiler flag was given on the command line
@@ -1443,6 +1481,9 @@ test "renderHelp: simplified view renders simplified option descriptions" {
     try T.expect(std.mem.indexOf(u8, help, "COMMAND LINE FLAGS") != null);
     try T.expect(std.mem.indexOf(u8, help, "COMMON COMPILER OPTIONS") != null);
     try T.expect(std.mem.indexOf(u8, help, "You can learn about all of the compiler options at https://aka.ms/tsc") != null);
+    try T.expect(std.mem.indexOf(u8, help, "type: boolean") != null);
+    try T.expect(std.mem.indexOf(u8, help, "one of: es6/es2015") != null);
+    try T.expect(std.mem.indexOf(u8, help, "one or more: es5") != null);
     // `--watch` / `--strict` are ShowInSimplifiedHelpView; their catalogue
     // descriptions must appear in the default view.
     try T.expect(std.mem.indexOf(u8, help, "Watch input files.") != null);

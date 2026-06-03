@@ -85,6 +85,105 @@ function field(block, name) {
   return { raw: m[1] };
 }
 
+function normalizeKind(kindF) {
+  if (!kindF) return "";
+  const raw = kindF.str ?? kindF.raw ?? "";
+  return raw.replace(/^CommandLineOptionType/, "").replace(/^./, (c) => c.toLowerCase());
+}
+
+function readRefFile(file) {
+  return fs.readFileSync(path.join(ref, "internal/tsoptions", file), "utf8");
+}
+
+function parseElementKinds() {
+  const text = readRefFile("commandlineoption.go");
+  const elements = new Map();
+  const mapStart = text.indexOf("var commandLineOptionElements");
+  const mapEnd = text.indexOf("// CommandLineOption.EnumMap()", mapStart);
+  const body = mapStart >= 0 && mapEnd >= 0 ? text.slice(mapStart, mapEnd) : "";
+  for (const m of body.matchAll(/"([^"]+)":\s*\{([\s\S]*?)\n\s*\},/g)) {
+    const kindF = field(m[2], "Kind");
+    const kind = normalizeKind(kindF);
+    if (kind) elements.set(m[1], kind);
+  }
+  return elements;
+}
+
+function parseEnumOptionMaps() {
+  const text = readRefFile("commandlineoption.go");
+  const maps = new Map();
+  const mapStart = text.indexOf("var commandLineOptionEnumMap");
+  const mapEnd = text.indexOf("// CommandLineOption.DeprecatedKeys()", mapStart);
+  const body = mapStart >= 0 && mapEnd >= 0 ? text.slice(mapStart, mapEnd) : "";
+  for (const m of body.matchAll(/"([^"]+)":\s*([A-Za-z0-9_]+)/g)) {
+    maps.set(m[1], m[2]);
+  }
+  return maps;
+}
+
+function parseDeprecatedKeys() {
+  const text = readRefFile("commandlineoption.go");
+  const deprecated = new Map();
+  const mapStart = text.indexOf("var commandLineOptionDeprecated");
+  const body = mapStart >= 0 ? text.slice(mapStart) : "";
+  for (const m of body.matchAll(/"([^"]+)":\s*collections\.NewSetFromItems\(([^)]*)\)/g)) {
+    const keys = new Set();
+    for (const k of m[2].matchAll(/"([^"]+)"/g)) keys.add(k[1]);
+    deprecated.set(m[1], keys);
+  }
+  return deprecated;
+}
+
+function parseEnumMapValues() {
+  const text = readRefFile("enummaps.go");
+  const values = new Map();
+  for (const m of text.matchAll(/var\s+([A-Za-z0-9_]+)\s*=\s*collections\.NewOrderedMapFromList\(\[\]collections\.MapEntry\[string,\s*any\]\{\n([\s\S]*?)\n\}\)/g)) {
+    const entries = [];
+    for (const e of m[2].matchAll(/\{Key:\s*"([^"]+)",\s*Value:\s*([^}]+)\},/g)) {
+      entries.push({ key: e[1], value: e[2].trim().replace(/,\s*$/, "") });
+    }
+    values.set(m[1], entries);
+  }
+  return values;
+}
+
+const elementKinds = parseElementKinds();
+const enumOptionMaps = parseEnumOptionMaps();
+const deprecatedKeys = parseDeprecatedKeys();
+const enumMapValues = parseEnumMapValues();
+
+function enumPossibleValues(optionName) {
+  const mapName = enumOptionMaps.get(optionName);
+  const entries = mapName ? enumMapValues.get(mapName) : null;
+  if (!entries) return "";
+  const deprecated = deprecatedKeys.get(optionName);
+  const grouped = new Map();
+  for (const entry of entries) {
+    if (deprecated && deprecated.has(entry.key)) continue;
+    if (!grouped.has(entry.value)) grouped.set(entry.value, []);
+    grouped.get(entry.value).push(entry.key);
+  }
+  return [...grouped.values()].map((keys) => keys.join("/")).join(", ");
+}
+
+function possibleValues(optionName, kind) {
+  switch (kind) {
+    case "string":
+    case "number":
+    case "boolean":
+      return kind;
+    case "list": {
+      const elementKind = elementKinds.get(optionName);
+      if (elementKind === "enum") return enumPossibleValues(optionName);
+      return elementKind || "";
+    }
+    case "enum":
+      return enumPossibleValues(optionName);
+    default:
+      return "";
+  }
+}
+
 const seen = new Set();
 const options = [];
 for (const file of ["declscompiler.go", "declswatch.go", "declsbuild.go"]) {
@@ -97,6 +196,7 @@ for (const file of ["declscompiler.go", "declswatch.go", "declsbuild.go"]) {
     const descF = field(block, "Description");
     const catF = field(block, "Category");
     const defaultF = field(block, "DefaultValueDescription");
+    const kind = normalizeKind(field(block, "Kind"));
     const simplified = /ShowInSimplifiedHelpView:\s*true/.test(block);
     const cmdOnly = /IsCommandLineOnly:\s*true/.test(block);
     const descCode = descF && descF.diag ? codeFor(descF.diag) : null;
@@ -109,7 +209,9 @@ for (const file of ["declscompiler.go", "declswatch.go", "declsbuild.go"]) {
     options.push({ name, short, descCode, catCode, simplified, cmdOnly,
       descDiag: descF && descF.diag ? descF.diag : null,
       defaultDiag: defaultF && defaultF.diag ? defaultF.diag : null,
-      defaultCode });
+      defaultCode,
+      kind,
+      values: possibleValues(name, kind) });
   }
 }
 
@@ -136,6 +238,10 @@ out.push("    /// TSxxxx code of the option's `--help` category header, or 0.");
 out.push("    category: u32 = 0,");
 out.push("    /// TSxxxx code of the option's diagnostic-backed default-value text, or 0.");
 out.push("    default_code: u32 = 0,");
+out.push("    /// Upstream command-line option kind.");
+out.push("    kind: []const u8 = \"\",");
+out.push("    /// Rendered possible value/type text for `--help` additional info.");
+out.push("    possible_values: []const u8 = \"\",");
 out.push("    /// Shown in the default (non-`--all`) `--help` view.");
 out.push("    simplified: bool = false,");
 out.push("    /// Only valid on the command line (never in tsconfig.json).");
@@ -151,6 +257,8 @@ for (const o of options) {
   if (o.descCode) parts.push(`.code = ${o.descCode}`);
   if (o.catCode) parts.push(`.category = ${o.catCode}`);
   if (o.defaultCode) parts.push(`.default_code = ${o.defaultCode}`);
+  if (o.kind) parts.push(`.kind = ${zstr(o.kind)}`);
+  if (o.values) parts.push(`.possible_values = ${zstr(o.values)}`);
   if (o.simplified) parts.push(`.simplified = true`);
   if (o.cmdOnly) parts.push(`.command_line_only = true`);
   out.push(`    .{ ${parts.join(", ")} },`);

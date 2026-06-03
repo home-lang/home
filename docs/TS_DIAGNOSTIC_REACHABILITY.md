@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 816 |
-| reachable (parity targets) | 348 |
+| catalog-only total | 813 |
+| reachable (parity targets) | 345 |
 | dead in tsgo (leave catalog-only) | 468 |
 
 ## Reachable worklist by range
@@ -24,7 +24,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
 | 1xxx — parser / syntactic + program file-inclusion | 65 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 56 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -259,7 +259,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1543 `Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543`
 - TS1544 `Named_imports_from_a_JSON_file_into_an_ECMAScript_module_are_not_allowed_when_module_is_set_to_0_1544`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (56)
+### 6xxx — CLI / build / watch / resolution-trace messages (53)
 
 - TS6041 `Errors_Files_6041`
 - TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
@@ -314,9 +314,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6501 `The_expected_type_comes_from_this_index_signature_6501`
 - TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
 - TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
-- TS6900 `one_of_Colon_6900`
-- TS6901 `one_or_more_Colon_6901`
-- TS6902 `type_Colon_6902`
 
 ### 4xxx — declaration-emit (privacy / serialization) (22)
 
