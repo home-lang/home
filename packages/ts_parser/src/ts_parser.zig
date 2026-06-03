@@ -10712,6 +10712,10 @@ pub const Parser = struct {
         }
         const close_tok = self.advance();
         const name_id = (try self.computedTypeMemberNameFromKey(key_expr)) orelse blk: {
+            if (self.computedTypeMemberUnresolvedQualifiedRoot(key_expr)) |root| {
+                try self.reportCannotFindNameNode(root, start_tok.line);
+                break :blk @as(hir_mod.StringId, 0);
+            }
             if (self.hir.kindOf(key_expr) != .identifier) {
                 // A computed type-member key whose expression isn't a
                 // literal-resolvable name (binary_op, call_expr, etc.)
@@ -10971,9 +10975,24 @@ pub const Parser = struct {
 
     fn computedTypeMemberIdentifierIsDeclaredValue(self: *Parser, key_expr: NodeId) bool {
         if (self.hir.kindOf(key_expr) != .identifier) return false;
+        return self.identifierNodeIsDeclaredValue(key_expr);
+    }
+
+    fn computedTypeMemberUnresolvedQualifiedRoot(self: *Parser, key_expr: NodeId) ?NodeId {
+        var root = key_expr;
+        while (self.hir.kindOf(root) == .member_access) {
+            root = hir_mod.memberOf(self.hir, root).object;
+        }
+        if (self.hir.kindOf(root) != .identifier) return null;
+        if (self.identifierNodeIsDeclaredValue(root)) return null;
+        return root;
+    }
+
+    fn identifierNodeIsDeclaredValue(self: *Parser, key_expr: NodeId) bool {
         const id = hir_mod.identifierOf(self.hir, key_expr);
         const raw = self.interner.get(id.name);
-        const keywords = [_][]const u8{ "var", "let", "const", "function", "class" };
+        if (std.mem.eql(u8, raw, "Symbol")) return true;
+        const keywords = [_][]const u8{ "var", "let", "const", "function", "class", "enum" };
         for (keywords) |kw| {
             var search_start: usize = 0;
             while (std.mem.indexOfPos(u8, self.source, search_start, kw)) |kw_pos| {
@@ -23368,6 +23387,16 @@ test "parser: unique symbol computed type members parse without TS1169" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1169);
     }
+}
+
+test "parser: unresolved qualified computed type member reports name lookup before TS1170" {
+    var s = try newTestSetup("export type Type = { x?: { [Enum.A]: 0 } };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 2304) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Cannot find name 'Enum'.", d.message);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1170));
 }
 
 test "parser: lone accessibility keyword in class body can be field name" {
