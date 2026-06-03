@@ -55,6 +55,7 @@ pub const convertUTF8BytesIntoUTF16WithLength = @import("string/immutable.zig").
 pub const copyCP1252IntoUTF16 = @import("string/immutable.zig").copyCP1252IntoUTF16;
 pub const withoutNTPrefix = @import("string/immutable.zig").withoutNTPrefix;
 pub const inMapCaseInsensitive = @import("string/immutable.zig").inMapCaseInsensitive;
+pub const isIPAddress = @import("string/immutable.zig").isIPAddress;
 pub const toUTF16AllocMaybeBuffered = @import("string/immutable.zig").toUTF16AllocMaybeBuffered;
 pub const withoutUTF8BOM = @import("string/immutable.zig").withoutUTF8BOM;
 pub const toUTF8ListWithType = @import("string/immutable.zig").toUTF8ListWithType;

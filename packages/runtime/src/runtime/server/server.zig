@@ -247,14 +247,41 @@ pub const ServerConfig = struct {
 
     pub const SSLConfig = struct {
         pub const SharedPtr = SSLConfig;
+        pub const zero: SSLConfig = .{};
+        server_name: ?[*:0]const u8 = null,
+        requires_custom_request_ctx: bool = false,
+
+        pub inline fn get(this: *const SSLConfig) *SSLConfig {
+            return @constCast(this);
+        }
+
+        pub inline fn rawPtr(maybe_shared: ?SharedPtr) ?*SSLConfig {
+            if (maybe_shared) |shared| {
+                var copy = shared;
+                return copy.get();
+            }
+            return null;
+        }
 
         pub fn fromJS(_: anytype, _: *jsc.JSGlobalObject, _: jsc.JSValue) !?SSLConfig {
+            return .{};
+        }
+
+        pub fn fromGenerated(_: *jsc.VirtualMachine, _: *jsc.JSGlobalObject, _: *const jsc.generated.SSLConfig) !?SSLConfig {
             return .{};
         }
 
         pub fn deinit(_: *SSLConfig) void {}
 
         pub fn clone(_: *const SSLConfig) SSLConfig {
+            return .{};
+        }
+
+        pub fn asUSockets(_: *const SSLConfig) bun.uws.SocketContext.BunSocketContextOptions {
+            return .{};
+        }
+
+        pub fn asUSocketsForClientVerification(_: *const SSLConfig) bun.uws.SocketContext.BunSocketContextOptions {
             return .{};
         }
     };

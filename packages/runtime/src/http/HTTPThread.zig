@@ -74,7 +74,7 @@ pub const HeapRequestBodyBuffer = struct {
 
 pub const RequestBodyBuffer = union(enum) {
     heap: *HeapRequestBodyBuffer,
-    stack: std.heap.StackFallbackAllocator(request_body_send_stack_buffer_size),
+    stack: bun.StackFallbackAllocator(request_body_send_stack_buffer_size),
 
     pub fn deinit(this: *@This()) void {
         switch (this.*) {
@@ -147,7 +147,7 @@ pub inline fn getRequestBodySendBuffer(this: *@This(), estimated_size: usize) Re
         return .{ .heap = bun.take(&this.lazy_request_body_buffer).? };
     }
     return .{
-        .stack = std.heap.stackFallback(request_body_send_stack_buffer_size, bun.default_allocator),
+        .stack = bun.stackFallback(request_body_send_stack_buffer_size, bun.default_allocator),
     };
 }
 

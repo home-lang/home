@@ -325,7 +325,12 @@ pub fn SSLWrapper(comptime T: type) type {
                 return .{};
             }
             const ssl = this.ssl orelse return .{};
-            return ssl.getVerifyError();
+            const err = ssl.getVerifyError();
+            return .{
+                .error_no = err.error_no,
+                .code = err.code,
+                .reason = err.reason,
+            };
         }
 
         /// Update the handshake state

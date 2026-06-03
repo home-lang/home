@@ -219,22 +219,18 @@ const c = struct {
 const ConnectingSocket = @import("./ConnectingSocket.zig").ConnectingSocket;
 const SocketKind = @import("./SocketKind.zig").SocketKind;
 
-/// Placeholder forward-declaration — see `ConnectingSocket.zig`. Collapses
-/// to the future `uws_sys/Loop.zig` export (same opaque ABI).
-pub const Loop = opaque {};
+/// uSockets loop handle.
+pub const Loop = @import("./Loop.zig").PosixLoop;
 
-/// Placeholder forward-declaration. Replaced when `uws_sys/us_socket_t.zig`
-/// ports. Already used as an opaque in `vtable.zig`.
-pub const us_socket_t = opaque {};
+/// Shared usockets socket wrapper.
+pub const us_socket_t = @import("./us_socket_t.zig").us_socket_t;
 
 /// Placeholder forward-declaration. Replaced when `uws_sys/ListenSocket.zig`
 /// ports (it pulls in `NewSocketHandler` which needs the broader uws surface).
 pub const ListenSocket = opaque {};
 
-/// Placeholder forward-declaration. Replaced when the TLS surface lands
-/// (`us_bun_socket_context_options_t` family in libusockets.h). Pointer-only
-/// here — internal layout is owned by openssl/wolfssl.
-pub const SslCtx = opaque {};
+/// TLS context pointer owned by BoringSSL/libusockets.
+pub const SslCtx = @import("../boringssl_sys/boringssl.zig").SSL_CTX;
 
 /// Layout-compatible mirror of `us_bun_verify_error_t`. Re-exported here so
 /// `VTable.on_handshake` carries the same struct shape as the C side; matches

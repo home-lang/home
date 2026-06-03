@@ -181,6 +181,10 @@ pub fn ArrayHashMap(
             return self.unmanaged.swapRemove(key);
         }
 
+        pub fn swapRemoveAt(self: *Self, index: usize) void {
+            self.unmanaged.swapRemoveAt(index);
+        }
+
         pub fn fetchSwapRemove(self: *Self, key: K) ?KV {
             return self.unmanaged.fetchSwapRemove(key);
         }

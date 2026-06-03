@@ -492,9 +492,10 @@ pub const extremely_verbose = false;
 
 fn writeProxyConnect(
     comptime Writer: type,
-    writer: Writer,
+    writer_: Writer,
     client: *HTTPClient,
 ) !void {
+    var writer = writer_;
     var port: []const u8 = undefined;
     if (client.url.getPort()) |_| {
         port = client.url.port;
@@ -544,10 +545,11 @@ fn writeProxyConnect(
 
 fn writeProxyRequest(
     comptime Writer: type,
-    writer: Writer,
+    writer_: Writer,
     request: picohttp.Request,
     client: *HTTPClient,
 ) !void {
+    var writer = writer_;
     _ = writer.write(request.method) catch 0;
     // will always be http:// here, https:// needs CONNECT tunnel
     _ = writer.write(" http://") catch 0;
@@ -601,9 +603,10 @@ fn writeProxyRequest(
 
 fn writeRequest(
     comptime Writer: type,
-    writer: Writer,
+    writer_: Writer,
     request: picohttp.Request,
 ) !void {
+    var writer = writer_;
     _ = writer.write(request.method) catch 0;
     _ = writer.write(" ") catch 0;
     _ = writer.write(request.path) catch 0;
@@ -1427,7 +1430,7 @@ noinline fn sendInitialRequestPayload(this: *HTTPClient, comptime is_first_call:
     var temporary_send_buffer = request_body_buffer.toArrayList();
     defer temporary_send_buffer.deinit();
 
-    const writer = &temporary_send_buffer.writer();
+    var writer = std.Io.Writer.fixed(temporary_send_buffer.allocatedSlice()[temporary_send_buffer.items.len..]);
 
     const request = this.buildRequest(this.state.original_request_body.len());
 
@@ -1441,8 +1444,8 @@ noinline fn sendInitialRequestPayload(this: *HTTPClient, comptime is_first_call:
             log("start proxy request (http proxy)", .{});
             // HTTP do not need tunneling with CONNECT just a slightly different version of the request
             try writeProxyRequest(
-                @TypeOf(writer),
-                writer,
+                @TypeOf(&writer),
+                &writer,
                 request,
                 this,
             );
@@ -1450,14 +1453,14 @@ noinline fn sendInitialRequestPayload(this: *HTTPClient, comptime is_first_call:
     } else {
         log("normal request", .{});
         try writeRequest(
-            @TypeOf(writer),
-            writer,
+            @TypeOf(&writer),
+            &writer,
             request,
         );
     }
 
+    temporary_send_buffer.items.len += writer.end;
     const headers_len = temporary_send_buffer.items.len;
-    assert(temporary_send_buffer.items.len == writer.context.items.len);
     if (this.state.request_body.len > 0 and temporary_send_buffer.capacity - temporary_send_buffer.items.len > 0 and !this.flags.proxy_tunneling) {
         var remain = temporary_send_buffer.items.ptr[temporary_send_buffer.items.len..temporary_send_buffer.capacity];
         const wrote = @min(remain.len, this.state.request_body.len);
@@ -1777,20 +1780,20 @@ pub fn onWritable(this: *HTTPClient, comptime is_first_call: bool, comptime is_s
                 var temporary_send_buffer = std.array_list.Managed(u8).fromOwnedSlice(allocator, &stack_buffer.buffer);
                 temporary_send_buffer.items.len = 0;
                 defer temporary_send_buffer.deinit();
-                const writer = &temporary_send_buffer.writer();
+                var writer = std.Io.Writer.fixed(temporary_send_buffer.allocatedSlice()[temporary_send_buffer.items.len..]);
 
                 const request = this.buildRequest(this.state.request_body.len);
                 writeRequest(
-                    @TypeOf(writer),
-                    writer,
+                    @TypeOf(&writer),
+                    &writer,
                     request,
                 ) catch {
                     this.closeAndFail(error.OutOfMemory, is_ssl, socket);
                     return;
                 };
 
+                temporary_send_buffer.items.len += writer.end;
                 const headers_len = temporary_send_buffer.items.len;
-                assert(temporary_send_buffer.items.len == writer.context.items.len);
                 if (this.state.request_body.len > 0 and temporary_send_buffer.capacity - temporary_send_buffer.items.len > 0) {
                     var remain = temporary_send_buffer.items.ptr[temporary_send_buffer.items.len..temporary_send_buffer.capacity];
                     const wrote = @min(remain.len, this.state.request_body.len);

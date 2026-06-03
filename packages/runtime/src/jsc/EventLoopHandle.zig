@@ -64,6 +64,20 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
+    pub fn stdout(this: EventLoopHandle) *home_rt.jsc.WebCore.Blob.Store {
+        return switch (this) {
+            .js => this.js.virtual_machine.rareData().stdout(),
+            .mini => this.mini.stdout(),
+        };
+    }
+
+    pub fn stderr(this: EventLoopHandle) *home_rt.jsc.WebCore.Blob.Store {
+        return switch (this) {
+            .js => this.js.virtual_machine.rareData().stderr(),
+            .mini => this.mini.stderr(),
+        };
+    }
+
     pub fn enqueueTaskConcurrent(this: EventLoopHandle, task: EventLoopTask) void {
         switch (this) {
             .js => this.js.enqueueTaskConcurrent(task.js),
@@ -96,6 +110,10 @@ pub const EventLoopTask = union(EventLoopKind) {
             .js => .{ .js = @ptrFromInt(0xdead_bee0) },
             .mini => .{ .mini = @ptrFromInt(0xdead_bee8) },
         };
+    }
+
+    pub fn fromEventLoop(handle: EventLoopHandle) EventLoopTask {
+        return init(std.meta.activeTag(handle));
     }
 };
 

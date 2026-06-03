@@ -39,14 +39,13 @@ substrate, HTTP/H2/H3 carriers, JSC/webcore/API object surfaces, DNS/file
 poll shims, and Zig 0.17 compatibility. The latest focused gate,
 `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`,
 still has the existing compiled **48/48 tests passing**, but fails the
-`home_test` compile step at **15 visible compile errors** after the
-follow-up worker tranche landed managed map/string compatibility, install
-mini-store/repository shims, JSC array/string/DOM surface fixes,
-Node/N-API/EventLoop compatibility, PipeWriter poll registration fallback,
-FFI/parse-args/std-drift cleanup, request enum JS conversions, bake route
-bundle wiring, and SQL/Postgres bridge drift fixes. This does not
-raise the audited integrated parity count; remaining blockers are tracked
-in the plan checkpoint.
+`home_test` compile step at **4 visible compile errors** after the
+follow-up runtime tranche landed WebSocket export hooks, generated socket
+config shells, TLS/uWS identity fixes, HTTP request buffering compatibility,
+managed map/string helpers, and shell event-loop forwarding. This does not
+raise the audited integrated parity count; remaining blockers are the
+server all-connections-closed task carrier, hot-reload watcher wiring,
+shell parser export, and shell glob walker export.
 
 Legend:
 

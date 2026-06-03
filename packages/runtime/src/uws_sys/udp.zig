@@ -119,11 +119,8 @@ pub const PacketBuffer = opaque {
     extern fn us_udp_packet_buffer_truncated(buf: ?*PacketBuffer, index: c_int) c_int;
 };
 
-/// Placeholder forward-declaration. Replaced when `uws_sys/Loop.zig` ports
-/// (it pulls in `InternalLoopData` + `jsc.EventLoopHandle`). `udp.Socket`
-/// only takes `?*Loop` / `*Loop` through the C ABI and never dereferences
-/// it, so a local opaque is shape-compatible with the future real type.
-pub const Loop = opaque {};
+/// Faithful to the shared usockets loop handle used by `uws_sys/Loop.zig`.
+pub const Loop = @import("./Loop.zig").PosixLoop;
 
 const home_rt = @import("home");
 const std = @import("std");

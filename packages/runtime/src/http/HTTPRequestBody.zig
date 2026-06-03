@@ -9,6 +9,7 @@
 // client (Phase 12.5).
 
 const std = @import("std");
+const home_rt = @import("home");
 
 /// Opaque stub for upstream `bun/src/http/SendFile.zig`. Only
 /// `content_size` is referenced by `HTTPRequestBody.len`.
@@ -19,6 +20,16 @@ pub const SendFile = struct {
     remain: usize = 0,
     offset: usize = 0,
     content_size: usize = 0,
+
+    pub fn write(_: *SendFile, _: anytype) Status {
+        return .done;
+    }
+
+    pub const Status = union(enum) {
+        done: void,
+        err: anyerror,
+        again: void,
+    };
 };
 
 /// Opaque stub for upstream `bun/src/http/ThreadSafeStreamBuffer.zig`. The
@@ -26,19 +37,7 @@ pub const SendFile = struct {
 /// impl wires through `bun.ptr.ThreadSafeRefCount`. The stub no-ops it so
 /// the union's `.detach()` path compiles.
 pub const ThreadSafeStreamBuffer = struct {
-    const Buffer = struct {
-        cursor: usize = 0,
-
-        pub fn slice(_: *Buffer) []const u8 {
-            return "";
-        }
-
-        pub fn isEmpty(_: *Buffer) bool {
-            return true;
-        }
-
-        pub fn reset(_: *Buffer) void {}
-    };
+    const Buffer = home_rt.io.StreamBuffer;
 
     buffer: Buffer = .{},
 

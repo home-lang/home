@@ -28,6 +28,8 @@ const upgrade_client = struct {
     pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
         return opaque {
             pub const is_ssl: bool = ssl;
+
+            pub fn exportAll() void {}
         };
     }
 };
@@ -36,6 +38,8 @@ const websocket_client = struct {
     pub fn NewWebSocketClient(comptime ssl: bool) type {
         return opaque {
             pub const is_ssl: bool = ssl;
+
+            pub fn exportAll() void {}
         };
     }
 };

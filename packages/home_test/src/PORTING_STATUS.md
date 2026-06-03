@@ -37,16 +37,13 @@ and JSC host-call bridge close the unsupported surface.
 runtime integration batch was verified with
 `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
 The already-compiled test set still reports **48/48 tests passed**, but
-the `home_test` compile step remains red at **15 visible compile
-errors** after the follow-up worker tranche landed managed map/string
-compatibility, install mini-store/repository shims, JSC array/string/DOM
-surface fixes, Node/N-API/EventLoop compatibility, PipeWriter poll
-registration fallback, FFI/parse-args/std-drift cleanup, request enum JS
-conversions, bake route bundle wiring, and SQL/Postgres bridge drift
-fixes. The dominant remaining surfaces are server task carriers,
-hot-reload watcher wiring, shell parser/glob/event-loop surfaces, socket
-generated config plus TLS/uWS type identity, and WebCore websocket export
-glue. Treat this as a
+the `home_test` compile step remains red at **4 visible compile
+errors** after the follow-up runtime tranche landed WebSocket export hooks,
+generated socket config shells, TLS/uWS identity fixes, HTTP request
+buffering compatibility, managed map/string helpers, and shell event-loop
+forwarding. The dominant remaining surfaces are the server
+all-connections-closed task carrier, hot-reload watcher wiring, shell
+parser export, and shell glob walker export. Treat this as a
 compile-frontier checkpoint, not as JS-visible `bun:test` parity.
 
 The `bundler-core-itbundled` tranche now executes all five selected

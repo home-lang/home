@@ -2042,6 +2042,7 @@ pub const jsc = struct {
     pub const array_buffer = @import("jsc/array_buffer.zig");
     /// Faithful to upstream `jsc/jsc.zig:47` (`array_buffer.MarkedArrayBuffer`).
     pub const MarkedArrayBuffer = @import("jsc/array_buffer.zig").MarkedArrayBuffer;
+    pub const JSCArrayBuffer = @import("jsc/array_buffer.zig").JSCArrayBuffer;
     pub const AnyPromise = @import("jsc/AnyPromise.zig").AnyPromise;
     pub const JSObject = @import("jsc/JSObject.zig").JSObject;
     pub const Jest = @import("runtime/test_runner/jest.zig");
@@ -2075,6 +2076,127 @@ pub const jsc = struct {
     // NOTE: upstream jsc/jsc.zig:282 (`generated = @import("bindgen_generated")`)
     // is deferred — the vendored bindgen_generated.zig imports a
     // `bindgen_generated/` subtree that codegen has not emitted into the tree yet.
+    pub const generated = struct {
+        const WTFStringImpl = @import("string/string.zig").WTFStringImpl;
+
+        pub const BinaryType = enum { arraybuffer, buffer, uint8array };
+
+        pub const MaybeString = struct {
+            pub fn get(_: MaybeString) ?WTFStringImpl {
+                return null;
+            }
+        };
+
+        pub const StringValue = struct {
+            value: WTFStringImpl,
+            pub fn get(this: *const StringValue) WTFStringImpl {
+                return this.value;
+            }
+        };
+
+        pub const BufferValue = struct {
+            value: *JSCArrayBuffer,
+            pub fn get(this: *const BufferValue) *JSCArrayBuffer {
+                return this.value;
+            }
+        };
+
+        pub const BlobValue = struct {
+            value: *WebCore.Blob,
+            pub fn get(this: *const BlobValue) *WebCore.Blob {
+                return this.value;
+            }
+        };
+
+        pub fn GeneratedList(comptime T: type) type {
+            return struct {
+                values: []const T = &.{},
+
+                pub fn items(this: *const @This()) []const T {
+                    return this.values;
+                }
+            };
+        }
+
+        pub const SSLConfigSingleFile = union(enum) {
+            string: StringValue,
+            buffer: BufferValue,
+            file: BlobValue,
+        };
+
+        pub const SSLConfigFile = union(enum) {
+            none,
+            string: StringValue,
+            buffer: BufferValue,
+            file: BlobValue,
+            array: GeneratedList(SSLConfigSingleFile),
+        };
+
+        pub const SSLConfig = struct {
+            passphrase: MaybeString = .{},
+            dh_params_file: MaybeString = .{},
+            server_name: MaybeString = .{},
+            low_memory_mode: bool = false,
+            reject_unauthorized: ?bool = null,
+            request_cert: bool = false,
+            secure_options: i32 = 0,
+            ca: SSLConfigFile = .none,
+            cert: SSLConfigFile = .none,
+            key: SSLConfigFile = .none,
+            key_file: MaybeString = .{},
+            cert_file: MaybeString = .{},
+            ca_file: MaybeString = .{},
+            alpn_protocols: union(enum) { none, string: StringValue, buffer: BufferValue } = .none,
+            ciphers: MaybeString = .{},
+            client_renegotiation_limit: u32 = 0,
+            client_renegotiation_window: u32 = 0,
+
+            pub fn fromJS(_: *JSGlobalObject, _: JSValue) JSError!SSLConfig {
+                return .{};
+            }
+
+            pub fn deinit(_: *SSLConfig) void {}
+        };
+
+        pub const SocketConfigHandlers = struct {
+            binary_type: BinaryType = .buffer,
+            onOpen: JSValue = .zero,
+            onClose: JSValue = .zero,
+            onData: JSValue = .zero,
+            onWritable: JSValue = .zero,
+            onTimeout: JSValue = .zero,
+            onConnectError: JSValue = .zero,
+            onEnd: JSValue = .zero,
+            onError: JSValue = .zero,
+            onHandshake: JSValue = .zero,
+
+            pub fn fromJS(_: *JSGlobalObject, _: JSValue) JSError!SocketConfigHandlers {
+                return .{};
+            }
+
+            pub fn deinit(_: *SocketConfigHandlers) void {}
+        };
+
+        pub const SocketConfig = struct {
+            tls: union(enum) { none, boolean: bool, object: SSLConfig } = .none,
+            fd: ?i32 = null,
+            handlers: SocketConfigHandlers = .{},
+            data: JSValue = .zero,
+            unix_: MaybeString = .{},
+            hostname: MaybeString = .{},
+            port: ?u16 = null,
+            exclusive: bool = false,
+            allow_half_open: bool = false,
+            reuse_port: bool = false,
+            ipv6_only: bool = false,
+
+            pub fn fromJS(_: *JSGlobalObject, _: JSValue) JSError!SocketConfig {
+                return .{};
+            }
+
+            pub fn deinit(_: *SocketConfig) void {}
+        };
+    };
     // Faithful to upstream jsc/jsc.zig:101.
     pub const RareData = @import("jsc/rare_data.zig");
     // Faithful to upstream jsc/jsc.zig:209.
@@ -2903,7 +3025,7 @@ pub const runtime = struct {
         pub const IOReader = @import("runtime/shell/shell.zig").IOReader;
         pub const Yield = @import("runtime/shell/shell.zig").Yield;
         pub const AllocScope = @import("runtime/shell/shell.zig").AllocScope;
-        pub const Result = @import("runtime/shell/Builtin.zig").Result;
+        pub const Result = @import("runtime/shell/shell.zig").Result;
         pub const escapeBunStr = @import("runtime/shell/shell.zig").escapeBunStr;
         pub const needsEscapeBunstr = @import("runtime/shell/shell.zig").needsEscapeBunstr;
         pub const shellCmdFromJS = @import("runtime/shell/shell.zig").shellCmdFromJS;
@@ -3849,8 +3971,10 @@ pub const c = struct {
     pub extern fn memmove(dest: ?*anyopaque, src: ?*const anyopaque, n: usize) ?*anyopaque;
     // libc fns + C types/constants the copied source spells as `bun.c.X`.
     pub const F_DUPFD_CLOEXEC = if (@hasDecl(std.c, "F_DUPFD_CLOEXEC")) std.c.F_DUPFD_CLOEXEC else 67;
+    pub const IF_NAMESIZE = 16;
     pub const getuid = std.c.getuid;
     pub const chmod = std.c.chmod;
+    pub extern fn if_indextoname(ifindex: c_uint, ifname: [*c]u8) ?[*:0]u8;
     pub extern fn clonefile(src: [*:0]const u8, dst: [*:0]const u8, flags: u32) c_int;
     pub extern fn clonefileat(src_dir_fd: fd_t, src: [*:0]const u8, dst_dir_fd: fd_t, dst: [*:0]const u8, flags: u32) c_int;
     pub extern fn copyfile(src: [*:0]const u8, dst: [*:0]const u8, state: ?*anyopaque, flags: u32) c_int;

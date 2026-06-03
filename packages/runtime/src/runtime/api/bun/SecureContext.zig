@@ -155,7 +155,7 @@ pub const JSValue = @import("home").jsc.JSValue;
 pub const JSError = @import("home").JSError;
 
 const BoringSSL = struct {
-    pub const SSL_CTX = opaque {};
+    pub const SSL_CTX = home_rt.boringssl_sys.boringssl.SSL_CTX;
 
     pub var SSL_CTX_up_ref: *const fn (ctx: *SSL_CTX) callconv(.c) c_int = stub_up_ref;
     pub var SSL_CTX_free: *const fn (ctx: *SSL_CTX) callconv(.c) void = stub_free;
