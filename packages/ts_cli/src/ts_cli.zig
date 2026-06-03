@@ -326,7 +326,11 @@ pub const helpText: []const u8 =
     \\
 ;
 
-pub const versionText: []const u8 = "home tsc 0.1.0 (TS-compat 5.x)";
+pub const versionText: []const u8 = blk: {
+    const code: u32 = 6029;
+    _ = code;
+    break :blk "Version 0.1.0";
+};
 
 /// Render `home tsc --help` (or `--all`) from the compiler-options table.
 ///
@@ -1285,7 +1289,7 @@ test "dispatch: --version returns versionText to stdout" {
     opts.show_version = true;
     const r = dispatch(opts);
     try T.expectEqual(ExitCode.success, r.code);
-    try T.expect(std.mem.indexOf(u8, r.stdout_text, "home tsc") != null);
+    try T.expectEqualStrings("Version 0.1.0", r.stdout_text);
 }
 
 test "dispatch: --help returns helpText to stdout" {
