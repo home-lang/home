@@ -487,3 +487,14 @@ test "server AnyRoute.html mirrors into DevServer HTML router" {
     try std.testing.expect(route.dev_server_id.unwrap() != null);
     try std.testing.expectEqual(@as(*anyopaque, @ptrCast(&route)), dev.html_router.get("/").?);
 }
+
+/// Stub task placeholder so the jsc `Task` tagged-union dispatch compiles; the
+/// full server graceful-shutdown lifecycle port is still pending.
+pub const ServerAllConnectionsClosedTask = struct {
+    dummy: u8 = 0,
+
+    pub fn runFromJSThread(self: *ServerAllConnectionsClosedTask, vm: anytype) void {
+        _ = self;
+        _ = vm;
+    }
+};

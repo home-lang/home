@@ -1569,7 +1569,7 @@ pub fn spawnProcessPosix(
                 try extra_fds.append(.unavailable);
             },
             .ignore => {
-                try actions.openZ(fileno, "/dev/null", bun.O.RDWR, 0o664);
+                try actions.openZ(fileno.native(), "/dev/null", bun.O.RDWR, 0o664);
                 try extra_fds.append(.unavailable);
             },
 
