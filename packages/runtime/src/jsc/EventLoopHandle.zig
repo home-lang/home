@@ -64,6 +64,15 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
+    pub fn topLevelDir(this: EventLoopHandle) [:0]const u8 {
+        _ = this;
+        return home_rt.fs.FileSystem.instance.top_level_dir;
+    }
+
+    pub fn createNullDelimitedEnvMap(this: EventLoopHandle, alloc: std.mem.Allocator) error{OutOfMemory}![:null]?[*:0]const u8 {
+        return this.bunVM().?.transpiler.env.map.createNullDelimitedEnvMap(alloc);
+    }
+
     pub fn stdout(this: EventLoopHandle) *home_rt.jsc.WebCore.Blob.Store {
         return switch (this) {
             .js => this.js.virtual_machine.rareData().stdout(),

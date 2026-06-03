@@ -355,7 +355,7 @@ pub fn GlobWalker_(
 
         pathBuf: bun.PathBuffer = undefined,
         // iteration state
-        workbuf: ArrayList(WorkItem) = ArrayList(WorkItem){},
+        workbuf: ArrayList(WorkItem) = .empty,
 
         /// Array hashmap used as a set (values are the keys)
         /// to store matched paths and prevent duplicates
