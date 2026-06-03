@@ -93,9 +93,9 @@ fn findChrome(alloc: std.mem.Allocator, explicitPath: ?[*:0]const u8) !?[:0]cons
     if (explicitPath) |p| {
         return try alloc.dupeZ(u8, std.mem.span(p));
     }
-    if (std.process.getEnvVarOwned(alloc, "BUN_CHROME_PATH")) |p| {
+    if (bun.getenvZ("BUN_CHROME_PATH")) |p| {
         return try alloc.dupeZ(u8, p);
-    } else |_| {}
+    }
 
     const buf = bun.path_buffer_pool.get();
     defer bun.path_buffer_pool.put(buf);

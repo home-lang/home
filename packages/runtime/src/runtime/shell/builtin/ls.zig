@@ -354,8 +354,7 @@ pub const ShellLsTask = struct {
             return;
         }
 
-        const writer = this.output.writer();
-        bun.handleOom(writer.print("{s}\n", .{this.path}));
+        bun.handleOom(this.output.print("{s}\n", .{this.path}));
         return;
     }
 
@@ -400,8 +399,6 @@ pub const ShellLsTask = struct {
             .result => |s| s,
         };
 
-        const writer = this.output.writer();
-
         // File type and permissions
         const mode: u32 = @intCast(stat.mode);
         const file_type = getFileTypeChar(mode);
@@ -421,7 +418,7 @@ pub const ShellLsTask = struct {
         const mtime = stat.mtime();
         const time_str = formatTime(@intCast(mtime.sec), this._now_secs);
 
-        bun.handleOom(writer.print("{c}{s} {d: >3} {d: >5} {d: >5} {d: >8} {s} {s}\n", .{
+        bun.handleOom(this.output.print("{c}{s} {d: >3} {d: >5} {d: >5} {d: >8} {s} {s}\n", .{
             file_type,
             &perms,
             nlink,
