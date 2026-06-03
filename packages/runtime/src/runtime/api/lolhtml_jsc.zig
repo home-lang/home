@@ -40,7 +40,7 @@ pub fn htmlStringToJS(this: HTMLString, globalThis: *JSGlobalObject) JSError!JSV
     //     return try str.toJS(globalThis);
     _ = globalThis;
     // Exercise the no-op toString so future re-attachment is one line.
-    this.toString();
+    _ = this.toString();
     return .js_undefined;
 }
 

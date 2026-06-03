@@ -3017,6 +3017,7 @@ pub const runtime = struct {
         pub const EnvStr = @import("runtime/shell/EnvStr.zig").EnvStr;
         pub const SmolList = @import("runtime/shell/shell.zig").SmolList;
         pub const Interpreter = @import("runtime/shell/shell.zig").Interpreter;
+        pub const Parser = @import("runtime/shell/shell.zig").Parser;
         pub const AST = @import("runtime/shell/shell.zig").AST;
         pub const interpret = @import("runtime/shell/interpreter.zig");
         pub const ParsedShellScript = @import("runtime/shell/ParsedShellScript.zig");
