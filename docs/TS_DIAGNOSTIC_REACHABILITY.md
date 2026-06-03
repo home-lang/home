@@ -5,7 +5,7 @@
 Splits the `catalog-only` rows of [TS_DIAGNOSTIC_CODE_STATUS.md](./TS_DIAGNOSTIC_CODE_STATUS.md)
 into codes the reference compiler (typescript-go) **actually references in source**
 (*reachable* — genuine parity targets) versus codes present only in the upstream
-message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-only).
+message table that tsgo never emits (*dead* — obsolete wording, test-only fixtures, or classic-tsc-only).
 
 **Faithful parity = emit the reachable set.** Dead codes correctly stay
 `catalog-only`; emitting them would diverge from the reference compiler.
@@ -14,9 +14,9 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 811 |
-| reachable (parity targets) | 346 |
-| dead in tsgo (leave catalog-only) | 465 |
+| catalog-only total | 810 |
+| reachable (parity targets) | 343 |
+| dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
 
@@ -24,7 +24,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 53 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 50 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -260,7 +260,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1543 `Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543`
 - TS1544 `Named_imports_from_a_JSON_file_into_an_ECMAScript_module_are_not_allowed_when_module_is_set_to_0_1544`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (53)
+### 6xxx — CLI / build / watch / resolution-trace messages (50)
 
 - TS6041 `Errors_Files_6041`
 - TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
@@ -285,9 +285,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6240 `File_0_does_not_exist_according_to_earlier_cached_lookups_6240`
 - TS6242 `Resolving_type_reference_directive_0_containing_file_1_6242`
 - TS6245 `File_Management_6245`
-- TS6253 `Backwards_Compatibility_6253`
 - TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`
-- TS6302 `Enable_project_compilation_6302`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
 - TS6306 `Referenced_project_0_must_have_setting_composite_Colon_true_6306`
 - TS6307 `File_0_is_not_listed_within_the_file_list_of_project_1_Projects_must_list_all_files_or_use_an_includ_6307`
@@ -299,7 +297,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6359 `Updating_output_timestamps_of_project_0_6359`
 - TS6362 `Skipping_build_of_project_0_because_its_dependency_1_has_errors_6362`
 - TS6363 `Project_0_can_t_be_built_because_its_dependency_1_has_errors_6363`
-- TS6364 `Build_one_or_more_projects_and_their_dependencies_if_out_of_date_6364`
 - TS6371 `Updating_unchanged_output_timestamps_of_project_0_6371`
 - TS6374 `A_non_dry_build_would_update_timestamps_for_output_of_project_0_6374`
 - TS6377 `Cannot_write_file_0_because_it_will_overwrite_tsbuildinfo_file_generated_by_referenced_project_1_6377`
@@ -423,7 +420,7 @@ dead. Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully catalog-only)
 
-465 codes. Listed for auditability; none should be `emitted`.
+467 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
 
 <details><summary>Show dead codes</summary>
 
@@ -601,10 +598,12 @@ dead. Confirm against this list before picking one:
 - TS6235 `Disable_loading_referenced_projects_6235`
 - TS6238 `Specify_the_module_specifier_to_be_used_to_import_the_jsx_and_jsxs_factory_functions_from_eg_react_6238`
 - TS6241 `Resolution_for_type_reference_directive_0_was_found_in_cache_from_location_1_6241`
+- TS6253 `Backwards_Compatibility_6253`
 - TS6258 `_0_should_be_set_inside_the_compilerOptions_object_of_the_config_json_file_6258`
 - TS6262 `File_name_0_has_a_1_extension_looking_up_2_instead_6262`
 - TS6279 `Resolution_of_non_relative_name_failed_trying_with_moduleResolution_bundler_to_see_if_project_may_ne_6279`
 - TS6280 `There_are_types_at_0_but_this_result_could_not_be_resolved_under_your_current_moduleResolution_setti_6280`
+- TS6302 `Enable_project_compilation_6302`
 - TS6353 `Project_0_is_out_of_date_because_its_dependency_1_is_out_of_date_6353`
 - TS6380 `Specify_file_to_store_incremental_compilation_information_6380`
 - TS6384 `Have_recompiles_in_incremental_and_watch_assume_that_changes_within_a_file_will_only_affect_files_di_6384`

@@ -1520,6 +1520,8 @@ test "renderHelp: simplified view renders simplified option descriptions" {
     // descriptions must appear in the default view.
     try T.expect(std.mem.indexOf(u8, help, "Watch input files.") != null);
     try T.expect(std.mem.indexOf(u8, help, "Enable all strict type-checking options.") != null);
+    try T.expect(std.mem.indexOf(u8, help, "--build, -b") != null);
+    try T.expect(std.mem.indexOf(u8, help, "Build one or more projects and their dependencies, if out of date") != null);
     // `traceResolution` is not ShowInSimplifiedHelpView — it must NOT leak
     // into the default view.
     try T.expect(std.mem.indexOf(u8, help, "--traceResolution") == null);

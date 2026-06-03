@@ -10,9 +10,9 @@
 // This makes "100% faithful parity" well-defined: faithful parity means
 // emitting the REACHABLE set, not chasing DEAD codes the reference compiler
 // itself never produces. The reachability heuristic matches a code's
-// catalogue key (its name minus the trailing `_<code>`) against
+// catalogue key (its name minus the trailing `_<code>`) against production
 // `diagnostics.<Name>` references anywhere in tsgo's `internal/` tree,
-// excluding the generated message table.
+// excluding tests and the generated message table.
 //
 // Usage:  node scripts/gen-ts-reachability.mjs > docs/TS_DIAGNOSTIC_REACHABILITY.md
 //   TSGO_ROOT overrides the reference checkout (default ~/Code/typescript-go).
@@ -40,7 +40,10 @@ function walkGo(dir, out = []) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       walkGo(full, out);
-    } else if (entry.isFile() && entry.name.endsWith(".go") && entry.name !== "diagnostics_generated.go") {
+    } else if (entry.isFile() &&
+      entry.name.endsWith(".go") &&
+      !entry.name.endsWith("_test.go") &&
+      entry.name !== "diagnostics_generated.go") {
       out.push(full);
     }
   }
@@ -124,7 +127,7 @@ out.push(
   "(*reachable* — genuine parity targets) versus codes present only in the upstream",
 );
 out.push(
-  "message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-only).",
+  "message table that tsgo never emits (*dead* — obsolete wording, test-only fixtures, or classic-tsc-only).",
 );
 out.push("");
 out.push("**Faithful parity = emit the reachable set.** Dead codes correctly stay");
@@ -176,7 +179,7 @@ out.push("  types (Home currently accepts unknown flags loosely).");
 out.push("");
 out.push("## Dead in tsgo (faithfully catalog-only)");
 out.push("");
-out.push(`${dead.length} codes. Listed for auditability; none should be \`emitted\`.`);
+out.push(`${dead.length} codes. Listed for auditability; none should be \`emitted\` unless a production tsgo reference appears.`);
 out.push("");
 out.push("<details><summary>Show dead codes</summary>");
 out.push("");

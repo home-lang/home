@@ -77,6 +77,25 @@ function readEntries(file) {
   return entries;
 }
 
+function readStandaloneEntry(file, varName) {
+  const full = path.join(ref, "internal/tsoptions", file);
+  if (!fs.existsSync(full)) return null;
+  const text = fs.readFileSync(full, "utf8");
+  const start = text.indexOf(`var ${varName} = CommandLineOption{`);
+  if (start < 0) return null;
+  const open = text.indexOf("{", start);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    if (text[i] === "}") {
+      depth--;
+      if (depth === 0) return text.slice(open + 1, i);
+    }
+  }
+  return null;
+}
+
 function field(block, name) {
   const m = block.match(new RegExp(`\\b${name}:\\s*("([^"]*)"|diagnostics\\.([A-Za-z0-9_]+)|[A-Za-z0-9_.]+)`));
   if (!m) return null;
@@ -186,32 +205,38 @@ function possibleValues(optionName, kind) {
 
 const seen = new Set();
 const options = [];
+function addOptionBlock(block) {
+  if (!block) return;
+  const nameF = field(block, "Name");
+  if (!nameF || !nameF.str) return;
+  const name = nameF.str;
+  const shortF = field(block, "ShortName");
+  const short = shortF && shortF.str ? shortF.str : "";
+  const descF = field(block, "Description");
+  const catF = field(block, "Category");
+  const defaultF = field(block, "DefaultValueDescription");
+  const kind = normalizeKind(field(block, "Kind"));
+  const simplified = /ShowInSimplifiedHelpView:\s*true/.test(block);
+  const cmdOnly = /IsCommandLineOnly:\s*true/.test(block);
+  const descCode = descF && descF.diag ? codeFor(descF.diag) : null;
+  const catCode = catF && catF.diag ? codeFor(catF.diag) : null;
+  const defaultCode = defaultF && defaultF.diag ? codeFor(defaultF.diag) : null;
+  // Dedup on (name, short); the `?`-aliased help entry has no description.
+  const dkey = name + "\0" + short;
+  if (seen.has(dkey)) return;
+  seen.add(dkey);
+  options.push({ name, short, descCode, catCode, simplified, cmdOnly,
+    descDiag: descF && descF.diag ? descF.diag : null,
+    defaultDiag: defaultF && defaultF.diag ? defaultF.diag : null,
+    defaultCode,
+    kind,
+    values: possibleValues(name, kind) });
+}
+
 for (const file of ["declscompiler.go", "declswatch.go", "declsbuild.go"]) {
+  if (file === "declsbuild.go") addOptionBlock(readStandaloneEntry(file, "TscBuildOption"));
   for (const block of readEntries(file)) {
-    const nameF = field(block, "Name");
-    if (!nameF || !nameF.str) continue;
-    const name = nameF.str;
-    const shortF = field(block, "ShortName");
-    const short = shortF && shortF.str ? shortF.str : "";
-    const descF = field(block, "Description");
-    const catF = field(block, "Category");
-    const defaultF = field(block, "DefaultValueDescription");
-    const kind = normalizeKind(field(block, "Kind"));
-    const simplified = /ShowInSimplifiedHelpView:\s*true/.test(block);
-    const cmdOnly = /IsCommandLineOnly:\s*true/.test(block);
-    const descCode = descF && descF.diag ? codeFor(descF.diag) : null;
-    const catCode = catF && catF.diag ? codeFor(catF.diag) : null;
-    const defaultCode = defaultF && defaultF.diag ? codeFor(defaultF.diag) : null;
-    // Dedup on (name, short); the `?`-aliased help entry has no description.
-    const dkey = name + "\0" + short;
-    if (seen.has(dkey)) continue;
-    seen.add(dkey);
-    options.push({ name, short, descCode, catCode, simplified, cmdOnly,
-      descDiag: descF && descF.diag ? descF.diag : null,
-      defaultDiag: defaultF && defaultF.diag ? defaultF.diag : null,
-      defaultCode,
-      kind,
-      values: possibleValues(name, kind) });
+    addOptionBlock(block);
   }
 }
 

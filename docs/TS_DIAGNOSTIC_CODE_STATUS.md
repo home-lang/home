@@ -29,10 +29,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1263 |
+| emitted | 1264 |
 | declared | 4 |
 | tested-only | 1 |
-| catalog-only | 811 |
+| catalog-only | 810 |
 | total upstream codes | 2079 |
 
 ## Codes
@@ -1149,8 +1149,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5052 | err | emitted | packages/tsconfig/src/tsconfig.zig:1074 | Option_0_cannot_be_specified_without_specifying_option_1_5052 |
 | TS5053 | err | emitted | packages/tsconfig/src/tsconfig.zig:1090 | Option_0_cannot_be_specified_with_option_1_5053 |
 | TS5054 | err | emitted | packages/ts_cli/src/ts_cli.zig:606 | A_tsconfig_json_file_is_already_defined_at_Colon_0_5054 |
-| TS5055 | err | emitted | packages/ts_cli/src/ts_cli.zig:777<br>packages/ts_cli/src/ts_cli.zig:1802<br>packages/ts_cli/src/ts_cli.zig:1806 | Cannot_write_file_0_because_it_would_overwrite_input_file_5055 |
-| TS5056 | err | emitted | packages/ts_cli/src/ts_cli.zig:790<br>packages/ts_cli/src/ts_cli.zig:1812 | Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056 |
+| TS5055 | err | emitted | packages/ts_cli/src/ts_cli.zig:777<br>packages/ts_cli/src/ts_cli.zig:1804<br>packages/ts_cli/src/ts_cli.zig:1808 | Cannot_write_file_0_because_it_would_overwrite_input_file_5055 |
+| TS5056 | err | emitted | packages/ts_cli/src/ts_cli.zig:790<br>packages/ts_cli/src/ts_cli.zig:1814 | Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056 |
 | TS5057 | err | catalog-only |  | Cannot_find_a_tsconfig_json_file_at_the_specified_directory_Colon_0_5057 |
 | TS5058 | err | emitted | packages/ts_cli/src/tsc_main.zig:1790 | The_specified_path_does_not_exist_Colon_0_5058 |
 | TS5059 | err | emitted | packages/tsconfig/src/tsconfig.zig:1491 | Invalid_value_for_reactNamespace_0_is_not_a_valid_identifier_5059 |
@@ -1462,9 +1462,9 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6361 | message | emitted | packages/ts_cli/src/tsc_main.zig:308 | Project_0_is_up_to_date_6361 |
 | TS6362 | message | catalog-only |  | Skipping_build_of_project_0_because_its_dependency_1_has_errors_6362 |
 | TS6363 | message | catalog-only |  | Project_0_can_t_be_built_because_its_dependency_1_has_errors_6363 |
-| TS6364 | message | catalog-only |  | Build_one_or_more_projects_and_their_dependencies_if_out_of_date_6364 |
-| TS6365 | message | emitted | packages/ts_cli/src/options_table.zig:166 | Delete_the_outputs_of_all_projects_6365 |
-| TS6367 | message | emitted | packages/ts_cli/src/options_table.zig:164 | Show_what_would_be_built_or_deleted_if_specified_with_clean_6367 |
+| TS6364 | message | emitted | packages/ts_cli/src/options_table.zig:163 | Build_one_or_more_projects_and_their_dependencies_if_out_of_date_6364 |
+| TS6365 | message | emitted | packages/ts_cli/src/options_table.zig:167 | Delete_the_outputs_of_all_projects_6365 |
+| TS6367 | message | emitted | packages/ts_cli/src/options_table.zig:165 | Show_what_would_be_built_or_deleted_if_specified_with_clean_6367 |
 | TS6369 | err | emitted | packages/ts_cli/src/ts_cli.zig:988<br>packages/ts_cli/src/tsc_main.zig:761 | Option_build_must_be_the_first_command_line_argument_6369 |
 | TS6370 | err | emitted | packages/ts_cli/src/ts_cli.zig:1005<br>packages/ts_cli/src/ts_cli.zig:1009 | Options_0_and_1_cannot_be_combined_6370 |
 | TS6371 | message | catalog-only |  | Updating_unchanged_output_timestamps_of_project_0_6371 |
@@ -1553,11 +1553,11 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6633 | message | catalog-only |  | Specify_one_or_more_path_or_node_module_references_to_base_configuration_files_from_which_settings_a_6633 |
 | TS6634 | message | emitted | packages/ts_cli/src/options_table.zig:159 | Specify_what_approach_the_watcher_should_use_if_the_system_runs_out_of_native_file_watchers_6634 |
 | TS6635 | message | catalog-only |  | Include_a_list_of_files_This_does_not_support_glob_patterns_as_opposed_to_include_6635 |
-| TS6636 | message | emitted | packages/ts_cli/src/options_table.zig:165 | Build_all_projects_including_those_that_appear_to_be_up_to_date_6636 |
+| TS6636 | message | emitted | packages/ts_cli/src/options_table.zig:166 | Build_all_projects_including_those_that_appear_to_be_up_to_date_6636 |
 | TS6637 | message | emitted | packages/ts_cli/src/options_table.zig:150 | Ensure_that_casing_is_correct_in_imports_6637 |
 | TS6638 | message | emitted | packages/ts_cli/src/options_table.zig:42 | Emit_a_v8_CPU_profile_of_the_compiler_run_for_debugging_6638 |
 | TS6639 | message | emitted | packages/ts_cli/src/options_table.zig:78 | Allow_importing_helper_functions_from_tslib_once_per_project_instead_of_including_them_per_file_6639 |
-| TS6640 | message | emitted | packages/ts_cli/src/options_table.zig:168 | Skip_building_downstream_projects_on_error_in_upstream_project_6640 |
+| TS6640 | message | emitted | packages/ts_cli/src/options_table.zig:169 | Skip_building_downstream_projects_on_error_in_upstream_project_6640 |
 | TS6641 | message | catalog-only |  | Specify_a_list_of_glob_patterns_that_match_files_to_be_included_in_compilation_6641 |
 | TS6642 | message | emitted | packages/ts_cli/src/options_table.zig:44 | Save_tsbuildinfo_files_to_allow_for_incremental_compilation_of_projects_6642 |
 | TS6643 | message | emitted | packages/ts_cli/src/options_table.zig:49 | Include_sourcemap_files_inside_the_emitted_JavaScript_6643 |
@@ -1628,7 +1628,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6710 | message | emitted | packages/ts_cli/src/options_table.zig:108 | Specify_multiple_folders_that_act_like_Slashnode_modules_Slash_types_6710 |
 | TS6711 | message | emitted | packages/ts_cli/src/options_table.zig:109 | Specify_type_package_names_to_be_included_without_being_referenced_in_a_source_file_6711 |
 | TS6712 | message | emitted | packages/ts_cli/src/options_table.zig:152 | Emit_ECMAScript_standard_compliant_class_fields_6712 |
-| TS6713 | message | emitted | packages/ts_cli/src/options_table.zig:163 | Enable_verbose_logging_6713 |
+| TS6713 | message | emitted | packages/ts_cli/src/options_table.zig:164 | Enable_verbose_logging_6713 |
 | TS6714 | message | emitted | packages/ts_cli/src/options_table.zig:158 | Specify_how_directories_are_watched_on_systems_that_lack_recursive_file_watching_functionality_6714 |
 | TS6715 | message | emitted | packages/ts_cli/src/options_table.zig:157 | Specify_how_the_TypeScript_watch_mode_works_6715 |
 | TS6717 | message | catalog-only |  | Require_undeclared_properties_from_index_signatures_to_use_element_accesses_6717 |

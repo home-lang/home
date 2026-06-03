@@ -160,6 +160,7 @@ pub const all_options = [_]OptionDecl{
     .{ .name = "synchronousWatchDirectory", .code = 6704, .category = 6250, .kind = "boolean", .possible_values = "boolean" },
     .{ .name = "excludeDirectories", .code = 6628, .category = 6250, .kind = "list", .possible_values = "string" },
     .{ .name = "excludeFiles", .code = 6629, .category = 6250, .kind = "list", .possible_values = "string" },
+    .{ .name = "build", .short = "b", .code = 6364, .category = 6171, .kind = "boolean", .possible_values = "boolean", .simplified = true },
     .{ .name = "verbose", .short = "v", .code = 6713, .category = 6171, .kind = "boolean", .possible_values = "boolean" },
     .{ .name = "dry", .short = "d", .code = 6367, .category = 6171, .kind = "boolean", .possible_values = "boolean" },
     .{ .name = "force", .short = "f", .code = 6636, .category = 6171, .kind = "boolean", .possible_values = "boolean" },
