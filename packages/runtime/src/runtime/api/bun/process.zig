@@ -1469,7 +1469,7 @@ pub fn spawnProcessPosix(
                 } else try actions.dup2(dup2.to.toFd().native(), dup2.out.toFd().native());
             },
             .inherit => {
-                try actions.inherit(fileno);
+                try actions.inherit(fileno.native());
             },
             .ipc, .ignore => {
                 try actions.openZ(fileno, "/dev/null", flag | bun.O.CREAT, 0o664);
