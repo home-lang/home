@@ -669,9 +669,8 @@ pub fn enqueueFmt(
     comptime fmt: []const u8,
     args: anytype,
 ) Yield {
-    var buf_writer = this.buf.writer(bun.default_allocator);
     const start = this.buf.items.len;
-    bun.handleOom(buf_writer.print(fmt, args));
+    bun.handleOom(this.buf.print(bun.default_allocator, fmt, args));
 
     const childptr = if (@TypeOf(ptr) == ChildPtr) ptr else ChildPtr.init(ptr);
     if (this.handleBrokenPipe(childptr)) |yield| return yield;

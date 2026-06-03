@@ -298,7 +298,7 @@ pub const ShellLsTask = struct {
     pub fn run(this: *@This()) void {
         // Cache current time once per task for timestamp formatting
         if (this.opts.long_listing) {
-            this._now_secs = @intCast(std.time.timestamp());
+            this._now_secs = @intCast(@divTrunc(bun.milliTimestamp(), 1000));
         }
 
         const fd = switch (ShellSyscall.openat(this.cwd, this.path, bun.O.RDONLY | bun.O.DIRECTORY, 0)) {
