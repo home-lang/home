@@ -82,7 +82,7 @@ pub fn initializeMiniStore() void {
         mini_store.memory_allocator.push();
     } else {
         var mini_store = MiniStore.instance.?;
-        if (mini_store.memory_allocator.stack_allocator.fixed_buffer_allocator.end_index >= mini_store.memory_allocator.stack_allocator.fixed_buffer_allocator.buffer.len -| 1) {
+        if (false) {
             mini_store.heap.deinit();
             mini_store.heap = bun.MimallocArena.init();
             mini_store.memory_allocator.allocator = mini_store.heap.allocator();

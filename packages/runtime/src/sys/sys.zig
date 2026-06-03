@@ -801,7 +801,7 @@ pub fn lutimes(path: [:0]const u8, atime: jsc.Node.TimeLike, mtime: jsc.Node.Tim
 pub fn mkdiratA(dir_fd: bun.FD, file_path: []const u8) Maybe(void) {
     const buf = bun.w_path_buffer_pool.get();
     defer bun.w_path_buffer_pool.put(buf);
-    return mkdiratW(dir_fd, bun.strings.toWPathNormalized(buf, file_path));
+    return mkdiratW(dir_fd, bun.strings.toWPathNormalized(buf, file_path), 0o755);
 }
 
 pub fn mkdiratZ(dir_fd: bun.FD, file_path: [*:0]const u8, mode: mode_t) Maybe(void) {

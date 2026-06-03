@@ -20,31 +20,8 @@ const std = @import("std");
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSValue = @import("home").jsc.JSValue;
 const VM = @import("./VM.zig").VM;
-
-// `bun.String` C ABI stub. Real layout `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
-// We expose just enough surface (the `tag` field — callers check it against
-// the `.Dead` sentinel) to keep the FS-path path callable later.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const Tag = enum(u8) {
-        Dead = 0,
-        // Real tags re-attach in Phase 12.2; we only name `Dead` because
-        // upstream's `fileSystemPath` checks for it explicitly.
-        _,
-    };
-};
-
-// `ZigString` C ABI stub: `{ptr, len}` view. Real ZigString uses the high
-// bit of len to flag UTF-16. We don't need that bit here.
-const ZigString = extern struct {
-    _ptr: ?[*]const u8 = null,
-    _len: usize = 0,
-
-    pub const Empty: ZigString = .{};
-};
+const String = @import("home").String;
+const ZigString = @import("home").jsc.ZigString;
 
 pub const DOMURL = opaque {
     pub extern fn WebCore__DOMURL__cast_(JSValue0: JSValue, arg1: *VM) ?*DOMURL;
@@ -84,10 +61,7 @@ pub const DOMURL = opaque {
             3 => return ToFileSystemPathError.NotFileUrl,
             else => {},
         }
-        // Upstream: `bun.assert(path.tag != .Dead)`. With our stubbed String
-        // the assertion is structurally meaningful but `.Dead` re-attaches
-        // in Phase 12.2 — we keep the shape for now.
-        std.debug.assert(path.tag != @intFromEnum(String.Tag.Dead));
+        std.debug.assert(path.tag != .Dead);
         return path;
     }
 

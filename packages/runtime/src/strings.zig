@@ -37,6 +37,7 @@ pub const indexOfCharUsize = @import("string/immutable.zig").indexOfCharUsize;
 pub const indexOfChar16Usize = @import("string/immutable.zig").indexOfChar16Usize;
 pub const utf16Codepoint = @import("string/immutable.zig").utf16Codepoint;
 pub const utf16CodepointWithFFFD = @import("string/immutable.zig").utf16CodepointWithFFFD;
+pub const convertUTF16ToUTF8Append = @import("string/immutable.zig").convertUTF16ToUTF8Append;
 pub const whitespace_chars = @import("string/immutable.zig").whitespace_chars;
 pub const grapheme = @import("string/immutable.zig").grapheme;
 pub const isValidUTF8 = @import("string/immutable.zig").isValidUTF8;
@@ -90,6 +91,12 @@ pub const StringArrayByIndexSorter = @import("string/immutable.zig").StringArray
 pub const startsWithChar = @import("string/immutable.zig").startsWithChar;
 pub const split = @import("string/immutable.zig").split;
 pub const SplitIterator = @import("string/immutable.zig").SplitIterator;
+pub const ExactSizeMatcher = @import("string/immutable.zig").ExactSizeMatcher;
+pub const toWPath = @import("string/immutable.zig").toWPath;
+pub const toWPathMaybeDir = @import("string/immutable.zig").toWPathMaybeDir;
+pub const toWPathNormalizeAutoExtend = @import("string/immutable.zig").toWPathNormalizeAutoExtend;
+pub const toWPathNormalized = @import("string/immutable.zig").toWPathNormalized;
+pub const toWPathNormalized16 = @import("string/immutable.zig").toWPathNormalized16;
 
 pub fn copy(dest: []u8, src: []const u8) void {
     std.mem.copyForwards(u8, dest, src);
@@ -278,6 +285,14 @@ pub const includes = contains;
 pub fn containsComptime(slice: []const u8, comptime needle: []const u8) bool {
     if (comptime needle.len == 0) @compileError("containsComptime requires a non-empty needle");
     return std.mem.indexOf(u8, slice, needle) != null;
+}
+
+pub fn trimRight(comptime T: type, slice: []const T, values_to_strip: []const T) []const T {
+    var end = slice.len;
+    while (end > 0 and std.mem.indexOfScalar(T, values_to_strip, slice[end - 1]) != null) {
+        end -= 1;
+    }
+    return slice[0..end];
 }
 
 pub fn eql(a: []const u8, b: []const u8) bool {

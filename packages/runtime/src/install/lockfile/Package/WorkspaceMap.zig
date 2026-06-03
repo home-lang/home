@@ -2,7 +2,7 @@ const WorkspaceMap = @This();
 
 map: Map,
 
-const Map = bun.StringArrayHashMap(Entry);
+const Map = bun.ArrayHashMap(string, Entry, bun.StringArrayHashMapContext, false);
 pub const Entry = struct {
     name: string,
     version: ?string,

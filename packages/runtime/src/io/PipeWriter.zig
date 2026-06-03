@@ -13,6 +13,14 @@ pub const WriteStatus = enum {
     pending,
 };
 
+fn registerWritableWithFd(poll: anytype, loop: anytype, fd: bun.FD) bun.sys.Maybe(void) {
+    const Poll = std.meta.Child(@TypeOf(poll));
+    if (comptime @hasDecl(Poll, "registerWithFd")) {
+        return poll.registerWithFd(loop, .writable, .dispatch, fd);
+    }
+    return poll.register(loop, .writable, true);
+}
+
 pub fn PosixPipeWriter(
     comptime This: type,
     // Originally this was the comptime vtable struct like the below
@@ -254,10 +262,10 @@ pub fn PosixBufferedWriter(Parent: type, function_table: anytype) type {
         }
 
         pub fn registerPoll(this: *PosixWriter) void {
-            var poll = this.getPoll() orelse return;
+            const poll = this.getPoll() orelse return;
             // Use the event loop from the parent, not the global one
             const loop = this.parent.eventLoop().loop();
-            switch (poll.registerWithFd(loop, .writable, .dispatch, poll.fd)) {
+            switch (registerWritableWithFd(poll, loop, poll.fd)) {
                 .err => |err| {
                     onError(this.parent, err);
                 },
@@ -351,13 +359,13 @@ pub fn PosixBufferedWriter(Parent: type, function_table: anytype) type {
                 this.handle = .{ .fd = fd };
                 return .success;
             }
-            var poll = this.getPoll() orelse brk: {
+            const poll = this.getPoll() orelse brk: {
                 this.handle = .{ .poll = this.createPoll(fd) };
                 break :brk this.handle.poll;
             };
             const loop = @as(*Parent, @ptrCast(this.parent)).eventLoop().loop();
 
-            switch (poll.registerWithFd(loop, .writable, .dispatch, fd)) {
+            switch (registerWritableWithFd(poll, loop, fd)) {
                 .err => |err| {
                     return .initErr(err);
                 },
@@ -494,7 +502,7 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
 
         fn registerPoll(this: *PosixWriter) void {
             const poll = this.getPoll() orelse return;
-            switch (poll.registerWithFd(this.parent.loop(), .writable, .dispatch, poll.fd)) {
+            switch (registerWritableWithFd(poll, this.parent.loop(), poll.fd)) {
                 .err => |err| {
                     onError(this.parent, err);
                     this.close();
@@ -748,12 +756,12 @@ pub fn PosixStreamingWriter(comptime Parent: type, comptime function_table: anyt
             }
 
             const loop = this.parent.eventLoop();
-            var poll = this.getPoll() orelse brk: {
+            const poll = this.getPoll() orelse brk: {
                 this.handle = .{ .poll = Async.FilePoll.init(loop, fd, .{}, PosixWriter, this) };
                 break :brk this.handle.poll;
             };
 
-            switch (poll.registerWithFd(loop.loop(), .writable, .dispatch, fd)) {
+            switch (registerWritableWithFd(poll, loop.loop(), fd)) {
                 .err => |err| {
                     return bun.sys.Maybe(void){ .err = err };
                 },

@@ -714,7 +714,7 @@ pub const PathLike = union(enum) {
             },
             else => {
                 if (arg.as(jsc.DOMURL)) |domurl| {
-                    var str: bun.String = @bitCast(domurl.fileSystemPath() catch |err| switch (err) {
+                    var str: bun.String = domurl.fileSystemPath() catch |err| switch (err) {
                         error.NotFileUrl => {
                             return ctx.ERR(.INVALID_URL, "URL must be a non-empty \"file:\" path", .{}).throw();
                         },
@@ -724,7 +724,7 @@ pub const PathLike = union(enum) {
                         error.InvalidHost => {
                             return ctx.ERR(.INVALID_URL, "URL must be a non-empty \"file:\" path", .{}).throw();
                         },
-                    });
+                    };
                     defer str.deref();
                     if (str.isEmpty()) {
                         return ctx.ERR(.INVALID_ARG_VALUE, "URL must be a non-empty \"file:\" path", .{}).throw();

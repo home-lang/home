@@ -19,7 +19,7 @@ pub const WalkerEntry = struct {
     dir: FD,
     basename: OSPathSliceZ,
     path: OSPathSliceZ,
-    kind: std.fs.Dir.Entry.Kind,
+    kind: std.Io.File.Kind,
 };
 
 const StackItem = struct {

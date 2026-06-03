@@ -2067,14 +2067,14 @@ pub export fn napi_get_value_external(env_: napi_env, value: napi_value, result:
     return setNapiLastError(env, .ok);
 }
 
-pub export fn napi_create_int32(env_: napi_env, value: i32, result: ?*napi_value) napi_status {
+fn napi_create_int32(env_: napi_env, value: i32, result: ?*napi_value) napi_status {
     const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     out.* = extern_fns.JSValueMakeNumber(env.ctx, @floatFromInt(value));
     return setNapiLastError(env, .ok);
 }
 
-pub export fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, result: ?*napi_value) napi_status {
+fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, result: ?*napi_value) napi_status {
     const env = env_ orelse return @intFromEnum(NapiStatus.invalid_arg);
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const ptr = str orelse return setNapiLastError(env, .invalid_arg);

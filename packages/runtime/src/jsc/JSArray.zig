@@ -10,9 +10,8 @@ const std = @import("std");
 
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 pub const JSValue = @import("home").jsc.JSValue;
-// JSC bridge JSArrayIterator stubbed — re-attaches in Phase 12.2 once
-// JSArrayIterator.zig ports.
-const JSArrayIterator = opaque {};
+const JSArrayIterator = @import("./JSArrayIterator.zig").JSArrayIterator;
+const bun = @import("bun");
 
 pub const JSArray = opaque {
     // TODO(@paperclover): this can throw
@@ -28,9 +27,9 @@ pub const JSArray = opaque {
         return JSArray__constructEmptyArray(global, len);
     }
 
-    /// Phase 12.2: this returns a real `JSArrayIterator` once that file ports.
-    /// Currently exposes the externs only.
-    pub const iterator = @compileError("JSArray.iterator awaits JSArrayIterator port (Phase 12.2)");
+    pub fn iterator(this: *JSArray, global: *JSGlobalObject) bun.JSError!JSArrayIterator {
+        return JSValue.fromCell(this).arrayIterator(global);
+    }
 };
 
 test "JSArray is an opaque pointer-only type" {

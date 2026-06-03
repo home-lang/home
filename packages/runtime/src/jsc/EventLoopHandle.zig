@@ -28,16 +28,8 @@ pub const EventLoopKind = enum(u8) {
 pub const EventLoop = @import("./event_loop.zig").EventLoop;
 pub const MiniEventLoop = @import("../event_loop/MiniEventLoop.zig");
 
-/// Plain-data placeholder for `jsc.ConcurrentTask`. Real one lives in
-/// `Task.zig` once it lands; it's a tagged-pointer union, 8 bytes wide.
-pub const ConcurrentTaskPlaceholder = extern struct {
-    raw: u64 = 0,
-};
-
-/// Plain-data placeholder for `jsc.AnyTaskWithExtraContext`.
-pub const AnyTaskWithExtraContextPlaceholder = extern struct {
-    raw: u64 = 0,
-};
+const ConcurrentTask = @import("./event_loop.zig").ConcurrentTask;
+const AnyTaskWithExtraContext = @import("./event_loop.zig").AnyTaskWithExtraContext;
 
 /// A non-owning reference to either the JS event loop or the mini event loop.
 pub const EventLoopHandle = union(EventLoopKind) {
@@ -65,6 +57,20 @@ pub const EventLoopHandle = union(EventLoopKind) {
         return @field(this, @tagName(tag));
     }
 
+    pub fn loop(this: EventLoopHandle) *home_rt.jsc.PlatformEventLoop {
+        return switch (this) {
+            .js => this.js.usocketsLoop(),
+            .mini => this.mini.loop,
+        };
+    }
+
+    pub fn enqueueTaskConcurrent(this: EventLoopHandle, task: EventLoopTask) void {
+        switch (this) {
+            .js => this.js.enqueueTaskConcurrent(task.js),
+            .mini => this.mini.enqueueTaskConcurrent(task.mini),
+        }
+    }
+
     pub fn init(context: anytype) EventLoopHandle {
         const Context = @TypeOf(context);
         return switch (Context) {
@@ -82,20 +88,20 @@ pub const EventLoopHandle = union(EventLoopKind) {
 };
 
 pub const EventLoopTask = union(EventLoopKind) {
-    js: ConcurrentTaskPlaceholder,
-    mini: AnyTaskWithExtraContextPlaceholder,
+    js: *ConcurrentTask,
+    mini: *AnyTaskWithExtraContext,
 
     pub fn init(kind: EventLoopKind) EventLoopTask {
         return switch (kind) {
-            .js => .{ .js = .{} },
-            .mini => .{ .mini = .{} },
+            .js => .{ .js = @ptrFromInt(0xdead_bee0) },
+            .mini => .{ .mini = @ptrFromInt(0xdead_bee8) },
         };
     }
 };
 
 pub const EventLoopTaskPtr = union {
-    js: *ConcurrentTaskPlaceholder,
-    mini: *AnyTaskWithExtraContextPlaceholder,
+    js: *ConcurrentTask,
+    mini: *AnyTaskWithExtraContext,
 };
 
 test "EventLoopKind tag values" {

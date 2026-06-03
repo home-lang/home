@@ -938,16 +938,15 @@ pub const FFI = struct {
             return val;
         }
 
-        var arraylist = std.array_list.Managed(u8).init(allocator);
-        defer arraylist.deinit();
-        var writer = arraylist.writer();
+        var source = std.Io.Writer.Allocating.init(allocator);
+        defer source.deinit();
 
         function.base_name = "my_callback_function";
 
-        function.printCallbackSourceCode(null, null, &writer) catch {
+        function.printCallbackSourceCode(null, null, &source.writer) catch {
             return ZigString.init("Error while printing code").toErrorInstance(global);
         };
-        return ZigString.init(arraylist.items).toJS(global);
+        return ZigString.init(source.written()).toJS(global);
     }
 
     pub fn print(global: *JSGlobalObject, object: jsc.JSValue, is_callback_val: ?jsc.JSValue) bun.JSError!JSValue {
@@ -985,9 +984,9 @@ pub const FFI = struct {
         }
         var function_iter = symbols.valueIterator();
         while (function_iter.next()) |function| {
-            var arraylist = std.array_list.Managed(u8).init(allocator);
-            var writer = arraylist.writer();
-            function.printSourceCode(&writer) catch {
+            var source = std.Io.Writer.Allocating.init(allocator);
+            defer source.deinit();
+            function.printSourceCode(&source.writer) catch {
                 // an error while generating source code
                 var key_iter = symbols.keyIterator();
                 while (key_iter.next()) |key| {
@@ -1001,7 +1000,7 @@ pub const FFI = struct {
                 symbols.clearAndFree(allocator);
                 return ZigString.init("Error while printing code").toErrorInstance(global);
             };
-            strs.appendAssumeCapacity(bun.String.cloneUTF8(arraylist.items));
+            strs.appendAssumeCapacity(bun.String.cloneUTF8(source.written()));
         }
 
         const ret = try bun.String.toJSArray(global, strs.items);
@@ -1570,12 +1569,11 @@ pub const FFI = struct {
         const tcc_options = "-std=c11 -nostdlib -Wl,--export-all-symbols" ++ if (Environment.isDebug) " -g" else "";
 
         pub fn compile(this: *Function, napiEnv: ?*napi.NapiEnv) !void {
-            var source_code = std.array_list.Managed(u8).init(this.allocator);
-            var source_code_writer = source_code.writer();
-            try this.printSourceCode(&source_code_writer);
-
-            try source_code.append(0);
+            var source_code = std.Io.Writer.Allocating.init(this.allocator);
             defer source_code.deinit();
+            try this.printSourceCode(&source_code.writer);
+
+            try source_code.writer.writeByte(0);
             const state = TCC.State.init(Function, .{
                 .options = tcc_options,
                 .err = .{ .ctx = this, .handler = handleTCCError },
@@ -1598,7 +1596,7 @@ pub const FFI = struct {
 
             CompilerRT.define(state);
 
-            state.compileString(@ptrCast(source_code.items)) catch {
+            state.compileString(@ptrCast(source_code.written().ptr)) catch {
                 this.fail("Failed to compile source code");
                 return;
             };

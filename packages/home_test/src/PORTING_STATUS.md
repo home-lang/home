@@ -37,15 +37,15 @@ and JSC host-call bridge close the unsupported surface.
 runtime integration batch was verified with
 `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
 The already-compiled test set still reports **48/48 tests passed**, but
-the `home_test` compile step remains red at **59 visible compile
-errors** after the follow-up worker tranche landed HTTP/H3 identity,
-package-manager path/format helpers, Node/std-drift fixes, crypto/ffi/
-zlib compatibility, test-runner value/timespec shims, and WebCore/Valkey
-glue. The dominant remaining surfaces are install/libarchive filesystem
-method drift, repository process spawning, package-manager env/path
-helpers, JSC iterator/value/string-list shape, node/fs and N-API exports,
-shell parser/glob surfaces, socket/TLS/uWS type identity, Valkey JSC
-follow-ons, and bootstrap N-API symbol collisions. Treat this as a
+the `home_test` compile step remains red at **37 visible compile
+errors** after the follow-up worker tranche landed managed map/string
+compatibility, install mini-store/repository shims, JSC array/string/DOM
+surface fixes, Node/N-API/EventLoop compatibility, PipeWriter poll
+registration fallback, and FFI/parse-args/std-drift cleanup. The dominant
+remaining surfaces are install/libarchive filesystem method drift,
+package-manager env/path helpers, server/bake route carriers, shell
+parser/glob surfaces, socket/TLS/uWS type identity, test-runner writer
+drift, and SQL/WebCore follow-ons. Treat this as a
 compile-frontier checkpoint, not as JS-visible `bun:test` parity.
 
 The `bundler-core-itbundled` tranche now executes all five selected

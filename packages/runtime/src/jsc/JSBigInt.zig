@@ -13,12 +13,11 @@ const std = @import("std");
 const JSValue = @import("home").jsc.JSValue;
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-// JSC bridge bun.String stubbed — re-attaches in Phase 12.2.
-const String = opaque {};
+const String = @import("home").String;
 
 pub const JSBigInt = opaque {
-    extern fn JSC__JSBigInt__fromJS(*JSValue) ?*JSBigInt;
-    pub fn fromJS(value: *JSValue) ?*JSBigInt {
+    extern fn JSC__JSBigInt__fromJS(JSValue) ?*JSBigInt;
+    pub fn fromJS(value: JSValue) ?*JSBigInt {
         return JSC__JSBigInt__fromJS(value);
     }
 
@@ -45,9 +44,9 @@ pub const JSBigInt = opaque {
         return JSC__JSBigInt__toInt64(this);
     }
 
-    extern fn JSC__JSBigInt__toString(*JSBigInt, *JSGlobalObject) *String;
+    extern fn JSC__JSBigInt__toString(*JSBigInt, *JSGlobalObject) String;
     /// Phase 12.2 will reintroduce JSError propagation via `fromJSHostCallGeneric`.
-    pub fn toString(this: *JSBigInt, global: *JSGlobalObject) *String {
+    pub fn toString(this: *JSBigInt, global: *JSGlobalObject) String {
         return JSC__JSBigInt__toString(this, global);
     }
 };

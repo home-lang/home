@@ -2648,7 +2648,7 @@ pub const Arguments = struct {
                 // const maxPosition = 2n ** 63n - 1n - BigInt(length)
                 const max_position = std.math.maxInt(i64) - length_int;
                 if (position.order(i64, -1) == .lt or position.order(i64, max_position) == .gt) {
-                    const position_str = try position.toString(ctx);
+                    const position_str = position.toString(ctx);
                     defer position_str.deref();
 
                     return ctx.throwRangeError(position_str, .{
@@ -5728,7 +5728,7 @@ pub const NodeFS = struct {
 
     pub fn rmdir(this: *NodeFS, args: Arguments.RmDir, _: Flavor) Maybe(Return.Rmdir) {
         if (args.recursive) {
-            zigDeleteTree(std.fs.cwd(), args.path.slice(), .directory) catch |err| {
+            zigDeleteTree(std.Io.Dir.cwd(), args.path.slice(), .directory) catch |err| {
                 var errno: bun.sys.E = switch (@as(anyerror, err)) {
                     error.AccessDenied => .PERM,
                     error.FileTooBig => .FBIG,
@@ -5784,7 +5784,7 @@ pub const NodeFS = struct {
 
         // We cannot use removefileat() on macOS because it does not handle write-protected files as expected.
         if (args.recursive) {
-            zigDeleteTree(std.fs.cwd(), args.path.slice(), .file) catch |err| {
+            zigDeleteTree(std.Io.Dir.cwd(), args.path.slice(), .file) catch |err| {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
                 const errno: E = switch (@as(anyerror, err)) {
                     // error.InvalidHandle => .BADF,
@@ -6573,7 +6573,7 @@ pub const NodeFS = struct {
 
             const first_try = ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse return ret.success;
             if (first_try == .err and first_try.err.errno == @intFromEnum(Syscall.E.NOENT)) {
-                bun.makePath(std.fs.cwd(), bun.path.dirname(dest, .auto)) catch {};
+                bun.makePath(std.Io.Dir.cwd(), bun.path.dirname(dest, .auto)) catch {};
                 return ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse ret.success;
             }
             return first_try;
@@ -6847,7 +6847,7 @@ pub const NodeFS = struct {
                     switch (err) {
                         .FILE_EXISTS, .ALREADY_EXISTS => errpath = dest,
                         .PATH_NOT_FOUND => {
-                            bun.makePathW(std.fs.cwd(), bun.path.dirnameW(dest)) catch {};
+                            bun.makePathW(std.Io.Dir.cwd(), bun.path.dirnameW(dest)) catch {};
                             const second_try = windows.CopyFileW(src, dest, @intFromBool(mode.shouldntOverwrite()));
                             if (second_try > 0) return ret.success;
                             err = windows.GetLastError();
@@ -6926,24 +6926,28 @@ comptime {
     _ = Bun__mkdirp;
 }
 
-/// Copied from std.fs.Dir.deleteTree. This function returns `FileNotFound` instead of ignoring it, which
+/// Copied from std.Io.Dir.deleteTree. This function returns `FileNotFound` instead of ignoring it, which
 /// is required to match the behavior of Node.js's `fs.rm` { recursive: true, force: false }.
-pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.File.Kind) !void {
-    var initial_iterable_dir = (try zigDeleteTreeOpenInitialSubpath(self, sub_path, kind_hint)) orelse return;
+pub fn zigDeleteTree(self: std.Io.Dir, sub_path: []const u8, kind_hint: std.Io.File.Kind) !void {
+    var threaded = std.Io.Threaded.init(bun.default_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var initial_iterable_dir = (try zigDeleteTreeOpenInitialSubpath(self, io, sub_path, kind_hint)) orelse return;
 
     const StackItem = struct {
         name: []const u8,
-        parent_dir: std.fs.Dir,
-        iter: std.fs.Dir.Iterator,
+        parent_dir: std.Io.Dir,
+        iter: std.Io.Dir.Iterator,
 
-        fn closeAll(items: []@This()) void {
-            for (items) |*item| item.iter.dir.close();
+        fn closeAll(inner_io: std.Io, items: []@This()) void {
+            for (items) |*item| item.iter.reader.dir.close(inner_io);
         }
     };
 
     var stack_buffer: [16]StackItem = undefined;
     var stack = std.ArrayListUnmanaged(StackItem).initBuffer(&stack_buffer);
-    defer StackItem.closeAll(stack.items);
+    defer StackItem.closeAll(io, stack.items);
 
     stack.appendAssumeCapacity(.{
         .name = sub_path,
@@ -6953,13 +6957,13 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
 
     process_stack: while (stack.items.len != 0) {
         var top = &stack.items[stack.items.len - 1];
-        while (try top.iter.next()) |entry| {
+        while (try top.iter.next(io)) |entry| {
             var treat_as_dir = entry.kind == .directory;
             handle_entry: while (true) {
                 if (treat_as_dir) {
                     if (stack.unusedCapacitySlice().len >= 1) {
-                        var iterable_dir = top.iter.dir.openDir(entry.name, .{
-                            .no_follow = true,
+                        var iterable_dir = top.iter.reader.dir.openDir(io, entry.name, .{
+                            .follow_symlinks = false,
                             .iterate = true,
                         }) catch |err| switch (err) {
                             error.NotDir => {
@@ -6969,7 +6973,6 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
                             error.FileNotFound,
                             error.AccessDenied,
                             error.PermissionDenied,
-                            error.ProcessNotFound,
                             error.SymLinkLoop,
                             error.ProcessFdQuotaExceeded,
                             error.NameTooLong,
@@ -6977,25 +6980,23 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
                             error.NoDevice,
                             error.SystemResources,
                             error.Unexpected,
-                            error.InvalidUtf8,
-                            error.InvalidWtf8,
                             error.BadPathName,
                             error.NetworkNotFound,
-                            error.DeviceBusy,
+                            error.Canceled,
                             => |e| return e,
                         };
                         stack.appendAssumeCapacity(.{
                             .name = entry.name,
-                            .parent_dir = top.iter.dir,
+                            .parent_dir = top.iter.reader.dir,
                             .iter = iterable_dir.iterateAssumeFirstIteration(),
                         });
                         continue :process_stack;
                     } else {
-                        try zigDeleteTreeMinStackSizeWithKindHint(top.iter.dir, entry.name, entry.kind);
+                        try zigDeleteTreeMinStackSizeWithKindHint(top.iter.reader.dir, io, entry.name, entry.kind);
                         break :handle_entry;
                     }
                 } else {
-                    if (top.iter.dir.deleteFile(entry.name)) {
+                    if (top.iter.reader.dir.deleteFile(io, entry.name)) {
                         break :handle_entry;
                     } else |err| switch (err) {
                         error.IsDir => {
@@ -7007,8 +7008,6 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
                         error.NotDir,
                         error.AccessDenied,
                         error.PermissionDenied,
-                        error.InvalidUtf8,
-                        error.InvalidWtf8,
                         error.SymLinkLoop,
                         error.NameTooLong,
                         error.SystemResources,
@@ -7026,7 +7025,7 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
 
         // On Windows, we can't delete until the dir's handle has been closed, so
         // close it before we try to delete.
-        top.iter.dir.close();
+        top.iter.reader.dir.close(io);
 
         // In order to avoid double-closing the directory when cleaning up
         // the stack in the case of an error, we save the relevant portions and
@@ -7036,7 +7035,7 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
         stack.items.len -= 1;
 
         var need_to_retry: bool = false;
-        parent_dir.deleteDir(name) catch |err| switch (err) {
+        parent_dir.deleteDir(io, name) catch |err| switch (err) {
             error.FileNotFound => {},
             error.DirNotEmpty => need_to_retry = true,
             else => |e| return e,
@@ -7049,8 +7048,8 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
                 var treat_as_dir = true;
                 handle_entry: while (true) {
                     if (treat_as_dir) {
-                        break :iterable_dir parent_dir.openDir(name, .{
-                            .no_follow = true,
+                        break :iterable_dir parent_dir.openDir(io, name, .{
+                            .follow_symlinks = false,
                             .iterate = true,
                         }) catch |err| switch (err) {
                             error.NotDir => {
@@ -7064,7 +7063,6 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
 
                             error.AccessDenied,
                             error.PermissionDenied,
-                            error.ProcessNotFound,
                             error.SymLinkLoop,
                             error.ProcessFdQuotaExceeded,
                             error.NameTooLong,
@@ -7072,15 +7070,12 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
                             error.NoDevice,
                             error.SystemResources,
                             error.Unexpected,
-                            error.InvalidUtf8,
-                            error.InvalidWtf8,
                             error.BadPathName,
                             error.NetworkNotFound,
-                            error.DeviceBusy,
                             => |e| return e,
                         };
                     } else {
-                        if (parent_dir.deleteFile(name)) {
+                        if (parent_dir.deleteFile(io, name)) {
                             continue :process_stack;
                         } else |err| switch (err) {
                             error.FileNotFound => continue :process_stack,
@@ -7092,8 +7087,6 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
 
                             error.AccessDenied,
                             error.PermissionDenied,
-                            error.InvalidUtf8,
-                            error.InvalidWtf8,
                             error.SymLinkLoop,
                             error.NameTooLong,
                             error.SystemResources,
@@ -7120,22 +7113,21 @@ pub fn zigDeleteTree(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.F
     }
 }
 
-fn zigDeleteTreeOpenInitialSubpath(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.File.Kind) !?std.fs.Dir {
+fn zigDeleteTreeOpenInitialSubpath(self: std.Io.Dir, io: std.Io, sub_path: []const u8, kind_hint: std.Io.File.Kind) !?std.Io.Dir {
     return iterable_dir: {
         // Treat as a file by default
         var treat_as_dir = kind_hint == .directory;
 
         handle_entry: while (true) {
             if (treat_as_dir) {
-                break :iterable_dir self.openDir(sub_path, .{
-                    .no_follow = true,
+                break :iterable_dir self.openDir(io, sub_path, .{
+                    .follow_symlinks = false,
                     .iterate = true,
                 }) catch |err| switch (err) {
                     error.NotDir,
                     error.FileNotFound,
                     error.AccessDenied,
                     error.PermissionDenied,
-                    error.ProcessNotFound,
                     error.SymLinkLoop,
                     error.ProcessFdQuotaExceeded,
                     error.NameTooLong,
@@ -7143,15 +7135,13 @@ fn zigDeleteTreeOpenInitialSubpath(self: std.fs.Dir, sub_path: []const u8, kind_
                     error.NoDevice,
                     error.SystemResources,
                     error.Unexpected,
-                    error.InvalidUtf8,
-                    error.InvalidWtf8,
                     error.BadPathName,
-                    error.DeviceBusy,
                     error.NetworkNotFound,
+                    error.Canceled,
                     => |e| return e,
                 };
             } else {
-                if (self.deleteFile(sub_path)) {
+                if (self.deleteFile(io, sub_path)) {
                     return null;
                 } else |err| switch (err) {
                     error.IsDir => {
@@ -7162,8 +7152,6 @@ fn zigDeleteTreeOpenInitialSubpath(self: std.fs.Dir, sub_path: []const u8, kind_
                     error.FileNotFound,
                     error.AccessDenied,
                     error.PermissionDenied,
-                    error.InvalidUtf8,
-                    error.InvalidWtf8,
                     error.SymLinkLoop,
                     error.NameTooLong,
                     error.SystemResources,
@@ -7173,6 +7161,7 @@ fn zigDeleteTreeOpenInitialSubpath(self: std.fs.Dir, sub_path: []const u8, kind_
                     error.FileBusy,
                     error.BadPathName,
                     error.NetworkNotFound,
+                    error.Canceled,
                     error.Unexpected,
                     => |e| return e,
                 }
@@ -7181,14 +7170,14 @@ fn zigDeleteTreeOpenInitialSubpath(self: std.fs.Dir, sub_path: []const u8, kind_
     };
 }
 
-fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8, kind_hint: std.Io.File.Kind) !void {
+fn zigDeleteTreeMinStackSizeWithKindHint(self: std.Io.Dir, io: std.Io, sub_path: []const u8, kind_hint: std.Io.File.Kind) !void {
     start_over: while (true) {
-        var dir = (try zigDeleteTreeOpenInitialSubpath(self, sub_path, kind_hint)) orelse return;
-        var cleanup_dir_parent: ?std.fs.Dir = null;
-        defer if (cleanup_dir_parent) |*d| d.close();
+        var dir = (try zigDeleteTreeOpenInitialSubpath(self, io, sub_path, kind_hint)) orelse return;
+        var cleanup_dir_parent: ?std.Io.Dir = null;
+        defer if (cleanup_dir_parent) |*d| d.close(io);
 
         var cleanup_dir = true;
-        defer if (cleanup_dir) dir.close();
+        defer if (cleanup_dir) dir.close(io);
 
         // Valid use of MAX_PATH_BYTES because dir_name_buf will only
         // ever store a single path component that was returned from the
@@ -7202,12 +7191,12 @@ fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8,
 
         scan_dir: while (true) {
             var dir_it = dir.iterateAssumeFirstIteration();
-            dir_it: while (try dir_it.next()) |entry| {
+            dir_it: while (try dir_it.next(io)) |entry| {
                 var treat_as_dir = entry.kind == .directory;
                 handle_entry: while (true) {
                     if (treat_as_dir) {
-                        const new_dir = dir.openDir(entry.name, .{
-                            .no_follow = true,
+                        const new_dir = dir.openDir(io, entry.name, .{
+                            .follow_symlinks = false,
                             .iterate = true,
                         }) catch |err| switch (err) {
                             error.NotDir => {
@@ -7221,7 +7210,6 @@ fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8,
 
                             error.AccessDenied,
                             error.PermissionDenied,
-                            error.ProcessNotFound,
                             error.SymLinkLoop,
                             error.ProcessFdQuotaExceeded,
                             error.NameTooLong,
@@ -7229,14 +7217,11 @@ fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8,
                             error.NoDevice,
                             error.SystemResources,
                             error.Unexpected,
-                            error.InvalidUtf8,
-                            error.InvalidWtf8,
                             error.BadPathName,
                             error.NetworkNotFound,
-                            error.DeviceBusy,
                             => |e| return e,
                         };
-                        if (cleanup_dir_parent) |*d| d.close();
+                        if (cleanup_dir_parent) |*d| d.close(io);
                         cleanup_dir_parent = dir;
                         dir = new_dir;
                         const result = dir_name_buf[0..entry.name.len];
@@ -7244,7 +7229,7 @@ fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8,
                         dir_name = result;
                         continue :scan_dir;
                     } else {
-                        if (dir.deleteFile(entry.name)) {
+                        if (dir.deleteFile(io, entry.name)) {
                             continue :dir_it;
                         } else |err| switch (err) {
                             error.FileNotFound => continue :dir_it,
@@ -7257,8 +7242,6 @@ fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8,
 
                             error.AccessDenied,
                             error.PermissionDenied,
-                            error.InvalidUtf8,
-                            error.InvalidWtf8,
                             error.SymLinkLoop,
                             error.NameTooLong,
                             error.SystemResources,
@@ -7275,18 +7258,18 @@ fn zigDeleteTreeMinStackSizeWithKindHint(self: std.fs.Dir, sub_path: []const u8,
             }
             // Reached the end of the directory entries, which means we successfully deleted all of them.
             // Now to remove the directory itself.
-            dir.close();
+            dir.close(io);
             cleanup_dir = false;
 
             if (cleanup_dir_parent) |d| {
-                d.deleteDir(dir_name) catch |err| switch (err) {
+                d.deleteDir(io, dir_name) catch |err| switch (err) {
                     // These two things can happen due to file system race conditions.
                     error.FileNotFound, error.DirNotEmpty => continue :start_over,
                     else => |e| return e,
                 };
                 continue :start_over;
             } else {
-                self.deleteDir(sub_path) catch |err| switch (err) {
+                self.deleteDir(io, sub_path) catch |err| switch (err) {
                     error.FileNotFound => return,
                     error.DirNotEmpty => continue :start_over,
                     else => |e| return e,

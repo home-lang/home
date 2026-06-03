@@ -84,14 +84,12 @@ Honest interpretation:
   `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
   The existing compiled test set still reports **48/48 tests passed**,
   but the `home_test` compile gate is not green: latest visible frontier
-  is **59 compile errors**.
+  is **37 compile errors**.
 - The current frontier is real integration work, not source presence:
   remaining blockers are concentrated in install/libarchive filesystem
-  method drift, repository process spawning, package-manager env/path
-  helpers, JSC iterator/value/string-list shape, server/bake route
-  carriers, node/fs and N-API exports, shell parser/glob surfaces,
-  socket/TLS/uWS type identity, test-runner writer/close shims, Valkey
-  JSC follow-on method shapes, and N-API bootstrap symbol collisions.
+  method drift, package-manager env/path helpers, server/bake route
+  carriers, shell parser/glob surfaces, socket/TLS/uWS type identity,
+  test-runner writer drift, and SQL/WebCore follow-ons.
 - Do not advance the audited **552 / 1193** integrated-file count from
   this checkpoint. Count only after the compile gate is green or after a
   fresh integration audit isolates tested build-wired files.

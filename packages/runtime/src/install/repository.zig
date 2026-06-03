@@ -10,10 +10,10 @@ const SloppyGlobalGitConfig = struct {
     has_ssh_command: bool = false,
 
     var holder: SloppyGlobalGitConfig = .{};
-    var load_and_parse_once = std.once(loadAndParse);
+    var load_and_parse_once = bun.once(loadAndParse);
 
     pub fn get() SloppyGlobalGitConfig {
-        load_and_parse_once.call();
+        load_and_parse_once.call(.{});
         return holder;
     }
 
@@ -360,21 +360,15 @@ pub const Repository = extern struct {
 
         defer std_map.deinit();
 
-        const result = if (comptime Environment.isWindows)
-            try std.process.Child.run(.{
-                .allocator = allocator,
-                .argv = argv,
-                .env_map = std_map.get(),
-            })
-        else
-            try std.process.Child.run(.{
-                .allocator = allocator,
-                .argv = argv,
-                .env_map = std_map.get(),
-            });
+        var threaded = std.Io.Threaded.init(allocator, .{});
+        defer threaded.deinit();
+        const result = try std.process.run(allocator, threaded.io(), .{
+            .argv = argv,
+            .environ_map = std_map.get(),
+        });
 
         switch (result.term) {
-            .Exited => |sig| if (sig == 0) return result.stdout else if (
+            .exited => |sig| if (sig == 0) return result.stdout else if (
             // remote: The page could not be found <-- for non git
             // remote: Repository not found. <-- for git
             // remote: fatal repository '<url>' does not exist <-- for git

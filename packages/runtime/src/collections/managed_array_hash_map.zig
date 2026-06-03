@@ -33,11 +33,31 @@ pub fn ArrayHashMap(
         pub const Hash = Unmanaged.Hash;
         pub const GetOrPutResult = Unmanaged.GetOrPutResult;
         pub const Iterator = Unmanaged.Iterator;
+        pub const KeyIterator = FieldIterator(K);
+        pub const ValueIterator = FieldIterator(V);
         pub const Size = u32;
         pub const Data = Unmanaged.Data;
 
+        fn FieldIterator(comptime T: type) type {
+            return struct {
+                items: []T,
+                index: usize = 0,
+
+                pub fn next(self: *@This()) ?*T {
+                    if (self.index >= self.items.len) return null;
+                    defer self.index += 1;
+                    return &self.items[self.index];
+                }
+            };
+        }
+
         pub fn init(allocator: Allocator) Self {
             return .{ .unmanaged = .empty, .allocator = allocator };
+        }
+
+        pub fn initContext(allocator: Allocator, ctx: Context) Self {
+            _ = ctx;
+            return init(allocator);
         }
 
         pub fn deinit(self: *Self) void {
@@ -77,8 +97,28 @@ pub fn ArrayHashMap(
             return self.unmanaged.iterator();
         }
 
+        pub fn keyIterator(self: Self) KeyIterator {
+            return .{ .items = self.unmanaged.keys() };
+        }
+
+        pub fn valueIterator(self: Self) ValueIterator {
+            return .{ .items = self.unmanaged.values() };
+        }
+
         pub fn getOrPut(self: *Self, key: K) Allocator.Error!GetOrPutResult {
             return self.unmanaged.getOrPut(self.allocator, key);
+        }
+
+        pub fn getOrPutAssumeCapacity(self: *Self, key: K) GetOrPutResult {
+            return self.unmanaged.getOrPutAssumeCapacity(key);
+        }
+
+        pub fn getOrPutAssumeCapacityContext(self: *Self, key: K, ctx: Context) GetOrPutResult {
+            return self.unmanaged.getOrPutAssumeCapacityContext(key, ctx);
+        }
+
+        pub fn getOrPutAssumeCapacityAdapted(self: *Self, key: anytype, ctx: anytype) GetOrPutResult {
+            return self.unmanaged.getOrPutAssumeCapacityAdapted(key, ctx);
         }
 
         pub fn getOrPutValue(self: *Self, key: K, value: V) Allocator.Error!GetOrPutResult {
@@ -91,6 +131,22 @@ pub fn ArrayHashMap(
 
         pub fn putNoClobber(self: *Self, key: K, value: V) Allocator.Error!void {
             return self.unmanaged.putNoClobber(self.allocator, key, value);
+        }
+
+        pub fn putAssumeCapacity(self: *Self, key: K, value: V) void {
+            self.unmanaged.putAssumeCapacity(key, value);
+        }
+
+        pub fn putAssumeCapacityContext(self: *Self, key: K, value: V, ctx: Context) void {
+            self.unmanaged.putAssumeCapacityContext(key, value, ctx);
+        }
+
+        pub fn putAssumeCapacityNoClobber(self: *Self, key: K, value: V) void {
+            self.unmanaged.putAssumeCapacityNoClobber(key, value);
+        }
+
+        pub fn putAssumeCapacityNoClobberContext(self: *Self, key: K, value: V, ctx: Context) void {
+            self.unmanaged.putAssumeCapacityNoClobberContext(key, value, ctx);
         }
 
         pub fn fetchPut(self: *Self, key: K, value: V) Allocator.Error!?KV {
@@ -133,6 +189,10 @@ pub fn ArrayHashMap(
             return self.unmanaged.orderedRemove(key);
         }
 
+        pub fn remove(self: *Self, key: K) bool {
+            return self.orderedRemove(key);
+        }
+
         pub fn fetchOrderedRemove(self: *Self, key: K) ?KV {
             return self.unmanaged.fetchOrderedRemove(key);
         }
@@ -143,6 +203,22 @@ pub fn ArrayHashMap(
 
         pub fn ensureUnusedCapacity(self: *Self, additional_capacity: usize) Allocator.Error!void {
             return self.unmanaged.ensureUnusedCapacity(self.allocator, additional_capacity);
+        }
+
+        pub fn sort(self: *Self, sort_ctx: anytype) void {
+            return self.unmanaged.sort(sort_ctx);
+        }
+
+        pub fn sortUnstable(self: *Self, sort_ctx: anytype) void {
+            return self.unmanaged.sortUnstable(sort_ctx);
+        }
+
+        pub fn sortContext(self: *Self, sort_ctx: anytype, ctx: Context) void {
+            return self.unmanaged.sortContext(sort_ctx, ctx);
+        }
+
+        pub fn sortUnstableContext(self: *Self, sort_ctx: anytype, ctx: Context) void {
+            return self.unmanaged.sortUnstableContext(sort_ctx, ctx);
         }
 
         pub fn clone(self: Self) Allocator.Error!Self {

@@ -27,6 +27,8 @@ pub const bun_cli_spawn_process_fs_file = @import("bun/cli_spawn_process_fs_file
 // that copied source needs to compile. Each function mirrors the
 // upstream semantics — see file-level docs for divergences.
 pub const strings = @import("strings.zig");
+pub const copyFile = @import("sys/copy_file.zig").copyFile;
+pub const copyFileWithState = @import("sys/copy_file.zig").copyFileWithState;
 pub const Output = @import("output.zig");
 // Bun's `bun.Progress` is a snapshot of the pre-0.13 `std.Progress` API used
 // by `bun install`'s progress bar. The install / PackageManager cone consumes
@@ -789,6 +791,11 @@ pub const timespec = extern struct {
             return std.math.maxInt(u64);
     }
 
+    pub fn sinceNow(this: *const timespec, comptime mock_mode: MockMode) u64 {
+        const current = timespec.now(mock_mode);
+        return current.duration(this).ns();
+    }
+
     pub fn nsSigned(this: *const timespec) i64 {
         const ns_per_sec = this.sec *% std.time.ns_per_s;
         const ns_from_nsec = @divFloor(this.nsec, 1_000_000);
@@ -1109,6 +1116,10 @@ pub fn freeSensitive(allocator: std.mem.Allocator, slice: anytype) void {
 /// hash32, fastRandom) when those land.
 pub fn hash(content: []const u8) u64 {
     return std.hash.Wyhash.hash(0, content);
+}
+
+pub fn hashWithSeed(seed: u64, content: []const u8) u64 {
+    return std.hash.Wyhash.hash(seed, content);
 }
 
 pub fn fastRandom() u64 {
@@ -1696,6 +1707,53 @@ pub const jsc = struct {
         pub fn parseDouble(input: []const u8) !f64 {
             return @import("home").parseDouble(input);
         }
+
+        pub fn parseES5Date(input: []const u8) !f64 {
+            if (input.len < "YYYY-MM-DDTHH:MM:SSZ".len) return error.InvalidDate;
+            if (input[4] != '-' or input[7] != '-' or (input[10] != 'T' and input[10] != 't') or input[13] != ':' or input[16] != ':') return error.InvalidDate;
+
+            const year = std.fmt.parseInt(i32, input[0..4], 10) catch return error.InvalidDate;
+            const month = std.fmt.parseInt(u8, input[5..7], 10) catch return error.InvalidDate;
+            const day = std.fmt.parseInt(u8, input[8..10], 10) catch return error.InvalidDate;
+            const hour = std.fmt.parseInt(u8, input[11..13], 10) catch return error.InvalidDate;
+            const minute = std.fmt.parseInt(u8, input[14..16], 10) catch return error.InvalidDate;
+            const second = std.fmt.parseInt(u8, input[17..19], 10) catch return error.InvalidDate;
+            if (month < 1 or month > 12 or day < 1 or day > 31 or hour > 23 or minute > 59 or second > 60) return error.InvalidDate;
+
+            var index: usize = 19;
+            var millis: u16 = 0;
+            if (index < input.len and input[index] == '.') {
+                index += 1;
+                var scale: u16 = 100;
+                while (index < input.len and input[index] >= '0' and input[index] <= '9') : (index += 1) {
+                    if (scale > 0) {
+                        millis += @as(u16, input[index] - '0') * scale;
+                        scale /= 10;
+                    }
+                }
+            }
+            if (index >= input.len or input[index] != 'Z') return error.InvalidDate;
+
+            const days = daysFromCivil(year, month, day);
+            const seconds = days * std.time.s_per_day +
+                @as(i64, hour) * std.time.s_per_hour +
+                @as(i64, minute) * std.time.s_per_min +
+                @as(i64, second);
+            return @floatFromInt(seconds * std.time.ms_per_s + @as(i64, millis));
+        }
+
+        fn daysFromCivil(year: i32, month: u8, day: u8) i64 {
+            var y: i64 = year;
+            const m: i64 = month;
+            const d: i64 = day;
+            y -= @intFromBool(m <= 2);
+            const era = @divFloor(y, 400);
+            const yoe = y - era * 400;
+            const mp = m + if (m > 2) @as(i64, -3) else 9;
+            const doy = @divTrunc(153 * mp + 2, 5) + d - 1;
+            const doe = yoe * 365 + @divTrunc(yoe, 4) - @divTrunc(yoe, 100) + doy;
+            return era * 146097 + doe - 719468;
+        }
     };
 
     pub const init_timestamp: JSTimeType = 0;
@@ -1767,6 +1825,9 @@ pub const jsc = struct {
         ENCODING_NOT_SUPPORTED = 153,
         ZSTD = 154,
         ZLIB_INITIALIZATION_FAILED = 261,
+        PARSE_ARGS_INVALID_OPTION_VALUE = 262,
+        PARSE_ARGS_UNKNOWN_OPTION = 263,
+        PARSE_ARGS_UNEXPECTED_POSITIONAL = 264,
         BORINGSSL = 155,
         HTTP2_INVALID_SETTING_VALUE_RangeError = 156,
         HTTP2_PING_CANCEL = 157,
@@ -3742,6 +3803,13 @@ pub const c = struct {
     pub extern fn clonefile(src: [*:0]const u8, dst: [*:0]const u8, flags: u32) c_int;
     pub extern fn clonefileat(src_dir_fd: fd_t, src: [*:0]const u8, dst_dir_fd: fd_t, dst: [*:0]const u8, flags: u32) c_int;
     pub extern fn copyfile(src: [*:0]const u8, dst: [*:0]const u8, state: ?*anyopaque, flags: u32) c_int;
+    pub extern fn fchmodat(fd: fd_t, path: [*:0]const u8, mode: std.c.mode_t, flags: c_int) c_int;
+    pub extern fn renameatx_np(from_dir_fd: c_int, from: [*:0]const u8, to_dir_fd: c_int, to: [*:0]const u8, flags: u32) c_int;
+    pub const RENAME_SWAP: u32 = 0x00000002;
+    pub const RENAME_EXCL: u32 = 0x00000004;
+    pub const RENAME_NOFOLLOW_ANY: u32 = 0x00000020;
+    pub const RENAME_EXCHANGE: u32 = 0x2;
+    pub const RENAME_NOREPLACE: u32 = 0x1;
     pub extern fn lchmod(path: [*:0]const u8, mode: std.c.mode_t) c_int;
     pub extern fn lchown(path: [*:0]const u8, uid: std.c.uid_t, gid: std.c.gid_t) c_int;
     pub extern fn mkdtemp(template: [*]u8) ?[*:0]u8;
@@ -3817,6 +3885,7 @@ pub const sys = struct {
     pub const fstatat = @import("sys/sys.zig").fstatat;
     pub const lutimes = @import("sys/sys.zig").lutimes;
     pub const mkdir = @import("sys/sys.zig").mkdir;
+    pub const mkdiratZ = @import("sys/sys.zig").mkdiratZ;
     pub const mkdirOSPath = @import("sys/sys.zig").mkdirOSPath;
     pub const open = @import("sys/sys.zig").open;
     pub const dup = @import("sys/sys.zig").dup;
@@ -3852,6 +3921,18 @@ pub const sys = struct {
     pub const updateNonblocking = @import("sys/sys.zig").updateNonblocking;
     pub const fchown = @import("sys/sys.zig").fchown;
     pub const futimens = @import("sys/sys.zig").futimens;
+    pub const exists = @import("sys/sys.zig").exists;
+    pub const copyFile = @import("sys/copy_file.zig").copyFile;
+
+    pub fn mkdirat(dir_fd: FD, file_path: []const u8, mode: Mode) Maybe(void) {
+        const path_z = std.posix.toPosixPath(file_path) catch {
+            return .{ .err = .{
+                .errno = @intFromEnum(E.NAMETOOLONG),
+                .syscall = .mkdir,
+            } };
+        };
+        return mkdiratZ(dir_fd, &path_z, mode);
+    }
 
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const Error = @import("sys/Error.zig");
@@ -4080,6 +4161,20 @@ pub const sys = struct {
             return Sys.readAll(this.handle, buf);
         }
 
+        pub fn pwriteAll(this: File, bytes: []const u8, offset: i64) Maybe(void) {
+            var written: usize = 0;
+            while (written < bytes.len) {
+                switch (Sys.pwrite(this.handle, bytes[written..], offset + @as(i64, @intCast(written)))) {
+                    .err => |err| return .{ .err = err },
+                    .result => |count| {
+                        if (count == 0) return .{ .err = unexpected(.write) };
+                        written += count;
+                    },
+                }
+            }
+            return .success;
+        }
+
         pub const ReadToEndResult = struct {
             bytes: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(default_allocator),
             err: ?Error = null,
@@ -4115,6 +4210,24 @@ pub const sys = struct {
             }
 
             return .{ .bytes = list };
+        }
+
+        pub fn readToEndWithArrayList(this: File, list: *std.array_list.Managed(u8), size_hint: anytype) Maybe(usize) {
+            _ = size_hint;
+            const original_len = list.items.len;
+            var buf: [8192]u8 = undefined;
+            while (true) {
+                switch (this.read(&buf)) {
+                    .err => |err| return .{ .err = err },
+                    .result => |bytes_read| {
+                        if (bytes_read == 0) break;
+                        list.appendSlice(buf[0..bytes_read]) catch |err| {
+                            return .{ .err = errnoFromPosix(.read, err) };
+                        };
+                    },
+                }
+            }
+            return .{ .result = list.items.len - original_len };
         }
 
         pub fn getEndPos(this: File) Maybe(usize) {

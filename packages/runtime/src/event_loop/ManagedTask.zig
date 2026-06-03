@@ -52,7 +52,7 @@ pub fn New(comptime Type: type, comptime Callback: anytype) type {
 // JSError + Task move to home_rt.jsc once the JSC bridge lands
 // (Phase 12.2). callmod_inline mirrors upstream Bun.
 
-pub const JSError = error{ JSError, OutOfMemory };
+pub const JSError = home_rt.JSError;
 
 pub const Task = struct {
     ptr: ?*anyopaque,
