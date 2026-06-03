@@ -82,6 +82,9 @@ pub const Config = struct {
     out_dir: []const u8 = "",
     declaration_dir: []const u8 = "",
     root_dir: []const u8 = "",
+    /// `compilerOptions.rootDirs`, resolved by callers when available.
+    /// Relative entries are interpreted relative to `config_file_path`.
+    root_dirs: []const []const u8 = &.{},
     config_file_path: []const u8 = "",
     /// `compilerOptions.typeRoots` or harness `@typeRoots` roots.
     /// These are custom package-root directories such as `/a/types`;
@@ -144,6 +147,7 @@ pub const Resolution = struct {
         package_main,
         index_file,
         type_roots,
+        root_dirs,
     };
 };
 
@@ -377,6 +381,7 @@ pub const Resolver = struct {
             const joined = try self.joinPath(dir, normalized);
             if (try self.tryFileWithExtensions(joined)) |r| return r;
             if (try self.tryDirectoryIndex(joined)) |r| return r;
+            if (try self.tryRootDirs(normalized, joined)) |r| return r;
             return error.NotFound;
         }
         if (isAbsolute(specifier)) {
@@ -950,6 +955,55 @@ pub const Resolver = struct {
                 }
             }
         }
+        return null;
+    }
+
+    fn tryRootDirs(
+        self: *Resolver,
+        specifier: []const u8,
+        candidate: []const u8,
+    ) ResolveError!?Resolution {
+        if (self.config.root_dirs.len == 0) return null;
+
+        self.traceMsg(6107, "'rootDirs' option is set, using it to resolve relative module name '{s}'.", .{specifier});
+        var best_root: ?[]const u8 = null;
+        var best_suffix: []const u8 = "";
+        for (self.config.root_dirs) |configured_root| {
+            const root = try self.configuredRootDir(configured_root);
+            const suffix = rootDirSuffix(candidate, root);
+            self.traceMsg(6104, "Checking if '{s}' is the longest matching prefix for '{s}' - '{s}'.", .{ root, candidate, suffix orelse "" });
+            if (suffix) |s| {
+                if (best_root == null or root.len > best_root.?.len) {
+                    best_root = root;
+                    best_suffix = s;
+                }
+            }
+        }
+
+        const matched_root = best_root orelse {
+            self.traceMsg(6111, "Module resolution using 'rootDirs' has failed.", .{});
+            return null;
+        };
+        self.traceMsg(6108, "Longest matching prefix for '{s}' is '{s}'.", .{ candidate, matched_root });
+        self.traceMsg(6110, "Trying other entries in 'rootDirs'.", .{});
+
+        for (self.config.root_dirs) |configured_root| {
+            const root = try self.configuredRootDir(configured_root);
+            if (std.mem.eql(u8, root, matched_root)) continue;
+            const remapped = if (best_suffix.len == 0)
+                root
+            else
+                try self.joinPath(root, best_suffix);
+            self.traceMsg(6109, "Loading '{s}' from the root dir '{s}', candidate location '{s}'.", .{ specifier, root, remapped });
+            if (try self.tryFileWithExtensions(remapped)) |r| {
+                return .{ .path = r.path, .source = .root_dirs, .is_declaration = r.is_declaration };
+            }
+            if (try self.tryDirectoryIndex(remapped)) |r| {
+                return .{ .path = r.path, .source = .root_dirs, .is_declaration = r.is_declaration };
+            }
+        }
+
+        self.traceMsg(6111, "Module resolution using 'rootDirs' has failed.", .{});
         return null;
     }
 
@@ -1627,6 +1681,12 @@ pub const Resolver = struct {
         if (self.config.config_file_path.len != 0) return dirname(self.config.config_file_path);
         return null;
     }
+
+    fn configuredRootDir(self: *Resolver, root: []const u8) ResolveError![]const u8 {
+        if (root.len == 0 or isAbsolute(root)) return root;
+        const config_root = self.configRootDir() orelse return root;
+        return try self.joinPath(config_root, root);
+    }
 };
 
 /// Split a bare specifier into `(packageName, subpath)`.
@@ -1806,6 +1866,15 @@ fn pathHasDirPrefix(path: []const u8, dir: []const u8) bool {
     if (path.len == dir.len) return true;
     if (dir.len > 0 and dir[dir.len - 1] == '/') return true;
     return path[dir.len] == '/';
+}
+
+fn rootDirSuffix(path: []const u8, root: []const u8) ?[]const u8 {
+    if (root.len == 0) return null;
+    if (!pathHasDirPrefix(path, root)) return null;
+    if (path.len == root.len) return "";
+    var start = root.len;
+    while (start < path.len and path[start] == '/') start += 1;
+    return path[start..];
 }
 
 fn stripOutputExtension(path: []const u8) ?[]const u8 {
@@ -2262,6 +2331,73 @@ test "Resolver: not-found resolution traces TS6090" {
         if (e.code == 6090) saw_6090 = true;
     }
     try T.expect(saw_6090);
+}
+
+test "Resolver: rootDirs resolves relative module through sibling virtual root and traces" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/views/view.ts", "import './template';");
+    try vfs.addFile("/proj/generated/views/template.ts", "export const template = 1;");
+    try vfs.addFile("/proj/tsconfig.json", "{\"compilerOptions\":{\"rootDirs\":[\"./src\",\"./generated\"]}}");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    const roots = [_][]const u8{ "./src", "./generated" };
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .root_dirs = &roots,
+        .config_file_path = "/proj/tsconfig.json",
+    });
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("./template", "/proj/src/views/view.ts");
+    try T.expectEqualStrings("/proj/generated/views/template.ts", res.path);
+    try T.expectEqual(Resolution.Source.root_dirs, res.source);
+
+    var saw_6104 = false;
+    var saw_6107 = false;
+    var saw_6108 = false;
+    var saw_6109 = false;
+    var saw_6110 = false;
+    for (sink.entries.items) |e| {
+        switch (e.code) {
+            6104 => saw_6104 = true,
+            6107 => saw_6107 = true,
+            6108 => saw_6108 = true,
+            6109 => saw_6109 = true,
+            6110 => saw_6110 = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_6104);
+    try T.expect(saw_6107);
+    try T.expect(saw_6108);
+    try T.expect(saw_6109);
+    try T.expect(saw_6110);
+}
+
+test "Resolver: failed rootDirs lookup traces TS6111" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/views/view.ts", "import './missing';");
+    try vfs.addFile("/proj/tsconfig.json", "{\"compilerOptions\":{\"rootDirs\":[\"./src\",\"./generated\"]}}");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    const roots = [_][]const u8{ "./src", "./generated" };
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .root_dirs = &roots,
+        .config_file_path = "/proj/tsconfig.json",
+    });
+    defer r.deinit();
+    r.trace = &sink;
+
+    try T.expectError(error.NotFound, r.resolve("./missing", "/proj/src/views/view.ts"));
+    var saw_6111 = false;
+    for (sink.entries.items) |e| {
+        if (e.code == 6111) saw_6111 = true;
+    }
+    try T.expect(saw_6111);
 }
 
 test "Resolver: trace skips absolute URI-looking specifiers with TS6164" {

@@ -1232,6 +1232,7 @@ const TsconfigResolverOptions = struct {
     out_dir: []const u8 = "",
     declaration_dir: []const u8 = "",
     root_dir: []const u8 = "",
+    root_dirs: []const []const u8 = &.{},
     config_file_path: []const u8 = "",
     module: []const u8 = "",
     type_roots: []const []const u8 = &.{},
@@ -1240,6 +1241,7 @@ const TsconfigResolverOptions = struct {
         if (self.out_dir.len != 0) gpa.free(self.out_dir);
         if (self.declaration_dir.len != 0) gpa.free(self.declaration_dir);
         if (self.root_dir.len != 0) gpa.free(self.root_dir);
+        freeStringList(gpa, self.root_dirs);
         if (self.config_file_path.len != 0) gpa.free(self.config_file_path);
         if (self.module.len != 0) gpa.free(self.module);
         freeStringList(gpa, self.type_roots);
@@ -1264,6 +1266,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
             .out_dir = try dupeJsonStringField(gpa, obj, "outDir"),
             .declaration_dir = try dupeJsonStringField(gpa, obj, "declarationDir"),
             .root_dir = try dupeJsonStringField(gpa, obj, "rootDir"),
+            .root_dirs = try dupeJsonStringArrayField(gpa, obj, "rootDirs"),
             .module = try dupeJsonStringField(gpa, obj, "module"),
             .type_roots = try dupeJsonStringArrayField(gpa, obj, "typeRoots"),
             .config_file_path = try canonicalVfsPath(gpa, f.path),
@@ -1405,6 +1408,7 @@ test "conformance: resolver config resolves package self-name through declaratio
         .out_dir = opts.out_dir,
         .declaration_dir = opts.declaration_dir,
         .root_dir = opts.root_dir,
+        .root_dirs = opts.root_dirs,
         .config_file_path = opts.config_file_path,
         .type_roots = opts.type_roots,
     });
@@ -1701,6 +1705,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .out_dir = tsconfig_options.out_dir,
         .declaration_dir = tsconfig_options.declaration_dir,
         .root_dir = tsconfig_options.root_dir,
+        .root_dirs = tsconfig_options.root_dirs,
         .config_file_path = tsconfig_options.config_file_path,
         .type_roots = tsconfig_options.type_roots,
     });
