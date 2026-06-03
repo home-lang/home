@@ -420,7 +420,7 @@ test "basic functionality" {
     const root_node = progress.start("", 100);
     defer root_node.end();
 
-    const speed_factor = std.time.ns_per_ms;
+    // progress pacing removed: std.Thread.sleep is gone in the Io-based std
 
     const sub_task_names = [_][]const u8{
         "reticulating splines",
@@ -437,17 +437,17 @@ test "basic functionality" {
         next_sub_task = (next_sub_task + 1) % sub_task_names.len;
 
         node.completeOne();
-        std.Thread.sleep(5 * speed_factor);
+        std.Thread.yield() catch {};
         node.completeOne();
         node.completeOne();
-        std.Thread.sleep(5 * speed_factor);
+        std.Thread.yield() catch {};
         node.completeOne();
         node.completeOne();
-        std.Thread.sleep(5 * speed_factor);
+        std.Thread.yield() catch {};
 
         node.end();
 
-        std.Thread.sleep(5 * speed_factor);
+        std.Thread.yield() catch {};
     }
     {
         var node = root_node.start("this is a really long name designed to activate the truncation code. let's find out if it works", 0);
