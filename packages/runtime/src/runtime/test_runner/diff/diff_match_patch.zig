@@ -83,6 +83,7 @@ pub fn DMP(comptime Unit: type) type {
             }
 
             test eql {
+                if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
                 const equal_a: Diff = .{ .operation = .equal, .text = "a" };
                 const insert_a: Diff = .{ .operation = .insert, .text = "a" };
                 const equal_b: Diff = .{ .operation = .equal, .text = "b" };
@@ -1409,7 +1410,7 @@ pub fn DMP(comptime Unit: type) type {
             var equalities: std.ArrayListUnmanaged(usize) = .empty;
             defer equalities.deinit(allocator);
             // Always equal to equalities[equalitiesLength-1][1]
-            var last_equality: []const Unit = "";
+            var last_equality: []const Unit = &.{};
             var ipointer: isize = 0; // Index of current position.
             // Is there an insertion operation before the last equality.
             var pre_ins = false;
@@ -1541,6 +1542,7 @@ pub fn DMP(comptime Unit: type) type {
         // not cause segfault while freeing
 
         test diffCommonPrefix {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             // Detect any common suffix.
             try testing.expectEqual(@as(usize, 0), diffCommonPrefix("abc", "xyz")); // Null case
             try testing.expectEqual(@as(usize, 4), diffCommonPrefix("1234abcdef", "1234xyz")); // Non-null case
@@ -1548,6 +1550,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffCommonSuffix {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             // Detect any common suffix.
             try testing.expectEqual(@as(usize, 0), diffCommonSuffix("abc", "xyz")); // Null case
             try testing.expectEqual(@as(usize, 4), diffCommonSuffix("abcdef1234", "xyz1234")); // Non-null case
@@ -1555,6 +1558,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffCommonOverlap {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             // Detect any suffix/prefix overlap.
             try testing.expectEqual(@as(usize, 0), diffCommonOverlap("", "abcd")); // Null case
             try testing.expectEqual(@as(usize, 3), diffCommonOverlap("abc", "abcd")); // Whole case
@@ -1581,6 +1585,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffHalfMatch {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             const one_timeout: DiffMatchPatch = .{ .config = .{ .diff_timeout = 1 } };
 
             // No match #1
@@ -1724,6 +1729,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffLinesToChars {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             const allocator = testing.allocator;
             // Convert lines down to characters.
             var tmp_array_list: std.ArrayListUnmanaged([]const Unit) = .empty;
@@ -1818,6 +1824,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffCharsToLines {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             // Convert chars up to lines.
             var diff_list: DiffList = .empty;
             defer deinitDiffList(testing.allocator, &diff_list);
@@ -1859,6 +1866,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffCleanupMerge {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             // Cleanup a messy diff.
 
             // No change case
@@ -2076,6 +2084,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffCleanupSemanticLossless {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             // Null case
             try checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
                 .input = &[_]Diff{},
@@ -2212,6 +2221,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test rebuildtexts {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             {
                 var diffs = try sliceToDiffList(testing.allocator, &.{
                     .{ .operation = .insert, .text = "abcabc" },
@@ -2273,6 +2283,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffBisect {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             const this: DiffMatchPatch = .{ .config = .{ .diff_timeout = 0 } };
 
             const a = "cat";
@@ -2315,6 +2326,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test "diffHalfMatch leak regression test" {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             try checkAllAllocationFailures(testing.allocator, diffHalfMatchLeak, .{});
         }
 
@@ -2334,6 +2346,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diff {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             const this: DiffMatchPatch = .{ .config = .{ .diff_timeout = 0 } };
 
             //  Null case.
@@ -2618,6 +2631,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test "diffLineMode" {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             var dmp: DiffMatchPatch = .{ .config = .{ .diff_timeout = 0 } };
             try checkAllAllocationFailures(
                 testing.allocator,
@@ -2651,6 +2665,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test diffCleanupSemantic {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             // Null case.
             try checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
                 .input = &[_]Diff{},
@@ -2828,6 +2843,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         test "diffCleanupEfficiency" {
+            if (Unit != u8) return error.SkipZigTest; // u8-only string-literal fixtures
             const allocator = testing.allocator;
             var dmp: DiffMatchPatch = .default;
             dmp.config.diff_edit_cost = 4;
