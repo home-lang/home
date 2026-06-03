@@ -700,6 +700,12 @@ pub const Resolver = struct {
         const source_exts = sourceExtensionsForOutputPath(path);
         if (source_exts.len == 0) return null;
         const source_base = stripOutputExtension(path) orelse return null;
+        const stripped_ext = path[source_base.len..];
+        self.traceMsg(
+            6132,
+            "File name '{s}' has a '{s}' extension - stripping it.",
+            .{ path, stripped_ext },
+        );
         for (source_exts) |ext| {
             const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ source_base, ext }) catch return error.OutOfMemory;
             if (std.mem.eql(u8, candidate, path)) continue;
@@ -2039,10 +2045,19 @@ test "Resolver: relative emitted js specifier maps to ts source input" {
     try vfs.addFile("/proj/src/thing.ts", "");
     try vfs.addFile("/proj/index.ts", "");
 
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
     var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .nodenext });
     defer r.deinit();
+    r.trace = &sink;
     const res = try r.resolve("./src/thing.js", "/proj/index.ts");
     try T.expectEqualStrings("/proj/src/thing.ts", res.path);
+
+    var saw_6132 = false;
+    for (sink.entries.items) |e| {
+        if (e.code == 6132) saw_6132 = true;
+    }
+    try T.expect(saw_6132);
 }
 
 test "Resolver: tsx extension" {
