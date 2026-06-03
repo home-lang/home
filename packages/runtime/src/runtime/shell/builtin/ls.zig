@@ -327,8 +327,7 @@ pub const ShellLsTask = struct {
 
         if (!this.opts.list_directories) {
             if (this.print_directory) {
-                const writer = this.output.writer();
-                bun.handleOom(writer.print("{s}:\n", .{this.path}));
+                bun.handleOom(this.output.print("{s}:\n", .{this.path}));
             }
 
             var iterator = DirIterator.iterate(fd, .u8);
@@ -395,8 +394,7 @@ pub const ShellLsTask = struct {
         const stat = switch (stat_result) {
             .err => {
                 // If stat fails, just output the name with placeholders
-                const writer = this.output.writer();
-                bun.handleOom(writer.print("?????????? ? ? ? ?            ? {s}\n", .{name}));
+                bun.handleOom(this.output.print("?????????? ? ? ? ?            ? {s}\n", .{name}));
                 return;
             },
             .result => |s| s,
