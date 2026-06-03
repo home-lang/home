@@ -577,7 +577,7 @@ pub const Process = struct {
         if (comptime Environment.isPosix) {
             switch (this.poller) {
                 .waiter_thread, .fd => {
-                    const err = std.c.kill(this.pid, signal);
+                    const err = std.c.kill(this.pid, @enumFromInt(signal));
                     if (err != 0) {
                         const errno_ = bun.sys.getErrno(err);
 

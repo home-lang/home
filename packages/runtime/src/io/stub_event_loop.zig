@@ -43,6 +43,15 @@ pub const FilePoll = struct {
     next_to_free: ?*FilePoll = null,
     flags: Flags = .{},
 
+    pub fn enableKeepingProcessAlive(this: *FilePoll, event_loop_ctx_: anytype) void {
+        this.flags.keeps_event_loop_alive = true;
+        _ = event_loop_ctx_;
+    }
+    pub fn disableKeepingProcessAlive(this: *FilePoll, event_loop_ctx_: anytype) void {
+        this.flags.keeps_event_loop_alive = false;
+        _ = event_loop_ctx_;
+    }
+
     pub const Flags = packed struct {
         poll_readable: bool = false,
         poll_writable: bool = false,

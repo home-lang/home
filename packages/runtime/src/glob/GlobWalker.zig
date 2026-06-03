@@ -341,7 +341,7 @@ pub fn GlobWalker_(
         end_byte_of_basename_excluding_special_syntax: u32 = 0,
         basename_excluding_special_syntax_component_idx: u32 = 0,
 
-        patternComponents: ArrayList(Component) = .{},
+        patternComponents: ArrayList(Component) = .empty,
         matchedPaths: MatchedMap = .{},
         i: u32 = 0,
 
