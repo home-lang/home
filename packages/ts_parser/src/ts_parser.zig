@@ -3573,6 +3573,20 @@ pub const Parser = struct {
             while (true) {
                 const k = self.peek().kind;
                 if (!self.hasPendingStatement() and (k == .kw_case or k == .kw_default or k == .close_brace or k == .eof)) break;
+                // TS1129 — when a token that clearly cannot start a
+                // statement appears in `SwitchClauseStatements`, tsc
+                // emits "Statement expected." (narrower than the
+                // generic TS1128 "Declaration or statement expected"
+                // because case-clause bodies forbid declarations).
+                // We detect the specific shape: a `:` standalone
+                // token at the start of a case-body line. The
+                // general parseStatement fallback below handles
+                // every other recovery.
+                if (k == .colon) {
+                    const bad = self.advance();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1129, "Statement expected.");
+                    continue;
+                }
                 try stmts.append(self.gpa, try self.parseStatement());
             }
             const last_end: u32 = if (stmts.items.len > 0)
