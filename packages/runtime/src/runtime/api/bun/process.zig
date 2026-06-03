@@ -1466,7 +1466,7 @@ pub fn spawnProcessPosix(
                 // Right now we only allow one output redirection so it's okay.
                 if (i == 1 and dup2.to == .stderr) {
                     dup_stdout_to_stderr = true;
-                } else try actions.dup2(dup2.to.toFd(), dup2.out.toFd());
+                } else try actions.dup2(dup2.to.toFd().native(), dup2.out.toFd().native());
             },
             .inherit => {
                 try actions.inherit(fileno);
