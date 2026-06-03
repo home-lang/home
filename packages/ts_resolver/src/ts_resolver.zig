@@ -954,9 +954,8 @@ pub const Resolver = struct {
     }
 
     fn tryNodeModules(self: *Resolver, specifier: []const u8, containing_file: []const u8) ResolveError!?Resolution {
-        // Walk up the directory tree looking for node_modules/<spec>.
         const split = packageNameSplit(specifier);
-        var dir = dirname(containing_file);
+        const dir = dirname(containing_file);
         if (self.trace != null) {
             self.traceMsg(6098, "Loading module '{s}' from 'node_modules' folder, target file types: {s}.", .{ specifier, self.targetFileTypesText() });
             self.traceMsg(6125, "Looking up in 'node_modules' folder, initial location '{s}'.", .{dir});
@@ -965,6 +964,75 @@ pub const Resolver = struct {
                 self.traceMsg(6182, "Scoped package detected, looking in '{s}'", .{split.name});
             }
         }
+
+        var preferred_exts: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer preferred_exts.deinit(self.gpa);
+        var fallback_exts: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer fallback_exts.deinit(self.gpa);
+        try self.partitionNodeModuleExtensions(&preferred_exts, &fallback_exts);
+
+        if (preferred_exts.items.len > 0) {
+            self.traceMsg(6417, "Searching all ancestor node_modules directories for preferred extensions: {s}.", .{self.extensionsText(preferred_exts.items)});
+            if (try self.tryNodeModulesPass(specifier, containing_file, preferred_exts.items)) |r| return r;
+        }
+
+        if (fallback_exts.items.len > 0) {
+            self.traceMsg(6418, "Searching all ancestor node_modules directories for fallback extensions: {s}.", .{self.extensionsText(fallback_exts.items)});
+            if (try self.tryNodeModulesPass(specifier, containing_file, fallback_exts.items)) |r| return r;
+        }
+        return null;
+    }
+
+    fn partitionNodeModuleExtensions(
+        self: *Resolver,
+        preferred: *std.ArrayListUnmanaged([]const u8),
+        fallback: *std.ArrayListUnmanaged([]const u8),
+    ) ResolveError!void {
+        for (self.config.extensions) |ext| {
+            if (isPreferredNodeModuleExtension(ext)) {
+                try preferred.append(self.gpa, ext);
+            } else {
+                try fallback.append(self.gpa, ext);
+            }
+        }
+        if (self.config.resolve_json) {
+            try fallback.append(self.gpa, ".json");
+        }
+    }
+
+    fn extensionsText(self: *Resolver, exts: []const []const u8) []const u8 {
+        const sink = self.trace orelse return "";
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const a = sink.arena.allocator();
+        buf.append(a, '[') catch return "[]";
+        for (exts, 0..) |ext, i| {
+            if (i != 0) buf.appendSlice(a, ", ") catch return "[]";
+            buf.append(a, '\'') catch return "[]";
+            buf.appendSlice(a, ext) catch return "[]";
+            buf.append(a, '\'') catch return "[]";
+        }
+        buf.append(a, ']') catch return "[]";
+        return buf.items;
+    }
+
+    fn tryNodeModulesPass(
+        self: *Resolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+        extensions: []const []const u8,
+    ) ResolveError!?Resolution {
+        const saved_exts = self.config.extensions;
+        const saved_resolve_json = self.config.resolve_json;
+        self.config.extensions = extensions;
+        self.config.resolve_json = false;
+        defer {
+            self.config.extensions = saved_exts;
+            self.config.resolve_json = saved_resolve_json;
+        }
+
+        // Walk up the directory tree looking for node_modules/<spec>.
+        const split = packageNameSplit(specifier);
+        var dir = dirname(containing_file);
         while (true) {
             const nm = try self.joinPath(dir, "node_modules");
             if (!self.fs.directoryExists(nm)) {
@@ -1723,6 +1791,16 @@ fn isDeclarationPath(s: []const u8) bool {
         (std.mem.endsWith(u8, s, ".ts") and std.mem.indexOf(u8, s, ".d.") != null);
 }
 
+fn isPreferredNodeModuleExtension(ext: []const u8) bool {
+    return isDeclarationPath(ext) or
+        std.mem.eql(u8, ext, ".ts") or
+        std.mem.eql(u8, ext, ".tsx") or
+        std.mem.eql(u8, ext, ".mts") or
+        std.mem.eql(u8, ext, ".cts") or
+        std.mem.eql(u8, ext, ".hm") or
+        std.mem.eql(u8, ext, ".home");
+}
+
 fn pathHasDirPrefix(path: []const u8, dir: []const u8) bool {
     if (!std.mem.startsWith(u8, path, dir)) return false;
     if (path.len == dir.len) return true;
@@ -1993,12 +2071,16 @@ test "Resolver: node_modules + package.json resolution traces TS6098/6125/6099/6
     var saw_6125 = false;
     var saw_6101 = false;
     var saw_6100 = false;
+    var saw_6417 = false;
+    var saw_6418 = false;
     for (sink.entries.items) |e| {
         switch (e.code) {
             6098 => saw_6098 = true,
             6125 => saw_6125 = true,
             6101 => saw_6101 = true,
             6100 => saw_6100 = true,
+            6417 => saw_6417 = true,
+            6418 => saw_6418 = true,
             else => {},
         }
     }
@@ -2006,6 +2088,8 @@ test "Resolver: node_modules + package.json resolution traces TS6098/6125/6099/6
     try T.expect(saw_6125);
     try T.expect(saw_6101);
     try T.expect(saw_6100);
+    try T.expect(saw_6417);
+    try T.expect(saw_6418);
 }
 
 test "Resolver: invalid package.json path field traces TS6105" {

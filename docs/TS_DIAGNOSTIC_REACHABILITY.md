@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 851 |
-| reachable (parity targets) | 383 |
+| catalog-only total | 849 |
+| reachable (parity targets) | 381 |
 | dead in tsgo (leave catalog-only) | 468 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 90 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 88 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -191,7 +191,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (90)
+### 6xxx — CLI / build / watch / resolution-trace messages (88)
 
 - TS6041 `Errors_Files_6041`
 - TS6104 `Checking_if_0_is_the_longest_matching_prefix_for_1_2_6104`
@@ -252,8 +252,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6406 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_there_is_change_in_compilerOptions_6406`
 - TS6411 `true_when_moduleResolution_is_node16_nodenext_or_bundler_otherwise_false_6411`
 - TS6412 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_file_2_was_root_file_of_compilation_6412`
-- TS6417 `Searching_all_ancestor_node_modules_directories_for_preferred_extensions_Colon_0_6417`
-- TS6418 `Searching_all_ancestor_node_modules_directories_for_fallback_extensions_Colon_0_6418`
 - TS6419 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_program_needs_to_report_errors_6419`
 - TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
 - TS6501 `The_expected_type_comes_from_this_index_signature_6501`
