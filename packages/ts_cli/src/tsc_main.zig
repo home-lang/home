@@ -168,12 +168,20 @@ fn printConfigValidationDiagnostics(gpa: std.mem.Allocator, cfg: tsconfig_mod.Ts
     return true;
 }
 
-/// Emit a `tsc --build` status message. tsc prints these
+/// Emit a tsc status message. tsc prints these
 /// CategoryMessage diagnostics as plain text (no `TSxxxx:` prefix); the
 /// `code` is carried so the diagnostic-coverage ledger credits it.
 fn buildStatusMessage(comptime code: u32, comptime fmt: []const u8, args: anytype) void {
     comptime std.debug.assert(code >= 6000);
     std.debug.print(fmt, args);
+}
+
+fn reportWatchErrorStatus(error_count: usize) void {
+    if (error_count == 1) {
+        buildStatusMessage(6193, "Found 1 error. Watching for file changes.\n", .{});
+    } else {
+        buildStatusMessage(6194, "Found {d} errors. Watching for file changes.\n", .{error_count});
+    }
 }
 
 /// A project is up to date when every expected output (`.js`, and `.d.ts`
@@ -1117,15 +1125,22 @@ pub fn main(init: std.process.Init) !void {
         .first_error_line = &stream_first_error_line,
         .first_error_col = &stream_first_error_col,
     };
+    if (opts.watch) {
+        buildStatusMessage(6031, "Starting compilation in watch mode...\n", .{});
+    }
     program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
-    // tsc's post-compilation summary (CategoryMessage), only when there
-    // are errors so a clean compile stays silent. tsc picks the message
-    // by error-and-file count: 1 error → TS6259 in one file else TS6216;
-    // many errors across >1 files → TS6261; otherwise TS6217.
-    if (stream_error_count == 1) {
+    // tsc's post-compilation summary (CategoryMessage). Non-watch
+    // compiles stay silent when clean; watch compiles always report
+    // the TS6193/TS6194 "Watching for file changes" status. For
+    // non-watch errors, tsc picks the message by error-and-file count:
+    // 1 error → TS6259 in one file else TS6216; many errors across >1
+    // files → TS6261; otherwise TS6217.
+    if (opts.watch) {
+        reportWatchErrorStatus(stream_error_count);
+    } else if (stream_error_count == 1) {
         if (stream_files_with_errors == 1 and stream_first_error_file.len != 0) {
             buildStatusMessage(6259, "Found 1 error in {s}\n", .{stream_first_error_file});
         } else {
@@ -1384,7 +1399,6 @@ pub fn main(init: std.process.Init) !void {
         // the program, recompile changed files, and re-emit JS.
         // Native FS-event backends (FSEvents/inotify/ReadDirChangesW)
         // are tracked separately.
-        buildStatusMessage(6031, "Starting compilation in watch mode...\n", .{});
         var watch_threaded = std.Io.Threaded.init(gpa, .{});
         defer watch_threaded.deinit();
         const watch_io = watch_threaded.io();
@@ -1440,11 +1454,27 @@ pub fn main(init: std.process.Init) !void {
             }
             if (changed.items.len == 0) continue;
             buildStatusMessage(6032, "File change detected. Starting incremental compilation...\n", .{});
-            const recompiled = program.recompileChanged(changed.items, compile_opts) catch |err| blk: {
+            _ = program.recompileChanged(changed.items, compile_opts) catch |err| {
                 std.debug.print("recompile error: {s}\n", .{@errorName(err)});
-                break :blk @as(u32, 0);
+                continue;
             };
-            std.debug.print("[watch] {d} file(s) recompiled.\n", .{recompiled});
+            var watch_any_errors = false;
+            var watch_error_count: usize = 0;
+            var watch_stream_ctx: StreamCtx = .{
+                .gpa = gpa,
+                .program = &program,
+                .use_pretty = opts.pretty orelse true,
+                .use_color = stdout_is_tty,
+                .any_errors = &watch_any_errors,
+                .error_count = &watch_error_count,
+            };
+            for (changed.items) |path| {
+                const file_id = program.lookupPath(path) orelse continue;
+                const f = program.fileById(file_id);
+                const c = f.compilation orelse continue;
+                streamDiagsCallback(&watch_stream_ctx, path, c.diagnostics.items);
+            }
+            reportWatchErrorStatus(watch_error_count);
             // Re-emit each changed file's JS to disk.
             for (changed.items) |path| {
                 const file_id = program.lookupPath(path) orelse continue;

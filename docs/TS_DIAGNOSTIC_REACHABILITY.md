@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 878 |
-| reachable (parity targets) | 376 |
+| catalog-only total | 876 |
+| reachable (parity targets) | 374 |
 | dead in tsgo (leave catalog-only) | 502 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 146 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 100 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 98 |
 | 1xxx — parser / syntactic + program file-inclusion | 64 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -180,7 +180,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (100)
+### 6xxx — CLI / build / watch / resolution-trace messages (98)
 
 - TS6041 `Errors_Files_6041`
 - TS6095 `Loading_module_as_file_Slash_folder_candidate_module_location_0_target_file_types_Colon_1_6095`
@@ -201,8 +201,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6140 `Auto_discovery_for_typings_is_enabled_in_project_0_Running_extra_resolution_pass_for_module_1_using__6140`
 - TS6142 `Module_0_was_resolved_to_1_but_jsx_is_not_set_6142`
 - TS6164 `Skipping_module_0_that_looks_like_an_absolute_URI_target_file_types_Colon_1_6164`
-- TS6193 `Found_1_error_Watching_for_file_changes_6193`
-- TS6194 `Found_0_errors_Watching_for_file_changes_6194`
 - TS6210 `An_argument_for_0_was_not_provided_6210`
 - TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
 - TS6212 `Did_you_mean_to_call_this_expression_6212`
