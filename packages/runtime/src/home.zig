@@ -2466,7 +2466,7 @@ pub const io = struct {
         _buffer: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(default_allocator),
         maxbuf: ?*MaxBuf = null,
         source: ?Source = null,
-        handle: Handle = .{},
+        handle: Handle = .closed,
         flags: Flags = .{},
         parent: ?*anyopaque = null,
 
@@ -2479,14 +2479,20 @@ pub const io = struct {
             }
         };
 
-        pub const Handle = struct {
+        pub const Handle = union(enum) {
+            closed,
             // Qualify to the nested Poll (the top-level `io.Poll` alias would
             // otherwise make the unqualified `Poll` an ambiguous container ref).
-            poll: BufferedReader.Poll = .{},
+            poll: BufferedReader.Poll,
         };
 
         pub const Poll = struct {
             flags: PollFlags = .{},
+
+            pub fn isRegistered(this: Poll) bool {
+                _ = this;
+                return false;
+            }
         };
 
         pub const PollFlags = struct {
@@ -2500,7 +2506,14 @@ pub const io = struct {
             socket: bool = false,
             nonblocking: bool = false,
             pollable: bool = false,
+            close_handle: bool = true,
         };
+
+        pub fn takeBuffer(this: *BufferedReader) std.array_list.Managed(u8) {
+            const out = this._buffer;
+            this._buffer = std.array_list.Managed(u8).init(default_allocator);
+            return out;
+        }
 
         pub fn init(comptime Parent: type) BufferedReader {
             _ = Parent;
@@ -3997,6 +4010,7 @@ pub const c = struct {
     // posix_spawn flag bits (identical on macOS/Linux).
     pub const POSIX_SPAWN_SETSIGDEF: c_int = 0x04;
     pub const POSIX_SPAWN_SETSIGMASK: c_int = 0x08;
+    pub const POSIX_SPAWN_CLOEXEC_DEFAULT: c_int = 0x4000; // Darwin-only flag
     pub extern fn memmem(
         haystack: ?[*]const u8,
         haystacklen: usize,
