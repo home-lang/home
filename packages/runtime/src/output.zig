@@ -11,6 +11,8 @@ pub const LogFunction = fn (comptime fmt: []const u8, args: anytype) void;
 
 pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;
+pub var is_github_action = false;
+pub const ElapsedFormatter = @import("bun_core/output.zig").ElapsedFormatter;
 
 const CSI = "\x1b[";
 var error_writer_buffer: [4096]u8 = undefined;
@@ -76,6 +78,10 @@ pub fn printErrorln(comptime fmt: []const u8, args: anytype) void {
 
 pub fn printElapsed(elapsed_ms: f64) void {
     std.debug.print("[{d:.2}ms]", .{elapsed_ms});
+}
+
+pub fn isGithubAction() bool {
+    return std.process.hasEnvVarConstant("GITHUB_ACTIONS");
 }
 
 const RESET: []const u8 = "\x1b[0m";
@@ -287,6 +293,8 @@ pub fn printStartEndStdout(start: i128, end: i128) void {
     const elapsed_ms: f64 = @as(f64, @floatFromInt(end - start)) / std.time.ns_per_ms;
     std.debug.print("[{d:.2}ms]", .{elapsed_ms});
 }
+
+pub const printStartEnd = printStartEndStdout;
 
 pub fn enableBuffering() void {}
 pub fn enableBufferingScope() BufferingScope {

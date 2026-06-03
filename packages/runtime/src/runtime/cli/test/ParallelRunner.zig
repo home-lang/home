@@ -44,6 +44,11 @@ pub const Worker = struct {
     }
 };
 
+pub fn workerEmitTestDone(file_idx: u32, formatted_line: []const u8) void {
+    _ = file_idx;
+    _ = formatted_line;
+}
+
 test "ParallelRunner docs facade compiles standalone" {
     // No runtime surface yet — the test exists so the file participates in
     // `zig test` and the banner comments above stay live as compile-checked

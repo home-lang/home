@@ -407,7 +407,10 @@ pub fn formatLabel(globalThis: *JSGlobalObject, label: string, function_args: []
                     } else {
                         var formatter = jsc.ConsoleObject.Formatter{ .globalThis = globalThis, .quote_strings = true };
                         defer formatter.deinit();
-                        bun.handleOom(list.writer().print("{f}", .{value.toFmt(&formatter)}));
+                        var value_writer = std.Io.Writer.Allocating.init(bun.default_allocator);
+                        defer value_writer.deinit();
+                        bun.handleOom(value_writer.writer.print("{f}", .{value.toFmt(&formatter)}));
+                        bun.handleOom(list.appendSlice(value_writer.written()));
                     }
                     idx = var_end;
                     continue;
@@ -452,7 +455,10 @@ pub fn formatLabel(globalThis: *JSGlobalObject, label: string, function_args: []
                     var formatter = jsc.ConsoleObject.Formatter{ .globalThis = globalThis, .quote_strings = true };
                     defer formatter.deinit();
                     const value_fmt = current_arg.toFmt(&formatter);
-                    bun.handleOom(list.writer().print("{f}", .{value_fmt}));
+                    var value_writer = std.Io.Writer.Allocating.init(allocator);
+                    defer value_writer.deinit();
+                    bun.handleOom(value_writer.writer.print("{f}", .{value_fmt}));
+                    bun.handleOom(list.appendSlice(value_writer.written()));
                     idx += 1;
                     args_idx += 1;
                 },

@@ -234,7 +234,7 @@ pub const PatchFile = struct {
         // to use the arena
         const use_arena: bool = stat.size <= PAGE_SIZE;
         const file_alloc = if (use_arena) arena.allocator() else bun.default_allocator;
-        const filebuf = patch_dir.stdDir().readFileAlloc(file_alloc, file_path, 1024 * 1024 * 1024 * 4) catch return .{ .err = bun.sys.Error.fromCode(.INVAL, .read).withPath(file_path) };
+        const filebuf = patch_dir.stdDir().readFileAlloc(std.Options.debug_io, file_path, file_alloc, .limited(1024 * 1024 * 1024 * 4)) catch return .{ .err = bun.sys.Error.fromCode(.INVAL, .read).withPath(file_path) };
         defer file_alloc.free(filebuf);
 
         var file_line_count: usize = 0;

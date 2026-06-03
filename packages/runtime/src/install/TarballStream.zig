@@ -800,7 +800,7 @@ fn finish(this: *TarballStream) void {
             d.close();
             this.dest = null;
         }
-        task.request.extract.tarball.temp_dir.deleteTree(this.tmpname) catch {};
+        task.request.extract.tarball.temp_dir.deleteTree(std.Options.debug_io, this.tmpname) catch {};
     }
 
     this.deinit();

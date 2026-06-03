@@ -37,7 +37,7 @@ and JSC host-call bridge close the unsupported surface.
 runtime integration batch was verified with
 `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
 The already-compiled test set still reports **48/48 tests passed**, but
-the `home_test` compile step remains red at **37 visible compile
+the `home_test` compile step remains red at **19 visible compile
 errors** after the follow-up worker tranche landed managed map/string
 compatibility, install mini-store/repository shims, JSC array/string/DOM
 surface fixes, Node/N-API/EventLoop compatibility, PipeWriter poll

@@ -348,7 +348,7 @@ pub const Archiver = struct {
         _ = stream.openRead();
         const archive = stream.archive;
         var count: u32 = 0;
-        const dir_fd = dir.fd;
+        const dir_fd = dir.handle;
 
         var symlink_join_buf: ?*bun.PathBuffer = null;
         defer if (symlink_join_buf) |join_buf| bun.path_buffer_pool.put(join_buf);
@@ -470,13 +470,13 @@ pub const Archiver = struct {
                             if (comptime Environment.isWindows) {
                                 try bun.MakePath.makePath(u16, dir, path);
                             } else {
-                                std.posix.mkdiratZ(dir_fd, path, @intCast(mode)) catch |err| {
+                                bun.sys.mkdiratZ(.fromStdDir(dir), path, @intCast(mode)).unwrap() catch |err| {
                                     // It's possible for some tarballs to return a directory twice, with and
                                     // without `./` in the beginning. So if it already exists, continue to the
                                     // next entry.
                                     if (err == error.PathAlreadyExists or err == error.NotDir) continue;
                                     bun.makePath(dir, std.fs.path.dirname(path_slice) orelse return err) catch {};
-                                    std.posix.mkdiratZ(dir_fd, path, 0o777) catch {};
+                                    _ = bun.sys.mkdiratZ(.fromStdDir(dir), path, 0o777);
                                 };
                             }
                         },
@@ -499,7 +499,7 @@ pub const Archiver = struct {
                                 bun.sys.symlinkat(link_target, .fromNative(dir_fd), path).unwrap() catch |err| brk: {
                                     switch (err) {
                                         error.EPERM, error.ENOENT => {
-                                            dir.makePath(std.fs.path.dirname(path_slice) orelse return err) catch {};
+                                            bun.MakePath.makePath(u8, dir, std.fs.path.dirname(path_slice) orelse return err) catch {};
                                             break :brk try bun.sys.symlinkat(link_target, .fromNative(dir_fd), path).unwrap();
                                         },
                                         else => return err,
@@ -531,16 +531,16 @@ pub const Archiver = struct {
                                     },
                                 }
                             else
-                                .fromStdFile(dir.createFileZ(path, .{
+                                .fromStdFile(dir.createFile(std.Options.debug_io, path, .{
                                     .truncate = true,
-                                    .mode = mode,
+                                    .permissions = .fromMode(mode),
                                 }) catch |err|
                                     switch (err) {
                                         error.AccessDenied, error.FileNotFound => brk: {
-                                            dir.makePath(std.fs.path.dirname(path_slice) orelse return err) catch {};
-                                            break :brk try dir.createFileZ(path, .{
+                                            bun.MakePath.makePath(u8, dir, std.fs.path.dirname(path_slice) orelse return err) catch {};
+                                            break :brk try dir.createFile(std.Options.debug_io, path, .{
                                                 .truncate = true,
-                                                .mode = mode,
+                                                .permissions = .fromMode(mode),
                                             });
                                         },
                                         else => return err,

@@ -918,7 +918,7 @@ pub const PackageManifest = struct {
                 dat.* = .{
                     .size = @sizeOf(field_info.type),
                     .name = field_info.name,
-                    .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment,
+                    .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment orelse @alignOf(field_info.type),
                 };
             }
             const Sort = struct {
@@ -957,21 +957,22 @@ pub const PackageManifest = struct {
             pos.* += bytes.len;
         }
 
-        pub fn readArray(stream: *std.io.FixedBufferStream([]const u8), comptime Type: type) ![]const Type {
-            var reader = stream.reader();
-            const byte_len = try reader.readInt(u64, .little);
+        pub fn readArray(bytes: []const u8, pos: *usize, comptime Type: type) ![]const Type {
+            if (bytes.len -| pos.* < @sizeOf(u64)) return error.BufferTooSmall;
+            const byte_len = std.mem.readInt(u64, bytes[pos.*..][0..@sizeOf(u64)], .little);
+            pos.* += @sizeOf(u64);
             if (byte_len == 0) {
                 return &[_]Type{};
             }
 
-            stream.pos += Aligner.skipAmount(Type, stream.pos);
-            const remaining = stream.buffer[@min(stream.pos, stream.buffer.len)..];
+            pos.* += Aligner.skipAmount(Type, pos.*);
+            const remaining = bytes[@min(pos.*, bytes.len)..];
             if (remaining.len < byte_len) {
                 return error.BufferTooSmall;
             }
             const result_bytes = remaining[0..byte_len];
             const result = @as([*]const Type, @ptrCast(@alignCast(result_bytes.ptr)))[0 .. result_bytes.len / @sizeOf(Type)];
-            stream.pos += result_bytes.len;
+            pos.* += result_bytes.len;
             return result;
         }
 
@@ -1013,9 +1014,10 @@ pub const PackageManifest = struct {
             var stack_fallback = bun.stackFallback(64 * 1024, bun.default_allocator);
 
             const allocator = stack_fallback.get();
-            var buffer = try std.array_list.Managed(u8).initCapacity(allocator, this.byteLength(scope) + 64);
+            var buffer = std.Io.Writer.Allocating.init(allocator);
             defer buffer.deinit();
-            const writer = &buffer.writer();
+            try buffer.writer.ensureUnusedCapacity(this.byteLength(scope) + 64);
+            const writer = &buffer.writer;
             try Serializer.write(this, scope, @TypeOf(writer), writer);
             // --- Perf Improvement #1 ----
             // Do not forget to buffer writes!
@@ -1089,7 +1091,7 @@ pub const PackageManifest = struct {
 
             {
                 errdefer file.close();
-                try file.writeAll(buffer.items).unwrap();
+                try file.writeAll(buffer.written()).unwrap();
             }
             if (comptime Environment.isWindows) {
                 var realpath2_buf: bun.PathBuffer = undefined;
@@ -1206,14 +1208,13 @@ pub const PackageManifest = struct {
             const file_id = bun.Wyhash11.hash(0, this.name());
             var dest_path_buf: [512 + 64]u8 = undefined;
             var out_path_buf: [("18446744073709551615".len * 2) + "_".len + ".npm".len + 1]u8 = undefined;
-            var dest_path_stream = std.io.fixedBufferStream(&dest_path_buf);
-            var dest_path_stream_writer = dest_path_stream.writer();
+            var dest_path_stream_writer = std.Io.Writer.fixed(&dest_path_buf);
             const file_id_hex_fmt = bun.fmt.hexIntLower(file_id);
             const hex_timestamp: usize = @intCast(@max(bun.milliTimestamp(), 0));
             const hex_timestamp_fmt = bun.fmt.hexIntLower(hex_timestamp);
             try dest_path_stream_writer.print("{f}.npm-{f}", .{ file_id_hex_fmt, hex_timestamp_fmt });
             try dest_path_stream_writer.writeByte(0);
-            const tmp_path: [:0]u8 = dest_path_buf[0 .. dest_path_stream.pos - 1 :0];
+            const tmp_path: [:0]u8 = dest_path_buf[0 .. dest_path_stream_writer.end - 1 :0];
             const out_path = try manifestFileName(&out_path_buf, file_id, scope);
             try writeFile(this, scope, tmp_path, tmpdir, cache_dir, out_path);
         }
@@ -1258,29 +1259,33 @@ pub const PackageManifest = struct {
             if (!strings.eqlComptime(bytes[0..header_bytes.len], header_bytes)) {
                 return null;
             }
-            var pkg_stream = std.io.fixedBufferStream(bytes);
-            pkg_stream.pos = header_bytes.len;
-
-            var reader = pkg_stream.reader();
+            var pos: usize = header_bytes.len;
             var package_manifest = PackageManifest{};
 
-            const registry_hash = try reader.readInt(u64, .little);
+            if (bytes.len -| pos < @sizeOf(u64)) return error.BufferTooSmall;
+            const registry_hash = std.mem.readInt(u64, bytes[pos..][0..@sizeOf(u64)], .little);
+            pos += @sizeOf(u64);
             if (scope.url_hash != registry_hash) {
                 return null;
             }
 
-            const registry_length = try reader.readInt(u64, .little);
+            if (bytes.len -| pos < @sizeOf(u64)) return error.BufferTooSmall;
+            const registry_length = std.mem.readInt(u64, bytes[pos..][0..@sizeOf(u64)], .little);
+            pos += @sizeOf(u64);
             if (strings.withoutTrailingSlash(scope.url.href).len != registry_length) {
                 return null;
             }
 
             inline for (sizes.fields) |field_name| {
                 if (comptime strings.eqlComptime(field_name, "pkg")) {
-                    pkg_stream.pos = std.mem.alignForward(usize, pkg_stream.pos, @alignOf(Npm.NpmPackage));
-                    package_manifest.pkg = try reader.readStruct(NpmPackage);
+                    pos = std.mem.alignForward(usize, pos, @alignOf(Npm.NpmPackage));
+                    if (bytes.len -| pos < @sizeOf(NpmPackage)) return error.BufferTooSmall;
+                    package_manifest.pkg = @as(*const NpmPackage, @ptrCast(@alignCast(bytes[pos..][0..@sizeOf(NpmPackage)].ptr))).*;
+                    pos += @sizeOf(NpmPackage);
                 } else {
                     @field(package_manifest, field_name) = try readArray(
-                        &pkg_stream,
+                        bytes,
+                        &pos,
                         std.meta.Child(@TypeOf(@field(package_manifest, field_name))),
                     );
                 }

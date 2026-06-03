@@ -39,6 +39,25 @@ pub fn escapeXml(str: string, writer: anytype) !void {
         try writer.writeAll(str[last..]);
     }
 }
+
+fn appendEscapedXml(list: *std.ArrayListUnmanaged(u8), value: string) !void {
+    var writer = std.Io.Writer.Allocating.init(bun.default_allocator);
+    defer writer.deinit();
+    try escapeXml(value, &writer.writer);
+    try list.appendSlice(bun.default_allocator, writer.written());
+}
+
+fn appendPrint(list: *std.ArrayListUnmanaged(u8), comptime fmt: []const u8, args: anytype) !void {
+    var writer = std.Io.Writer.Allocating.init(bun.default_allocator);
+    defer writer.deinit();
+    try writer.writer.print(fmt, args);
+    try list.appendSlice(bun.default_allocator, writer.written());
+}
+
+fn nanoTimestamp() i128 {
+    return @intCast(bun.getRoughTickCount(.force_real_time).ns());
+}
+
 fn fmtStatusTextLine(status: bun_test.Execution.Result, emoji_or_color: bool) []const u8 {
     // emoji and color might be split into two different options in the future
     // some terminals support color, but not emoji.
@@ -96,12 +115,13 @@ pub const JunitReporter = struct {
                 return null;
             };
 
-            var arraylist_writer = std.array_list.Managed(u8).init(bun.default_allocator);
-            escapeXml(hostname, arraylist_writer.writer()) catch {
+            var arraylist_writer = std.Io.Writer.Allocating.init(bun.default_allocator);
+            errdefer arraylist_writer.deinit();
+            escapeXml(hostname, &arraylist_writer.writer) catch {
                 this.hostname_value = "";
                 return null;
             };
-            this.hostname_value = arraylist_writer.items;
+            this.hostname_value = bun.handleOom(arraylist_writer.toOwnedSlice());
         }
 
         if (this.hostname_value) |hostname| {
@@ -228,32 +248,31 @@ pub const JunitReporter = struct {
             return;
         }
 
-        var buffer = std.array_list.Managed(u8).init(bun.default_allocator);
-        var writer = buffer.writer();
+        var writer = std.Io.Writer.Allocating.init(bun.default_allocator);
 
-        try writer.writeAll(
+        try writer.writer.writeAll(
             \\    <properties>
             \\
         );
 
         if (properties.ci.len > 0) {
-            try writer.writeAll(
+            try writer.writer.writeAll(
                 \\      <property name="ci" value="
             );
-            try escapeXml(properties.ci, writer);
-            try writer.writeAll("\" />\n");
+            try escapeXml(properties.ci, &writer.writer);
+            try writer.writer.writeAll("\" />\n");
         }
         if (properties.commit.len > 0) {
-            try writer.writeAll(
+            try writer.writer.writeAll(
                 \\      <property name="commit" value="
             );
-            try escapeXml(properties.commit, writer);
-            try writer.writeAll("\" />\n");
+            try escapeXml(properties.commit, &writer.writer);
+            try writer.writer.writeAll("\" />\n");
         }
 
-        try writer.writeAll("    </properties>\n");
+        try writer.writer.writeAll("    </properties>\n");
 
-        this.properties_list_to_repeat_in_every_test_suite = buffer.items;
+        this.properties_list_to_repeat_in_every_test_suite = bun.handleOom(writer.toOwnedSlice());
     }
 
     fn getIndent(depth: u32) []const u8 {
@@ -282,21 +301,27 @@ pub const JunitReporter = struct {
         const indent = getIndent(this.current_depth);
         try this.contents.appendSlice(bun.default_allocator, indent);
         try this.contents.appendSlice(bun.default_allocator, "<testsuite name=\"");
-        try escapeXml(name, this.contents.writer(bun.default_allocator));
+        var name_writer = std.Io.Writer.Allocating.init(bun.default_allocator);
+        defer name_writer.deinit();
+        try escapeXml(name, &name_writer.writer);
+        try this.contents.appendSlice(bun.default_allocator, name_writer.written());
         try this.contents.appendSlice(bun.default_allocator, "\"");
 
         if (is_file_suite) {
             try this.contents.appendSlice(bun.default_allocator, " file=\"");
-            try escapeXml(name, this.contents.writer(bun.default_allocator));
+            var file_writer = std.Io.Writer.Allocating.init(bun.default_allocator);
+            defer file_writer.deinit();
+            try escapeXml(name, &file_writer.writer);
+            try this.contents.appendSlice(bun.default_allocator, file_writer.written());
             try this.contents.appendSlice(bun.default_allocator, "\"");
         } else if (this.current_file.len > 0) {
             try this.contents.appendSlice(bun.default_allocator, " file=\"");
-            try escapeXml(this.current_file, this.contents.writer(bun.default_allocator));
+            try appendEscapedXml(&this.contents, this.current_file);
             try this.contents.appendSlice(bun.default_allocator, "\"");
         }
 
         if (line_number > 0) {
-            try this.contents.writer(bun.default_allocator).print(" line=\"{d}\"", .{line_number});
+            try appendPrint(&this.contents, " line=\"{d}\"", .{line_number});
         }
 
         try this.contents.appendSlice(bun.default_allocator, " ");
@@ -393,23 +418,23 @@ pub const JunitReporter = struct {
         try this.contents.appendSlice(bun.default_allocator, indent);
         try this.contents.appendSlice(bun.default_allocator, "<testcase");
         try this.contents.appendSlice(bun.default_allocator, " name=\"");
-        try escapeXml(name, this.contents.writer(bun.default_allocator));
+        try appendEscapedXml(&this.contents, name);
         try this.contents.appendSlice(bun.default_allocator, "\" classname=\"");
-        try escapeXml(class_name, this.contents.writer(bun.default_allocator));
+        try appendEscapedXml(&this.contents, class_name);
         try this.contents.appendSlice(bun.default_allocator, "\"");
 
         const elapsed_seconds = elapsed_ms / std.time.ms_per_s;
-        try this.contents.writer(bun.default_allocator).print(" time=\"{f}\"", .{bun.fmt.trimmedPrecision(elapsed_seconds, 6)});
+        try appendPrint(&this.contents, " time=\"{f}\"", .{bun.fmt.trimmedPrecision(elapsed_seconds, 6)});
 
         try this.contents.appendSlice(bun.default_allocator, " file=\"");
-        try escapeXml(file, this.contents.writer(bun.default_allocator));
+        try appendEscapedXml(&this.contents, file);
         try this.contents.appendSlice(bun.default_allocator, "\"");
 
         if (line_number > 0) {
-            try this.contents.writer(bun.default_allocator).print(" line=\"{d}\"", .{line_number});
+            try appendPrint(&this.contents, " line=\"{d}\"", .{line_number});
         }
 
-        try this.contents.writer(bun.default_allocator).print(" assertions=\"{d}\"", .{assertions});
+        try appendPrint(&this.contents, " assertions=\"{d}\"", .{assertions});
 
         switch (status) {
             .pass => {
@@ -437,7 +462,7 @@ pub const JunitReporter = struct {
                 }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
                 try this.contents.appendSlice(bun.default_allocator, indent);
-                try this.contents.writer(bun.default_allocator).print(
+                try appendPrint(&this.contents,
                     \\  <failure message="test marked with .failing() did not throw" type="AssertionError"/>
                     \\
                 , .{});
@@ -450,7 +475,7 @@ pub const JunitReporter = struct {
                 }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
                 try this.contents.appendSlice(bun.default_allocator, indent);
-                try this.contents.writer(bun.default_allocator).print(
+                try appendPrint(&this.contents,
                     \\  <failure message="Expected more assertions, but only received {d}" type="AssertionError"/>
                     \\
                 , .{assertions});
@@ -463,7 +488,7 @@ pub const JunitReporter = struct {
                 }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
                 try this.contents.appendSlice(bun.default_allocator, indent);
-                try this.contents.writer(bun.default_allocator).print(
+                try appendPrint(&this.contents,
                     \\  <failure message="TODO passed" type="AssertionError"/>
                     \\
                 , .{});
@@ -476,7 +501,7 @@ pub const JunitReporter = struct {
                 }
                 try this.contents.appendSlice(bun.default_allocator, ">\n");
                 try this.contents.appendSlice(bun.default_allocator, indent);
-                try this.contents.writer(bun.default_allocator).print(
+                try appendPrint(&this.contents,
                     \\  <failure message="Expected to have assertions, but none were run" type="AssertionError"/>
                     \\
                 , .{});
@@ -530,7 +555,7 @@ pub const JunitReporter = struct {
             var stack_fallback_allocator = bun.stackFallback(4096, arena.allocator());
             const allocator = stack_fallback_allocator.get();
             const metrics = this.total_metrics;
-            const elapsed_time = @as(f64, @floatFromInt(std.time.nanoTimestamp() - bun.start_time)) / std.time.ns_per_s;
+            const elapsed_time = @as(f64, @floatFromInt(nanoTimestamp() - bun.start_time)) / std.time.ns_per_s;
             const summary = try std.fmt.allocPrint(allocator,
                 \\tests="{d}" assertions="{d}" failures="{d}" skipped="{d}" time="{d}"
             , .{
@@ -855,7 +880,10 @@ pub const CommandLineReporter = struct {
                                     bun.handleOom(concatenated_describe_scopes.appendSlice(" &gt; "));
                                 }
 
-                                bun.handleOom(escapeXml(name, concatenated_describe_scopes.writer()));
+                                var scope_writer = std.Io.Writer.Allocating.init(allocator);
+                                defer scope_writer.deinit();
+                                bun.handleOom(escapeXml(name, &scope_writer.writer));
+                                bun.handleOom(concatenated_describe_scopes.appendSlice(scope_writer.written()));
                             };
                         }
                     }
@@ -874,12 +902,9 @@ pub const CommandLineReporter = struct {
     }
 
     pub fn handleTestCompleted(buntest: *bun_test.BunTest, sequence: *bun_test.Execution.ExecutionSequence, test_entry: *bun_test.ExecutionEntry, elapsed_ns: u64) void {
-        var output_buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer output_buf.deinit(buntest.gpa);
-
-        const initial_length = output_buf.items.len;
-        const base_writer = output_buf.writer(buntest.gpa);
-        var writer = base_writer;
+        var output_buf = std.Io.Writer.Allocating.init(buntest.gpa);
+        defer output_buf.deinit();
+        const writer = &output_buf.writer;
 
         switch (sequence.result) {
             inline else => |result| {
@@ -903,14 +928,14 @@ pub const CommandLineReporter = struct {
                     } else {
                         buntest.bun_test_root.onBeforePrint();
 
-                        writeTestStatusLine(result, &writer);
+                        writeTestStatusLine(result, writer);
                         const dim = switch (comptime result.basicResult()) {
                             .todo => if (bun.jsc.Jest.Jest.runner) |runner| !runner.run_todo else true,
                             .skip, .pending => true,
                             .pass, .fail => false,
                         };
                         switch (dim) {
-                            inline else => |dim_comptime| printTestLine(result, sequence, test_entry, elapsed_ns, &writer, dim_comptime),
+                            inline else => |dim_comptime| printTestLine(result, sequence, test_entry, elapsed_ns, writer, dim_comptime),
                         }
                     }
                 }
@@ -919,7 +944,7 @@ pub const CommandLineReporter = struct {
             },
         }
 
-        const formatted_line = output_buf.items[initial_length..];
+        const formatted_line = output_buf.written();
         if (buntest.reporter != null and buntest.reporter.?.worker_ipc_file_idx != null) {
             ParallelRunner.workerEmitTestDone(buntest.reporter.?.worker_ipc_file_idx.?, formatted_line);
         } else {
@@ -929,9 +954,9 @@ pub const CommandLineReporter = struct {
         var this: *CommandLineReporter = buntest.reporter orelse return; // command line reporter is missing! uh oh!
 
         if (!this.reporters.dots and !this.reporters.only_failures) switch (sequence.result.basicResult()) {
-            .skip => bun.handleOom(this.skips_to_repeat_buf.appendSlice(bun.default_allocator, output_buf.items[initial_length..])),
-            .todo => bun.handleOom(this.todos_to_repeat_buf.appendSlice(bun.default_allocator, output_buf.items[initial_length..])),
-            .fail => bun.handleOom(this.failures_to_repeat_buf.appendSlice(bun.default_allocator, output_buf.items[initial_length..])),
+            .skip => bun.handleOom(this.skips_to_repeat_buf.appendSlice(bun.default_allocator, formatted_line)),
+            .todo => bun.handleOom(this.todos_to_repeat_buf.appendSlice(bun.default_allocator, formatted_line)),
+            .fail => bun.handleOom(this.failures_to_repeat_buf.appendSlice(bun.default_allocator, formatted_line)),
             .pass, .pending => {},
         };
 
@@ -978,7 +1003,7 @@ pub const CommandLineReporter = struct {
             if (files == 1) "" else "s",
         });
 
-        Output.printStartEnd(bun.start_time, std.time.nanoTimestamp());
+        Output.printStartEnd(bun.start_time, nanoTimestamp());
     }
 
     /// Writes the JUnit reporter output file if a JUnit reporter is active and
@@ -1851,7 +1876,7 @@ pub const TestCommand = struct {
                 }
                 if (search_count > 0) {
                     Output.prettyError("\n{d} files were searched ", .{search_count});
-                    Output.printStartEnd(ctx.start_time, std.time.nanoTimestamp());
+                    Output.printStartEnd(ctx.start_time, nanoTimestamp());
                 }
 
                 Output.prettyErrorln(
@@ -1992,7 +2017,7 @@ pub const TestCommand = struct {
                     summary.skipped_because_label,
                     if (summary.skipped_because_label == 1) "" else "s",
                 });
-                Output.printStartEnd(ctx.start_time, std.time.nanoTimestamp());
+                Output.printStartEnd(ctx.start_time, nanoTimestamp());
             }
         }
 

@@ -116,7 +116,7 @@ pub const PackageInstall = struct {
 
         var destination_dir = this.node_modules.openDir(root_node_modules_dir) catch return false;
         defer {
-            if (std.fs.cwd().fd != destination_dir.fd) destination_dir.close();
+            if (std.fs.cwd().fd != destination_dir.fd) destination_dir.close(std.Options.debug_io);
         }
 
         if (comptime bun.Environment.isPosix) {
@@ -490,10 +490,10 @@ pub const PackageInstall = struct {
 
         pub fn deinit(this: *@This()) void {
             if (!Environment.isWindows) {
-                this.subdir.close();
+                this.subdir.close(std.Options.debug_io);
             }
             defer this.walker.deinit();
-            defer this.cached_package_dir.close();
+            defer this.cached_package_dir.close(std.Options.debug_io);
         }
     };
 
@@ -527,11 +527,11 @@ pub const PackageInstall = struct {
         state.walker.resolve_unknown_entry_types = true;
 
         if (!Environment.isWindows) {
-            state.subdir = destbase.makeOpenPath(bun.span(destpath), .{
+            state.subdir = bun.MakePath.makeOpenPath(destbase, bun.span(destpath), .{
                 .iterate = true,
                 .access_sub_paths = true,
             }) catch |err| {
-                state.cached_package_dir.close();
+                state.cached_package_dir.close(std.Options.debug_io);
                 state.walker.deinit();
                 return Result.fail(err, .opening_dest_dir, @errorReturnTrace());
             };
@@ -545,7 +545,7 @@ pub const PackageInstall = struct {
                 (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
             else
                 error.NameTooLong;
-            state.cached_package_dir.close();
+            state.cached_package_dir.close(std.Options.debug_io);
             state.walker.deinit();
             return Result.fail(err, .opening_dest_dir, null);
         }
@@ -572,7 +572,7 @@ pub const PackageInstall = struct {
                 (if (e.toSystemErrno()) |sys_err| bun.errnoToZigErr(sys_err) else error.Unexpected)
             else
                 error.NameTooLong;
-            state.cached_package_dir.close();
+            state.cached_package_dir.close(std.Options.debug_io);
             state.walker.deinit();
             return Result.fail(err, .copying_files, null);
         }
@@ -662,17 +662,15 @@ pub const PackageInstall = struct {
                     } else {
                         if (entry.kind != .file) continue;
                         real_file_count += 1;
-                        const createFile = std.Io.Dir.createFile;
-
                         var in_file = try entry.dir.openat(entry.basename, bun.O.RDONLY, 0).unwrap();
                         defer in_file.close();
 
-                        debug("createFile {} {s}\n", .{ destination_dir_.fd, entry.path });
-                        var outfile = createFile(destination_dir_, entry.path, .{}) catch brk: {
+                        debug("createFile {} {s}\n", .{ destination_dir_.handle, entry.path });
+                        var outfile = destination_dir_.createFile(std.Options.debug_io, entry.path, .{}) catch brk: {
                             if (bun.Dirname.dirname(bun.OSPathChar, entry.path)) |entry_dirname| {
                                 bun.MakePath.makePath(bun.OSPathChar, destination_dir_, entry_dirname) catch {};
                             }
-                            break :brk createFile(destination_dir_, entry.path, .{}) catch |err| {
+                            break :brk destination_dir_.createFile(std.Options.debug_io, entry.path, .{}) catch |err| {
                                 if (progress_) |progress| {
                                     progress.root.end();
                                     progress.refresh();
@@ -682,7 +680,7 @@ pub const PackageInstall = struct {
                                 Global.crash();
                             };
                         };
-                        defer outfile.close();
+                        defer outfile.close(std.Options.debug_io);
 
                         if (comptime Environment.isPosix) {
                             const stat = in_file.stat().unwrap() catch continue;
@@ -709,10 +707,10 @@ pub const PackageInstall = struct {
             state.subdir,
             &state.walker,
             this.progress,
-            if (Environment.isWindows) state.to_copy_buf else void{},
-            if (Environment.isWindows) &state.buf else void{},
-            if (Environment.isWindows) state.to_copy_buf2 else void{},
-            if (Environment.isWindows) &state.buf2 else void{},
+            if (Environment.isWindows) state.to_copy_buf else {},
+            if (Environment.isWindows) &state.buf else {},
+            if (Environment.isWindows) state.to_copy_buf2 else {},
+            if (Environment.isWindows) &state.buf2 else {},
         ) catch |err| return Result.fail(err, .copying_files, @errorReturnTrace());
 
         return .success;
@@ -889,13 +887,13 @@ pub const PackageInstall = struct {
                                 bun.MakePath.makePath(std.meta.Elem(@TypeOf(entry.path)), destination_dir, entry.path) catch {};
                             },
                             .file => {
-                                std.posix.linkatZ(entry.dir.cast(), entry.basename, destination_dir.fd, entry.path, 0) catch |err| {
+                                bun.sys.linkatZ(entry.dir, entry.basename, .fromStdDir(destination_dir), entry.path).unwrap() catch |err| {
                                     if (err != error.PathAlreadyExists) {
                                         return err;
                                     }
 
-                                    std.posix.unlinkatZ(destination_dir.fd, entry.path, 0) catch {};
-                                    try std.posix.linkatZ(entry.dir.cast(), entry.basename, destination_dir.fd, entry.path, 0);
+                                    bun.sys.unlinkat(.fromStdDir(destination_dir), entry.path).unwrap() catch {};
+                                    try bun.sys.linkatZ(entry.dir, entry.basename, .fromStdDir(destination_dir), entry.path).unwrap();
                                 };
 
                                 real_file_count += 1;
@@ -944,9 +942,9 @@ pub const PackageInstall = struct {
             state.subdir,
             &state.walker,
             state.to_copy_buf,
-            if (Environment.isWindows) &state.buf else void{},
+            if (Environment.isWindows) &state.buf else {},
             state.to_copy_buf2,
-            if (Environment.isWindows) &state.buf2 else void{},
+            if (Environment.isWindows) &state.buf2 else {},
         ) catch |err| {
             bun.handleErrorReturnTrace(err, @errorReturnTrace());
 
@@ -1003,13 +1001,13 @@ pub const PackageInstall = struct {
                                 head2[entry.path.len + (head2.len - to_copy_into2.len)] = 0;
                                 const target: [:0]u8 = head2[0 .. entry.path.len + head2.len - to_copy_into2.len :0];
 
-                                std.posix.symlinkat(target, destination_dir.fd, entry.path) catch |err| {
+                                bun.sys.symlinkat(target, .fromStdDir(destination_dir), entry.path).unwrap() catch |err| {
                                     if (err != error.PathAlreadyExists) {
                                         return err;
                                     }
 
-                                    std.posix.unlinkat(destination_dir.fd, entry.path, 0) catch {};
-                                    try std.posix.symlinkat(entry.basename, destination_dir.fd, entry.path);
+                                    bun.sys.unlinkat(.fromStdDir(destination_dir), entry.path).unwrap() catch {};
+                                    try bun.sys.symlinkat(target, .fromStdDir(destination_dir), entry.path).unwrap();
                                 };
 
                                 real_file_count += 1;
@@ -1086,8 +1084,8 @@ pub const PackageInstall = struct {
         this.file_count = FileCopier.copy(
             state.subdir,
             &state.walker,
-            if (Environment.isWindows) state.to_copy_buf else void{},
-            if (Environment.isWindows) &state.buf else void{},
+            if (Environment.isWindows) state.to_copy_buf else {},
+            if (Environment.isWindows) &state.buf else {},
             if (Environment.isWindows) state.to_copy_buf2 else to_copy_buf2,
             if (Environment.isWindows) &state.buf2 else &buf2,
         ) catch |err| {

@@ -640,19 +640,22 @@ pub const Archive = opaque {
     }
     extern fn archive_read_data_into_fd(*Archive, fd: c_int) Result;
 
-    // Phase 12 stubs: `writeZerosToFile` and `readDataIntoFd` reach into
-    // `bun.sys.File.{pwriteAll, writeAll}` + `bun.sys.setFileOffset` +
-    // `bun.sys.ftruncate`, none of which are ported yet. The sparse-file
-    // extraction path is needed for `tar --sparse` tarballs; until
-    // `home_rt.sys.File` lands callers should fall back to
-    // `archive_read_data_into_fd` (the libarchive built-in, no sparse) via
-    // a direct extern call.
-    pub fn writeZerosToFile(_: anytype, _: usize) Result {
-        @compileError("writeZerosToFile: requires home_rt.sys.File.writeAll (Phase 12.3); call archive_read_data_into_fd directly for now");
+    pub fn writeZerosToFile(fd: anytype, size: usize) Result {
+        var zeros: [8192]u8 = @splat(0);
+        var remaining = size;
+        const handle = if (@TypeOf(fd) == home_rt.sys.File) fd.handle else if (@TypeOf(fd) == home_rt.FD) fd else home_rt.FD.fromNative(fd);
+        const file = home_rt.sys.File{ .handle = handle };
+        while (remaining > 0) {
+            const chunk = zeros[0..@min(remaining, zeros.len)];
+            file.writeAll(chunk).unwrap() catch return .fatal;
+            remaining -= chunk.len;
+        }
+        return .ok;
     }
 
-    pub fn readDataIntoFd(_: *Archive, _: FD, _: *bool, _: *bool) Result {
-        @compileError("readDataIntoFd: requires home_rt.sys.File + setFileOffset + ftruncate (Phase 12.3); call archive_read_data_into_fd directly for now");
+    pub fn readDataIntoFd(archive: *Archive, fd: anytype, _: *bool, _: *bool) Result {
+        const native_fd = if (@TypeOf(fd) == home_rt.FD) fd.cast() else fd;
+        return archive_read_data_into_fd(archive, native_fd);
     }
 
     extern fn archive_read_support_filter_all(*Archive) Result;

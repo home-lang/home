@@ -5830,14 +5830,14 @@ pub const NodeFS = struct {
 
         const dest = args.path.sliceZ(&this.sync_error_buf);
 
-        std.posix.unlinkZ(dest) catch |err1| {
+        bun.sys.unlinkat(.cwd(), dest).unwrap() catch |err1| {
             bun.handleErrorReturnTrace(err1, @errorReturnTrace());
             // empircally, it seems to return AccessDenied when the
             // file is actually a directory on macOS.
             if (args.recursive and
                 (err1 == error.IsDir or err1 == error.NotDir or err1 == error.AccessDenied))
             {
-                std.posix.rmdirZ(dest) catch |err2| {
+                bun.sys.rmdir(dest).unwrap() catch |err2| {
                     bun.handleErrorReturnTrace(err2, @errorReturnTrace());
                     const code: E = switch (err2) {
                         error.AccessDenied => .ACCES,
@@ -7017,6 +7017,7 @@ pub fn zigDeleteTree(self: std.Io.Dir, sub_path: []const u8, kind_hint: std.Io.F
                         error.BadPathName,
                         error.NetworkNotFound,
                         error.Unexpected,
+                        error.Canceled,
                         => |e| return e,
                     }
                 }
@@ -7072,6 +7073,7 @@ pub fn zigDeleteTree(self: std.Io.Dir, sub_path: []const u8, kind_hint: std.Io.F
                             error.Unexpected,
                             error.BadPathName,
                             error.NetworkNotFound,
+                            error.Canceled,
                             => |e| return e,
                         };
                     } else {
@@ -7096,6 +7098,7 @@ pub fn zigDeleteTree(self: std.Io.Dir, sub_path: []const u8, kind_hint: std.Io.F
                             error.BadPathName,
                             error.NetworkNotFound,
                             error.Unexpected,
+                            error.Canceled,
                             => |e| return e,
                         }
                     }
@@ -7219,6 +7222,7 @@ fn zigDeleteTreeMinStackSizeWithKindHint(self: std.Io.Dir, io: std.Io, sub_path:
                             error.Unexpected,
                             error.BadPathName,
                             error.NetworkNotFound,
+                            error.Canceled,
                             => |e| return e,
                         };
                         if (cleanup_dir_parent) |*d| d.close(io);
@@ -7251,6 +7255,7 @@ fn zigDeleteTreeMinStackSizeWithKindHint(self: std.Io.Dir, io: std.Io, sub_path:
                             error.BadPathName,
                             error.NetworkNotFound,
                             error.Unexpected,
+                            error.Canceled,
                             => |e| return e,
                         }
                     }

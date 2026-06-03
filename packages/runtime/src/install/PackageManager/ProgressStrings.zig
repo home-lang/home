@@ -60,6 +60,14 @@ pub const ProgressStrings = struct {
     }
 };
 
+pub fn startProgressBar(_: anytype) void {}
+
+pub fn startProgressBarIfNone(_: anytype) void {}
+
+pub fn endProgressBar(_: anytype) void {}
+
+pub fn setNodeName(_: anytype, _: anytype, _: anytype, _: anytype, _: bool) void {}
+
 test "ProgressStrings returns plain Bun labels" {
     const std = @import("std");
     try std.testing.expectEqualStrings("Resolving\n", ProgressStrings.download(.plain));

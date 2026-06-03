@@ -502,7 +502,7 @@ pub const Repository = extern struct {
             bun.fmt.hexIntLower(task_id.get()),
         });
 
-        return if (cache_dir.openDirZ(folder_name, .{})) |dir| fetch: {
+        return if (cache_dir.openDir(std.Options.debug_io, folder_name, .{})) |dir| fetch: {
             const path = Path.joinAbsString(PackageManager.get().cache_directory_path, &.{folder_name}, .auto);
 
             _ = exec(
@@ -547,7 +547,7 @@ pub const Repository = extern struct {
                 return err;
             };
 
-            break :clone try cache_dir.openDirZ(folder_name, .{});
+            break :clone try cache_dir.openDir(std.Options.debug_io, folder_name, .{});
         };
     }
 
@@ -637,19 +637,19 @@ pub const Repository = extern struct {
                 return err;
             };
             var dir = try bun.openDir(cache_dir, folder_name);
-            dir.deleteTree(".git") catch {};
+            dir.deleteTree(std.Options.debug_io, ".git") catch {};
 
             if (resolved.len > 0) insert_tag: {
-                const git_tag = dir.createFileZ(".bun-tag", .{ .truncate = true }) catch break :insert_tag;
-                defer git_tag.close();
-                git_tag.writeAll(resolved) catch {
-                    dir.deleteFileZ(".bun-tag") catch {};
+                const git_tag = dir.createFile(std.Options.debug_io, ".bun-tag", .{ .truncate = true }) catch break :insert_tag;
+                defer git_tag.close(std.Options.debug_io);
+                bun.sys.File.from(git_tag).writeAll(resolved).unwrap() catch {
+                    dir.deleteFile(std.Options.debug_io, ".bun-tag") catch {};
                 };
             }
 
             break :brk dir;
         };
-        defer package_dir.close();
+        defer package_dir.close(std.Options.debug_io);
 
         const json_file, const json_buf = bun.sys.File.readFileFrom(package_dir, "package.json", allocator).unwrap() catch |err| {
             if (err == error.ENOENT) {

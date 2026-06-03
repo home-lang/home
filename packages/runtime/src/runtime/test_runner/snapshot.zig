@@ -262,7 +262,7 @@ pub const Snapshots = struct {
                 .id = file_id,
                 .file = fd.stdFile(),
             };
-            errdefer file.file.close();
+            errdefer file.file.close(std.Options.debug_io);
 
             const file_text = try file.file.readToEndAlloc(arena, std.math.maxInt(usize));
 
@@ -535,17 +535,18 @@ pub const Snapshots = struct {
                 .id = file_id,
                 .file = fd.stdFile(),
             };
-            errdefer file.file.close();
+            errdefer file.file.close(std.Options.debug_io);
 
             if (this.update_snapshots) {
                 try this.file_buf.appendSlice(file_header);
             } else {
-                const length = try file.file.getEndPos();
+                const sys_file = bun.sys.File.from(file.file);
+                const length = try sys_file.getEndPos().unwrap();
                 if (length == 0) {
                     try this.file_buf.appendSlice(file_header);
                 } else {
                     const buf = try this.allocator.alloc(u8, length);
-                    _ = try file.file.preadAll(buf, 0);
+                    _ = try sys_file.preadAll(buf, 0).unwrap();
                     if (comptime bun.Environment.isWindows) {
                         try file.file.seekTo(0);
                     }

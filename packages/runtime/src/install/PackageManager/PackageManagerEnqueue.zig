@@ -831,7 +831,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
                         var manifest_entry_parse = try this.task_queue.getOrPutContext(this.allocator, task_id, .{});
                         if (!manifest_entry_parse.found_existing) {
-                            manifest_entry_parse.value_ptr.* = TaskCallbackList{};
+                            manifest_entry_parse.value_ptr.* = .empty;
                         }
 
                         const callback_tag = comptime if (successFn == assignRootResolution) "root_dependency" else "dependency";
@@ -891,7 +891,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                 const checkout_id = Task.Id.forGitCheckout(url, resolved);
 
                 var entry = this.task_queue.getOrPutContext(this.allocator, checkout_id, .{}) catch unreachable;
-                if (!entry.found_existing) entry.value_ptr.* = .{};
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
                 if (this.lockfile.buffers.resolutions.items[id] == invalid_package_id) {
                     try entry.value_ptr.append(this.allocator, ctx);
                 }
@@ -916,7 +916,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                 )));
             } else {
                 var entry = this.task_queue.getOrPutContext(this.allocator, clone_id, .{}) catch unreachable;
-                if (!entry.found_existing) entry.value_ptr.* = .{};
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
                 try entry.value_ptr.append(this.allocator, ctx);
 
                 if (dependency.behavior.isPeer()) {
@@ -951,7 +951,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
             const task_id = Task.Id.forTarball(url);
             var entry = this.task_queue.getOrPutContext(this.allocator, task_id, .{}) catch unreachable;
             if (!entry.found_existing) {
-                entry.value_ptr.* = TaskCallbackList{};
+                entry.value_ptr.* = .empty;
             }
 
             if (comptime Environment.allow_assert)
@@ -1139,7 +1139,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
             const task_id = Task.Id.forTarball(url);
             var entry = this.task_queue.getOrPutContext(this.allocator, task_id, .{}) catch unreachable;
             if (!entry.found_existing) {
-                entry.value_ptr.* = TaskCallbackList{};
+                entry.value_ptr.* = .empty;
             }
 
             if (comptime Environment.allow_assert)

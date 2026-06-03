@@ -29,6 +29,10 @@ pub const lastIndexOfSep = @import("paths/resolve_path.zig").lastIndexOfSep;
 pub const lastIndexOfSepT = @import("paths/resolve_path.zig").lastIndexOfSepT;
 pub const normalizeBufT = @import("paths/resolve_path.zig").normalizeBufT;
 pub const PosixToWinNormalizer = @import("paths/resolve_path.zig").PosixToWinNormalizer;
+pub const relative = @import("paths/resolve_path.zig").relative;
+pub const relativePlatform = @import("paths/resolve_path.zig").relativePlatform;
+pub const relativePlatformBuf = @import("paths/resolve_path.zig").relativePlatformBuf;
+pub const relativeBufZ = @import("paths/resolve_path.zig").relativeBufZ;
 pub const z = @import("paths/resolve_path.zig").z;
 
 pub fn dirname(path: []const u8, style: anytype) []const u8 {

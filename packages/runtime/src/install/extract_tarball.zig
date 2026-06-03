@@ -192,7 +192,7 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
             return error.InstallFailed;
         };
 
-        defer extract_destination.close();
+        defer extract_destination.close(std.Options.debug_io);
 
         const Archiver = bun.libarchive.Archiver;
         const Zlib = @import("../zlib/zlib.zig");
@@ -255,7 +255,7 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
         if (PackageManager.verbose_install) {
             const decompressing_ended_at: u64 = bun.getRoughTickCount(.allow_mocked_time).ns();
             const elapsed = decompressing_ended_at - time_started_for_verbose_logs;
-            Output.prettyErrorln("[{s}] Extract {s}<r> (decompressed {f} tgz file in {D})", .{ name, tmpname, bun.fmt.size(tgz_bytes.len, .{}), elapsed });
+            Output.prettyErrorln("[{s}] Extract {s}<r> (decompressed {f} tgz file in {d})", .{ name, tmpname, bun.fmt.size(tgz_bytes.len, .{}), elapsed });
         }
 
         switch (this.resolution.tag) {
@@ -290,10 +290,10 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
                 // installed from GitHub. package.json version becomes sort of
                 // meaningless in cases like this.
                 if (resolved.len > 0) insert_tag: {
-                    const gh_tag = extract_destination.createFileZ(".bun-tag", .{ .truncate = true }) catch break :insert_tag;
-                    defer gh_tag.close();
-                    gh_tag.writeAll(resolved) catch {
-                        extract_destination.deleteFileZ(".bun-tag") catch {};
+                    const gh_tag = extract_destination.createFile(std.Options.debug_io, ".bun-tag", .{ .truncate = true }) catch break :insert_tag;
+                    defer gh_tag.close(std.Options.debug_io);
+                    bun.sys.File.from(gh_tag).writeAll(resolved).unwrap() catch {
+                        extract_destination.deleteFile(std.Options.debug_io, ".bun-tag") catch {};
                     };
                 }
             },
@@ -317,7 +317,7 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
 
         if (PackageManager.verbose_install) {
             const elapsed = bun.getRoughTickCount(.allow_mocked_time).ns() - time_started_for_verbose_logs;
-            Output.prettyErrorln("[{s}] Extracted to {s} ({D})<r>", .{ name, tmpname, elapsed });
+            Output.prettyErrorln("[{s}] Extracted to {s} ({d})<r>", .{ name, tmpname, elapsed });
             Output.flush();
         }
     }
@@ -480,7 +480,7 @@ pub fn moveToCacheDirectory(
         ) catch unreachable;
         return error.InstallFailed;
     };
-    defer final_dir.close();
+    defer final_dir.close(std.Options.debug_io);
     // and get the fd path
     const final_path = bun.getFdPathZ(
         .fromStdDir(final_dir),

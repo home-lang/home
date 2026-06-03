@@ -81,6 +81,37 @@ pub fn hexIntLower(value: anytype) HexIntFormatter {
     return .{ .value = @intCast(value), .upper = false };
 }
 
+/// Equivalent to `{d:.<precision>}` but trims trailing zeros from the
+/// fractional part. Faithful to upstream `bun_core/fmt.zig:1560`.
+fn TrimmedPrecisionFormatter(comptime precision: usize) type {
+    return struct {
+        num: f64,
+        precision: usize,
+
+        pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+            const whole = @trunc(self.num);
+            try writer.print("{d}", .{whole});
+            const rem = self.num - whole;
+            if (rem != 0) {
+                var buf: [2 + precision]u8 = undefined;
+                var formatted = std.fmt.bufPrint(&buf, "{d:." ++ std.fmt.comptimePrint("{d}", .{precision}) ++ "}", .{rem}) catch unreachable;
+                formatted = formatted[2..];
+                var trimmed_len = formatted.len;
+                while (trimmed_len > 0 and formatted[trimmed_len - 1] == '0') {
+                    trimmed_len -= 1;
+                }
+                const trimmed = formatted[0..trimmed_len];
+                try writer.print(".{s}", .{trimmed});
+            }
+        }
+    };
+}
+
+pub fn trimmedPrecision(value: f64, comptime precision: usize) TrimmedPrecisionFormatter(precision) {
+    const Formatter = TrimmedPrecisionFormatter(precision);
+    return Formatter{ .num = value, .precision = precision };
+}
+
 pub fn hexIntUpper(value: anytype) HexIntFormatter {
     return .{ .value = @intCast(value), .upper = true };
 }

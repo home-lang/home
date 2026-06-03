@@ -43,6 +43,13 @@ pub const BUN_INSTALL = StringEnv("BUN_INSTALL");
 pub const TMPDIR = StringEnv("TMPDIR");
 pub const TMP = StringEnv("TMP");
 pub const TEMP = StringEnv("TEMP");
+pub const GITHUB_RUN_ID = StringEnv("GITHUB_RUN_ID");
+pub const GITHUB_SERVER_URL = StringEnv("GITHUB_SERVER_URL");
+pub const GITHUB_REPOSITORY = StringEnv("GITHUB_REPOSITORY");
+pub const GITHUB_SHA = StringEnv("GITHUB_SHA");
+pub const CI_JOB_URL = StringEnv("CI_JOB_URL");
+pub const CI_COMMIT_SHA = StringEnv("CI_COMMIT_SHA");
+pub const GIT_SHA = StringEnv("GIT_SHA");
 
 pub const BUN_INSTALL_STREAMING_MIN_SIZE = struct {
     pub fn get() usize {

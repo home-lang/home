@@ -13,8 +13,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub const upstream_sha = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
+pub var start_time: i128 = 0;
 pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
+pub const HOST_NAME_MAX = if (builtin.os.tag == .windows) 256 else std.posix.HOST_NAME_MAX;
 
 // Faithful Bun-source import surface for the Node URL/querystring/assert/util
 // and Web text-encoding parity slice. This namespace points at copied Bun Zig
@@ -29,6 +31,7 @@ pub const bun_cli_spawn_process_fs_file = @import("bun/cli_spawn_process_fs_file
 pub const strings = @import("strings.zig");
 pub const copyFile = @import("sys/copy_file.zig").copyFile;
 pub const copyFileWithState = @import("sys/copy_file.zig").copyFileWithState;
+pub const CopyFileState = @import("sys/copy_file.zig").CopyFileState;
 pub const Output = @import("output.zig");
 // Bun's `bun.Progress` is a snapshot of the pre-0.13 `std.Progress` API used
 // by `bun install`'s progress bar. The install / PackageManager cone consumes
@@ -518,6 +521,44 @@ pub fn StackFallbackAllocator(comptime size: usize) type {
 pub fn stackFallback(comptime size: usize, fallback: std.mem.Allocator) StackFallbackAllocator(size) {
     return .{ .fallback_allocator = fallback };
 }
+
+pub const Dirname = struct {
+    pub fn dirname(comptime T: type, path_: []const T) ?[]const T {
+        if (comptime builtin.target.os.tag == .windows) {
+            return dirnameWindows(T, path_);
+        }
+        return std.fs.path.dirnamePosix(path_);
+    }
+
+    fn dirnameWindows(comptime T: type, path_: []const T) ?[]const T {
+        if (path_.len == 0) return null;
+
+        const root_slice = diskDesignatorWindows(T, path_);
+        if (path_.len == root_slice.len) return null;
+
+        const have_root_slash = path_.len > root_slice.len and (path_[root_slice.len] == '/' or path_[root_slice.len] == '\\');
+        var end_index: usize = path_.len - 1;
+
+        while (path_[end_index] == '/' or path_[end_index] == '\\') {
+            if (end_index == 0) return null;
+            end_index -= 1;
+        }
+
+        while (path_[end_index] != '/' and path_[end_index] != '\\') {
+            if (end_index == 0) return null;
+            end_index -= 1;
+        }
+
+        if (have_root_slash and end_index == root_slice.len) end_index += 1;
+        if (end_index == 0) return null;
+        return path_[0..end_index];
+    }
+
+    fn diskDesignatorWindows(comptime T: type, path_: []const T) []const T {
+        if (path_.len >= 2 and path_[1] == ':') return path_[0..2];
+        return &[_]T{};
+    }
+};
 
 pub noinline fn outOfMemory() noreturn {
     @branchHint(.cold);
@@ -2488,6 +2529,7 @@ pub const meta = struct {
     pub const typeBaseNameT = @import("meta/meta.zig").typeBaseNameT;
     pub const enumFieldNames = @import("meta/meta.zig").enumFieldNames;
     pub const Item = @import("meta/meta.zig").Item;
+    pub const Tagged = @import("meta/meta.zig").Tagged;
     // `std.meta.intToEnum` was removed in Zig 0.17; faithful drop-in replacement.
     pub fn intToEnum(comptime Enum: type, tag_int: anytype) error{InvalidEnumTag}!Enum {
         inline for (@typeInfo(Enum).@"enum".fields) |f| {
@@ -2935,6 +2977,10 @@ pub fn getcwdAlloc(allocator: std.mem.Allocator) ![:0]u8 {
 }
 
 /// Monotonic milliseconds. Values are only meaningful relative to other calls.
+pub fn getRoughTickCount(comptime mock_mode: timespec.MockMode) timespec {
+    return timespec.now(mock_mode);
+}
+
 pub fn getRoughTickCountMs(comptime mock_mode: timespec.MockMode) u64 {
     _ = mock_mode;
     var ts: std.c.timespec = undefined;
@@ -3875,6 +3921,7 @@ pub const sys = struct {
     pub const getcwd = @import("sys/sys.zig").getcwd;
     pub const getcwdZ = @import("sys/sys.zig").getcwdZ;
     pub const unlink = @import("sys/sys.zig").unlink;
+    pub const rmdir = @import("sys/sys.zig").rmdir;
     pub const munmap = @import("sys/sys.zig").munmap;
     pub const chmod = @import("sys/sys.zig").chmod;
     pub const chown = @import("sys/sys.zig").chown;
@@ -3883,6 +3930,7 @@ pub const sys = struct {
     pub const lstatat = @import("sys/sys.zig").lstatat;
     pub const fchmodat = @import("sys/sys.zig").fchmodat;
     pub const fstatat = @import("sys/sys.zig").fstatat;
+    pub const linkatZ = @import("sys/sys.zig").linkatZ;
     pub const lutimes = @import("sys/sys.zig").lutimes;
     pub const mkdir = @import("sys/sys.zig").mkdir;
     pub const mkdiratZ = @import("sys/sys.zig").mkdiratZ;
@@ -3902,6 +3950,7 @@ pub const sys = struct {
     pub const readlink = @import("sys/sys.zig").readlink;
     pub const rename = @import("sys/sys.zig").rename;
     pub const renameat = @import("sys/sys.zig").renameat;
+    pub const renameat2 = @import("sys/sys.zig").renameat2;
     pub const renameatConcurrently = @import("sys/sys.zig").renameatConcurrently;
     pub const S = @import("sys/sys.zig").S;
     pub const isPollable = @import("sys/sys.zig").isPollable;
@@ -4161,6 +4210,24 @@ pub const sys = struct {
             return Sys.readAll(this.handle, buf);
         }
 
+        pub fn preadAll(this: File, buf: []u8, initial_offset: i64) Maybe(usize) {
+            var remain = buf;
+            var offset = initial_offset;
+            var total: usize = 0;
+            while (remain.len > 0) {
+                switch (Sys.pread(this.handle, remain, offset)) {
+                    .err => |err| return .{ .err = err },
+                    .result => |count| {
+                        if (count == 0) break;
+                        total += count;
+                        remain = remain[count..];
+                        offset += @intCast(count);
+                    },
+                }
+            }
+            return .{ .result = total };
+        }
+
         pub fn pwriteAll(this: File, bytes: []const u8, offset: i64) Maybe(void) {
             var written: usize = 0;
             while (written < bytes.len) {
@@ -4232,6 +4299,10 @@ pub const sys = struct {
 
         pub fn getEndPos(this: File) Maybe(usize) {
             return Sys.getFileSize(this.handle);
+        }
+
+        pub fn getPath(this: File, out_buffer: *PathBuffer) Maybe([]u8) {
+            return @import("sys/File.zig").getPath(.{ .handle = this.handle }, out_buffer);
         }
 
         pub fn stat(this: File) Maybe(std.c.Stat) {
@@ -4314,6 +4385,45 @@ pub const sys = struct {
             };
 
             return .{ .result = buf[0..read_len] };
+        }
+
+        pub fn readFileFrom(dir_fd: anytype, path_: anytype, allocator: std.mem.Allocator) Maybe(struct { File, []u8 }) {
+            const path_z = std.posix.toPosixPath(pathBytes(path_)) catch {
+                return .{ .err = .{
+                    .errno = @intFromEnum(E.NAMETOOLONG),
+                    .syscall = .open,
+                } };
+            };
+            const this = switch (File.openat(File.from(dir_fd).handle, &path_z, O.CLOEXEC | O.RDONLY, 0)) {
+                .err => |err| return .{ .err = err },
+                .result => |f| f,
+            };
+            errdefer this.close();
+
+            const size = switch (this.getEndPos()) {
+                .err => |err| return .{ .err = err },
+                .result => |s| s,
+            };
+            const buf = allocator.alloc(u8, size) catch return .{ .err = unexpected(.read).withFd(this.handle) };
+            errdefer allocator.free(buf);
+
+            const read_len = switch (this.readAll(buf)) {
+                .err => |err| return .{ .err = err },
+                .result => |n| n,
+            };
+
+            return .{ .result = .{ this, buf[0..read_len] } };
+        }
+
+        pub fn readFromUserInput(dir_fd: anytype, input_path: anytype, allocator: std.mem.Allocator) Maybe([]u8) {
+            var buf: PathBuffer = undefined;
+            const normalized = path.joinAbsStringBufZ(
+                fs.FileSystem.instance.top_level_dir,
+                &buf,
+                &.{input_path},
+                .loose,
+            );
+            return readFrom(dir_fd, normalized, allocator);
         }
 
         pub const ToSourceOptions = struct {

@@ -84,7 +84,7 @@ Honest interpretation:
   `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
   The existing compiled test set still reports **48/48 tests passed**,
   but the `home_test` compile gate is not green: latest visible frontier
-  is **37 compile errors**.
+  is **19 compile errors**.
 - The current frontier is real integration work, not source presence:
   remaining blockers are concentrated in install/libarchive filesystem
   method drift, package-manager env/path helpers, server/bake route
