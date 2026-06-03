@@ -558,6 +558,7 @@ pub const Resolver = struct {
         // Re-resolve with `exports` disabled (node10 strategy) and only
         // declaration/TypeScript extensions in play, so a `.js`/`.mjs`
         // implementation can't masquerade as the alternate.
+        self.traceMsg(6277, "Resolution of non-relative name failed; trying with modern Node resolution features disabled to see if npm library needs configuration update.", .{});
         const saved_strategy = self.config.strategy;
         const saved_exts = self.config.extensions;
         self.config.strategy = .node10;
@@ -2482,11 +2483,22 @@ test "Resolver: exports routes to JS but legacy types yields alternate_result" {
         .conditions = &.{ "import", "node" },
     });
     defer r.deinit();
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    r.trace = &sink;
     const res = try r.resolve("foo", "/index.mts");
     try T.expectEqualStrings("/node_modules/foo/index.mjs", res.path);
     try T.expect(!res.is_declaration);
     try T.expect(res.alternate_result != null);
     try T.expectEqualStrings("/node_modules/foo/index.d.ts", res.alternate_result.?);
+    var saw_probe_trace = false;
+    var saw_types_trace = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6277) saw_probe_trace = true;
+        if (entry.code == 6278) saw_types_trace = true;
+    }
+    try T.expect(saw_probe_trace);
+    try T.expect(saw_types_trace);
 }
 
 test "Resolver: exports routes to JS, @types sibling yields alternate_result" {

@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 868 |
-| reachable (parity targets) | 366 |
+| catalog-only total | 867 |
+| reachable (parity targets) | 365 |
 | dead in tsgo (leave catalog-only) | 502 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 146 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 90 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 89 |
 | 1xxx — parser / syntactic + program file-inclusion | 64 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -180,7 +180,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (90)
+### 6xxx — CLI / build / watch / resolution-trace messages (89)
 
 - TS6041 `Errors_Files_6041`
 - TS6104 `Checking_if_0_is_the_longest_matching_prefix_for_1_2_6104`
@@ -214,7 +214,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6245 `File_Management_6245`
 - TS6253 `Backwards_Compatibility_6253`
 - TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`
-- TS6277 `Resolution_of_non_relative_name_failed_trying_with_modern_Node_resolution_features_disabled_to_see_i_6277`
 - TS6282 `Found_peerDependency_0_with_1_version_6282`
 - TS6283 `Failed_to_find_peerDependency_0_6283`
 - TS6302 `Enable_project_compilation_6302`
