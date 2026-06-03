@@ -1384,7 +1384,7 @@ pub fn main(init: std.process.Init) !void {
         // the program, recompile changed files, and re-emit JS.
         // Native FS-event backends (FSEvents/inotify/ReadDirChangesW)
         // are tracked separately.
-        std.debug.print("home tsc - watching for changes (Ctrl-C to stop)\n", .{});
+        buildStatusMessage(6031, "Starting compilation in watch mode...\n", .{});
         var watch_threaded = std.Io.Threaded.init(gpa, .{});
         defer watch_threaded.deinit();
         const watch_io = watch_threaded.io();
@@ -1439,7 +1439,7 @@ pub fn main(init: std.process.Init) !void {
                 try changed.append(gpa, path_borrow);
             }
             if (changed.items.len == 0) continue;
-            std.debug.print("\n[{s}] {d} file(s) changed; recompiling…\n", .{ "watch", changed.items.len });
+            buildStatusMessage(6032, "File change detected. Starting incremental compilation...\n", .{});
             const recompiled = program.recompileChanged(changed.items, compile_opts) catch |err| blk: {
                 std.debug.print("recompile error: {s}\n", .{@errorName(err)});
                 break :blk @as(u32, 0);

@@ -29,10 +29,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1194 |
+| emitted | 1196 |
 | declared | 4 |
 | tested-only | 1 |
-| catalog-only | 880 |
+| catalog-only | 878 |
 | total upstream codes | 2079 |
 
 ## Codes
@@ -1226,8 +1226,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6027 | message | catalog-only |  | Options_Colon_6027 |
 | TS6029 | message | emitted | packages/ts_cli/src/ts_cli.zig:330 | Version_0_6029 |
 | TS6030 | message | catalog-only |  | Insert_command_line_options_and_files_from_a_file_6030 |
-| TS6031 | message | catalog-only |  | Starting_compilation_in_watch_mode_6031 |
-| TS6032 | message | catalog-only |  | File_change_detected_Starting_incremental_compilation_6032 |
+| TS6031 | message | emitted | packages/ts_cli/src/tsc_main.zig:1387 | Starting_compilation_in_watch_mode_6031 |
+| TS6032 | message | emitted | packages/ts_cli/src/tsc_main.zig:1442 | File_change_detected_Starting_incremental_compilation_6032 |
 | TS6034 | message | catalog-only |  | KIND_6034 |
 | TS6035 | message | catalog-only |  | FILE_6035 |
 | TS6036 | message | catalog-only |  | VERSION_6036 |
