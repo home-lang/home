@@ -114,6 +114,7 @@ fn resolveConfigPath(arena: std.mem.Allocator, base_dir: []const u8, ref: []cons
 const LoadedGraph = struct {
     nodes: []ts_cli.ProjectNode,
     paths: [][]const u8,
+    diagnostics: []const []const u8 = &.{},
 };
 
 /// Load the `tsc --build` project graph starting from `root_config` (a
@@ -125,6 +126,7 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
     // temporary lists don't need their own cleanup.
     var paths: std.ArrayListUnmanaged([]const u8) = .empty;
     var dep_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
+    var diagnostics: std.ArrayListUnmanaged([]const u8) = .empty;
 
     const ensure = struct {
         fn idx(a: std.mem.Allocator, ps: *std.ArrayListUnmanaged([]const u8), ds: *std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)), p: []const u8) !usize {
@@ -144,10 +146,21 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
         const src = RealFs.read(arena, cfg_path) catch continue; // leaf on read error
         const cfg = tsconfig_mod.parseString(gpa, arena, src) catch continue;
         const base = std.fs.path.dirname(cfg_path) orelse ".";
+        const parent_has_inputs = projectConfigHasInputFiles(gpa, arena, cfg_path, cfg) catch false;
         for (cfg.references) |ref| {
             const ref_path = resolveConfigPath(arena, base, ref) catch continue;
             const dep_idx = try ensure.idx(arena, &paths, &dep_lists, ref_path);
             try dep_lists.items[i].append(arena, dep_idx);
+            if (parent_has_inputs) {
+                const ref_src = RealFs.read(arena, ref_path) catch continue;
+                const ref_cfg = tsconfig_mod.parseString(gpa, arena, ref_src) catch continue;
+                if (ref_cfg.compiler_options.composite != true) {
+                    try diagnostics.append(arena, try referencedProjectMustBeCompositeDiagnostic(arena, ref));
+                }
+                if (ref_cfg.compiler_options.no_emit == true) {
+                    try diagnostics.append(arena, try referencedProjectMayNotDisableEmitDiagnostic(arena, ref));
+                }
+            }
         }
     }
 
@@ -155,7 +168,53 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
     for (paths.items, 0..) |p, k| {
         nodes[k] = .{ .name = p, .deps = dep_lists.items[k].items };
     }
-    return .{ .nodes = nodes, .paths = paths.items };
+    return .{ .nodes = nodes, .paths = paths.items, .diagnostics = diagnostics.items };
+}
+
+fn projectConfigHasInputFiles(gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg_path: []const u8, cfg: tsconfig_mod.TsConfig) !bool {
+    if (cfg.files) |files| return files.len > 0;
+
+    const project_dir = std.fs.path.dirname(cfg_path) orelse ".";
+    var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer input_files.deinit(gpa);
+    var owned: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned.items) |p| gpa.free(p);
+        owned.deinit(gpa);
+    }
+    var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer excludes.deinit(gpa);
+    if (cfg.exclude) |ex| {
+        for (ex) |e| try excludes.append(gpa, e);
+    }
+    if (cfg.compiler_options.out_dir) |d| {
+        try excludes.append(gpa, d);
+        try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
+    }
+    if (cfg.compiler_options.declaration_dir) |d| {
+        try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
+    }
+    try excludes.append(gpa, "**/node_modules/**");
+    try expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned);
+    return input_files.items.len > 0;
+}
+
+fn referencedProjectMustBeCompositeDiagnostic(gpa: std.mem.Allocator, ref_path: []const u8) ![]const u8 {
+    const code: u32 = 6306;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Referenced project '{s}' must have setting \"composite\": true.",
+        .{ code, ref_path },
+    );
+}
+
+fn referencedProjectMayNotDisableEmitDiagnostic(gpa: std.mem.Allocator, ref_path: []const u8) ![]const u8 {
+    const code: u32 = 6310;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Referenced project '{s}' may not disable emit.",
+        .{ code, ref_path },
+    );
 }
 
 fn printConfigValidationDiagnostics(gpa: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) !bool {
@@ -665,6 +724,10 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("error: cannot load project '{s}'\n", .{root_cfg});
             std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
         };
+        if (graph.diagnostics.len > 0) {
+            for (graph.diagnostics) |d| std.debug.print("{s}\n", .{d});
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        }
         var ord = ts_cli.topoSortProjects(gpa, graph.nodes) catch
             ts_cli.BuildOrder{ .order = &.{}, .cycle = null };
         defer ord.deinit(gpa);
@@ -2005,6 +2068,24 @@ test "tsc_main: TS5081 cannot find tsconfig at current directory diagnostic" {
     defer std.testing.allocator.free(msg);
     try std.testing.expectEqualStrings(
         "error TS5081: Cannot find a tsconfig.json file at the current directory: /repo/sub/tsconfig.json.",
+        msg,
+    );
+}
+
+test "tsc_main: TS6306 referenced project must be composite diagnostic" {
+    const msg = try referencedProjectMustBeCompositeDiagnostic(std.testing.allocator, "../lib");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS6306: Referenced project '../lib' must have setting \"composite\": true.",
+        msg,
+    );
+}
+
+test "tsc_main: TS6310 referenced project may not disable emit diagnostic" {
+    const msg = try referencedProjectMayNotDisableEmitDiagnostic(std.testing.allocator, "../lib");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS6310: Referenced project '../lib' may not disable emit.",
         msg,
     );
 }
