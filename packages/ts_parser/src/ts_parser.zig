@@ -560,6 +560,28 @@ pub const Parser = struct {
         }
     }
 
+    fn consumeTypeAssertionGreater(self: *Parser) ParseError!bool {
+        const tok = self.peek();
+        switch (tok.kind) {
+            .greater_than,
+            .greater_than_equal,
+            .greater_greater,
+            .greater_greater_equal,
+            .greater_greater_greater,
+            .greater_greater_greater_equal,
+            => {
+                _ = try self.consumeTypeGreater("'>' to close type assertion");
+                return true;
+            },
+            else => {
+                const anchor = if (tok.kind == .eof and self.cursor > 0) self.tokens[self.cursor - 1] else tok;
+                const pos = if (tok.kind == .eof and self.cursor > 0) anchor.span.end else anchor.span.start;
+                try self.reportCodeAt(pos, anchor.line, 1005, "'>' expected.");
+                return false;
+            },
+        }
+    }
+
     fn match(self: *Parser, kind: TokenKind) bool {
         if (self.peek().kind == kind) {
             _ = self.advance();
@@ -6212,6 +6234,20 @@ pub const Parser = struct {
         const type_span = self.hir.spanOf(type_node);
         if (!self.isJavaScriptSyntaxAt(type_span.start)) return;
         try self.reportCodeAt(type_span.start, self.lineForPos(type_span.start), 8016, "Type assertion expressions can only be used in TypeScript files.");
+    }
+
+    fn sourceHasErasableSyntaxOnlyDirective(self: *const Parser) bool {
+        return std.mem.indexOf(u8, self.source, "@erasableSyntaxOnly: true") != null or
+            std.mem.indexOf(u8, self.source, "@erasableSyntaxOnly:true") != null;
+    }
+
+    fn reportErasableSyntaxOnlyTypeAssertionIfNeeded(self: *Parser, less_tok: Token) ParseError!void {
+        if (!self.sourceHasErasableSyntaxOnlyDirective()) return;
+        try self.reportCodeAt(less_tok.span.start, less_tok.line, 1294, "This syntax is not allowed when 'erasableSyntaxOnly' is enabled.");
+    }
+
+    fn syntheticTypeAssertionOperandAt(self: *Parser, tok: Token) ParseError!NodeId {
+        return try self.builder.addLiteralNumber(.{ .start = tok.span.start, .end = tok.span.start }, 0);
     }
 
     fn virtualSectionFilenameAt(self: *const Parser, pos: u32) ?[]const u8 {
@@ -15159,8 +15195,12 @@ pub const Parser = struct {
                 // the same rescan path used by type references.
                 _ = self.advance();
                 const type_node = try self.parseTypeAnnotation();
-                _ = try self.consumeTypeGreater("'>' to close type assertion");
-                const expr = try self.parseUnaryExpression();
+                try self.reportErasableSyntaxOnlyTypeAssertionIfNeeded(t);
+                const consumed_gt = try self.consumeTypeAssertionGreater();
+                const expr = if (!consumed_gt and self.peek().kind == .eof)
+                    try self.syntheticTypeAssertionOperandAt(self.peek())
+                else
+                    try self.parseUnaryExpression();
                 return try self.builder.addAsExpression(.type_assertion, .{
                     .start = t.span.start,
                     .end = self.hir.spanOf(expr).end,
@@ -19582,6 +19622,25 @@ test "parser: relational RHS can be angle-bracket type assertion" {
         try T.expectEqual(hir_mod.NodeKind.type_assertion, s.hir.kindOf(bin.rhs));
     }
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: erasableSyntaxOnly type assertions report TS1294 and recover missing greater" {
+    var s = try newTestSetup(
+        \\// @erasableSyntaxOnly: true
+        \\let a = (<unknown function foo() {});
+        \\let b = <unknown 123;
+        \\let c = <unknown
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 3), countDiag(s, 1294));
+    var missing_greater: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'>' expected.")) missing_greater += 1;
+        try T.expect(d.code != 1109);
+    }
+    try T.expectEqual(@as(u32, 3), missing_greater);
 }
 
 test "parser: generic arrow accepts nested type parameter constraint" {
