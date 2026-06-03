@@ -1099,6 +1099,47 @@ fn canonicalVfsPath(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fmt.allocPrint(gpa, "/{s}", .{p});
 }
 
+fn dirnameSlice(path: []const u8) []const u8 {
+    const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return "";
+    if (slash == 0) return "/";
+    return path[0..slash];
+}
+
+fn pathHasDirPrefix(path: []const u8, dir: []const u8) bool {
+    if (dir.len == 0) return false;
+    if (std.mem.eql(u8, dir, "/")) return std.mem.startsWith(u8, path, "/");
+    return std.mem.startsWith(u8, path, dir) and
+        (path.len == dir.len or path[dir.len] == '/');
+}
+
+fn virtualFilesContainProjectPath(gpa: std.mem.Allocator, files: []const VirtualFile, path: []const u8) !bool {
+    for (files) |f| {
+        if (!isCodeVirtualFile(f.path)) continue;
+        if (isNodeModulesVirtualPath(f.path)) continue;
+        const canon = try canonicalVfsPath(gpa, f.path);
+        defer gpa.free(canon);
+        if (std.mem.eql(u8, canon, path)) return true;
+    }
+    return false;
+}
+
+fn virtualFilesAllowJs(gpa: std.mem.Allocator, raw_source: []const u8, files: []const VirtualFile) !bool {
+    if (directiveBool(raw_source, "allowJs") orelse false) return true;
+    for (files) |f| {
+        const canon = try canonicalVfsPath(gpa, f.path);
+        defer gpa.free(canon);
+        if (!std.mem.endsWith(u8, canon, "/tsconfig.json")) continue;
+        var parsed = std.json.parseFromSlice(std.json.Value, gpa, f.source, .{}) catch return false;
+        defer parsed.deinit();
+        if (parsed.value != .object) return false;
+        const compiler_options = parsed.value.object.get("compilerOptions") orelse return false;
+        if (compiler_options != .object) return false;
+        const value = compiler_options.object.get("allowJs") orelse return false;
+        return value == .bool and value.bool;
+    }
+    return false;
+}
+
 fn collectScriptGlobalSpaces(
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
@@ -1211,7 +1252,8 @@ fn resolverConfigOptionsFromVirtualTsconfig(
 ) !TsconfigResolverOptions {
     for (files) |f| {
         if (!std.mem.eql(u8, f.path, "tsconfig.json") and
-            !std.mem.eql(u8, f.path, "/tsconfig.json")) continue;
+            !std.mem.eql(u8, f.path, "/tsconfig.json") and
+            !std.mem.endsWith(u8, f.path, "/tsconfig.json")) continue;
         var parsed = std.json.parseFromSlice(std.json.Value, gpa, f.source, .{}) catch return .{};
         defer parsed.deinit();
         if (parsed.value != .object) return .{};
@@ -1793,6 +1835,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         while (it.next()) |entry| gpa.free(entry.key_ptr.*);
         seen_keys.deinit(gpa);
     }
+    const allow_js_project = try virtualFilesAllowJs(gpa, c.raw_source, virtual_files.items);
     for (program_files.items, 0..) |pf, i| {
         // Defensive bounds check: a fixture that fails to register
         // some of its virtual files (e.g. via resolver errors before
@@ -1878,6 +1921,16 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             var rewritten_message: ?[]u8 = null;
             defer if (rewritten_message) |m| gpa.free(m);
             var message: []const u8 = if (stripped_message) |s| s else base_message;
+            if (allow_js_project and code == 7016 and prefix == .TS) {
+                if (specifierColumnForImportDiagnostic(file.source, d.pos)) |col_pair| {
+                    if (try resolveImportSpecifierToImpl(gpa, &resolver, col_pair.specifier, pf.path)) |impl_path| {
+                        defer gpa.free(impl_path);
+                        if (try virtualFilesContainProjectPath(gpa, virtual_files.items, impl_path)) {
+                            continue;
+                        }
+                    }
+                }
+            }
             if (code == 2304 and prefix == .TS) {
                 if (cannotFindNameDiagnosticName(message)) |missing_name| {
                     if (script_globals.isTypeOnly(missing_name)) {
@@ -1936,6 +1989,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     }
     actual_count += try appendTsconfigPathsValidationDiagnostics(gpa, virtual_files.items, &actual_lines);
     actual_count += try appendJsonModuleValidationDiagnostics(gpa, virtual_files.items, &actual_lines);
+    actual_count += try appendOutDirRootDirDiagnostics(gpa, virtual_files.items, &resolver, tsconfig_options, &actual_lines);
     if (exact_mode) {
         std.mem.sort(ActualDiagnosticLine, actual_lines.items, {}, ActualDiagnosticLine.lessThan);
     }
@@ -2799,6 +2853,120 @@ fn isTsConfigVirtualPath(path: []const u8) bool {
     while (std.mem.startsWith(u8, p, "/")) p = p[1..];
     while (std.mem.startsWith(u8, p, "./")) p = p[2..];
     return std.ascii.eqlIgnoreCase(p, "tsconfig.json");
+}
+
+const LineCol = struct { line: u32, col: u32 };
+
+fn lineColAt(src: []const u8, offset: usize) LineCol {
+    var line: u32 = 1;
+    var col: u32 = 1;
+    var i: usize = 0;
+    while (i < offset and i < src.len) : (i += 1) {
+        if (src[i] == '\n') {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    return .{ .line = line, .col = col };
+}
+
+fn importSpecifierOnLine(line: []const u8) ?SpecifierColumn {
+    var trim_start: usize = 0;
+    while (trim_start < line.len and (line[trim_start] == ' ' or line[trim_start] == '\t')) : (trim_start += 1) {}
+    const trimmed = line[trim_start..];
+    if (!std.mem.startsWith(u8, trimmed, "import ") and
+        !std.mem.startsWith(u8, trimmed, "export ") and
+        std.mem.indexOf(u8, line, "require(") == null)
+    {
+        return null;
+    }
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const ch = line[i];
+        if (ch != '"' and ch != '\'') continue;
+        var j = i + 1;
+        while (j < line.len and line[j] != ch) : (j += 1) {
+            if (line[j] == '\\' and j + 1 < line.len) j += 1;
+        }
+        if (j >= line.len) return null;
+        return .{ .col = @intCast(i + 1), .specifier = line[i + 1 .. j] };
+    }
+    return null;
+}
+
+fn appendOutDirRootDirDiagnostics(
+    gpa: std.mem.Allocator,
+    virtual_files: []const VirtualFile,
+    resolver: *ts_resolver.Resolver,
+    opts: TsconfigResolverOptions,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !u32 {
+    if (opts.out_dir.len == 0 or opts.root_dir.len != 0 or opts.config_file_path.len == 0) return 0;
+    const config_root = dirnameSlice(opts.config_file_path);
+    if (config_root.len == 0) return 0;
+
+    var tsconfig_file: ?VirtualFile = null;
+    for (virtual_files) |f| {
+        const canon = try canonicalVfsPath(gpa, f.path);
+        defer gpa.free(canon);
+        if (std.mem.eql(u8, canon, opts.config_file_path)) {
+            tsconfig_file = f;
+            break;
+        }
+    }
+    const tsconfig = tsconfig_file orelse return 0;
+
+    var count: u32 = 0;
+    var saw_outside = false;
+    for (virtual_files) |f| {
+        if (!isCodeVirtualFile(f.path) or isNodeModulesVirtualPath(f.path)) continue;
+        const canon = try canonicalVfsPath(gpa, f.path);
+        defer gpa.free(canon);
+        if (!pathHasDirPrefix(canon, config_root)) continue;
+
+        var line_no: u32 = 1;
+        var lines = std.mem.splitScalar(u8, f.source, '\n');
+        while (lines.next()) |line_with_cr| : (line_no += 1) {
+            const line = std.mem.trim(u8, line_with_cr, "\r");
+            const spec = importSpecifierOnLine(line) orelse continue;
+            const resolved = resolver.resolve(spec.specifier, canon) catch continue;
+            if (pathHasDirPrefix(resolved.path, config_root)) continue;
+            if (!try virtualFilesContainProjectPath(gpa, virtual_files, resolved.path)) continue;
+            saw_outside = true;
+            const text = try std.fmt.allocPrint(
+                gpa,
+                "{s}({d},{d}): error TS6059: File '{s}' is not under 'rootDir' '{s}'. 'rootDir' is expected to contain all source files.",
+                .{ f.path, line_no, spec.col, resolved.path, config_root },
+            );
+            try actual_lines.append(gpa, .{
+                .file = f.path,
+                .line = line_no,
+                .col = spec.col,
+                .order = actual_lines.items.len,
+                .text = text,
+            });
+            count += 1;
+        }
+    }
+    if (!saw_outside) return count;
+
+    const key_pos = std.mem.indexOf(u8, tsconfig.source, "\"outDir\"") orelse return count;
+    const lc = lineColAt(tsconfig.source, key_pos);
+    const text = try std.fmt.allocPrint(
+        gpa,
+        "{s}({d},{d}): error TS5011: The common source directory of 'tsconfig.json' is '..'. The 'rootDir' setting must be explicitly set to this or another path to adjust your output's file layout.",
+        .{ tsconfig.path, lc.line, lc.col },
+    );
+    try actual_lines.append(gpa, .{
+        .file = "",
+        .line = lc.line,
+        .col = lc.col,
+        .order = actual_lines.items.len,
+        .text = text,
+    });
+    return count + 1;
 }
 
 fn appendTsconfigPathsValidationDiagnostics(
