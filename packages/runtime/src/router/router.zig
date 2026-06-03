@@ -958,7 +958,7 @@ pub const Test = struct {
         // _ = try std.fs.makeDirAbsolute(
         //     pages_dir,
         // );
-        const router = try Router.init(&FileSystem.instance, default_allocator, Options.RouteConfig{
+        _ = try Router.init(&FileSystem.instance, default_allocator, Options.RouteConfig{
             .dir = pages_dir,
             .routes_enabled = true,
             .extensions = &.{"js"},
@@ -976,6 +976,7 @@ pub const Test = struct {
             .define = undefined,
             .log = &logger,
             // `.routes` was removed from BundleOptions in the bundler migration.
+            .css_chunking = false,
             .entry_points = &.{},
             .out_extensions = bun.StringHashMap(string).init(default_allocator),
             .transform_options = std.mem.zeroes(api.TransformOptions),
@@ -1031,6 +1032,7 @@ pub const Test = struct {
             .define = undefined,
             .log = &logger,
             // `.routes` was removed from BundleOptions in the bundler migration.
+            .css_chunking = false,
             .entry_points = &.{},
             .out_extensions = bun.StringHashMap(string).init(default_allocator),
             .transform_options = std.mem.zeroes(api.TransformOptions),
