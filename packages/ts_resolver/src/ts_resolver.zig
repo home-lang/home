@@ -820,6 +820,7 @@ pub const Resolver = struct {
                         // extensions, so such a package falls through
                         // to the sibling `@types/<pkg>` lookup.
                         if (!self.alternate_mode or r.is_declaration) {
+                            try self.tracePackagePeerDependencies(dir, obj);
                             return .{
                                 .path = r.path,
                                 .source = .package_main,
@@ -837,6 +838,7 @@ pub const Resolver = struct {
                     // `packageJsonMain_isNonRecursive.ts`.
                     if (try self.tryDirectoryIndexNoPkg(target)) |r| {
                         if (!self.alternate_mode or r.is_declaration) {
+                            try self.tracePackagePeerDependencies(dir, obj);
                             return .{
                                 .path = r.path,
                                 .source = .package_main,
@@ -850,6 +852,55 @@ pub const Resolver = struct {
             }
         }
         return null;
+    }
+
+    fn tracePackagePeerDependencies(
+        self: *Resolver,
+        pkg_dir: []const u8,
+        obj: std.json.ObjectMap,
+    ) ResolveError!void {
+        if (self.trace == null) return;
+        const peer_v = obj.get("peerDependencies") orelse return;
+        if (peer_v != .object or peer_v.object.count() == 0) return;
+
+        self.traceMsg(6281, "'package.json' has a 'peerDependencies' field.", .{});
+        const marker = "/node_modules";
+        const nm_end = (std.mem.lastIndexOf(u8, pkg_dir, marker) orelse return) + marker.len;
+        const node_modules = pkg_dir[0..nm_end];
+
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer names.deinit(self.gpa);
+        var it = peer_v.object.iterator();
+        while (it.next()) |entry| {
+            try names.append(self.gpa, entry.key_ptr.*);
+        }
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+                return std.mem.lessThan(u8, lhs, rhs);
+            }
+        }.lessThan);
+
+        for (names.items) |name| {
+            const peer_root = try self.joinPath(node_modules, name);
+            const peer_pkg_json = try self.joinPath(peer_root, "package.json");
+            const version = try self.packageJsonVersion(peer_pkg_json);
+            if (version) |v| {
+                self.traceMsg(6282, "Found peerDependency '{s}' with '{s}' version.", .{ name, v });
+            } else {
+                self.traceMsg(6283, "Failed to find peerDependency '{s}'.", .{name});
+            }
+        }
+    }
+
+    fn packageJsonVersion(self: *Resolver, pkg_json: []const u8) ResolveError!?[]const u8 {
+        const bytes = self.fs.readFile(self.gpa, pkg_json) catch return null;
+        defer self.gpa.free(bytes);
+        var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return null;
+        defer parsed.deinit();
+        if (parsed.value != .object) return null;
+        const v = parsed.value.object.get("version") orelse return "";
+        if (v != .string) return "";
+        return self.ar().dupe(u8, v.string) catch error.OutOfMemory;
     }
 
     fn tryPathsMapping(self: *Resolver, specifier: []const u8) ResolveError!?Resolution {
@@ -1121,8 +1172,14 @@ pub const Resolver = struct {
                         .matched_null => return .blocked, // hard rejection
                         .matched => |m| {
                             const joined = try self.joinPath(pkg_dir, m);
-                            if (try self.tryFileWithExtensions(joined)) |r| return .{ .resolved = r };
-                            if (try self.tryLoadInputFileForPath(joined)) |r| return .{ .resolved = r };
+                            if (try self.tryFileWithExtensions(joined)) |r| {
+                                try self.tracePackagePeerDependencies(pkg_dir, obj);
+                                return .{ .resolved = r };
+                            }
+                            if (try self.tryLoadInputFileForPath(joined)) |r| {
+                                try self.tracePackagePeerDependencies(pkg_dir, obj);
+                                return .{ .resolved = r };
+                            }
                             // The exports map matched but the target file
                             // is missing on disk; tsc treats this as a
                             // resolution failure rather than falling back
@@ -1156,6 +1213,7 @@ pub const Resolver = struct {
                     const map = e.value_ptr.*;
                     if (map != .object) continue;
                     if (try self.matchTypesVersions(pkg_dir, map.object, subpath)) |r| {
+                        try self.tracePackagePeerDependencies(pkg_dir, obj);
                         return .{ .resolved = r };
                     }
                 }
@@ -1801,6 +1859,44 @@ test "Resolver: invalid package.json path field traces TS6105" {
         if (e.code == 6105) saw_6105 = true;
     }
     try T.expect(saw_6105);
+}
+
+test "Resolver: package peerDependencies trace found and missing peers" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/node_modules/dep/package.json",
+        \\{
+        \\  "types": "./index.d.ts",
+        \\  "peerDependencies": {
+        \\    "missing": "^1.0.0",
+        \\    "react": "^18.0.0"
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/proj/node_modules/dep/index.d.ts", "");
+    try vfs.addFile("/proj/node_modules/react/package.json", "{\"version\":\"18.2.0\"}");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("dep", "/proj/src/main.ts");
+    try T.expectEqualStrings("/proj/node_modules/dep/index.d.ts", res.path);
+
+    var saw_field = false;
+    var saw_found = false;
+    var saw_missing = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6281 and std.mem.indexOf(u8, entry.text, "peerDependencies") != null) saw_field = true;
+        if (entry.code == 6282 and std.mem.indexOf(u8, entry.text, "react") != null and std.mem.indexOf(u8, entry.text, "18.2.0") != null) saw_found = true;
+        if (entry.code == 6283 and std.mem.indexOf(u8, entry.text, "missing") != null) saw_missing = true;
+    }
+    try T.expect(saw_field);
+    try T.expect(saw_found);
+    try T.expect(saw_missing);
 }
 
 test "Resolver: paths mapping traces TS6091/6092/6093" {

@@ -14,24 +14,24 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 867 |
-| reachable (parity targets) | 365 |
-| dead in tsgo (leave catalog-only) | 502 |
+| catalog-only total | 864 |
+| reachable (parity targets) | 396 |
+| dead in tsgo (leave catalog-only) | 468 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 146 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 89 |
-| 1xxx — parser / syntactic + program file-inclusion | 64 |
+| 2xxx — checker / type engine | 157 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 103 |
+| 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| other | 13 |
+| other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
-| 5xxx — tsconfig / build-option validation | 3 |
+| 5xxx — tsconfig / build-option validation | 5 |
 
-### 2xxx — checker / type engine (146)
+### 2xxx — checker / type engine (157)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -49,6 +49,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2444 `Property_0_is_protected_in_type_1_but_public_in_type_2_2444`
 - TS2446 `Property_0_is_protected_and_only_accessible_through_an_instance_of_class_1_This_is_an_instance_of_cl_2446`
 - TS2468 `Cannot_find_global_value_0_2468`
+- TS2475 `const_enums_can_only_be_used_in_property_or_index_access_expressions_or_the_right_hand_side_of_an_im_2475`
 - TS2484 `Export_declaration_conflicts_with_exported_declaration_of_0_2484`
 - TS2489 `An_iterator_must_have_a_next_method_2489`
 - TS2498 `Module_0_uses_export_and_cannot_be_used_with_export_Asterisk_2498`
@@ -71,7 +72,9 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2574 `A_rest_element_type_must_be_an_array_type_2574`
 - TS2577 `Return_type_annotation_circularly_references_itself_2577`
 - TS2584 `Cannot_find_name_0_Do_you_need_to_change_your_target_library_Try_changing_the_lib_compiler_option_to_2584`
+- TS2585 `_0_only_refers_to_a_type_but_is_being_used_as_a_value_here_Do_you_need_to_change_your_target_library_2585`
 - TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
+- TS2597 `_0_can_only_be_imported_by_using_a_require_call_or_by_using_a_default_import_2597`
 - TS2602 `JSX_element_implicitly_has_type_any_because_the_global_type_JSX_Element_does_not_exist_2602`
 - TS2607 `JSX_element_class_does_not_support_attributes_because_it_does_not_have_a_0_property_2607`
 - TS2608 `The_global_type_JSX_0_may_not_have_more_than_one_property_2608`
@@ -80,6 +83,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2613 `Module_0_has_no_default_export_Did_you_mean_to_use_import_1_from_0_instead_2613`
 - TS2614 `Module_0_has_no_exported_member_1_Did_you_mean_to_use_import_1_from_0_instead_2614`
 - TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
+- TS2616 `_0_can_only_be_imported_by_using_import_1_require_2_or_a_default_import_2616`
 - TS2618 `Source_has_0_element_s_but_target_requires_1_2618`
 - TS2619 `Source_has_0_element_s_but_target_allows_only_1_2619`
 - TS2620 `Target_requires_0_element_s_but_source_may_have_fewer_2620`
@@ -90,6 +94,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2626 `Type_at_position_0_in_source_is_not_compatible_with_type_at_position_1_in_target_2626`
 - TS2627 `Type_at_positions_0_through_1_in_source_is_not_compatible_with_type_at_position_2_in_target_2627`
 - TS2633 `JSX_property_access_expressions_cannot_include_JSX_namespace_names_2633`
+- TS2634 `_0_index_signatures_are_incompatible_2634`
 - TS2635 `Type_0_has_no_signatures_for_which_the_type_argument_list_is_applicable_2635`
 - TS2636 `Type_0_is_not_assignable_to_type_1_as_implied_by_variance_annotation_2636`
 - TS2637 `Variance_annotations_are_only_supported_in_type_aliases_for_object_function_constructor_and_mapped_t_2637`
@@ -103,12 +108,16 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
 - TS2666 `Exports_and_export_assignments_are_not_permitted_in_module_augmentations_2666`
 - TS2667 `Imports_are_not_permitted_in_module_augmentations_Consider_moving_them_to_the_enclosing_external_mod_2667`
+- TS2668 `export_modifier_cannot_be_applied_to_ambient_modules_and_module_augmentations_since_they_are_always__2668`
 - TS2670 `Augmentations_for_the_global_scope_should_have_declare_modifier_unless_they_appear_in_already_ambien_2670`
 - TS2671 `Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671`
 - TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
 - TS2679 `A_function_that_is_called_with_the_new_keyword_cannot_have_a_this_type_that_is_void_2679`
 - TS2685 `The_this_types_of_each_signature_are_incompatible_2685`
+- TS2686 `_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686`
 - TS2688 `Cannot_find_type_definition_file_for_0_2688`
+- TS2690 `_0_only_refers_to_a_type_but_is_being_used_as_a_value_here_Did_you_mean_to_use_1_in_0_2690`
+- TS2692 `_0_is_a_primitive_but_1_is_a_wrapper_object_Prefer_using_0_when_possible_2692`
 - TS2696 `The_Object_type_is_assignable_to_very_few_other_types_Did_you_mean_to_use_the_any_type_instead_2696`
 - TS2697 `An_async_function_or_method_must_return_a_Promise_Make_sure_you_have_a_declaration_for_Promise_or_in_2697`
 - TS2705 `An_async_function_or_method_in_ES5_requires_the_Promise_constructor_Make_sure_you_have_a_declaration_2705`
@@ -130,6 +139,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2743 `No_overload_expects_0_type_arguments_but_overloads_do_exist_that_expect_either_1_or_2_type_arguments_2743`
 - TS2745 `This_JSX_tag_s_0_prop_expects_type_1_which_requires_multiple_children_but_only_a_single_child_was_pr_2745`
 - TS2748 `Cannot_access_ambient_const_enums_when_0_is_enabled_2748`
+- TS2749 `_0_refers_to_a_value_but_is_being_used_as_a_type_here_Did_you_mean_typeof_0_2749`
 - TS2751 `Circularity_originates_in_type_at_this_location_2751`
 - TS2752 `The_first_export_default_is_here_2752`
 - TS2753 `Another_export_default_is_here_2753`
@@ -150,6 +160,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2774 `This_condition_will_always_return_true_since_this_function_is_always_defined_Did_you_mean_to_call_it_2774`
 - TS2775 `Assertions_require_every_name_in_the_call_target_to_be_declared_with_an_explicit_type_annotation_2775`
 - TS2776 `Assertions_require_the_call_target_to_be_an_identifier_or_qualified_name_2776`
+- TS2782 `_0_needs_an_explicit_type_annotation_2782`
 - TS2785 `This_spread_always_overwrites_this_property_2785`
 - TS2787 `Its_return_type_0_is_not_a_valid_JSX_element_2787`
 - TS2788 `Its_instance_type_0_is_not_a_valid_JSX_element_2788`
@@ -180,10 +191,12 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (89)
+### 6xxx — CLI / build / watch / resolution-trace messages (103)
 
 - TS6041 `Errors_Files_6041`
+- TS6100 `package_json_does_not_have_a_0_field_6100`
 - TS6104 `Checking_if_0_is_the_longest_matching_prefix_for_1_2_6104`
+- TS6107 `rootDirs_option_is_set_using_it_to_resolve_relative_module_name_0_6107`
 - TS6108 `Longest_matching_prefix_for_0_is_1_6108`
 - TS6109 `Loading_0_from_the_root_dir_1_candidate_location_2_6109`
 - TS6110 `Trying_other_entries_in_rootDirs_6110`
@@ -195,6 +208,10 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6122 `Root_directory_cannot_be_determined_skipping_primary_search_paths_6122`
 - TS6130 `Resolving_real_path_for_0_result_1_6130`
 - TS6140 `Auto_discovery_for_typings_is_enabled_in_project_0_Running_extra_resolution_pass_for_module_1_using__6140`
+- TS6206 `package_json_has_a_typesVersions_field_with_version_specific_path_mappings_6206`
+- TS6207 `package_json_does_not_have_a_typesVersions_entry_that_matches_version_0_6207`
+- TS6208 `package_json_has_a_typesVersions_entry_0_that_matches_compiler_version_1_looking_for_a_pattern_to_ma_6208`
+- TS6209 `package_json_has_a_typesVersions_entry_0_that_is_not_a_valid_semver_range_6209`
 - TS6210 `An_argument_for_0_was_not_provided_6210`
 - TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
 - TS6212 `Did_you_mean_to_call_this_expression_6212`
@@ -202,6 +219,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
 - TS6218 `Module_name_0_was_successfully_resolved_to_1_with_Package_ID_2_6218`
 - TS6219 `Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219`
+- TS6220 `package_json_had_a_falsy_0_field_6220`
 - TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
 - TS6231 `Could_not_resolve_the_path_0_with_the_extensions_Colon_1_6231`
 - TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
@@ -214,8 +232,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6245 `File_Management_6245`
 - TS6253 `Backwards_Compatibility_6253`
 - TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`
-- TS6282 `Found_peerDependency_0_with_1_version_6282`
-- TS6283 `Failed_to_find_peerDependency_0_6283`
+- TS6275 `package_json_scope_0_has_invalid_type_for_target_of_specifier_1_6275`
 - TS6302 `Enable_project_compilation_6302`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
 - TS6306 `Referenced_project_0_must_have_setting_composite_Colon_true_6306`
@@ -242,6 +259,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6404 `Using_0_subpath_1_with_target_2_6404`
 - TS6405 `Saw_non_matching_condition_0_6405`
 - TS6406 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_there_is_change_in_compilerOptions_6406`
+- TS6411 `true_when_moduleResolution_is_node16_nodenext_or_bundler_otherwise_false_6411`
 - TS6412 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_file_2_was_root_file_of_compilation_6412`
 - TS6413 `Entering_conditional_exports_6413`
 - TS6414 `Resolved_under_condition_0_6414`
@@ -254,6 +272,11 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6501 `The_expected_type_comes_from_this_index_signature_6501`
 - TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
 - TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
+- TS6900 `one_of_Colon_6900`
+- TS6901 `one_or_more_Colon_6901`
+- TS6902 `type_Colon_6902`
+- TS6903 `default_Colon_6903`
+- TS6906 `false_unless_composite_is_set_6906`
 - TS6911 `Computed_from_the_list_of_input_files_6911`
 - TS6912 `Platform_specific_6912`
 - TS6913 `You_can_learn_about_all_of_the_compiler_options_at_0_6913`
@@ -265,14 +288,16 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6919 `BUILD_OPTIONS_6919`
 - TS6920 `COMMON_COMPILER_OPTIONS_6920`
 - TS6921 `COMMAND_LINE_FLAGS_6921`
+- TS6922 `tsc_Colon_The_TypeScript_Compiler_6922`
 - TS6923 `Compiles_the_current_project_tsconfig_json_in_the_working_directory_6923`
 - TS6924 `Ignoring_tsconfig_json_compiles_the_specified_files_with_default_compiler_options_6924`
 - TS6925 `Build_a_composite_project_in_the_working_directory_6925`
 - TS6926 `Creates_a_tsconfig_json_with_the_recommended_settings_in_the_working_directory_6926`
 - TS6928 `An_expanded_version_of_this_information_showing_all_possible_compiler_options_6928`
 - TS6929 `Compiles_the_current_project_with_additional_settings_6929`
+- TS6930 `true_for_ES2022_and_above_including_ESNext_6930`
 
-### 1xxx — parser / syntactic + program file-inclusion (64)
+### 1xxx — parser / syntactic + program file-inclusion (66)
 
 - TS1012 `Unexpected_token_1012`
 - TS1059 `A_promise_must_have_a_then_method_1059`
@@ -280,6 +305,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1062 `Type_is_referenced_directly_or_indirectly_in_the_fulfillment_callback_of_its_own_then_method_1062`
 - TS1149 `File_name_0_differs_from_already_included_file_name_1_only_in_casing_1149`
 - TS1168 `A_computed_property_name_in_a_method_overload_must_refer_to_an_expression_whose_type_is_a_literal_ty_1168`
+- TS1195 `export_Asterisk_does_not_re_export_a_default_1195`
 - TS1224 `Signature_0_must_be_a_type_predicate_1224`
 - TS1226 `Type_predicate_0_is_not_assignable_to_1_1226`
 - TS1227 `Parameter_0_is_not_in_the_same_position_as_parameter_1_1227`
@@ -328,6 +354,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1460 `File_is_CommonJS_module_because_0_does_not_have_field_type_1460`
 - TS1461 `File_is_CommonJS_module_because_package_json_was_not_found_1461`
 - TS1471 `Module_0_cannot_be_imported_using_this_construct_The_specifier_only_resolves_to_an_ES_module_which_c_1471`
+- TS1476 `auto_Colon_Treat_files_with_imports_exports_import_meta_jsx_with_jsx_Colon_react_jsx_or_esm_format_w_1476`
 - TS1479 `The_current_file_is_a_CommonJS_module_whose_imports_will_produce_require_calls_however_the_reference_1479`
 - TS1480 `To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_create_a_local_packag_1480`
 - TS1481 `To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_add_the_field_type_Co_1481`
@@ -384,7 +411,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### other (13)
+### other (15)
 
 - TS8001 `You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001`
 - TS8031 `You_cannot_rename_a_module_via_a_global_import_8031`
@@ -399,6 +426,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS9035 `Add_satisfies_and_a_type_assertion_to_this_expression_satisfies_T_as_T_to_make_the_type_explicit_9035`
 - TS9036 `Move_the_expression_in_default_export_to_a_variable_and_add_a_type_annotation_to_it_9036`
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
+- TS18044 `_0_is_automatically_exported_here_18044`
+- TS80007 `await_has_no_effect_on_the_type_of_this_expression_80007`
 
 ### 7xxx — noImplicitAny / implicit-type family (11)
 
@@ -414,11 +443,13 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 - TS7058 `If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058`
 
-### 5xxx — tsconfig / build-option validation (3)
+### 5xxx — tsconfig / build-option validation (5)
 
+- TS5075 `_0_is_assignable_to_the_constraint_of_type_1_but_1_could_be_instantiated_with_a_different_subtype_of_5075`
 - TS5078 `Unknown_watch_option_0_5078`
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
 - TS5080 `Watch_option_0_requires_a_value_of_type_1_5080`
+- TS5082 `_0_could_be_instantiated_with_an_arbitrary_type_which_could_be_unrelated_to_1_5082`
 
 ## Notes: heuristic false-positives & subsystem-gated clusters
 
@@ -442,14 +473,13 @@ dead. Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully catalog-only)
 
-502 codes. Listed for auditability; none should be `emitted`.
+468 codes. Listed for auditability; none should be `emitted`.
 
 <details><summary>Show dead codes</summary>
 
 - TS1055 `Type_0_is_not_a_valid_async_function_return_type_in_ES5_because_it_does_not_refer_to_a_Promise_compa_1055`
 - TS1056 `Accessors_are_only_available_when_targeting_ECMAScript_5_and_higher_1056`
 - TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
-- TS1195 `export_Asterisk_does_not_re_export_a_default_1195`
 - TS1236 `The_return_type_of_a_property_decorator_function_must_be_either_void_or_any_1236`
 - TS1237 `The_return_type_of_a_parameter_decorator_function_must_be_either_void_or_any_1237`
 - TS1259 `Module_0_can_only_be_default_imported_using_the_1_flag_1259`
@@ -466,7 +496,6 @@ dead. Confirm against this list before picking one:
 - TS1449 `Preserve_unused_imported_values_in_the_JavaScript_output_that_would_otherwise_be_removed_1449`
 - TS1455 `resolution_mode_is_the_only_valid_key_for_type_import_assertions_1455`
 - TS1456 `Type_import_assertions_should_have_exactly_one_key_resolution_mode_with_value_import_or_require_1456`
-- TS1476 `auto_Colon_Treat_files_with_imports_exports_import_meta_jsx_with_jsx_Colon_react_jsx_or_esm_format_w_1476`
 - TS1496 `Identifier_string_literal_or_number_literal_expected_1496`
 - TS2211 `Add_extends_constraint_2211`
 - TS2212 `Add_extends_constraint_to_all_type_parameters_2212`
@@ -478,7 +507,6 @@ dead. Confirm against this list before picking one:
 - TS2419 `Types_of_construct_signatures_are_incompatible_2419`
 - TS2458 `An_AMD_module_cannot_have_multiple_name_assignments_2458`
 - TS2472 `Spread_operator_in_new_expressions_is_only_available_when_targeting_ECMAScript_5_and_higher_2472`
-- TS2475 `const_enums_can_only_be_used_in_property_or_index_access_expressions_or_the_right_hand_side_of_an_im_2475`
 - TS2494 `Using_a_string_in_a_for_of_statement_is_only_supported_in_ECMAScript_5_and_higher_2494`
 - TS2520 `Duplicate_identifier_0_Compiler_uses_declaration_1_to_support_async_functions_2520`
 - TS2522 `The_arguments_object_cannot_be_referenced_in_an_async_function_or_method_in_ES5_Consider_using_a_sta_2522`
@@ -487,24 +515,14 @@ dead. Confirm against this list before picking one:
 - TS2548 `Type_0_is_not_an_array_type_or_does_not_have_a_Symbol_iterator_method_that_returns_an_iterator_2548`
 - TS2549 `Type_0_is_not_an_array_type_or_a_string_type_or_does_not_have_a_Symbol_iterator_method_that_returns__2549`
 - TS2553 `Computed_values_are_not_permitted_in_an_enum_with_string_valued_members_2553`
-- TS2585 `_0_only_refers_to_a_type_but_is_being_used_as_a_value_here_Do_you_need_to_change_your_target_library_2585`
 - TS2594 `This_module_is_declared_with_export_and_can_only_be_used_with_a_default_import_when_using_the_0_flag_2594`
 - TS2596 `_0_can_only_be_imported_by_turning_on_the_esModuleInterop_flag_and_using_a_default_import_2596`
-- TS2597 `_0_can_only_be_imported_by_using_a_require_call_or_by_using_a_default_import_2597`
 - TS2598 `_0_can_only_be_imported_by_using_a_require_call_or_by_turning_on_the_esModuleInterop_flag_and_using__2598`
 - TS2603 `Property_0_in_type_1_is_not_assignable_to_type_2_2603`
 - TS2606 `Property_0_of_JSX_spread_attribute_is_not_assignable_to_target_property_2606`
-- TS2616 `_0_can_only_be_imported_by_using_import_1_require_2_or_a_default_import_2616`
 - TS2617 `_0_can_only_be_imported_by_using_import_1_require_2_or_by_turning_on_the_esModuleInterop_flag_and_us_2617`
-- TS2634 `_0_index_signatures_are_incompatible_2634`
-- TS2668 `export_modifier_cannot_be_applied_to_ambient_modules_and_module_augmentations_since_they_are_always__2668`
-- TS2686 `_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686`
-- TS2690 `_0_only_refers_to_a_type_but_is_being_used_as_a_value_here_Did_you_mean_to_use_1_in_0_2690`
-- TS2692 `_0_is_a_primitive_but_1_is_a_wrapper_object_Prefer_using_0_when_possible_2692`
 - TS2733 `Property_0_was_also_declared_here_2733`
-- TS2749 `_0_refers_to_a_value_but_is_being_used_as_a_type_here_Did_you_mean_typeof_0_2749`
 - TS2772 `Overload_0_of_1_2_gave_the_following_error_2772`
-- TS2782 `_0_needs_an_explicit_type_annotation_2782`
 - TS2807 `This_syntax_requires_an_imported_helper_named_1_with_2_parameters_which_is_not_compatible_with_the_o_2807`
 - TS2811 `Initializer_for_property_0_2811`
 - TS2817 `Property_0_has_no_initializer_and_is_not_definitely_assigned_in_a_class_static_block_2817`
@@ -519,8 +537,6 @@ dead. Confirm against this list before picking one:
 - TS5012 `Cannot_read_file_0_Colon_1_5012`
 - TS5057 `Cannot_find_a_tsconfig_json_file_at_the_specified_directory_Colon_0_5057`
 - TS5074 `Option_incremental_can_only_be_specified_using_tsconfig_emitting_to_single_file_or_when_option_tsBui_5074`
-- TS5075 `_0_is_assignable_to_the_constraint_of_type_1_but_1_could_be_instantiated_with_a_different_subtype_of_5075`
-- TS5082 `_0_could_be_instantiated_with_an_arbitrary_type_which_could_be_unrelated_to_1_5082`
 - TS5104 `Option_0_is_redundant_and_cannot_be_specified_with_option_1_5104`
 - TS6001 `Concatenate_and_emit_output_to_single_file_6001`
 - TS6002 `Generates_corresponding_d_ts_file_6002`
@@ -576,10 +592,8 @@ dead. Confirm against this list before picking one:
 - TS6084 `Deprecated_Use_jsxFactory_instead_Specify_the_object_invoked_for_createElement_when_targeting_react__6084`
 - TS6085 `Enable_tracing_of_the_name_resolution_process_6085`
 - TS6094 `Resolving_module_name_0_relative_to_base_url_1_2_6094`
-- TS6100 `package_json_does_not_have_a_0_field_6100`
 - TS6102 `Allow_javascript_files_to_be_compiled_6102`
 - TS6106 `baseUrl_option_is_set_to_0_using_this_value_to_resolve_non_relative_module_name_1_6106`
-- TS6107 `rootDirs_option_is_set_using_it_to_resolve_relative_module_name_0_6107`
 - TS6112 `Do_not_emit_use_strict_directives_in_module_output_6112`
 - TS6113 `Enable_strict_null_checks_6113`
 - TS6115 `Raise_error_on_this_expressions_with_an_implied_any_type_6115`
@@ -627,12 +641,7 @@ dead. Confirm against this list before picking one:
 - TS6197 `Include_modules_imported_with_json_extension_6197`
 - TS6200 `Definitions_of_the_following_identifiers_conflict_with_those_in_another_file_Colon_0_6200`
 - TS6201 `Conflicts_are_in_this_file_6201`
-- TS6206 `package_json_has_a_typesVersions_field_with_version_specific_path_mappings_6206`
-- TS6207 `package_json_does_not_have_a_typesVersions_entry_that_matches_version_0_6207`
-- TS6208 `package_json_has_a_typesVersions_entry_0_that_matches_compiler_version_1_looking_for_a_pattern_to_ma_6208`
-- TS6209 `package_json_has_a_typesVersions_entry_0_that_is_not_a_valid_semver_range_6209`
 - TS6214 `Enable_strict_bind_call_and_apply_methods_on_functions_6214`
-- TS6220 `package_json_had_a_falsy_0_field_6220`
 - TS6221 `Disable_use_of_source_files_instead_of_declaration_files_from_referenced_projects_6221`
 - TS6222 `Emit_class_fields_with_Define_instead_of_Set_6222`
 - TS6223 `Generates_a_CPU_profile_6223`
@@ -645,10 +654,8 @@ dead. Confirm against this list before picking one:
 - TS6241 `Resolution_for_type_reference_directive_0_was_found_in_cache_from_location_1_6241`
 - TS6258 `_0_should_be_set_inside_the_compilerOptions_object_of_the_config_json_file_6258`
 - TS6262 `File_name_0_has_a_1_extension_looking_up_2_instead_6262`
-- TS6275 `package_json_scope_0_has_invalid_type_for_target_of_specifier_1_6275`
 - TS6279 `Resolution_of_non_relative_name_failed_trying_with_moduleResolution_bundler_to_see_if_project_may_ne_6279`
 - TS6280 `There_are_types_at_0_but_this_result_could_not_be_resolved_under_your_current_moduleResolution_setti_6280`
-- TS6281 `package_json_has_a_peerDependencies_field_6281`
 - TS6353 `Project_0_is_out_of_date_because_its_dependency_1_is_out_of_date_6353`
 - TS6380 `Specify_file_to_store_incremental_compilation_information_6380`
 - TS6384 `Have_recompiles_in_incremental_and_watch_assume_that_changes_within_a_file_will_only_affect_files_di_6384`
@@ -664,7 +671,6 @@ dead. Confirm against this list before picking one:
 - TS6397 `Reusing_resolution_of_type_reference_directive_0_from_1_found_in_cache_from_location_2_it_was_succes_6397`
 - TS6398 `Reusing_resolution_of_type_reference_directive_0_from_1_found_in_cache_from_location_2_it_was_not_re_6398`
 - TS6401 `Project_0_is_out_of_date_because_there_was_error_reading_file_1_6401`
-- TS6411 `true_when_moduleResolution_is_node16_nodenext_or_bundler_otherwise_false_6411`
 - TS6420 `Project_0_is_out_of_date_because_1_6420`
 - TS6505 `Print_names_of_files_and_the_reason_they_are_part_of_the_compilation_6505`
 - TS6600 `Allow_JavaScript_files_to_be_a_part_of_your_program_Use_the_checkJS_option_to_get_errors_from_these__6600`
@@ -685,19 +691,12 @@ dead. Confirm against this list before picking one:
 - TS6709 `Specify_options_for_automatic_acquisition_of_declaration_files_6709`
 - TS6717 `Require_undeclared_properties_from_index_signatures_to_use_element_accesses_6717`
 - TS6718 `Specify_emit_Slashchecking_behavior_for_imports_that_are_only_used_for_types_6718`
-- TS6900 `one_of_Colon_6900`
-- TS6901 `one_or_more_Colon_6901`
-- TS6902 `type_Colon_6902`
-- TS6903 `default_Colon_6903`
 - TS6904 `module_system_or_esModuleInterop_6904`
 - TS6905 `false_unless_strict_is_set_6905`
-- TS6906 `false_unless_composite_is_set_6906`
 - TS6907 `node_modules_bower_components_jspm_packages_plus_the_value_of_outDir_if_one_is_specified_6907`
 - TS6908 `if_files_is_specified_otherwise_Asterisk_Asterisk_Slash_Asterisk_6908`
 - TS6909 `true_if_composite_false_otherwise_6909`
-- TS6922 `tsc_Colon_The_TypeScript_Compiler_6922`
 - TS6927 `Compiles_the_TypeScript_project_located_at_the_specified_path_6927`
-- TS6930 `true_for_ES2022_and_above_including_ESNext_6930`
 - TS7037 `Enables_emit_interoperability_between_CommonJS_and_ES_Modules_via_creation_of_namespace_objects_for__7037`
 - TS7048 `Property_0_implicitly_has_type_any_but_a_better_type_for_its_get_accessor_may_be_inferred_from_usage_7048`
 - TS7049 `Property_0_implicitly_has_type_any_but_a_better_type_for_its_set_accessor_may_be_inferred_from_usage_7049`
@@ -707,7 +706,6 @@ dead. Confirm against this list before picking one:
 - TS9005 `Declaration_emit_for_this_file_requires_using_private_name_0_An_explicit_type_annotation_may_unblock_9005`
 - TS9006 `Declaration_emit_for_this_file_requires_using_private_name_0_from_module_1_An_explicit_type_annotati_9006`
 - TS18034 `Specify_the_JSX_fragment_factory_function_to_use_when_targeting_react_JSX_emit_with_jsxFactory_compi_18034`
-- TS18044 `_0_is_automatically_exported_here_18044`
 - TS69010 `module_AMD_or_UMD_or_System_or_ES6_then_Classic_Otherwise_Node_69010`
 - TS80001 `File_is_a_CommonJS_module_it_may_be_converted_to_an_ES_module_80001`
 - TS80002 `This_constructor_function_may_be_converted_to_a_class_declaration_80002`
@@ -715,7 +713,6 @@ dead. Confirm against this list before picking one:
 - TS80004 `JSDoc_types_may_be_moved_to_TypeScript_types_80004`
 - TS80005 `require_call_may_be_converted_to_an_import_80005`
 - TS80006 `This_may_be_converted_to_an_async_function_80006`
-- TS80007 `await_has_no_effect_on_the_type_of_this_expression_80007`
 - TS80009 `JSDoc_typedef_may_be_converted_to_TypeScript_type_80009`
 - TS80010 `JSDoc_typedefs_may_be_converted_to_TypeScript_types_80010`
 - TS90001 `Add_missing_super_call_90001`

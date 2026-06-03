@@ -51,11 +51,25 @@ const referenced = new Set(
   grep.split("\n").map((s) => s.replace("diagnostics.", "").trim()).filter(Boolean),
 );
 
+// Go identifiers for generated diagnostics may be prefixed to avoid invalid
+// or awkward exported names, while the catalogue key keeps the plain message
+// name (for example TS6281 is referenced as
+// diagnostics.X_package_json_has_a_peerDependencies_field).
+const generatedText = fs.readFileSync(path.join(refInternal, "diagnostics/diagnostics_generated.go"), "utf8");
+const generatedAliases = new Map();
+for (const m of generatedText.matchAll(
+  /^var\s+([A-Za-z0-9_]+)\s+=\s+&Message\{code:\s+(\d+),[^}]*key:\s+"([^"]+)"/gm,
+)) {
+  generatedAliases.set(m[3].replace(/_\d+$/, ""), m[1]);
+}
+
 function isReachable(name) {
   // Catalogue keys are truncated to a max length before the `_<code>`
   // suffix, so a referenced (untruncated) name may be longer than the key
   // name. Match on equality or referenced-name-startsWith-key-name.
   for (const r of referenced) if (r === name || r.startsWith(name)) return true;
+  const alias = generatedAliases.get(name);
+  if (alias && referenced.has(alias)) return true;
   return false;
 }
 
