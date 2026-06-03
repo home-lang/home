@@ -3994,6 +3994,9 @@ pub fn handleErrorReturnTrace(err: anytype, trace: anytype) void {
 // yet, so this exposes the individual libc symbols vendored Bun source needs.
 // `workaround_missing_symbols.zig` routes `memmem` through here on posix.
 pub const c = struct {
+    // posix_spawn flag bits (identical on macOS/Linux).
+    pub const POSIX_SPAWN_SETSIGDEF: c_int = 0x04;
+    pub const POSIX_SPAWN_SETSIGMASK: c_int = 0x08;
     pub extern fn memmem(
         haystack: ?[*]const u8,
         haystacklen: usize,

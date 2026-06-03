@@ -37,6 +37,7 @@ fn StringEnv(comptime name: []const u8) type {
     };
 }
 
+pub const PATH = StringEnv("PATH");
 pub const BUN_TMPDIR = StringEnv("BUN_TMPDIR");
 pub const BUN_INSTALL_GLOBAL_DIR = StringEnv("BUN_INSTALL_GLOBAL_DIR");
 pub const BUN_INSTALL = StringEnv("BUN_INSTALL");
