@@ -64,8 +64,25 @@ pub const sha = @import("sha_hmac/sha.zig");
 pub const dns = @import("dns/dns.zig");
 /// Faithful to upstream `bun.zig:1442` (`Watcher = @import("./watcher/Watcher.zig")`).
 pub const Watcher = @import("watcher/Watcher.zig");
-pub const SliceIterator = @import("bun.zig").SliceIterator;
-pub const which = @import("bun.zig").which;
+/// Inlined from upstream bun.zig:SliceIterator (avoid importing bun.zig's
+/// broken-WIP graph via a re-export).
+pub fn SliceIterator(comptime T: type) type {
+    return struct {
+        items: []const T,
+        index: usize = 0,
+
+        pub fn init(items: []const T) @This() {
+            return .{ .items = items };
+        }
+
+        pub fn next(this: *@This()) ?T {
+            if (this.index >= this.items.len) return null;
+            defer this.index += 1;
+            return this.items[this.index];
+        }
+    };
+}
+pub const which = @import("which/which.zig").which;
 /// Faithful to upstream `bun.zig:222` (`trait = @import("./meta/traits.zig")`).
 pub const trait = @import("meta/traits.zig");
 // Top-level bun.zig members (modules + small helpers) the copied source spells

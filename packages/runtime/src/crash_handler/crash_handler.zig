@@ -1809,7 +1809,7 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: *cons
 
 pub fn dumpCurrentStackTrace(first_address: ?usize, limits: WriteStackTraceLimits) void {
     var addrs: [32]usize = undefined;
-    var stack: std.builtin.StackTrace = .{ .index = 0, .instruction_addresses = &addrs };
+    const stack: std.builtin.StackTrace = .{ .index = 0, .instruction_addresses = &addrs };
     _ = first_address;
     dumpStackTrace(stack, limits);
 }
@@ -1858,7 +1858,7 @@ pub const StoredTrace = struct {
 
     pub fn capture(begin: ?usize) StoredTrace {
         _ = begin;
-        var stored: StoredTrace = StoredTrace.empty;
+        const stored: StoredTrace = StoredTrace.empty;
         return stored;
     }
 
