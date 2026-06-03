@@ -394,6 +394,14 @@ pub const Resolver = struct {
             // whose `package.json` declares a matching `name` + `exports`.
             if (try self.trySelfNameReference(specifier, containing_file)) |r| return r;
         }
+        if (looksLikeAbsoluteUriSpecifier(specifier)) {
+            self.traceMsg(
+                6164,
+                "Skipping module '{s}' that looks like an absolute URI, target file types: {s}.",
+                .{ specifier, self.targetFileTypesText() },
+            );
+            return error.NotFound;
+        }
         if (try self.tryNodeModules(specifier, containing_file)) |r| {
             return try self.attachExportsAlternateResult(r, specifier, containing_file);
         }
@@ -1449,6 +1457,10 @@ fn isAbsolute(s: []const u8) bool {
     return false;
 }
 
+fn looksLikeAbsoluteUriSpecifier(s: []const u8) bool {
+    return std.mem.indexOfScalar(u8, s, ':') != null;
+}
+
 fn hasKnownExtension(s: []const u8) bool {
     const exts = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts", ".hm", ".home", ".d.hm", ".d.home", ".js", ".jsx", ".mjs", ".cjs" };
     for (exts) |e| if (std.mem.endsWith(u8, s, e)) return true;
@@ -1855,6 +1867,31 @@ test "Resolver: not-found resolution traces TS6090" {
         if (e.code == 6090) saw_6090 = true;
     }
     try T.expect(saw_6090);
+}
+
+test "Resolver: trace skips absolute URI-looking specifiers with TS6164" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/main.ts", "import 'https://example.com/mod.js';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    try T.expectError(error.NotFound, r.resolve("https://example.com/mod.js", "/proj/src/main.ts"));
+    var saw_6164 = false;
+    var saw_6098 = false;
+    for (sink.entries.items) |e| {
+        switch (e.code) {
+            6164 => saw_6164 = true,
+            6098 => saw_6098 = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_6164);
+    try T.expect(!saw_6098);
 }
 
 test "Resolver: no trace sink means no tracing overhead (entries stay empty)" {
