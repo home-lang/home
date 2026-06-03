@@ -3801,7 +3801,7 @@ fn parseStrictDirectiveState(source: []const u8) ?ParsedStrictDirectives {
         const value = parseDirectiveBool(body[colon + 1 ..]) orelse continue;
         if (setStrictDirective(&state, name, value)) {
             seen = true;
-            if (std.mem.eql(u8, name, "strict")) {
+            if (std.ascii.eqlIgnoreCase(name, "strict")) {
                 strict_explicit = true;
             } else if (isStrictFamilyDirective(name)) {
                 has_strict_family = true;
@@ -3817,11 +3817,11 @@ fn parseStrictDirectiveState(source: []const u8) ?ParsedStrictDirectives {
 }
 
 fn isStrictFamilyDirective(name: []const u8) bool {
-    return std.mem.eql(u8, name, "noImplicitAny") or
-        std.mem.eql(u8, name, "strictFunctionTypes") or
-        std.mem.eql(u8, name, "strictNullChecks") or
-        std.mem.eql(u8, name, "strictPropertyInitialization") or
-        std.mem.eql(u8, name, "useUnknownInCatchVariables");
+    return std.ascii.eqlIgnoreCase(name, "noImplicitAny") or
+        std.ascii.eqlIgnoreCase(name, "strictFunctionTypes") or
+        std.ascii.eqlIgnoreCase(name, "strictNullChecks") or
+        std.ascii.eqlIgnoreCase(name, "strictPropertyInitialization") or
+        std.ascii.eqlIgnoreCase(name, "useUnknownInCatchVariables");
 }
 
 /// Strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) so directive scanners
@@ -4215,41 +4215,41 @@ fn parseDirectiveBool(raw: []const u8) ?bool {
 }
 
 fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: bool) bool {
-    if (std.mem.eql(u8, name, "strict")) {
+    if (std.ascii.eqlIgnoreCase(name, "strict")) {
         state.strict = value;
-    } else if (std.mem.eql(u8, name, "noImplicitAny")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "noImplicitAny")) {
         state.no_implicit_any = value;
-    } else if (std.mem.eql(u8, name, "noUnusedParameters")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "noUnusedParameters")) {
         state.no_unused_parameters = value;
-    } else if (std.mem.eql(u8, name, "noUnusedLocals")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "noUnusedLocals")) {
         state.no_unused_locals = value;
-    } else if (std.mem.eql(u8, name, "strictFunctionTypes")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "strictFunctionTypes")) {
         state.strict_function_types = value;
-    } else if (std.mem.eql(u8, name, "strictNullChecks")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "strictNullChecks")) {
         state.strict_null_checks = value;
-    } else if (std.mem.eql(u8, name, "strictPropertyInitialization")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "strictPropertyInitialization")) {
         state.strict_property_initialization = value;
-    } else if (std.mem.eql(u8, name, "noUncheckedIndexedAccess")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "noUncheckedIndexedAccess")) {
         state.no_unchecked_indexed_access = value;
-    } else if (std.mem.eql(u8, name, "isolatedModules")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "isolatedModules")) {
         state.isolated_modules = value;
-    } else if (std.mem.eql(u8, name, "resolveJsonModule")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "resolveJsonModule")) {
         state.resolve_json_module = value;
-    } else if (std.mem.eql(u8, name, "exactOptionalPropertyTypes")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "exactOptionalPropertyTypes")) {
         state.exact_optional_property_types = value;
-    } else if (std.mem.eql(u8, name, "noPropertyAccessFromIndexSignature")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "noPropertyAccessFromIndexSignature")) {
         state.no_property_access_from_index_signature = value;
-    } else if (std.mem.eql(u8, name, "noImplicitOverride")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "noImplicitOverride")) {
         state.no_implicit_override = value;
-    } else if (std.mem.eql(u8, name, "noImplicitReturns")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "noImplicitReturns")) {
         state.no_implicit_returns = value;
-    } else if (std.mem.eql(u8, name, "noFallthroughCasesInSwitch")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "noFallthroughCasesInSwitch")) {
         state.no_fallthrough_cases_in_switch = value;
-    } else if (std.mem.eql(u8, name, "useUnknownInCatchVariables")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "useUnknownInCatchVariables")) {
         state.use_unknown_in_catch_variables = value;
-    } else if (std.mem.eql(u8, name, "isolatedDeclarations")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "isolatedDeclarations")) {
         state.isolated_declarations = value;
-    } else if (std.mem.eql(u8, name, "declaration")) {
+    } else if (std.ascii.eqlIgnoreCase(name, "declaration")) {
         state.declaration = value;
     } else {
         return false;
@@ -4611,6 +4611,16 @@ test "conformance: parses strict directives into checker flags" {
     try T.expect(flags.no_unused_locals);
     try T.expect(!flags.no_unused_parameters);
     try T.expect(flags.use_unknown_in_catch_variables);
+}
+
+test "conformance: strict directive names are case-insensitive" {
+    const flags = parseStrictDirectiveFlags(
+        \\//@noimplicitany: true
+        \\// @STRICTNULLCHECKS: false
+        \\let xs: number[] = [null];
+    ).?;
+    try T.expect(flags.no_implicit_any);
+    try T.expect(!flags.strict_null_checks);
 }
 
 test "conformance: parseStrictDirectiveState distinguishes sub-strict overrides" {
