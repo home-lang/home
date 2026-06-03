@@ -1542,7 +1542,7 @@ pub fn spawnProcessPosix(
                     try bun.sys.setNonblocking(fds[0]).unwrap();
                 }
 
-                try actions.dup2(fds[1], fileno.native());
+                try actions.dup2(fds[1].native(), fileno.native());
                 if (fds[1] != fileno)
                     try actions.close(fds[1]);
 
@@ -1591,7 +1591,7 @@ pub fn spawnProcessPosix(
                 try to_close_at_end.append(fds[1]);
                 try to_close_on_error.append(fds[0]);
 
-                try actions.dup2(fds[1], fileno.native());
+                try actions.dup2(fds[1].native(), fileno.native());
                 if (fds[1] != fileno)
                     try actions.close(fds[1]);
                 try extra_fds.append(.{ .owned_fd = fds[0] });
