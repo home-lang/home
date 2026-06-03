@@ -2489,7 +2489,7 @@ pub const io = struct {
         pub const Poll = struct {
             flags: PollFlags = .{},
 
-            pub fn isRegistered(this: Poll) bool {
+            pub fn isRegistered(this: @This()) bool {
                 _ = this;
                 return false;
             }
@@ -4011,6 +4011,7 @@ pub const c = struct {
     pub const POSIX_SPAWN_SETSIGDEF: c_int = 0x04;
     pub const POSIX_SPAWN_SETSIGMASK: c_int = 0x08;
     pub const POSIX_SPAWN_CLOEXEC_DEFAULT: c_int = 0x4000; // Darwin-only flag
+    pub const POSIX_SPAWN_SETEXEC: c_int = 0x0040; // Darwin-only flag
     pub extern fn memmem(
         haystack: ?[*]const u8,
         haystacklen: usize,
