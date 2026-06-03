@@ -5550,11 +5550,14 @@ pub const Parser = struct {
                     }
                     default_value = try self.parseAssignmentExpression();
                 }
+                const recovered_unknown_keyword = try self.reportUnknownKeywordOrIdentifierSuggestionForClassProperty(name_tok, type_anno, default_value);
                 try self.reportClassPropertyDefiniteAssignment(definite_assignment_token, type_anno, default_value, mods, member_start.span.start);
                 if (mods.is_accessor) {
                     try self.reportOptionalAutoAccessor(optional_member_token);
                 }
-                try self.consumeClassPropertyTerminator();
+                if (!recovered_unknown_keyword) {
+                    try self.consumeClassPropertyTerminator();
+                }
                 if (name_tok.kind == .private_identifier) {
                     try self.reportPrivateIdentifierTargetDiagnostic(name_tok);
                     try self.reportPrivateIdentifierModifierDiagnostics(mods, true);
@@ -6164,6 +6167,104 @@ pub const Parser = struct {
         const mod_name = self.source[bad.span.start..bad.span.end];
         const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
         try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
+    }
+
+    fn reportUnknownKeywordOrIdentifierSuggestionForClassProperty(
+        self: *Parser,
+        name_tok: Token,
+        type_anno: NodeId,
+        default_value: NodeId,
+    ) ParseError!bool {
+        if (type_anno != hir_mod.none_node_id or default_value != hir_mod.none_node_id) return false;
+        const next = self.peek();
+        if (next.kind == .eof or
+            next.kind == .close_brace or
+            next.kind == .semicolon or
+            next.flags.preceded_by_newline)
+        {
+            return false;
+        }
+        const name_text = self.source[name_tok.span.start..name_tok.span.end];
+        const suggestion = try self.classMemberKeywordSuggestion(name_text) orelse return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Unknown keyword or identifier. Did you mean '{s}'?",
+            .{suggestion},
+        );
+        try self.reportCodeAt(name_tok.span.start, name_tok.line, 1435, msg);
+        self.skipMalformedClassFieldTail();
+        return true;
+    }
+
+    fn classMemberKeywordSuggestion(self: *Parser, name: []const u8) ParseError!?[]const u8 {
+        const candidates = [_][]const u8{
+            "abstract",
+            "accessor",
+            "async",
+            "class",
+            "const",
+            "constructor",
+            "declare",
+            "export",
+            "extends",
+            "function",
+            "implements",
+            "interface",
+            "let",
+            "module",
+            "namespace",
+            "private",
+            "protected",
+            "public",
+            "readonly",
+            "static",
+            "type",
+            "var",
+        };
+        if (try self.spaceSeparatedKeywordSuggestion(name, &candidates)) |suggestion| return suggestion;
+        var best: ?[]const u8 = null;
+        var best_distance: usize = std.math.maxInt(usize);
+        for (candidates) |candidate| {
+            const distance = levenshteinIcase(name, candidate);
+            if (distance < best_distance) {
+                best = candidate;
+                best_distance = distance;
+            }
+        }
+        const threshold = @max(@as(usize, 2), name.len / 4);
+        return if (best != null and best_distance <= threshold) best else null;
+    }
+
+    fn spaceSeparatedKeywordSuggestion(self: *Parser, name: []const u8, candidates: []const []const u8) ParseError!?[]const u8 {
+        for (candidates) |candidate| {
+            if (name.len > candidate.len + 2 and std.mem.startsWith(u8, name, candidate)) {
+                return try std.fmt.allocPrint(self.diag_arena.allocator(), "{s} {s}", .{ candidate, name[candidate.len..] });
+            }
+        }
+        return null;
+    }
+
+    fn levenshteinIcase(a: []const u8, b: []const u8) usize {
+        var previous_buf: [128]usize = undefined;
+        var current_buf: [128]usize = undefined;
+        if (b.len + 1 > previous_buf.len) return std.math.maxInt(usize);
+        for (0..b.len + 1) |i| previous_buf[i] = i;
+        var i: usize = 0;
+        while (i < a.len) : (i += 1) {
+            current_buf[0] = i + 1;
+            var j: usize = 0;
+            while (j < b.len) : (j += 1) {
+                const ca = std.ascii.toLower(a[i]);
+                const cb = std.ascii.toLower(b[j]);
+                const cost: usize = if (ca == cb) 0 else 1;
+                const del = previous_buf[j + 1] + 1;
+                const ins = current_buf[j] + 1;
+                const sub = previous_buf[j] + cost;
+                current_buf[j + 1] = @min(@min(del, ins), sub);
+            }
+            @memcpy(previous_buf[0 .. b.len + 1], current_buf[0 .. b.len + 1]);
+        }
+        return previous_buf[b.len];
     }
 
     fn reportMissingClassMemberImplementation(self: *Parser, member_start: Token, mods: ClassModifiers) ParseError!void {
@@ -17566,6 +17667,46 @@ test "parser: TS1031 fires for `export` modifier on class member" {
         if (d.code == 1031) saw_1031 += 1;
     }
     try T.expect(saw_1031 >= 1);
+}
+
+test "parser: TS1435 suggests misspelled class member keyword" {
+    // Mirrors upstream `parseErrorForMissingSemicolonAfter`: a class
+    // field named `pubic` followed by another same-line identifier is
+    // treated as a misspelled keyword, not a valid field plus TS1005.
+    const src = "class C { pubic x: string }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1435) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Unknown keyword or identifier. Did you mean 'public'?", d.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "pubic").?)), d.pos);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
+}
+
+test "parser: TS1435 suggests missing space after class member keyword" {
+    const src = "class C { publicField x: string }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1435) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Unknown keyword or identifier. Did you mean 'public Field'?", d.message);
+}
+
+test "parser: TS1435 stays clean for ordinary class properties" {
+    const cases = [_][]const u8{
+        "class C { public: number; }",
+        "class C { publicField: string; }",
+        "class C { abstract; }",
+        "class C { static = 1; }",
+        "class C { readonly!: T; }",
+        "class C { private?: string; }",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1435));
+    }
 }
 
 test "parser: TS1390 fires for reserved keywords used as a parameter name" {
