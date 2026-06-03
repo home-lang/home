@@ -384,6 +384,10 @@ pub const Resolver = struct {
             // `#`-prefixed private subpath imports resolve against the
             // nearest enclosing `package.json` `imports` map.
             if (specifier.len > 0 and specifier[0] == '#') {
+                if (std.mem.eql(u8, specifier, "#") or std.mem.startsWith(u8, specifier, "#/")) {
+                    self.traceMsg(6272, "Invalid import specifier '{s}' has no possible resolutions.", .{specifier});
+                    return error.NotFound;
+                }
                 if (try self.tryImportsMapping(specifier, containing_file)) |r| return r;
                 // A `#`-prefixed specifier never resolves through
                 // node_modules; if the imports map didn't cover it, it's
@@ -483,7 +487,11 @@ pub const Resolver = struct {
         specifier: []const u8,
         containing_file: []const u8,
     ) ResolveError!?Resolution {
-        const scope = (try self.getPackageScope(containing_file)) orelse return null;
+        const scope = (try self.getPackageScope(containing_file)) orelse {
+            const directory_path = dirname(containing_file);
+            self.traceMsg(6270, "Directory '{s}' has no containing package.json scope. Imports will not resolve.", .{directory_path});
+            return null;
+        };
         const bytes = self.fs.readFile(self.gpa, scope.pkg_json) catch return null;
         defer self.gpa.free(bytes);
         var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return null;
@@ -3302,6 +3310,47 @@ test "Resolver: #imports — unmatched `#` specifier is a hard NotFound" {
     var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
     defer r.deinit();
     try T.expectError(error.NotFound, r.resolve("#unknown", "/proj/src/main.ts"));
+}
+
+test "Resolver: #imports — invalid specifier traces TS6272" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{ "name": "my-pkg", "imports": { "#known": "./known.d.ts" } }
+    );
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    r.trace = &sink;
+
+    try T.expectError(error.NotFound, r.resolve("#", "/proj/src/main.ts"));
+    var saw_6272 = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6272) saw_6272 = true;
+    }
+    try T.expect(saw_6272);
+}
+
+test "Resolver: #imports — missing package scope traces TS6270" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    r.trace = &sink;
+
+    try T.expectError(error.NotFound, r.resolve("#unknown", "/proj/src/main.ts"));
+    var saw_6270 = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6270) saw_6270 = true;
+    }
+    try T.expect(saw_6270);
 }
 
 test "Resolver: #imports — disabled under classic strategy" {
