@@ -327,7 +327,7 @@ const RouteLoader = struct {
             .config = config,
             .static_list = bun.StringHashMap(*Route).init(allocator),
             .dedupe_dynamic = bun.AutoArrayHashMap(u32, string).init(allocator),
-            .all_routes = .{},
+            .all_routes = .empty,
             .route_dirname_len = route_dirname_len,
         };
         defer this.dedupe_dynamic.deinit();

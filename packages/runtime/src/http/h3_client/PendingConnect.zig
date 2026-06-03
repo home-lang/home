@@ -294,7 +294,7 @@ test "failSession: empties pending and decrements live_sessions" {
     _ = H3.live_sessions.fetchAdd(1, .monotonic);
     const before = H3.live_sessions.load(.monotonic);
 
-    failSession(&session, error.Aborted);
+    failSession(session, error.Aborted);
 
     try std.testing.expect(session.closed);
     try std.testing.expectEqual(@as(usize, 0), session.pending.items.len);

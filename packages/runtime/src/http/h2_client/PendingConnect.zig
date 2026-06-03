@@ -97,7 +97,7 @@ test "PendingConnect.unregisterFrom: removes the matching entry" {
         .ssl_config = null,
     };
 
-    var ctx: NewHTTPContext = .{};
+    var ctx: NewHTTPContext(false) = .{};
     defer ctx.pending_h2_connects.deinit(home_rt.default_allocator);
 
     try ctx.pending_h2_connects.append(home_rt.default_allocator, &pc_a);
