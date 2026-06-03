@@ -1872,6 +1872,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         }
     }
     actual_count += try appendTsconfigPathsValidationDiagnostics(gpa, virtual_files.items, &actual_lines);
+    actual_count += try appendJsonModuleValidationDiagnostics(gpa, virtual_files.items, &actual_lines);
     if (exact_mode) {
         std.mem.sort(ActualDiagnosticLine, actual_lines.items, {}, ActualDiagnosticLine.lessThan);
     }
@@ -2810,6 +2811,138 @@ fn appendOneTsconfigPathsValidationDiagnostics(
         i = jsonValueEnd(src, i) orelse (i + 1);
     }
     return count;
+}
+
+fn appendJsonModuleValidationDiagnostics(
+    gpa: std.mem.Allocator,
+    virtual_files: []const VirtualFile,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !u32 {
+    var count: u32 = 0;
+    for (virtual_files) |file| {
+        if (!isJsonModuleVirtualPath(file.path)) continue;
+        count += try appendOneJsonModuleValidationDiagnostics(gpa, file, actual_lines);
+    }
+    return count;
+}
+
+fn appendOneJsonModuleValidationDiagnostics(
+    gpa: std.mem.Allocator,
+    file: VirtualFile,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !u32 {
+    const src = file.source;
+    var count: u32 = 0;
+    var i: usize = 0;
+    while (i < src.len) {
+        i = skipJsonTrivia(src, i);
+        if (i >= src.len) break;
+        switch (src[i]) {
+            '{' => {
+                i += 1;
+                while (i < src.len) {
+                    i = skipJsonTrivia(src, i);
+                    if (i >= src.len or src[i] == '}') break;
+                    if (src[i] == ',') {
+                        i += 1;
+                        continue;
+                    }
+                    if (src[i] != '"') {
+                        try appendJsonDoubleQuoteDiagnostic(gpa, file, @intCast(i), actual_lines);
+                        count += 1;
+                        i = skipInvalidJsonObjectMember(src, i);
+                        continue;
+                    }
+                    const key_end = jsonStringEnd(src, i) orelse break;
+                    i = skipJsonTrivia(src, key_end);
+                    if (i < src.len and src[i] == ':') {
+                        i = jsonValueEnd(src, skipJsonTrivia(src, i + 1)) orelse (i + 1);
+                    }
+                }
+            },
+            '[' => {
+                i = jsonValueEnd(src, i) orelse (i + 1);
+            },
+            else => i += 1,
+        }
+    }
+    return count;
+}
+
+fn skipInvalidJsonObjectMember(src: []const u8, start: usize) usize {
+    var i = start;
+    while (i < src.len and src[i] != ':' and src[i] != ',' and src[i] != '}') i += 1;
+    if (i < src.len and src[i] == ':') {
+        i = skipJsonTrivia(src, i + 1);
+        return jsonValueEnd(src, i) orelse i;
+    }
+    return i;
+}
+
+fn appendJsonDoubleQuoteDiagnostic(
+    gpa: std.mem.Allocator,
+    file: VirtualFile,
+    pos_byte: u32,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !void {
+    const msg = "String literal with double quotes expected.";
+    const pos = ts_diagnostics.positionToLineCol(file.source, pos_byte);
+    var diag_path = file.path;
+    if (std.mem.startsWith(u8, diag_path, "./")) diag_path = diag_path[2..];
+    const fdiag: ts_diagnostics.Diagnostic = .{
+        .file = diag_path,
+        .line = pos.line,
+        .col = pos.col,
+        .code = 1327,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = msg,
+        .span_len = 1,
+    };
+    const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
+    try actual_lines.append(gpa, .{
+        .file = diag_path,
+        .line = pos.line,
+        .col = pos.col,
+        .order = actual_lines.items.len,
+        .text = formatted,
+    });
+}
+
+fn isJsonModuleVirtualPath(path: []const u8) bool {
+    if (!std.mem.endsWith(u8, path, ".json")) return false;
+    if (isTsConfigVirtualPath(path)) return false;
+    var p = path;
+    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    return !std.ascii.eqlIgnoreCase(p, "package.json") and
+        !std.mem.endsWith(u8, p, "/package.json");
+}
+
+test "conformance: JSON module validation reports TS1327 for computed property key" {
+    const file = VirtualFile{
+        .path = "b.json",
+        .source =
+        \\{
+        \\    [a]: 10
+        \\}
+        ,
+        .extra_strip = 0,
+    };
+    var actual_lines: std.ArrayListUnmanaged(ActualDiagnosticLine) = .empty;
+    defer {
+        for (actual_lines.items) |line| std.testing.allocator.free(line.text);
+        actual_lines.deinit(std.testing.allocator);
+    }
+
+    const count = try appendJsonModuleValidationDiagnostics(std.testing.allocator, &.{file}, &actual_lines);
+
+    try std.testing.expectEqual(@as(u32, 1), count);
+    try std.testing.expectEqual(@as(usize, 1), actual_lines.items.len);
+    try std.testing.expectEqualStrings(
+        "b.json(2,5): error TS1327: String literal with double quotes expected.",
+        actual_lines.items[0].text,
+    );
 }
 
 fn skipJsonTrivia(src: []const u8, start: usize) usize {
