@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 859 |
-| reachable (parity targets) | 391 |
+| catalog-only total | 851 |
+| reachable (parity targets) | 383 |
 | dead in tsgo (leave catalog-only) | 468 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 98 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 90 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -191,7 +191,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (98)
+### 6xxx — CLI / build / watch / resolution-trace messages (90)
 
 - TS6041 `Errors_Files_6041`
 - TS6104 `Checking_if_0_is_the_longest_matching_prefix_for_1_2_6104`
@@ -249,17 +249,9 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6383 `Project_0_can_t_be_built_because_its_dependency_1_was_not_built_6383`
 - TS6399 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_some_of_the_changes_were_not_emitte_6399`
 - TS6400 `Project_0_is_up_to_date_but_needs_to_update_timestamps_of_output_files_that_are_older_than_input_fil_6400`
-- TS6402 `Resolving_in_0_mode_with_conditions_1_6402`
-- TS6403 `Matched_0_condition_1_6403`
-- TS6404 `Using_0_subpath_1_with_target_2_6404`
-- TS6405 `Saw_non_matching_condition_0_6405`
 - TS6406 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_there_is_change_in_compilerOptions_6406`
 - TS6411 `true_when_moduleResolution_is_node16_nodenext_or_bundler_otherwise_false_6411`
 - TS6412 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_file_2_was_root_file_of_compilation_6412`
-- TS6413 `Entering_conditional_exports_6413`
-- TS6414 `Resolved_under_condition_0_6414`
-- TS6415 `Failed_to_resolve_under_condition_0_6415`
-- TS6416 `Exiting_conditional_exports_6416`
 - TS6417 `Searching_all_ancestor_node_modules_directories_for_preferred_extensions_Colon_0_6417`
 - TS6418 `Searching_all_ancestor_node_modules_directories_for_fallback_extensions_Colon_0_6418`
 - TS6419 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_program_needs_to_report_errors_6419`
