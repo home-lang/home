@@ -645,6 +645,11 @@ pub const Resolver = struct {
     /// Probe `base` then `base.ext` for each configured extension and
     /// `.d.ts`. Returns the first hit.
     fn tryFileWithExtensions(self: *Resolver, base: []const u8) ResolveError!?Resolution {
+        self.traceMsg(
+            6095,
+            "Loading module as file / folder, candidate module location '{s}', target file types: {s}.",
+            .{ base, self.targetFileTypesText() },
+        );
         // Direct file with explicit extension first. `.json` is gated on
         // `resolveJsonModule` per tsc — otherwise even
         // `import "./data.json"` is left unresolved.
@@ -1671,7 +1676,7 @@ test "Resolver: relative .ts file" {
     try T.expectEqual(Resolution.Source.relative, res.source);
 }
 
-test "Resolver: --traceResolution emits TS6086/6089/6096/6097 banners and file probes" {
+test "Resolver: --traceResolution emits TS6086/6089/6095/6096/6097 banners and file probes" {
     var vfs = VirtualFs.init(T.allocator);
     defer vfs.deinit();
     try vfs.addFile("/proj/src/foo.ts", "export const x = 1;");
@@ -1688,17 +1693,20 @@ test "Resolver: --traceResolution emits TS6086/6089/6096/6097 banners and file p
 
     var saw_6086 = false;
     var saw_6089 = false;
+    var saw_6095 = false;
     var saw_6097 = false;
     for (sink.entries.items) |e| {
         switch (e.code) {
             6086 => saw_6086 = true,
             6089 => saw_6089 = true,
+            6095 => saw_6095 = true,
             6097 => saw_6097 = true,
             else => {},
         }
     }
     try T.expect(saw_6086);
     try T.expect(saw_6089);
+    try T.expect(saw_6095);
     try T.expect(saw_6097);
 }
 
