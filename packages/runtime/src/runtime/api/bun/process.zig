@@ -646,7 +646,7 @@ pub const Status = union(enum) {
                 }
 
                 if (std.posix.W.IFSIGNALED(result.status)) {
-                    signal = @as(u8, @truncate(std.posix.W.TERMSIG(result.status)));
+                    signal = @as(u8, @truncate(@intFromEnum(std.posix.W.TERMSIG(result.status))));
                 }
 
                 // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/waitpid.2.html
@@ -1042,7 +1042,7 @@ const WaiterThreadPosix = struct {
                 _ = std.posix.poll(&polls, std.math.maxInt(i32)) catch 0;
             } else {
                 var mask = std.posix.sigemptyset();
-                var signal: c_int = std.posix.SIG.CHLD;
+                var signal: c_int = @intFromEnum(std.posix.SIG.CHLD);
                 const rc = std.c.sigwait(&mask, &signal);
                 _ = rc;
             }
@@ -1556,7 +1556,7 @@ pub fn spawnProcessPosix(
     }
 
     if (dup_stdout_to_stderr) {
-        try actions.dup2(stdio_options[1].dup2.to.toFd(), stdio_options[1].dup2.out.toFd());
+        try actions.dup2(stdio_options[1].dup2.to.toFd().native(), stdio_options[1].dup2.out.toFd().native());
     }
 
     for (options.extra_fds, 0..) |ipc, i| {
