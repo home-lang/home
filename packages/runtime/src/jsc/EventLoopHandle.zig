@@ -73,6 +73,10 @@ pub const EventLoopHandle = union(EventLoopKind) {
         return this.bunVM().?.transpiler.env.map.createNullDelimitedEnvMap(alloc);
     }
 
+    pub fn env(this: EventLoopHandle) *home_rt.DotEnv.Loader {
+        return this.bunVM().?.transpiler.env;
+    }
+
     pub fn stdout(this: EventLoopHandle) *home_rt.jsc.WebCore.Blob.Store {
         return switch (this) {
             .js => this.js.virtual_machine.rareData().stdout(),

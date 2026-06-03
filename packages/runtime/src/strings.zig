@@ -11,6 +11,11 @@ pub const string = []const u8;
 
 pub const CodepointIterator = @import("string/immutable.zig").CodepointIterator;
 pub const trimSubsequentLeadingChars = @import("string/immutable.zig").trimSubsequentLeadingChars;
+/// Upstream bun.strings.utf8ByteSequenceLength returns u3 (0 for an invalid
+/// leading byte) rather than std.unicode's error union.
+pub fn utf8ByteSequenceLength(first_byte: u8) u3 {
+    return @import("std").unicode.utf8ByteSequenceLength(first_byte) catch 0;
+}
 pub const Encoding = @import("string/immutable.zig").Encoding;
 pub const EncodingNonAscii = @import("string/immutable.zig").EncodingNonAscii;
 pub const AsciiStatus = @import("string/immutable.zig").AsciiStatus;
