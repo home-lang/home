@@ -4,23 +4,18 @@
 // home_rt.env_var; bun.Output.scoped → home_rt.Output.scoped. Same wave-15
 // stubs as the sibling DebugSocketMonitorReader.zig.
 
-var file: std.fs.File = undefined;
 pub var enabled = false;
-pub var check = std.once(load);
+pub var check = home_rt.once(load);
 
 pub fn load() void {
     if (home_rt.env_var.BUN_POSTGRES_SOCKET_MONITOR_WRITER.get()) |monitor| {
-        enabled = true;
-        file = std.fs.cwd().createFile(monitor, .{ .truncate = true }) catch {
-            enabled = false;
-            return;
-        };
+        enabled = false;
         debug("duplicating writes to {s}", .{monitor});
     }
 }
 
 pub fn write(data: []const u8) void {
-    file.writeAll(data) catch {};
+    _ = data;
 }
 
 const debug = home_rt.Output.scoped(.Postgres, .visible);

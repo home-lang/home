@@ -247,7 +247,43 @@ pub const Tag = enum(short) {
         };
     }
 
-    // JSC-bridge toJSTypedArrayType / toJS / fromJS omitted — re-lands in Phase 12.2.
+    // JSC-bridge `toJSTypedArrayType` / `toJS` omitted — re-lands in Phase 12.2.
+    pub fn fromJS(globalObject: *home_rt.jsc.JSGlobalObject, value: home_rt.jsc.JSValue) home_rt.JSError!Tag {
+        if (value.isEmptyOrUndefinedOrNull()) return .numeric;
+
+        if (value.isCell()) {
+            const value_type = value.jsType();
+            if (value_type.isStringLike()) return .text;
+            if (value_type == .JSDate) return .timestamptz;
+            if (value_type.isTypedArrayOrArrayBuffer()) {
+                if (value_type == .Int32Array) return .int4_array;
+                return .bytea;
+            }
+            if (value_type == .HeapBigInt) return .int8;
+            if (value_type.isArrayLike()) return .json;
+            if (value_type == .NumberObject) {
+                return globalObject.ERR(.INVALID_ARG_TYPE, "Number object is ambiguous and cannot be used as a PostgreSQL type", .{}).throw();
+            }
+            if (value_type == .BooleanObject) {
+                return globalObject.ERR(.INVALID_ARG_TYPE, "Boolean object is ambiguous and cannot be used as a PostgreSQL type", .{}).throw();
+            }
+            if (!value_type.isIndexable()) {
+                return globalObject.ERR(.INVALID_ARG_TYPE, "Unknown object is not a valid PostgreSQL type", .{}).throw();
+            }
+            if (value_type.isObject()) return .json;
+        }
+
+        if (value.isInt32()) return .int4;
+        if (value.isAnyInt()) {
+            const int = value.toInt64();
+            if (int >= std.math.minInt(i32) and int <= std.math.maxInt(i32)) return .int4;
+            return .int8;
+        }
+        if (value.isNumber()) return .float8;
+        if (value.isBoolean()) return .bool;
+
+        return .numeric;
+    }
 
     pub fn byteArrayType(comptime T: Tag) !type {
         return comptime switch (T) {
@@ -265,6 +301,7 @@ pub const Tag = enum(short) {
 };
 
 const std = @import("std");
+const home_rt = @import("home");
 
 const int_types = @import("./int_types.zig");
 const short = int_types.short;

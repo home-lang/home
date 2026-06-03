@@ -727,6 +727,7 @@ pub const bake = struct {
         // `pub const DevAllocator = AllocationScope.Borrowed;`. Used by PackedMap.
         pub const DevAllocator = @import("bun_alloc/allocation_scope.zig").AllocationScopeIn(DefaultAllocator).Borrowed;
         pub const HotReloadEvent = @import("runtime/bake/DevServer/HotReloadEvent.zig");
+        pub const RouteBundle = @import("runtime/bake/DevServer/RouteBundle.zig").RouteBundle;
     };
     // Faithful to upstream `bun.bake.Side` (`src/bake/bake.zig`): the
     // client/server render-side enum used by OutputFile + the production
@@ -915,12 +916,15 @@ pub const SignalCode = @import("sys/SignalCode.zig").SignalCode;
 /// `@compileError` referencing the actual and expected values.
 /// Used by `string/string.zig:1131` to lock the WTF::String FFI
 /// struct size down to 24 bytes (matching the C++ side).
-pub inline fn assert_eql(comptime actual: anytype, comptime expected: anytype) void {
+pub inline fn assert_eql(actual: anytype, expected: anytype) void {
     if (actual != expected) {
-        @compileError(std.fmt.comptimePrint(
-            "assert_eql failed: actual={any} expected={any}",
-            .{ actual, expected },
-        ));
+        if (@inComptime()) {
+            @compileError(std.fmt.comptimePrint(
+                "assert_eql failed: actual={any} expected={any}",
+                .{ actual, expected },
+            ));
+        }
+        unreachable;
     }
 }
 
@@ -1882,6 +1886,7 @@ pub const jsc = struct {
         INVALID_IP_ADDRESS = 165,
         DNS_SET_SERVERS_FAILED = 166,
         REDIS_INVALID_RESPONSE = 167,
+        IPC_CHANNEL_CLOSED = 181,
         REDIS_INVALID_INTEGER = 172,
         REDIS_INVALID_SIMPLE_STRING = 173,
         REDIS_INVALID_ERROR_STRING = 174,

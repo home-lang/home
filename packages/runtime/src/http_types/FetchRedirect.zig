@@ -14,6 +14,10 @@ pub const FetchRedirect = enum(u2) {
         .{ "manual", .manual },
         .{ "error", .@"error" },
     });
+
+    pub fn toJS(this: FetchRedirect, globalThis: *home_rt.jsc.JSGlobalObject) home_rt.jsc.JSValue {
+        return home_rt.jsc.ZigString.init(@tagName(this)).toJS(globalThis);
+    }
 };
 
 const home_rt = @import("home");

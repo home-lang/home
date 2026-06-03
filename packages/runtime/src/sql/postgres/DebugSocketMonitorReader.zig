@@ -7,23 +7,18 @@
 // wave-15 no-op stub (real env-var-gated debug output lands when the full
 // `Output` substrate ports).
 
-var file: std.fs.File = undefined;
 pub var enabled = false;
-pub var check = std.once(load);
+pub var check = home_rt.once(load);
 
 pub fn load() void {
     if (home_rt.env_var.BUN_POSTGRES_SOCKET_MONITOR_READER.get()) |monitor| {
-        enabled = true;
-        file = std.fs.cwd().createFile(monitor, .{ .truncate = true }) catch {
-            enabled = false;
-            return;
-        };
+        enabled = false;
         debug("duplicating reads to {s}", .{monitor});
     }
 }
 
 pub fn write(data: []const u8) void {
-    file.writeAll(data) catch {};
+    _ = data;
 }
 
 const debug = home_rt.Output.scoped(.Postgres, .visible);

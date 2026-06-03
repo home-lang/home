@@ -438,6 +438,30 @@ pub const Part = union(enum(u3)) {
             .catch_all_optional => |param_name| try writer.print("/:*?{s}", .{param_name}),
         }
     }
+
+    fn appendStringForInternalUse(part: Part, list: *std.array_list.Managed(u8)) !void {
+        try list.append('/');
+        switch (part) {
+            .text => |text| try list.appendSlice(text),
+            .param => |param_name| {
+                try list.append(':');
+                try list.appendSlice(param_name);
+            },
+            .group => |label| {
+                try list.append('(');
+                try list.appendSlice(label);
+                try list.append(')');
+            },
+            .catch_all => |param_name| {
+                try list.appendSlice(":*");
+                try list.appendSlice(param_name);
+            },
+            .catch_all_optional => |param_name| {
+                try list.appendSlice(":*?");
+                try list.appendSlice(param_name);
+            },
+        }
+    }
 };
 
 pub const ParsedPattern = struct {
@@ -1203,8 +1227,8 @@ pub const JSFrameworkRouter = struct {
 
         const jsfr = bun.new(JSFrameworkRouter, .{
             .router = try FrameworkRouter.initEmpty(abs_root, types, bun.default_allocator),
-            .files = .{},
-            .stored_parse_errors = .{},
+            .files = .empty,
+            .stored_parse_errors = .empty,
         });
 
         try jsfr.router.scan(
@@ -1350,7 +1374,7 @@ pub const JSFrameworkRouter = struct {
         var rendered = try std.array_list.Managed(u8).initCapacity(temp_allocator, pattern.data.len);
         defer rendered.deinit();
         var it = pattern.iterate();
-        while (it.next()) |part| try part.toStringForInternalUse(rendered.writer());
+        while (it.next()) |part| try part.appendStringForInternalUse(&rendered);
         var str = bun.String.cloneUTF8(rendered.items);
         return try str.transferToJS(global);
     }
@@ -1358,7 +1382,7 @@ pub const JSFrameworkRouter = struct {
     fn partToJS(global: *JSGlobalObject, part: Part, temp_allocator: Allocator) !JSValue {
         var rendered = std.array_list.Managed(u8).init(temp_allocator);
         defer rendered.deinit();
-        try part.toStringForInternalUse(rendered.writer());
+        try part.appendStringForInternalUse(&rendered);
         var str = bun.String.cloneUTF8(rendered.items);
         return try str.transferToJS(global);
     }

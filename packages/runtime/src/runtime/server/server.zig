@@ -132,6 +132,43 @@ pub const DebugHTTPSServer = ServerJSStub;
 pub const DebugHTTPServer = ServerJSStub;
 pub const HTTPSServer = ServerJSStub;
 pub const HTTPServer = ServerJSStub;
+pub const AnyServer = ServerJSStub;
+pub const AnyRequestContext = struct {
+    pub const AdditionalOnAbortCallback = @import("./RequestContext.zig").AdditionalOnAbortCallback;
+    pub const Null: AnyRequestContext = .{};
+
+    pub fn init(_: anytype) AnyRequestContext {
+        return .{};
+    }
+
+    pub fn setAdditionalOnAbortCallback(_: AnyRequestContext, _: ?AdditionalOnAbortCallback) void {}
+    pub fn memoryCost(_: AnyRequestContext) usize {
+        return 0;
+    }
+    pub fn get(_: AnyRequestContext, comptime T: type) ?*T {
+        return null;
+    }
+    pub fn setTimeout(_: AnyRequestContext, _: c_uint) bool {
+        return false;
+    }
+    pub fn setCookies(_: AnyRequestContext, _: ?*jsc.WebCore.CookieMap) void {}
+    pub fn enableTimeoutEvents(_: AnyRequestContext) void {}
+    pub fn getRemoteSocketInfo(_: AnyRequestContext) ?bun.uws.SocketAddress {
+        return null;
+    }
+    pub fn detachRequest(_: AnyRequestContext) void {}
+    pub fn setRequest(_: AnyRequestContext, _: *bun.uws.Request) void {}
+    pub fn getRequest(_: AnyRequestContext) ?*bun.uws.Request {
+        return null;
+    }
+    pub fn onAbort(_: AnyRequestContext, _: bun.uws.AnyResponse) void {}
+    pub fn ref(_: AnyRequestContext) void {}
+    pub fn setSignalAborted(_: AnyRequestContext, _: jsc.CommonAbortReason) void {}
+    pub fn devServer(_: AnyRequestContext) ?*bun.bake.DevServer {
+        return null;
+    }
+    pub fn deref(_: AnyRequestContext) void {}
+};
 pub const NodeHTTPResponse = struct {
     pub fn finalize(_: *NodeHTTPResponse) void {}
     pub fn abort(_: *NodeHTTPResponse, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) jsc.JSValue { return .zero; }

@@ -15,6 +15,10 @@ pub const FetchRequestMode = enum(u2) {
         .{ "cors", .cors },
         .{ "navigate", .navigate },
     });
+
+    pub fn toJS(this: FetchRequestMode, globalThis: *home_rt.jsc.JSGlobalObject) home_rt.jsc.JSValue {
+        return home_rt.jsc.ZigString.init(@tagName(this)).toJS(globalThis);
+    }
 };
 
 const home_rt = @import("home");

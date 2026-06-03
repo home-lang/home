@@ -19,6 +19,10 @@ pub const FetchCacheMode = enum(u3) {
         .{ "force-cache", .@"force-cache" },
         .{ "only-if-cached", .@"only-if-cached" },
     });
+
+    pub fn toJS(this: FetchCacheMode, globalThis: *home_rt.jsc.JSGlobalObject) home_rt.jsc.JSValue {
+        return home_rt.jsc.ZigString.init(@tagName(this)).toJS(globalThis);
+    }
 };
 
 const home_rt = @import("home");

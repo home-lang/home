@@ -84,12 +84,11 @@ Honest interpretation:
   `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
   The existing compiled test set still reports **48/48 tests passed**,
   but the `home_test` compile gate is not green: latest visible frontier
-  is **19 compile errors**.
+  is **15 compile errors**.
 - The current frontier is real integration work, not source presence:
-  remaining blockers are concentrated in install/libarchive filesystem
-  method drift, package-manager env/path helpers, server/bake route
-  carriers, shell parser/glob surfaces, socket/TLS/uWS type identity,
-  test-runner writer drift, and SQL/WebCore follow-ons.
+  remaining blockers are concentrated in server task carriers, hot-reload
+  watcher wiring, shell parser/glob/event-loop surfaces, socket generated
+  config plus TLS/uWS type identity, and WebCore websocket export glue.
 - Do not advance the audited **552 / 1193** integrated-file count from
   this checkpoint. Count only after the compile gate is green or after a
   fresh integration audit isolates tested build-wired files.

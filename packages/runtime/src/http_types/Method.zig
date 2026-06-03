@@ -179,6 +179,10 @@ pub const Method = enum(u8) {
         return null;
     }
 
+    pub fn toJS(this: Method, globalThis: *home_rt.jsc.JSGlobalObject) home_rt.jsc.JSValue {
+        return home_rt.jsc.ZigString.init(@tagName(this)).toJS(globalThis);
+    }
+
     pub const Optional = union(enum) {
         any: void,
         method: Set,
@@ -231,6 +235,7 @@ test "Method.isIdempotent matches RFC 7231" {
 }
 
 const std = @import("std");
+const home_rt = @import("home");
 
 fn ComptimeStringMap(comptime V: type, comptime kvs_list: anytype) type {
     return struct {
