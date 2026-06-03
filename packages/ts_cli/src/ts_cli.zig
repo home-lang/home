@@ -630,6 +630,35 @@ pub const defaultTsconfigContents: []const u8 =
     \\
 ;
 
+/// Default `tsconfig.json` body with diagnostic-backed header comments,
+/// matching tsgo's generated `--init` scaffold where Home has the
+/// corresponding option defaults.
+pub fn defaultTsconfigContentsWithDiagnostics(gpa: std.mem.Allocator) ![]u8 {
+    const comment_code: u32 = 95110;
+    const comment = if (codes.lookup(comment_code)) |ci|
+        ci.message
+    else
+        "Visit https://aka.ms/tsconfig to read more about this file";
+    return try std.fmt.allocPrint(
+        gpa,
+        \\{{
+        \\  // {s}
+        \\  "compilerOptions": {{
+        \\    "target": "esnext",
+        \\    "module": "esnext",
+        \\    "moduleResolution": "bundler",
+        \\    "strict": true,
+        \\    "esModuleInterop": true,
+        \\    "skipLibCheck": true,
+        \\    "forceConsistentCasingInFileNames": true
+        \\  }}
+        \\}}
+        \\
+    ,
+        .{comment},
+    );
+}
+
 /// Message printed after `--init` successfully writes a new config.
 /// Mirrors tsc's "Created a new tsconfig.json" header + learn-more line.
 pub const initCreatedMessage: []const u8 =
@@ -1538,6 +1567,18 @@ test "defaultTsconfigContents parses as a tsconfig object" {
     var arena = std.heap.ArenaAllocator.init(T.allocator);
     defer arena.deinit();
     const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), defaultTsconfigContents);
+    try T.expect(!cfg.root_not_object);
+    try T.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
+}
+
+test "defaultTsconfigContentsWithDiagnostics includes TS95110 header" {
+    const text = try defaultTsconfigContentsWithDiagnostics(T.allocator);
+    defer T.allocator.free(text);
+    try T.expect(std.mem.indexOf(u8, text, "// Visit https://aka.ms/tsconfig to read more about this file") != null);
+
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), text);
     try T.expect(!cfg.root_not_object);
     try T.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
 }

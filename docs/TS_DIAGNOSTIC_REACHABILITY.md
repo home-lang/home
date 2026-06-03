@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 812 |
-| reachable (parity targets) | 347 |
+| catalog-only total | 811 |
+| reachable (parity targets) | 346 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
@@ -26,7 +26,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
-| 9xxxx — editor code-fix / refactor (language service) | 18 |
+| 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
 | 5xxx — tsconfig / build-option validation | 5 |
@@ -341,7 +341,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS4125 `Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125`
 - TS4126 `One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126`
 
-### 9xxxx — editor code-fix / refactor (language service) (18)
+### 9xxxx — editor code-fix / refactor (language service) (17)
 
 - TS90014 `Change_0_to_1_90014`
 - TS90055 `Remove_type_from_import_declaration_from_0_90055`
@@ -359,7 +359,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS90070 `Mark_array_literal_as_const_90070`
 - TS90071 `Annotate_types_of_properties_expando_function_in_a_namespace_90071`
 - TS95064 `Add_all_missing_imports_95064`
-- TS95110 `Visit_https_Colon_Slash_Slashaka_ms_Slashtsconfig_to_read_more_about_this_file_95110`
 - TS95174 `Use_0_95174`
 
 ### other (15)

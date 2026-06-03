@@ -839,7 +839,9 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("{s}\n", .{msg});
             std.process.exit(1);
         }
-        RealFs.write(gpa, "tsconfig.json", ts_cli.defaultTsconfigContents) catch |err| {
+        const tsconfig_text = ts_cli.defaultTsconfigContentsWithDiagnostics(gpa) catch std.process.exit(1);
+        defer gpa.free(tsconfig_text);
+        RealFs.write(gpa, "tsconfig.json", tsconfig_text) catch |err| {
             std.debug.print("error writing tsconfig.json: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
