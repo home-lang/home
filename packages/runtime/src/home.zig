@@ -4048,9 +4048,6 @@ pub const c = struct {
     // macOS <sys/stat.h>: `#define UTIME_NOW -1` (Linux uses std.os.linux.UTIME.NOW).
     pub const UTIME_NOW = -1;
     pub const ZSTD_inBuffer = @import("zstd/zstd.zig").c.ZSTD_inBuffer;
-    pub const socketpair = @import("sys/sys.zig").socketpair;
-    pub const socketpairForShell = @import("sys/sys.zig").socketpairForShell;
-    pub const isExecutableFilePath = @import("sys/sys.zig").isExecutableFilePath;
     pub const ZSTD_outBuffer = @import("zstd/zstd.zig").c.ZSTD_outBuffer;
     pub const ZSTD_createCCtx = @import("zstd/zstd.zig").c.ZSTD_createCCtx;
     pub const ZSTD_freeCCtx = @import("zstd/zstd.zig").c.ZSTD_freeCCtx;
@@ -4075,6 +4072,11 @@ pub const c = struct {
 // blocked on `bun.sys.SystemErrno` + `bun.sys.Maybe` until that lands.
 pub const sys = struct {
     const Sys = @This();
+    pub const socketpair = @import("sys/sys.zig").socketpair;
+    pub const socketpairForShell = @import("sys/sys.zig").socketpairForShell;
+    pub const isExecutableFilePath = @import("sys/sys.zig").isExecutableFilePath;
+    pub const unlinkatWithFlags = @import("sys/sys.zig").unlinkatWithFlags;
+    pub const rmdirat = @import("sys/sys.zig").rmdirat;
 
     // Faithful to upstream `bun.sys.workaround_symbols`
     // (`src/sys/sys.zig:20`): the platform-selected stat/memmem shims from
