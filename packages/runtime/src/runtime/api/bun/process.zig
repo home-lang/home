@@ -1472,10 +1472,10 @@ pub fn spawnProcessPosix(
                 try actions.inherit(fileno.native());
             },
             .ipc, .ignore => {
-                try actions.openZ(fileno, "/dev/null", flag | bun.O.CREAT, 0o664);
+                try actions.openZ(fileno.native(), "/dev/null", flag | bun.O.CREAT, 0o664);
             },
             .path => |path| {
-                try actions.open(fileno, path, flag | bun.O.CREAT, 0o664);
+                try actions.open(fileno.native(), path, flag | bun.O.CREAT, 0o664);
             },
             .buffer => {
                 if (Environment.isLinux) use_memfd: {

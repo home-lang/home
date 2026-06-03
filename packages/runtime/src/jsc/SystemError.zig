@@ -28,7 +28,7 @@ const JSPromise = @import("./JSPromise.zig").JSPromise;
 const String = @import("home").String;
 
 // `bun.sys.E` errno enum stubbed — re-attaches with the sys layer.
-const SysE = enum(i32) {
+pub const SysE = enum(i32) {
     SUCCESS = 0,
     _,
 };
