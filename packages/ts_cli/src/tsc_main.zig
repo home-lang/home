@@ -721,6 +721,17 @@ pub fn main(init: std.process.Init) !void {
                         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
                     }
                 },
+                error.InvalidEnumOption => {
+                    if (parse_ctx.enum_option.len > 0 and parse_ctx.enum_allowed_values.len > 0) {
+                        const msg = ts_cli.argumentForOptionMustBeDiagnostic(gpa, parse_ctx.enum_option, parse_ctx.enum_allowed_values) catch {
+                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                        };
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                    } else {
+                        std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
+                    }
+                },
                 else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
             }
             std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));

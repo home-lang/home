@@ -1158,7 +1158,7 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
             .es2021 => .es2021,
             .es2022 => .es2022,
             .es2023 => .es2023,
-            .es2024, .esnext => .esnext,
+            .es2024, .es2025, .esnext => .esnext,
         };
         opts.syntax_target_es2015 = switch (t) {
             .es3, .es5 => false,

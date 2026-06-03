@@ -107,6 +107,7 @@ pub const Target = enum {
     es2022,
     es2023,
     es2024,
+    es2025,
     esnext,
 
     pub fn fromString(s: []const u8) ?Target {
@@ -124,6 +125,7 @@ pub const Target = enum {
             .{ "es2022", .es2022 },
             .{ "es2023", .es2023 },
             .{ "es2024", .es2024 },
+            .{ "es2025", .es2025 },
             .{ "esnext", .esnext },
         };
         inline for (map) |entry| {
@@ -149,6 +151,22 @@ pub const Jsx = enum {
         return null;
     }
 };
+
+pub fn enumOptionValueIsValid(option: []const u8, value: []const u8) bool {
+    if (std.mem.eql(u8, option, "module")) return Module.fromString(value) != null;
+    if (std.mem.eql(u8, option, "moduleResolution")) return ModuleResolution.fromString(value) != null;
+    if (std.mem.eql(u8, option, "target")) return Target.fromString(value) != null;
+    if (std.mem.eql(u8, option, "jsx")) return Jsx.fromString(value) != null;
+    return true;
+}
+
+pub fn enumOptionAllowedValues(option: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, option, "module")) return "'commonjs', 'es6', 'es2015', 'es2020', 'es2022', 'esnext', 'node16', 'node18', 'node20', 'nodenext', 'preserve'";
+    if (std.mem.eql(u8, option, "moduleResolution")) return "'node16', 'nodenext', 'bundler'";
+    if (std.mem.eql(u8, option, "target")) return "'es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'es2025', 'esnext'";
+    if (std.mem.eql(u8, option, "jsx")) return "'preserve', 'react-native', 'react-jsx', 'react-jsxdev', 'react'";
+    return null;
+}
 
 /// `paths` map: pattern → list of substitution patterns.
 ///
@@ -406,6 +424,15 @@ pub const TsConfig = struct {
                         .message = msg,
                         .owns_message = true,
                         .field = "paths",
+                    });
+                },
+                6046 => {
+                    const msg = try std.fmt.allocPrint(gpa, "Argument for '--{s}' option must be: {s}.", .{ opt_diag.option, opt_diag.expected_type });
+                    try diags.append(gpa, .{
+                        .code = 6046,
+                        .message = msg,
+                        .owns_message = true,
+                        .field = opt_diag.option,
                     });
                 },
                 6266 => {
@@ -1195,7 +1222,7 @@ fn effectiveModuleKind(co: CompilerOptions) Module {
 
     return switch (co.target orelse .esnext) {
         .esnext => .esnext,
-        .es2022, .es2023, .es2024 => .es2022,
+        .es2022, .es2023, .es2024, .es2025 => .es2022,
         .es2020, .es2021 => .es2020,
         .es2015, .es2016, .es2017, .es2018, .es2019 => .es2015,
         .es3, .es5 => .commonjs,
@@ -1727,6 +1754,18 @@ fn recordCommandLineOnlyOption(
     });
 }
 
+fn recordInvalidEnumOption(
+    arena: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+    option: []const u8,
+) !void {
+    try diags.append(arena, .{
+        .code = 6046,
+        .option = option,
+        .expected_type = enumOptionAllowedValues(option) orelse "",
+    });
+}
+
 /// JS `typeof` of a JSON value, used for TS5064's `{2}` placeholder.
 fn jsonValueTypeName(v: jsonc.Value) []const u8 {
     return switch (v) {
@@ -1902,11 +1941,14 @@ fn fillCompilerOptions(
 
         // Enum-typed. A non-string value is a value-type mismatch
         // (TS5024); an unrecognized string value is an enum-argument
-        // error (TS6046, out of this band) — we leave the option unset
-        // and keep parsing, mirroring tsc's recovery.
+        // error (TS6046). In both cases keep parsing, mirroring tsc's
+        // recovery.
         if (std.mem.eql(u8, key, "module")) {
             if (value.asString()) |s| {
-                co.module = Module.fromString(s);
+                co.module = Module.fromString(s) orelse {
+                    try recordInvalidEnumOption(arena, diags, "module");
+                    continue;
+                };
             } else {
                 try recordOptionTypeMismatch(arena, diags, "module", "string");
             }
@@ -1914,7 +1956,10 @@ fn fillCompilerOptions(
         }
         if (std.mem.eql(u8, key, "moduleResolution")) {
             if (value.asString()) |s| {
-                co.module_resolution = ModuleResolution.fromString(s);
+                co.module_resolution = ModuleResolution.fromString(s) orelse {
+                    try recordInvalidEnumOption(arena, diags, "moduleResolution");
+                    continue;
+                };
             } else {
                 try recordOptionTypeMismatch(arena, diags, "moduleResolution", "string");
             }
@@ -1922,7 +1967,10 @@ fn fillCompilerOptions(
         }
         if (std.mem.eql(u8, key, "target")) {
             if (value.asString()) |s| {
-                co.target = Target.fromString(s);
+                co.target = Target.fromString(s) orelse {
+                    try recordInvalidEnumOption(arena, diags, "target");
+                    continue;
+                };
             } else {
                 try recordOptionTypeMismatch(arena, diags, "target", "string");
             }
@@ -1930,7 +1978,10 @@ fn fillCompilerOptions(
         }
         if (std.mem.eql(u8, key, "jsx")) {
             if (value.asString()) |s| {
-                co.jsx = Jsx.fromString(s);
+                co.jsx = Jsx.fromString(s) orelse {
+                    try recordInvalidEnumOption(arena, diags, "jsx");
+                    continue;
+                };
             } else {
                 try recordOptionTypeMismatch(arena, diags, "jsx", "string");
             }
@@ -2235,17 +2286,22 @@ test "tsconfig: unknown keys preserved in extra" {
 }
 
 test "tsconfig: invalid module enum value is dropped without aborting parse" {
-    // An unrecognized enum *string* is an argument error (TS6046, out of
-    // the TS50xx config band) — tsc reports it but keeps parsing the
-    // rest of the config. We mirror the recovery: the option is left
-    // unset rather than aborting the whole parse. (A non-string value,
-    // by contrast, is a TS5024 value-type mismatch — see below.)
+    // An unrecognized enum *string* is TS6046. tsc reports it but keeps
+    // parsing the rest of the config; the option is left unset. (A
+    // non-string value, by contrast, is a TS5024 value-type mismatch.)
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const cfg = try parseString(t.allocator, arena.allocator(),
-        \\{ "compilerOptions": { "module": "atomic-fission" } }
+        \\{ "compilerOptions": { "module": "atomic-fission", "strict": true } }
     );
     try t.expectEqual(@as(?Module, null), cfg.compiler_options.module);
+    try t.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 6046));
+    const d = findCode(diags, 6046).?;
+    try t.expectEqualStrings("Argument for '--module' option must be: 'commonjs', 'es6', 'es2015', 'es2020', 'es2022', 'esnext', 'node16', 'node18', 'node20', 'nodenext', 'preserve'.", d.message);
+    try t.expectEqualStrings("module", d.field);
 }
 
 test "tsconfig: real-world tsconfig.json (with comments)" {
@@ -3421,6 +3477,46 @@ test "tsconfig.validate: command-line-only compiler options report TS6266" {
     }
     try t.expect(saw_show_config);
     try t.expect(saw_locale);
+}
+
+test "tsconfig.validate: invalid enum compiler options report TS6046" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "module": "nope", "target": "wat", "jsx": "nah", "moduleResolution": "zz", "strict": true } }
+    );
+    try t.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 4), countCode(diags, 6046));
+
+    var saw_module = false;
+    var saw_target = false;
+    var saw_jsx = false;
+    var saw_module_resolution = false;
+    for (diags) |d| {
+        if (d.code != 6046) continue;
+        if (std.mem.eql(u8, d.field, "module")) {
+            saw_module = true;
+            try t.expectEqualStrings("Argument for '--module' option must be: 'commonjs', 'es6', 'es2015', 'es2020', 'es2022', 'esnext', 'node16', 'node18', 'node20', 'nodenext', 'preserve'.", d.message);
+        }
+        if (std.mem.eql(u8, d.field, "target")) {
+            saw_target = true;
+            try t.expectEqualStrings("Argument for '--target' option must be: 'es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'es2025', 'esnext'.", d.message);
+        }
+        if (std.mem.eql(u8, d.field, "jsx")) {
+            saw_jsx = true;
+            try t.expectEqualStrings("Argument for '--jsx' option must be: 'preserve', 'react-native', 'react-jsx', 'react-jsxdev', 'react'.", d.message);
+        }
+        if (std.mem.eql(u8, d.field, "moduleResolution")) {
+            saw_module_resolution = true;
+            try t.expectEqualStrings("Argument for '--moduleResolution' option must be: 'node16', 'nodenext', 'bundler'.", d.message);
+        }
+    }
+    try t.expect(saw_module);
+    try t.expect(saw_target);
+    try t.expect(saw_jsx);
+    try t.expect(saw_module_resolution);
 }
 
 test "tsconfig.validate: value-type mismatch reports TS5024" {

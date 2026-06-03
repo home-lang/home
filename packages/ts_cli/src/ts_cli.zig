@@ -67,6 +67,8 @@ pub const Options = struct {
     out_dir: ?[]const u8 = null,
     /// `--module=…`.
     module: ?[]const u8 = null,
+    /// `--moduleResolution=…`.
+    module_resolution: ?[]const u8 = null,
     /// `--jsx=…`.
     jsx: ?[]const u8 = null,
     /// `--declaration` / `-d`. `null` means defer to tsconfig.
@@ -85,6 +87,7 @@ pub const ParseError = error{
     MissingValue,
     ConfigOnlyOption,
     ConfigOnlyBooleanOption,
+    InvalidEnumOption,
 };
 
 /// Diagnostic context captured when `parseArgs` aborts. Lets the binary
@@ -96,6 +99,8 @@ pub const ParseError = error{
 pub const ParseContext = struct {
     missing_value_option: []const u8 = "",
     config_only_option: []const u8 = "",
+    enum_option: []const u8 = "",
+    enum_allowed_values: []const u8 = "",
 };
 
 /// Parse argv (excluding the program name) into a typed Options.
@@ -156,8 +161,18 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 ctx.missing_value_option = "target";
                 return error.MissingValue;
             }
+            if (!tsconfig_mod.enumOptionValueIsValid("target", args[i])) {
+                ctx.enum_option = "target";
+                ctx.enum_allowed_values = tsconfig_mod.enumOptionAllowedValues("target").?;
+                return error.InvalidEnumOption;
+            }
             opts.target = args[i];
         } else if (parseEqFlag(a, "--target=")) |v| {
+            if (!tsconfig_mod.enumOptionValueIsValid("target", v)) {
+                ctx.enum_option = "target";
+                ctx.enum_allowed_values = tsconfig_mod.enumOptionAllowedValues("target").?;
+                return error.InvalidEnumOption;
+            }
             opts.target = v;
         } else if (parseEqFlag(a, "--outDir=")) |v| {
             opts.out_dir = v;
@@ -169,6 +184,11 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             }
             opts.out_dir = args[i];
         } else if (parseEqFlag(a, "--module=")) |v| {
+            if (!tsconfig_mod.enumOptionValueIsValid("module", v)) {
+                ctx.enum_option = "module";
+                ctx.enum_allowed_values = tsconfig_mod.enumOptionAllowedValues("module").?;
+                return error.InvalidEnumOption;
+            }
             opts.module = v;
         } else if (std.mem.eql(u8, a, "--module")) {
             i += 1;
@@ -176,14 +196,48 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 ctx.missing_value_option = "module";
                 return error.MissingValue;
             }
+            if (!tsconfig_mod.enumOptionValueIsValid("module", args[i])) {
+                ctx.enum_option = "module";
+                ctx.enum_allowed_values = tsconfig_mod.enumOptionAllowedValues("module").?;
+                return error.InvalidEnumOption;
+            }
             opts.module = args[i];
         } else if (parseEqFlag(a, "--jsx=")) |v| {
+            if (!tsconfig_mod.enumOptionValueIsValid("jsx", v)) {
+                ctx.enum_option = "jsx";
+                ctx.enum_allowed_values = tsconfig_mod.enumOptionAllowedValues("jsx").?;
+                return error.InvalidEnumOption;
+            }
             opts.jsx = v;
+        } else if (parseEqFlag(a, "--moduleResolution=")) |v| {
+            if (!tsconfig_mod.enumOptionValueIsValid("moduleResolution", v)) {
+                ctx.enum_option = "moduleResolution";
+                ctx.enum_allowed_values = tsconfig_mod.enumOptionAllowedValues("moduleResolution").?;
+                return error.InvalidEnumOption;
+            }
+            opts.module_resolution = v;
+        } else if (std.mem.eql(u8, a, "--moduleResolution")) {
+            i += 1;
+            if (i >= args.len) {
+                ctx.missing_value_option = "moduleResolution";
+                return error.MissingValue;
+            }
+            if (!tsconfig_mod.enumOptionValueIsValid("moduleResolution", args[i])) {
+                ctx.enum_option = "moduleResolution";
+                ctx.enum_allowed_values = tsconfig_mod.enumOptionAllowedValues("moduleResolution").?;
+                return error.InvalidEnumOption;
+            }
+            opts.module_resolution = args[i];
         } else if (std.mem.eql(u8, a, "--jsx")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "jsx";
                 return error.MissingValue;
+            }
+            if (!tsconfig_mod.enumOptionValueIsValid("jsx", args[i])) {
+                ctx.enum_option = "jsx";
+                ctx.enum_allowed_values = tsconfig_mod.enumOptionAllowedValues("jsx").?;
+                return error.InvalidEnumOption;
             }
             opts.jsx = args[i];
         } else if (configOnlyBooleanOptionName(a)) |name| {
@@ -359,6 +413,16 @@ pub fn compilerOptionExpectsArgumentDiagnostic(gpa: std.mem.Allocator, option: [
         gpa,
         "error TS{d}: Compiler option '{s}' expects an argument.",
         .{ code, option },
+    );
+}
+
+/// TS6046: an enum-valued compiler option received an unsupported string.
+pub fn argumentForOptionMustBeDiagnostic(gpa: std.mem.Allocator, option: []const u8, allowed_values: []const u8) ![]u8 {
+    const code: u32 = 6046;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Argument for '--{s}' option must be: {s}.",
+        .{ code, option, allowed_values },
     );
 }
 
@@ -1090,6 +1154,32 @@ test "parseArgsCtx: flag with a value does not set missing-value option" {
     try T.expectEqualStrings("", ctx.missing_value_option);
 }
 
+test "parseArgsCtx: invalid enum option values report TS6046 context" {
+    const cases = [_]struct { flag: []const u8, value: []const u8, name: []const u8 }{
+        .{ .flag = "--module", .value = "nope", .name = "module" },
+        .{ .flag = "--moduleResolution", .value = "nope", .name = "moduleResolution" },
+        .{ .flag = "--target", .value = "nope", .name = "target" },
+        .{ .flag = "--jsx", .value = "nope", .name = "jsx" },
+    };
+    for (cases) |c| {
+        var ctx: ParseContext = .{};
+        const argv = [_][]const u8{ c.flag, c.value };
+        try T.expectError(error.InvalidEnumOption, parseArgsCtx(T.allocator, &argv, &ctx));
+        try T.expectEqualStrings(c.name, ctx.enum_option);
+        try T.expect(ctx.enum_allowed_values.len > 0);
+    }
+}
+
+test "parseArgsCtx: enum option equals forms validate and parse" {
+    const argv = [_][]const u8{ "--module=preserve", "--moduleResolution=bundler", "--target=es2025", "--jsx=react-jsx" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqualStrings("preserve", opts.module.?);
+    try T.expectEqualStrings("bundler", opts.module_resolution.?);
+    try T.expectEqualStrings("es2025", opts.target.?);
+    try T.expectEqualStrings("react-jsx", opts.jsx.?);
+}
+
 test "parseArgsCtx: tsconfig-only options reject non-null command-line values" {
     const cases = [_]struct { flag: []const u8, name: []const u8 }{
         .{ .flag = "--paths", .name = "paths" },
@@ -1159,6 +1249,15 @@ test "compilerOptionExpectsArgumentDiagnostic: TS6044 message text" {
     defer T.allocator.free(msg);
     try T.expectEqualStrings(
         "error TS6044: Compiler option 'outDir' expects an argument.",
+        msg,
+    );
+}
+
+test "argumentForOptionMustBeDiagnostic: TS6046 message text" {
+    const msg = try argumentForOptionMustBeDiagnostic(T.allocator, "moduleResolution", "'node16', 'nodenext', 'bundler'");
+    defer T.allocator.free(msg);
+    try T.expectEqualStrings(
+        "error TS6046: Argument for '--moduleResolution' option must be: 'node16', 'nodenext', 'bundler'.",
         msg,
     );
 }
