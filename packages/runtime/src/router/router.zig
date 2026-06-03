@@ -734,7 +734,7 @@ pub const Route = struct {
         if (abs_path_str.len == 0) {
             var file: std.Io.File = undefined;
             var needs_close = true;
-            defer if (needs_close) file.close();
+            defer if (needs_close) file.close(std.Io.Threaded.global_single_threaded.io());
             if (entry.cache.fd.unwrapValid()) |valid| {
                 file = valid.stdFile();
                 needs_close = false;

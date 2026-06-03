@@ -655,7 +655,7 @@ pub const Status = union(enum) {
                 // ified the WUNTRACED option or if the child process is being
                 // traced (see ptrace(2)).
                 else if (std.posix.W.IFSTOPPED(result.status)) {
-                    signal = @as(u8, @truncate(std.posix.W.STOPSIG(result.status)));
+                    signal = @as(u8, @truncate(@intFromEnum(std.posix.W.STOPSIG(result.status))));
                 }
             },
         }
@@ -1565,7 +1565,7 @@ pub fn spawnProcessPosix(
         switch (ipc) {
             .dup2 => @panic("TODO dup2 extra fd"),
             .inherit => {
-                try actions.inherit(fileno);
+                try actions.inherit(fileno.native());
                 try extra_fds.append(.unavailable);
             },
             .ignore => {
