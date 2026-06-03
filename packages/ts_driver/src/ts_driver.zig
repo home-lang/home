@@ -662,15 +662,34 @@ fn reportMissingReferencePathDiagnostics(
         if (path.len == 0) continue;
         if (isHarnessProvidedReferencePath(path) or virtualReferencePathExists(source, path)) continue;
 
+        if (!referencePathHasExtension(path)) {
+            if (try referencePathExistsWithSupportedExtension(gpa, io, path)) continue;
+            const normalized = try normalizeReferencePathForDiagnostic(gpa, path);
+            defer gpa.free(normalized);
+            const message = try std.fmt.allocPrint(
+                gpa,
+                "Could not resolve the path '{s}' with the extensions: {s}.",
+                .{ normalized, ts_reference_supported_extensions_display },
+            );
+            defer gpa.free(message);
+            try appendDriverDiagnostic(
+                gpa,
+                c,
+                @intCast(offset + leading + path_start),
+                6231,
+                message,
+            );
+            continue;
+        }
+
         std.Io.Dir.cwd().access(io, path, .{}) catch {
             // tsc normalizes backslashes to forward slashes when
             // rendering TS6053 paths (Windows-style separators in the
             // `<reference path='..\\compiler\\io.ts'/>` source become
             // `../compiler/io.ts` in the diagnostic prose). Mirror that
             // here so fixtures like `parserharness.ts` match upstream.
-            const normalized = try gpa.alloc(u8, path.len);
+            const normalized = try normalizeReferencePathForDiagnostic(gpa, path);
             defer gpa.free(normalized);
-            for (path, 0..) |ch, i| normalized[i] = if (ch == '\\') '/' else ch;
             const message = try std.fmt.allocPrint(gpa, "File '{s}' not found.", .{normalized});
             defer gpa.free(message);
             try appendDriverDiagnostic(
@@ -682,6 +701,42 @@ fn reportMissingReferencePathDiagnostics(
             );
         };
     }
+}
+
+const ts_reference_supported_extensions = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".cts", ".d.cts", ".mts", ".d.mts" };
+const ts_reference_supported_extensions_display = "'.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'";
+
+fn referencePathHasExtension(path: []const u8) bool {
+    var i = path.len;
+    while (i > 0) {
+        i -= 1;
+        switch (path[i]) {
+            '.' => return true,
+            '/', '\\' => return false,
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn referencePathExistsWithSupportedExtension(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) CompileError!bool {
+    for (ts_reference_supported_extensions) |extension| {
+        const candidate = try std.fmt.allocPrint(gpa, "{s}{s}", .{ path, extension });
+        defer gpa.free(candidate);
+        std.Io.Dir.cwd().access(io, candidate, .{}) catch continue;
+        return true;
+    }
+    return false;
+}
+
+fn normalizeReferencePathForDiagnostic(gpa: std.mem.Allocator, path: []const u8) CompileError![]u8 {
+    const normalized = try gpa.alloc(u8, path.len);
+    for (path, 0..) |ch, i| normalized[i] = if (ch == '\\') '/' else ch;
+    return normalized;
 }
 
 /// Normalize a reference/section path for self-reference comparison:
@@ -4038,6 +4093,27 @@ test "driver: missing triple-slash path reference reports TS6053" {
         if (d.code == 6053) {
             found = true;
             try T.expectEqual(@as(u32, 20), d.pos);
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: extensionless missing triple-slash path reference reports TS6231" {
+    var c = try compileSource(T.allocator, "///<reference path='definitely-missing' />\nlet x = 1;", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 6053);
+        if (d.code == 6231) {
+            found = true;
+            try T.expectEqual(@as(u32, 20), d.pos);
+            try T.expectEqualStrings(
+                "Could not resolve the path 'definitely-missing' with the extensions: '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.",
+                d.message,
+            );
         }
     }
     try T.expect(found);

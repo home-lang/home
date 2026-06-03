@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 840 |
-| reachable (parity targets) | 372 |
+| catalog-only total | 839 |
+| reachable (parity targets) | 371 |
 | dead in tsgo (leave catalog-only) | 468 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 79 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 78 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -191,7 +191,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (79)
+### 6xxx — CLI / build / watch / resolution-trace messages (78)
 
 - TS6041 `Errors_Files_6041`
 - TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
@@ -208,7 +208,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
 - TS6219 `Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219`
 - TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
-- TS6231 `Could_not_resolve_the_path_0_with_the_extensions_Colon_1_6231`
 - TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
 - TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
 - TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
