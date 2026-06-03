@@ -274,10 +274,10 @@ pub const ExtraEntry = struct {
 };
 
 /// Diagnostic captured by the parser (`fillCompilerOptions`) for an
-/// option whose *value* is malformed (wrong JSON type). Stored on the
-/// parsed `TsConfig` so `validate` can re-emit it with an owned message
-/// rather than aborting the entire parse on the first bad value — which
-/// matches `tsc`, which keeps parsing the rest of the config.
+/// option whose value or placement is malformed. Stored on the parsed
+/// `TsConfig` so `validate` can re-emit it with an owned message rather
+/// than aborting the entire parse on the first bad value — which matches
+/// `tsc`, which keeps parsing the rest of the config.
 pub const OptionParseDiagnostic = struct {
     code: u32,
     /// Compiler option name (`{0}`), e.g. `"target"`.
@@ -406,6 +406,15 @@ pub const TsConfig = struct {
                         .message = msg,
                         .owns_message = true,
                         .field = "paths",
+                    });
+                },
+                6266 => {
+                    const msg = try std.fmt.allocPrint(gpa, "Option '{s}' can only be specified on command line.", .{opt_diag.option});
+                    try diags.append(gpa, .{
+                        .code = 6266,
+                        .message = msg,
+                        .owns_message = true,
+                        .field = opt_diag.option,
                     });
                 },
                 else => {},
@@ -841,6 +850,21 @@ const known_compiler_option_names = [_][]const u8{
 
 pub fn isKnownCompilerOptionName(name: []const u8) bool {
     for (known_compiler_option_names) |candidate| {
+        if (std.mem.eql(u8, name, candidate)) return true;
+    }
+    return false;
+}
+
+fn isCommandLineOnlyCompilerOptionName(name: []const u8) bool {
+    const command_line_only = [_][]const u8{
+        "help",
+        "watch",
+        "locale",
+        "showConfig",
+        "listFilesOnly",
+        "ignoreConfig",
+    };
+    for (command_line_only) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
     }
     return false;
@@ -1692,6 +1716,17 @@ fn recordOptionTypeMismatch(
     });
 }
 
+fn recordCommandLineOnlyOption(
+    arena: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+    option: []const u8,
+) !void {
+    try diags.append(arena, .{
+        .code = 6266,
+        .option = option,
+    });
+}
+
 /// JS `typeof` of a JSON value, used for TS5064's `{2}` placeholder.
 fn jsonValueTypeName(v: jsonc.Value) []const u8 {
     return switch (v) {
@@ -1735,6 +1770,11 @@ fn fillCompilerOptions(
     while (i < obj.keys.len) : (i += 1) {
         const key = obj.keys[i];
         const value = obj.values[i];
+
+        if (isCommandLineOnlyCompilerOptionName(key)) {
+            try recordCommandLineOnlyOption(arena, diags, key);
+            continue;
+        }
 
         // Boolean flags — list once, dispatch via comptime.
         const Bool = struct { name: []const u8, field: []const u8 };
@@ -3355,6 +3395,32 @@ test "tsconfig.validate: known-but-unmodeled option is not flagged unknown" {
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), countCode(diags, 5023));
     try t.expectEqual(@as(usize, 0), countCode(diags, 5025));
+}
+
+test "tsconfig.validate: command-line-only compiler options report TS6266" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "watch": true, "showConfig": true, "locale": "en", "strict": true } }
+    );
+    try t.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), countCode(diags, 6266));
+
+    const first = findCode(diags, 6266).?;
+    try t.expectEqualStrings("Option 'watch' can only be specified on command line.", first.message);
+    try t.expectEqualStrings("watch", first.field);
+
+    var saw_show_config = false;
+    var saw_locale = false;
+    for (diags) |d| {
+        if (d.code != 6266) continue;
+        if (std.mem.eql(u8, d.field, "showConfig")) saw_show_config = true;
+        if (std.mem.eql(u8, d.field, "locale")) saw_locale = true;
+    }
+    try t.expect(saw_show_config);
+    try t.expect(saw_locale);
 }
 
 test "tsconfig.validate: value-type mismatch reports TS5024" {

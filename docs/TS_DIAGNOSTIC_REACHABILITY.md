@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 883 |
-| reachable (parity targets) | 381 |
+| catalog-only total | 882 |
+| reachable (parity targets) | 380 |
 | dead in tsgo (leave catalog-only) | 502 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 146 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 105 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 104 |
 | 1xxx — parser / syntactic + program file-inclusion | 64 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -180,7 +180,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (105)
+### 6xxx — CLI / build / watch / resolution-trace messages (104)
 
 - TS6029 `Version_0_6029`
 - TS6031 `Starting_compilation_in_watch_mode_6031`
@@ -226,7 +226,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6245 `File_Management_6245`
 - TS6253 `Backwards_Compatibility_6253`
 - TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`
-- TS6266 `Option_0_can_only_be_specified_on_command_line_6266`
 - TS6270 `Directory_0_has_no_containing_package_json_scope_Imports_will_not_resolve_6270`
 - TS6272 `Invalid_import_specifier_0_has_no_possible_resolutions_6272`
 - TS6277 `Resolution_of_non_relative_name_failed_trying_with_modern_Node_resolution_features_disabled_to_see_i_6277`

@@ -158,6 +158,16 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
     return .{ .nodes = nodes, .paths = paths.items };
 }
 
+fn printConfigValidationDiagnostics(gpa: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) !bool {
+    const diags = try cfg.validate(gpa);
+    defer tsconfig_mod.freeValidationDiagnostics(gpa, diags);
+    if (diags.len == 0) return false;
+    for (diags) |d| {
+        std.debug.print("error TS{d}: {s}\n", .{ d.code, d.message });
+    }
+    return true;
+}
+
 /// Emit a `tsc --build` status message. tsc prints these
 /// CategoryMessage diagnostics as plain text (no `TSxxxx:` prefix); the
 /// `code` is carried so the diagnostic-coverage ledger credits it.
@@ -232,6 +242,7 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
         return true;
     };
     cfg.file_path = config_path;
+    if (printConfigValidationDiagnostics(gpa, cfg) catch true) return true;
     const project_dir = std.fs.path.dirname(config_path) orelse ".";
 
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -846,6 +857,12 @@ pub fn main(init: std.process.Init) !void {
                 break :blk null;
             };
             if (loaded_cfg) |*c| c.file_path = path;
+        }
+    }
+
+    if (loaded_cfg) |c| {
+        if (try printConfigValidationDiagnostics(gpa, c)) {
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
         }
     }
 
