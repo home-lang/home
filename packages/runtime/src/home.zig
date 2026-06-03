@@ -2427,6 +2427,7 @@ pub const io = struct {
     // Forward-port: Home's Zig fork removed `std.io.GenericWriter`; this restores
     // it (faithful old API + `adaptToNewApi` bridge to the new `std.Io.Writer`).
     pub const GenericWriter = @import("io_shim.zig").GenericWriter;
+    pub const openForWritingImpl = @import("io/openForWriting.zig").openForWritingImpl;
     // Faithful to upstream io/io.zig (Poll:438, BufferedWriter:724, StreamingWriter:727).
     pub const Poll = @import("io/io.zig").Poll;
     pub const Request = @import("io/io.zig").Request;
@@ -4047,6 +4048,9 @@ pub const c = struct {
     // macOS <sys/stat.h>: `#define UTIME_NOW -1` (Linux uses std.os.linux.UTIME.NOW).
     pub const UTIME_NOW = -1;
     pub const ZSTD_inBuffer = @import("zstd/zstd.zig").c.ZSTD_inBuffer;
+    pub const socketpair = @import("sys/sys.zig").socketpair;
+    pub const socketpairForShell = @import("sys/sys.zig").socketpairForShell;
+    pub const isExecutableFilePath = @import("sys/sys.zig").isExecutableFilePath;
     pub const ZSTD_outBuffer = @import("zstd/zstd.zig").c.ZSTD_outBuffer;
     pub const ZSTD_createCCtx = @import("zstd/zstd.zig").c.ZSTD_createCCtx;
     pub const ZSTD_freeCCtx = @import("zstd/zstd.zig").c.ZSTD_freeCCtx;

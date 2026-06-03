@@ -732,7 +732,7 @@ pub const Route = struct {
         }
 
         if (abs_path_str.len == 0) {
-            var file: std.fs.File = undefined;
+            var file: std.Io.File = undefined;
             var needs_close = true;
             defer if (needs_close) file.close();
             if (entry.cache.fd.unwrapValid()) |valid| {

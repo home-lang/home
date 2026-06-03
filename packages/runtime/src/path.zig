@@ -28,6 +28,10 @@ pub const joinStringBufZ = @import("paths/resolve_path.zig").joinStringBufZ;
 pub const lastIndexOfSep = @import("paths/resolve_path.zig").lastIndexOfSep;
 pub const lastIndexOfSepT = @import("paths/resolve_path.zig").lastIndexOfSepT;
 pub const normalizeBufT = @import("paths/resolve_path.zig").normalizeBufT;
+pub const normalizeBuf = @import("paths/resolve_path.zig").normalizeBuf;
+pub const normalizeString = @import("paths/resolve_path.zig").normalizeString;
+/// Shared scratch buffer for path joins (upstream `bun.path.join_buf`).
+pub threadlocal var join_buf: [4096]u8 = undefined;
 pub const PosixToWinNormalizer = @import("paths/resolve_path.zig").PosixToWinNormalizer;
 pub const relative = @import("paths/resolve_path.zig").relative;
 pub const relativePlatform = @import("paths/resolve_path.zig").relativePlatform;

@@ -523,7 +523,7 @@ pub fn childDone(this: *Expansion, child: ChildPtr, exit_code: ExitCode) Yield {
         if (!this.child_state.cmd_subst.quoted) {
             this.postSubshellExpansion(stdout);
         } else {
-            const trimmed = std.mem.trimRight(u8, stdout, " \n\t\r");
+            const trimmed = std.mem.trimEnd(u8, stdout, " \n\t\r");
             bun.handleOom(this.current_out.appendSlice(trimmed));
         }
 
