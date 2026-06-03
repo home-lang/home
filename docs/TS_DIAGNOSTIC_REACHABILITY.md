@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 884 |
-| reachable (parity targets) | 382 |
+| catalog-only total | 883 |
+| reachable (parity targets) | 381 |
 | dead in tsgo (leave catalog-only) | 502 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 146 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 106 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 105 |
 | 1xxx — parser / syntactic + program file-inclusion | 64 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -180,7 +180,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (106)
+### 6xxx — CLI / build / watch / resolution-trace messages (105)
 
 - TS6029 `Version_0_6029`
 - TS6031 `Starting_compilation_in_watch_mode_6031`
@@ -215,7 +215,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6218 `Module_name_0_was_successfully_resolved_to_1_with_Package_ID_2_6218`
 - TS6219 `Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219`
 - TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
-- TS6230 `Option_0_can_only_be_specified_in_tsconfig_json_file_or_set_to_false_or_null_on_command_line_6230`
 - TS6231 `Could_not_resolve_the_path_0_with_the_extensions_Colon_1_6231`
 - TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
 - TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`

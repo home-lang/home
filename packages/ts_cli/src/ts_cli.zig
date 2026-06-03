@@ -84,6 +84,7 @@ pub const ParseError = error{
     UnknownFlag,
     MissingValue,
     ConfigOnlyOption,
+    ConfigOnlyBooleanOption,
 };
 
 /// Diagnostic context captured when `parseArgs` aborts. Lets the binary
@@ -185,6 +186,12 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 return error.MissingValue;
             }
             opts.jsx = args[i];
+        } else if (configOnlyBooleanOptionName(a)) |name| {
+            i += 1;
+            if (i >= args.len or !(std.mem.eql(u8, args[i], "false") or std.mem.eql(u8, args[i], "null"))) {
+                ctx.config_only_option = name;
+                return error.ConfigOnlyBooleanOption;
+            }
         } else if (std.mem.eql(u8, a, "--paths")) {
             i += 1;
             if (i >= args.len or !std.mem.eql(u8, args[i], "null")) {
@@ -229,6 +236,14 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
 
 fn parseEqFlag(a: []const u8, prefix: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, a, prefix)) return a[prefix.len..];
+    return null;
+}
+
+fn configOnlyBooleanOptionName(a: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, a, "--composite")) return "composite";
+    if (std.mem.eql(u8, a, "--disableSourceOfProjectReferenceRedirect")) return "disableSourceOfProjectReferenceRedirect";
+    if (std.mem.eql(u8, a, "--disableSolutionSearching")) return "disableSolutionSearching";
+    if (std.mem.eql(u8, a, "--disableReferencedProjectLoad")) return "disableReferencedProjectLoad";
     return null;
 }
 
@@ -354,6 +369,17 @@ pub fn optionCanOnlyBeSpecifiedInTsconfigOrNullDiagnostic(gpa: std.mem.Allocator
     return try std.fmt.allocPrint(
         gpa,
         "error TS{d}: Option '{s}' can only be specified in 'tsconfig.json' file or set to 'null' on command line.",
+        .{ code, option },
+    );
+}
+
+/// TS6230: a boolean tsconfig-only option was supplied on the command line
+/// with anything other than the special `false` / `null` reset values.
+pub fn optionCanOnlyBeSpecifiedInTsconfigOrFalseOrNullDiagnostic(gpa: std.mem.Allocator, option: []const u8) ![]u8 {
+    const code: u32 = 6230;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Option '{s}' can only be specified in 'tsconfig.json' file or set to 'false' or 'null' on command line.",
         .{ code, option },
     );
 }
@@ -1092,6 +1118,42 @@ test "parseArgsCtx: tsconfig-only options accept null command-line reset" {
     try T.expectEqualStrings("index.ts", opts.files[0]);
 }
 
+test "parseArgsCtx: boolean tsconfig-only options reject true command-line values" {
+    const cases = [_]struct { flag: []const u8, name: []const u8 }{
+        .{ .flag = "--composite", .name = "composite" },
+        .{ .flag = "--disableSourceOfProjectReferenceRedirect", .name = "disableSourceOfProjectReferenceRedirect" },
+        .{ .flag = "--disableSolutionSearching", .name = "disableSolutionSearching" },
+        .{ .flag = "--disableReferencedProjectLoad", .name = "disableReferencedProjectLoad" },
+    };
+    for (cases) |c| {
+        var ctx: ParseContext = .{};
+        const argv = [_][]const u8{ c.flag, "true" };
+        try T.expectError(error.ConfigOnlyBooleanOption, parseArgsCtx(T.allocator, &argv, &ctx));
+        try T.expectEqualStrings(c.name, ctx.config_only_option);
+    }
+}
+
+test "parseArgsCtx: boolean tsconfig-only options reject missing command-line values" {
+    var ctx: ParseContext = .{};
+    const argv = [_][]const u8{"--composite"};
+    try T.expectError(error.ConfigOnlyBooleanOption, parseArgsCtx(T.allocator, &argv, &ctx));
+    try T.expectEqualStrings("composite", ctx.config_only_option);
+}
+
+test "parseArgsCtx: boolean tsconfig-only options accept false or null command-line reset" {
+    const argv = [_][]const u8{
+        "--composite",
+        "false",
+        "--disableReferencedProjectLoad",
+        "null",
+        "index.ts",
+    };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(usize, 1), opts.files.len);
+    try T.expectEqualStrings("index.ts", opts.files[0]);
+}
+
 test "compilerOptionExpectsArgumentDiagnostic: TS6044 message text" {
     const msg = try compilerOptionExpectsArgumentDiagnostic(T.allocator, "outDir");
     defer T.allocator.free(msg);
@@ -1106,6 +1168,15 @@ test "optionCanOnlyBeSpecifiedInTsconfigOrNullDiagnostic: TS6064 message text" {
     defer T.allocator.free(msg);
     try T.expectEqualStrings(
         "error TS6064: Option 'paths' can only be specified in 'tsconfig.json' file or set to 'null' on command line.",
+        msg,
+    );
+}
+
+test "optionCanOnlyBeSpecifiedInTsconfigOrFalseOrNullDiagnostic: TS6230 message text" {
+    const msg = try optionCanOnlyBeSpecifiedInTsconfigOrFalseOrNullDiagnostic(T.allocator, "composite");
+    defer T.allocator.free(msg);
+    try T.expectEqualStrings(
+        "error TS6230: Option 'composite' can only be specified in 'tsconfig.json' file or set to 'false' or 'null' on command line.",
         msg,
     );
 }
