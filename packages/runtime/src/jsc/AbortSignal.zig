@@ -35,8 +35,11 @@ fn castPtr(comptime T: type, p: *anyopaque) T {
 
 pub const AbortSignal = opaque {
     /// Marker type for timeout-backed abort signals (used by EventLoopTimer's
-    /// comptime owner dispatch). Full port pending.
-    pub const Timeout = opaque {};
+    /// comptime owner dispatch). Full port pending; minimal struct so
+    /// @fieldParentPtr resolves.
+    pub const Timeout = struct {
+        flags: u8 = 0,
+    };
 
     extern fn WebCore__AbortSignal__aborted(arg0: *AbortSignal) bool;
     extern fn WebCore__AbortSignal__abortReason(arg0: *AbortSignal) JSValue;

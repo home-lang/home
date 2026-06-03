@@ -1574,7 +1574,7 @@ pub fn spawnProcessPosix(
             },
 
             .path => |path| {
-                try actions.open(fileno, path, bun.O.RDWR | bun.O.CREAT, 0o664);
+                try actions.open(fileno.native(), path, bun.O.RDWR | bun.O.CREAT, 0o664);
                 try extra_fds.append(.unavailable);
             },
             .ipc, .buffer => {
