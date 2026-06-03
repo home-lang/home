@@ -1365,6 +1365,7 @@ pub const Parser = struct {
     fn scanJSDocTypedefDuplicateTypeTags(self: *Parser, start: usize, end: usize) ParseError!void {
         var has_typedef = false;
         var type_tag_count: u32 = 0;
+        var first_type_tag_pos: ?u32 = null;
         var i = start;
         while (i < end) {
             const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
@@ -1382,6 +1383,7 @@ pub const Parser = struct {
                 continue;
             }
             type_tag_count += 1;
+            if (first_type_tag_pos == null) first_type_tag_pos = @intCast(tag_pos);
             if (has_typedef and type_tag_count >= 2) {
                 const report_pos = self.jsDocTagTypeAnnotationEnd(tag_name_end, end) orelse tag_name_end;
                 try self.reportCodeAt(
@@ -1390,6 +1392,21 @@ pub const Parser = struct {
                     8033,
                     "A JSDoc '@typedef' comment may not contain multiple '@type' tags.",
                 );
+                // Attach TS8034 ("The tag was first specified here.") as
+                // related-info on the just-emitted TS8033, pointing at
+                // the first `@type` tag in the comment. Mirrors tsc's
+                // `addRelatedInfo(lastError, ... The_tag_was_first_specified_here)`.
+                if (first_type_tag_pos) |first_pos| {
+                    const arena_alloc = self.diag_arena.allocator();
+                    const rel = try arena_alloc.alloc(RelatedInfo, 1);
+                    rel[0] = .{
+                        .code = 8034,
+                        .message = try arena_alloc.dupe(u8, "The tag was first specified here."),
+                        .pos = first_pos,
+                        .span_len = 5, // "@type"
+                    };
+                    self.diagnostics.items[self.diagnostics.items.len - 1].related = rel;
+                }
                 return;
             }
             i = tag_name_end;
