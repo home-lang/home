@@ -688,6 +688,17 @@ pub fn main(init: std.process.Init) !void {
                         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
                     }
                 },
+                error.ConfigOnlyOption => {
+                    if (parse_ctx.config_only_option.len > 0) {
+                        const msg = ts_cli.optionCanOnlyBeSpecifiedInTsconfigOrNullDiagnostic(gpa, parse_ctx.config_only_option) catch {
+                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                        };
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                    } else {
+                        std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
+                    }
+                },
                 else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
             }
             std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));

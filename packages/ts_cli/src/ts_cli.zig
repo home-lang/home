@@ -83,6 +83,7 @@ pub const ParseError = error{
     OutOfMemory,
     UnknownFlag,
     MissingValue,
+    ConfigOnlyOption,
 };
 
 /// Diagnostic context captured when `parseArgs` aborts. Lets the binary
@@ -90,9 +91,10 @@ pub const ParseError = error{
 /// the canonical option name) rather than a generic `error.MissingValue`
 /// string. `missing_value_option` names the flag whose argument was
 /// omitted (canonical tsc name, no leading dashes); it is only
-/// meaningful when `parseArgs` returns `error.MissingValue`.
+/// meaningful when `parseArgs` returns the corresponding parse error.
 pub const ParseContext = struct {
     missing_value_option: []const u8 = "",
+    config_only_option: []const u8 = "",
 };
 
 /// Parse argv (excluding the program name) into a typed Options.
@@ -183,6 +185,18 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 return error.MissingValue;
             }
             opts.jsx = args[i];
+        } else if (std.mem.eql(u8, a, "--paths")) {
+            i += 1;
+            if (i >= args.len or !std.mem.eql(u8, args[i], "null")) {
+                ctx.config_only_option = "paths";
+                return error.ConfigOnlyOption;
+            }
+        } else if (std.mem.eql(u8, a, "--rootDirs")) {
+            i += 1;
+            if (i >= args.len or !std.mem.eql(u8, args[i], "null")) {
+                ctx.config_only_option = "rootDirs";
+                return error.ConfigOnlyOption;
+            }
         } else if (std.mem.eql(u8, a, "--declaration") or std.mem.eql(u8, a, "-d")) {
             opts.declaration = true;
         } else if (std.mem.eql(u8, a, "--no-declaration")) {
@@ -329,6 +343,17 @@ pub fn compilerOptionExpectsArgumentDiagnostic(gpa: std.mem.Allocator, option: [
     return try std.fmt.allocPrint(
         gpa,
         "error TS{d}: Compiler option '{s}' expects an argument.",
+        .{ code, option },
+    );
+}
+
+/// TS6064: a tsconfig-only option was supplied on the command line
+/// with anything other than the special `null` reset value.
+pub fn optionCanOnlyBeSpecifiedInTsconfigOrNullDiagnostic(gpa: std.mem.Allocator, option: []const u8) ![]u8 {
+    const code: u32 = 6064;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Option '{s}' can only be specified in 'tsconfig.json' file or set to 'null' on command line.",
         .{ code, option },
     );
 }
@@ -514,13 +539,11 @@ pub fn formatOutputCollision(gpa: std.mem.Allocator, col: OutputCollision) ![]u8
                 "error TS5055: Cannot write file '{s}' because it would overwrite input file.\n  {s}",
                 .{ col.output_path, (codes.lookup(hint_code) orelse unreachable).message },
             );
-        }
-        else
-            try std.fmt.allocPrint(
-                gpa,
-                "error TS5055: Cannot write file '{s}' because it would overwrite input file.",
-                .{col.output_path},
-            ),
+        } else try std.fmt.allocPrint(
+            gpa,
+            "error TS5055: Cannot write file '{s}' because it would overwrite input file.",
+            .{col.output_path},
+        ),
         5056 => try std.fmt.allocPrint(
             gpa,
             "error TS5056: Cannot write file '{s}' because it would be overwritten by multiple input files.",
@@ -550,17 +573,19 @@ const BuildOptions = struct {
 /// is either a compiler-only option (TS5094) or unknown (TS5072/TS5077).
 const build_valid_names = [_][]const u8{
     // commonOptionsWithBuild (canonical names)
-    "assumeChangesOnlyAffectDirectDependencies", "checkers",      "declaration",
+    "assumeChangesOnlyAffectDirectDependencies", "checkers",            "declaration",
     "declarationMap",                            "deduplicatePackages", "diagnostics",
-    "emitDeclarationOnly",                       "explainFiles",  "extendedDiagnostics",
-    "generateCpuProfile",                        "generateTrace", "help",
-    "incremental",                               "inlineSourceMap", "listEmittedFiles",
-    "listFiles",                                 "locale",        "noCheck",
-    "noEmit",                                    "pprofDir",      "preserveWatchOutput",
-    "pretty",                                    "quiet",         "singleThreaded",
-    "sourceMap",                                 "traceResolution", "watch",
+    "emitDeclarationOnly",                       "explainFiles",        "extendedDiagnostics",
+    "generateCpuProfile",                        "generateTrace",       "help",
+    "incremental",                               "inlineSourceMap",     "listEmittedFiles",
+    "listFiles",                                 "locale",              "noCheck",
+    "noEmit",                                    "pprofDir",            "preserveWatchOutput",
+    "pretty",                                    "quiet",               "singleThreaded",
+    "sourceMap",                                 "traceResolution",     "watch",
     // OptionsForBuild
-    "build", "verbose", "dry", "force", "clean", "builders", "stopBuildOnErrors",
+    "build",                                     "verbose",             "dry",
+    "force",                                     "clean",               "builders",
+    "stopBuildOnErrors",
 };
 
 /// Build-only flags (in `BuildOpts` but not a compiler option) — using one
@@ -575,9 +600,9 @@ const build_only_names = [_][]const u8{
 /// recognized short.
 fn canonicalBuildName(name: []const u8) []const u8 {
     const pairs = [_]struct { short: []const u8, long: []const u8 }{
-        .{ .short = "b", .long = "build" },   .{ .short = "v", .long = "verbose" },
-        .{ .short = "d", .long = "dry" },     .{ .short = "f", .long = "force" },
-        .{ .short = "h", .long = "help" },    .{ .short = "w", .long = "watch" },
+        .{ .short = "b", .long = "build" },       .{ .short = "v", .long = "verbose" },
+        .{ .short = "d", .long = "dry" },         .{ .short = "f", .long = "force" },
+        .{ .short = "h", .long = "help" },        .{ .short = "w", .long = "watch" },
         .{ .short = "i", .long = "incremental" }, .{ .short = "q", .long = "quiet" },
     };
     for (pairs) |p| if (std.mem.eql(u8, name, p.short)) return p.long;
@@ -1039,11 +1064,48 @@ test "parseArgsCtx: flag with a value does not set missing-value option" {
     try T.expectEqualStrings("", ctx.missing_value_option);
 }
 
+test "parseArgsCtx: tsconfig-only options reject non-null command-line values" {
+    const cases = [_]struct { flag: []const u8, name: []const u8 }{
+        .{ .flag = "--paths", .name = "paths" },
+        .{ .flag = "--rootDirs", .name = "rootDirs" },
+    };
+    for (cases) |c| {
+        var ctx: ParseContext = .{};
+        const argv = [_][]const u8{ c.flag, "foo" };
+        try T.expectError(error.ConfigOnlyOption, parseArgsCtx(T.allocator, &argv, &ctx));
+        try T.expectEqualStrings(c.name, ctx.config_only_option);
+    }
+}
+
+test "parseArgsCtx: tsconfig-only options reject missing command-line values" {
+    var ctx: ParseContext = .{};
+    const argv = [_][]const u8{"--paths"};
+    try T.expectError(error.ConfigOnlyOption, parseArgsCtx(T.allocator, &argv, &ctx));
+    try T.expectEqualStrings("paths", ctx.config_only_option);
+}
+
+test "parseArgsCtx: tsconfig-only options accept null command-line reset" {
+    const argv = [_][]const u8{ "--paths", "null", "--rootDirs", "null", "index.ts" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(usize, 1), opts.files.len);
+    try T.expectEqualStrings("index.ts", opts.files[0]);
+}
+
 test "compilerOptionExpectsArgumentDiagnostic: TS6044 message text" {
     const msg = try compilerOptionExpectsArgumentDiagnostic(T.allocator, "outDir");
     defer T.allocator.free(msg);
     try T.expectEqualStrings(
         "error TS6044: Compiler option 'outDir' expects an argument.",
+        msg,
+    );
+}
+
+test "optionCanOnlyBeSpecifiedInTsconfigOrNullDiagnostic: TS6064 message text" {
+    const msg = try optionCanOnlyBeSpecifiedInTsconfigOrNullDiagnostic(T.allocator, "paths");
+    defer T.allocator.free(msg);
+    try T.expectEqualStrings(
+        "error TS6064: Option 'paths' can only be specified in 'tsconfig.json' file or set to 'null' on command line.",
         msg,
     );
 }
