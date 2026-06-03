@@ -33,8 +33,10 @@ for (const m of catalogText.matchAll(catalogRe)) {
 // finding the catalogue entry whose stored name is the longest prefix of it.
 function codeFor(diagName) {
   let best = null;
+  const normalizedDiagName = diagName.startsWith("X_") ? diagName.slice(2) : diagName;
   for (const c of catalogNames) {
-    if (diagName === c.name || diagName.startsWith(c.name)) {
+    if (diagName === c.name || diagName.startsWith(c.name) ||
+        normalizedDiagName === c.name || normalizedDiagName.startsWith(c.name)) {
       if (best === null || c.name.length > best.name.length) best = c;
     }
   }
@@ -94,16 +96,20 @@ for (const file of ["declscompiler.go", "declswatch.go", "declsbuild.go"]) {
     const short = shortF && shortF.str ? shortF.str : "";
     const descF = field(block, "Description");
     const catF = field(block, "Category");
+    const defaultF = field(block, "DefaultValueDescription");
     const simplified = /ShowInSimplifiedHelpView:\s*true/.test(block);
     const cmdOnly = /IsCommandLineOnly:\s*true/.test(block);
     const descCode = descF && descF.diag ? codeFor(descF.diag) : null;
     const catCode = catF && catF.diag ? codeFor(catF.diag) : null;
+    const defaultCode = defaultF && defaultF.diag ? codeFor(defaultF.diag) : null;
     // Dedup on (name, short); the `?`-aliased help entry has no description.
     const dkey = name + "\0" + short;
     if (seen.has(dkey)) continue;
     seen.add(dkey);
     options.push({ name, short, descCode, catCode, simplified, cmdOnly,
-      descDiag: descF && descF.diag ? descF.diag : null });
+      descDiag: descF && descF.diag ? descF.diag : null,
+      defaultDiag: defaultF && defaultF.diag ? defaultF.diag : null,
+      defaultCode });
   }
 }
 
@@ -128,6 +134,8 @@ out.push("    /// upstream decl carries no description (e.g. the `-?` help alias
 out.push("    code: u32 = 0,");
 out.push("    /// TSxxxx code of the option's `--help` category header, or 0.");
 out.push("    category: u32 = 0,");
+out.push("    /// TSxxxx code of the option's diagnostic-backed default-value text, or 0.");
+out.push("    default_code: u32 = 0,");
 out.push("    /// Shown in the default (non-`--all`) `--help` view.");
 out.push("    simplified: bool = false,");
 out.push("    /// Only valid on the command line (never in tsconfig.json).");
@@ -137,10 +145,12 @@ out.push("");
 out.push("pub const all_options = [_]OptionDecl{");
 for (const o of options) {
   if (o.descDiag && o.descCode === null) missing++;
+  if (o.defaultDiag && o.defaultCode === null) missing++;
   const parts = [`.name = ${zstr(o.name)}`];
   if (o.short) parts.push(`.short = ${zstr(o.short)}`);
   if (o.descCode) parts.push(`.code = ${o.descCode}`);
   if (o.catCode) parts.push(`.category = ${o.catCode}`);
+  if (o.defaultCode) parts.push(`.default_code = ${o.defaultCode}`);
   if (o.simplified) parts.push(`.simplified = true`);
   if (o.cmdOnly) parts.push(`.command_line_only = true`);
   out.push(`    .{ ${parts.join(", ")} },`);

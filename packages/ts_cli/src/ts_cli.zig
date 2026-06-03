@@ -405,6 +405,18 @@ fn renderOption(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), opt: o
             try buf.append(gpa, '\n');
         }
     }
+    if (opt.default_code != 0) {
+        if (codes.lookup(opt.default_code)) |default_ci| {
+            const default_label_code: u32 = 6903;
+            try buf.appendSlice(gpa, "      ");
+            if (codes.lookup(default_label_code)) |label_ci| {
+                try buf.appendSlice(gpa, label_ci.message);
+                try buf.append(gpa, ' ');
+            }
+            try buf.appendSlice(gpa, default_ci.message);
+            try buf.append(gpa, '\n');
+        }
+    }
 }
 
 /// TS6044: a non-boolean compiler flag was given on the command line
@@ -1322,6 +1334,7 @@ test "options_table: every description/category code resolves in the catalogue" 
     for (all_options) |opt| {
         if (opt.code != 0) try T.expect(codes.lookup(opt.code) != null);
         if (opt.category != 0) try T.expect(codes.lookup(opt.category) != null);
+        if (opt.default_code != 0) try T.expect(codes.lookup(opt.default_code) != null);
     }
 }
 
@@ -1346,6 +1359,13 @@ test "renderHelp: --all view includes advanced options and category headers" {
     try T.expect(std.mem.indexOf(u8, help, "Log paths used during the 'moduleResolution' process.") != null);
     // Simplified options still render under --all too.
     try T.expect(std.mem.indexOf(u8, help, "--target, -t") != null);
+}
+
+test "renderHelp: --all view renders diagnostic-backed default descriptions" {
+    const help = try renderHelp(T.allocator, true);
+    defer T.allocator.free(help);
+    try T.expect(std.mem.indexOf(u8, help, "--resolvePackageJsonExports") != null);
+    try T.expect(std.mem.indexOf(u8, help, "default: `true` when 'moduleResolution' is 'node16', 'nodenext', or 'bundler'; otherwise `false`.") != null);
 }
 
 test "renderHelp: option names carry their short alias" {

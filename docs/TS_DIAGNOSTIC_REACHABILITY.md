@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 839 |
-| reachable (parity targets) | 371 |
+| catalog-only total | 832 |
+| reachable (parity targets) | 364 |
 | dead in tsgo (leave catalog-only) | 468 |
 
 ## Reachable worklist by range
@@ -23,8 +23,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 78 |
-| 1xxx — parser / syntactic + program file-inclusion | 66 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 72 |
+| 1xxx — parser / syntactic + program file-inclusion | 65 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -191,7 +191,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (78)
+### 6xxx — CLI / build / watch / resolution-trace messages (72)
 
 - TS6041 `Errors_Files_6041`
 - TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
@@ -240,7 +240,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6399 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_some_of_the_changes_were_not_emitte_6399`
 - TS6400 `Project_0_is_up_to_date_but_needs_to_update_timestamps_of_output_files_that_are_older_than_input_fil_6400`
 - TS6406 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_there_is_change_in_compilerOptions_6406`
-- TS6411 `true_when_moduleResolution_is_node16_nodenext_or_bundler_otherwise_false_6411`
 - TS6412 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_file_2_was_root_file_of_compilation_6412`
 - TS6419 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_program_needs_to_report_errors_6419`
 - TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
@@ -250,10 +249,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6900 `one_of_Colon_6900`
 - TS6901 `one_or_more_Colon_6901`
 - TS6902 `type_Colon_6902`
-- TS6903 `default_Colon_6903`
-- TS6906 `false_unless_composite_is_set_6906`
-- TS6911 `Computed_from_the_list_of_input_files_6911`
-- TS6912 `Platform_specific_6912`
 - TS6913 `You_can_learn_about_all_of_the_compiler_options_at_0_6913`
 - TS6914 `Including_watch_w_will_start_watching_the_current_project_for_the_file_changes_Once_set_you_can_conf_6914`
 - TS6915 `Using_build_b_will_make_tsc_behave_more_like_a_build_orchestrator_than_a_compiler_This_is_used_to_tr_6915`
@@ -270,9 +265,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6926 `Creates_a_tsconfig_json_with_the_recommended_settings_in_the_working_directory_6926`
 - TS6928 `An_expanded_version_of_this_information_showing_all_possible_compiler_options_6928`
 - TS6929 `Compiles_the_current_project_with_additional_settings_6929`
-- TS6930 `true_for_ES2022_and_above_including_ESNext_6930`
 
-### 1xxx — parser / syntactic + program file-inclusion (66)
+### 1xxx — parser / syntactic + program file-inclusion (65)
 
 - TS1012 `Unexpected_token_1012`
 - TS1059 `A_promise_must_have_a_then_method_1059`
@@ -329,7 +323,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS1460 `File_is_CommonJS_module_because_0_does_not_have_field_type_1460`
 - TS1461 `File_is_CommonJS_module_because_package_json_was_not_found_1461`
 - TS1471 `Module_0_cannot_be_imported_using_this_construct_The_specifier_only_resolves_to_an_ES_module_which_c_1471`
-- TS1476 `auto_Colon_Treat_files_with_imports_exports_import_meta_jsx_with_jsx_Colon_react_jsx_or_esm_format_w_1476`
 - TS1479 `The_current_file_is_a_CommonJS_module_whose_imports_will_produce_require_calls_however_the_reference_1479`
 - TS1480 `To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_create_a_local_packag_1480`
 - TS1481 `To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_add_the_field_type_Co_1481`
