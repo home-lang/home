@@ -1200,23 +1200,13 @@ pub const Resolver = struct {
         }
 
         // 2) `typesVersions` field (TS-only — pattern map under a
-        //    semver range). We treat any range as matching for now;
-        //    the check.zig and tsc both ratchet ranges via `semver`,
-        //    but since our checker doesn't propagate a TS version
-        //    string the most useful default is "match all".
-        if (obj.get("typesVersions")) |tv_v| {
-            if (tv_v == .object) {
-                var it = tv_v.object.iterator();
-                while (it.next()) |e| {
-                    const range = e.key_ptr.*;
-                    _ = range; // ignore, treat as matching
-                    const map = e.value_ptr.*;
-                    if (map != .object) continue;
-                    if (try self.matchTypesVersions(pkg_dir, map.object, subpath)) |r| {
-                        try self.tracePackagePeerDependencies(pkg_dir, obj);
-                        return .{ .resolved = r };
-                    }
-                }
+        //    semver range). Mirror tsc's trace sequence from
+        //    packagejson.GetVersionPaths, then resolve through the first
+        //    entry that matches the compiler version.
+        if (try self.selectTypesVersionsEntry(obj, subpath)) |entry| {
+            if (try self.matchTypesVersions(pkg_dir, entry.map, subpath)) |r| {
+                try self.tracePackagePeerDependencies(pkg_dir, obj);
+                return .{ .resolved = r };
             }
         }
 
@@ -1227,6 +1217,54 @@ pub const Resolver = struct {
             if (try self.resolvePackageMain(pkg_dir, pkg_json)) |r| return .{ .resolved = r };
         }
         return .none;
+    }
+
+    const TypeVersionsEntry = struct {
+        map: std.json.ObjectMap,
+    };
+
+    const ts_compiler_version = "7.0.0-dev";
+    const ts_compiler_version_major_minor = "7.0";
+
+    fn selectTypesVersionsEntry(
+        self: *Resolver,
+        obj: std.json.ObjectMap,
+        module_name: []const u8,
+    ) ResolveError!?TypeVersionsEntry {
+        const tv_v = obj.get("typesVersions") orelse {
+            self.traceMsg(6100, "'package.json' does not have a '{s}' field.", .{"typesVersions"});
+            return null;
+        };
+        if (tv_v != .object) {
+            self.traceMsg(6105, "Expected type of '{s}' field in 'package.json' to be 'object', got '{s}'.", .{ "typesVersions", jsonValueTypeName(tv_v) });
+            return null;
+        }
+
+        self.traceMsg(6206, "'package.json' has a 'typesVersions' field with version-specific path mappings.", .{});
+        var it = tv_v.object.iterator();
+        while (it.next()) |entry| {
+            const range = entry.key_ptr.*;
+            switch (typesVersionRangeMatches(range)) {
+                .invalid => {
+                    self.traceMsg(6209, "'package.json' has a 'typesVersions' entry '{s}' that is not a valid semver range.", .{range});
+                    continue;
+                },
+                .no_match => continue,
+                .match => {
+                    if (entry.value_ptr.* != .object) {
+                        const field_name = try std.fmt.allocPrint(self.ar(), "typesVersions['{s}']", .{range});
+                        self.traceMsg(6105, "Expected type of '{s}' field in 'package.json' to be 'object', got '{s}'.", .{ field_name, jsonValueTypeName(entry.value_ptr.*) });
+                        return null;
+                    }
+                    const lookup_key: []const u8 = if (std.mem.eql(u8, module_name, ".") or module_name.len == 0) "index" else module_name;
+                    self.traceMsg(6208, "'package.json' has a 'typesVersions' entry '{s}' that matches compiler version '{s}', looking for a pattern to match module name '{s}'.", .{ range, ts_compiler_version, lookup_key });
+                    return .{ .map = entry.value_ptr.*.object };
+                },
+            }
+        }
+
+        self.traceMsg(6207, "'package.json' does not have a 'typesVersions' entry that matches version '{s}'.", .{ts_compiler_version_major_minor});
+        return null;
     }
 
     const ExportsLookup = union(enum) {
@@ -1541,6 +1579,80 @@ fn jsonValueTypeName(value: std.json.Value) []const u8 {
     };
 }
 
+const TypesVersionRangeMatch = enum { invalid, no_match, match };
+
+fn typesVersionRangeMatches(range: []const u8) TypesVersionRangeMatch {
+    const trimmed = std.mem.trim(u8, range, " \t\r\n");
+    if (trimmed.len == 0) return .invalid;
+    if (std.mem.eql(u8, trimmed, "*") or std.mem.eql(u8, trimmed, "x") or std.mem.eql(u8, trimmed, "X")) return .match;
+
+    var i: usize = 0;
+    var op: enum { exact, gt, gte, lt, lte, caret, tilde } = .exact;
+    if (std.mem.startsWith(u8, trimmed, ">=")) {
+        op = .gte;
+        i = 2;
+    } else if (std.mem.startsWith(u8, trimmed, "<=")) {
+        op = .lte;
+        i = 2;
+    } else if (trimmed[0] == '>') {
+        op = .gt;
+        i = 1;
+    } else if (trimmed[0] == '<') {
+        op = .lt;
+        i = 1;
+    } else if (trimmed[0] == '^') {
+        op = .caret;
+        i = 1;
+    } else if (trimmed[0] == '~') {
+        op = .tilde;
+        i = 1;
+    }
+    while (i < trimmed.len and trimmed[i] == ' ') i += 1;
+    const major = parseUnsignedPrefix(trimmed, &i) orelse return .invalid;
+    var minor: u32 = 0;
+    if (i < trimmed.len and trimmed[i] == '.') {
+        i += 1;
+        minor = parseUnsignedPrefix(trimmed, &i) orelse return .invalid;
+    }
+    if (i < trimmed.len and trimmed[i] == '.') {
+        i += 1;
+        _ = parseUnsignedPrefix(trimmed, &i) orelse return .invalid;
+    }
+    if (i < trimmed.len) {
+        const c = trimmed[i];
+        if (c != '-' and c != '+' and c != ' ' and c != '\t') return .invalid;
+    }
+
+    const cmp = compareMajorMinor(7, 0, major, minor);
+    return switch (op) {
+        .exact, .caret, .tilde => if (cmp == 0) .match else .no_match,
+        .gt => if (cmp > 0) .match else .no_match,
+        .gte => if (cmp >= 0) .match else .no_match,
+        .lt => if (cmp < 0) .match else .no_match,
+        .lte => if (cmp <= 0) .match else .no_match,
+    };
+}
+
+fn parseUnsignedPrefix(s: []const u8, index: *usize) ?u32 {
+    if (index.* >= s.len or s[index.*] < '0' or s[index.*] > '9') return null;
+    var value: u32 = 0;
+    while (index.* < s.len) : (index.* += 1) {
+        const c = s[index.*];
+        if (c < '0' or c > '9') break;
+        value = std.math.mul(u32, value, 10) catch return null;
+        value = std.math.add(u32, value, @as(u32, c - '0')) catch return null;
+    }
+    return value;
+}
+
+fn compareMajorMinor(lhs_major: u32, lhs_minor: u32, rhs_major: u32, rhs_minor: u32) i8 {
+    if (lhs_major > rhs_major) return 1;
+    if (lhs_major < rhs_major) return -1;
+    if (lhs_minor > rhs_minor) return 1;
+    if (lhs_minor < rhs_minor) return -1;
+    return 0;
+}
+
 fn hasKnownExtension(s: []const u8) bool {
     const exts = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts", ".hm", ".home", ".d.hm", ".d.home", ".js", ".jsx", ".mjs", ".cjs" };
     for (exts) |e| if (std.mem.endsWith(u8, s, e)) return true;
@@ -1825,17 +1937,20 @@ test "Resolver: node_modules + package.json resolution traces TS6098/6125/6099/6
     var saw_6098 = false;
     var saw_6125 = false;
     var saw_6101 = false;
+    var saw_6100 = false;
     for (sink.entries.items) |e| {
         switch (e.code) {
             6098 => saw_6098 = true,
             6125 => saw_6125 = true,
             6101 => saw_6101 = true,
+            6100 => saw_6100 = true,
             else => {},
         }
     }
     try T.expect(saw_6098);
     try T.expect(saw_6125);
     try T.expect(saw_6101);
+    try T.expect(saw_6100);
 }
 
 test "Resolver: invalid package.json path field traces TS6105" {
@@ -2834,6 +2949,79 @@ test "Resolver: typesVersions wildcard rewrites subpath into versioned types dir
     const res = try r.resolve("foo/sub", "/a.ts");
     try T.expectEqualStrings("/node_modules/foo/ts4.0/sub.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+test "Resolver: typesVersions traces matching range lookup" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "name": "foo",
+        \\  "typesVersions": { ">=4.0": { "*": ["ts4.0/*"] } }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/ts4.0/sub.d.ts", "");
+    try vfs.addFile("/a.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+    const res = try r.resolve("foo/sub", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/ts4.0/sub.d.ts", res.path);
+
+    var saw_field = false;
+    var saw_match = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6206) saw_field = true;
+        if (entry.code == 6208 and
+            std.mem.indexOf(u8, entry.text, ">=4.0") != null and
+            std.mem.indexOf(u8, entry.text, "7.0.0-dev") != null and
+            std.mem.indexOf(u8, entry.text, "sub") != null)
+        {
+            saw_match = true;
+        }
+    }
+    try T.expect(saw_field);
+    try T.expect(saw_match);
+}
+
+test "Resolver: typesVersions traces invalid and nonmatching ranges" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "name": "foo",
+        \\  "main": "./index.js",
+        \\  "typesVersions": {
+        \\    "not-a-range": { "*": ["bad/*"] },
+        \\    ">=99.0": { "*": ["future/*"] }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/index.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+    const res = try r.resolve("foo", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/index.js", res.path);
+
+    var saw_field = false;
+    var saw_invalid = false;
+    var saw_no_match = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6206) saw_field = true;
+        if (entry.code == 6209 and std.mem.indexOf(u8, entry.text, "not-a-range") != null) saw_invalid = true;
+        if (entry.code == 6207 and std.mem.indexOf(u8, entry.text, "7.0") != null) saw_no_match = true;
+    }
+    try T.expect(saw_field);
+    try T.expect(saw_invalid);
+    try T.expect(saw_no_match);
 }
 
 test "Resolver: untypedModuleImport — bare JS package without types still resolves to .js" {

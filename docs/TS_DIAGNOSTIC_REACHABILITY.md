@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 864 |
-| reachable (parity targets) | 396 |
+| catalog-only total | 859 |
+| reachable (parity targets) | 391 |
 | dead in tsgo (leave catalog-only) | 468 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 103 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 98 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -191,10 +191,9 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (103)
+### 6xxx — CLI / build / watch / resolution-trace messages (98)
 
 - TS6041 `Errors_Files_6041`
-- TS6100 `package_json_does_not_have_a_0_field_6100`
 - TS6104 `Checking_if_0_is_the_longest_matching_prefix_for_1_2_6104`
 - TS6107 `rootDirs_option_is_set_using_it_to_resolve_relative_module_name_0_6107`
 - TS6108 `Longest_matching_prefix_for_0_is_1_6108`
@@ -208,10 +207,6 @@ message table that tsgo never emits (*dead* — obsolete wording or classic-tsc-
 - TS6122 `Root_directory_cannot_be_determined_skipping_primary_search_paths_6122`
 - TS6130 `Resolving_real_path_for_0_result_1_6130`
 - TS6140 `Auto_discovery_for_typings_is_enabled_in_project_0_Running_extra_resolution_pass_for_module_1_using__6140`
-- TS6206 `package_json_has_a_typesVersions_field_with_version_specific_path_mappings_6206`
-- TS6207 `package_json_does_not_have_a_typesVersions_entry_that_matches_version_0_6207`
-- TS6208 `package_json_has_a_typesVersions_entry_0_that_matches_compiler_version_1_looking_for_a_pattern_to_ma_6208`
-- TS6209 `package_json_has_a_typesVersions_entry_0_that_is_not_a_valid_semver_range_6209`
 - TS6210 `An_argument_for_0_was_not_provided_6210`
 - TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
 - TS6212 `Did_you_mean_to_call_this_expression_6212`
