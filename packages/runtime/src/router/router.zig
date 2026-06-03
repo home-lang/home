@@ -690,7 +690,7 @@ pub const Route = struct {
             name = name[0 .. name.len - 6];
         }
 
-        name = std.mem.trimRight(u8, name, "/");
+        name = std.mem.trimEnd(u8, name, "/");
 
         var match_name: string = name;
 

@@ -62,6 +62,8 @@ pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 pub const sha = @import("sha_hmac/sha.zig");
 /// Faithful to upstream `bun.zig:3218` (`dns = @import("./dns/dns.zig")`).
 pub const dns = @import("dns/dns.zig");
+/// Faithful to upstream `bun.zig:1442` (`Watcher = @import("./watcher/Watcher.zig")`).
+pub const Watcher = @import("watcher/Watcher.zig");
 /// Faithful to upstream `bun.zig:222` (`trait = @import("./meta/traits.zig")`).
 pub const trait = @import("meta/traits.zig");
 // Top-level bun.zig members (modules + small helpers) the copied source spells
@@ -4721,6 +4723,9 @@ pub const glob = struct {
     /// (`.match` / `.no_match` / `.negate_match` / `.negate_no_match`);
     /// call `.matches()` for a plain bool.
     pub const match = @import("glob/glob.zig").match;
+    /// Null-terminated glob walker over the real syscall accessor (upstream
+    /// `BunGlobWalkerZ = GlobWalker_(null, SyscallAccessor, sentinel=true)`).
+    pub const BunGlobWalkerZ = @import("glob/GlobWalker.zig").GlobWalker_(null, @import("glob/GlobWalker.zig").SyscallAccessor, true);
 };
 
 // ---- src/highway/ ------------------------------------------------------
