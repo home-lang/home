@@ -399,6 +399,15 @@ pub const TsConfig = struct {
                         .field = "paths",
                     });
                 },
+                5063 => {
+                    const msg = try std.fmt.allocPrint(gpa, "Substitutions for pattern '{s}' should be an array.", .{opt_diag.pattern});
+                    try diags.append(gpa, .{
+                        .code = 5063,
+                        .message = msg,
+                        .owns_message = true,
+                        .field = "paths",
+                    });
+                },
                 else => {},
             }
         }
@@ -1906,7 +1915,16 @@ fn fillCompilerOptions(
                 const arr = obj_v.values[idx].asArray() orelse {
                     patterns[idx] = pk;
                     substitutions[idx] = &.{};
-                    try recordOptionTypeMismatch(arena, diags, pk, "Array");
+                    // TS5063 — `Substitutions for pattern '{0}' should
+                    // be an array.` Specific to `paths` per-pattern
+                    // value validation; mirrors tsc's narrower error.
+                    // The renderer at the validation pass converts the
+                    // OptionParseDiagnostic to its final wording.
+                    try diags.append(arena, .{
+                        .code = 5063,
+                        .option = "paths",
+                        .pattern = pk,
+                    });
                     continue;
                 };
                 const subs_buf = try arena.alloc([]const u8, arr.len);
@@ -3422,7 +3440,11 @@ test "tsconfig.validate: paths substitution wrong type reports TS5064" {
     try t.expectEqualStrings("src/*", cfg.compiler_options.paths.?.substitutions[0][0]);
 }
 
-test "tsconfig.validate: paths value non-array reports TS5024" {
+test "tsconfig.validate: paths value non-array reports TS5063" {
+    // Previously fell back to the generic TS5024 ("requires a value
+    // of type Array") for this case, but upstream tsc emits the
+    // narrower TS5063 for `paths` substitution-value mismatches.
+    // Mirrors `commandLineParser` / `parseCustomTypeOption`.
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const cfg = try parseString(t.allocator, arena.allocator(),
@@ -3430,9 +3452,9 @@ test "tsconfig.validate: paths value non-array reports TS5024" {
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 1), countCode(diags, 5024));
-    const d = findCode(diags, 5024).?;
-    try t.expectEqualStrings("Compiler option '@/*' requires a value of type Array.", d.message);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5063));
+    const d = findCode(diags, 5063).?;
+    try t.expectEqualStrings("Substitutions for pattern '@/*' should be an array.", d.message);
 }
 
 test "tsconfig.validate: removed valueless option reports TS5102 with chain" {
