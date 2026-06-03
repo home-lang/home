@@ -389,6 +389,7 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     var compile_opts = ts_driver.optionsFromConfig(&cfg);
     var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
     compile_opts.external_resolver = .{ .ptr = &resolver_adapter, .vtable = &CheckerResolverAdapter.vtable };
+    _ = program.loadImportClosure(compile_opts) catch {};
 
     var had_errors = false;
     var stream_ctx: StreamCtx = .{
@@ -399,6 +400,17 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
         .any_errors = &had_errors,
     };
     program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch return true;
+    if (cfg.compiler_options.composite orelse false) {
+        const composite_summary = printCompositeProjectFileListDiagnostics(
+            gpa,
+            &program,
+            input_files.items,
+            config_path,
+            true,
+            false,
+        );
+        if (composite_summary.error_count > 0) had_errors = true;
+    }
     if (compile_opts.no_emit) return had_errors;
 
     for (program.files.items) |f| {
@@ -524,6 +536,123 @@ fn pathInList(haystack: []const []const u8, needle: []const u8) bool {
         if (std.mem.eql(u8, p, needle)) return true;
     }
     return false;
+}
+
+const CompositeProjectFileListSummary = struct {
+    error_count: usize = 0,
+    files_with_errors: usize = 0,
+    first_error_file: []const u8 = "",
+    first_error_line: usize = 0,
+    first_error_col: usize = 0,
+};
+
+fn sourceFileMayBeEmittedByProject(f: *const ts_program.File) bool {
+    return !f.is_declaration;
+}
+
+fn compositeProjectFileListMessage(
+    gpa: std.mem.Allocator,
+    file_path: []const u8,
+    config_path: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        gpa,
+        "File '{s}' is not listed within the file list of project '{s}'. Projects must list all files or use an 'include' pattern.",
+        .{ file_path, config_path },
+    );
+}
+
+fn compositeDiagnosticAnchor(
+    program: *const ts_program.Program,
+    f: *const ts_program.File,
+) struct { file: *const ts_program.File, pos: u32, span_len: u32 } {
+    if (f.include_reason) |reason| {
+        if (reason.importer < program.files.items.len) {
+            const importer = program.fileById(reason.importer);
+            const pos = findIncludeSpecifierPosition(importer.source, reason.specifier_text);
+            const span_len: u32 = blk: {
+                if (reason.specifier_text.len >= 2) {
+                    const first = reason.specifier_text[0];
+                    const last = reason.specifier_text[reason.specifier_text.len - 1];
+                    if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) {
+                        break :blk @intCast(@min(reason.specifier_text.len, std.math.maxInt(u32)));
+                    }
+                }
+                break :blk @intCast(@min(reason.specifier_text.len, std.math.maxInt(u32)));
+            };
+            return .{ .file = importer, .pos = pos, .span_len = span_len };
+        }
+    }
+    return .{ .file = f, .pos = 0, .span_len = 0 };
+}
+
+fn findIncludeSpecifierPosition(source: []const u8, specifier_text: []const u8) u32 {
+    if (specifier_text.len == 0) return 0;
+    if (std.mem.indexOf(u8, source, specifier_text)) |pos| {
+        return @intCast(@min(pos, std.math.maxInt(u32)));
+    }
+    var needle = specifier_text;
+    if (specifier_text.len >= 2) {
+        const first = specifier_text[0];
+        const last = specifier_text[specifier_text.len - 1];
+        if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) {
+            needle = specifier_text[1 .. specifier_text.len - 1];
+        }
+    }
+    if (std.mem.indexOf(u8, source, needle)) |pos| {
+        const quoted_pos = if (pos > 0 and (source[pos - 1] == '"' or source[pos - 1] == '\'')) pos - 1 else pos;
+        return @intCast(@min(quoted_pos, std.math.maxInt(u32)));
+    }
+    return 0;
+}
+
+fn printCompositeProjectFileListDiagnostics(
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    roots: []const []const u8,
+    config_path: []const u8,
+    use_pretty: bool,
+    use_color: bool,
+) CompositeProjectFileListSummary {
+    var summary: CompositeProjectFileListSummary = .{};
+    var seen_files: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen_files.deinit(gpa);
+    for (program.files.items) |f| {
+        if (!sourceFileMayBeEmittedByProject(f)) continue;
+        if (pathInList(roots, f.path)) continue;
+        const anchor = compositeDiagnosticAnchor(program, f);
+        const lc = ts_diagnostics.positionToLineCol(anchor.file.source, anchor.pos);
+        const message = compositeProjectFileListMessage(gpa, f.path, config_path) catch continue;
+        defer gpa.free(message);
+        const diag: ts_diagnostics.Diagnostic = .{
+            .file = anchor.file.path,
+            .line = lc.line,
+            .col = lc.col,
+            .code = 6307,
+            .code_prefix = .TS,
+            .severity = .err,
+            .message = message,
+            .span_len = anchor.span_len,
+        };
+        const formatted = if (use_pretty)
+            ts_diagnostics.formatPretty(gpa, diag, anchor.file.source, use_color) catch continue
+        else
+            ts_diagnostics.formatDefault(gpa, diag) catch continue;
+        defer gpa.free(formatted);
+        std.debug.print("{s}\n", .{formatted});
+
+        summary.error_count += 1;
+        if (!seen_files.contains(anchor.file.path)) {
+            seen_files.put(gpa, anchor.file.path, {}) catch {};
+            summary.files_with_errors += 1;
+        }
+        if (summary.first_error_file.len == 0) {
+            summary.first_error_file = anchor.file.path;
+            summary.first_error_line = lc.line;
+            summary.first_error_col = lc.col;
+        }
+    }
+    return summary;
 }
 
 /// Modification time of `path` in nanoseconds, or null if it can't be
@@ -1197,6 +1326,28 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
+    if (loaded_cfg) |c| {
+        if (c.compiler_options.composite orelse false) {
+            const composite_summary = printCompositeProjectFileListDiagnostics(
+                gpa,
+                &program,
+                input_files.items,
+                c.file_path,
+                opts.pretty orelse true,
+                stdout_is_tty,
+            );
+            if (composite_summary.error_count > 0) {
+                any_errors_streaming = true;
+                stream_error_count += composite_summary.error_count;
+                stream_files_with_errors += composite_summary.files_with_errors;
+                if (stream_first_error_file.len == 0) {
+                    stream_first_error_file = composite_summary.first_error_file;
+                    stream_first_error_line = composite_summary.first_error_line;
+                    stream_first_error_col = composite_summary.first_error_col;
+                }
+            }
+        }
+    }
     // tsc's post-compilation summary (CategoryMessage). Non-watch
     // compiles stay silent when clean; watch compiles always report
     // the TS6193/TS6194 "Watching for file changes" status. For
@@ -2173,4 +2324,23 @@ test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
     defer std.testing.allocator.free(msg);
 
     try std.testing.expect(std.mem.indexOf(u8, msg, "src/\\u0001*.ts") != null);
+}
+
+test "tsc_main: TS6307 diagnostic message and anchor match composite file list validation" {
+    const msg = try compositeProjectFileListMessage(
+        std.testing.allocator,
+        "/repo/src/dep.ts",
+        "/repo/tsconfig.json",
+    );
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "File '/repo/src/dep.ts' is not listed within the file list of project '/repo/tsconfig.json'. Projects must list all files or use an 'include' pattern.",
+        msg,
+    );
+
+    const src = "import { dep } from './dep';\n";
+    const pos = findIncludeSpecifierPosition(src, "\"./dep\"");
+    const lc = ts_diagnostics.positionToLineCol(src, pos);
+    try std.testing.expectEqual(@as(u32, 1), lc.line);
+    try std.testing.expectEqual(@as(u32, 21), lc.col);
 }
