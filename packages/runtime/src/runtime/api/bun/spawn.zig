@@ -183,6 +183,17 @@ pub const PosixSpawn = struct {
         status: u32,
     };
 
+    /// Forward-port: std.posix.wait4 was removed in Home's Zig fork; wrap the
+    /// libc wait4 directly. `usage` is a pointer to process.Rusage (layout-
+    /// compatible with std.c.rusage).
+    pub fn wait4(pid: pid_t, options: c_int, usage: anytype) @import("bun").sys.Maybe(WaitPidResult) {
+        const M = @import("bun").sys.Maybe(WaitPidResult);
+        var status: c_int = 0;
+        const rc = std.c.wait4(pid, &status, options, @ptrCast(usage));
+        if (M.errnoSys(rc, .waitpid)) |err| return err;
+        return .{ .result = .{ .pid = @intCast(rc), .status = @bitCast(status) } };
+    }
+
     pub const PosixSpawnAttr = struct {
         attr: system.posix_spawnattr_t,
         detached: bool = false,

@@ -743,7 +743,7 @@ pub const Route = struct {
                 abs_path_str = FileSystem.instance.absBuf(&parts, route_file_buf);
                 route_file_buf[abs_path_str.len] = 0;
                 const buf = route_file_buf[0..abs_path_str.len :0];
-                file = std.fs.openFileAbsoluteZ(buf, .{ .mode = .read_only }) catch |err| {
+                file = bun.openFileForPath(buf) catch |err| {
                     needs_close = false;
                     log.addErrorFmt(null, Logger.Loc.Empty, allocator, "{s} opening route: {s}", .{ @errorName(err), abs_path_str }) catch unreachable;
                     return null;

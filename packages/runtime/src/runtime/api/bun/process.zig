@@ -1544,12 +1544,12 @@ pub fn spawnProcessPosix(
 
                 try actions.dup2(fds[1].native(), fileno.native());
                 if (fds[1] != fileno)
-                    try actions.close(fds[1]);
+                    try actions.close(fds[1].native());
 
                 stdio.* = fds[0];
             },
             .pipe => |fd| {
-                try actions.dup2(fd, fileno);
+                try actions.dup2(fd.native(), fileno.native());
                 stdio.* = fd;
             },
         }
