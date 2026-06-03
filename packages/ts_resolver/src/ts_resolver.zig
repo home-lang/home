@@ -524,7 +524,7 @@ pub const Resolver = struct {
         };
         // `imports` keys are always `#`-prefixed; reuse the same subpath
         // lookup machinery as `exports` (exact key then `*` pattern).
-        if (try self.lookupExports(imports_v, specifier, "imports")) |target| {
+        if (try self.lookupExports(imports_v, specifier, "imports", scope.dir)) |target| {
             switch (target) {
                 .matched_null => {
                     self.traceMsg(6274, "package.json scope '{s}' explicitly maps specifier '{s}' to null.", .{ scope.dir, specifier });
@@ -541,6 +541,7 @@ pub const Resolver = struct {
                     self.traceMsg(6271, "Import specifier '{s}' does not exist in package.json scope at path '{s}'.", .{ specifier, scope.dir });
                     return null;
                 },
+                .invalid_target => return null,
             }
         }
         self.traceMsg(6271, "Import specifier '{s}' does not exist in package.json scope at path '{s}'.", .{ specifier, scope.dir });
@@ -1310,7 +1311,7 @@ pub const Resolver = struct {
                     "."
                 else
                     try std.fmt.allocPrint(self.ar(), "./{s}", .{subpath});
-                if (try self.lookupExports(exports_v, key, "exports")) |target| {
+                if (try self.lookupExports(exports_v, key, "exports", pkg_dir)) |target| {
                     switch (target) {
                         .matched_null => return .blocked, // hard rejection
                         .matched => |m| {
@@ -1337,6 +1338,7 @@ pub const Resolver = struct {
                             self.traceMsg(6276, "Export specifier '{s}' does not exist in package.json scope at path '{s}'.", .{ key, pkg_dir });
                             return .blocked;
                         },
+                        .invalid_target => return .blocked,
                     }
                 }
             }
@@ -1413,6 +1415,7 @@ pub const Resolver = struct {
     const ExportsLookup = union(enum) {
         not_matched,
         matched_null,
+        invalid_target,
         matched: []const u8,
     };
 
@@ -1421,6 +1424,7 @@ pub const Resolver = struct {
         node: std.json.Value,
         key: []const u8,
         kind: []const u8,
+        scope_dir: []const u8,
     ) ResolveError!?ExportsLookup {
         // `exports` may be:
         //   - a string  → applies to "."
@@ -1434,7 +1438,22 @@ pub const Resolver = struct {
             }
             return .not_matched;
         }
-        if (node != .object) return null;
+        if (node == .array) {
+            if (std.mem.eql(u8, key, ".")) {
+                if (try self.resolveConditional(node, kind, scope_dir, key)) |resolved| {
+                    if (resolved == .matched) {
+                        self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched });
+                    }
+                    return resolved;
+                }
+                return null;
+            }
+            return .not_matched;
+        }
+        if (node != .object) {
+            self.traceInvalidPackageJsonTarget(scope_dir, key);
+            return .invalid_target;
+        }
         const obj = node.object;
         // Subpath-keyed when a key begins with `.` (`exports`) OR `#`
         // (`imports`). The `imports` map shares this shape but its keys
@@ -1450,7 +1469,7 @@ pub const Resolver = struct {
         if (looks_subpath_keyed) {
             // Exact match first.
             if (obj.get(key)) |entry| {
-                if (try self.resolveConditional(entry, kind)) |resolved| {
+                if (try self.resolveConditional(entry, kind, scope_dir, key)) |resolved| {
                     if (resolved == .matched) {
                         self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched });
                     }
@@ -1474,9 +1493,10 @@ pub const Resolver = struct {
                 best_substitution = key[prefix.len..];
             }
             if (best_entry) |entry| {
-                const conditional = try self.resolveConditional(entry, kind);
+                const conditional = try self.resolveConditional(entry, kind, scope_dir, key);
                 if (conditional) |c| switch (c) {
                     .matched_null => return c,
+                    .invalid_target => return c,
                     .matched => |m| {
                         // Replace the first `*` in the target with the
                         // captured substitution. tsc's
@@ -1499,7 +1519,7 @@ pub const Resolver = struct {
         }
         // Conditional object directly — only valid for the root.
         if (std.mem.eql(u8, key, ".")) {
-            if (try self.resolveConditional(node, kind)) |resolved| {
+            if (try self.resolveConditional(node, kind, scope_dir, key)) |resolved| {
                 if (resolved == .matched) {
                     self.traceMsg(6404, "Using '{s}' subpath '{s}' with target '{s}'.", .{ kind, key, resolved.matched });
                 }
@@ -1510,13 +1530,46 @@ pub const Resolver = struct {
         return .not_matched;
     }
 
-    fn resolveConditional(self: *Resolver, node: std.json.Value, kind: []const u8) ResolveError!?ExportsLookup {
+    fn traceInvalidPackageJsonTarget(self: *Resolver, scope_dir: []const u8, specifier: []const u8) void {
+        self.traceMsg(6275, "package.json scope '{s}' has invalid type for target of specifier '{s}'", .{ scope_dir, specifier });
+    }
+
+    fn resolveConditional(
+        self: *Resolver,
+        node: std.json.Value,
+        kind: []const u8,
+        scope_dir: []const u8,
+        specifier: []const u8,
+    ) ResolveError!?ExportsLookup {
         if (node == .null) return .matched_null;
         if (node == .string) return .{ .matched = node.string };
-        if (node != .object) return null;
+        if (node == .array) {
+            if (node.array.items.len == 0) {
+                self.traceInvalidPackageJsonTarget(scope_dir, specifier);
+                return .invalid_target;
+            }
+            var saw_invalid_target = false;
+            for (node.array.items) |item| {
+                if (try self.resolveConditional(item, kind, scope_dir, specifier)) |inner| {
+                    switch (inner) {
+                        .not_matched => {},
+                        .invalid_target => saw_invalid_target = true,
+                        else => return inner,
+                    }
+                }
+            }
+            if (saw_invalid_target) return .invalid_target;
+            self.traceInvalidPackageJsonTarget(scope_dir, specifier);
+            return .invalid_target;
+        }
+        if (node != .object) {
+            self.traceInvalidPackageJsonTarget(scope_dir, specifier);
+            return .invalid_target;
+        }
         const obj = node.object;
         self.traceMsg(6413, "Entering conditional exports.", .{});
         defer self.traceMsg(6416, "Exiting conditional exports.", .{});
+        var saw_invalid_target = false;
 
         var nonmatch_it = obj.iterator();
         while (nonmatch_it.next()) |entry| {
@@ -1536,9 +1589,16 @@ pub const Resolver = struct {
         // Try `types` explicitly first.
         if (obj.get("types")) |v| {
             self.traceMsg(6403, "Matched '{s}' condition '{s}'.", .{ kind, "types" });
-            if (try self.resolveConditional(v, kind)) |inner| {
-                if (inner == .matched) self.traceMsg(6414, "Resolved under condition '{s}'.", .{"types"});
-                if (inner != .not_matched) return inner;
+            if (try self.resolveConditional(v, kind, scope_dir, specifier)) |inner| {
+                switch (inner) {
+                    .matched => {
+                        self.traceMsg(6414, "Resolved under condition '{s}'.", .{"types"});
+                        return inner;
+                    },
+                    .matched_null => return inner,
+                    .invalid_target => saw_invalid_target = true,
+                    .not_matched => {},
+                }
             }
             self.traceMsg(6415, "Failed to resolve under condition '{s}'.", .{"types"});
         }
@@ -1546,21 +1606,36 @@ pub const Resolver = struct {
             if (std.mem.eql(u8, cond, "types")) continue;
             if (obj.get(cond)) |v| {
                 self.traceMsg(6403, "Matched '{s}' condition '{s}'.", .{ kind, cond });
-                if (try self.resolveConditional(v, kind)) |inner| {
-                    if (inner == .matched) self.traceMsg(6414, "Resolved under condition '{s}'.", .{cond});
-                    if (inner != .not_matched) return inner;
+                if (try self.resolveConditional(v, kind, scope_dir, specifier)) |inner| {
+                    switch (inner) {
+                        .matched => {
+                            self.traceMsg(6414, "Resolved under condition '{s}'.", .{cond});
+                            return inner;
+                        },
+                        .matched_null => return inner,
+                        .invalid_target => saw_invalid_target = true,
+                        .not_matched => {},
+                    }
                 }
                 self.traceMsg(6415, "Failed to resolve under condition '{s}'.", .{cond});
             }
         }
         if (obj.get("default")) |v| {
             self.traceMsg(6403, "Matched '{s}' condition '{s}'.", .{ kind, "default" });
-            if (try self.resolveConditional(v, kind)) |inner| {
-                if (inner == .matched) self.traceMsg(6414, "Resolved under condition '{s}'.", .{"default"});
-                if (inner != .not_matched) return inner;
+            if (try self.resolveConditional(v, kind, scope_dir, specifier)) |inner| {
+                switch (inner) {
+                    .matched => {
+                        self.traceMsg(6414, "Resolved under condition '{s}'.", .{"default"});
+                        return inner;
+                    },
+                    .matched_null => return inner,
+                    .invalid_target => saw_invalid_target = true,
+                    .not_matched => {},
+                }
             }
             self.traceMsg(6415, "Failed to resolve under condition '{s}'.", .{"default"});
         }
+        if (saw_invalid_target) return .invalid_target;
         return .not_matched;
     }
 
@@ -2981,6 +3056,46 @@ test "Resolver: conditional exports trace matching fallback path" {
     try T.expect(saw_exit);
 }
 
+test "Resolver: conditional exports invalid target traces TS6275 before fallback" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/dep/package.json",
+        \\{
+        \\  "name": "dep",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": 123,
+        \\      "default": "./fallback.d.ts"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/dep/fallback.d.ts", "export {};");
+    try vfs.addFile("/a.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .conditions = &.{ "import", "node" },
+    });
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("dep", "/a.ts");
+    try T.expectEqualStrings("/node_modules/dep/fallback.d.ts", res.path);
+
+    var saw_6275 = false;
+    var saw_failed_import = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6275 and
+            std.mem.indexOf(u8, entry.text, "/node_modules/dep") != null and
+            std.mem.indexOf(u8, entry.text, "'.'") != null) saw_6275 = true;
+        if (entry.code == 6415 and std.mem.indexOf(u8, entry.text, "import") != null) saw_failed_import = true;
+    }
+    try T.expect(saw_6275);
+    try T.expect(saw_failed_import);
+}
+
 test "Resolver: package exports — `null` value short-circuits with no fallthrough" {
     var vfs = VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -3965,6 +4080,30 @@ test "Resolver: #imports — exact key beats node_modules and never walks it" {
     defer r.deinit();
     const res = try r.resolve("#dep", "/proj/src/main.ts");
     try T.expectEqualStrings("/proj/shim.d.ts", res.path);
+}
+
+test "Resolver: #imports — invalid target traces TS6275" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json",
+        \\{ "name": "my-pkg", "imports": { "#bad": 123 } }
+    );
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    r.trace = &sink;
+
+    try T.expectError(error.NotFound, r.resolve("#bad", "/proj/src/main.ts"));
+    var saw_6275 = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6275 and
+            std.mem.indexOf(u8, entry.text, "/proj") != null and
+            std.mem.indexOf(u8, entry.text, "#bad") != null) saw_6275 = true;
+    }
+    try T.expect(saw_6275);
 }
 
 test "Resolver: #imports — unmatched `#` specifier is a hard NotFound" {
