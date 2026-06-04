@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 764 |
-| reachable (parity targets) | 297 |
+| catalog-only total | 763 |
+| reachable (parity targets) | 296 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -28,8 +28,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 5 |
 | 5xxx — tsconfig / build-option validation | 4 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 4 |
 
 ### 2xxx — checker / type engine (157)
 
@@ -337,20 +337,19 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 - TS7058 `If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (5)
-
-- TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
-- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
-- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
-- TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
-- TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
-
 ### 5xxx — tsconfig / build-option validation (4)
 
 - TS5075 `_0_is_assignable_to_the_constraint_of_type_1_but_1_could_be_instantiated_with_a_different_subtype_of_5075`
 - TS5078 `Unknown_watch_option_0_5078`
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
 - TS5082 `_0_could_be_instantiated_with_an_arbitrary_type_which_could_be_unrelated_to_1_5082`
+
+### 6xxx — CLI / build / watch / resolution-trace messages (4)
+
+- TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
+- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
+- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
+- TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
 
 ## Notes: heuristic false-positives & subsystem-gated clusters
 

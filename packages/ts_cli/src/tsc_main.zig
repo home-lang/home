@@ -350,23 +350,35 @@ fn projectIsUpToDate(
     return true;
 }
 
+const BuildOneProjectResult = enum { up_to_date, built_dts_unchanged, built_dts_changed, errors };
+
+fn shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts: bool) bool {
+    return upstream_dependency_built_with_unchanged_dts;
+}
+
 /// Build a single project (used by `tsc --build` for each project in
 /// dependency order): load its tsconfig, gather inputs, compile, and emit
 /// `.js` (+ `.d.ts` when declaration/composite is set). Paths are resolved
-/// against the project's own directory. Returns true if the project had
-/// compile errors. Reuses the same program/driver/emit APIs as the normal
-/// single-project flow.
-fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8, verbose: bool, force: bool) bool {
+/// against the project's own directory. Reuses the same program/driver/emit
+/// APIs as the normal single-project flow.
+fn buildOneProject(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    verbose: bool,
+    force: bool,
+    upstream_dependency_built_with_unchanged_dts: bool,
+) BuildOneProjectResult {
     const cfg_src = RealFs.read(arena, config_path) catch {
         std.debug.print("error reading {s}\n", .{config_path});
-        return true;
+        return .errors;
     };
     var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch {
         std.debug.print("error parsing {s}\n", .{config_path});
-        return true;
+        return .errors;
     };
     cfg.file_path = config_path;
-    if (printConfigValidationDiagnostics(gpa, cfg) catch true) return true;
+    if (printConfigValidationDiagnostics(gpa, cfg) catch true) return .errors;
     const project_dir = std.fs.path.dirname(config_path) orelse ".";
 
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -378,9 +390,9 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     }
     if (cfg.files) |fs_list| {
         for (fs_list) |f| {
-            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return true;
-            owned.append(gpa, p) catch return true;
-            input_files.append(gpa, p) catch return true;
+            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return .errors;
+            owned.append(gpa, p) catch return .errors;
+            input_files.append(gpa, p) catch return .errors;
         }
     } else {
         // Exclude the project's own output dir (so emitted .js/.d.ts aren't
@@ -389,31 +401,31 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
         var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
         defer excludes.deinit(gpa);
         if (cfg.exclude) |ex| {
-            for (ex) |e| excludes.append(gpa, e) catch return true;
+            for (ex) |e| excludes.append(gpa, e) catch return .errors;
         }
         if (cfg.compiler_options.out_dir) |d| {
-            excludes.append(gpa, d) catch return true;
-            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return true) catch return true;
+            excludes.append(gpa, d) catch return .errors;
+            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .errors) catch return .errors;
         }
         if (cfg.compiler_options.declaration_dir) |d| {
-            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return true) catch return true;
+            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .errors) catch return .errors;
         }
-        excludes.append(gpa, "**/node_modules/**") catch return true;
-        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return true;
+        excludes.append(gpa, "**/node_modules/**") catch return .errors;
+        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return .errors;
     }
     if (input_files.items.len == 0) {
         if (verbose) std.debug.print("  (no input files)\n", .{});
-        return false;
+        return .up_to_date;
     }
 
     // Output directories are resolved against the project's own dir.
     const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors)
     else
         null;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors)
     else
         out_dir;
 
@@ -447,9 +459,12 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
                 buildStatusMessage(6359, "Updating output timestamps of project '{s}'...\n", .{config_path});
             }
             touchProjectOutputs(gpa, input_files.items, out_dir, declaration_dir, emit_dts);
-            return false;
-        } else if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, verbose)) {
-            return false;
+            return .up_to_date;
+        } else if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, verbose and !shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts))) {
+            if (verbose and shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts)) {
+                buildStatusMessage(6354, "Project '{s}' is up to date with .d.ts files from its dependencies\n", .{config_path});
+            }
+            return .up_to_date;
         }
     }
     // TS6388 — under `--force`, tsc rebuilds regardless of up-to-dateness.
@@ -465,10 +480,10 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     for (input_files.items) |path| {
         const src = RealFs.read(gpa, path) catch {
             std.debug.print("error reading {s}\n", .{path});
-            return true;
+            return .errors;
         };
         defer gpa.free(src);
-        _ = program.add(path, src) catch return true;
+        _ = program.add(path, src) catch return .errors;
     }
 
     var compile_opts = ts_driver.optionsFromConfig(&cfg);
@@ -484,7 +499,7 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
         .use_color = false,
         .any_errors = &had_errors,
     };
-    program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch return true;
+    program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch return .errors;
     if (cfg.compiler_options.composite orelse false) {
         const composite_summary = printCompositeProjectFileListDiagnostics(
             gpa,
@@ -496,14 +511,15 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
         );
         if (composite_summary.error_count > 0) had_errors = true;
     }
-    if (compile_opts.no_emit) return had_errors;
+    if (compile_opts.no_emit) return if (had_errors) .errors else .built_dts_unchanged;
 
     var reported_unchanged_timestamps = false;
+    var changed_dts = false;
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
         const out_path = computeOutPath(gpa, f.path, out_dir, ".js") catch continue;
         defer gpa.free(out_path);
-        writeProjectOutput(gpa, out_path, c.js, config_path, verbose, &reported_unchanged_timestamps);
+        _ = writeProjectOutput(gpa, out_path, c.js, config_path, verbose, &reported_unchanged_timestamps);
         if (emit_dts) {
             const dts_path = computeOutPath(gpa, f.path, declaration_dir, ".d.ts") catch continue;
             defer gpa.free(dts_path);
@@ -511,18 +527,19 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
             // back to the symbol-driven emitter if it can't process the file.
             if (ts_emit.d_ts_fast.emit(gpa, f.source)) |dts| {
                 defer gpa.free(dts);
-                writeProjectOutput(gpa, dts_path, dts, config_path, verbose, &reported_unchanged_timestamps);
+                if (writeProjectOutput(gpa, dts_path, dts, config_path, verbose, &reported_unchanged_timestamps)) changed_dts = true;
             } else |_| {
                 var emitter = ts_emit.DtsEmitter.initWithTypes(gpa, &c.hir, &c.interner, &c.type_interner, .{});
                 defer emitter.deinit();
                 emitter.emitSourceFile(c.root) catch continue;
                 const dts_bytes = emitter.toOwnedSlice() catch continue;
                 defer gpa.free(dts_bytes);
-                writeProjectOutput(gpa, dts_path, dts_bytes, config_path, verbose, &reported_unchanged_timestamps);
+                if (writeProjectOutput(gpa, dts_path, dts_bytes, config_path, verbose, &reported_unchanged_timestamps)) changed_dts = true;
             }
         }
     }
-    return had_errors;
+    if (had_errors) return .errors;
+    return if (changed_dts) .built_dts_changed else .built_dts_unchanged;
 }
 
 const ProjectDryStatus = enum { build, up_to_date, update_timestamps };
@@ -994,7 +1011,7 @@ fn writeProjectOutput(
     project: []const u8,
     verbose: bool,
     reported_unchanged_timestamps: *bool,
-) void {
+) bool {
     if (RealFs.read(gpa, path)) |existing| {
         defer gpa.free(existing);
         if (std.mem.eql(u8, existing, bytes)) {
@@ -1003,10 +1020,11 @@ fn writeProjectOutput(
                 reported_unchanged_timestamps.* = true;
             }
             touchFileNow(path);
-            return;
+            return false;
         }
     } else |_| {}
     writeOrDie(gpa, path, bytes);
+    return true;
 }
 
 fn appendCleanOutputIfPresent(
@@ -1567,19 +1585,24 @@ pub fn main(init: std.process.Init) !void {
         }
         // Build each project (dependencies first). The per-project builder
         // handles up-to-date checks unless `--force` is set.
-        const BuildProjectStatus = enum { ok, errors, skipped };
+        const BuildProjectStatus = enum { up_to_date, built_dts_unchanged, built_dts_changed, errors, skipped };
         const project_status = try gpa.alloc(BuildProjectStatus, graph.paths.len);
         defer gpa.free(project_status);
-        @memset(project_status, .ok);
+        @memset(project_status, .up_to_date);
         var build_had_errors = false;
         for (ord.order) |pi| {
             var blocked_dep: ?usize = null;
-            var blocked_dep_status: BuildProjectStatus = .ok;
+            var blocked_dep_status: BuildProjectStatus = .up_to_date;
+            var upstream_dependency_built_with_unchanged_dts = false;
             for (graph.nodes[pi].deps) |dep| {
-                if (project_status[dep] != .ok) {
-                    blocked_dep = dep;
-                    blocked_dep_status = project_status[dep];
-                    break;
+                switch (project_status[dep]) {
+                    .built_dts_unchanged => upstream_dependency_built_with_unchanged_dts = true,
+                    .up_to_date, .built_dts_changed => {},
+                    .errors, .skipped => {
+                        blocked_dep = dep;
+                        blocked_dep_status = project_status[dep];
+                        break;
+                    },
                 }
             }
             if (blocked_dep) |dep| {
@@ -1598,9 +1621,14 @@ pub fn main(init: std.process.Init) !void {
                 build_had_errors = true;
                 continue;
             }
-            if (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force)) {
-                project_status[pi] = .errors;
-                build_had_errors = true;
+            switch (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force, upstream_dependency_built_with_unchanged_dts)) {
+                .up_to_date => project_status[pi] = .up_to_date,
+                .built_dts_unchanged => project_status[pi] = .built_dts_unchanged,
+                .built_dts_changed => project_status[pi] = .built_dts_changed,
+                .errors => {
+                    project_status[pi] = .errors;
+                    build_had_errors = true;
+                },
             }
         }
         if (build_had_errors) std.process.exit(@intFromEnum(ts_cli.ExitCode.type_errors));
@@ -3059,6 +3087,11 @@ test "tsc_main: TS6377 referenced project build info overwrite diagnostic" {
         "error TS6377: Cannot write file '/repo/shared.tsbuildinfo' because it will overwrite '.tsbuildinfo' file generated by referenced project '../lib'.",
         msg,
     );
+}
+
+test "tsc_main: TS6354 status is selected after an upstream dependency build with unchanged dts" {
+    try std.testing.expect(shouldReportUpToDateWithDtsFilesFromDependencies(true));
+    try std.testing.expect(!shouldReportUpToDateWithDtsFilesFromDependencies(false));
 }
 
 test "tsc_main: TS18003 no-input config diagnostic uses include and exclude specs" {
