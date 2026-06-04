@@ -41,6 +41,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2319 `Named_property_0_of_types_1_and_2_are_not_identical_2319`
 - TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
 - TS2324 `Property_0_is_missing_in_type_1_2324`
+- TS2330 `_0_and_1_index_signatures_are_incompatible_2330`
 - TS2418 `Type_of_computed_property_s_value_is_0_which_is_not_assignable_to_type_1_2418`
 - TS2468 `Cannot_find_global_value_0_2468`
 - TS2484 `Export_declaration_conflicts_with_exported_declaration_of_0_2484`
@@ -82,7 +83,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2626 `Type_at_position_0_in_source_is_not_compatible_with_type_at_position_1_in_target_2626`
 - TS2627 `Type_at_positions_0_through_1_in_source_is_not_compatible_with_type_at_position_2_in_target_2627`
 - TS2633 `JSX_property_access_expressions_cannot_include_JSX_namespace_names_2633`
-- TS2634 `_0_index_signatures_are_incompatible_2634`
 - TS2636 `Type_0_is_not_assignable_to_type_1_as_implied_by_variance_annotation_2636`
 - TS2637 `Variance_annotations_are_only_supported_in_type_aliases_for_object_function_constructor_and_mapped_t_2637`
 - TS2638 `Type_0_may_represent_a_primitive_value_which_is_not_permitted_as_the_right_operand_of_the_in_operato_2638`
