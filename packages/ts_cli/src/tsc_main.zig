@@ -2021,6 +2021,8 @@ pub fn main(init: std.process.Init) !void {
     var stream_first_error_file: []const u8 = "";
     var stream_first_error_line: usize = 0;
     var stream_first_error_col: usize = 0;
+    var stream_error_file_counts: std.ArrayListUnmanaged(ErrorFileCount) = .empty;
+    defer stream_error_file_counts.deinit(gpa);
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
@@ -2032,6 +2034,7 @@ pub fn main(init: std.process.Init) !void {
         .first_error_file = &stream_first_error_file,
         .first_error_line = &stream_first_error_line,
         .first_error_col = &stream_first_error_col,
+        .error_file_counts = &stream_error_file_counts,
     };
     if (opts.watch) {
         buildStatusMessage(6031, "Starting compilation in watch mode...\n", .{});
@@ -2079,6 +2082,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (stream_error_count > 1) {
         if (stream_files_with_errors > 1) {
             buildStatusMessage(6261, "Found {d} errors in {d} files.\n", .{ stream_error_count, stream_files_with_errors });
+            printErrorFileSummaryTable(stream_error_file_counts.items);
         } else if (stream_files_with_errors == 1 and stream_first_error_file.len != 0) {
             buildStatusMessage(6260, "Found {d} errors in the same file, starting at: {s}:{d}\n", .{ stream_error_count, stream_first_error_file, stream_first_error_line });
         } else {
@@ -2455,6 +2459,14 @@ const StreamCtx = struct {
     /// Line/col of the first error, for TS6260's "starting at:" anchor.
     first_error_line: ?*usize = null,
     first_error_col: ?*usize = null,
+    /// Per-file diagnostic counts used for tsc's TS6041 "Errors  Files"
+    /// table after a multi-file summary.
+    error_file_counts: ?*std.ArrayListUnmanaged(ErrorFileCount) = null,
+};
+
+const ErrorFileCount = struct {
+    path: []const u8,
+    count: usize,
 };
 
 /// Invoked once per compiled file, in compilation order. Renders
@@ -2465,6 +2477,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
     const fid = ctx.program.lookupPath(file_path) orelse return;
     const f = ctx.program.fileById(fid);
     var file_had_error = false;
+    var file_error_count: usize = 0;
     for (diags) |d| {
         const pos = ts_diagnostics.positionToLineCol(f.source, d.pos);
         const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
@@ -2501,6 +2514,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
         if (d.phase != .emit) {
             ctx.any_errors.* = true;
             if (ctx.error_count) |ec| ec.* += 1;
+            file_error_count += 1;
             if (!file_had_error) {
                 file_had_error = true;
                 if (ctx.files_with_errors) |fc| fc.* += 1;
@@ -2513,6 +2527,45 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
                 }
             }
         }
+    }
+    if (file_error_count > 0) {
+        if (ctx.error_file_counts) |counts| {
+            for (counts.items) |*entry| {
+                if (std.mem.eql(u8, entry.path, f.path)) {
+                    entry.count += file_error_count;
+                    return;
+                }
+            }
+            counts.append(ctx.gpa, .{ .path = f.path, .count = file_error_count }) catch {};
+        }
+    }
+}
+
+fn decimalDigits(value: usize) usize {
+    var n = value;
+    var digits: usize = 1;
+    while (n >= 10) : (digits += 1) n /= 10;
+    return digits;
+}
+
+fn printErrorFileSummaryTable(counts: []const ErrorFileCount) void {
+    if (counts.len == 0) return;
+    var max_errors: usize = 0;
+    for (counts) |entry| {
+        if (entry.count > max_errors) max_errors = entry.count;
+    }
+    const left_heading_len = "Errors".len;
+    const count_width = decimalDigits(max_errors);
+    const left_padding_goal = @max(left_heading_len, count_width);
+    const header_padding = if (count_width > left_heading_len) count_width - left_heading_len else 0;
+    var i: usize = 0;
+    while (i < header_padding) : (i += 1) std.debug.print(" ", .{});
+    buildStatusMessage(6041, "Errors  Files\n", .{});
+    for (counts) |entry| {
+        const digits = decimalDigits(entry.count);
+        var pad: usize = digits;
+        while (pad < left_padding_goal) : (pad += 1) std.debug.print(" ", .{});
+        std.debug.print("{d}  {s}\n", .{ entry.count, entry.path });
     }
 }
 
