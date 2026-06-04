@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 755 |
-| reachable (parity targets) | 288 |
+| catalog-only total | 754 |
+| reachable (parity targets) | 287 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 153 |
+| 2xxx — checker / type engine | 152 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (153)
+### 2xxx — checker / type engine (152)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -60,7 +60,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2519 `An_async_iterator_must_have_a_next_method_2519`
 - TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
 - TS2529 `Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_containing_async_func_2529`
-- TS2545 `A_mixin_class_must_have_a_constructor_with_a_single_rest_parameter_of_type_any_2545`
 - TS2547 `The_type_returned_by_the_0_method_of_an_async_iterator_must_be_a_promise_for_a_type_with_a_value_pro_2547`
 - TS2550 `Property_0_does_not_exist_on_type_1_Do_you_need_to_change_your_target_library_Try_changing_the_lib_c_2550`
 - TS2560 `Value_of_type_0_has_no_properties_in_common_with_type_1_Did_you_mean_to_call_it_2560`
