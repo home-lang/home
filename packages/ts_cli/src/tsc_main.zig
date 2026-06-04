@@ -1655,6 +1655,17 @@ pub fn main(init: std.process.Init) !void {
                         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
                     }
                 },
+                error.WatchOptionTypeMismatch => {
+                    if (parse_ctx.watch_option.len > 0 and parse_ctx.watch_option_type.len > 0) {
+                        const msg = ts_cli.watchOptionRequiresValueDiagnostic(gpa, parse_ctx.watch_option, parse_ctx.watch_option_type) catch {
+                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                        };
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                    } else {
+                        std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
+                    }
+                },
                 else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
             }
             std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));

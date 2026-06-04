@@ -88,6 +88,7 @@ pub const ParseError = error{
     ConfigOnlyOption,
     ConfigOnlyBooleanOption,
     InvalidEnumOption,
+    WatchOptionTypeMismatch,
 };
 
 /// Diagnostic context captured when `parseArgs` aborts. Lets the binary
@@ -101,6 +102,8 @@ pub const ParseContext = struct {
     config_only_option: []const u8 = "",
     enum_option: []const u8 = "",
     enum_allowed_values: []const u8 = "",
+    watch_option: []const u8 = "",
+    watch_option_type: []const u8 = "",
 };
 
 /// Parse argv (excluding the program name) into a typed Options.
@@ -270,6 +273,8 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.declaration_map = true;
         } else if (std.mem.eql(u8, a, "--no-declarationMap")) {
             opts.declaration_map = false;
+        } else if (watchOptionFromFlag(a)) |watch| {
+            try parseWatchOptionArg(args, &i, watch, ctx);
         } else if (a.len > 0 and a[0] == '-') {
             // Unknown flag — silently accept for forward-compat per
             // TS_PARITY_PLAN. A future cycle promotes selected
@@ -299,6 +304,93 @@ fn configOnlyBooleanOptionName(a: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, a, "--disableSolutionSearching")) return "disableSolutionSearching";
     if (std.mem.eql(u8, a, "--disableReferencedProjectLoad")) return "disableReferencedProjectLoad";
     return null;
+}
+
+const WatchOptionKind = enum { number, string, boolean, array };
+
+const WatchOption = struct {
+    name: []const u8,
+    kind: WatchOptionKind,
+    value: ?[]const u8 = null,
+};
+
+fn watchOptionFromFlag(flag: []const u8) ?WatchOption {
+    if (flag.len == 0 or flag[0] != '-') return null;
+    var name = stripDashes(flag);
+    var value: ?[]const u8 = null;
+    if (std.mem.indexOfScalar(u8, name, '=')) |eq| {
+        value = name[eq + 1 ..];
+        name = name[0..eq];
+    }
+    const kind: WatchOptionKind = if (std.mem.eql(u8, name, "watchInterval"))
+        .number
+    else if (std.mem.eql(u8, name, "watchFile") or
+        std.mem.eql(u8, name, "watchDirectory") or
+        std.mem.eql(u8, name, "fallbackPolling"))
+        .string
+    else if (std.mem.eql(u8, name, "synchronousWatchDirectory"))
+        .boolean
+    else if (std.mem.eql(u8, name, "excludeDirectories") or
+        std.mem.eql(u8, name, "excludeFiles"))
+        .array
+    else
+        return null;
+    return .{ .name = name, .kind = kind, .value = value };
+}
+
+fn parseWatchOptionArg(
+    args: []const []const u8,
+    index: *usize,
+    watch: WatchOption,
+    ctx: *ParseContext,
+) ParseError!void {
+    const value: ?[]const u8 = watch.value orelse blk: {
+        if (watch.kind == .boolean) {
+            if (index.* + 1 < args.len and
+                (std.mem.eql(u8, args[index.* + 1], "true") or
+                    std.mem.eql(u8, args[index.* + 1], "false") or
+                    std.mem.eql(u8, args[index.* + 1], "null")))
+            {
+                index.* += 1;
+            }
+            return;
+        }
+        if (index.* + 1 >= args.len) {
+            ctx.watch_option = watch.name;
+            ctx.watch_option_type = watchOptionValueTypeText(watch);
+            return error.WatchOptionTypeMismatch;
+        }
+        index.* += 1;
+        break :blk args[index.*];
+    };
+    if (std.mem.eql(u8, value.?, "null")) return;
+    switch (watch.kind) {
+        .number => {
+            _ = std.fmt.parseInt(i64, value.?, 10) catch {
+                ctx.watch_option = watch.name;
+                ctx.watch_option_type = "number";
+                return error.WatchOptionTypeMismatch;
+            };
+        },
+        .string => {},
+        .boolean => {
+            if (!std.mem.eql(u8, value.?, "true") and !std.mem.eql(u8, value.?, "false")) {
+                ctx.watch_option = watch.name;
+                ctx.watch_option_type = "boolean";
+                return error.WatchOptionTypeMismatch;
+            }
+        },
+        .array => {},
+    }
+}
+
+fn watchOptionValueTypeText(watch: WatchOption) []const u8 {
+    return switch (watch.kind) {
+        .number => "number",
+        .string => "string",
+        .boolean => "boolean",
+        .array => "Array",
+    };
 }
 
 pub const helpText: []const u8 =
@@ -564,6 +656,17 @@ pub fn compilerOptionExpectsArgumentDiagnostic(gpa: std.mem.Allocator, option: [
         gpa,
         "error TS{d}: Compiler option '{s}' expects an argument.",
         .{ code, option },
+    );
+}
+
+/// TS5080: a watch option was supplied without a value or with a value
+/// whose primitive type does not match the watch-option declaration.
+pub fn watchOptionRequiresValueDiagnostic(gpa: std.mem.Allocator, option: []const u8, value_type: []const u8) ![]u8 {
+    const code: u32 = 5080;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Watch option '{s}' requires a value of type {s}.",
+        .{ code, option, value_type },
     );
 }
 
@@ -1360,6 +1463,37 @@ test "parseArgsCtx: enum option equals forms validate and parse" {
     try T.expectEqualStrings("react-jsx", opts.jsx.?);
 }
 
+test "parseArgsCtx: watch option type mismatch reports TS5080 context" {
+    var ctx_number: ParseContext = .{};
+    const bad_number = [_][]const u8{ "--watchInterval", "soon" };
+    try T.expectError(error.WatchOptionTypeMismatch, parseArgsCtx(T.allocator, &bad_number, &ctx_number));
+    try T.expectEqualStrings("watchInterval", ctx_number.watch_option);
+    try T.expectEqualStrings("number", ctx_number.watch_option_type);
+
+    var ctx_enum_missing: ParseContext = .{};
+    const missing_enum = [_][]const u8{"--fallbackPolling"};
+    try T.expectError(error.WatchOptionTypeMismatch, parseArgsCtx(T.allocator, &missing_enum, &ctx_enum_missing));
+    try T.expectEqualStrings("fallbackPolling", ctx_enum_missing.watch_option);
+    try T.expectEqualStrings("string", ctx_enum_missing.watch_option_type);
+}
+
+test "parseArgsCtx: watch options consume values without becoming files" {
+    const argv = [_][]const u8{
+        "--watchFile",
+        "UseFsEvents",
+        "--watchInterval=1000",
+        "--synchronousWatchDirectory",
+        "false",
+        "--excludeFiles",
+        "**/*.generated.ts",
+        "index.ts",
+    };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(usize, 1), opts.files.len);
+    try T.expectEqualStrings("index.ts", opts.files[0]);
+}
+
 test "parseArgsCtx: tsconfig-only options reject non-null command-line values" {
     const cases = [_]struct { flag: []const u8, name: []const u8 }{
         .{ .flag = "--paths", .name = "paths" },
@@ -1429,6 +1563,15 @@ test "compilerOptionExpectsArgumentDiagnostic: TS6044 message text" {
     defer T.allocator.free(msg);
     try T.expectEqualStrings(
         "error TS6044: Compiler option 'outDir' expects an argument.",
+        msg,
+    );
+}
+
+test "watchOptionRequiresValueDiagnostic: TS5080 message text" {
+    const msg = try watchOptionRequiresValueDiagnostic(T.allocator, "watchInterval", "number");
+    defer T.allocator.free(msg);
+    try T.expectEqualStrings(
+        "error TS5080: Watch option 'watchInterval' requires a value of type number.",
         msg,
     );
 }
