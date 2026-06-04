@@ -14,9 +14,9 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 751 |
+| catalog-only total | 749 |
 | reachable (parity targets) | 284 |
-| dead in tsgo (leave catalog-only) | 467 |
+| dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
@@ -357,7 +357,7 @@ dead. Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully catalog-only)
 
-467 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
+465 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
 
 <details><summary>Show dead codes</summary>
 
@@ -377,8 +377,6 @@ dead. Confirm against this list before picking one:
 - TS1415 `Source_from_referenced_project_0_included_because_module_is_specified_as_none_1415`
 - TS1416 `File_is_source_from_referenced_project_specified_here_1416`
 - TS1449 `Preserve_unused_imported_values_in_the_JavaScript_output_that_would_otherwise_be_removed_1449`
-- TS1455 `resolution_mode_is_the_only_valid_key_for_type_import_assertions_1455`
-- TS1456 `Type_import_assertions_should_have_exactly_one_key_resolution_mode_with_value_import_or_require_1456`
 - TS1496 `Identifier_string_literal_or_number_literal_expected_1496`
 - TS2211 `Add_extends_constraint_2211`
 - TS2212 `Add_extends_constraint_to_all_type_parameters_2212`

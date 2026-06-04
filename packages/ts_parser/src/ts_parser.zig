@@ -11646,6 +11646,7 @@ pub const Parser = struct {
             _ = self.advance();
         }
         if (self.match(.comma)) {
+            try self.reportLegacyImportTypeAssertionDiagnostics();
             var depth: i32 = 0;
             while (self.peek().kind != .eof) {
                 if (depth == 0 and self.peek().kind == .close_paren) break;
@@ -11713,6 +11714,142 @@ pub const Parser = struct {
             qualifier.items,
             args.items,
         );
+    }
+
+    fn reportLegacyImportTypeAssertionDiagnostics(self: *Parser) ParseError!void {
+        if (self.peek().kind != .open_brace) return;
+        const outer_open: usize = @intCast(self.cursor);
+        const outer_close = self.findMatchingBraceTokenIndex(outer_open) orelse return;
+        var i: usize = outer_open + 1;
+        while (i < outer_close and i < self.tokens.len) {
+            const key_tok = self.tokens[i];
+            if (key_tok.kind == .comma) {
+                i += 1;
+                continue;
+            }
+            if (i + 2 >= outer_close or self.tokens[i + 1].kind != .colon) {
+                i += 1;
+                continue;
+            }
+            const value_i = i + 2;
+            if (self.importTypeAttributePropertyNameEquals(key_tok, "assert") and self.tokens[value_i].kind == .open_brace) {
+                try self.reportLegacyImportTypeAssertionBlockDiagnostics(value_i);
+                return;
+            }
+            i = self.skipTopLevelObjectPropertyValue(value_i, outer_close);
+        }
+    }
+
+    fn reportLegacyImportTypeAssertionBlockDiagnostics(self: *Parser, open_i: usize) ParseError!void {
+        const close_i = self.findMatchingBraceTokenIndex(open_i) orelse return;
+        var attr_count: usize = 0;
+        var first_key: ?Token = null;
+        var i = open_i + 1;
+        while (i < close_i and i < self.tokens.len) {
+            const key_tok = self.tokens[i];
+            if (key_tok.kind == .comma) {
+                i += 1;
+                continue;
+            }
+            if (key_tok.kind == .close_brace or key_tok.kind == .eof) break;
+            attr_count += 1;
+            if (attr_count == 1) first_key = key_tok;
+            if (i + 1 < close_i and self.tokens[i + 1].kind == .colon and i + 2 < close_i) {
+                i = self.skipTopLevelObjectPropertyValue(i + 2, close_i);
+            } else {
+                i += 1;
+            }
+        }
+        const open_tok = self.tokens[open_i];
+        if (attr_count != 1) {
+            try self.reportCodeAt(
+                open_tok.span.start,
+                open_tok.line,
+                1456,
+                "Type import assertions should have exactly one key - `resolution-mode` - with value `import` or `require`.",
+            );
+            return;
+        }
+        const key_tok = first_key orelse return;
+        if (key_tok.kind == .string_literal and !self.stringLiteralTokenInnerEquals(key_tok, "resolution-mode")) {
+            try self.reportCodeAt(
+                key_tok.span.start,
+                key_tok.line,
+                1455,
+                "`resolution-mode` is the only valid key for type import assertions.",
+            );
+        }
+    }
+
+    fn findMatchingBraceTokenIndex(self: *const Parser, open_i: usize) ?usize {
+        if (open_i >= self.tokens.len or self.tokens[open_i].kind != .open_brace) return null;
+        var brace_depth: usize = 0;
+        var bracket_depth: usize = 0;
+        var paren_depth: usize = 0;
+        var i = open_i;
+        while (i < self.tokens.len) : (i += 1) {
+            switch (self.tokens[i].kind) {
+                .open_brace => brace_depth += 1,
+                .open_bracket => bracket_depth += 1,
+                .open_paren => paren_depth += 1,
+                .close_brace => {
+                    if (brace_depth == 0) return null;
+                    brace_depth -= 1;
+                    if (brace_depth == 0 and bracket_depth == 0 and paren_depth == 0) return i;
+                },
+                .close_bracket => {
+                    if (bracket_depth > 0) bracket_depth -= 1;
+                },
+                .close_paren => {
+                    if (paren_depth > 0) paren_depth -= 1;
+                },
+                .eof => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn skipTopLevelObjectPropertyValue(self: *const Parser, value_i: usize, limit: usize) usize {
+        var brace_depth: usize = 0;
+        var bracket_depth: usize = 0;
+        var paren_depth: usize = 0;
+        var i = value_i;
+        while (i < limit and i < self.tokens.len) : (i += 1) {
+            switch (self.tokens[i].kind) {
+                .open_brace => brace_depth += 1,
+                .open_bracket => bracket_depth += 1,
+                .open_paren => paren_depth += 1,
+                .close_brace => {
+                    if (brace_depth == 0) return i;
+                    brace_depth -= 1;
+                },
+                .close_bracket => {
+                    if (bracket_depth == 0) return i;
+                    bracket_depth -= 1;
+                },
+                .close_paren => {
+                    if (paren_depth == 0) return i;
+                    paren_depth -= 1;
+                },
+                .comma => if (brace_depth == 0 and bracket_depth == 0 and paren_depth == 0) return i + 1,
+                else => {},
+            }
+        }
+        return i;
+    }
+
+    fn importTypeAttributePropertyNameEquals(self: *const Parser, tok: Token, expected: []const u8) bool {
+        if (tok.kind == .string_literal) return self.stringLiteralTokenInnerEquals(tok, expected);
+        if (tok.kind == .identifier or tok.kind.isKeyword()) return self.tokenTextEquals(tok, expected);
+        return false;
+    }
+
+    fn stringLiteralTokenInnerEquals(self: *const Parser, tok: Token, expected: []const u8) bool {
+        if (tok.kind != .string_literal) return false;
+        const text = self.source[tok.span.start..tok.span.end];
+        if (text.len < 2) return false;
+        return std.mem.eql(u8, text[1 .. text.len - 1], expected);
     }
 
     fn parseTypeReference(self: *Parser) ParseError!NodeId {
@@ -20954,6 +21091,30 @@ test "parser: import type non-string recovers and emits one TS1141 per site" {
         if (d.code == 1141 and std.mem.eql(u8, d.message, "String literal expected.")) ts1141_count += 1;
     }
     try T.expectEqual(@as(usize, 2), ts1141_count);
+}
+
+test "parser: legacy import type assertion with multiple keys reports TS1456" {
+    var s = try newTestSetup(
+        \\type T = import("x", { assert: { "resolution-mode": "import", extra: "x" } });
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    const d = findFirstDiagnosticOfCode(&s.parser, 1456) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Type import assertions should have exactly one key - `resolution-mode` - with value `import` or `require`.", d.message);
+    try T.expectEqualStrings("{", s.parser.source[d.pos .. d.pos + 1]);
+}
+
+test "parser: legacy import type assertion quoted wrong key reports TS1455" {
+    var s = try newTestSetup(
+        \\type T = import("x", { assert: { "other": "import" } });
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    const d = findFirstDiagnosticOfCode(&s.parser, 1455) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("`resolution-mode` is the only valid key for type import assertions.", d.message);
+    try T.expectEqualStrings("\"other\"", s.parser.source[d.pos .. d.pos + 7]);
 }
 
 test "parser: import type alias reports diagnostic" {
