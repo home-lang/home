@@ -425,6 +425,14 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
                 const default_options = ts_emit.tsbuildinfo.Options{};
                 buildStatusMessage(6381, "Project '{s}' is out of date because output for it was generated with version '{s}' that differs with current version '{s}'\n", .{ config_path, stored_version, default_options.compiler_version });
             }
+        } else if (projectBuildInfoHasPendingEmit(gpa, arena, config_path, cfg)) |buildinfo_path| {
+            if (verbose) {
+                buildStatusMessage(6399, "Project '{s}' is out of date because buildinfo file '{s}' indicates that some of the changes were not emitted\n", .{ config_path, buildinfo_path });
+            }
+        } else if (projectBuildInfoHasErrors(gpa, arena, config_path, cfg)) |buildinfo_path| {
+            if (verbose) {
+                buildStatusMessage(6419, "Project '{s}' is out of date because buildinfo file '{s}' indicates that program needs to report errors.\n", .{ config_path, buildinfo_path });
+            }
         } else if (projectBuildInfoOptionsMismatch(gpa, arena, config_path, cfg)) |buildinfo_path| {
             if (verbose) {
                 buildStatusMessage(6406, "Project '{s}' is out of date because buildinfo file '{s}' indicates there is change in compilerOptions\n", .{ config_path, buildinfo_path });
@@ -614,6 +622,36 @@ fn projectBuildInfoOptionsMismatch(
     const current_options = buildInfoOptionsJson(gpa, cfg) catch return null;
     defer gpa.free(current_options);
     if (std.mem.eql(u8, info.options_json, current_options)) return null;
+    return buildinfo_path;
+}
+
+fn projectBuildInfoHasPendingEmit(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    cfg: tsconfig_mod.TsConfig,
+) ?[]const u8 {
+    const buildinfo_path = (projectBuildInfoFilePath(arena, config_path, cfg) catch null) orelse return null;
+    const buildinfo_src = RealFs.read(gpa, buildinfo_path) catch return null;
+    defer gpa.free(buildinfo_src);
+    var info = ts_emit.tsbuildinfo.read(gpa, buildinfo_src) catch return null;
+    defer info.deinit(gpa);
+    if (!info.has_pending_emit) return null;
+    return buildinfo_path;
+}
+
+fn projectBuildInfoHasErrors(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    cfg: tsconfig_mod.TsConfig,
+) ?[]const u8 {
+    const buildinfo_path = (projectBuildInfoFilePath(arena, config_path, cfg) catch null) orelse return null;
+    const buildinfo_src = RealFs.read(gpa, buildinfo_path) catch return null;
+    defer gpa.free(buildinfo_src);
+    var info = ts_emit.tsbuildinfo.read(gpa, buildinfo_src) catch return null;
+    defer info.deinit(gpa);
+    if (!info.has_errors) return null;
     return buildinfo_path;
 }
 

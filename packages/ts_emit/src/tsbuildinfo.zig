@@ -114,6 +114,8 @@ pub const BuildInfo = struct {
     file_names: [][]const u8,
     file_infos: []FileInfo,
     options_json: []const u8,
+    has_pending_emit: bool = false,
+    has_errors: bool = false,
 
     pub fn deinit(self: *BuildInfo, gpa: std.mem.Allocator) void {
         gpa.free(self.version);
@@ -220,12 +222,38 @@ pub fn read(gpa: std.mem.Allocator, json_bytes: []const u8) ReadError!BuildInfo 
         try stringifyJsonValue(gpa, options_val)
     else
         try gpa.dupe(u8, "{}");
+    errdefer gpa.free(options_json);
 
     return BuildInfo{
         .version = version_dup,
         .file_names = file_names,
         .file_infos = file_infos,
         .options_json = options_json,
+        .has_pending_emit = buildInfoFieldIsPresent(root, "affectedFilesPendingEmit") or
+            buildInfoFieldIsPresent(root, "pendingEmit") or
+            buildInfoFieldIsPresent(root, "programEmitPending"),
+        .has_errors = buildInfoFieldIsTrue(root, "errors") or
+            buildInfoFieldIsTrue(root, "hasErrors") or
+            buildInfoFieldIsTrue(root, "checkPending"),
+    };
+}
+
+fn buildInfoFieldIsTrue(root: std.json.ObjectMap, name: []const u8) bool {
+    const value = root.get(name) orelse return false;
+    return switch (value) {
+        .bool => |b| b,
+        else => false,
+    };
+}
+
+fn buildInfoFieldIsPresent(root: std.json.ObjectMap, name: []const u8) bool {
+    const value = root.get(name) orelse return false;
+    return switch (value) {
+        .null => false,
+        .bool => |b| b,
+        .array => |items| items.items.len > 0,
+        .object => |object| object.count() > 0,
+        else => true,
     };
 }
 
@@ -346,6 +374,8 @@ test "tsbuildinfo: round-trip emit then read preserves fields" {
     try T.expectEqual(false, info.file_infos[2].affects_global_scope);
     try T.expectEqual(true, info.file_infos[2].is_declaration);
     try T.expectEqualStrings("{\"strict\":true}", info.options_json);
+    try T.expectEqual(false, info.has_pending_emit);
+    try T.expectEqual(false, info.has_errors);
 }
 
 test "tsbuildinfo: round-trip on empty inputs is a no-op" {
@@ -367,7 +397,9 @@ test "tsbuildinfo: read parses a hand-written minimal document" {
         \\    "0": { "version": "h0" },
         \\    "1": { "version": "h1", "affectsGlobalScope": true }
         \\  },
-        \\  "options": { "target": 7 }
+        \\  "options": { "target": 7 },
+        \\  "affectedFilesPendingEmit": [0],
+        \\  "errors": true
         \\}
     ;
     var info = try read(T.allocator, json);
@@ -382,4 +414,6 @@ test "tsbuildinfo: read parses a hand-written minimal document" {
     try T.expectEqualStrings("h1", info.file_infos[1].version);
     try T.expectEqual(true, info.file_infos[1].affects_global_scope);
     try T.expectEqualStrings("{\"target\":7}", info.options_json);
+    try T.expectEqual(true, info.has_pending_emit);
+    try T.expectEqual(true, info.has_errors);
 }
