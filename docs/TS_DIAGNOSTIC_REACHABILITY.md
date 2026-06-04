@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 744 |
-| reachable (parity targets) | 279 |
+| catalog-only total | 741 |
+| reachable (parity targets) | 276 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 151 |
-| 1xxx — parser / syntactic + program file-inclusion | 59 |
+| 1xxx — parser / syntactic + program file-inclusion | 56 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -185,7 +185,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 1xxx — parser / syntactic + program file-inclusion (59)
+### 1xxx — parser / syntactic + program file-inclusion (56)
 
 - TS1012 `Unexpected_token_1012`
 - TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
@@ -193,9 +193,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060`
 - TS1062 `Type_is_referenced_directly_or_indirectly_in_the_fulfillment_callback_of_its_own_then_method_1062`
 - TS1149 `File_name_0_differs_from_already_included_file_name_1_only_in_casing_1149`
-- TS1224 `Signature_0_must_be_a_type_predicate_1224`
-- TS1226 `Type_predicate_0_is_not_assignable_to_1_1226`
-- TS1227 `Parameter_0_is_not_in_the_same_position_as_parameter_1_1227`
 - TS1261 `Already_included_file_name_0_differs_from_file_name_1_only_in_casing_1261`
 - TS1272 `A_type_referenced_in_a_decorated_signature_must_be_imported_with_import_type_or_a_namespace_import_w_1272`
 - TS1281 `Cannot_access_0_from_another_file_without_qualification_when_1_is_enabled_Use_2_instead_1281`
