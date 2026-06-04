@@ -3482,9 +3482,33 @@ pub const Parser = struct {
             return try self.builder.addThrow(.{ .start = start.span.start, .end = start.span.end }, missing);
         }
         const value = try self.parseExpression();
+        if (self.throwExpressionIsDisallowedLetDeclaration(value)) {
+            const value_span = self.hir.spanOf(value);
+            try self.reportCodeAt(value_span.start, self.lineAt(value_span.start), 1440, "Variable declaration not allowed at this location.");
+            self.skipMalformedStatementTail();
+        }
         try self.consumeStatementTerminator();
         const end_pos = self.hir.spanOf(value).end;
         return try self.builder.addThrow(.{ .start = start.span.start, .end = end_pos }, value);
+    }
+
+    fn throwExpressionIsDisallowedLetDeclaration(self: *const Parser, value: NodeId) bool {
+        if (self.hir.kindOf(value) != .identifier) return false;
+        const value_span = self.hir.spanOf(value);
+        if (!std.mem.eql(u8, self.source[value_span.start..value_span.end], "let")) return false;
+        const next = self.peek();
+        return next.kind != .eof and
+            next.kind != .close_brace and
+            next.kind != .semicolon and
+            !next.flags.preceded_by_newline;
+    }
+
+    fn skipMalformedStatementTail(self: *Parser) void {
+        while (self.peek().kind != .eof and self.peek().kind != .close_brace) {
+            if (self.peek().flags.preceded_by_newline) return;
+            if (self.match(.semicolon)) return;
+            _ = self.advance();
+        }
     }
 
     fn parseTryStatement(self: *Parser) ParseError!NodeId {
@@ -18808,6 +18832,18 @@ test "parser: throw newline eof keeps expression expected diagnostic" {
         try T.expect(d.code != 1142);
     }
     try T.expect(saw_1109);
+}
+
+test "parser: TS1440 fires for variable declaration after throw" {
+    const src = "throw let x;";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1440) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Variable declaration not allowed at this location.", d.message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "let").?)), d.pos);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
 }
 
 test "parser: try-catch-finally" {

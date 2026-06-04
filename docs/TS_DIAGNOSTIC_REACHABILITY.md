@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 753 |
-| reachable (parity targets) | 286 |
+| catalog-only total | 752 |
+| reachable (parity targets) | 285 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 151 |
-| 1xxx — parser / syntactic + program file-inclusion | 66 |
+| 1xxx — parser / syntactic + program file-inclusion | 65 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -185,7 +185,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 1xxx — parser / syntactic + program file-inclusion (66)
+### 1xxx — parser / syntactic + program file-inclusion (65)
 
 - TS1012 `Unexpected_token_1012`
 - TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
@@ -237,7 +237,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1428 `File_is_output_of_project_reference_source_0_1428`
 - TS1429 `File_redirects_to_file_0_1429`
 - TS1430 `The_file_is_in_the_program_because_Colon_1430`
-- TS1440 `Variable_declaration_not_allowed_at_this_location_1440`
 - TS1458 `File_is_ECMAScript_module_because_0_has_field_type_with_value_module_1458`
 - TS1459 `File_is_CommonJS_module_because_0_has_field_type_whose_value_is_not_module_1459`
 - TS1460 `File_is_CommonJS_module_because_0_does_not_have_field_type_1460`
