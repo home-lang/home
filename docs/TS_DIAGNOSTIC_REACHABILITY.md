@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 718 |
-| reachable (parity targets) | 253 |
+| catalog-only total | 717 |
+| reachable (parity targets) | 252 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 131 |
+| 2xxx — checker / type engine | 130 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (131)
+### 2xxx — checker / type engine (130)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -152,7 +152,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2775 `Assertions_require_every_name_in_the_call_target_to_be_declared_with_an_explicit_type_annotation_2775`
 - TS2776 `Assertions_require_the_call_target_to_be_an_identifier_or_qualified_name_2776`
 - TS2782 `_0_needs_an_explicit_type_annotation_2782`
-- TS2787 `Its_return_type_0_is_not_a_valid_JSX_element_2787`
 - TS2788 `Its_instance_type_0_is_not_a_valid_JSX_element_2788`
 - TS2789 `Its_element_type_0_is_not_a_valid_JSX_element_2789`
 - TS2793 `The_call_would_have_succeeded_against_this_implementation_but_implementation_signatures_of_overloads_2793`
