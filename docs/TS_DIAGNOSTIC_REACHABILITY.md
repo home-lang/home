@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 729 |
-| reachable (parity targets) | 264 |
+| catalog-only total | 728 |
+| reachable (parity targets) | 263 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 142 |
+| 2xxx — checker / type engine | 141 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (142)
+### 2xxx — checker / type engine (141)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -168,7 +168,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2851 `The_initializer_of_an_await_using_declaration_must_be_either_an_object_with_a_Symbol_asyncDispose_or_2851`
 - TS2855 `Class_field_0_defined_by_the_parent_class_is_not_accessible_in_the_child_class_via_super_2855`
 - TS2856 `Import_attributes_are_not_allowed_on_statements_that_compile_to_CommonJS_require_calls_2856`
-- TS2857 `Import_attributes_cannot_be_used_with_type_only_imports_or_exports_2857`
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2862 `Type_0_is_generic_and_can_only_be_indexed_for_reading_2862`
 - TS2865 `Import_0_conflicts_with_local_value_so_must_be_declared_with_a_type_only_import_when_isolatedModules_2865`
