@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 807 |
-| reachable (parity targets) | 340 |
+| catalog-only total | 805 |
+| reachable (parity targets) | 338 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -24,7 +24,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 47 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 45 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -260,7 +260,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1543 `Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543`
 - TS1544 `Named_imports_from_a_JSON_file_into_an_ECMAScript_module_are_not_allowed_when_module_is_set_to_0_1544`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (47)
+### 6xxx — CLI / build / watch / resolution-trace messages (45)
 
 - TS6041 `Errors_Files_6041`
 - TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
@@ -287,10 +287,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS6245 `File_Management_6245`
 - TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
-- TS6351 `Project_0_is_up_to_date_because_newest_input_1_is_older_than_output_2_6351`
 - TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
 - TS6356 `A_non_dry_build_would_delete_the_following_files_Colon_0_6356`
-- TS6357 `A_non_dry_build_would_build_project_0_6357`
 - TS6359 `Updating_output_timestamps_of_project_0_6359`
 - TS6362 `Skipping_build_of_project_0_because_its_dependency_1_has_errors_6362`
 - TS6363 `Project_0_can_t_be_built_because_its_dependency_1_has_errors_6363`

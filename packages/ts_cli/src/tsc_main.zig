@@ -257,6 +257,9 @@ fn projectIsUpToDate(
 ) bool {
     var newest_input: i128 = std.math.minInt(i128);
     var newest_input_path: []const u8 = "";
+    var oldest_output: i128 = std.math.maxInt(i128);
+    var oldest_output_path: []u8 = "";
+    defer if (oldest_output_path.len != 0) gpa.free(oldest_output_path);
     for (inputs) |in| {
         const m = fileMtimeNanos(in) orelse return false; // can't stat → rebuild
         if (m > newest_input) {
@@ -277,6 +280,11 @@ fn projectIsUpToDate(
             if (verbose) buildStatusMessage(6350, "Project '{s}' is out of date because output '{s}' is older than input '{s}'\n", .{ project, js, newest_input_path });
             return false;
         }
+        if (verbose and jm < oldest_output) {
+            if (oldest_output_path.len != 0) gpa.free(oldest_output_path);
+            oldest_output_path = gpa.dupe(u8, js) catch "";
+            oldest_output = jm;
+        }
         if (emit_dts) {
             const dts = computeOutPath(gpa, in, declaration_dir, ".d.ts") catch return false;
             defer gpa.free(dts);
@@ -288,7 +296,16 @@ fn projectIsUpToDate(
                 if (verbose) buildStatusMessage(6350, "Project '{s}' is out of date because output '{s}' is older than input '{s}'\n", .{ project, dts, newest_input_path });
                 return false;
             }
+            if (verbose and dm < oldest_output) {
+                if (oldest_output_path.len != 0) gpa.free(oldest_output_path);
+                oldest_output_path = gpa.dupe(u8, dts) catch "";
+                oldest_output = dm;
+            }
         }
+    }
+    // TS6351 — verbose build reason for a timestamp-clean project.
+    if (verbose and oldest_output_path.len != 0) {
+        buildStatusMessage(6351, "Project '{s}' is up to date because newest input '{s}' is older than output '{s}'\n", .{ project, newest_input_path, oldest_output_path });
     }
     return true;
 }
@@ -363,8 +380,6 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
     // input/output mtime comparison). Skipped under `--force`.
     if (!force and projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, verbose)) {
-        // TS6361 — `tsc --build` status message (CategoryMessage, plain text).
-        if (verbose) buildStatusMessage(6361, "Project '{s}' is up to date\n", .{config_path});
         return false;
     }
     // TS6388 — under `--force`, tsc rebuilds regardless of up-to-dateness.
@@ -437,6 +452,57 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
         }
     }
     return had_errors;
+}
+
+fn projectWouldBuild(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8) bool {
+    const cfg_src = RealFs.read(arena, config_path) catch return true;
+    var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch return true;
+    cfg.file_path = config_path;
+    if (printConfigValidationDiagnostics(gpa, cfg) catch true) return true;
+    const project_dir = std.fs.path.dirname(config_path) orelse ".";
+
+    var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer input_files.deinit(gpa);
+    var owned: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned.items) |p| gpa.free(p);
+        owned.deinit(gpa);
+    }
+    if (cfg.files) |fs_list| {
+        for (fs_list) |f| {
+            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return true;
+            owned.append(gpa, p) catch return true;
+            input_files.append(gpa, p) catch return true;
+        }
+    } else {
+        var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer excludes.deinit(gpa);
+        if (cfg.exclude) |ex| {
+            for (ex) |e| excludes.append(gpa, e) catch return true;
+        }
+        if (cfg.compiler_options.out_dir) |d| {
+            excludes.append(gpa, d) catch return true;
+            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return true) catch return true;
+        }
+        if (cfg.compiler_options.declaration_dir) |d| {
+            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return true) catch return true;
+        }
+        excludes.append(gpa, "**/node_modules/**") catch return true;
+        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return true;
+    }
+    if (input_files.items.len == 0) return false;
+
+    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+    else
+        null;
+    const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
+    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+    else
+        out_dir;
+
+    return !projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, false);
 }
 
 /// How a root (input) file was specified, for `--explainFiles`.
@@ -830,7 +896,7 @@ pub fn main(init: std.process.Init) !void {
         // Parse the build flags (TS5072/5073/5077/5094/6369/6370). Phase A:
         // on clean parse, build each project via the normal per-project
         // compile flow (full topological/incremental orchestration is a
-        // follow-up). `--clean` / `--dry` are not yet implemented.
+        // follow-up). `--clean` is not yet implemented.
         var bp = ts_cli.parseBuildArgs(gpa, argv.items[1..]) catch
             std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
         defer bp.deinit(gpa);
@@ -840,8 +906,8 @@ pub fn main(init: std.process.Init) !void {
             had_build_err = true;
         }
         if (had_build_err) std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
-        if (bp.options.clean or bp.options.dry) {
-            std.debug.print("home tsc --build: '--{s}' is not yet implemented.\n", .{if (bp.options.clean) "clean" else "dry"});
+        if (bp.options.clean) {
+            std.debug.print("home tsc --build: '--clean' is not yet implemented.\n", .{});
             return;
         }
         // Resolve the project reference graph, check for cycles (TS6202),
@@ -872,8 +938,21 @@ pub fn main(init: std.process.Init) !void {
             buildStatusMessage(6355, "Projects in this build:\n", .{});
             for (graph.paths) |p| std.debug.print("    * {s}\n", .{p});
         }
-        // Build each project (dependencies first). `--force` would skip
-        // up-to-date checks — we always build for now (no incremental skip).
+        if (bp.options.dry) {
+            for (ord.order) |pi| {
+                const project_path = graph.paths[pi];
+                if (projectWouldBuild(gpa, args_arena.allocator(), project_path)) {
+                    // TS6357 — dry build status for a project that would build.
+                    buildStatusMessage(6357, "A non-dry build would build project '{s}'\n", .{project_path});
+                } else {
+                    // TS6361 — dry build status for a project that is already current.
+                    buildStatusMessage(6361, "Project '{s}' is up to date\n", .{project_path});
+                }
+            }
+            return;
+        }
+        // Build each project (dependencies first). The per-project builder
+        // handles up-to-date checks unless `--force` is set.
         var build_had_errors = false;
         for (ord.order) |pi| {
             if (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force)) {
