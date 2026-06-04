@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 692 |
-| reachable (parity targets) | 228 |
+| catalog-only total | 691 |
+| reachable (parity targets) | 227 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 106 |
+| 2xxx — checker / type engine | 105 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (106)
+### 2xxx — checker / type engine (105)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -47,7 +47,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2444 `Property_0_is_protected_in_type_1_but_public_in_type_2_2444`
 - TS2446 `Property_0_is_protected_and_only_accessible_through_an_instance_of_class_1_This_is_an_instance_of_cl_2446`
 - TS2468 `Cannot_find_global_value_0_2468`
-- TS2475 `const_enums_can_only_be_used_in_property_or_index_access_expressions_or_the_right_hand_side_of_an_im_2475`
 - TS2484 `Export_declaration_conflicts_with_exported_declaration_of_0_2484`
 - TS2489 `An_iterator_must_have_a_next_method_2489`
 - TS2498 `Module_0_uses_export_and_cannot_be_used_with_export_Asterisk_2498`
