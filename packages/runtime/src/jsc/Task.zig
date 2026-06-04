@@ -497,15 +497,13 @@ pub fn tickQueueWithCount(this: *EventLoop, virtual_machine: *VirtualMachine, co
             },
             @field(Task.Tag, @typeName(ServerAllConnectionsClosedTask)) => {
                 var any: *ServerAllConnectionsClosedTask = task.get(ServerAllConnectionsClosedTask).?;
-                try any.runFromJSThread(virtual_machine);
+                any.runFromJSThread(virtual_machine);
             },
             @field(Task.Tag, @typeName(bun.bundle_v2.DeferredBatchTask)) => {
                 var any: *bun.bundle_v2.DeferredBatchTask = task.get(bun.bundle_v2.DeferredBatchTask).?;
                 any.runOnJSThread();
             },
-            @field(Task.Tag, @typeName(PosixSignalTask)) => {
-                PosixSignalTask.runFromJSThread(@intCast(task.asUintptr()), global);
-            },
+            @field(Task.Tag, @typeName(PosixSignalTask)) => {},
             @field(Task.Tag, @typeName(NapiFinalizerTask)) => {
                 var any: *NapiFinalizerTask = task.get(NapiFinalizerTask).?;
                 any.runOnJSThread();

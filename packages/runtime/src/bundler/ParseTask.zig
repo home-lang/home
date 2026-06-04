@@ -254,7 +254,7 @@ fn getRuntimeSourceComptime(comptime target: options.Target) RuntimeSource {
         \\}
         \\
     };
-    const runtime_code = @embedFile("../runtime.js") ++ runtime_require ++ runtime_using_symbols;
+    const runtime_code = @embedFile("runtime.js") ++ runtime_require ++ runtime_using_symbols;
 
     const parse_task = ParseTask{
         .ctx = undefined,

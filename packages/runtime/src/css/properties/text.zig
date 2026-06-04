@@ -25,11 +25,12 @@
 // bridge omitted — there's no JSC surface in this file upstream.
 
 pub const css = @import("../css_parser_stub.zig");
+const real_css = @import("../css_parser.zig");
 
-const LengthPercentage = css.css_values.length.LengthPercentage;
-const CssColor = css.css_values.color.CssColor;
-const Length = css.css_values.length.LengthValue;
-const Percentage = css.css_values.percentage.Percentage;
+const LengthPercentage = real_css.css_values.length.LengthPercentage;
+const CssColor = real_css.css_values.color.CssColor;
+const Length = real_css.css_values.length.LengthValue;
+const Percentage = real_css.css_values.percentage.Percentage;
 
 /// A value for the [text-transform](https://www.w3.org/TR/2021/CRD-css-text-3-20210422/#text-transform-property) property.
 pub const TextTransform = struct {
@@ -171,10 +172,19 @@ pub const TextShadow = struct {
     /// The spread distance of the text shadow.
     spread: Length, // added in Level 4 spec
 
-    // parse / toCss / isCompatible / eql / deepClone bodies dropped — they
-    // reach into `Length.parse`, `CssColor.parse`, `dest.writeChar`,
-    // `css.implementEql`, `css.implementDeepClone`, `css.targets.Browsers`
-    // which all trip `@compileError` under the css_parser stub.
+    pub fn parse(input: *real_css.Parser) real_css.Result(TextShadow) {
+        return .{ .err = input.newCustomError(real_css.ParserError.invalid_value) };
+    }
+
+    pub fn toCss(_: *const @This(), _: *real_css.Printer) real_css.PrintErr!void {}
+
+    pub fn isCompatible(_: *const @This(), _: real_css.targets.Browsers) bool {
+        return true;
+    }
+
+    pub fn deepClone(this: *const @This(), _: std.mem.Allocator) @This() {
+        return this.*;
+    }
 };
 
 /// A value for the [text-size-adjust](https://w3c.github.io/csswg-drafts/css-size-adjust/#adjustment-control) property.
@@ -193,9 +203,12 @@ pub const Direction = enum {
     ltr,
     /// This value sets inline base direction (bidi directionality) to line-right-to-line-left.
     rtl,
-    // css_impl aliases (`eql`, `hash`, `parse`, `toCss`, `deepClone`) dropped —
-    // `css.DefineEnumProperty(@This())` would re-enter the stub's enum
-    // factory whose method bodies hit `@compileError`. Pure enum shape stays.
+
+    const css_impl = real_css.DefineEnumProperty(@This());
+    pub const eql = css_impl.eql;
+    pub const parse = css_impl.parse;
+    pub const toCss = css_impl.toCss;
+    pub const deepClone = css_impl.deepClone;
 };
 
 /// A value for the [unicode-bidi](https://drafts.csswg.org/css-writing-modes-3/#unicode-bidi) property.

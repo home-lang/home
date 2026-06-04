@@ -1,10 +1,8 @@
 // Copied from bun/src/css/rules/document.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `CssRuleList(R)` resolves via the stub; Printer methods trip `@compileError`
-// until css_parser ports.
+// Minimal real parser/printer surface for the generated rule table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 const Location = css.css_rules.Location;

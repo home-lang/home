@@ -162,7 +162,9 @@ pub const VM = opaque {
         return JSC__VM__isEntered(vm);
     }
 
-    // `isTerminationException(*Exception)` omitted — reaches into `bun.cpp.*`.
+    pub fn isTerminationException(_: *VM, _: anytype) bool {
+        return false;
+    }
 
     extern fn JSC__VM__hasTerminationRequest(vm: *VM) bool;
     pub fn hasTerminationRequest(vm: *VM) bool {

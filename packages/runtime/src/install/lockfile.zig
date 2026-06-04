@@ -48,7 +48,35 @@ pub const DepSorter = struct {
     }
 };
 
-pub const Stream = std.io.FixedBufferStream([]u8);
+pub const Stream = struct {
+    buffer: []u8,
+    pos: usize = 0,
+
+    pub fn reader(self: *Stream) Reader {
+        return .{ .stream = self };
+    }
+
+    pub fn getPos(self: *const Stream) !usize {
+        return self.pos;
+    }
+
+    pub const Reader = struct {
+        stream: *Stream,
+
+        pub fn readAll(self: *Reader, dest: []u8) !usize {
+            const amount = @min(dest.len, self.stream.buffer.len -| self.stream.pos);
+            @memcpy(dest[0..amount], self.stream.buffer[self.stream.pos..][0..amount]);
+            self.stream.pos += amount;
+            return amount;
+        }
+
+        pub fn readInt(self: *Reader, comptime T: type, endian: std.builtin.Endian) !T {
+            var bytes: [@divExact(@typeInfo(T).int.bits, 8)]u8 = undefined;
+            if (try self.readAll(&bytes) != bytes.len) return error.EndOfStream;
+            return std.mem.readInt(T, &bytes, endian);
+        }
+    };
+};
 pub const default_filename = "bun.lockb";
 
 pub const Scripts = struct {
@@ -642,9 +670,9 @@ pub fn cleanWithLogger(
     exact_versions: bool,
     log_level: PackageManager.Options.LogLevel,
 ) !*Lockfile {
-    var timer: std.time.Timer = undefined;
+    var timer: bun.Timer = undefined;
     if (log_level.isVerbose()) {
-        timer = try std.time.Timer.start();
+        timer = try bun.Timer.start();
     }
 
     const old_trusted_dependencies = old.trusted_dependencies;

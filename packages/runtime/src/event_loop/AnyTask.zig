@@ -13,9 +13,8 @@ const AnyTask = @This();
 ctx: ?*anyopaque,
 callback: *const (fn (*anyopaque) JSError!void),
 
-pub fn task(this: *AnyTask) Task {
-    // JSC bridge Task.init stubbed — re-attaches in Phase 12.2.
-    return Task.init(this);
+pub fn task(this: *AnyTask) home_rt.jsc.Task {
+    return home_rt.jsc.Task.init(this);
 }
 
 pub fn run(this: *AnyTask) JSError!void {
@@ -46,15 +45,6 @@ pub fn New(comptime Type: type, comptime Callback: anytype) type {
 // before the rest of the JSC surface is in place.
 
 pub const JSError = home_rt.JSError;
-
-// JSC bridge Task stubbed — re-attaches in Phase 12.2.
-pub const Task = struct {
-    ptr: ?*anyopaque,
-
-    pub fn init(ctx: anytype) Task {
-        return .{ .ptr = @ptrCast(ctx) };
-    }
-};
 
 // callmod_inline mirrors upstream Bun: Debug → .auto so stack traces
 // stay readable, otherwise force inline so the wrap thunk is a single
@@ -93,5 +83,5 @@ test "AnyTask: task() returns a non-null Task wrapper" {
     const Wrapped = AnyTask.New(Counter, Counter.bump);
     var any = Wrapped.init(&counter);
     const t = any.task();
-    try testing.expect(t.ptr != null);
+    try testing.expect(!t.isNull());
 }

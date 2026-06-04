@@ -19,6 +19,10 @@ pub fn crash() noreturn {
     @panic("home_rt: crash() called");
 }
 
+pub fn raiseIgnoringPanicHandler(signal: anytype) noreturn {
+    std.process.exit(signal.toExitCode() orelse 1);
+}
+
 /// Mirrors Bun's `Global.mimalloc_cleanup` (upstream `bun_core/Global.rs`
 /// line 778), which calls `mi_collect(force)` only when mimalloc is the
 /// active allocator. Home links the libc-backed mimalloc shim, which has no
@@ -27,6 +31,8 @@ pub fn crash() noreturn {
 pub fn mimalloc_cleanup(force: bool) void {
     _ = force;
 }
+
+pub fn setThreadName(_: []const u8) void {}
 
 /// Mirrors Bun's `bun.OOM` — an alias for `error{OutOfMemory}`. Many
 /// copied files spell their fallible return type as `bun.OOM!T`.

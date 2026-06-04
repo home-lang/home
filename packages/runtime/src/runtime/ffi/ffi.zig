@@ -916,8 +916,7 @@ pub const FFI = struct {
 
         const allocator = VirtualMachine.get().allocator;
 
-        var function_iter = this.functions.valueIterator();
-        while (function_iter.next()) |val| {
+        for (this.functions.values()) |*val| {
             val.deinit(globalThis);
         }
         this.functions.deinit(allocator);
@@ -963,12 +962,10 @@ pub const FFI = struct {
         var symbols = bun.StringArrayHashMapUnmanaged(Function){};
         if (generateSymbols(global, bun.default_allocator, &symbols, obj) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
-            var key_iter = symbols.keyIterator();
-            while (key_iter.next()) |key| {
-                allocator.free(@constCast(key.*));
+            for (symbols.keys()) |key| {
+                allocator.free(@constCast(key));
             }
-            var function_iter = symbols.valueIterator();
-            while (function_iter.next()) |function_| {
+            for (symbols.values()) |*function_| {
                 function_.arg_types.deinit(allocator);
             }
             symbols.clearAndFree(allocator);
@@ -982,18 +979,15 @@ pub const FFI = struct {
             }
             strs.deinit();
         }
-        var function_iter = symbols.valueIterator();
-        while (function_iter.next()) |function| {
+        for (symbols.values()) |*function| {
             var source = std.Io.Writer.Allocating.init(allocator);
             defer source.deinit();
             function.printSourceCode(&source.writer) catch {
                 // an error while generating source code
-                var key_iter = symbols.keyIterator();
-                while (key_iter.next()) |key| {
-                    allocator.free(@constCast(key.*));
+                for (symbols.keys()) |key| {
+                    allocator.free(@constCast(key));
                 }
-                var cleanup_iter = symbols.valueIterator();
-                while (cleanup_iter.next()) |function_| {
+                for (symbols.values()) |*function_| {
                     function_.arg_types.deinit(allocator);
                 }
 
@@ -1005,12 +999,10 @@ pub const FFI = struct {
 
         const ret = try bun.String.toJSArray(global, strs.items);
 
-        var key_iter = symbols.keyIterator();
-        while (key_iter.next()) |key| {
-            allocator.free(@constCast(key.*));
+        for (symbols.keys()) |key| {
+            allocator.free(@constCast(key));
         }
-        function_iter = symbols.valueIterator();
-        while (function_iter.next()) |function_| {
+        for (symbols.values()) |*function_| {
             function_.arg_types.deinit(allocator);
         }
         symbols.clearAndFree(allocator);
@@ -1157,7 +1149,7 @@ pub const FFI = struct {
                     defer {
                         var cleanup_iter = symbols.valueIterator();
                         while (cleanup_iter.next()) |other_function| {
-                        other_function.deinit(global);
+                            other_function.deinit(global);
                         }
                     }
 

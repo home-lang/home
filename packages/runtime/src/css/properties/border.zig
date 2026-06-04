@@ -633,7 +633,7 @@ const BorderProperty = packed struct(u32) {
 
     pub fn tryFromPropertyId(property_id: css.PropertyIdTag) ?@This() {
         @setEvalBranchQuota(10000);
-        const fields = bun.meta.EnumFields(css.PropertyIdTag);
+        const fields = comptime bun.meta.EnumFields(css.PropertyIdTag);
         inline for (fields) |field| {
             if (field.value == @intFromEnum(property_id)) {
                 if (comptime std.mem.startsWith(u8, field.name, "border") and @hasDecl(@This(), field.name)) {

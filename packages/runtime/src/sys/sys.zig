@@ -3074,7 +3074,7 @@ pub fn getFdPath(fd: bun.FD, out_buffer: *bun.PathBuffer) Maybe([]u8) {
 pub fn mmap(
     ptr: ?[*]align(page_size_min) u8,
     length: usize,
-    prot: u32,
+    prot: std.posix.PROT,
     flags: std.posix.MAP,
     fd: bun.FD,
     offset: u64,

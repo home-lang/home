@@ -76,7 +76,7 @@ pub fn _stat(path: []const u8) i32 {
 
 pub const CustomLoader = union(enum) {
     loader: bun.options.Loader,
-    custom: jsc.Strong,
+    custom: jsc.Strong.Optional,
 };
 
 extern fn JSCommonJSExtensions__appendFunction(global: *jsc.JSGlobalObject, value: jsc.JSValue) u32;
@@ -84,12 +84,25 @@ extern fn JSCommonJSExtensions__setFunction(global: *jsc.JSGlobalObject, index: 
 /// Returns the index of the last value, which must have it's references updated to `index`
 extern fn JSCommonJSExtensions__swapRemove(global: *jsc.JSGlobalObject, index: u32) u32;
 
+fn syncExtraCJSExtensions(vm: *jsc.VirtualMachine) void {
+    const old = vm.transpiler.resolver.opts.extra_cjs_extensions;
+    if (old.len > 0) bun.default_allocator.free(old);
+
+    const keys = bun.default_allocator.alloc([]const u8, vm.commonjs_custom_extensions.count()) catch bun.outOfMemory();
+    var i: usize = 0;
+    for (vm.commonjs_custom_extensions.keys()) |key| {
+        keys[i] = key;
+        i += 1;
+    }
+    vm.transpiler.resolver.opts.extra_cjs_extensions = keys;
+}
+
 // Memory management is complicated because JSValues are stored in gc-visitable
 // WriteBarriers in C++ but the hash map for extensions is in Zig for flexibility.
 fn onRequireExtensionModify(global: *jsc.JSGlobalObject, str: []const u8, loader: bun.schema.api.Loader, value: jsc.JSValue) bun.OOM!void {
     const vm = global.bunVM();
     const list = &vm.commonjs_custom_extensions;
-    defer vm.transpiler.resolver.opts.extra_cjs_extensions = list.keys();
+    defer syncExtraCJSExtensions(vm);
     const is_built_in = bun.options.defaultLoaders.get(str) != null;
 
     const gop = try list.getOrPut(bun.default_allocator, str);
@@ -122,10 +135,10 @@ fn onRequireExtensionModify(global: *jsc.JSGlobalObject, str: []const u8, loader
 fn onRequireExtensionModifyNonFunction(global: *JSGlobalObject, str: []const u8) bun.OOM!void {
     const vm = global.bunVM();
     const list = &vm.commonjs_custom_extensions;
-    defer vm.transpiler.resolver.opts.extra_cjs_extensions = list.keys();
+    defer syncExtraCJSExtensions(vm);
     const is_built_in = bun.options.defaultLoaders.get(str) != null;
 
-    if (list.fetchSwapRemove(str)) |prev| {
+    if (list.fetchOrderedRemove(str)) |prev| {
         bun.default_allocator.free(prev.key);
         if (is_built_in) {
             vm.has_mutated_built_in_extensions -= 1;

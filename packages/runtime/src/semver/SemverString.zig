@@ -27,6 +27,10 @@ pub const String = extern struct {
         return .{ .str = self, .buf = buf };
     }
 
+    pub inline fn fmtJson(self: *const String, buf: string, opts: anytype) @TypeOf(shim.fmt.formatJSONStringUTF8("", opts)) {
+        return shim.fmt.formatJSONStringUTF8(self.slice(buf), opts);
+    }
+
     pub inline fn order(
         lhs: *const String,
         rhs: *const String,
@@ -301,6 +305,63 @@ pub const String = extern struct {
         }
     };
 
+    pub const Buf = struct {
+        bytes: *std.ArrayListUnmanaged(u8),
+        allocator: std.mem.Allocator,
+        pool: *Builder.StringPool,
+
+        pub fn append(this: *Buf, input: string) OOM!String {
+            return this.appendWithHash(input, Builder.stringHash(input));
+        }
+
+        pub fn appendExternal(this: *Buf, input: string) OOM!ExternalString {
+            const hash = Builder.stringHash(input);
+            return this.appendExternalWithHash(input, hash);
+        }
+
+        pub fn appendExternalWithHash(this: *Buf, input: string, hash: u64) OOM!ExternalString {
+            return .{
+                .value = try this.appendWithHash(input, hash),
+                .hash = hash,
+            };
+        }
+
+        pub fn appendWithHash(this: *Buf, input: string, hash: u64) OOM!String {
+            if (input.len <= max_inline_len and strings.isAllASCII(input)) {
+                return String.init(this.bytes.items, input);
+            }
+
+            const entry = try this.pool.getOrPut(hash);
+            if (!entry.found_existing) {
+                try this.bytes.appendSlice(this.allocator, input);
+                const final = this.bytes.items[this.bytes.items.len - input.len ..];
+                entry.value_ptr.* = String.init(this.bytes.items, final);
+            }
+            return entry.value_ptr.*;
+        }
+    };
+
+    pub fn initAppendIfNeeded(
+        allocator: std.mem.Allocator,
+        buf: *std.ArrayListUnmanaged(u8),
+        input: string,
+    ) OOM!String {
+        if (input.len <= max_inline_len and strings.isAllASCII(input)) {
+            return String.init(buf.items, input);
+        }
+        return initAppend(allocator, buf, input);
+    }
+
+    pub fn initAppend(
+        allocator: std.mem.Allocator,
+        buf: *std.ArrayListUnmanaged(u8),
+        input: string,
+    ) OOM!String {
+        try buf.appendSlice(allocator, input);
+        const final = buf.items[buf.items.len - input.len ..];
+        return String.init(buf.items, final);
+    }
+
     comptime {
         if (@sizeOf(String) != @sizeOf(Pointer)) {
             @compileError("String types must be the same size");
@@ -367,6 +428,7 @@ const string = []const u8;
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const OOM = error{OutOfMemory};
 const Wyhash11 = std.hash.Wyhash;
 const shim = @import("shim.zig");
 const Environment = shim.Environment;

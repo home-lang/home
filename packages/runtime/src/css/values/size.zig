@@ -1,15 +1,8 @@
 // Copied from bun/src/css/values/size.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `LengthPercentage` is unported; it appears only inside `Size2D(T).parseVal`'s
-// type switch — Zig's lazy analysis keeps the generic compiling as long as
-// the body is never instantiated against `LengthPercentage`. `CSSNumberFns`
-// is also stubbed. `bun.css.targets.Browsers` is referenced only inside
-// `isCompatible` (also lazy). Pure-data shape (`a: T`, `b: T`) is what
-// downstream leaves need. `eql`/`valEql` keep their original switches; for
-// non-`f32` T's the user-defined `T.eql` resolves via duck-typing.
+// Pure-data shape (`a: T`, `b: T`) is what downstream leaves need.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -21,6 +14,23 @@ pub fn Size2D(comptime T: type) type {
     return struct {
         a: T,
         b: T,
+
+        pub fn parse(input: *css.Parser) Result(@This()) {
+            const a = switch (T.parse(input)) {
+                .result => |v| v,
+                .err => |e| return .{ .err = e },
+            };
+            const b = input.tryParse(T.parse, .{}).unwrapOr(a);
+            return .{ .result = .{ .a = a, .b = b } };
+        }
+
+        pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+            try this.a.toCss(dest);
+            if (!valEql(&this.a, &this.b)) {
+                try dest.writeStr(" ");
+                try this.b.toCss(dest);
+            }
+        }
 
         pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
             return css.implementDeepClone(@This(), this, allocator);

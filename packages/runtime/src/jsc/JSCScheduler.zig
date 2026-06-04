@@ -16,7 +16,9 @@
 
 const JSCScheduler = @This();
 
-pub const JSCDeferredWorkTask = opaque {};
+pub const JSCDeferredWorkTask = opaque {
+    pub fn run(_: *JSCDeferredWorkTask) !void {}
+};
 
 test "JSCDeferredWorkTask is an opaque pointer-only type" {
     const std = @import("std");

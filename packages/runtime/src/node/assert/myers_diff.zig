@@ -122,7 +122,7 @@ pub fn DifferWithEql(comptime Line: type, comptime opts: Options, comptime areLi
         /// - [An O(ND) Difference Algorithm and Its Variations](http://www.xmailserver.org/diff2.pdf)
         pub fn diff(home_allocator: Allocator, actual: []const Line, expected: []const Line) Error!DiffList(Line) {
 
-            // Edit graph's allocator. Zig 0.17 removed `std.heap.stackFallback`,
+            // Edit graph's allocator. Zig 0.17 removed `bun.stackFallback`,
             // so we fall through to the caller's allocator directly. This
             // costs a heap allocation on the hot path that upstream avoids for
             // small (<256-byte) inputs — re-attach a stack-fallback when one

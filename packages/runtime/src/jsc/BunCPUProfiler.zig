@@ -52,6 +52,8 @@ pub const CPUProfiler = struct {
     }
 };
 
+pub fn stopAndWriteProfile(_: anytype, _: CPUProfilerConfig) !void {}
+
 test "CPUProfilerConfig defaults" {
     const cfg: CPUProfilerConfig = .{ .name = "x", .dir = "y" };
     try std.testing.expect(!cfg.md_format);

@@ -64,9 +64,18 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
+    pub fn enter(_: EventLoopHandle) void {}
+
+    pub fn exit(_: EventLoopHandle) void {}
+
     pub fn topLevelDir(this: EventLoopHandle) [:0]const u8 {
         _ = this;
         return home_rt.fs.FileSystem.instance.top_level_dir;
+    }
+
+    pub fn allocator(this: EventLoopHandle) std.mem.Allocator {
+        _ = this;
+        return home_rt.default_allocator;
     }
 
     pub fn createNullDelimitedEnvMap(this: EventLoopHandle, alloc: std.mem.Allocator) error{OutOfMemory}![:null]?[*:0]const u8 {
@@ -120,8 +129,8 @@ pub const EventLoopTask = union(EventLoopKind) {
 
     pub fn init(kind: EventLoopKind) EventLoopTask {
         return switch (kind) {
-            .js => .{ .js = @ptrFromInt(0xdead_bee0) },
-            .mini => .{ .mini = @ptrFromInt(0xdead_bee8) },
+            .js => .{ .js = @ptrFromInt(std.mem.alignForward(usize, 0xdead_bee0, @alignOf(ConcurrentTask))) },
+            .mini => .{ .mini = @ptrFromInt(std.mem.alignForward(usize, 0xdead_bee8, @alignOf(AnyTaskWithExtraContext))) },
         };
     }
 
@@ -141,11 +150,9 @@ test "EventLoopKind tag values" {
 }
 
 test "EventLoopHandle.cast returns the right pointer" {
-    // We can't materialize an opaque on the stack, but a dangling `*EventLoop`
-    // is enough to prove the union round-trips and `cast()` dispatches.
-    const fake: *EventLoop = @ptrFromInt(0xdead_bee0);
-    const h: EventLoopHandle = .{ .js = fake };
-    try std.testing.expectEqual(fake, h.cast(.js));
+    var fake: EventLoop = undefined;
+    const h: EventLoopHandle = .{ .js = &fake };
+    try std.testing.expectEqual(&fake, h.cast(.js));
 }
 
 test "EventLoopTask.init produces the right tag" {

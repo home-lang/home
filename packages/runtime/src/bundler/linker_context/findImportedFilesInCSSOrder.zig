@@ -238,7 +238,7 @@ pub fn findImportedFilesInCSSOrder(this: *LinkerContext, temp_allocator: std.mem
     // overrides all previous instances of that declaration.
     {
         var source_index_duplicates = bun.AutoArrayHashMap(u32, BabyList(u32)).init(temp_allocator);
-        var external_path_duplicates = std.StringArrayHashMap(BabyList(u32)).init(temp_allocator);
+        var external_path_duplicates = bun.StringArrayHashMap(BabyList(u32)).init(temp_allocator);
 
         var i: u32 = visitor.order.len;
         next_backward: while (i != 0) {

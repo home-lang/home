@@ -422,6 +422,61 @@ pub const Engine = struct {
         return true;
     }
 
+    fn restArrayElementParam(self: *Engine, sig: TypeId, params: []const TypeId, index: usize, param: TypeId) TypeId {
+        const rs = self.rest_signatures orelse return param;
+        if (!rs.contains(sig) or params.len == 0 or index + 1 != params.len) return param;
+        if (param >= self.pool().typeCount()) return param;
+        const elem = self.interner.objectNumberIndex(param);
+        return if (elem != Primitive.none) elem else param;
+    }
+
+    fn typeContainsTypeParameter(self: *Engine, t: TypeId) bool {
+        if (t >= self.pool().typeCount()) return false;
+        const flags = self.pool().flagsOf(t);
+        if (flags.is_type_parameter) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| if (self.typeContainsTypeParameter(member)) return true;
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| if (self.typeContainsTypeParameter(member)) return true;
+            return false;
+        }
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |member| if (self.typeContainsTypeParameter(member.type)) return true;
+            const str_idx = self.interner.objectStringIndex(t);
+            const num_idx = self.interner.objectNumberIndex(t);
+            const sym_idx = self.interner.objectSymbolIndex(t);
+            return (str_idx != Primitive.none and self.typeContainsTypeParameter(str_idx)) or
+                (num_idx != Primitive.none and self.typeContainsTypeParameter(num_idx)) or
+                (sym_idx != Primitive.none and self.typeContainsTypeParameter(sym_idx));
+        }
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |param| if (self.typeContainsTypeParameter(param)) return true;
+            if (self.interner.signatureReturn(t)) |ret| return self.typeContainsTypeParameter(ret);
+        }
+        return false;
+    }
+
+    fn signatureParamAssignableTo(
+        self: *Engine,
+        source_param: TypeId,
+        target_param: TypeId,
+        reject_target_type_parameter: bool,
+    ) anyerror!bool {
+        if (source_param == target_param) return true;
+        if (reject_target_type_parameter and
+            target_param < self.pool().typeCount() and
+            self.pool().flagsOf(target_param).is_type_parameter)
+        {
+            if (source_param < self.pool().typeCount() and self.pool().flagsOf(source_param).is_type_parameter) {
+                return self.typeParameterConstraintReaches(source_param, target_param);
+            }
+            return false;
+        }
+        return self.isAssignableTo(source_param, target_param);
+    }
+
     pub fn deinit(self: *Engine) void {
         self.cache.deinit();
         self.source_stack.deinit(self.gpa);
@@ -1372,14 +1427,10 @@ pub const Engine = struct {
         defer sp_expanded.deinit(self.gpa);
         var tp_expanded: std.ArrayListUnmanaged(TypeId) = .empty;
         defer tp_expanded.deinit(self.gpa);
-        const sp: []const TypeId = if (try self.expandRestTupleParams(source, sp_raw, &sp_expanded))
-            sp_expanded.items
-        else
-            sp_raw;
-        const tp: []const TypeId = if (try self.expandRestTupleParams(target, tp_raw, &tp_expanded))
-            tp_expanded.items
-        else
-            tp_raw;
+        const source_rest_tuple_expanded = try self.expandRestTupleParams(source, sp_raw, &sp_expanded);
+        const target_rest_tuple_expanded = try self.expandRestTupleParams(target, tp_raw, &tp_expanded);
+        const sp: []const TypeId = if (source_rest_tuple_expanded) sp_expanded.items else sp_raw;
+        const tp: []const TypeId = if (target_rest_tuple_expanded) tp_expanded.items else tp_raw;
         var source_required: usize = sp.len;
         while (source_required > 0) {
             if (!self.typeIncludesUndefined(sp[source_required - 1]) and
@@ -1395,6 +1446,8 @@ pub const Engine = struct {
         var tp_map_len: usize = 0;
         var source_context_buf: [16]TpPair = undefined;
         var source_context_len: usize = 0;
+        const reject_target_type_parameter = self.typeContainsTypeParameter(source) and
+            self.typeContainsTypeParameter(target);
 
         const compare_len = @min(sp.len, tp.len);
         for (sp[0..compare_len], 0..) |s_param, i| {
@@ -1432,14 +1485,29 @@ pub const Engine = struct {
                 }
                 continue;
             }
+            const t_param_ctx_raw = try self.substituteTpDeep(t_param, tp_map_buf[0..tp_map_len]);
+            const s_param_cmp = if (!source_rest_tuple_expanded)
+                self.restArrayElementParam(source, sp, i, s_param_ctx)
+            else
+                s_param_ctx;
+            const t_param_cmp = if (!target_rest_tuple_expanded)
+                self.restArrayElementParam(target, tp, i, t_param_ctx_raw)
+            else
+                t_param_ctx_raw;
+            const comparing_rest_array_elements = !source_rest_tuple_expanded and
+                !target_rest_tuple_expanded and
+                i + 1 == compare_len and
+                ((self.rest_signatures != null and self.rest_signatures.?.contains(source)) or
+                    (self.rest_signatures != null and self.rest_signatures.?.contains(target)));
+            const reject_param_inference = reject_target_type_parameter and comparing_rest_array_elements;
             // Strict mode: target's param must be assignable to
             // source's (contravariant). Non-strict: bivariant —
             // accept either direction.
             if (!force_bivariant_params and (force_strict_params or self.strict_function_types)) {
-                if (!try self.isAssignableTo(t_param, s_param_ctx)) return false;
+                if (!try self.signatureParamAssignableTo(t_param_cmp, s_param_cmp, reject_param_inference)) return false;
             } else {
-                const ct = try self.isAssignableTo(t_param, s_param_ctx);
-                const co = try self.isAssignableTo(s_param_ctx, t_param);
+                const ct = try self.signatureParamAssignableTo(t_param_cmp, s_param_cmp, reject_param_inference);
+                const co = try self.signatureParamAssignableTo(s_param_cmp, t_param_cmp, reject_param_inference);
                 if (!ct and !co) return false;
             }
         }

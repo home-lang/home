@@ -34,7 +34,7 @@ byte_offset_to_start_of_line: u32 = 0,
 
 pub const List = MultiArrayList(LineOffsetTable);
 
-pub fn findLine(byte_offsets_to_start_of_line: []const u32, loc: Loc) i32 {
+pub fn findLine(byte_offsets_to_start_of_line: []const u32, loc: anytype) i32 {
     home_rt.assert(loc.start > -1); // checked by caller
     var original_line: usize = 0;
     const loc_start = @as(usize, @intCast(loc.start));

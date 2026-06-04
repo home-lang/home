@@ -854,9 +854,7 @@ const FilesContext = struct {
         switch (this.result) {
             .success => |*entries| {
                 const map = jsc.JSMap.create(globalThis);
-                const map_ptr = jsc.JSMap.fromJS(map) orelse {
-                    return .{ .reject = globalThis.createErrorInstance("Failed to create Map", .{}) };
-                };
+                const map_ptr = map;
 
                 for (entries.items) |*entry| {
                     const blob_ptr = jsc.WebCore.Blob.new(jsc.WebCore.Blob.createWithBytesAndAllocator(entry.data, bun.default_allocator, globalThis, false));
@@ -865,10 +863,10 @@ const FilesContext = struct {
                     blob_ptr.name = bun.String.cloneUTF8(entry.path);
                     blob_ptr.last_modified = @floatFromInt(entry.mtime * 1000);
 
-                    try map_ptr.set(globalThis, try blob_ptr.name.toJS(globalThis), blob_ptr.toJS(globalThis));
+                    map_ptr.set(globalThis, try blob_ptr.name.toJS(globalThis), blob_ptr.toJS(globalThis));
                 }
 
-                return .{ .resolve = map };
+                return .{ .resolve = jsc.JSValue.fromCell(@ptrCast(map)) };
             },
             .libarchive_err => |err_msg| return .{ .reject = globalThis.createErrorInstance("{s}", .{err_msg}) },
             .err => |e| return .{ .reject = globalThis.createErrorInstance("{s}", .{@errorName(e)}) },

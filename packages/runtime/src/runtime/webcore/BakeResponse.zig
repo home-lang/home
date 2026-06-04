@@ -1,6 +1,11 @@
 pub fn fixDeadCodeElimination() void {
     std.mem.doNotOptimizeAway(&BakeResponseClass__constructForSSR);
+    std.mem.doNotOptimizeAway(&BakeResponseClass__constructRedirect);
     std.mem.doNotOptimizeAway(&BakeResponseClass__constructRender);
+}
+
+comptime {
+    fixDeadCodeElimination();
 }
 
 extern "C" fn BakeResponse__createForSSR(globalObject: *JSGlobalObject, this: *Response, kind: u8) callconv(jsc.conv) jsc.JSValue;

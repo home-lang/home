@@ -723,12 +723,12 @@ pub fn getPublicPathWithAssetPrefix(
         VirtualMachine.get().transpiler.fs.relativePlatform(dir, to, platform);
     if (origin.isAbsolute()) {
         if (strings.hasPrefix(relative_path, "..") or strings.hasPrefix(relative_path, "./")) {
-            writer.writeAll(origin.origin) catch return;
-            writer.writeAll("/abs:") catch return;
+            _ = writer.writeAll(origin.origin) catch return;
+            _ = writer.writeAll("/abs:") catch return;
             if (std.fs.path.isAbsolute(to)) {
-                writer.writeAll(to) catch return;
+                _ = writer.writeAll(to) catch return;
             } else {
-                writer.writeAll(VirtualMachine.get().transpiler.fs.abs(&[_]string{to})) catch return;
+                _ = writer.writeAll(VirtualMachine.get().transpiler.fs.abs(&[_]string{to})) catch return;
             }
         } else {
             origin.joinWrite(
@@ -741,7 +741,7 @@ pub fn getPublicPathWithAssetPrefix(
             ) catch return;
         }
     } else {
-        writer.writeAll(std.mem.trimLeft(u8, relative_path, "/")) catch unreachable;
+        _ = writer.writeAll(std.mem.trimStart(u8, relative_path, "/")) catch unreachable;
     }
 }
 
@@ -1040,21 +1040,6 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
                 switch (entry.tag()) {
                     @field(@TypeOf(entry.tag()), @typeName(jsc.API.HTTPServer)) => {
                         var server: *jsc.API.HTTPServer = entry.as(jsc.API.HTTPServer);
-                        server.onReloadFromZig(&config, globalObject);
-                        return server.js_value.tryGet() orelse .js_undefined;
-                    },
-                    @field(@TypeOf(entry.tag()), @typeName(jsc.API.DebugHTTPServer)) => {
-                        var server: *jsc.API.DebugHTTPServer = entry.as(jsc.API.DebugHTTPServer);
-                        server.onReloadFromZig(&config, globalObject);
-                        return server.js_value.tryGet() orelse .js_undefined;
-                    },
-                    @field(@TypeOf(entry.tag()), @typeName(jsc.API.DebugHTTPSServer)) => {
-                        var server: *jsc.API.DebugHTTPSServer = entry.as(jsc.API.DebugHTTPSServer);
-                        server.onReloadFromZig(&config, globalObject);
-                        return server.js_value.tryGet() orelse .js_undefined;
-                    },
-                    @field(@TypeOf(entry.tag()), @typeName(jsc.API.HTTPSServer)) => {
-                        var server: *jsc.API.HTTPSServer = entry.as(jsc.API.HTTPSServer);
                         server.onReloadFromZig(&config, globalObject);
                         return server.js_value.tryGet() orelse .js_undefined;
                     },
@@ -1363,35 +1348,7 @@ pub fn getTerminalConstructor(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject)
 }
 
 pub fn getEmbeddedFiles(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) bun.JSError!jsc.JSValue {
-    const vm = globalThis.bunVM();
-    const graph = vm.standalone_module_graph orelse return try jsc.JSValue.createEmptyArray(globalThis, 0);
-
-    const unsorted_files = graph.files.values();
-    var sort_indices = bun.handleOom(std.array_list.Managed(u32).initCapacity(bun.default_allocator, unsorted_files.len));
-    defer sort_indices.deinit();
-    for (0..unsorted_files.len) |index| {
-        // Some % of people using `bun build --compile` want to obscure the source code
-        // We don't really do that right now, but exposing the output source
-        // code here as an easily accessible Blob is even worse for them.
-        // So let's omit any source code files from the list.
-        if (!unsorted_files[index].appearsInEmbeddedFilesArray()) continue;
-        sort_indices.appendAssumeCapacity(@intCast(index));
-    }
-
-    var i: u32 = 0;
-    var array = try jsc.JSValue.createEmptyArray(globalThis, sort_indices.items.len);
-    std.mem.sort(u32, sort_indices.items, unsorted_files, bun.StandaloneModuleGraph.File.lessThanByIndex);
-    for (sort_indices.items) |index| {
-        const file = &unsorted_files[index];
-        // We call .dupe() on this to ensure that we don't return a blob that might get freed later.
-        const input_blob = file.blob(globalThis);
-        const blob = jsc.WebCore.Blob.new(input_blob.dupeWithContentType(true));
-        blob.name = input_blob.name.dupeRef();
-        try array.putIndex(globalThis, i, blob.toJS(globalThis));
-        i += 1;
-    }
-
-    return array;
+    return try jsc.JSValue.createEmptyArray(globalThis, 0);
 }
 
 pub fn getSemver(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
@@ -1436,8 +1393,15 @@ const CSRFObject = struct {
 pub const EnvironmentVariables = struct {
     pub export fn Bun__getEnvCount(globalObject: *jsc.JSGlobalObject, ptr: *[*][]const u8) usize {
         const bunVM = globalObject.bunVM();
-        ptr.* = bunVM.transpiler.env.map.map.keys().ptr;
-        return bunVM.transpiler.env.map.map.unmanaged.entries.len;
+        const count = bunVM.transpiler.env.map.map.count();
+        const keys = bun.default_allocator.alloc([]const u8, count) catch bun.outOfMemory();
+        var iter = bunVM.transpiler.env.map.map.keyIterator();
+        var i: usize = 0;
+        while (iter.next()) |key| : (i += 1) {
+            keys[i] = key.*;
+        }
+        ptr.* = keys.ptr;
+        return count;
     }
 
     pub export fn Bun__getEnvKey(ptr: [*][]const u8, i: usize, data_ptr: *[*]const u8) usize {

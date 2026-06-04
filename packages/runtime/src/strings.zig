@@ -7,14 +7,64 @@
 
 const std = @import("std");
 
+pub const repeatingAlloc = @import("string/immutable.zig").repeatingAlloc;
+
+pub fn indexOfNotChar(haystack: []const u8, char: u8) ?usize {
+    for (haystack, 0..) |c, i| {
+        if (c != char) return i;
+    }
+    return null;
+}
+
 pub const string = []const u8;
 
 pub const CodepointIterator = @import("string/immutable.zig").CodepointIterator;
 pub const trimSubsequentLeadingChars = @import("string/immutable.zig").trimSubsequentLeadingChars;
+pub const formatEscapes = @import("string/immutable.zig").formatEscapes;
+pub const isAllWhitespace = @import("string/immutable.zig").isAllWhitespace;
+pub const isOnCharBoundary = @import("string/immutable.zig").isOnCharBoundary;
+pub const trimLeadingChar = @import("string/immutable.zig").trimLeadingChar;
+pub const getLinesInText = @import("string/immutable.zig").getLinesInText;
+pub const startsWithCaseInsensitiveAscii = @import("string/immutable.zig").startsWithCaseInsensitiveAscii;
+pub const splitFirst = @import("string/immutable.zig").splitFirst;
+pub const splitFirstWithExpected = @import("string/immutable.zig").splitFirstWithExpected;
+pub const utf8ByteSequenceLengthUnsafe = @import("string/immutable.zig").utf8ByteSequenceLengthUnsafe;
+pub fn withoutSuffixComptime(input: []const u8, comptime suffix: []const u8) []const u8 {
+    return if (hasSuffixComptime(input, suffix)) input[0 .. input.len - suffix.len] else input;
+}
+
+pub fn withoutPrefixIfPossibleComptime(input: []const u8, comptime prefix: []const u8) ?[]const u8 {
+    return if (hasPrefixComptime(input, prefix)) input[prefix.len..] else null;
+}
+
+pub fn order(a: []const u8, b: []const u8) std.math.Order {
+    return std.mem.order(u8, a, b);
+}
 /// Upstream bun.strings.utf8ByteSequenceLength returns u3 (0 for an invalid
 /// leading byte) rather than std.unicode's error union.
 pub fn utf8ByteSequenceLength(first_byte: u8) u3 {
     return @import("std").unicode.utf8ByteSequenceLength(first_byte) catch 0;
+}
+
+pub fn indexOfNewlineOrNonASCIIOrANSI(input: []const u8, start: usize) ?usize {
+    var i = start;
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+        if (c == '\n' or c == 0x1b or c >= 0x80) return i;
+    }
+    return null;
+}
+
+pub fn trimLeadingPattern2(input: []const u8, a: u8, b: u8) []const u8 {
+    var i: usize = 0;
+    while (i + 1 < input.len and input[i] == a and input[i + 1] == b) {
+        i += 2;
+    }
+    return input[i..];
+}
+
+pub fn removeLeadingDotSlash(input: []const u8) []const u8 {
+    return if (std.mem.startsWith(u8, input, "./")) input[2..] else input;
 }
 pub const Encoding = @import("string/immutable.zig").Encoding;
 pub const EncodingNonAscii = @import("string/immutable.zig").EncodingNonAscii;
@@ -25,6 +75,7 @@ pub const containsNonBmpCodePointOrIsInvalidIdentifier = @import("string/immutab
 pub const decodeWTF8RuneT = @import("string/immutable.zig").decodeWTF8RuneT;
 pub const encodeWTF8Rune = @import("string/immutable.zig").encodeWTF8Rune;
 pub const encodeWTF8RuneT = @import("string/immutable.zig").encodeWTF8RuneT;
+pub const encodeUTF8Comptime = @import("string/immutable.zig").encodeUTF8Comptime;
 pub const indexOfNeedsEscapeForJavaScriptString = @import("string/immutable.zig").indexOfNeedsEscapeForJavaScriptString;
 pub const charIsAnySlash = @import("string/immutable.zig").charIsAnySlash;
 pub const hasPrefixComptime = @import("string/immutable.zig").hasPrefixComptime;
@@ -67,6 +118,8 @@ pub const withoutUTF8BOM = @import("string/immutable.zig").withoutUTF8BOM;
 pub const toUTF8ListWithType = @import("string/immutable.zig").toUTF8ListWithType;
 pub const allocateLatin1IntoUTF8WithList = @import("string/immutable.zig").allocateLatin1IntoUTF8WithList;
 pub const toUTF8ListWithTypeBun = @import("string/immutable.zig").toUTF8ListWithTypeBun;
+pub const toUTF8AllocZ = @import("string/immutable.zig").toUTF8AllocZ;
+pub const toUTF8FromLatin1Z = @import("string/immutable.zig").toUTF8FromLatin1Z;
 pub const elementLengthUTF16IntoUTF8 = @import("string/immutable.zig").elementLengthUTF16IntoUTF8;
 pub const eqlCaseInsensitiveASCII = @import("string/immutable.zig").eqlCaseInsensitiveASCII;
 pub const eqlCaseInsensitiveASCIIIgnoreLength = @import("string/immutable.zig").eqlCaseInsensitiveASCIIIgnoreLength;
@@ -80,6 +133,7 @@ pub const elementLengthLatin1IntoUTF8 = @import("string/immutable.zig").elementL
 pub const encodeBytesToHex = @import("string/immutable.zig").encodeBytesToHex;
 pub const escapeHTMLForUTF16Input = @import("string/immutable.zig").escapeHTMLForUTF16Input;
 pub const indexOfCharPos = @import("string/immutable.zig").indexOfCharPos;
+pub const indexOfAnyPosComptime = @import("string/immutable.zig").indexOfAnyPosComptime;
 pub const OptionalUsize = @import("string/immutable.zig").OptionalUsize;
 pub const codepointSize = @import("string/immutable.zig").codepointSize;
 pub const nonASCIISequenceLength = @import("string/immutable.zig").nonASCIISequenceLength;
@@ -106,6 +160,32 @@ pub const toWPathMaybeDir = @import("string/immutable.zig").toWPathMaybeDir;
 pub const toWPathNormalizeAutoExtend = @import("string/immutable.zig").toWPathNormalizeAutoExtend;
 pub const toWPathNormalized = @import("string/immutable.zig").toWPathNormalized;
 pub const toWPathNormalized16 = @import("string/immutable.zig").toWPathNormalized16;
+
+pub fn normalizeSlashesOnly(buf: []u8, input: []const u8, sep: u8) []u8 {
+    const len = @min(buf.len, input.len);
+    for (input[0..len], 0..) |c, i| {
+        buf[i] = if (c == '/' or c == '\\') sep else c;
+    }
+    return buf[0..len];
+}
+
+pub fn cloneNormalizingSeparators(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    const out = try allocator.dupe(u8, input);
+    for (out) |*c| {
+        if (c.* == '\\') c.* = '/';
+    }
+    return out;
+}
+
+pub const escapeHTMLForLatin1Input = @import("string/immutable.zig").escapeHTMLForLatin1Input;
+
+pub fn isIPV6Address(input: []const u8) bool {
+    return std.mem.indexOfScalar(u8, input, ':') != null;
+}
+
+pub fn toUTF16Literal(comptime input: []const u8) [:0]const u16 {
+    return @import("string/immutable.zig").toUTF16Literal(input);
+}
 
 pub fn copy(dest: []u8, src: []const u8) void {
     std.mem.copyForwards(u8, dest, src);

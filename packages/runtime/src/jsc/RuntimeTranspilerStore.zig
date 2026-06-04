@@ -13,90 +13,9 @@ pub fn dumpSourceString(vm: *VirtualMachine, specifier: string, written: []const
 }
 
 pub fn dumpSourceStringFailiable(vm: *VirtualMachine, specifier: string, written: []const u8) !void {
-    if (!Environment.isDebug) return;
-    if (bun.feature_flag.BUN_DEBUG_NO_DUMP.get()) return;
-
-    const BunDebugHolder = struct {
-        pub var dir: ?std.fs.Dir = null;
-        pub var lock: bun.Mutex = .{};
-    };
-
-    BunDebugHolder.lock.lock();
-    defer BunDebugHolder.lock.unlock();
-
-    const dir = BunDebugHolder.dir orelse dir: {
-        const base_name = switch (Environment.os) {
-            else => if (comptime Environment.isAndroid) "/data/local/tmp/bun-debug-src/" else "/tmp/bun-debug-src/",
-            .windows => brk: {
-                const temp = bun.fs.FileSystem.RealFS.platformTempDir();
-                var win_temp_buffer: bun.PathBuffer = undefined;
-                @memcpy(win_temp_buffer[0..temp.len], temp);
-                const suffix = "\\bun-debug-src";
-                @memcpy(win_temp_buffer[temp.len .. temp.len + suffix.len], suffix);
-                win_temp_buffer[temp.len + suffix.len] = 0;
-                break :brk win_temp_buffer[0 .. temp.len + suffix.len :0];
-            },
-        };
-        const dir = try std.fs.cwd().makeOpenPath(base_name, .{});
-        BunDebugHolder.dir = dir;
-        break :dir dir;
-    };
-
-    if (std.fs.path.dirname(specifier)) |dir_path| {
-        const root_len = switch (Environment.os) {
-            else => "/".len,
-            .windows => bun.path.windowsFilesystemRoot(dir_path).len,
-        };
-        var parent = try dir.makeOpenPath(dir_path[root_len..], .{});
-        defer parent.close();
-        parent.writeFile(.{
-            .sub_path = std.fs.path.basename(specifier),
-            .data = written,
-        }) catch |e| {
-            Output.debugWarn("Failed to dump source string: writeFile {}", .{e});
-            return;
-        };
-        if (vm.source_mappings.get(specifier)) |mappings| {
-            defer mappings.deref();
-            const map_path = bun.handleOom(std.mem.concat(bun.default_allocator, u8, &.{ std.fs.path.basename(specifier), ".map" }));
-            defer bun.default_allocator.free(map_path);
-            const file = try parent.createFile(map_path, .{});
-            defer file.close();
-
-            const source_file = parent.readFileAlloc(
-                bun.default_allocator,
-                specifier,
-                std.math.maxInt(u64),
-            ) catch "";
-            defer bun.default_allocator.free(source_file);
-
-            var bufw_buffer: [4096]u8 = undefined;
-            var bufw = file.writerStreaming(&bufw_buffer);
-            const w = &bufw.interface;
-            try w.print(
-                \\{{
-                \\  "version": 3,
-                \\  "file": {f},
-                \\  "sourceRoot": "",
-                \\  "sources": [{f}],
-                \\  "sourcesContent": [{f}],
-                \\  "names": [],
-                \\  "mappings": "{f}"
-                \\}}
-            , .{
-                bun.fmt.formatJSONStringUTF8(std.fs.path.basename(specifier), .{}),
-                bun.fmt.formatJSONStringUTF8(specifier, .{}),
-                bun.fmt.formatJSONStringUTF8(source_file, .{}),
-                mappings.formatVLQs(),
-            });
-            try w.flush();
-        }
-    } else {
-        dir.writeFile(.{
-            .sub_path = std.fs.path.basename(specifier),
-            .data = written,
-        }) catch return;
-    }
+    _ = vm;
+    _ = specifier;
+    _ = written;
 }
 
 pub fn setBreakPointOnFirstLine() bool {
@@ -526,7 +445,10 @@ pub const RuntimeTranspilerStore = struct {
 
                 if (HardcodedModule.Alias.get(import_record.path.text, transpiler.options.target, .{ .rewrite_jest_for_tests = transpiler.options.rewrite_jest_for_tests })) |replacement| {
                     import_record.path.text = replacement.path;
-                    import_record.tag = replacement.tag;
+                    import_record.tag = switch (replacement.tag) {
+                        .builtin => .builtin,
+                        .bun => .bun,
+                    };
                     import_record.flags.is_external_without_side_effects = true;
                     continue;
                 }

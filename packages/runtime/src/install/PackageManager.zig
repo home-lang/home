@@ -970,7 +970,7 @@ pub fn init(
             }
         }
 
-        break :brk @truncate(@as(u64, @intCast(@max(std.time.timestamp(), 0))));
+        break :brk @truncate(@as(u64, @intCast(@max(bun.timestamp(), 0))));
     };
     return .{
         manager,
@@ -1100,7 +1100,7 @@ pub fn initWithRuntimeOnce(
         @truncate(@as(
             u64,
             @intCast(@max(
-                std.time.timestamp(),
+                bun.timestamp(),
                 0,
             )),
         )),

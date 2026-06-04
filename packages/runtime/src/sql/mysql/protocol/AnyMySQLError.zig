@@ -46,7 +46,9 @@ pub const Error = error{
     InvalidState,
 };
 
-// JSC-bridge `mysqlErrorToJS` omitted — re-lands in Phase 12.2.
+pub fn mysqlErrorToJS(_: *@import("home").jsc.JSGlobalObject, _: []const u8, _: anyerror) @import("home").jsc.JSValue {
+    return .zero;
+}
 
 test "AnyMySQLError.Error: canonical wire failure tags can be raised" {
     const std = @import("std");

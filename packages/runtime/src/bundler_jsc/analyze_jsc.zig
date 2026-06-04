@@ -103,7 +103,7 @@ export fn zig__ModuleInfoDeserialized__toJSModuleRecord(
 const parked_jsc_glue_msg = "JSC module-record bridge not linked: parked Phase 12.2 C++ glue (unused on the transpile/corpus path)";
 
 const VariableEnvironment = opaque {
-    export fn JSC__VariableEnvironment__add(environment: *VariableEnvironment, vm: *bun.jsc.VM, identifier_array: *IdentifierArray, identifier_index: StringID) void {
+    pub fn JSC__VariableEnvironment__add(environment: *VariableEnvironment, vm: *bun.jsc.VM, identifier_array: *IdentifierArray, identifier_index: StringID) callconv(.c) void {
         _ = environment;
         _ = vm;
         _ = identifier_array;
@@ -113,19 +113,19 @@ const VariableEnvironment = opaque {
     pub const add = JSC__VariableEnvironment__add;
 };
 const IdentifierArray = opaque {
-    export fn JSC__IdentifierArray__create(len: usize) *IdentifierArray {
+    pub fn JSC__IdentifierArray__create(len: usize) callconv(.c) *IdentifierArray {
         _ = len;
         @panic(parked_jsc_glue_msg);
     }
     pub const create = JSC__IdentifierArray__create;
 
-    export fn JSC__IdentifierArray__destroy(identifier_array: *IdentifierArray) void {
+    pub fn JSC__IdentifierArray__destroy(identifier_array: *IdentifierArray) callconv(.c) void {
         _ = identifier_array;
         @panic(parked_jsc_glue_msg);
     }
     pub const destroy = JSC__IdentifierArray__destroy;
 
-    export fn JSC__IdentifierArray__setFromUtf8(identifier_array: *IdentifierArray, n: usize, vm: *bun.jsc.VM, str: [*]const u8, len: usize) void {
+    pub fn JSC__IdentifierArray__setFromUtf8(identifier_array: *IdentifierArray, n: usize, vm: *bun.jsc.VM, str: [*]const u8, len: usize) callconv(.c) void {
         _ = identifier_array;
         _ = n;
         _ = vm;
@@ -139,7 +139,7 @@ const IdentifierArray = opaque {
 };
 const SourceCode = opaque {};
 const JSModuleRecord = opaque {
-    export fn JSC_JSModuleRecord__create(global_object: *bun.jsc.JSGlobalObject, vm: *bun.jsc.VM, module_key: *const IdentifierArray, source_code: *const SourceCode, declared_variables: *VariableEnvironment, lexical_variables: *VariableEnvironment, has_import_meta: bool, is_typescript: bool, has_tla: bool) *JSModuleRecord {
+    pub fn JSC_JSModuleRecord__create(global_object: *bun.jsc.JSGlobalObject, vm: *bun.jsc.VM, module_key: *const IdentifierArray, source_code: *const SourceCode, declared_variables: *VariableEnvironment, lexical_variables: *VariableEnvironment, has_import_meta: bool, is_typescript: bool, has_tla: bool) callconv(.c) *JSModuleRecord {
         _ = global_object;
         _ = vm;
         _ = module_key;
@@ -153,7 +153,7 @@ const JSModuleRecord = opaque {
     }
     pub const create = JSC_JSModuleRecord__create;
 
-    export fn JSC_JSModuleRecord__addIndirectExport(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, export_name: StringID, import_name: StringID, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addIndirectExport(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, export_name: StringID, import_name: StringID, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = export_name;
@@ -162,7 +162,7 @@ const JSModuleRecord = opaque {
         @panic(parked_jsc_glue_msg);
     }
     pub const addIndirectExport = JSC_JSModuleRecord__addIndirectExport;
-    export fn JSC_JSModuleRecord__addLocalExport(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, export_name: StringID, local_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addLocalExport(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, export_name: StringID, local_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = export_name;
@@ -170,7 +170,7 @@ const JSModuleRecord = opaque {
         @panic(parked_jsc_glue_msg);
     }
     pub const addLocalExport = JSC_JSModuleRecord__addLocalExport;
-    export fn JSC_JSModuleRecord__addNamespaceExport(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, export_name: StringID, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addNamespaceExport(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, export_name: StringID, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = export_name;
@@ -178,7 +178,7 @@ const JSModuleRecord = opaque {
         @panic(parked_jsc_glue_msg);
     }
     pub const addNamespaceExport = JSC_JSModuleRecord__addNamespaceExport;
-    export fn JSC_JSModuleRecord__addStarExport(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addStarExport(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = module_name;
@@ -186,35 +186,35 @@ const JSModuleRecord = opaque {
     }
     pub const addStarExport = JSC_JSModuleRecord__addStarExport;
 
-    export fn JSC_JSModuleRecord__addRequestedModuleNullAttributesPtr(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addRequestedModuleNullAttributesPtr(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = module_name;
         @panic(parked_jsc_glue_msg);
     }
     pub const addRequestedModuleNullAttributesPtr = JSC_JSModuleRecord__addRequestedModuleNullAttributesPtr;
-    export fn JSC_JSModuleRecord__addRequestedModuleJavaScript(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addRequestedModuleJavaScript(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = module_name;
         @panic(parked_jsc_glue_msg);
     }
     pub const addRequestedModuleJavaScript = JSC_JSModuleRecord__addRequestedModuleJavaScript;
-    export fn JSC_JSModuleRecord__addRequestedModuleWebAssembly(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addRequestedModuleWebAssembly(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = module_name;
         @panic(parked_jsc_glue_msg);
     }
     pub const addRequestedModuleWebAssembly = JSC_JSModuleRecord__addRequestedModuleWebAssembly;
-    export fn JSC_JSModuleRecord__addRequestedModuleJSON(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addRequestedModuleJSON(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = module_name;
         @panic(parked_jsc_glue_msg);
     }
     pub const addRequestedModuleJSON = JSC_JSModuleRecord__addRequestedModuleJSON;
-    export fn JSC_JSModuleRecord__addRequestedModuleHostDefined(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID, host_defined_import_type: StringID) void {
+    pub fn JSC_JSModuleRecord__addRequestedModuleHostDefined(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, module_name: StringID, host_defined_import_type: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = module_name;
@@ -223,7 +223,7 @@ const JSModuleRecord = opaque {
     }
     pub const addRequestedModuleHostDefined = JSC_JSModuleRecord__addRequestedModuleHostDefined;
 
-    export fn JSC_JSModuleRecord__addImportEntrySingle(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, import_name: StringID, local_name: StringID, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addImportEntrySingle(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, import_name: StringID, local_name: StringID, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = import_name;
@@ -232,7 +232,7 @@ const JSModuleRecord = opaque {
         @panic(parked_jsc_glue_msg);
     }
     pub const addImportEntrySingle = JSC_JSModuleRecord__addImportEntrySingle;
-    export fn JSC_JSModuleRecord__addImportEntrySingleTypeScript(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, import_name: StringID, local_name: StringID, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addImportEntrySingleTypeScript(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, import_name: StringID, local_name: StringID, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = import_name;
@@ -241,7 +241,7 @@ const JSModuleRecord = opaque {
         @panic(parked_jsc_glue_msg);
     }
     pub const addImportEntrySingleTypeScript = JSC_JSModuleRecord__addImportEntrySingleTypeScript;
-    export fn JSC_JSModuleRecord__addImportEntryNamespace(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, import_name: StringID, local_name: StringID, module_name: StringID) void {
+    pub fn JSC_JSModuleRecord__addImportEntryNamespace(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, import_name: StringID, local_name: StringID, module_name: StringID) callconv(.c) void {
         _ = module_record;
         _ = identifier_array;
         _ = import_name;
@@ -251,6 +251,26 @@ const JSModuleRecord = opaque {
     }
     pub const addImportEntryNamespace = JSC_JSModuleRecord__addImportEntryNamespace;
 };
+
+comptime {
+    @export(&VariableEnvironment.JSC__VariableEnvironment__add, .{ .name = "JSC__VariableEnvironment__add", .linkage = .weak });
+    @export(&IdentifierArray.JSC__IdentifierArray__create, .{ .name = "JSC__IdentifierArray__create", .linkage = .weak });
+    @export(&IdentifierArray.JSC__IdentifierArray__destroy, .{ .name = "JSC__IdentifierArray__destroy", .linkage = .weak });
+    @export(&IdentifierArray.JSC__IdentifierArray__setFromUtf8, .{ .name = "JSC__IdentifierArray__setFromUtf8", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__create, .{ .name = "JSC_JSModuleRecord__create", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addIndirectExport, .{ .name = "JSC_JSModuleRecord__addIndirectExport", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addLocalExport, .{ .name = "JSC_JSModuleRecord__addLocalExport", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addNamespaceExport, .{ .name = "JSC_JSModuleRecord__addNamespaceExport", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addStarExport, .{ .name = "JSC_JSModuleRecord__addStarExport", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addRequestedModuleNullAttributesPtr, .{ .name = "JSC_JSModuleRecord__addRequestedModuleNullAttributesPtr", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addRequestedModuleJavaScript, .{ .name = "JSC_JSModuleRecord__addRequestedModuleJavaScript", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addRequestedModuleWebAssembly, .{ .name = "JSC_JSModuleRecord__addRequestedModuleWebAssembly", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addRequestedModuleJSON, .{ .name = "JSC_JSModuleRecord__addRequestedModuleJSON", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addRequestedModuleHostDefined, .{ .name = "JSC_JSModuleRecord__addRequestedModuleHostDefined", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addImportEntrySingle, .{ .name = "JSC_JSModuleRecord__addImportEntrySingle", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addImportEntrySingleTypeScript, .{ .name = "JSC_JSModuleRecord__addImportEntrySingleTypeScript", .linkage = .weak });
+    @export(&JSModuleRecord.JSC_JSModuleRecord__addImportEntryNamespace, .{ .name = "JSC_JSModuleRecord__addImportEntryNamespace", .linkage = .weak });
+}
 
 const bun = @import("home");
 const DiffFormatter = @import("../runtime/test_runner/diff_format.zig").DiffFormatter;

@@ -24,6 +24,12 @@ pub const ConfigVersion = enum {
             },
         };
     }
+
+    pub fn fromExpr(expr: anytype) ?ConfigVersion {
+        const value = expr.asNumber() orelse return null;
+        if (!@import("std").math.isFinite(value) or value < 0) return null;
+        return fromInt(@intFromFloat(value));
+    }
 };
 
 test "ConfigVersion.fromInt maps known integers" {

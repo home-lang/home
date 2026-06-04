@@ -1739,8 +1739,8 @@ pub fn DMP(comptime Unit: type) type {
             try tmp_array_list.append(allocator, "beta\n");
 
             var result = try diffLinesToChars(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
-            try testing.expectEqualStrings("\u{0001}\u{0002}\u{0001}", result.chars_1); // Shared lines #1
-            try testing.expectEqualStrings("\u{0002}\u{0001}\u{0002}", result.chars_2); // Shared lines #2
+            try testing.expectEqualSlices(usize, &.{ 1, 2, 1 }, result.chars_1); // Shared lines #1
+            try testing.expectEqualSlices(usize, &.{ 2, 1, 2 }, result.chars_2); // Shared lines #2
             try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
 
             tmp_array_list.clearRetainingCapacity();
@@ -1751,8 +1751,8 @@ pub fn DMP(comptime Unit: type) type {
             result.deinit(allocator);
 
             result = try diffLinesToChars(allocator, "", "alpha\r\nbeta\r\n\r\n\r\n");
-            try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
-            try testing.expectEqualStrings("\u{0001}\u{0002}\u{0003}\u{0003}", result.chars_2); // Empty string and blank lines #2
+            try testing.expectEqualSlices(usize, &.{}, result.chars_1); // Empty string and blank lines #1
+            try testing.expectEqualSlices(usize, &.{ 1, 2, 3, 3 }, result.chars_2); // Empty string and blank lines #2
             try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
 
             tmp_array_list.clearRetainingCapacity();
@@ -1762,8 +1762,8 @@ pub fn DMP(comptime Unit: type) type {
             result.deinit(allocator);
 
             result = try diffLinesToChars(allocator, "a", "b");
-            try testing.expectEqualStrings("\u{0001}", result.chars_1); // No linebreaks #1.
-            try testing.expectEqualStrings("\u{0002}", result.chars_2); // No linebreaks #2.
+            try testing.expectEqualSlices(usize, &.{1}, result.chars_1); // No linebreaks #1.
+            try testing.expectEqualSlices(usize, &.{2}, result.chars_2); // No linebreaks #2.
             try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
             result.deinit(allocator);
 
@@ -1797,7 +1797,7 @@ pub fn DMP(comptime Unit: type) type {
             defer result.deinit(allocator);
             // TODO: This isn't equal, should it be?
             // try testing.expectEqualSlices(Unit, char_list.items, result.chars_1);
-            try testing.expectEqualStrings("", result.chars_2);
+            try testing.expectEqualSlices(usize, &.{}, result.chars_2);
             // TODO this is wrong because of the max_value I think?
             // try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items);
         }
@@ -2535,8 +2535,18 @@ pub fn DMP(comptime Unit: type) type {
 
             // Increase the text lengths by 1024 times to ensure a timeout.
             {
-                const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n"**1024;
-                const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n"**1024;
+                const a_seed = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n";
+                const b_seed = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n";
+                var a_buf: std.ArrayListUnmanaged(Unit) = .empty;
+                defer a_buf.deinit(allocator);
+                var b_buf: std.ArrayListUnmanaged(Unit) = .empty;
+                defer b_buf.deinit(allocator);
+                for (0..1024) |_| {
+                    try a_buf.appendSlice(allocator, a_seed);
+                    try b_buf.appendSlice(allocator, b_seed);
+                }
+                const a = a_buf.items;
+                const b = b_buf.items;
 
                 const with_timout: DiffMatchPatch = .{
                     .config = .{ .diff_timeout = 100 }, // 100ms

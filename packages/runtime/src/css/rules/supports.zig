@@ -21,7 +21,8 @@ pub const css = @import("../css_parser_stub.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
-const Location = css.css_rules.Location;
+const Location = @import("./rules.zig").Location;
+const RealCssRuleList = @import("./rules.zig").CssRuleList;
 
 const ArrayList = std.ArrayListUnmanaged;
 
@@ -69,6 +70,34 @@ pub const SupportsCondition = union(enum) {
     pub fn deepClone(this: *const SupportsCondition, allocator: std.mem.Allocator) SupportsCondition {
         return css.implementDeepClone(SupportsCondition, this, allocator);
     }
+
+    pub fn deinit(_: *const SupportsCondition, _: std.mem.Allocator) void {}
+
+    pub fn parse(_: *@import("../css_parser.zig").Parser) @import("../css_parser.zig").Result(SupportsCondition) {
+        return .{ .result = .{ .unknown = "" } };
+    }
+
+    pub fn parseDeclaration(_: *@import("../css_parser.zig").Parser) @import("../css_parser.zig").Result(SupportsCondition) {
+        return .{ .result = .{ .unknown = "" } };
+    }
+
+    pub fn cloneWithImportRecords(this: *const SupportsCondition, allocator: std.mem.Allocator, _: anytype) SupportsCondition {
+        return this.deepClone(allocator);
+    }
+
+    pub fn toCss(this: *const SupportsCondition, dest: anytype) !void {
+        switch (this.*) {
+            .unknown, .selector => |text| try dest.writeStr(text),
+            .declaration => |decl| try dest.writeStr(decl.value),
+            .not => |condition| try condition.toCss(dest),
+            .@"and", .@"or" => |list| {
+                for (list.items, 0..) |*condition, i| {
+                    if (i > 0) try dest.writeStr(" and ");
+                    try condition.toCss(dest);
+                }
+            },
+        }
+    }
 };
 
 /// A [@supports](https://drafts.csswg.org/css-conditional-3/#at-supports) rule.
@@ -77,12 +106,20 @@ pub fn SupportsRule(comptime R: type) type {
         /// The supports condition.
         condition: SupportsCondition,
         /// The rules within the `@supports` rule.
-        rules: css.CssRuleList(R),
+        rules: RealCssRuleList(R),
         /// The location of the rule in the source file.
         loc: Location,
 
         pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
             return css.implementDeepClone(@This(), this, allocator);
+        }
+
+        pub fn toCss(_: *const @This(), _: anytype) PrintErr!void {
+            return;
+        }
+
+        pub fn minify(_: *@This(), _: anytype, _: bool) !bool {
+            return false;
         }
     };
 }
@@ -113,7 +150,7 @@ test "SupportsRule(void) keeps the three fields" {
     const r = T{
         .condition = .{ .selector = "*" },
         .rules = .{},
-        .loc = css.Location.dummy(),
+        .loc = Location.dummy(),
     };
     try std.testing.expect(r.condition == .selector);
     try std.testing.expectEqual(std.math.maxInt(u32), r.loc.source_index);

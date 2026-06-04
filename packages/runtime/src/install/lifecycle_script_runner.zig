@@ -301,8 +301,8 @@ pub const LifecycleScriptSubprocess = struct {
 
             // Reuse the memory
             if (stdout.items.len == 0 and stdout.capacity > 0 and this.stderr.buffer().capacity == 0) {
-                this.stderr.buffer().* = stdout.*;
-                stdout.* = std.array_list.Managed(u8).init(bun.default_allocator);
+                this.stderr.buffer().* = stdout;
+                stdout = std.array_list.Managed(u8).init(bun.default_allocator);
             }
 
             var stderr = this.stderr.finalBuffer();
@@ -531,7 +531,8 @@ pub const LifecycleScriptSubprocess = struct {
             const dirname = std.fs.path.dirname(this.scripts.cwd) orelse break :try_delete_dir;
             const basename = std.fs.path.basename(this.scripts.cwd);
             const dir = bun.openDirAbsolute(dirname) catch break :try_delete_dir;
-            dir.deleteTree(basename) catch break :try_delete_dir;
+            const io = std.Io.Threaded.global_single_threaded.io();
+            dir.deleteTree(io, basename) catch break :try_delete_dir;
         }
 
         this.deinit();

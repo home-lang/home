@@ -29,6 +29,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const home_rt = @import("home");
+const Terminal = @This();
 
 const jsc = home_rt.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
@@ -94,14 +95,36 @@ pub const OpenPtyFn = *const fn (
 ) callconv(.c) c_int;
 
 pub const CreatePtyError = error{ OpenPtyFailed, DupFailed, NotSupported };
+pub const CreateError = CreatePtyError || error{ WriterStartFailed, ReaderStartFailed };
+
+pub const CreateResult = struct {
+    terminal: *Terminal,
+    js_value: JSValue = .zero,
+};
 
 /// Maximum length for terminal name (e.g., "xterm-256color"). Longest
 /// known terminfo names are ~23 chars; 128 allows for custom terminals.
 pub const max_term_name_len = 128;
 
+pub const Options = struct {
+    pub const max_term_name_len = Terminal.max_term_name_len;
+
+    cols: u16 = 80,
+    rows: u16 = 24,
+
+    pub fn parseFromJS(_: *JSGlobalObject, _: JSValue) JSError!@This() {
+        return .{};
+    }
+
+    pub fn deinit(_: *@This()) void {}
+};
+
 flags: Flags = .{},
 cols: u16 = 80,
 rows: u16 = 24,
+this_value: jsc.JSRef = jsc.JSRef.empty(),
+slave_fd: home_rt.FD = home_rt.invalid_fd,
+hpcon: if (home_rt.Environment.isWindows) ?home_rt.windows.HPCON else void = if (home_rt.Environment.isWindows) null else {},
 
 /// COORD.X/Y are i16 on Windows; clamp the u16 cols/rows passed in from
 /// JS to the COORD range. Pure helper — no platform check needed.
@@ -201,6 +224,44 @@ pub fn asyncDispose(this: *@This(), _: *JSGlobalObject, _: *CallFrame) JSError!J
     this.flags.finalized = true;
     this.flags.closed = true;
     return .js_undefined;
+}
+
+pub fn createFromSpawn(_: *JSGlobalObject, _: *Options) CreateError!CreateResult {
+    return error.NotSupported;
+}
+
+pub fn getSlaveFd(this: *@This()) home_rt.FD {
+    return this.slave_fd;
+}
+
+pub fn closeSlaveFd(this: *@This()) void {
+    if (this.slave_fd != home_rt.invalid_fd) {
+        this.slave_fd.close();
+        this.slave_fd = home_rt.invalid_fd;
+    }
+}
+
+pub fn closeInternal(this: *@This()) void {
+    this.flags.closed = true;
+    this.closeSlaveFd();
+    if (comptime home_rt.Environment.isWindows) {
+        this.closePseudoconsole();
+    }
+}
+
+pub fn getPseudoconsole(this: *@This()) if (home_rt.Environment.isWindows) ?home_rt.windows.HPCON else void {
+    if (comptime home_rt.Environment.isWindows) {
+        return this.hpcon;
+    }
+}
+
+pub fn closePseudoconsole(this: *@This()) void {
+    if (comptime home_rt.Environment.isWindows) {
+        if (this.hpcon) |hpcon| {
+            home_rt.windows.ClosePseudoConsole(hpcon);
+            this.hpcon = null;
+        }
+    }
 }
 
 // ---- Parked surfaces -------------------------------------------------

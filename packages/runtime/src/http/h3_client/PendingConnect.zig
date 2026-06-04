@@ -209,9 +209,9 @@ test "PendingConnect linked-list push order is LIFO via onDNSResolvedThreadsafe"
 
     var session_a: ClientSession = undefined;
     var session_b: ClientSession = undefined;
-    var loop_storage: u8 align(@alignOf(uws.Loop)) = 0;
-    const fake_loop: *uws.Loop = @ptrCast(&loop_storage);
-    var fake_pc_storage: u8 = 0;
+    var loop_storage: uws.Loop = undefined;
+    const fake_loop: *uws.Loop = &loop_storage;
+    var fake_pc_storage: usize = 0;
     const fake_pc: *quic.PendingConnect = @ptrCast(&fake_pc_storage);
 
     var pc_a: PendingConnect = .{
@@ -236,9 +236,9 @@ test "PendingConnect linked-list push order is LIFO via onDNSResolvedThreadsafe"
 
 test "PendingConnect.loop returns the registered loop pointer" {
     var session: ClientSession = undefined;
-    var loop_storage: u8 align(@alignOf(uws.Loop)) = 0;
-    const fake_loop: *uws.Loop = @ptrCast(&loop_storage);
-    var fake_pc_storage: u8 = 0;
+    var loop_storage: uws.Loop = undefined;
+    const fake_loop: *uws.Loop = &loop_storage;
+    var fake_pc_storage: usize = 0;
     const fake_pc: *quic.PendingConnect = @ptrCast(&fake_pc_storage);
 
     var pc: PendingConnect = .{
@@ -257,6 +257,7 @@ test "ClientSession.detach removes the matching pending entry" {
         .port = 443,
         .reject_unauthorized = true,
     });
+    session.ref();
     session.ref();
 
     const stream_a = Stream.new(.{ .session = session, .client = null });

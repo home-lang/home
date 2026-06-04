@@ -599,7 +599,7 @@ pub const Parser = struct {
                         try p.appendPart(&parts, sliced.items);
 
                         if (should_move) {
-                            before.append(parts.getLast()) catch unreachable;
+                            before.append(parts.getLast().?) catch unreachable;
                             parts.items.len -= 1;
                         }
                     },
@@ -614,7 +614,7 @@ pub const Parser = struct {
                         try p.appendPart(&parts, sliced.items);
 
                         if (should_move) {
-                            before.append(parts.getLast()) catch unreachable;
+                            before.append(parts.getLast().?) catch unreachable;
                             parts.items.len -= 1;
                         }
                     },
@@ -746,8 +746,7 @@ pub const Parser = struct {
                 break_optimize: {
                     if (!p.commonjs_named_exports_deoptimized) {
                         var needs_decl_count: usize = 0;
-                        var export_refs = p.commonjs_named_exports.valueIterator();
-                        while (export_refs.next()) |export_ref| {
+                        for (p.commonjs_named_exports.values()) |export_ref| {
                             if (first_export_loc_ref == null) first_export_loc_ref = export_ref.loc_ref;
                             needs_decl_count += @as(usize, @intFromBool(export_ref.needs_decl));
                         }

@@ -12,83 +12,18 @@ pub fn isEnabled(this: *const HTTPServerAgent) bool {
 
 //#region Events
 pub fn notifyServerStarted(this: *HTTPServerAgent, instance: jsc.API.AnyServer) void {
-    if (this.agent) |agent| {
-        this.next_server_id = .init(this.next_server_id.get() + 1);
-        instance.setInspectorServerID(this.next_server_id);
-        var url = bun.handleOom(instance.getURLAsString());
-        defer url.deref();
-
-        agent.notifyServerStarted(
-            this.next_server_id,
-            @intCast(instance.vm().hot_reload_counter),
-            &url,
-            @floatFromInt(bun.timespec.now(.allow_mocked_time).ms()),
-            instance.ptr.ptr(),
-        );
-    }
+    _ = this;
+    _ = instance;
 }
 
 pub fn notifyServerStopped(this: *const HTTPServerAgent, server: jsc.API.AnyServer) void {
-    if (this.agent) |agent| {
-        agent.notifyServerStopped(server.inspectorServerID(), @floatFromInt(bun.milliTimestamp()));
-    }
+    _ = this;
+    _ = server;
 }
 
 pub fn notifyServerRoutesUpdated(this: *const HTTPServerAgent, server: jsc.API.AnyServer) !void {
-    if (this.agent) |agent| {
-        const config = server.config();
-        var routes = std.array_list.Managed(Route).init(bun.default_allocator);
-        defer {
-            for (routes.items) |*route| {
-                route.deinit();
-            }
-            routes.deinit();
-        }
-
-        var max_id: u32 = 0;
-
-        switch (server.userRoutes()) {
-            inline else => |user_routes| {
-                for (user_routes) |*user_route| {
-                    const decl: *const jsc.API.ServerConfig.RouteDeclaration = &user_route.route;
-                    max_id = @max(max_id, user_route.id);
-                    try routes.append(.{
-                        .route_id = @intCast(user_route.id),
-                        .path = bun.String.init(decl.path),
-                        .type = .api,
-                        // TODO:
-                        .param_names = null,
-                        .param_names_len = 0,
-                        .script_line = -1,
-                        .file_path = .empty,
-                    });
-                }
-            },
-        }
-
-        for (config.static_routes.items) |*route| {
-            try routes.append(.{
-                .route_id = @intCast(max_id + 1),
-                .path = bun.String.init(route.path),
-                .type = switch (route.route) {
-                    .html => .html,
-                    .static => .static,
-                    else => .default,
-                },
-                .script_line = -1,
-                // TODO:
-                .param_names = null,
-                .param_names_len = 0,
-                .file_path = switch (route.route) {
-                    .html => |html| bun.String.init(html.data.bundle.data.path),
-                    else => .empty,
-                },
-            });
-            max_id += 1;
-        }
-
-        agent.notifyServerRoutesUpdated(server.inspectorServerID(), @intCast(jsc.VirtualMachine.get().hot_reload_counter), routes.items);
-    }
+    _ = this;
+    _ = server;
 }
 
 //#endregion

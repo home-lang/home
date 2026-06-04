@@ -107,7 +107,7 @@ pub const Snapshots = struct {
 
         const estimated_length = "\nexports[`".len + name_with_counter.len + "`] = `".len + target_value.len + "`;\n".len;
         try this.file_buf.ensureUnusedCapacity(estimated_length + 10);
-        try this.file_buf.writer().print(
+        try this.file_buf.print(
             "\nexports[`{f}`] = `{f}`;\n",
             .{
                 strings.formatEscapes(name_with_counter, .{ .quote_char = '`' }),

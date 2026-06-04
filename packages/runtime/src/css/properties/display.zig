@@ -1,15 +1,8 @@
 // Copied from bun/src/css/properties/display.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `DefineEnumProperty` (stub) backs `Visibility` / `DisplayKeyword` /
-// `DisplayOutside`. `DisplayInside.flex/box` carry a `css.VendorPrefix`
-// (real). `Display.parse`/`toCss` use `DeriveParse`/`DeriveToCss`. The
-// non-pure-data parse bodies of `DisplayPair` and `DisplayInside` reach for
-// `bun.ComptimeStringMap` and `input.expectIdent` — both stub-deferred —
-// so they're dropped, leaving just the data shape. `eql`/`deepClone` keep
-// their stubbed forms. Upstream `bun` is dropped.
+// Minimal real parser/printer surface for the generated properties table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -20,6 +13,23 @@ pub const Display = union(enum) {
     keyword: DisplayKeyword,
     /// The inside and outside display values.
     pair: DisplayPair,
+
+    pub fn parse(input: *css.Parser) css.Result(Display) {
+        if (input.tryParse(DisplayKeyword.parse, .{}).asValue()) |keyword| {
+            return .{ .result = .{ .keyword = keyword } };
+        }
+        return switch (DisplayPair.parse(input)) {
+            .result => |pair| .{ .result = .{ .pair = pair } },
+            .err => |e| .{ .err = e },
+        };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        return switch (this.*) {
+            .keyword => |*keyword| keyword.toCss(dest),
+            .pair => |*pair| pair.toCss(dest),
+        };
+    }
 
     pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
         return css.implementDeepClone(@This(), this, allocator);
@@ -41,6 +51,8 @@ pub const Visibility = enum {
 
     const css_impl = css.DefineEnumProperty(@This());
     pub const eql = css_impl.eql;
+    pub const parse = css_impl.parse;
+    pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 };
 
@@ -63,6 +75,8 @@ pub const DisplayKeyword = enum {
 
     const css_impl = css.DefineEnumProperty(@This());
     pub const eql = css_impl.eql;
+    pub const parse = css_impl.parse;
+    pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 };
 
@@ -74,6 +88,52 @@ pub const DisplayPair = struct {
     inside: DisplayInside,
     /// Whether this is a list item.
     is_list_item: bool,
+
+    pub fn parse(input: *css.Parser) css.Result(DisplayPair) {
+        var outside: ?DisplayOutside = null;
+        var inside: ?DisplayInside = null;
+        var is_list_item = false;
+        var parsed_any = false;
+
+        while (true) {
+            if (!is_list_item and input.tryParse(css.Parser.expectIdentMatching, .{"list-item"}).isOk()) {
+                is_list_item = true;
+                parsed_any = true;
+                continue;
+            }
+            if (outside == null) {
+                if (input.tryParse(DisplayOutside.parse, .{}).asValue()) |value| {
+                    outside = value;
+                    parsed_any = true;
+                    continue;
+                }
+            }
+            if (inside == null) {
+                if (input.tryParse(DisplayInside.parse, .{}).asValue()) |value| {
+                    inside = value;
+                    parsed_any = true;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        if (!parsed_any) return .{ .err = input.newCustomError(css.ParserError.invalid_value) };
+        return .{ .result = .{
+            .outside = outside orelse .block,
+            .inside = inside orelse .flow,
+            .is_list_item = is_list_item,
+        } };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        try this.outside.toCss(dest);
+        try dest.writeChar(' ');
+        try this.inside.toCss(dest);
+        if (this.is_list_item) {
+            try dest.writeStr(" list-item");
+        }
+    }
 
     pub fn eql(lhs: *const @This(), rhs: *const @This()) bool {
         return css.implementEql(@This(), lhs, rhs);
@@ -88,6 +148,8 @@ pub const DisplayOutside = enum {
 
     const css_impl = css.DefineEnumProperty(@This());
     pub const eql = css_impl.eql;
+    pub const parse = css_impl.parse;
+    pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 };
 
@@ -103,6 +165,44 @@ pub const DisplayInside = union(enum) {
 
     pub fn eql(lhs: *const @This(), rhs: *const @This()) bool {
         return css.implementEql(@This(), lhs, rhs);
+    }
+
+    pub fn parse(input: *css.Parser) css.Result(DisplayInside) {
+        const location = input.currentSourceLocation();
+        const ident = switch (input.expectIdent()) {
+            .result => |value| value,
+            .err => |e| return .{ .err = e },
+        };
+
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "flow")) return .{ .result = .flow };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "flow-root")) return .{ .result = .flow_root };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "table")) return .{ .result = .table };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "flex")) return .{ .result = .{ .flex = css.VendorPrefix.NONE } };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "-webkit-flex")) return .{ .result = .{ .flex = css.VendorPrefix.WEBKIT } };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "box")) return .{ .result = .{ .box = css.VendorPrefix.NONE } };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "-webkit-box")) return .{ .result = .{ .box = css.VendorPrefix.WEBKIT } };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "grid")) return .{ .result = .grid };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "ruby")) return .{ .result = .ruby };
+
+        return .{ .err = location.newUnexpectedTokenError(.{ .ident = ident }) };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        switch (this.*) {
+            .flow => try dest.writeStr("flow"),
+            .flow_root => try dest.writeStr("flow-root"),
+            .table => try dest.writeStr("table"),
+            .flex => |*prefix| {
+                try prefix.toCss(dest);
+                try dest.writeStr("flex");
+            },
+            .box => |*prefix| {
+                try prefix.toCss(dest);
+                try dest.writeStr("box");
+            },
+            .grid => try dest.writeStr("grid"),
+            .ruby => try dest.writeStr("ruby"),
+        }
     }
 };
 
@@ -151,3 +251,4 @@ test "Display.pair variant" {
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const bun = @import("bun");

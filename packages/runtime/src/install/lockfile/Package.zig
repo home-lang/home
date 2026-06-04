@@ -2032,7 +2032,7 @@ pub fn Package(comptime SemverIntType: type) type {
                         .size = @sizeOf(field_info.type),
                         .size_index = i,
                         .Type = field_info.type,
-                        .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment,
+                        .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment orelse 1,
                     };
                 }
                 const SortContext = struct {

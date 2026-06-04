@@ -1,14 +1,8 @@
 // Copied from bun/src/css/properties/overflow.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `DefineEnumProperty` came in via the wave-7 stub; this batch extends it
-// with `eql`/`hash`/`deepClone` so the enum-only properties (`OverflowKeyword`,
-// `TextOverflow`) compile. `Overflow`'s `parse`/`toCss` bodies reach for
-// `OverflowKeyword.parse` + `dest.writeChar` — both stub-deferred. The
-// pure-data shape (`x: OverflowKeyword`, `y: OverflowKeyword`) is what
-// downstream leaves need.
+// Minimal real parser/printer surface for the generated properties table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -19,6 +13,23 @@ pub const Overflow = struct {
     x: OverflowKeyword,
     /// The overflow mode for the y direction.
     y: OverflowKeyword,
+
+    pub fn parse(input: *css.Parser) css.Result(Overflow) {
+        const x = switch (OverflowKeyword.parse(input)) {
+            .result => |value| value,
+            .err => |e| return .{ .err = e },
+        };
+        const y = input.tryParse(OverflowKeyword.parse, .{}).unwrapOr(x);
+        return .{ .result = .{ .x = x, .y = y } };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        try this.x.toCss(dest);
+        if (this.x != this.y) {
+            try dest.writeChar(' ');
+            try this.y.toCss(dest);
+        }
+    }
 
     pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
         return css.implementDeepClone(@This(), this, allocator);
@@ -45,6 +56,8 @@ pub const OverflowKeyword = enum {
 
     const css_impl = css.DefineEnumProperty(@This());
     pub const eql = css_impl.eql;
+    pub const parse = css_impl.parse;
+    pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 };
 
@@ -57,6 +70,8 @@ pub const TextOverflow = enum {
 
     const css_impl = css.DefineEnumProperty(@This());
     pub const eql = css_impl.eql;
+    pub const parse = css_impl.parse;
+    pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
 };
 
@@ -73,10 +88,12 @@ test "Overflow holds two OverflowKeyword fields" {
     try std.testing.expect(o.y == .scroll);
 }
 
-test "Overflow.eql returns false under stub" {
+test "Overflow.eql compares both axes" {
     const a = Overflow{ .x = .visible, .y = .visible };
     const b = Overflow{ .x = .visible, .y = .visible };
-    try std.testing.expect(!a.eql(&b));
+    const c = Overflow{ .x = .hidden, .y = .visible };
+    try std.testing.expect(a.eql(&b));
+    try std.testing.expect(!a.eql(&c));
 }
 
 test "TextOverflow has clip and ellipsis tags" {

@@ -46,9 +46,10 @@ fn alert(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSErr
     bun.Output.flush();
 
     // 7. Optionally, pause while waiting for the user to acknowledge the message.
-    var stdin = std.fs.File.stdin();
+    var stdin = std.Io.File.stdin();
     var stdin_buf: [1]u8 = undefined;
-    var stdin_reader = stdin.readerStreaming(&stdin_buf);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var stdin_reader = stdin.readerStreaming(io, &stdin_buf);
     const reader = &stdin_reader.interface;
     while (true) {
         const byte = reader.takeByte() catch break;
@@ -96,9 +97,10 @@ fn confirm(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSE
     bun.Output.flush();
 
     // 6. Pause until the user responds either positively or negatively.
-    var stdin = std.fs.File.stdin();
+    var stdin = std.Io.File.stdin();
     var stdin_buf: [1024]u8 = undefined;
-    var stdin_reader = stdin.readerStreaming(&stdin_buf);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var stdin_reader = stdin.readerStreaming(io, &stdin_buf);
     const reader = &stdin_reader.interface;
 
     const first_byte = reader.takeByte() catch {
@@ -167,7 +169,7 @@ pub const prompt = struct {
                 return error.StreamTooLong;
             }
 
-            const byte: u8 = try reader.readByte();
+            const byte: u8 = try reader.takeByte();
 
             if (byte == delimiter) {
                 return;
@@ -185,7 +187,7 @@ pub const prompt = struct {
         delimiter: u8,
     ) !void {
         while (true) {
-            const byte: u8 = try reader.readByte();
+            const byte: u8 = try reader.takeByte();
 
             if (byte == delimiter) {
                 return;
@@ -262,9 +264,13 @@ pub const prompt = struct {
         };
 
         // 7. Pause while waiting for the user's response.
-        const reader = bun.Output.buffered_stdin.reader();
+        var stdin = std.Io.File.stdin();
+        var stdin_buf: [4096]u8 = undefined;
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var stdin_reader = stdin.readerStreaming(io, &stdin_buf);
+        const reader = &stdin_reader.interface;
         var second_byte: ?u8 = null;
-        const first_byte = reader.readByte() catch {
+        const first_byte = reader.takeByte() catch {
             // 8. Let result be null if the user aborts, or otherwise the string
             //    that the user responded with.
             return .null;
@@ -275,7 +281,7 @@ pub const prompt = struct {
             //    that the user responded with.
             return default;
         } else if (first_byte == '\r') {
-            const second = reader.readByte() catch return .null;
+            const second = reader.takeByte() catch return .null;
             second_byte = second;
             if (second == '\n') return default;
         }

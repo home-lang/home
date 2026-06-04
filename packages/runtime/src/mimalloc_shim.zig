@@ -46,6 +46,10 @@ pub export fn mi_calloc(count: usize, size: usize) callconv(.c) ?*anyopaque {
     return std.c.calloc(count, size);
 }
 
+pub export fn mi_zalloc(size: usize) callconv(.c) ?*anyopaque {
+    return mi_calloc(1, size);
+}
+
 pub export fn mi_realloc(p: ?*anyopaque, newsize: usize) callconv(.c) ?*anyopaque {
     return std.c.realloc(p, newsize);
 }
@@ -57,6 +61,12 @@ pub export fn mi_free(p: ?*anyopaque) callconv(.c) void {
 pub export fn mi_malloc_aligned(size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     var ptr: ?*anyopaque = null;
     if (std.c.posix_memalign(&ptr, alignment, size) != 0) return null;
+    return ptr;
+}
+
+pub export fn mi_zalloc_aligned(size: usize, alignment: usize) callconv(.c) ?*anyopaque {
+    const ptr = mi_malloc_aligned(size, alignment) orelse return null;
+    @memset(@as([*]u8, @ptrCast(ptr))[0..size], 0);
     return ptr;
 }
 
@@ -139,6 +149,44 @@ pub export fn mi_thread_stats_print_out(out: ?mi_output_fun, arg: ?*anyopaque) c
     if (out) |cb| cb("mimalloc shim: libc allocator\n", arg);
 }
 
+fn emptyJson() ?*anyopaque {
+    const ptr = mi_malloc(3) orelse return null;
+    const bytes = @as([*]u8, @ptrCast(ptr))[0..3];
+    @memcpy(bytes, "{}\x00");
+    return ptr;
+}
+
+pub export fn mi_stats_get_json(out: ?*anyopaque) callconv(.c) ?*anyopaque {
+    _ = out;
+    return emptyJson();
+}
+
+pub export fn mi_heap_dump_json(heap: *Heap, out: ?*anyopaque) callconv(.c) ?*anyopaque {
+    _ = heap;
+    _ = out;
+    return emptyJson();
+}
+
+pub export fn mi_process_info(
+    elapsed_msecs: *usize,
+    user_msecs: *usize,
+    system_msecs: *usize,
+    current_rss: *usize,
+    peak_rss: *usize,
+    current_commit: *usize,
+    peak_commit: *usize,
+    page_faults: *usize,
+) callconv(.c) void {
+    elapsed_msecs.* = 0;
+    user_msecs.* = 0;
+    system_msecs.* = 0;
+    current_rss.* = 0;
+    peak_rss.* = 0;
+    current_commit.* = 0;
+    peak_commit.* = 0;
+    page_faults.* = 0;
+}
+
 pub const Option = enum(c_int) {
     show_errors,
     verbose,
@@ -202,9 +250,35 @@ pub export fn mi_check_owned(p: ?*const anyopaque) callconv(.c) bool {
     return p != null;
 }
 
+pub const mi_heap_area_t = extern struct {
+    blocks: ?*anyopaque,
+    reserved: usize,
+    committed: usize,
+    used: usize,
+    block_size: usize,
+    full_block_size: usize,
+    reserved1: ?*anyopaque,
+};
+
+pub const mi_block_visit_fun = *const fn (?*const Heap, [*c]const mi_heap_area_t, ?*anyopaque, usize, ?*anyopaque) callconv(.c) bool;
+
+pub export fn mi_heap_visit_blocks(
+    heap: *const Heap,
+    visit_all_blocks: bool,
+    visitor: ?mi_block_visit_fun,
+    arg: ?*anyopaque,
+) callconv(.c) bool {
+    _ = heap;
+    _ = visit_all_blocks;
+    _ = visitor;
+    _ = arg;
+    return true;
+}
+
 test "mimalloc shim libc fallback symbols compile" {
     _ = @typeName(@TypeOf(mi_malloc));
     _ = @typeName(@TypeOf(mi_calloc));
+    _ = @typeName(@TypeOf(mi_zalloc));
     _ = @typeName(@TypeOf(mi_realloc));
     _ = @typeName(@TypeOf(mi_free));
 }

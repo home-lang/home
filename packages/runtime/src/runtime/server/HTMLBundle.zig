@@ -119,6 +119,8 @@ pub const Route = struct {
         this.state = .{ .html = try StaticHTML.init(allocator, html_source) };
     }
 
+    pub fn onComplete(_: *Route, _: anytype) void {}
+
     pub fn markError(this: *Route, allocator: std.mem.Allocator, message: []const u8) !void {
         this.state.deinit(allocator);
         this.state = .{ .err = try allocator.dupe(u8, message) };

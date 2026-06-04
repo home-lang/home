@@ -1,14 +1,8 @@
 // Copied from bun/src/css/values/ratio.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `CSSNumber`/`CSSNumberFns` resolve via the stub. Body methods (parse,
-// parseRequired, toCss) reference stub members that trip `@compileError`
-// on call; Zig's lazy analysis keeps the file compiling as long as the
-// pure-data shape (`numerator`/`denominator`/`addF32`) is the only thing
-// exercised. `eql` mirrors the structural equality that upstream reaches
-// through `css.implementEql`.
+// Uses the real parser surface; this leaf's parse/toCss bodies are self-contained.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -48,11 +42,14 @@ pub const Ratio = struct {
         return .{ .result = Ratio{ .numerator = first, .denominator = second } };
     }
 
-    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
-        try CSSNumberFns.toCss(&this.numerator, dest);
+    pub fn toCss(this: *const @This(), dest: anytype) PrintErr!void {
+        var buf: [64]u8 = undefined;
+        const numerator = std.fmt.bufPrint(&buf, "{d}", .{this.numerator}) catch return dest.addFmtError();
+        try dest.writeStr(numerator);
         if (this.denominator != 1.0) {
             try dest.delim('/', true);
-            try CSSNumberFns.toCss(&this.denominator, dest);
+            const denominator = std.fmt.bufPrint(&buf, "{d}", .{this.denominator}) catch return dest.addFmtError();
+            try dest.writeStr(denominator);
         }
     }
 

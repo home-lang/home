@@ -660,10 +660,8 @@ pub fn SmallList(comptime T: type, comptime N: comptime_int) type {
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const css = @import("./css_parser_stub.zig");
-const Delimiters = struct {
-    comma: bool = false,
-};
+const css = @import("./css_parser.zig");
+const Delimiters = css.Delimiters;
 const Parser = css.Parser;
 const PrintErr = css.PrintErr;
 const Printer = css.Printer;
@@ -690,12 +688,15 @@ const generic = struct {
     }
 };
 
-fn voidWrap(comptime T: type, comptime func: anytype) @TypeOf(func) {
-    _ = T;
-    return func;
+fn voidWrap(comptime T: type, comptime func: *const fn (*Parser) Result(T)) *const fn (void, *Parser) Result(T) {
+    return struct {
+        fn parse(_: void, input: *Parser) Result(T) {
+            return func(input);
+        }
+    }.parse;
 }
 
-const TextShadow = struct {};
+const TextShadow = css.css_properties.text.TextShadow;
 
 const bun = struct {
     pub const assert = std.debug.assert;
@@ -744,6 +745,10 @@ const bun = struct {
                 if (this.len == 0) return null;
                 this.len -= 1;
                 return this.ptr[this.len];
+            }
+
+            pub fn slice(this: *const @This()) []T {
+                return this.ptr[0..this.len];
             }
 
             pub fn deinit(this: *@This(), allocator: Allocator) void {

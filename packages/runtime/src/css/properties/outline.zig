@@ -1,17 +1,11 @@
 // Copied from bun/src/css/properties/outline.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `GenericBorder` + `LineStyle` resolve via the stub's `css_properties.border`
-// surface. The stubbed `GenericBorder` returns a slim placeholder struct
-// (`{style}` + `default()`/`deepClone()`/`eql()`) — enough for `Outline` /
-// `OutlineStyle` to compile. `DeriveParse`/`DeriveToCss` `.parse`/`.toCss`
-// helpers trip `@compileError` if called (the real parser/printer hasn't
-// landed yet); `eql` returns `false` per the stub `implementEql` policy.
+// Minimal real parser/printer surface for the generated properties table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
-const GenericBorder = css.css_properties.border.GenericBorder;
-const LineStyle = css.css_properties.border.LineStyle;
+const GenericBorder = @import("./border.zig").GenericBorder;
+const LineStyle = @import("./border.zig").LineStyle;
 
 /// A value for the [outline](https://drafts.csswg.org/css-ui/#outline) shorthand property.
 pub const Outline = GenericBorder(OutlineStyle, 11);
@@ -56,7 +50,8 @@ test "Outline carries OutlineStyle via GenericBorder" {
 }
 
 test "Outline.deepClone is a shallow copy under the stub" {
-    const o = Outline{ .style = .{ .auto = {} } };
+    var o = Outline.default();
+    o.style = .{ .auto = {} };
     const cloned = o.deepClone(std.testing.allocator);
     try std.testing.expect(cloned.style == .auto);
 }

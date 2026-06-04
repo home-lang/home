@@ -59,8 +59,8 @@ pub const ProcessHandle = struct {
     } = null,
     options: bun.spawn.SpawnOptions,
 
-    start_time: ?std.time.Instant = null,
-    end_time: ?std.time.Instant = null,
+    start_time: ?i64 = null,
+    end_time: ?i64 = null,
 
     remaining_dependencies: usize = 0,
     /// Dependents within the same script group (pre->main->post chain).
@@ -80,7 +80,7 @@ pub const ProcessHandle = struct {
             null,
         };
 
-        this.start_time = std.time.Instant.now() catch null;
+        this.start_time = bun.milliTimestamp();
         var spawned: bun.spawn.process.SpawnProcessResult = brk: {
             var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
             defer arena.deinit();
@@ -130,7 +130,7 @@ pub const ProcessHandle = struct {
 
     pub fn onProcessExit(this: *This, proc: *bun.spawn.Process, status: bun.spawn.Status, _: *const bun.spawn.Rusage) void {
         this.process.?.status = status;
-        this.end_time = std.time.Instant.now() catch null;
+        this.end_time = bun.milliTimestamp();
         _ = proc;
         this.state.processExit(this) catch {};
     }
@@ -245,8 +245,8 @@ const State = struct {
                     try writer.print("Exited with code {d}\n", .{exited.code});
                 } else {
                     if (handle.start_time != null and handle.end_time != null) {
-                        const duration = handle.end_time.?.since(handle.start_time.?);
-                        const ms = @as(f64, @floatFromInt(duration)) / 1_000_000.0;
+                        const duration = handle.end_time.? - handle.start_time.?;
+                        const ms = @as(f64, @floatFromInt(duration));
                         if (ms > 1000.0) {
                             try writer.print("Done in {d:.2}s\n", .{ms / 1000.0});
                         } else {
@@ -326,7 +326,7 @@ const State = struct {
         for (this.handles) |*handle| {
             if (handle.process) |*proc| {
                 if (proc.status == .running) {
-                    _ = proc.ptr.kill(std.posix.SIG.INT);
+                    _ = proc.ptr.kill(@intFromEnum(std.posix.SIG.INT));
                 }
             }
         }

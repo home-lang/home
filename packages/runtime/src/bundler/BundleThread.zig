@@ -14,7 +14,7 @@ pub fn BundleThread(CompletionStruct: type) type {
         const Self = @This();
 
         waker: bun.Async.Waker,
-        ready_event: std.Thread.ResetEvent,
+        ready_event: ResetEvent,
         queue: bun.UnboundedQueue(CompletionStruct, .next),
         generation: bun.Generation = 0,
 
@@ -35,7 +35,7 @@ pub fn BundleThread(CompletionStruct: type) type {
         /// Lazily-initialized singleton. This is used for `Bun.build` since the
         /// bundle thread may not be needed.
         pub const singleton = struct {
-            var once = std.once(loadOnceImpl);
+            var once = bun.once(loadOnceImpl);
             var instance: ?*Self = null;
 
             // Blocks the calling thread until the bun build thread is created.
@@ -52,7 +52,7 @@ pub fn BundleThread(CompletionStruct: type) type {
             }
 
             pub fn get() *Self {
-                once.call();
+                once.call(.{});
                 return instance.?;
             }
 
@@ -193,3 +193,25 @@ const ThreadLocalArena = bun.allocators.MimallocArena;
 
 const bundler = bun.bundle_v2;
 const BundleV2 = bundler.BundleV2;
+
+const ResetEvent = struct {
+    mutex: bun.Mutex = .{},
+    condition: bun.threading.Condition = .{},
+    is_set: bool = false,
+
+    pub fn wait(event: *ResetEvent) void {
+        event.mutex.lock();
+        defer event.mutex.unlock();
+
+        while (!event.is_set) {
+            event.condition.wait(&event.mutex);
+        }
+    }
+
+    pub fn set(event: *ResetEvent) void {
+        event.mutex.lock();
+        event.is_set = true;
+        event.mutex.unlock();
+        event.condition.broadcast();
+    }
+};

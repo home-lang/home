@@ -21,6 +21,7 @@
 // re-attach in Phase 12.2.
 
 const std = @import("std");
+const home_rt = @import("home");
 const CommonAbortReason = @import("./CommonAbortReason.zig").CommonAbortReason;
 
 const bun = @import("bun");
@@ -38,8 +39,28 @@ pub const AbortSignal = opaque {
     /// comptime owner dispatch). Full port pending; minimal struct so
     /// @fieldParentPtr resolves.
     pub const Timeout = struct {
-        flags: u8 = 0,
+        event_loop_timer: jsc.API.Timer.EventLoopTimer = .initPaused(.AbortSignalTimeout),
+        flags: @import("../runtime/timer/TimerObjectInternals.zig").Flags = .{},
+
+        pub fn run(_: *Timeout, _: *jsc.VirtualMachine) void {}
+
+        pub fn create(_: *jsc.VirtualMachine, _: *AbortSignal, _: u64) callconv(.c) *Timeout {
+            return bun.new(Timeout, .{});
+        }
+
+        pub fn deinit(this: *Timeout) callconv(.c) void {
+            bun.default_allocator.destroy(this);
+        }
+
+        comptime {
+            @export(&Timeout.create, .{ .name = "AbortSignal__Timeout__create" });
+            @export(&Timeout.deinit, .{ .name = "AbortSignal__Timeout__deinit" });
+        }
     };
+
+    pub fn getTimeout(_: *AbortSignal) ?*Timeout {
+        return null;
+    }
 
     extern fn WebCore__AbortSignal__aborted(arg0: *AbortSignal) bool;
     extern fn WebCore__AbortSignal__abortReason(arg0: *AbortSignal) JSValue;
@@ -129,6 +150,13 @@ pub const AbortSignal = opaque {
             return switch (this) {
                 .common => |reason| reason.toJS(global),
                 .js => |value| value,
+            };
+        }
+
+        pub fn toBodyValueError(this: AbortReason, global: *JSGlobalObject) home_rt.runtime.webcore.Body.Value.ValueError {
+            return switch (this) {
+                .common => |reason| .{ .AbortReason = reason },
+                .js => |value| .{ .JSValue = home_rt.jsc.Strong.Optional.create(value, global) },
             };
         }
     };

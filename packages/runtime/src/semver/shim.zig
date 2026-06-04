@@ -1,5 +1,12 @@
 const std = @import("std");
 
+pub const fmt = struct {
+    pub fn formatJSONStringUTF8(text: []const u8, opts: anytype) @TypeOf(@import("../fmt.zig").formatJSONStringUTF8("", .{})) {
+        _ = opts;
+        return @import("../fmt.zig").formatJSONStringUTF8(text, .{});
+    }
+};
+
 pub const Environment = struct {
     pub const isDebug = @import("builtin").mode == .Debug;
     pub const allow_assert = isDebug;
@@ -8,12 +15,12 @@ pub const Environment = struct {
 pub const Output = struct {
     pub const enable_ansi_colors_stdout = false;
 
-    pub inline fn prettyFmt(comptime fmt: []const u8, comptime _: bool) []const u8 {
-        return fmt;
+    pub inline fn prettyFmt(comptime fmt_: []const u8, comptime _: bool) []const u8 {
+        return fmt_;
     }
 
-    pub fn prettyErrorln(comptime fmt: []const u8, args: anytype) void {
-        std.debug.print(fmt ++ "\n", args);
+    pub fn prettyErrorln(comptime fmt_: []const u8, args: anytype) void {
+        std.debug.print(fmt_ ++ "\n", args);
     }
 };
 
@@ -74,4 +81,3 @@ pub const strings = struct {
         return i;
     }
 };
-

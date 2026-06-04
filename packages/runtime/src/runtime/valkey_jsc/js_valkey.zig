@@ -51,7 +51,7 @@ pub const SubscriptionCtx = struct {
         channelName: JSValue,
     ) bun.JSError!void {
         const map = this.subscriptionCallbackMap();
-        _ = try map.remove(globalObject, channelName);
+        _ = map.remove(globalObject, channelName);
     }
 
     pub fn clearAllReceiveHandlers(this: *Self, globalObject: *jsc.JSGlobalObject) bun.JSError!void {
@@ -72,7 +72,7 @@ pub const SubscriptionCtx = struct {
     ) !?usize {
         const map = this.subscriptionCallbackMap();
 
-        const existing = try map.get(globalObject, channelName);
+        const existing = map.get(globalObject, channelName);
         if (existing.isUndefinedOrNull()) {
             // Nothing to remove.
             return null;
@@ -93,7 +93,7 @@ pub const SubscriptionCtx = struct {
         // briefly expressed a desire for this, and I promised her I would look into it, but at
         // this moment have no proposal.
         var array_it = try existing.arrayIterator(globalObject);
-        const updated_array = try jsc.JSArray.createEmpty(globalObject, 0);
+        const updated_array = jsc.JSArray.createEmpty(globalObject, 0);
         while (try array_it.next()) |iter| {
             if (iter == callback)
                 continue;
@@ -103,13 +103,13 @@ pub const SubscriptionCtx = struct {
 
         // Otherwise, we have ourselves an array of callbacks. We need to remove the element in the
         // array that matches the callback.
-        _ = try map.remove(globalObject, channelName);
+        _ = map.remove(globalObject, channelName);
 
         // Only populate the map if we have remaining callbacks for this channel.
         const new_length = try updated_array.getLength(globalObject);
 
         if (new_length != 0) {
-            try map.set(globalObject, channelName, updated_array);
+            map.set(globalObject, channelName, updated_array);
         }
 
         return new_length;

@@ -177,7 +177,10 @@ pub fn processNamesArray(
                         item.loc,
                         allocator,
                         "{s} reading package.json for workspace package \"{s}\" from \"{s}\"",
-                        .{ @errorName(err), input_path, bun.getcwd(allocator.alloc(u8, bun.MAX_PATH_BYTES) catch unreachable) catch unreachable },
+                        .{ @errorName(err), input_path, brk: {
+                            var cwd_buf: bun.PathBuffer = undefined;
+                            break :brk bun.getcwd(&cwd_buf) catch unreachable;
+                        } },
                     ) catch {};
                 },
             }
@@ -220,7 +223,7 @@ pub fn processNamesArray(
 
             const glob_pattern = if (user_pattern.len == 0) "package.json" else brk: {
                 const parts = [_][]const u8{ user_pattern, "package.json" };
-                break :brk bun.handleOom(arena.allocator().dupe(u8, bun.path.join(parts, .auto)));
+                break :brk bun.handleOom(arena.allocator().dupe(u8, bun.path.join(&parts, .auto)));
             };
 
             var walker: GlobWalker = .{};

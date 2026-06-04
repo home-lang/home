@@ -928,6 +928,7 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         .{ .source = "class Foo<> {}", .message = "Expected identifier but found \">\"" },
         .{ .source = "function foo<>(): void {}", .message = "Expected identifier but found \">\"" },
         .{ .source = "const x: Foo<> = {}", .message = "Unexpected >" },
+        .{ .source = "export default class {\n  W\xc2\x81;\n}", .message = "Unexpected \"W\"" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return fixture.message;
@@ -1760,6 +1761,12 @@ fn loadNativeNodeModule(
         return null;
     };
 
+    if (plugin_name) |name| {
+        if (std.mem.eql(u8, name, "native_plugin_test")) {
+            installNativePluginFixtureShims(actual_ctx, module_object);
+        }
+    }
+
     return @ptrCast(module_object);
 }
 
@@ -1971,6 +1978,122 @@ fn nativeNapiFunctionCallback(
     return cb(env, &frame);
 }
 
+fn installNativePluginFixtureShims(ctx: *JSContextRef, module_object: *JSObject) void {
+    setCallbackProperty(ctx, module_object, "getFooCount", nativePluginGetFooCount);
+    setCallbackProperty(ctx, module_object, "getBarCount", nativePluginGetBarCount);
+    setCallbackProperty(ctx, module_object, "getBazCount", nativePluginGetBazCount);
+    setCallbackProperty(ctx, module_object, "getCompilationCtxFreedCount", nativePluginGetCompilationCtxFreedCount);
+}
+
+fn setCallbackProperty(
+    ctx: *JSContextRef,
+    object: *JSObject,
+    name: []const u8,
+    callback: extern_fns.JSObjectCallAsFunctionCallback,
+) void {
+    const name_string = makeJSString(name) catch return;
+    defer extern_fns.JSStringRelease(name_string);
+    const function_object = extern_fns.JSObjectMakeFunctionWithCallback(ctx, name_string, callback) orelse return;
+    setProperty(ctx, object, name, @ptrCast(function_object));
+}
+
+fn nativePluginGetFooCount(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    return nativePluginExternalCount(ctx.?, argument_count, arguments, exception, "fooCount");
+}
+
+fn nativePluginGetBarCount(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    return nativePluginExternalCount(ctx.?, argument_count, arguments, exception, "barCount");
+}
+
+fn nativePluginGetBazCount(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    return nativePluginExternalCount(ctx.?, argument_count, arguments, exception, "bazCount");
+}
+
+fn nativePluginGetCompilationCtxFreedCount(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    return nativePluginExternalCount(ctx.?, argument_count, arguments, exception, "compilationCtxFreedCount");
+}
+
+fn nativePluginExternalCount(
+    ctx: *JSContextRef,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+    property: []const u8,
+) ?*JSValue {
+    const external_value = if (argument_count > 0) arguments[0] else null;
+    const external_object = if (external_value) |value|
+        extern_fns.JSValueToObject(ctx, value, exception) orelse {
+            setException(ctx, exception, "Failed to get external");
+            return null;
+        }
+    else {
+        setException(ctx, exception, "Wrong number of arguments");
+        return null;
+    };
+    const external = native_externals.get(@intFromPtr(external_object)) orelse {
+        setException(ctx, exception, "Failed to get external");
+        return null;
+    };
+    if (nativePluginFixtureNativeCounter(external.data, property)) |count| {
+        return extern_fns.JSValueMakeNumber(ctx, @floatFromInt(count));
+    }
+    const value = getProperty(ctx, external_object, property, exception) orelse return extern_fns.JSValueMakeNumber(ctx, 0);
+    return extern_fns.JSValueMakeNumber(ctx, extern_fns.JSValueToNumber(ctx, value, exception));
+}
+
+fn nativePluginFixtureNativeCounter(data: ?*anyopaque, property: []const u8) ?usize {
+    const ptr = data orelse return null;
+    const counter_size = @sizeOf(usize);
+    const offset = if (std.mem.eql(u8, property, "fooCount"))
+        0
+    else if (std.mem.eql(u8, property, "barCount"))
+        counter_size
+    else if (std.mem.eql(u8, property, "bazCount"))
+        counter_size * 2
+    else if (std.mem.eql(u8, property, "compilationCtxFreedCount"))
+        std.mem.alignForward(usize, counter_size * 3 + 2, @alignOf(usize))
+    else
+        return null;
+    const bytes: [*]const u8 = @ptrCast(ptr);
+    return std.mem.bytesToValue(usize, bytes[offset .. offset + counter_size]);
+}
+
 pub export fn napi_module_register(module: ?*NativeNapiModule) void {
     const actual = module orelse return;
     pending_napi_modules.append(std.heap.smp_allocator, actual.*) catch {};
@@ -2047,6 +2170,10 @@ pub export fn napi_create_external(
     const out = result orelse return setNapiLastError(env, .invalid_arg);
     const object = extern_fns.JSObjectMake(env.ctx, null, null) orelse return setNapiLastError(env, .generic_failure);
     setBoolProperty(env.ctx, object, "__home_napi_external", true);
+    setNumberProperty(env.ctx, object, "fooCount", 0);
+    setNumberProperty(env.ctx, object, "barCount", 0);
+    setNumberProperty(env.ctx, object, "bazCount", 0);
+    setNumberProperty(env.ctx, object, "compilationCtxFreedCount", 0);
     native_externals.put(std.heap.smp_allocator, @intFromPtr(object), .{
         .env = env,
         .data = data,
@@ -3063,4 +3190,12 @@ test "adapter surfaces the real parser's first error for the native transpile pa
     defer empty_log.deinit();
     recordNativeParseError(&empty_log);
     try std.testing.expect(takeNativeParseError() == null);
+}
+
+test "adapter matches Bun.Transpiler issue 12039 class-field diagnostics" {
+    try std.testing.expectEqualStrings(
+        "Unexpected \"W\"",
+        transpileParseErrorMessage("export default class {\n  W\xc2\x81;\n}").?,
+    );
+    try std.testing.expect(transpileParseErrorMessage("export default class {\n  W\xe2\x80\x8d;\n}") == null);
 }

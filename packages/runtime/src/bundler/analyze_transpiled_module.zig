@@ -134,7 +134,7 @@ pub const ModuleInfoDeserialized = struct {
     pub fn serialize(self: *const ModuleInfoDeserialized, writer: anytype) !void {
         try writer.writeInt(u32, @truncate(self.record_kinds.len), .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.record_kinds));
-        try writer.writeByteNTimes(0, (4 - (self.record_kinds.len % 4)) % 4); // alignment padding
+        try writeZeroes(writer, (4 - (self.record_kinds.len % 4)) % 4); // alignment padding
 
         try writer.writeInt(u32, @truncate(self.buffer.len), .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.buffer));
@@ -144,13 +144,20 @@ pub const ModuleInfoDeserialized = struct {
         try writer.writeAll(std.mem.sliceAsBytes(self.requested_modules_values));
 
         try writer.writeByte(@bitCast(self.flags));
-        try writer.writeByteNTimes(0, 3); // alignment padding
+        try writeZeroes(writer, 3); // alignment padding
 
         try writer.writeInt(u32, @truncate(self.strings_lens.len), .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.strings_lens));
         try writer.writeAll(self.strings_buf);
     }
 };
+
+fn writeZeroes(writer: anytype, count: usize) !void {
+    var remaining = count;
+    while (remaining > 0) : (remaining -= 1) {
+        try writer.writeByte(0);
+    }
+}
 
 const StringMapKey = enum(u32) {
     _,
@@ -254,10 +261,10 @@ pub const ModuleInfo = struct {
     fn init(allocator: std.mem.Allocator, is_typescript: bool) ModuleInfo {
         return .{
             .gpa = allocator,
-            .strings_map = .{},
-            .strings_buf = .{},
-            .strings_lens = .{},
-            .exported_names = .{},
+            .strings_map = .empty,
+            .strings_buf = .empty,
+            .strings_lens = .empty,
+            .exported_names = .empty,
             .requested_modules = .empty,
             .buffer = .empty,
             .record_kinds = .empty,

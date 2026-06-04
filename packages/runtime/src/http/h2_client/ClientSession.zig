@@ -295,7 +295,7 @@ fn removeStream(this: *ClientSession, stream: *Stream) void {
     if (this.expecting_continuation == stream.id) {
         this.orphan_header_block.deinit(bun.default_allocator);
         this.orphan_header_block = stream.header_block;
-        stream.header_block = .{};
+        stream.header_block = .empty;
     }
     _ = this.streams.swapRemove(stream.id);
     stream.deinit();

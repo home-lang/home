@@ -19,25 +19,12 @@
 
 const std = @import("std");
 
-// `bun.String` C ABI stub — re-attaches in Phase 12.2.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const empty: String = .{};
-
-    pub fn ref(_: *const String) void {}
-    pub fn deref(_: *const String) void {}
-    pub fn isEmpty(this: *const String) bool {
-        return this.tag == 0 and this.impl == null;
-    }
-};
+const String = @import("home").String;
 
 // JSC bridge stubs — re-attach in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = @import("home").jsc.JSValue;
-const VirtualMachine = opaque {};
+const VirtualMachine = home_rt.jsc.VirtualMachine;
 
 const home_rt = @import("home");
 const Exception = home_rt.jsc.Exception;
@@ -78,6 +65,8 @@ pub const ZigException = extern struct {
     pub fn collectSourceLines(this: *ZigException, value: JSValue, global: *JSGlobalObject) void {
         ZigException__collectSourceLines(value, global, this);
     }
+
+    pub fn addToErrorList(_: *const ZigException, _: anytype, _: anytype, _: anytype) !void {}
 
     pub fn deinit(this: *ZigException) void {
         this.syscall.deref();

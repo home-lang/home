@@ -441,13 +441,11 @@ const RouteLoader = struct {
 
                         for (this.config.extensions) |_extname| {
                             if (strings.eql(extname[1..], _extname)) {
-                                // length is extended by one
-                                // entry.dir is a string with a trailing slash
-                                if (comptime Environment.isDebug) {
-                                    bun.assert(bun.path.isSepAny(entry.dir[base_dir.len - 1]));
-                                }
-
-                                const public_dir = entry.dir.ptr[base_dir.len - 1 .. entry.dir.len];
+                                const relative_public_dir = FileSystem.instance.relative(base_dir, entry.dir);
+                                const public_dir = if (strings.hasPrefixComptime(relative_public_dir, ".."))
+                                    entry.dir
+                                else
+                                    relative_public_dir;
 
                                 if (Route.parse(
                                     entry.base(),
@@ -828,7 +826,7 @@ pub fn match(app: *Router, comptime Server: type, server: Server, comptime Reque
             }
         }
 
-        // ctx.matched_route = route;
+        ctx.matched_route = route;
         // RequestContextType.JavaScriptHandler.enqueue(ctx, server, &params_list) catch {
         //     server.javascript_enabled = false;
         // };
@@ -1585,6 +1583,7 @@ test "Github API Route Loader" {
     {
         ctx = MockRequestContextType{ .url = try URLPath.parse("/organizations") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
+        try std.testing.expect(ctx.matched_route != null);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
         try expectEqualStrings(route.name, "/organizations");
@@ -1593,6 +1592,7 @@ test "Github API Route Loader" {
     {
         ctx = MockRequestContextType{ .url = try URLPath.parse("/app/installations/") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
+        try std.testing.expect(ctx.matched_route != null);
         var route = ctx.matched_route.?;
         try std.testing.expect(!route.hasParams());
         try expectEqualStrings(route.name, "/app/installations");
@@ -1601,6 +1601,7 @@ test "Github API Route Loader" {
     {
         ctx = MockRequestContextType{ .url = try URLPath.parse("/app/installations/123") };
         try router.match(*MockServer, &server, MockRequestContextType, &ctx);
+        try std.testing.expect(ctx.matched_route != null);
         var route = ctx.matched_route.?;
         try expectEqualStrings(route.name, "/app/installations/[installation_id]");
         try expectEqualStrings(route.params.get(0).name, "installation_id");

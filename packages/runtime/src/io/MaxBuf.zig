@@ -15,21 +15,35 @@
 const MaxBuf = @This();
 
 // null after subprocess finalize
-owned_by_subprocess: ?*Subprocess,
+owned_by_subprocess: ?*anyopaque,
+owned_by_subprocess_slot: ?*?*MaxBuf,
+owned_by_subprocess_kind: Kind,
+on_max_buffer: ?*const fn (*anyopaque, Kind) void,
 // null after pipereader finalize
 owned_by_reader: bool,
 // if this goes negative, onMaxBuffer is called on the subprocess
 remaining_bytes: i64,
 // (once both are null, it is freed)
 
-pub fn createForSubprocess(owner: *Subprocess, ptr: *?*MaxBuf, initial: ?i64) void {
+pub fn createForSubprocess(owner: anytype, ptr: *?*MaxBuf, initial: ?i64) void {
     if (initial == null) {
         ptr.* = null;
         return;
     }
     const maxbuf = home_rt.handleOom(home_rt.default_allocator.create(MaxBuf));
+    const OwnerPtr = @TypeOf(owner);
+    const OwnerDispatch = struct {
+        fn onMaxBuffer(ctx: *anyopaque, kind: Kind) void {
+            const typed_owner: OwnerPtr = @ptrCast(@alignCast(ctx));
+            typed_owner.onMaxBuffer(kind);
+        }
+    };
+    const kind: Kind = if (ptr == &owner.stderr_maxbuf) .stderr else .stdout;
     maxbuf.* = .{
         .owned_by_subprocess = owner,
+        .owned_by_subprocess_slot = ptr,
+        .owned_by_subprocess_kind = kind,
+        .on_max_buffer = OwnerDispatch.onMaxBuffer,
         .owned_by_reader = false,
         .remaining_bytes = initial.?,
     };
@@ -45,8 +59,9 @@ fn destroy(this: *MaxBuf) void {
 pub fn removeFromSubprocess(ptr: *?*MaxBuf) void {
     if (ptr.* == null) return;
     const this = ptr.*.?;
-    home_rt.assert(this.owned_by_subprocess != null);
     this.owned_by_subprocess = null;
+    this.owned_by_subprocess_slot = null;
+    this.on_max_buffer = null;
     ptr.* = null;
     if (this.disowned()) {
         this.destroy();
@@ -78,15 +93,11 @@ pub fn onReadBytes(this: *MaxBuf, bytes: u64) void {
     this.remaining_bytes = std.math.sub(i64, this.remaining_bytes, std.math.cast(i64, bytes) orelse 0) catch -1;
     if (this.remaining_bytes < 0 and this.owned_by_subprocess != null) {
         const owned_by = this.owned_by_subprocess.?;
-        if (owned_by.stderr_maxbuf == this) {
-            MaxBuf.removeFromSubprocess(&owned_by.stderr_maxbuf);
-            owned_by.onMaxBuffer(.stderr);
-        } else if (owned_by.stdout_maxbuf == this) {
-            MaxBuf.removeFromSubprocess(&owned_by.stdout_maxbuf);
-            owned_by.onMaxBuffer(.stdout);
-        } else {
-            home_rt.assert(false);
-        }
+        const slot = this.owned_by_subprocess_slot.?;
+        const kind = this.owned_by_subprocess_kind;
+        const on_max_buffer = this.on_max_buffer.?;
+        MaxBuf.removeFromSubprocess(slot);
+        on_max_buffer(owned_by, kind);
     }
 }
 
@@ -138,7 +149,7 @@ test "MaxBuf: createForSubprocess with a budget allocates and assigns" {
     MaxBuf.createForSubprocess(&owner, &ptr, 4096);
     try testing.expect(ptr != null);
     try testing.expectEqual(@as(i64, 4096), ptr.?.remaining_bytes);
-    try testing.expect(ptr.?.owned_by_subprocess == &owner);
+    try testing.expect(ptr.?.owned_by_subprocess == @as(*anyopaque, @ptrCast(&owner)));
     try testing.expect(!ptr.?.owned_by_reader);
 
     // Drop both owners so the buffer is freed.
@@ -168,41 +179,33 @@ test "MaxBuf: addToPipereader transfers ownership, removeFromPipereader frees" {
 }
 
 test "MaxBuf: transferToPipereader hands the slot over" {
-    var prev: ?*MaxBuf = null;
     var next: ?*MaxBuf = null;
     var owner: Subprocess = .{ .stdout_maxbuf = null, .stderr_maxbuf = null };
-    MaxBuf.createForSubprocess(&owner, &prev, 64);
-    // Mirror the real call site: the subprocess slot points at the buffer.
-    owner.stdout_maxbuf = prev;
+    MaxBuf.createForSubprocess(&owner, &owner.stdout_maxbuf, 64);
 
-    MaxBuf.transferToPipereader(&prev, &next);
-    try testing.expect(prev == null);
+    MaxBuf.transferToPipereader(&owner.stdout_maxbuf, &next);
+    try testing.expect(owner.stdout_maxbuf == null);
     try testing.expect(next != null);
     try testing.expectEqual(@as(i64, 64), next.?.remaining_bytes);
 
-    // Clean up — drop the subprocess-side ownership (mirrors what would
-    // happen on subprocess finalize) and then free the orphan directly,
-    // since transferToPipereader does not flip owned_by_reader.
-    MaxBuf.removeFromSubprocess(&owner.stdout_maxbuf);
-    home_rt.default_allocator.destroy(next.?);
-    next = null;
+    MaxBuf.removeFromSubprocess(&next);
+    try testing.expect(next == null);
 }
 
 test "MaxBuf: onReadBytes decrements and clamps at -1" {
     var owner: Subprocess = .{ .stdout_maxbuf = null, .stderr_maxbuf = null };
-    var ptr: ?*MaxBuf = null;
-    MaxBuf.createForSubprocess(&owner, &ptr, 10);
-    owner.stdout_maxbuf = ptr;
+    MaxBuf.createForSubprocess(&owner, &owner.stdout_maxbuf, 10);
+    const ptr = owner.stdout_maxbuf.?;
 
     // 4 bytes consumed → 6 remaining.
-    ptr.?.onReadBytes(4);
-    try testing.expectEqual(@as(i64, 6), ptr.?.remaining_bytes);
+    ptr.onReadBytes(4);
+    try testing.expectEqual(@as(i64, 6), ptr.remaining_bytes);
 
     // A read that drains past the budget drives remaining_bytes negative
     // and triggers the onMaxBuffer hook; the buffer is removed from the
     // subprocess slot in the process. With no reader holding it, the
     // buffer is freed inside removeFromSubprocess.
-    ptr.?.onReadBytes(100);
+    ptr.onReadBytes(100);
     try testing.expect(owner.stdout_maxbuf == null);
 }
 

@@ -5,7 +5,7 @@
 // Renames applied (per packages/runtime/README.md naming convention):
 //   - `@import("bun")` -> `@import("home")`
 //   - removed the unused `Flags` re-export pulled from `bun.ast`.
-//   - Zig 0.17 compat: `std.mem.trimLeft` -> `std.mem.trimStart`.
+//   - Zig 0.17 compat: `std.mem.trimStart` -> `std.mem.trimStart`.
 //
 // `"use client"` / `"use server"` directive parser used by the server-
 // components boundary detection pass. Pure-data — only depends on

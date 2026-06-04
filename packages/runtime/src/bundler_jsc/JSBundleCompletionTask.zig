@@ -280,7 +280,7 @@ pub const JSBundleCompletionTask = struct {
         var root_dir = bun.FD.cwd().stdDir();
         defer {
             if (bun.FD.fromStdDir(root_dir) != bun.FD.cwd()) {
-                root_dir.close();
+                root_dir.close(std.Io.Threaded.global_single_threaded.io());
             }
         }
 
@@ -290,7 +290,7 @@ pub const JSBundleCompletionTask = struct {
 
         if (Environment.isPosix and !(dirname.len == 0 or strings.eqlComptime(dirname, "."))) {
             // On POSIX, makeOpenPath and change root_dir
-            root_dir = root_dir.makeOpenPath(dirname, .{}) catch |err| {
+            root_dir = root_dir.createDirPathOpen(std.Io.Threaded.global_single_threaded.io(), dirname, .{}) catch |err| {
                 return bun.StandaloneModuleGraph.CompileResult.failFmt("Failed to open output directory {s}: {s}", .{ dirname, @errorName(err) });
             };
         } else if (Environment.isWindows and !(dirname.len == 0 or strings.eqlComptime(dirname, "."))) {

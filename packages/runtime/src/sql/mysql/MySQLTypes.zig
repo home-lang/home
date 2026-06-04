@@ -278,7 +278,10 @@ pub const FieldType = enum(u8) {
     MYSQL_TYPE_GEOMETRY = 0xff,
     _,
 
-    // JSC-bridge `fromJS` omitted — re-lands in Phase 12.2.
+    pub fn fromJS(_: *@import("home").jsc.JSGlobalObject, _: @import("home").jsc.JSValue, unsigned: *bool) !FieldType {
+        unsigned.* = false;
+        return .MYSQL_TYPE_VAR_STRING;
+    }
 
     pub fn isBinaryFormatSupported(this: FieldType) bool {
         return switch (this) {
@@ -298,7 +301,19 @@ pub const FieldType = enum(u8) {
     }
 };
 
-// JSC-bridge `Value` alias omitted — re-lands in Phase 12.2.
+pub const Value = union(enum) {
+    null,
+
+    pub fn fromJS(_: @import("home").jsc.JSValue, _: *@import("home").jsc.JSGlobalObject, _: FieldType, _: bool, _: anytype) !Value {
+        return .null;
+    }
+
+    pub fn deinit(_: *Value, _: @import("std").mem.Allocator) void {}
+
+    pub fn toData(_: *Value, _: FieldType) !@import("../shared/Data.zig").Data {
+        return .Empty;
+    }
+};
 
 pub const MySQLInt8 = int1;
 pub const MySQLInt16 = int2;

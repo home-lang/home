@@ -34,10 +34,21 @@ pub const normalizeString = @import("paths/resolve_path.zig").normalizeString;
 pub threadlocal var join_buf: [4096]u8 = undefined;
 pub const PosixToWinNormalizer = @import("paths/resolve_path.zig").PosixToWinNormalizer;
 pub const relative = @import("paths/resolve_path.zig").relative;
+pub const relativeNormalized = @import("paths/resolve_path.zig").relativeNormalized;
+pub const relativeNormalizedBuf = @import("paths/resolve_path.zig").relativeNormalizedBuf;
 pub const relativePlatform = @import("paths/resolve_path.zig").relativePlatform;
 pub const relativePlatformBuf = @import("paths/resolve_path.zig").relativePlatformBuf;
 pub const relativeBufZ = @import("paths/resolve_path.zig").relativeBufZ;
+pub const pathToPosixBuf = @import("paths/resolve_path.zig").pathToPosixBuf;
+pub const platformToPosixInPlace = @import("paths/resolve_path.zig").platformToPosixInPlace;
 pub const z = @import("paths/resolve_path.zig").z;
+
+pub fn dangerouslyConvertPathToPosixInPlace(comptime T: type, path: []T) []T {
+    for (path) |*c| {
+        if (c.* == '\\') c.* = '/';
+    }
+    return path;
+}
 
 pub fn dirname(path: []const u8, style: anytype) []const u8 {
     _ = style;
@@ -53,6 +64,10 @@ pub fn join(parts: []const []const u8, sep: anytype) []const u8 {
     // process arena once Phase 12.3 lands the event loop.
     if (parts.len == 0) return "";
     return parts[0]; // placeholder for the simplest call site
+}
+
+pub fn relativeAlloc(allocator: std.mem.Allocator, from: []const u8, to: []const u8) ![]u8 {
+    return std.fs.path.relative(allocator, from, null, from, to);
 }
 
 test "basename matches std.fs.path.basename" {

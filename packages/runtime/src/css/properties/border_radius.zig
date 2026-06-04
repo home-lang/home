@@ -1,29 +1,22 @@
 // Copied from bun/src/css/properties/border_radius.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten:
-//   @import("../css_parser.zig")     → @import("../css_parser_stub.zig")
-//   @import("../values/size.zig")    → local relative import (ported leaf).
-//
-// Strategy-B port over the stub. `BorderRadius` is a pure-data struct
-// holding four `Size2D(LengthPercentage)` corner radii. `LengthPercentage`
-// resolves via the stub; `Size2D` resolves to the ported leaf
-// (`../values/size.zig`). `parse`/`toCss` reach for `Rect(LengthPercentage)`
-// (ported) but exercise `Rect.parse` / `Rect.deepClone` / `dest.delim` which
-// all trip `@compileError` under the stub — stripped here.
-//
-// `BorderRadiusHandler` references `Property`/`PropertyId`/`PropertyIdTag`/
-// `DeclarationList`/`PropertyHandlerContext`/`bun.bits`/`bun.handleOom`/
-// `bun.take` — all unported, so the entire handler + companion helpers
-// + the two `isBorderRadiusProperty` / `isLogicalBorderRadiusProperty`
-// classifier helpers are stripped.
+// Minimal real parser/printer surface for the generated properties table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 
 const LengthPercentage = css.css_values.length.LengthPercentage;
 const Size2D = @import("../values/size.zig").Size2D;
+
+pub const BorderRadiusHandler = struct {
+    pub fn handleProperty(_: *BorderRadiusHandler, _: anytype, _: anytype, _: anytype) bool {
+        return false;
+    }
+
+    pub fn finalize(_: *BorderRadiusHandler, _: anytype, _: anytype) void {}
+};
 
 /// A value for the [border-radius](https://www.w3.org/TR/css-backgrounds-3/#border-radius) property.
 pub const BorderRadius = struct {
@@ -49,6 +42,29 @@ pub const BorderRadius = struct {
         .bottom_right = true,
         .bottom_left = true,
     };
+
+    pub fn parse(input: *css.Parser) css.Result(BorderRadius) {
+        const rect = switch (css.css_values.rect.Rect(Size2D(LengthPercentage)).parse(input)) {
+            .result => |value| value,
+            .err => |e| return .{ .err = e },
+        };
+        return .{ .result = .{
+            .top_left = rect.top,
+            .top_right = rect.right,
+            .bottom_right = rect.bottom,
+            .bottom_left = rect.left,
+        } };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        const rect = css.css_values.rect.Rect(Size2D(LengthPercentage)){
+            .top = this.top_left,
+            .right = this.top_right,
+            .bottom = this.bottom_right,
+            .left = this.bottom_left,
+        };
+        return rect.toCss(dest);
+    }
 
     pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
         return css.implementDeepClone(@This(), this, allocator);

@@ -10,8 +10,7 @@ const std = @import("std");
 
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 pub const JSValue = @import("home").jsc.JSValue;
-// JSC bridge bun.String stubbed — re-attaches in Phase 12.2.
-const String = opaque {};
+const String = @import("home").String;
 
 const JSInternalPromise = @import("./JSInternalPromise.zig").JSInternalPromise;
 

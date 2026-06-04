@@ -1060,7 +1060,7 @@ pub const LinkerContext = struct {
             has_async_dependency: bool,
 
             pub fn init(alloc: std.mem.Allocator) InsideWrapperPrefix {
-                return .{ .stmts = .{}, .allocator = alloc, .sync_dependencies_end = 0, .has_async_dependency = false };
+                return .{ .stmts = .empty, .allocator = alloc, .sync_dependencies_end = 0, .has_async_dependency = false };
             }
 
             pub fn deinit(this: *InsideWrapperPrefix) void {
@@ -1148,9 +1148,9 @@ pub const LinkerContext = struct {
             return .{
                 .allocator = alloc,
                 .inside_wrapper_prefix = .init(alloc),
-                .outside_wrapper_prefix = .{},
-                .inside_wrapper_suffix = .{},
-                .all_stmts = .{},
+                .outside_wrapper_prefix = .empty,
+                .inside_wrapper_suffix = .empty,
+                .all_stmts = .empty,
             };
         }
 
@@ -1434,7 +1434,7 @@ pub const LinkerContext = struct {
         const all_sources: []Logger.Source = c.parse_graph.input_files.items(.source);
 
         // Collect all local css names
-        var sfb = std.heap.stackFallback(512, c.allocator());
+        var sfb = bun.stackFallback(512, c.allocator());
         const alloc = sfb.get();
         var local_css_names = std.AutoHashMap(bun.bundle_v2.Ref, void).init(alloc);
         defer local_css_names.deinit();

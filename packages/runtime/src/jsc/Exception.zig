@@ -11,19 +11,18 @@ const std = @import("std");
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 // JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
 const JSValue = @import("home").jsc.JSValue;
-// JSC bridge ZigStackTrace stubbed — re-attaches in Phase 12.2.
-const ZigStackTrace = opaque {};
+const ZigStackTrace = @import("./ZigStackTrace.zig").ZigStackTrace;
 
 /// Opaque representation of a JavaScript exception
 pub const Exception = opaque {
     extern fn JSC__Exception__getStackTrace(this: *Exception, global: *JSGlobalObject, stack: *ZigStackTrace) void;
-    extern fn JSC__Exception__asJSValue(this: *Exception) *JSValue;
+    extern fn JSC__Exception__asJSValue(this: *Exception) JSValue;
 
     pub fn getStackTrace(this: *Exception, global: *JSGlobalObject, stack: *ZigStackTrace) void {
         JSC__Exception__getStackTrace(this, global, stack);
     }
 
-    pub fn value(this: *Exception) *JSValue {
+    pub fn value(this: *Exception) JSValue {
         return JSC__Exception__asJSValue(this);
     }
 };

@@ -258,13 +258,12 @@ pub fn generateChunksInParallel(
             var chunk_naming: ?[]const u8 = null;
             var asset_naming: ?[]const u8 = null;
 
-            const writer = msg.writer();
-            try writer.print("Multiple files share the same output path\n", .{});
+            try msg.print("Multiple files share the same output path\n", .{});
 
             const kinds = c.graph.files.items(.entry_point_kind);
 
             for (duplicates_map.keys(), duplicates_map.values()) |key, dup| {
-                try writer.print("  {s}:\n", .{key});
+                try msg.print("  {s}:\n", .{key});
                 for (dup.sources.items) |chunk| {
                     if (chunk.entry_point.is_entry_point) {
                         if (kinds[chunk.entry_point.source_index] == .user_specified) {
@@ -278,7 +277,7 @@ pub fn generateChunksInParallel(
 
                     const source_index = chunk.entry_point.source_index;
                     const file: Logger.Source = c.parse_graph.input_files.items(.source)[source_index];
-                    try writer.print("    from input {s}\n", .{file.path.pretty});
+                    try msg.print("    from input {s}\n", .{file.path.pretty});
                 }
             }
 

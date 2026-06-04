@@ -14,16 +14,17 @@ pub const Params = extern struct {
 pub const RareData = struct {
     libdeflate_compressor: ?*libdeflate.Compressor = null,
     libdeflate_decompressor: ?*libdeflate.Decompressor = null,
-    stack_fallback: std.heap.StackFallbackAllocator(RareData.stack_buffer_size) = undefined,
+    stack_buffer: [RareData.stack_buffer_size]u8 = undefined,
+    stack_fallback: bun.BufferFallbackAllocator = undefined,
 
     pub const stack_buffer_size = 128 * 1024;
 
     pub fn arrayList(this: *RareData) std.array_list.Managed(u8) {
         var list = std.array_list.Managed(u8).init(this.allocator());
-        list.items = &this.stack_fallback.buffer;
+        list.items = &this.stack_buffer;
         list.items.len = 0;
-        list.capacity = this.stack_fallback.buffer.len;
-        this.stack_fallback.fixed_buffer_allocator.end_index = this.stack_fallback.buffer.len;
+        list.capacity = this.stack_buffer.len;
+        this.stack_fallback.fixed.end_index = this.stack_buffer.len;
         return list;
     }
 
@@ -38,11 +39,7 @@ pub const RareData = struct {
     }
 
     pub fn allocator(this: *RareData) std.mem.Allocator {
-        this.stack_fallback = .{
-            .buffer = undefined,
-            .fallback_allocator = bun.default_allocator,
-            .fixed_buffer_allocator = undefined,
-        };
+        this.stack_fallback = bun.BufferFallbackAllocator.init(&this.stack_buffer, bun.default_allocator);
         return this.stack_fallback.get();
     }
 

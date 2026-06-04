@@ -84,10 +84,7 @@ fn createExecArgv(globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
             }
 
             if (graph.compile_exec_argv.len > 0) {
-                var tokenizer = std.mem.tokenizeAny(u8, graph.compile_exec_argv, " \t\n\r");
-                while (tokenizer.next()) |token| {
-                    try args.append(bun.String.cloneUTF8(token));
-                }
+                for (graph.compile_exec_argv) |arg| try args.append(bun.String.cloneUTF8(arg));
             }
 
             const array = try jsc.JSValue.createEmptyArray(globalObject, args.items.len);
@@ -126,7 +123,7 @@ fn createExecArgv(globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
         const map = bun.ComptimeStringMap(void, comptime brk: {
             const auto_params = bun.cli.Arguments.auto_params;
             const KV = struct { []const u8, void };
-            var entries: [auto_params.len]KV = undefined;
+            var entries: [auto_params.len * 2]KV = undefined;
             var i = 0;
             for (auto_params) |param| {
                 if (param.takes_value != .none) {

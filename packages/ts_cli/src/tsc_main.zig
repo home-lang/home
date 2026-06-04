@@ -1392,7 +1392,7 @@ const ResolverRealFs = struct {
         defer threaded.deinit();
         const io = threaded.io();
         const cwd = std.Io.Dir.cwd();
-        return cwd.realpathAlloc(io, gpa, path);
+        return cwd.realPathFileAlloc(io, path, gpa);
     }
 };
 

@@ -37,12 +37,38 @@ fn StringEnv(comptime name: []const u8) type {
     };
 }
 
+pub const GITHUB_WORKSPACE = StringEnv("GITHUB_WORKSPACE");
+
+fn BoolEnv(comptime name: []const u8, comptime default: bool) type {
+    return struct {
+        pub fn get() bool {
+            const raw = rawGet(name) orelse return default;
+            if (raw.len == 0) return default;
+            if (std.mem.eql(u8, raw, "0")) return false;
+            if (std.mem.eql(u8, raw, "false")) return false;
+            return true;
+        }
+    };
+}
+
 pub const PATH = StringEnv("PATH");
+pub const BUN_OPTIONS = StringEnv("BUN_OPTIONS");
+pub const BUN_CONFIG_HTTP_IDLE_TIMEOUT = IntEnv("BUN_CONFIG_HTTP_IDLE_TIMEOUT", 0);
+pub const BUN_WATCHER_TRACE = StringEnv("BUN_WATCHER_TRACE");
 pub const BUN_TMPDIR = StringEnv("BUN_TMPDIR");
 pub const BUN_INSTALL_GLOBAL_DIR = StringEnv("BUN_INSTALL_GLOBAL_DIR");
 pub const BUN_INSTALL = StringEnv("BUN_INSTALL");
 pub const TMPDIR = StringEnv("TMPDIR");
 pub const TMP = StringEnv("TMP");
+
+fn IntEnv(comptime name: []const u8, comptime default: u64) type {
+    return struct {
+        pub fn get() u64 {
+            const raw = rawGet(name) orelse return default;
+            return std.fmt.parseInt(u64, raw, 10) catch default;
+        }
+    };
+}
 pub const TEMP = StringEnv("TEMP");
 pub const GITHUB_RUN_ID = StringEnv("GITHUB_RUN_ID");
 pub const GITHUB_SERVER_URL = StringEnv("GITHUB_SERVER_URL");
@@ -51,6 +77,8 @@ pub const GITHUB_SHA = StringEnv("GITHUB_SHA");
 pub const CI_JOB_URL = StringEnv("CI_JOB_URL");
 pub const CI_COMMIT_SHA = StringEnv("CI_COMMIT_SHA");
 pub const GIT_SHA = StringEnv("GIT_SHA");
+pub const BUN_SSG_DISABLE_STATIC_ROUTE_VISITOR = BoolEnv("BUN_SSG_DISABLE_STATIC_ROUTE_VISITOR", false);
+pub const BUN_TRACK_LAST_FN_NAME = BoolEnv("BUN_TRACK_LAST_FN_NAME", false);
 
 pub const BUN_INSTALL_STREAMING_MIN_SIZE = struct {
     pub fn get() usize {
@@ -136,6 +164,38 @@ pub const BUN_DEBUG_ENABLE_RESTORE_FROM_TRANSPILER_CACHE = struct {
         if (std.mem.eql(u8, raw, "0")) return false;
         if (std.mem.eql(u8, raw, "false")) return false;
         return true;
+    }
+};
+
+pub const BUN_DEBUG_TEST_TEXT_LOCKFILE = struct {
+    pub fn get() bool {
+        const raw = rawGet("BUN_DEBUG_TEST_TEXT_LOCKFILE") orelse return false;
+        if (raw.len == 0) return false;
+        if (std.mem.eql(u8, raw, "0")) return false;
+        if (std.mem.eql(u8, raw, "false")) return false;
+        return true;
+    }
+};
+
+pub const BUN_DEBUG_CSS_ORDER = struct {
+    pub fn get() bool {
+        const raw = rawGet("BUN_DEBUG_CSS_ORDER") orelse return false;
+        if (raw.len == 0) return false;
+        if (std.mem.eql(u8, raw, "0")) return false;
+        if (std.mem.eql(u8, raw, "false")) return false;
+        return true;
+    }
+};
+
+pub const BUN_INSPECT = struct {
+    pub fn get() []const u8 {
+        return rawGet("BUN_INSPECT") orelse "";
+    }
+};
+
+pub const BUN_INSPECT_CONNECT_TO = struct {
+    pub fn get() []const u8 {
+        return rawGet("BUN_INSPECT_CONNECT_TO") orelse "";
     }
 };
 

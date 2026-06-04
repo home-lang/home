@@ -8,6 +8,9 @@
 const std = @import("std");
 
 pub const LogFunction = fn (comptime fmt: []const u8, args: anytype) void;
+pub const Scoped = @import("bun_core/output.zig").Scoped;
+pub const synchronized_start = @import("bun_core/output.zig").synchronized_start;
+pub const synchronized_end = @import("bun_core/output.zig").synchronized_end;
 
 pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;
@@ -200,6 +203,10 @@ pub fn errorWriter() *std.Io.Writer {
     return &error_file_writer.?.interface;
 }
 
+pub fn errorWriterBuffered() *std.Io.Writer {
+    return errorWriter();
+}
+
 /// Minimal stub for `bun.Output.Visibility`. Upstream uses `.visible` /
 /// `.hidden` to gate the env-var-driven `BUN_DEBUG_<TAG>` scoped logs.
 pub const Visibility = enum { visible, hidden };
@@ -297,6 +304,7 @@ pub fn printStartEndStdout(start: i128, end: i128) void {
 pub const printStartEnd = printStartEndStdout;
 
 pub fn enableBuffering() void {}
+pub fn resetTerminalAll() void {}
 pub fn enableBufferingScope() BufferingScope {
     enableBuffering();
     return .{};
@@ -343,6 +351,7 @@ pub fn isVerbose() bool {
 /// (file / terminal / pipe). Home returns `.pipe` until the TTY probe lands.
 pub const OutputStreamDescriptor = enum { file, terminal, pipe };
 pub var stderr_descriptor_type: OutputStreamDescriptor = .pipe;
+pub var stdout_descriptor_type: OutputStreamDescriptor = .pipe;
 
 /// Narrowed `Output.DebugTimer` — measures elapsed time for `BUN_DEBUG`
 /// scoped logging. Faithful to Bun's `(comptime fmt)`-friendly formatter.
@@ -394,7 +403,6 @@ pub const Source = struct {
 pub fn isAIAgent() bool {
     return false;
 }
-
 
 test "prettyln formats without crashing" {
     prettyln("hello {s}", .{"world"});

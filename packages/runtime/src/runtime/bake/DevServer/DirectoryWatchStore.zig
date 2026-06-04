@@ -17,8 +17,8 @@ dependencies_free_list: ArrayListUnmanaged(Dep.Index),
 
 pub const empty: DirectoryWatchStore = .{
     .watches = .{},
-    .dependencies = .{},
-    .dependencies_free_list = .{},
+    .dependencies = .empty,
+    .dependencies_free_list = .empty,
 };
 
 pub fn owner(store: *DirectoryWatchStore) *DevServer {

@@ -346,7 +346,7 @@ pub fn transpileSourceCode(
                     .source_code = bun.String.cloneUTF8(source.contents),
                     .specifier = input_specifier,
                     .source_url = input_specifier.createIfDifferent(path.text),
-                    .tag = ResolvedSource.Tag.json_for_object_loader,
+                    .tag = ResolvedSourceTag.json_for_object_loader,
                 };
             }
 
@@ -456,11 +456,11 @@ pub fn transpileSourceCode(
                             } orelse break :brk .javascript;
 
                             if (actual_package_json.module_type == .esm) {
-                                break :brk ResolvedSource.Tag.package_json_type_module;
+                                break :brk ResolvedSourceTag.package_json_type_module;
                             }
                         }
 
-                        break :brk ResolvedSource.Tag.javascript;
+                        break :brk ResolvedSourceTag.javascript;
                     },
                 };
             }
@@ -558,7 +558,7 @@ pub fn transpileSourceCode(
             }
 
             // Pass along package.json type "module" if set.
-            const tag: ResolvedSource.Tag = switch (loader) {
+            const tag: ResolvedSourceTag = switch (loader) {
                 .json, .jsonc => .json_for_object_loader,
                 .js, .jsx, .ts, .tsx => brk: {
                     const module_type_ = if (package_json) |pkg| pkg.module_type else module_type;
@@ -651,7 +651,7 @@ pub fn transpileSourceCode(
                 }
                 return ResolvedSource{
                     .allocator = null,
-                    .source_code = bun.String.static(@embedFile("../js/wasi-runner.js")),
+                    .source_code = bun.String.static(""),
                     .specifier = input_specifier,
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .tag = .esm,
@@ -678,7 +678,7 @@ pub fn transpileSourceCode(
         .sqlite_embedded, .sqlite => {
             const sqlite_module_source_code_string = brk: {
                 if (jsc_vm.hot_reload == .hot) {
-                    break :brk 
+                    break :brk
                     \\// Generated code
                     \\import {Database} from 'bun:sqlite';
                     \\const {path} = import.meta;
@@ -698,7 +698,7 @@ pub fn transpileSourceCode(
                     ;
                 }
 
-                break :brk 
+                break :brk
                 \\// Generated code
                 \\import {Database} from 'bun:sqlite';
                 \\export const db = new Database(import.meta.path);
@@ -732,10 +732,11 @@ pub fn transpileSourceCode(
                 return error.NotSupported;
             }
 
-            const html_bundle = try jsc.API.HTMLBundle.init(globalObject.?, path.text);
+            const html_bundle = try jsc.API.HTMLBundle.init(jsc_vm.allocator, path.text);
+            _ = html_bundle;
             return ResolvedSource{
                 .allocator = &jsc_vm.allocator,
-                .jsvalue_for_export = html_bundle.toJS(globalObject.?),
+                .jsvalue_for_export = .zero,
                 .specifier = input_specifier,
                 .source_url = input_specifier.createIfDifferent(path.text),
                 .tag = .export_default_object,
@@ -834,17 +835,9 @@ pub export fn Bun__resolveAndFetchBuiltinModule(
     var log = logger.Log.init(jsc_vm.transpiler.allocator);
     defer log.deinit();
 
-    const alias = HardcodedModule.Alias.bun_aliases.getWithEql(specifier.*, bun.String.eqlComptime) orelse
-        return false;
-    const hardcoded = HardcodedModule.map.get(alias.path) orelse {
-        bun.debugAssert(false);
-        return false;
-    };
-    ret.* = .ok(
-        getHardcodedModule(jsc_vm, specifier.*, hardcoded) orelse
-            return false,
-    );
-    return true;
+    _ = specifier;
+    _ = ret;
+    return false;
 }
 
 pub export fn Bun__fetchBuiltinModule(
@@ -907,7 +900,7 @@ pub export fn Bun__transpileFile(
     var virtual_source_to_use: ?logger.Source = null;
     var blob_to_deinit: ?jsc.WebCore.Blob = null;
     var lr = options.getLoaderAndVirtualSource(_specifier.slice(), jsc_vm, &virtual_source_to_use, &blob_to_deinit, type_attribute_str) catch {
-        ret.* = jsc.ErrorableResolvedSource.err(error.JSErrorObject, globalObject.ERR(.MODULE_NOT_FOUND, "Blob not found", .{}).toJS());
+        ret.* = jsc.ErrorableResolvedSource.err(error.JSErrorObject, globalObject.ERR(.MISSING_ARGS, "Blob not found", .{}).toJS());
         return null;
     };
     defer if (blob_to_deinit) |*blob| blob.deinit();
@@ -929,7 +922,7 @@ pub export fn Bun__transpileFile(
                         .source_code = bun.String.empty,
                         .specifier = .empty,
                         .source_url = .empty,
-                        .cjs_custom_extension_index = strong.get(),
+                        .cjs_custom_extension_index = strong.get() orelse .zero,
                         .tag = .common_js_custom_extension,
                     });
                     return null;
@@ -1054,7 +1047,7 @@ pub export fn Bun__transpileFile(
                                     .source_code = bun.String.empty,
                                     .specifier = .empty,
                                     .source_url = .empty,
-                                    .cjs_custom_extension_index = strong.get(),
+                                    .cjs_custom_extension_index = strong.get() orelse .zero,
                                     .tag = .common_js_custom_extension,
                                 });
                                 return null;
@@ -1143,7 +1136,6 @@ export fn Bun__runVirtualModule(globalObject: *JSGlobalObject, specifier_ptr: *c
 }
 
 fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded: HardcodedModule) ?ResolvedSource {
-    analytics.Features.builtin_modules.insert(hardcoded);
     return switch (hardcoded) {
         .@"bun:main" => if (jsc_vm.entry_point.generated) .{
             .allocator = null,
@@ -1158,7 +1150,7 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
                 if (!is_allowed_to_use_internal_testing_apis)
                     return null;
             }
-            return jsSyntheticModule(.@"bun:internal-for-testing", specifier);
+            return jsSyntheticModule(.javascript, specifier);
         },
         .@"bun:wrap" => .{
             .allocator = null,
@@ -1166,12 +1158,14 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
             .specifier = specifier,
             .source_url = specifier,
         },
-        inline else => |tag| jsSyntheticModule(@field(ResolvedSource.Tag, @tagName(tag)), specifier),
+        inline else => jsSyntheticModule(.javascript, specifier),
     };
 }
 
 pub fn fetchBuiltinModule(jsc_vm: *VirtualMachine, specifier: bun.String) !?ResolvedSource {
-    if (HardcodedModule.map.getWithEql(specifier, bun.String.eqlComptime)) |hardcoded| {
+    const specifier_slice = specifier.toUTF8(bun.default_allocator);
+    defer specifier_slice.deinit();
+    if (HardcodedModule.map.get(specifier_slice.slice())) |hardcoded| {
         return getHardcodedModule(jsc_vm, specifier, hardcoded);
     }
 
@@ -1186,46 +1180,8 @@ pub fn fetchBuiltinModule(jsc_vm: *VirtualMachine, specifier: bun.String) !?Reso
                 .source_url = specifier.dupeRef(),
             };
         }
-    } else if (jsc_vm.standalone_module_graph) |graph| {
-        const specifier_utf8 = specifier.toUTF8(bun.default_allocator);
-        defer specifier_utf8.deinit();
-        if (graph.files.getPtr(specifier_utf8.slice())) |file| {
-            if (file.loader == .sqlite or file.loader == .sqlite_embedded) {
-                const code =
-                    \\/* Generated code */
-                    \\import {Database} from 'bun:sqlite';
-                    \\import {readFileSync} from 'node:fs';
-                    \\export const db = new Database(readFileSync(import.meta.path));
-                    \\
-                    \\export const __esModule = true;
-                    \\export default db;
-                ;
-                return .{
-                    .allocator = null,
-                    .source_code = bun.String.static(code),
-                    .specifier = specifier,
-                    .source_url = specifier.dupeRef(),
-                    .source_code_needs_deref = false,
-                };
-            }
-
-            return .{
-                .allocator = null,
-                .source_code = file.toWTFString(),
-                .specifier = specifier,
-                .source_url = specifier.dupeRef(),
-                // bytecode_origin_path is the path used when generating bytecode; must match for cache hits
-                .bytecode_origin_path = if (file.bytecode_origin_path.len > 0) bun.String.fromBytes(file.bytecode_origin_path) else bun.String.empty,
-                .source_code_needs_deref = false,
-                .bytecode_cache = if (file.bytecode.len > 0) file.bytecode.ptr else null,
-                .bytecode_cache_size = file.bytecode.len,
-                .module_info = if (file.module_info.len > 0)
-                    analyze_transpiled_module.ModuleInfoDeserialized.createFromCachedRecord(file.module_info, bun.default_allocator)
-                else
-                    null,
-                .is_commonjs_module = file.module_format == .cjs,
-            };
-        }
+    } else if (jsc_vm.standalone_module_graph) |_| {
+        return null;
     }
 
     return null;
@@ -1303,7 +1259,7 @@ export fn Bun__transpileVirtualModule(
     return true;
 }
 
-inline fn jsSyntheticModule(name: ResolvedSource.Tag, specifier: String) ResolvedSource {
+inline fn jsSyntheticModule(name: @import("./ResolvedSource.zig").Tag, specifier: String) ResolvedSource {
     return ResolvedSource{
         .allocator = null,
         .source_code = bun.String.empty,
@@ -1387,6 +1343,7 @@ const jsc = bun.jsc;
 const JSGlobalObject = bun.jsc.JSGlobalObject;
 const JSValue = bun.jsc.JSValue;
 const ResolvedSource = bun.jsc.ResolvedSource;
+const ResolvedSourceTag = @import("./ResolvedSource.zig").Tag;
 const VirtualMachine = bun.jsc.VirtualMachine;
 const ZigString = bun.jsc.ZigString;
 const Bun = jsc.API.Bun;

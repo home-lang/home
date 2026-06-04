@@ -43,9 +43,8 @@ pub const Stringifier = struct {
         const pkg_metas: []BinaryLockfile.Package.Meta = pkgs.items(.meta);
         const pkg_bins = pkgs.items(.bin);
 
-        var temp_buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer temp_buf.deinit(allocator);
-        const temp_writer = temp_buf.writer(allocator);
+        var temp_writer = std.Io.Writer.Allocating.init(allocator);
+        defer temp_writer.deinit();
 
         var found_trusted_dependencies: std.AutoHashMapUnmanaged(u64, String) = .{};
         defer found_trusted_dependencies.deinit(allocator);
@@ -211,20 +210,20 @@ pub const Stringifier = struct {
                     const dep = deps_buf[dep_id];
 
                     if (lockfile.patched_dependencies.count() > 0) {
-                        try temp_writer.print("{s}@", .{pkg_name.slice(buf)});
+                        try temp_writer.writer.print("{s}@", .{pkg_name.slice(buf)});
                         switch (res.tag) {
                             .workspace => {
                                 if (lockfile.workspace_versions.get(pkg_name_hash)) |workspace_version| {
-                                    try temp_writer.print("{f}", .{workspace_version.fmt(buf)});
+                                    try temp_writer.writer.print("{f}", .{workspace_version.fmt(buf)});
                                 }
                             },
                             else => {
-                                try temp_writer.print("{f}", .{res.fmt(buf, .posix)});
+                                try temp_writer.writer.print("{f}", .{res.fmt(buf, .posix)});
                             },
                         }
-                        defer temp_buf.clearRetainingCapacity();
+                        defer temp_writer.clearRetainingCapacity();
 
-                        const name_and_version = temp_buf.items;
+                        const name_and_version = temp_writer.written();
                         const name_and_version_hash = String.Builder.stringHash(name_and_version);
 
                         if (lockfile.patched_dependencies.get(name_and_version_hash)) |patch| {
@@ -982,21 +981,21 @@ pub const Stringifier = struct {
 
     fn writeIndent(writer: *std.Io.Writer, indent: *const u32) std.Io.Writer.Error!void {
         for (0..indent.*) |_| {
-            try writer.writeAll(" "**indent_scalar);
+            try writer.writeAll("  ");
         }
     }
 
     fn incIndent(writer: *std.Io.Writer, indent: *u32) std.Io.Writer.Error!void {
         indent.* += 1;
         for (0..indent.*) |_| {
-            try writer.writeAll(" "**indent_scalar);
+            try writer.writeAll("  ");
         }
     }
 
     fn decIndent(writer: *std.Io.Writer, indent: *u32) std.Io.Writer.Error!void {
         indent.* -= 1;
         for (0..indent.*) |_| {
-            try writer.writeAll(" "**indent_scalar);
+            try writer.writeAll("  ");
         }
     }
 };

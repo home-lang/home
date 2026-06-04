@@ -100,7 +100,7 @@ pub const PathBuf = struct {
 
     /// Returns a StackFallbackAllocator backed by the smallest tier that
     /// fits `min_len`, falling back to `fallback` when the buffer is exhausted.
-    pub fn get(self: *PathBuf, min_len: usize, fallback: std.mem.Allocator) bun.StackFallbackAllocator {
+    pub fn get(self: *PathBuf, min_len: usize, fallback: std.mem.Allocator) bun.BufferFallbackAllocator {
         const buf: []u8 = if (min_len <= 2 * S)
             (self.small orelse blk: {
                 self.small = bun.handleOom(bun.default_allocator.create(SmallBuf));
@@ -116,7 +116,7 @@ pub const PathBuf = struct {
                 self.large = bun.handleOom(bun.default_allocator.create(LargeBuf));
                 break :blk self.large.?;
             });
-        return bun.StackFallbackAllocator.init(buf, fallback);
+        return bun.BufferFallbackAllocator.init(buf, fallback);
     }
 
     pub fn deinit(self: *PathBuf) void {
@@ -257,8 +257,9 @@ pub const AWSSignatureCache = struct {
     lock: bun.Mutex = .{},
 
     pub fn clean(this: *@This()) void {
-        for (this.cache.keys()) |cached_key| {
-            bun.default_allocator.free(cached_key);
+        var iter = this.cache.keyIterator();
+        while (iter.next()) |cached_key| {
+            bun.default_allocator.free(cached_key.*);
         }
         this.cache.clearRetainingCapacity();
     }
@@ -628,7 +629,7 @@ pub fn stdin(rare: *RareData) *Blob.Store {
             .data = .{
                 .file = .{
                     .pathlike = .{ .fd = fd },
-                    .is_atty = if (fd.unwrapValid()) |valid| std.posix.isatty(valid.native()) else false,
+                    .is_atty = if (fd.unwrapValid()) |valid| std.c.isatty(valid.native()) != 0 else false,
                     .mode = mode,
                 },
             },
@@ -740,7 +741,7 @@ pub fn sslCtxCache(rare: *RareData) *api.SSLContextCache {
 /// the SSL_CTX is the only thing worth caching.
 pub fn defaultClientSslCtx(rare: *RareData) *uws.SslCtx {
     if (rare.default_client_ssl_ctx == null) {
-        var err: uws.create_bun_socket_error_t = .none;
+        var err: api.SSLContextCache.uws.create_bun_socket_error_t = .none;
         // Mode-neutral CTX (VERIFY_NONE). `us_internal_ssl_attach` overrides
         // each client SSL to VERIFY_PEER + the shared bundled-root store, so
         // `new WebSocket("wss://…")` (which shares this CTX and defaults to

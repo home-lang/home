@@ -199,9 +199,9 @@ pub const Options = struct {
             data: []const u8,
         },
         file: struct {
-            file: std.fs.File,
+            file: std.Io.File,
             size: usize,
-            dir: std.fs.Dir,
+            dir: std.Io.Dir,
         },
         saved: usize,
     },

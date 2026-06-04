@@ -17,11 +17,11 @@ pub const TransformList = struct {
 
     pub fn parse(input: *css.Parser) Result(@This()) {
         if (input.tryParse(css.Parser.expectIdentMatching, .{"none"}).isOk()) {
-            return .{ .result = .{ .v = .{} } };
+            return .{ .result = .{ .v = .empty } };
         }
 
         input.skipWhitespace();
-        var results = ArrayList(Transform){};
+        var results = ArrayList(Transform).empty;
         switch (Transform.parse(input)) {
             .result => |first| bun.handleOom(results.append(input.allocator(), first)),
             .err => |e| return .{ .err = e },

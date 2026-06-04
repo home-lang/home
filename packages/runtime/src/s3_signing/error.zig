@@ -41,7 +41,14 @@ pub fn getSignErrorCodeAndMessage(err: anyerror) ErrorCodeAndMessage {
 pub const S3Error = struct {
     code: []const u8,
     message: []const u8,
-    // toJS / toJSWithAsyncStack stripped — pending webcore/s3/error_jsc port.
+
+    pub fn toJS(_: S3Error, _: *@import("home").jsc.JSGlobalObject) @import("home").jsc.JSValue {
+        return .zero;
+    }
+
+    pub fn toJSWithAsyncStack(this: S3Error, global: *@import("home").jsc.JSGlobalObject, _: ?[]const u8, _: *@import("home").jsc.JSPromise) @import("home").jsc.JSValue {
+        return this.toJS(global);
+    }
 };
 
 test "getSignErrorMessage maps known errors" {

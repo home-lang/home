@@ -6015,8 +6015,7 @@ pub fn printAst(
             }
         }
 
-        var named_export_iter = tree.named_exports.valueIterator();
-        while (named_export_iter.next()) |named_export| {
+        for (tree.named_exports.values()) |named_export| {
             if (symbols.get(named_export.ref)) |symbol| {
                 symbol.must_not_be_renamed = true;
             }
@@ -6083,8 +6082,9 @@ pub fn printAst(
     if (PrinterType.may_have_module_info) {
         printer.module_info = opts.module_info;
     }
-    var bin_stack_heap = std.heap.stackFallback(1024, bun.default_allocator);
-    printer.binary_expression_stack = std.array_list.Managed(PrinterType.BinaryExpressionVisitor).init(bin_stack_heap.get());
+    var bin_stack_buf: [1024]u8 = undefined;
+    var bin_stack_heap = std.heap.BufferFirstAllocator.init(&bin_stack_buf, bun.default_allocator);
+    printer.binary_expression_stack = std.array_list.Managed(PrinterType.BinaryExpressionVisitor).init(bin_stack_heap.allocator());
     defer printer.binary_expression_stack.clearAndFree();
 
     if (!opts.bundling and
@@ -6414,10 +6414,10 @@ pub fn serializeModuleInfo(module_info: ?*analyze_transpiled_module.ModuleInfo) 
         mi.finalize() catch return null;
     }
     const deserialized = mi.asDeserialized();
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(bun.default_allocator);
-    deserialized.serialize(buf.writer(bun.default_allocator)) catch return null;
-    return buf.toOwnedSlice(bun.default_allocator) catch null;
+    var buf = std.Io.Writer.Allocating.init(bun.default_allocator);
+    defer buf.deinit();
+    deserialized.serialize(&buf.writer) catch return null;
+    return buf.toOwnedSlice() catch null;
 }
 
 const string = []const u8;

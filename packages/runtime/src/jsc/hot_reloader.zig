@@ -492,8 +492,8 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
                                         if (parent_hash == current_hash) {
                                             const affected_path = file_paths[entry_id];
                                             const was_deleted = check: {
-                                                std.posix.access(affected_path, std.posix.F_OK) catch break :check true;
-                                                break :check false;
+                                                const affected_path_z = std.posix.toPosixPath(affected_path) catch break :check true;
+                                                break :check bun.sys.access(&affected_path_z, std.posix.F_OK) != .result;
                                             };
                                             if (!was_deleted) continue;
 
@@ -600,7 +600,7 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
 
                                             break :brk path_string.slice();
                                         } else {
-                                            const file_path_without_trailing_slash = std.mem.trimRight(u8, file_path, std.fs.path.sep_str);
+                                            const file_path_without_trailing_slash = std.mem.trimEnd(u8, file_path, std.fs.path.sep_str);
                                             @memcpy(_on_file_update_path_buf[0..file_path_without_trailing_slash.len], file_path_without_trailing_slash);
                                             _on_file_update_path_buf[file_path_without_trailing_slash.len] = std.fs.path.sep;
 

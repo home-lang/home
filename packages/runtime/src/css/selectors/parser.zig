@@ -1283,7 +1283,7 @@ pub const SelectorParser = struct {
                 if (!bun.strings.startsWithChar(name, '-')) {
                     this.options.warn(parser.newCustomError(SelectorParseErrorKind.intoDefaultParserError(.{ .unsupported_pseudo_class_or_element = name })));
                 }
-                var args = ArrayList(css.css_properties.custom.TokenOrValue){};
+                var args = ArrayList(css.css_properties.custom.TokenOrValue).empty;
                 _ = switch (css.TokenListFns.parseRaw(parser, &args, this.options, 0)) {
                     .err => |e| return .{ .err = e },
                     .result => |v| v,
@@ -2291,13 +2291,13 @@ pub const SelectorParseErrorKind = union(enum) {
     pub fn intoSelectorError(this: SelectorParseErrorKind) css.SelectorError {
         return switch (this) {
             .invalid_state => .invalid_state,
-            .class_needs_ident => |token| .{ .class_needs_ident = token },
-            .pseudo_element_expected_ident => |token| .{ .pseudo_element_expected_ident = token },
+            .class_needs_ident => |token| .{ .class_needs_ident = toErrorToken(token) },
+            .pseudo_element_expected_ident => |token| .{ .pseudo_element_expected_ident = toErrorToken(token) },
             .unsupported_pseudo_class_or_element => |name| .{ .unsupported_pseudo_class_or_element = name },
-            .no_qualified_name_in_attribute_selector => |token| .{ .no_qualified_name_in_attribute_selector = token },
-            .unexpected_token_in_attribute_selector => |token| .{ .unexpected_token_in_attribute_selector = token },
-            .invalid_qual_name_in_attr => |token| .{ .invalid_qual_name_in_attr = token },
-            .expected_bar_in_attr => |token| .{ .expected_bar_in_attr = token },
+            .no_qualified_name_in_attribute_selector => |token| .{ .no_qualified_name_in_attribute_selector = toErrorToken(token) },
+            .unexpected_token_in_attribute_selector => |token| .{ .unexpected_token_in_attribute_selector = toErrorToken(token) },
+            .invalid_qual_name_in_attr => |token| .{ .invalid_qual_name_in_attr = toErrorToken(token) },
+            .expected_bar_in_attr => |token| .{ .expected_bar_in_attr = toErrorToken(token) },
             .empty_selector => .empty_selector,
             .dangling_combinator => .dangling_combinator,
             .invalid_pseudo_class_before_webkit_scrollbar => .invalid_pseudo_class_before_webkit_scrollbar,
@@ -2306,12 +2306,16 @@ pub const SelectorParseErrorKind = union(enum) {
             .missing_nesting_selector => .missing_nesting_selector,
             .missing_nesting_prefix => .missing_nesting_prefix,
             .expected_namespace => |name| .{ .expected_namespace = name },
-            .bad_value_in_attr => |token| .{ .bad_value_in_attr = token },
-            .explicit_namespace_unexpected_token => |token| .{ .explicit_namespace_unexpected_token = token },
+            .bad_value_in_attr => |token| .{ .bad_value_in_attr = toErrorToken(token) },
+            .explicit_namespace_unexpected_token => |token| .{ .explicit_namespace_unexpected_token = toErrorToken(token) },
             .unexpected_ident => |ident| .{ .unexpected_ident = ident },
-            .unexpected_selector_after_pseudo_element => |tok| .{ .unexpected_selector_after_pseudo_element = tok },
+            .unexpected_selector_after_pseudo_element => |tok| .{ .unexpected_selector_after_pseudo_element = toErrorToken(tok) },
             .ambiguous_css_module_class => |name| .{ .ambiguous_css_module_class = name },
         };
+    }
+
+    fn toErrorToken(token: css.Token) @import("../error.zig").css.Token {
+        return (css.SourceLocation{ .line = 0, .column = 0 }).toErrorToken(token);
     }
 };
 
@@ -2973,7 +2977,7 @@ pub fn parse_attribute_selector(comptime Impl: type, parser: *SelectorParser, in
         .result => |v| v,
         .err => |e| {
             if (e.kind == .basic and e.kind.basic == .unexpected_token) {
-                return .{ .err = e.location.newCustomError(SelectorParseErrorKind.intoDefaultParserError(.{ .bad_value_in_attr = e.kind.basic.unexpected_token })) };
+                return .{ .err = e.location.newCustomError(.{ .selector_error = .{ .bad_value_in_attr = e.kind.basic.unexpected_token } }) };
             }
             return .{
                 .err = .{

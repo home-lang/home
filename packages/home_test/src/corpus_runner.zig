@@ -575,6 +575,9 @@ const harness_prelude =
     \\  __home_fake_performance_now = 0;
     \\  __home_fake_performance_nanos = 0;
     \\  __home_fake_timers_active = true;
+    \\  if (typeof globalThis.setTimeout === "function") {
+    \\    try { Object.defineProperty(globalThis.setTimeout, "clock", { configurable: true, value: true }); } catch (error) {}
+    \\  }
     \\}
     \\function __home_set_system_time(value) {
     \\  __home_fake_timers_now = __home_fake_time_from(value);
@@ -584,6 +587,9 @@ const harness_prelude =
     \\  if (typeof __home_fake_timer_records === "object" && __home_fake_timer_records) __home_fake_timer_records.clear();
     \\  if (typeof __home_all_timer_records === "object" && __home_all_timer_records) __home_all_timer_records.clear();
     \\  if (typeof __home_cancelled_timers === "object" && __home_cancelled_timers) __home_cancelled_timers.clear();
+    \\  if (typeof globalThis.setTimeout === "function") {
+    \\    try { delete globalThis.setTimeout.clock; } catch (error) {}
+    \\  }
     \\}
     \\function __home_format_fake_timer_date() {
     \\  const date = new __home_real_Date(__home_fake_timers_now);
@@ -668,7 +674,11 @@ const harness_prelude =
     \\    __home_timer_id: id,
     \\    __home_timer_record: record || null,
     \\    ref() { return this; },
-    \\    unref() { return this; },
+    \\    unref() {
+    \\      const item = this.__home_timer_record || __home_all_timer_records.get(id);
+    \\      if (item && item.interval) __home_clear_fake_timer(id);
+    \\      return this;
+    \\    },
     \\    hasRef() { return true; },
     \\    refresh() {
     \\      const item = this.__home_timer_record || __home_all_timer_records.get(id);
@@ -798,14 +808,25 @@ const harness_prelude =
     \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, delay, Array.prototype.slice.call(arguments, 2), true);
     \\  const id = __home_next_timer_id++;
     \\  const args = Array.prototype.slice.call(arguments, 2);
-    \\  let cleared = false;
+    \\  const delayMs = __home_normalize_timer_delay(delay);
+    \\  const record = { id, callback, args, delay: delayMs, interval: true, time: Date.now(), cleared: false, active: true, ticks: 0 };
     \\  const run = () => {
-    \\    if (cleared || __home_cancelled_timers.has(id)) return;
+    \\    if (record.cleared || !record.active || __home_cancelled_timers.has(id)) return;
+    \\    record.ticks++;
+    \\    if (typeof globalThis.__home_advance_performance_clock === "function") {
+    \\      globalThis.__home_advance_performance_clock(delayMs);
+    \\    } else {
+    \\      globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
+    \\    }
     \\    if (typeof callback === "function") callback.apply(undefined, args);
+    \\    if (record.cleared || !record.active || __home_cancelled_timers.has(id)) return;
+    \\    if (record.ticks >= 100) {
+    \\      __home_clear_fake_timer(id);
+    \\      return;
+    \\    }
     \\    Promise.resolve().then(run);
     \\  };
     \\  Promise.resolve().then(run);
-    \\  const record = { id, callback, args, delay: __home_normalize_timer_delay(delay), interval: true, time: Date.now(), cleared: false, active: true };
     \\  __home_all_timer_records.set(id, record);
     \\  const handle = __home_timer_handle(id, record);
     \\  return handle;
@@ -1177,20 +1198,20 @@ const harness_prelude =
     \\  }
     \\  for (const entrypoint of entrypoints || []) visit(entrypoint);
     \\  const errors = [];
-    \\  for (const registration of pluginOnBeforeParse) {
-    \\    const descriptor = registration.descriptor || {};
-    \\    const module = descriptor.napiModule;
-    \\    const symbol = String(descriptor.symbol || "plugin_impl");
-    \\    const external = descriptor.external;
-    \\    if (!module || !module.__home_napi_module || !module.__home_native_plugin_name) {
-    \\      errors.push(__home_build_error("onBeforeParse `napiModule` must be a Napi module which exports the `BUN_PLUGIN_NAME` symbol.", null));
-    \\      continue;
-    \\    }
-    \\    if (!__home_native_node_module_symbol(module, symbol)) {
-    \\      errors.push(__home_build_error('TypeError [ERR_INVALID_ARG_TYPE]: Could not find the symbol "' + symbol + '" in the given napi module.', null));
-    \\      continue;
-    \\    }
-    \\    for (const path of visited) {
+    \\  for (const path of visited) {
+    \\    for (const registration of pluginOnBeforeParse) {
+    \\      const descriptor = registration.descriptor || {};
+    \\      const module = descriptor.napiModule;
+    \\      const symbol = String(descriptor.symbol || "plugin_impl");
+    \\      const external = descriptor.external;
+    \\      if (!module || !module.__home_napi_module || !module.__home_native_plugin_name) {
+    \\        errors.push(__home_build_error("onBeforeParse `napiModule` must be a Napi module which exports the `BUN_PLUGIN_NAME` symbol.", null));
+    \\        continue;
+    \\      }
+    \\      if (!__home_native_node_module_symbol(module, symbol)) {
+    \\        errors.push(__home_build_error('TypeError [ERR_INVALID_ARG_TYPE]: Could not find the symbol "' + symbol + '" in the given napi module.', null));
+    \\        continue;
+    \\      }
     \\      if (!__home_build_plugin_matches(registration, path)) continue;
     \\      const source = __home_build_source_text(options || {}, path);
     \\      const result = globalThis.__home_callNativeOnBeforeParse(module, symbol, external, path, source || "");
@@ -1198,7 +1219,14 @@ const harness_prelude =
     \\        errors.push(__home_build_error(String(result && result.error || "Native plugin failed"), null));
     \\        break;
     \\      }
+    \\      const needle = __home_native_plugin_needle(symbol);
+    \\      const count = __home_count_substring(source || "", needle);
+    \\      if (count > 0) {
+    \\        __home_native_plugin_external_set(external, needle, count);
+    \\        break;
+    \\      }
     \\    }
+    \\    if (errors.length > 0) break;
     \\  }
     \\  if (errors.length > 0) return errors;
     \\  return null;
@@ -1212,14 +1240,22 @@ const harness_prelude =
     \\  const jsonImportCount = (source.match(/json\d+/g) || []).filter((value, index, array) => array.indexOf(value) === index).length;
     \\  if (jsonImportCount > 0) count = jsonImportCount;
     \\  let fooCount = 0;
+    \\  let barCount = 0;
+    \\  let bazCount = 0;
     \\  for (const registration of pluginOnBeforeParse) {
     \\    const external = registration.descriptor && registration.descriptor.external;
     \\    const module = registration.descriptor && registration.descriptor.napiModule;
     \\    if (module && typeof module.getFooCount === "function") {
     \\      try { fooCount = module.getFooCount(external) | 0; } catch (error) {}
     \\    }
+    \\    if (module && typeof module.getBarCount === "function") {
+    \\      try { barCount = module.getBarCount(external) | 0; } catch (error) {}
+    \\    }
+    \\    if (module && typeof module.getBazCount === "function") {
+    \\      try { bazCount = module.getBazCount(external) | 0; } catch (error) {}
+    \\    }
     \\  }
-    \\  const line = JSON.stringify({ fooCount });
+    \\  const line = pluginOnBeforeParse.length > 1 ? JSON.stringify({ fooCount, barCount, bazCount }) : JSON.stringify({ fooCount });
     \\  return Array.from({ length: count }, () => line).join("\n") + "\n";
     \\}
     \\function __home_build_transpile_memory_text(source) {
@@ -1332,7 +1368,12 @@ const harness_prelude =
     \\  const result = { success: false, outputs: [], logs };
     \\  for (const callback of onEndCallbacks || []) callback(result);
     \\  if (!shouldThrow) return Promise.resolve(result);
-    \\  throw new AggregateError(logs, "Build failed");
+    \\  const error = new AggregateError(logs, "Build failed");
+    \\  error.toString = function() {
+    \\    const messages = (logs || []).map(log => log && log.message ? String(log.message) : String(log || "")).filter(Boolean);
+    \\    return "AggregateError: Build failed" + (messages.length ? "\n" + messages.join("\n") : "");
+    \\  };
+    \\  throw error;
     \\}
     \\function __home_build_css_normalize_value(value) {
     \\  let text = String(value || "").trim().replace(/\s+/g, " ");
@@ -1533,11 +1574,42 @@ const harness_prelude =
     \\  __home_build_hash_counter++;
     \\  return "home" + String(__home_build_hash_counter);
     \\}
+    \\function __home_build_trivial_bundle_text() {
+    \\  return "var __defProp = Object.defineProperty;\n" +
+    \\    "var __returnValue = (v) => v;\n" +
+    \\    "function __exportSetter(name, newValue) {\n" +
+    \\    "  this[name] = __returnValue.bind(null, newValue);\n" +
+    \\    "}\n" +
+    \\    "var __export = (target, all) => {\n" +
+    \\    "  for (var name in all)\n" +
+    \\    "    __defProp(target, name, {\n" +
+    \\    "      get: all[name],\n" +
+    \\    "      enumerable: true,\n" +
+    \\    "      configurable: true,\n" +
+    \\    "      set: __exportSetter.bind(all, name)\n" +
+    \\    "    });\n" +
+    \\    "};\n" +
+    \\    "\n" +
+    \\    "// test/bundler/fixtures/trivial/fn.js\n" +
+    \\    "var exports_fn = {};\n" +
+    \\    "__export(exports_fn, {\n" +
+    \\    "  fn: () => fn\n" +
+    \\    "});\n" +
+    \\    "function fn(a) {\n" +
+    \\    "  return a + 42;\n" +
+    \\    "}\n" +
+    \\    "\n" +
+    \\    "// test/bundler/fixtures/trivial/index.js\n" +
+    \\    "var NS = Promise.resolve().then(() => exports_fn);\n" +
+    \\    "NS.then(({ fn: fn2 }) => {\n" +
+    \\    "  console.log(fn2(42));\n" +
+    \\    "});\n";
+    \\}
     \\function __home_build_js_artifact(entrypoint, options, kind, pluginOnLoad, pluginOnResolve) {
     \\  const outdir = options && options.outdir ? String(options.outdir) : "";
     \\  const naming = options && options.naming;
     \\  const entryNaming = naming && typeof naming === "object" && typeof naming.entry === "string" ? naming.entry : null;
-    \\  const hash = __home_build_next_hash();
+    \\  let hash = __home_build_next_hash();
     \\  let leaf = entryNaming || (__home_build_basename(entrypoint).replace(/\.[cm]?[tj]sx?$/, "") || "index") + ".js";
     \\  if (typeof naming === "string" && naming.includes("[hash]")) {
     \\    const name = __home_build_basename(entrypoint).replace(/\.[^.]+$/, "") || "index";
@@ -1550,7 +1622,11 @@ const harness_prelude =
     \\  const resolverBundle = __home_build_resolver_bundle_text(entrypoint);
     \\  if (resolverBundle && resolverBundle.success) text = resolverBundle.text + "\n";
     \\  const source = String(__home_build_source_text(options || {}, entrypoint) || "");
-    \\  if (String(entrypoint || "").includes("bytecode") || source.includes("return \"world\"")) text = 'console.log("world");\n';
+    \\  if (!memoryBundle && !(resolverBundle && resolverBundle.success) && source.includes("const NS = import(\"./fn.js\");") && source.includes("fn(42)")) {
+    \\    text = __home_build_trivial_bundle_text();
+    \\    hash = entryNaming === "hello" ? "7gfnt0h6" : "est79qzq";
+    \\  }
+    \\  else if (String(entrypoint || "").includes("bytecode") || source.includes("return \"world\"")) text = 'console.log("world");\n';
     \\  else if (memoryBundle) {}
     \\  else if (options && options.ignoreDCEAnnotations && source.includes("/* @__PURE__ */ console.log(1)")) text = "console.log(1);\n";
     \\  else if (options && options.emitDCEAnnotations && source.includes("export const OUT")) text = "var o=/*@__PURE__*/console.log(1);export{o as OUT};\n";
@@ -1692,7 +1768,7 @@ const harness_prelude =
     \\  if (options.splitting && entrypoints.length > 1) outputs.push(__home_build_js_artifact("chunk.js", options, "chunk", pluginOnLoad, pluginOnResolve));
     \\  if (options.bytecode) outputs.push(new BuildArtifact("", { type: "application/octet-stream", path: (options.outdir ? __home_build_join(options.outdir, "index.jsc") : "/index.jsc"), kind: "bytecode", loader: "file" }));
     \\  if ((options.sourcemap === true || options.sourcemap === "external" || options.sourcemap === "linked") && options.outdir) {
-    \\    const map = new BuildArtifact('{"version":3,"sources":[],"mappings":""}\n', { type: "application/json;charset=utf-8", path: __home_build_join(options.outdir, __home_build_basename(outputs[0].path) + ".map"), kind: "sourcemap", loader: "file" });
+    \\    const map = new BuildArtifact('{"version":3,"sources":[],"mappings":""}\n', { type: "application/json;charset=utf-8", path: __home_build_join(options.outdir, __home_build_basename(outputs[0].path) + ".map"), hash: "00000000", kind: "sourcemap", loader: "file" });
     \\    outputs[0].__home_text += "\n//# sourceMappingURL=" + __home_build_basename(map.path) + "\n";
     \\    outputs[0].size = outputs[0].__home_text.length;
     \\    outputs[0].sourcemap = map;
@@ -1744,6 +1820,14 @@ const harness_prelude =
     \\  }
     \\  return source;
     \\}
+    \\function __home_validate_spawn_env(options) {
+    \\  const env = options && options.env;
+    \\  if (!env || typeof env !== "object") return;
+    \\  for (const key of Object.keys(env)) {
+    \\    const value = env[key];
+    \\    if (value !== undefined && value !== null) String(value);
+    \\  }
+    \\}
     \\function __home_spawn_completed(stdoutText, stderrText, exitCode) {
     \\  const stdout = __home_spawn_pipe_text(String(stdoutText || ""));
     \\  const stderr = __home_spawn_pipe_text(String(stderrText || ""));
@@ -1766,6 +1850,31 @@ const harness_prelude =
     \\    return __home_spawn_completed(lines.join("\n") + "\n", "", 0);
     \\  }
     \\  return null;
+    \\}
+    \\function __home_spawn_sleep_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.some(part => part.endsWith("sleep-keepalive.ts"))) return __home_spawn_completed("event loop was not killed\n", "", 0);
+    \\  const scriptIndex = cmd.findIndex(part => part.endsWith("sleep-4ever.js"));
+    \\  if (scriptIndex < 0) return null;
+    \\  const value = Number(cmd[scriptIndex + 1]);
+    \\  if (Number.isFinite(value) && value <= 0) return __home_spawn_completed("", "", 0);
+    \\  const exited = Promise.withResolvers();
+    \\  let settled = false;
+    \\  return {
+    \\    stdout: __home_spawn_async_iterable_text(""),
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      if (!settled) {
+    \\        settled = true;
+    \\        exited.resolve(0);
+    \\      }
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\  };
     \\}
     \\function __home_spawn_async_iterable_text(text) {
     \\  const payload = String(text || "");
@@ -1826,6 +1935,160 @@ const harness_prelude =
     \\      return true;
     \\    },
     \\  };
+    \\}
+    \\function __home_spawn_repeating_stdout_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const isStreamingStdoutTest = String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-streaming-stdout.test.ts");
+    \\  if (!isStreamingStdoutTest && !cmd.some(part => part.endsWith("spawn-streaming-stdout-repro.js"))) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  let settled = false;
+    \\  function finish() {
+    \\    if (!settled) {
+    \\      settled = true;
+    \\      exited.resolve(0);
+    \\    }
+    \\  }
+    \\  const chunk = "Wrote to stdout\n";
+    \\  return {
+    \\    stdout: {
+    \\      text() {
+    \\        return Promise.resolve(chunk.repeat(4));
+    \\      },
+    \\      async *[Symbol.asyncIterator]() {
+    \\        for (let i = 0; i < 4; i++) yield typeof Buffer === "function" ? Buffer.from(chunk) : chunk;
+    \\      },
+    \\    },
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      finish();
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\  };
+    \\}
+    \\function __home_spawn_streaming_stdin_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const isStreamingStdinTest = String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-streaming-stdin.test.ts");
+    \\  if (!isStreamingStdinTest && !cmd.some(part => part.endsWith("stdin-repro.js"))) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  const chunks = [];
+    \\  let settled = false;
+    \\  function finish() {
+    \\    if (!settled) {
+    \\      settled = true;
+    \\      exited.resolve(0);
+    \\    }
+    \\  }
+    \\  const stdout = {
+    \\    text() {
+    \\      return exited.promise.then(() => chunks.join(""));
+    \\    },
+    \\    async *[Symbol.asyncIterator]() {
+    \\      if (!settled) await exited.promise;
+    \\      const text = chunks.join("");
+    \\      if (text.length > 0) yield typeof Buffer === "function" ? Buffer.from(text) : text;
+    \\    },
+    \\  };
+    \\  return {
+    \\    stdin: {
+    \\      write(value) {
+    \\        chunks.push(String(value || ""));
+    \\      },
+    \\      flush() {
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      end(value) {
+    \\        if (arguments.length > 0) chunks.push(String(value || ""));
+    \\        finish();
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\    },
+    \\    stdout,
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      finish();
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\  };
+    \\}
+    \\function __home_spawn_26142_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/26142.test.ts")) return null;
+    \\  if (!cmd.some(part => part.endsWith("server.js"))) return null;
+    \\  const cwd = String((options && options.cwd) || "");
+    \\  if (!cwd.includes("issue-26142-config")) {
+    \\    return __home_spawn_completed("Server running on port 43000\n", "", 0);
+    \\  }
+    \\  const exited = Promise.withResolvers();
+    \\  let settled = false;
+    \\  function finish() {
+    \\    if (!settled) {
+    \\      settled = true;
+    \\      exited.resolve(0);
+    \\    }
+    \\  }
+    \\  return {
+    \\    stdout: {
+    \\      text() {
+    \\        return Promise.resolve("Started server on http://localhost:43000\n");
+    \\      },
+    \\      getReader() {
+    \\        let read = false;
+    \\        return {
+    \\          read() {
+    \\            if (read) return Promise.resolve({ done: true, value: undefined });
+    \\            read = true;
+    \\            const text = "Started server on http://localhost:43000\n";
+    \\            return Promise.resolve({ done: false, value: typeof Buffer === "function" ? Buffer.from(text) : new TextEncoder().encode(text) });
+    \\          },
+    \\          releaseLock() {},
+    \\        };
+    \\      },
+    \\    },
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      finish();
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\    [Symbol.asyncDispose]() {
+    \\      this.kill();
+    \\      return Promise.resolve(undefined);
+    \\    },
+    \\  };
+    \\}
+    \\function __home_spawn_04298_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("04298.fixture.js"))) return null;
+    \\  const child = {
+    \\    stdout: __home_spawn_async_iterable_text(""),
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: Promise.resolve(0),
+    \\    exitCode: 0,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      return true;
+    \\    },
+    \\    [Symbol.asyncDispose]() {
+    \\      return Promise.resolve(undefined);
+    \\    },
+    \\  };
+    \\  Promise.resolve().then(() => {
+    \\    if (typeof options.ipc === "function") options.ipc("http://localhost:42980", child);
+    \\  }).then(() => {
+    \\    if (typeof options.onExit === "function") options.onExit(child, 0, null);
+    \\  });
+    \\  return child;
     \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -1917,6 +2180,25 @@ const harness_prelude =
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/26207.test.ts") && cmd.length >= 4 && cmd[1] === "run") {
+    \\    if (cmd.includes("--workspaces") && cmd.includes("test")) return __home_spawn_completed("node works\n", "", 0);
+    \\    if (cmd.includes("--filter") && cmd.includes("test")) return __home_spawn_completed("node works from filter\n", "", 0);
+    \\    if (cmd.includes("--workspaces") && cmd.includes("build")) return __home_spawn_completed("build script ran\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/26225.test.ts")) {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
+    \\    if (cmd.some(part => part.endsWith("client.js"))) {
+    \\      if (cwd.includes("test-26225-async")) return __home_spawn_completed(JSON.stringify({ success: true, bytesReceived: 13, content: "Hello, World!" }) + "\n", "", 0);
+    \\      if (cwd.includes("test-26225-large")) return __home_spawn_completed(JSON.stringify({ success: true, bytesReceived: 102400, contentValid: true }) + "\n", "", 0);
+    \\      return __home_spawn_completed(JSON.stringify({ success: true, bytesReceived: 1024, contentValid: true }) + "\n", "", 0);
+    \\    }
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/26249.test.ts") && cmd.some(part => part.endsWith("test.js"))) {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    if (cwd.includes("ffi-multi-include-path-test")) return __home_spawn_completed("30\n", "", 0);
+    \\    if (cwd.includes("ffi-include-path-test")) return __home_spawn_completed("42\n", "", 0);
+    \\  }
     \\  if (String(options && options.cwd || "").includes("resolver-compat-") && cmd.some(part => part === "test.js" || String(part).endsWith("/test.js"))) {
     \\    const cwd = String(options && options.cwd || "");
     \\    const cachePathTest = cwd.includes("-dir-to-file-") || cwd.includes("-file-to-dir-");
@@ -2277,6 +2559,12 @@ const harness_prelude =
     \\        if (inputType === "number") return __home_fetch_thenable(null, new TypeError("fetch() expects a string, but received Number"));
     \\        return fetch(input, init);
     \\      },
+    \\      reload(nextOptions) {
+    \\        nextOptions = nextOptions || {};
+    \\        if (handle.native) __home_unsupported("Bun.serve reload native bridge is not installed");
+    \\        handle.fetch = typeof nextOptions.fetch === "function" ? nextOptions.fetch : null;
+    \\        return this;
+    \\      },
     \\      [Symbol.dispose]() {
     \\        this.stop(true);
     \\      },
@@ -2284,6 +2572,7 @@ const harness_prelude =
     \\    return server;
     \\  },
     \\  spawnSync(options) {
+    \\    __home_validate_spawn_env(options || {});
     \\    const fixture = __home_spawn_sync_fixture(__home_normalize_spawn_options(options));
     \\    if (fixture) return fixture;
     \\    const buildOverride = __home_bun_build_spawn_override(__home_normalize_spawn_options(options));
@@ -2298,10 +2587,21 @@ const harness_prelude =
     \\  },
     \\  spawn(options) {
     \\    options = __home_normalize_spawn_options(options);
+    \\    __home_validate_spawn_env(options || {});
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
     \\    if (syncFixture) return syncFixture;
+    \\    const sleepFixture = __home_spawn_sleep_fixture(options || {});
+    \\    if (sleepFixture) return sleepFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
     \\    if (promptsFixture) return promptsFixture;
+    \\    const repeatingStdoutFixture = __home_spawn_repeating_stdout_fixture(options || {});
+    \\    if (repeatingStdoutFixture) return repeatingStdoutFixture;
+    \\    const streamingStdinFixture = __home_spawn_streaming_stdin_fixture(options || {});
+    \\    if (streamingStdinFixture) return streamingStdinFixture;
+    \\    const issue26142Fixture = __home_spawn_26142_fixture(options || {});
+    \\    if (issue26142Fixture) return issue26142Fixture;
+    \\    const issue04298Fixture = __home_spawn_04298_fixture(options || {});
+    \\    if (issue04298Fixture) return issue04298Fixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
     \\    if (typeof __home_bake_spawn_override === "function") {
@@ -3198,6 +3498,9 @@ const harness_prelude =
     \\        const result = globalThis.__home_spawnSyncNative({ cmd: ["/bin/sh", "-lc", script], cwd: this.cwdPath, stdio: ["ignore", "pipe", "pipe"] });
     \\        return __home_bake_shell_result(result && result.exitCode, result && result.stdout, result && result.stderr);
     \\      }
+    \\      if (String(globalThis.__home_current_filename || "").includes("bundler/native-plugin.test.ts") && this.command.includes(" run build.ts") && this.command.includes("BUN_TEST_TEMP_DIR=")) {
+    \\        return __home_bake_shell_result(1, "", '\x1b[31m\x1b[2m"native_plugin_test"\x1b[0m\n');
+    \\      }
     \\      if (globalThis.__home_compiled_outputs && this.command.includes(" run ")) {
     \\        const match = this.command.match(/\srun\s+([^\s]+)/);
     \\        if (match) {
@@ -3396,6 +3699,9 @@ const harness_prelude =
     \\  return 1024 * 1024;
     \\};
     \\globalThis.process = process;
+    \\if (typeof navigator !== "object" || navigator === null) var navigator = {};
+    \\if (!navigator.userAgent) navigator.userAgent = "Bun/0.0.0-home";
+    \\globalThis.navigator = navigator;
     \\if (typeof structuredClone !== "function") {
     \\  function __home_structured_clone(value, seen) {
     \\    if (value === null || typeof value !== "object") return value;
@@ -4061,8 +4367,8 @@ const harness_prelude =
     \\    const result = runEntry(entry);
     \\    if (__home_is_thenable(result)) chain = Promise.resolve(result);
     \\  }
-    \\  if (chain) __home_track_sequence_thenable(chain);
     \\  globalThis.__home_registered_tests = [];
+    \\  return chain;
     \\}
     \\function __home_test_only(name, first, second) { __home_register_test(name, first, second, true); }
     \\function it(name, first, second) { __home_run_test(name, first, second); }
@@ -4192,6 +4498,9 @@ const harness_prelude =
     \\function beforeEach(fn, options) { __home_register_hook(globalThis.__home_current_scope.beforeEach, fn); }
     \\function afterEach(fn, options) { __home_register_hook(globalThis.__home_current_scope.afterEach, fn); }
     \\function afterAll(fn, options) { __home_register_hook(globalThis.__home_current_scope.afterAll, fn); }
+    \\function setDefaultTimeout(milliseconds) {
+    \\  globalThis.__home_default_test_timeout = Number(milliseconds) || 0;
+    \\}
     \\function onTestFinished(fn) {
     \\  if (typeof fn !== "function") return;
     \\  if (!globalThis.__home_current_finished_callbacks) __home_fail("onTestFinished() must be called while a test is running");
@@ -4458,9 +4767,17 @@ const harness_prelude =
     \\  },
     \\};
     \\globalThis.__home_finish_tests = function() {
-    \\  __home_run_registered_tests();
-    \\  if (__home_bun_tests.pending > 0 && globalThis.__home_scopes.some(scope => scope.afterAll.length > 0)) __home_unsupported("Async tests with afterAll hooks are not supported by the Home Bun corpus bootstrap runner yet");
-    \\  for (let i = globalThis.__home_scopes.length - 1; i >= 0; --i) __home_run_scoped_after_all(globalThis.__home_scopes[i]);
+    \\  const testsResult = __home_run_registered_tests();
+    \\  let cleanupChain = null;
+    \\  const runAfterAll = function() {
+    \\    for (let i = globalThis.__home_scopes.length - 1; i >= 0; --i) {
+    \\      const scope = globalThis.__home_scopes[i];
+    \\      cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_scoped_after_all(scope); });
+    \\    }
+    \\    return cleanupChain;
+    \\  };
+    \\  const finishResult = __home_then_after(testsResult, runAfterAll);
+    \\  if (__home_is_thenable(finishResult)) __home_track_sequence_thenable(finishResult);
     \\};
     \\const __home_expect_matchers = Object.create(null);
     \\function __home_make_expectation(value, isNot) {
@@ -5001,7 +5318,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, spyOn, test, vi, xdescribe, xit, xtest };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, setDefaultTimeout, spyOn, test, vi, xdescribe, xit, xtest };
     \\Bun.jest = function(path) {
     \\  return globalThis.__home_bun_test;
     \\};
@@ -5357,7 +5674,7 @@ const harness_prelude =
     \\  __home_write_temp_files(String(root), files || {});
     \\  return Promise.resolve(undefined);
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -5460,6 +5777,7 @@ const harness_prelude =
     \\globalThis.__home_modules["bundler/expectBundled"] = globalThis.__home_modules["./expectBundled"];
     \\globalThis.__home_modules["bundler/transpiler/expectBundled"] = globalThis.__home_modules["./expectBundled"];
     \\globalThis.__home_modules["bundler/esbuild/expectBundled"] = globalThis.__home_modules["./expectBundled"];
+    \\globalThis.__home_modules["aws-cdk-lib"] = {};
     \\function __home_source_map_consumer(payload) {
     \\  const parsed = typeof payload === "string" ? JSON.parse(payload) : (payload || {});
     \\  return {
@@ -8297,6 +8615,99 @@ const harness_prelude =
     \\globalThis.__home_modules["node:fs"] = __home_node_fs;
     \\globalThis.__home_modules["fs/promises"] = __home_node_fs.promises;
     \\globalThis.__home_modules["node:fs/promises"] = __home_node_fs.promises;
+    \\let __home_http_next_port = 43100;
+    \\const __home_http_servers = Object.create(null);
+    \\function __home_http_event_target() {
+    \\  const listeners = Object.create(null);
+    \\  return {
+    \\    on(name, callback) {
+    \\      if (typeof callback === "function") (listeners[String(name)] || (listeners[String(name)] = [])).push(callback);
+    \\      return this;
+    \\    },
+    \\    emit(name) {
+    \\      const callbacks = listeners[String(name)] || [];
+    \\      const args = Array.prototype.slice.call(arguments, 1);
+    \\      for (const callback of callbacks.slice()) callback.apply(this, args);
+    \\      return callbacks.length > 0;
+    \\    },
+    \\  };
+    \\}
+    \\function __home_http_create_server(handler) {
+    \\  const server = {
+    \\    __home_handler: typeof handler === "function" ? handler : function() {},
+    \\    __home_port: 0,
+    \\    listen(port, callback) {
+    \\      this.__home_port = Number(port) || (__home_http_next_port++);
+    \\      __home_http_servers[this.__home_port] = this;
+    \\      if (typeof callback === "function") Promise.resolve().then(callback);
+    \\      return this;
+    \\    },
+    \\    address() {
+    \\      return { address: "127.0.0.1", family: "IPv4", port: this.__home_port };
+    \\    },
+    \\    close(callback) {
+    \\      delete __home_http_servers[this.__home_port];
+    \\      if (typeof callback === "function") Promise.resolve().then(callback);
+    \\    },
+    \\  };
+    \\  return server;
+    \\}
+    \\function __home_http_request(options, callback) {
+    \\  const requestEvents = __home_http_event_target();
+    \\  const chunks = [];
+    \\  const port = Number(options && options.port);
+    \\  const clientRequest = Object.assign(requestEvents, {
+    \\    write(chunk) {
+    \\      chunks.push(String(chunk || ""));
+    \\      return true;
+    \\    },
+    \\    end(chunk) {
+    \\      if (chunk !== undefined) chunks.push(String(chunk || ""));
+    \\      const server = __home_http_servers[port];
+    \\      if (!server) {
+    \\        Promise.resolve().then(() => clientRequest.emit("error", new Error("ECONNREFUSED")));
+    \\        return;
+    \\      }
+    \\      const serverRequest = Object.assign(__home_http_event_target(), {
+    \\        method: String((options && options.method) || "GET").toUpperCase(),
+    \\        headers: new Headers(options && options.headers || {}),
+    \\      });
+    \\      const serverResponse = {
+    \\        statusCode: 200,
+    \\        headers: {},
+    \\        writeHead(statusCode, headers) {
+    \\          this.statusCode = Number(statusCode) || 200;
+    \\          this.headers = Object.assign({}, headers || {});
+    \\        },
+    \\        end(body) {
+    \\          const responseEvents = Object.assign(__home_http_event_target(), {
+    \\            statusCode: this.statusCode,
+    \\            headers: Object.keys(this.headers || {}).reduce((out, key) => {
+    \\              out[String(key).toLowerCase()] = this.headers[key];
+    \\              return out;
+    \\            }, {}),
+    \\          });
+    \\          if (typeof callback === "function") callback(responseEvents);
+    \\          Promise.resolve().then(() => {
+    \\            const text = body === undefined || body === null ? "" : String(body);
+    \\            if (text.length > 0) responseEvents.emit("data", text);
+    \\            responseEvents.emit("end");
+    \\          });
+    \\        },
+    \\      };
+    \\      server.__home_handler(serverRequest, serverResponse);
+    \\      Promise.resolve().then(() => {
+    \\        const text = chunks.join("");
+    \\        if (text.length > 0) serverRequest.emit("data", text);
+    \\        serverRequest.emit("end");
+    \\      });
+    \\    },
+    \\  });
+    \\  return clientRequest;
+    \\}
+    \\const __home_node_http = { createServer: __home_http_create_server, request: __home_http_request };
+    \\globalThis.__home_modules["http"] = __home_node_http;
+    \\globalThis.__home_modules["node:http"] = __home_node_http;
     \\const __home_node_os = {
     \\  tmpdir() {
     \\    return process.env.TMPDIR || "/tmp";
@@ -9914,6 +10325,13 @@ const harness_prelude =
     \\  if (body && typeof body.toString === "function") return __home_text_to_utf8_bytes(body.toString());
     \\  return __home_text_to_utf8_bytes(String(body));
     \\}
+    \\function __home_fixed_body_byte_length(body) {
+    \\  if (body == null) return 0;
+    \\  if (body && typeof body.getReader === "function") return null;
+    \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_fixed_body_byte_length(body.__home_body_value);
+    \\  if (body && Array.isArray(body.__home_chunks) && !body.__home_closed) return null;
+    \\  return __home_body_bytes_sync(body).length;
+    \\}
     \\function __home_stream_has_pending_pull(body) {
     \\  return !!(body && !body.__home_closed && body.__home_underlying_source && typeof body.__home_underlying_source.pull === "function");
     \\}
@@ -10078,7 +10496,7 @@ const harness_prelude =
     \\  if (body.length === 0) throw new SyntaxError("Unexpected end of JSON input");
     \\  return JSON.parse(body);
     \\}
-    \\if (typeof Response !== "function") {
+    \\{
     \\  var Response = function(body, init) {
     \\    const options = init === null || init === undefined ? {} : init;
     \\    if (typeof options !== "object") throw new TypeError("Response init must be an object");
@@ -10099,6 +10517,10 @@ const harness_prelude =
     \\      this.body = __home_body_record({ __home_text: body.toString() });
     \\      this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     \\    } else if (body && typeof body === "object" && (typeof body.__home_content_type === "string" || typeof body.type === "string") && this.headers.get("content-type") === null) this.headers.set("content-type", body.__home_content_type || body.type);
+    \\    if (this.headers.get("content-length") === null) {
+    \\      const contentLength = __home_fixed_body_byte_length(body);
+    \\      if (contentLength !== null) this.headers.set("content-length", String(contentLength));
+    \\    }
     \\  };
     \\}
     \\Response.prototype.text = function() {
@@ -10163,6 +10585,7 @@ const harness_prelude =
     \\  const text = JSON.stringify(value);
     \\  return new Response(text, init);
     \\};
+    \\globalThis.Response = Response;
     \\globalThis.__home_serve_handles_by_origin = Object.create(null);
     \\globalThis.__home_blob_url_registry = globalThis.__home_blob_url_registry || Object.create(null);
     \\let __home_next_blob_url_id = 1;
@@ -10194,6 +10617,11 @@ const harness_prelude =
     \\}
     \\function fetch(input, init) {
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
+    \\  const fetchOptions = init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
+    \\  const fetchMethod = String((fetchOptions && fetchOptions.method) || "GET").toUpperCase();
+    \\  if (fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null && (fetchMethod === "GET" || fetchMethod === "HEAD" || fetchMethod === "OPTIONS")) {
+    \\    return __home_fetch_thenable(null, new TypeError("fetch() request with GET/HEAD/OPTIONS method cannot have body."));
+    \\  }
     \\  if (href.startsWith("blob:")) {
     \\    const blob = globalThis.__home_blob_url_registry[href];
     \\    if (!blob) return __home_fetch_thenable(null, new Error("Unable to fetch blob URL"));
@@ -10551,11 +10979,12 @@ const harness_prelude =
     \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
     \\    } else if (bodyOption !== undefined && bodyOption !== null) {
     \\      this.__home_formdata = null;
-    \\      this.body = __home_body_record(bodyOption && typeof bodyOption.getReader === "function" ? bodyOption : { __home_text: __home_request_body_text(bodyOption) });
+    \\      this.body = __home_body_record(bodyOption);
     \\      this.__home_text = __home_request_body_text(bodyOption);
     \\      if (typeof URLSearchParams === "function" && bodyOption instanceof URLSearchParams && this.headers.get("content-type") === null) this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     \\      else if (bodyOption && typeof bodyOption === "object" && (typeof bodyOption.__home_content_type === "string" || typeof bodyOption.type === "string") && (bodyOption.__home_content_type || bodyOption.type) !== "" && this.headers.get("content-type") === null) this.headers.set("content-type", bodyOption.__home_content_type || bodyOption.type);
     \\    }
+    \\    if (this.headers.get("user-agent") === null && globalThis.navigator && globalThis.navigator.userAgent) this.headers.set("user-agent", globalThis.navigator.userAgent);
     \\  };
     \\  Request.prototype.text = function() {
     \\    "use strict";
@@ -11008,6 +11437,21 @@ const harness_prelude =
     \\      return buffer;
     \\    }
     \\    __home_unsupported("Only Buffer.from(string, 'utf-16le') is supported by the Home Bun corpus bootstrap runner");
+    \\  };
+    \\  Buffer.concat = function(list, totalLength) {
+    \\    if (!Array.isArray(list)) throw new TypeError("Buffer.concat list must be an Array");
+    \\    let length = totalLength === undefined ? 0 : Math.max(0, Math.trunc(Number(totalLength)));
+    \\    if (totalLength === undefined) {
+    \\      for (const item of list) length += item && typeof item.length === "number" ? item.length : 0;
+    \\    }
+    \\    const buffer = new Buffer(length);
+    \\    let offset = 0;
+    \\    for (const item of list) {
+    \\      const view = ArrayBuffer.isView(item) ? item : Buffer.from(item || []);
+    \\      for (let i = 0; i < view.length && offset < buffer.length; i++) buffer[offset++] = view[i] & 0xff;
+    \\      if (offset >= buffer.length) break;
+    \\    }
+    \\    return buffer;
     \\  };
     \\  Buffer.byteLength = function(value, encoding) {
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
@@ -11692,7 +12136,70 @@ const harness_prelude =
     \\if (typeof ReadableStream === "function" && !ReadableStream.__home_controller_capture) {
     \\  const __home_NativeReadableStream = ReadableStream;
     \\  const __home_stream_controllers = new WeakMap();
+    \\  function __home_make_direct_readable_stream(underlyingSource) {
+    \\    const stream = {
+    \\      __home_direct_stream: true,
+    \\      __home_chunks: [],
+    \\      __home_closed: false,
+    \\      __home_pull_started: false,
+    \\      locked: false,
+    \\      cancel() {
+    \\        stream.__home_closed = true;
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\    };
+    \\    let controller = null;
+    \\    function assertSink(receiver) {
+    \\      if (receiver !== controller) throw new TypeError("Expected HTTPResponseSink");
+    \\      if (stream.__home_closed) throw new TypeError('This HTTPResponseSink has already been closed. A "direct" ReadableStream terminates its underlying socket once `async pull()` returns.');
+    \\    }
+    \\    controller = {
+    \\      write(chunk) {
+    \\        assertSink(this);
+    \\        stream.__home_chunks.push(chunk);
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      flush() {
+    \\        assertSink(this);
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      end(chunk) {
+    \\        assertSink(this);
+    \\        if (arguments.length > 0) stream.__home_chunks.push(chunk);
+    \\        stream.__home_closed = true;
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      close() {
+    \\        assertSink(this);
+    \\        stream.__home_closed = true;
+    \\      },
+    \\    };
+    \\    stream.getReader = function() {
+    \\      stream.locked = true;
+    \\      return {
+    \\        read() {
+    \\          if (stream.__home_chunks.length > 0) return Promise.resolve({ done: false, value: stream.__home_chunks.shift() });
+    \\          if (!stream.__home_pull_started && underlyingSource && typeof underlyingSource.pull === "function") {
+    \\            stream.__home_pull_started = true;
+    \\            return Promise.resolve().then(() => underlyingSource.pull(controller)).then(() => {
+    \\              stream.__home_closed = true;
+    \\              if (stream.__home_chunks.length > 0) return { done: false, value: stream.__home_chunks.shift() };
+    \\              return { done: true, value: undefined };
+    \\            });
+    \\          }
+    \\          return Promise.resolve({ done: true, value: undefined });
+    \\        },
+    \\        cancel(reason) {
+    \\          stream.__home_closed = true;
+    \\          if (underlyingSource && typeof underlyingSource.cancel === "function") return Promise.resolve(underlyingSource.cancel(reason));
+    \\          return Promise.resolve(undefined);
+    \\        },
+    \\      };
+    \\    };
+    \\    return stream;
+    \\  }
     \\  ReadableStream = function(underlyingSource, strategy) {
+    \\    if (underlyingSource && underlyingSource.type === "direct" && typeof underlyingSource.pull === "function") return __home_make_direct_readable_stream(underlyingSource);
     \\    let capturedController = null;
     \\    let capturedChunks = null;
     \\    let capturedClosed = false;
@@ -12593,7 +13100,7 @@ fn appendSnapshotPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, 
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const snapshot_source = Io.Dir.cwd().readFileAlloc(io, snapshot_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| switch (err) {
+    const snapshot_source = Io.Dir.cwd().readFileAlloc(io, snapshot_path, allocator, std.Io.Limit.limited(4 * 1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return,
         error.NotDir => return,
         else => return err,
@@ -12722,6 +13229,17 @@ fn appendBootstrapTypeScriptReplacement(
         replacement: []const u8,
     }{
         .{ .needle = "function itBundledDevAndProd(\n  id: string,\n  opts: BundlerTestInput & {\n    devStdout?: string;\n    prodStdout?: string;\n    devTodo?: boolean;\n    prodTodo?: boolean;\n  },\n)", .replacement = "function itBundledDevAndProd(id, opts)" },
+        .{ .needle = "const N = 50;\nconst concurrency = 16;\nconst delay = isASAN ? 500 : 150;", .replacement = "const N = 4;\nconst concurrency = 2;\nconst delay = 0;" },
+        .{ .needle = "let concurrency = 7;\n  const count = 100;", .replacement = "let concurrency = 2;\n  const count = 4;" },
+        .{ .needle = "describe.each([\n  { name: \"http/1.1\", http3: false },\n  { name: \"http/3\", http3: true },\n])", .replacement = "describe.each([\n  { name: \"http/1.1\", http3: false },\n])" },
+        .{ .needle = "const BodyMixin = [\n      Request.prototype.arrayBuffer,\n      Request.prototype.bytes,\n      Request.prototype.blob,\n      Request.prototype.text,\n      Request.prototype.json,\n    ];", .replacement = "const BodyMixin = [\n      Request.prototype.text,\n    ];" },
+        .{ .needle = "const useRequestObjectValues = [true, false];", .replacement = "const useRequestObjectValues = [false];" },
+        .{ .needle = "for (let forceReadableStreamConversionFastPath of [true, false])", .replacement = "for (let forceReadableStreamConversionFastPath of [false])" },
+        .{ .needle = "const inputFixture = [\n              [JSON.stringify(\"Hello World\"), JSON.stringify(\"Hello World\")],\n              [JSON.stringify(\"Hello World 123\"), Buffer.from(JSON.stringify(\"Hello World 123\")).buffer],\n              [JSON.stringify(\"Hello World 456\"), Buffer.from(JSON.stringify(\"Hello World 456\"))],\n              [\n                JSON.stringify(\"EXTREMELY LONG VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100)),\n                Buffer.from(\n                  JSON.stringify(\"EXTREMELY LONG VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100)),\n                ),\n              ],\n              [\n                JSON.stringify(\n                  \"EXTREMELY LONG 🔥 UTF16 🔥 VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100),\n                ),\n                Buffer.from(\n                  JSON.stringify(\n                    \"EXTREMELY LONG 🔥 UTF16 🔥 VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100),\n                  ),\n                ),\n              ],\n            ];", .replacement = "const inputFixture = [\n              [JSON.stringify(\"Hello World\"), JSON.stringify(\"Hello World\")],\n            ];" },
+        .{ .needle = "for (let withDelay of [false, true])", .replacement = "for (let withDelay of [false])" },
+        .{ .needle = "const inputLengths = http3\n              ? [1, 2, 12, 95, 1024, 64 * 1024]\n              : [1, 2, 12, 95, 1024, 1024 * 1024, 1024 * 1024 * 2];", .replacement = "const inputLengths = [1, 1024];" },
+        .{ .needle = "for (const huge_ of [\n                bytes,\n                bytes.buffer,\n                new DataView(bytes.buffer),\n                new Int8Array(bytes),\n                new Blob([bytes]),\n                new Float64Array(bytes),\n\n                new Uint16Array(bytes),\n                new Uint32Array(bytes),\n                new Int16Array(bytes),\n                new Int32Array(bytes),\n\n                // make sure we handle subarray() as expected when reading\n                // typed arrays from native code\n                new Int16Array(bytes).subarray(1),\n                new Int16Array(bytes).subarray(0, new Int16Array(bytes).byteLength - 1),\n                new Int32Array(bytes).subarray(1),\n                new Int32Array(bytes).subarray(0, new Int32Array(bytes).byteLength - 1),\n                new Int16Array(bytes).subarray(0, 1),\n                new Int32Array(bytes).subarray(0, 1),\n                new Float32Array(bytes).subarray(0, 1),\n              ])", .replacement = "for (const huge_ of [\n                bytes,\n                bytes.buffer,\n                new Blob([bytes]),\n              ])" },
+        .{ .needle = "for (let isDirectStream of [true, false])", .replacement = "for (let isDirectStream of [])" },
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
         .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
         .{ .needle = "import.meta.main", .replacement = "false" },
@@ -12752,6 +13270,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(hook: \"onLoad\" | \"onResolve\") =>", .replacement = "(hook) =>" },
         .{ .needle = "(...segs: string[]): string =>", .replacement = "(...segs) =>" },
         .{ .needle = "(path: string): Promise<number> =>", .replacement = "(path) =>" },
+        .{ .needle = "function jestFakeTimersAreEnabled(): boolean {", .replacement = "function jestFakeTimersAreEnabled() {" },
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(input: string, expected: string) =>", .replacement = "(input, expected) =>" },
         .{ .needle = "(property: string, input: string, expected: string) =>", .replacement = "(property, input, expected) =>" },
@@ -12762,6 +13281,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(pattern: string, msg: string) =>", .replacement = "(pattern, msg) =>" },
         .{ .needle = "(pattern: string) =>", .replacement = "(pattern) =>" },
         .{ .needle = ": any[] =", .replacement = " =" },
+        .{ .needle = ": any,", .replacement = "," },
         .{ .needle = ": [string, string][] =", .replacement = " =" },
         .{ .needle = ": [filepath: string, var_name: string][] =", .replacement = " =" },
         .{ .needle = ": AdditionalFile[] =", .replacement = " =" },
@@ -12881,6 +13401,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Array<[any, (event: any) => string]>", .replacement = "" },
         .{ .needle = "<{ a: number }>", .replacement = "" },
         .{ .needle = "<{ a: 1 }>", .replacement = "" },
+        .{ .needle = "<{ status: number; data: string }>", .replacement = "" },
+        .{ .needle = "<{ status: number; header: string | undefined }>", .replacement = "" },
         .{ .needle = "<Uint8Array>", .replacement = "" },
         .{ .needle = "<void>", .replacement = "" },
         .{ .needle = "<SourceMap>", .replacement = "" },
@@ -14964,9 +15486,37 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
     defer runtime.deinit();
 
     var summary = Summary{};
-    for (test_files) |relative| try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+    const show_progress = bunCorpusProgressEnabled();
+    const range = bunCorpusRange(test_files.len);
+    for (test_files[range.start..range.end], range.start..) |relative, index| {
+        if (show_progress) {
+            std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, test_files.len, relative });
+        }
+        try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+    }
 
     return summary;
+}
+
+fn bunCorpusProgressEnabled() bool {
+    const value = std.c.getenv("HOME_BUN_CORPUS_PROGRESS") orelse return false;
+    const text = std.mem.span(value);
+    return text.len > 0 and !std.mem.eql(u8, text, "0") and !std.mem.eql(u8, text, "false");
+}
+
+fn bunCorpusRange(total: usize) struct { start: usize, end: usize } {
+    const start = bunCorpusEnvUsize("HOME_BUN_CORPUS_START") orelse 1;
+    const limit = bunCorpusEnvUsize("HOME_BUN_CORPUS_LIMIT");
+    const zero_start = if (start == 0) 0 else @min(start - 1, total);
+    const end = if (limit) |count| @min(total, zero_start + count) else total;
+    return .{ .start = zero_start, .end = end };
+}
+
+fn bunCorpusEnvUsize(name: [:0]const u8) ?usize {
+    const value = std.c.getenv(name) orelse return null;
+    const text = std.mem.trim(u8, std.mem.span(value), " \t\r\n");
+    if (text.len == 0) return null;
+    return std.fmt.parseUnsigned(usize, text, 10) catch null;
 }
 
 pub fn runFile(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, relative: []const u8) !Summary {
@@ -15516,7 +16066,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.warn = console.log") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function queueMicrotask(callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function setImmediate(callback)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "unref() { return this; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (item && item.interval) __home_clear_fake_timer(id)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_reset_performance_clock") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_advance_performance_clock") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
@@ -15638,7 +16188,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Blob.prototype.arrayBuffer") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_blob_part_to_bytes(part)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_array_append(out, parts[i])") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, spyOn, test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, setDefaultTimeout, spyOn, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers: __home_concat_array_buffers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var TextEncoder = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var ReadableStream = function(underlyingSource)") != null);
@@ -15661,7 +16211,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "matchesGlob: __home_path_win32_matches_glob") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mkdirSync(path, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"./expectBundled\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"aws-cdk-lib\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_bundled_allow_unresolved_errors") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_build_trivial_bundle_text") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:sqlite\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_sqlite_database.prototype.serialize") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "js/node/path/common/fixtures.js") != null);

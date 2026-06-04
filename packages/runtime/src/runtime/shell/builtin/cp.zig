@@ -587,8 +587,7 @@ pub const ShellCpTask = struct {
         this.verbose_output_lock.lock();
         log("onCopy: {s} -> {s}\n", .{ src, dest });
         defer this.verbose_output_lock.unlock();
-        var writer = this.verbose_output.writer();
-        bun.handleOom(writer.print("{s} -> {s}\n", .{ src, dest }));
+        bun.handleOom(this.verbose_output.print("{s} -> {s}\n", .{ src, dest }));
     }
 
     pub fn cpOnCopy(this: *ShellCpTask, src_: anytype, dest_: anytype) void {

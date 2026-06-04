@@ -7,8 +7,7 @@
 
 const std = @import("std");
 
-// JSC bridge bun.String stubbed — re-attaches in Phase 12.2.
-const String = opaque {};
+const String = @import("home").String;
 // JSC bridge bun.options.Format stubbed — re-attaches in Phase 12.2.
 const Format = enum { esm, cjs, iife };
 
@@ -44,7 +43,7 @@ pub const CachedBytecode = opaque {
         return CachedBytecode__deref(this);
     }
 
-    pub fn generate(format: Format, input: []const u8, source_provider_url: *String) ?struct { []const u8, *CachedBytecode } {
+    pub fn generate(format: anytype, input: []const u8, source_provider_url: *String) ?struct { []const u8, *CachedBytecode } {
         return switch (format) {
             .esm => generateForESM(source_provider_url, input),
             .cjs => generateForCJS(source_provider_url, input),

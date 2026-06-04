@@ -456,7 +456,8 @@ pub const NumberRenamer = struct {
     number_scope_pool: bun.HiveArray(NumberScope, 128).Fallback,
     arena: bun.ArenaAllocator,
     root: NumberScope = .{},
-    name_stack_fallback: std.heap.StackFallbackAllocator(512) = undefined,
+    name_stack_buffer: [512]u8 = undefined,
+    name_stack_fallback: std.heap.BufferFirstAllocator = undefined,
     name_temp_allocator: std.mem.Allocator = undefined,
 
     pub fn deinit(self: *NumberRenamer) void {
@@ -524,12 +525,12 @@ pub const NumberRenamer = struct {
             .number_scope_pool = undefined,
             .arena = bun.ArenaAllocator.init(temp_allocator),
         };
-        renamer.name_stack_fallback = std.heap.stackFallback(512, renamer.arena.allocator());
-        renamer.name_temp_allocator = renamer.name_stack_fallback.get();
+        renamer.name_stack_fallback = std.heap.BufferFirstAllocator.init(&renamer.name_stack_buffer, renamer.arena.allocator());
+        renamer.name_temp_allocator = renamer.name_stack_fallback.allocator();
         renamer.number_scope_pool = .init(renamer.arena.allocator());
         renamer.root.name_counts = root_names;
         if (comptime Environment.allow_assert and !Environment.isWindows) {
-            if (std.posix.getenv("BUN_DUMP_SYMBOLS") != null)
+            if (bun.getenvZ("BUN_DUMP_SYMBOLS") != null)
                 symbols.dump();
         }
 

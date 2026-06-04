@@ -14,13 +14,14 @@ pub const css_values = @import("../values/values.zig");
 pub const Error = css.Error;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
+const MediaList = @import("../media_query.zig").MediaList;
 
 /// A [@custom-media](https://drafts.csswg.org/mediaqueries-5/#custom-mq) rule.
 pub const CustomMediaRule = struct {
     /// The name of the declared media query.
     name: css.css_values.ident.DashedIdent,
     /// The media query to declare.
-    query: css.MediaList,
+    query: MediaList,
     /// The location of the rule in the source file.
     loc: css.Location,
 

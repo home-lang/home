@@ -8,22 +8,46 @@
 // `bun.strings`/`css.dtoa_short`/`css.to_css.float32`/`css.signfns` are all
 // stub-deferred. Upstream `bun` is dropped (no comptime touchpoints left).
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 
 pub const CSSNumber = f32;
 pub const CSSNumberFns = struct {
+    pub fn parse(input: *css.Parser) Result(CSSNumber) {
+        return input.expectNumber();
+    }
+
     pub fn sign(this: *const CSSNumber) f32 {
         if (this.* == 0.0) return 0.0;
         return if (this.* > 0.0) 1.0 else -1.0;
+    }
+
+    pub fn tryFromAngle(_: anytype) ?CSSNumber {
+        return null;
+    }
+
+    pub fn toCss(this: *const CSSNumber, dest: anytype) PrintErr!void {
+        var buf: [64]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "{d}", .{this.*}) catch return dest.addFmtError();
+        try dest.writeStr(text);
     }
 };
 
 /// A CSS [`<integer>`](https://www.w3.org/TR/css-values-4/#integers) value.
 pub const CSSInteger = i32;
-pub const CSSIntegerFns = struct {};
+pub const CSSIntegerFns = struct {
+    pub fn parse(input: *css.Parser) Result(CSSInteger) {
+        return input.expectInteger();
+    }
+
+    pub fn toCss(this: *const CSSInteger, dest: anytype) PrintErr!void {
+        var buf: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "{d}", .{this.*}) catch return dest.addFmtError();
+        try dest.writeStr(text);
+    }
+};
 
 test "CSSNumber is an f32 alias" {
     const n: CSSNumber = 1.5;

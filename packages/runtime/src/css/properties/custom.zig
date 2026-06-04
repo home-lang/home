@@ -178,7 +178,7 @@ pub const TokenList = struct {
     }
 
     pub fn parse(input: *css.Parser, options: *const css.ParserOptions, depth: usize) Result(TokenList) {
-        var tokens = ArrayList(TokenOrValue){}; // PERF: deinit on error
+        var tokens = ArrayList(TokenOrValue).empty; // PERF: deinit on error
         if (TokenListFns.parseInto(input, &tokens, options, depth).asErr()) |e| return .{ .err = e };
 
         // Slice off leading and trailing whitespace if there are at least two tokens.
@@ -192,7 +192,7 @@ pub const TokenList = struct {
             if (tokens.items.len > 0 and tokens.items[tokens.items.len - 1].isWhitespace()) {
                 slice = slice[0 .. slice.len - 1];
             }
-            var newlist = ArrayList(TokenOrValue){};
+            var newlist = ArrayList(TokenOrValue).empty;
             newlist.insertSlice(input.allocator(), 0, slice) catch unreachable;
             tokens.deinit(input.allocator());
             return .{ .result = TokenList{ .v = newlist } };
@@ -288,10 +288,11 @@ pub const TokenList = struct {
                 },
                 else => {
                     if (token.isParseError()) {
+                        const loc = state.sourceLocation();
                         return .{
                             .err = css.ParseError(css.ParserError){
-                                .kind = .{ .basic = .{ .unexpected_token = token.* } },
-                                .location = state.sourceLocation(),
+                                .kind = .{ .basic = .{ .unexpected_token = loc.toErrorToken(token.*) } },
+                                .location = loc.toErrorLocation(),
                             },
                         };
                     }
@@ -564,8 +565,8 @@ pub const TokenList = struct {
             if (tok.isParseError()) {
                 return .{
                     .err = .{
-                        .kind = .{ .basic = .{ .unexpected_token = tok.* } },
-                        .location = state.sourceLocation(),
+                        .kind = .{ .basic = .{ .unexpected_token = state.sourceLocation().toErrorToken(tok.*) } },
+                        .location = state.sourceLocation().toErrorLocation(),
                     },
                 };
             }
@@ -1083,7 +1084,7 @@ pub const EnvironmentVariable = struct {
     name: EnvironmentVariableName,
     /// Optional indices into the dimensions of the environment variable.
     /// TODO(zack): this could totally be a smallvec, why isn't it?
-    indices: ArrayList(CSSInteger) = ArrayList(CSSInteger){},
+    indices: ArrayList(CSSInteger) = ArrayList(CSSInteger).empty,
     /// A fallback value in case the variable is not defined.
     fallback: ?TokenList,
 
@@ -1115,7 +1116,7 @@ pub const EnvironmentVariable = struct {
             .result => |vv| vv,
             .err => |e| return .{ .err = e },
         };
-        var indices = ArrayList(i32){};
+        var indices = ArrayList(i32).empty;
         while (switch (input.tryParse(CSSIntegerFns.parse, .{})) {
             .result => |v| v,
             .err => null,

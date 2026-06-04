@@ -56,7 +56,9 @@ pub fn decodeInternal(this: *ErrorPacket, comptime Context: type, reader: NewRea
 
 pub const decode = decoderWrap(ErrorPacket, decodeInternal).decode;
 
-// JSC-bridge toJS omitted — Phase 12.2
+pub fn toJS(_: *const ErrorPacket, _: *@import("home").jsc.JSGlobalObject) @import("home").jsc.JSValue {
+    return .zero;
+}
 
 test "ErrorPacket defaults match upstream" {
     const std = @import("std");

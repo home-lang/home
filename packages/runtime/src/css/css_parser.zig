@@ -229,6 +229,18 @@ pub const SourceLocation = struct {
     line: u32,
     column: u32,
 
+    pub fn toErrorLocation(this: SourceLocation) errors_.css.SourceLocation {
+        return .{ .line = this.line, .column = this.column };
+    }
+
+    pub fn toErrorToken(_: SourceLocation, token: Token) errors_.css.Token {
+        return switch (token) {
+            .ident => |ident| .{ .ident = ident },
+            .delim => |delim| .{ .delim = @truncate(delim) },
+            else => .{ .ident = @tagName(token) },
+        };
+    }
+
     pub fn toLoggerLocation(this: SourceLocation, file: []const u8) bun.logger.Location {
         return bun.logger.Location{
             .file = file,
@@ -240,16 +252,16 @@ pub const SourceLocation = struct {
     /// Create a new BasicParseError at this location for an unexpected token
     pub fn newBasicUnexpectedTokenError(this: SourceLocation, token: Token) ParseError(ParserError) {
         return BasicParseError.intoDefaultParseError(.{
-            .kind = .{ .unexpected_token = token },
-            .location = this,
+            .kind = .{ .unexpected_token = this.toErrorToken(token) },
+            .location = this.toErrorLocation(),
         });
     }
 
     /// Create a new ParseError at this location for an unexpected token
     pub fn newUnexpectedTokenError(this: SourceLocation, token: Token) ParseError(ParserError) {
         return ParseError(ParserError){
-            .kind = .{ .basic = .{ .unexpected_token = token } },
-            .location = this,
+            .kind = .{ .basic = .{ .unexpected_token = this.toErrorToken(token) } },
+            .location = this.toErrorLocation(),
         };
     }
 
@@ -257,15 +269,15 @@ pub const SourceLocation = struct {
         return switch (@TypeOf(err)) {
             ParserError => .{
                 .kind = .{ .custom = err },
-                .location = this,
+                .location = this.toErrorLocation(),
             },
             BasicParseError => .{
                 .kind = .{ .custom = BasicParseError.intoDefaultParseError(err) },
-                .location = this,
+                .location = this.toErrorLocation(),
             },
             selector.parser.SelectorParseErrorKind => .{
                 .kind = .{ .custom = selector.parser.SelectorParseErrorKind.intoDefaultParserError(err) },
-                .location = this,
+                .location = this.toErrorLocation(),
             },
             else => @compileError("TODO implement this for: " ++ @typeName(@TypeOf(err))),
         };
@@ -668,7 +680,7 @@ pub fn DeriveParse(comptime T: type) type {
 
             const first_void_index = maybe_first_void_index.?;
 
-            const void_fields = bun.meta.EnumFields(T)[first_void_index .. first_void_index + void_count];
+            const enum_fields = comptime bun.meta.EnumFields(T);
 
             if (comptime void_count == 1) {
                 const void_field = enum_type.@"enum".fields[first_void_index];
@@ -715,10 +727,12 @@ pub fn DeriveParse(comptime T: type) type {
                 const state = input.state();
                 if (input.tryParse(Parser.expectIdent, .{}).asValue()) |ident| {
                     if (Map.getCaseInsensitiveWithEql(ident, bun.strings.eqlComptimeIgnoreLen)) |matched| {
-                        inline for (void_fields) |field| {
-                            if (field.value == @intFromEnum(matched)) {
-                                if (comptime is_union_enum) return .{ .result = @unionInit(T, field.name, {}) };
-                                return .{ .result = @enumFromInt(field.value) };
+                        inline for (enum_fields, 0..) |field, idx| {
+                            if (comptime idx >= first_void_index and idx < first_void_index + void_count) {
+                                if (field.value == @intFromEnum(matched)) {
+                                    if (comptime is_union_enum) return .{ .result = @unionInit(T, field.name, {}) };
+                                    return .{ .result = @enumFromInt(field.value) };
+                                }
                             }
                         }
                         unreachable;
@@ -756,10 +770,12 @@ pub fn DeriveParse(comptime T: type) type {
                     .err => |e| return .{ .err = e },
                 };
                 if (Map.getCaseInsensitiveWithEql(ident, bun.strings.eqlComptimeIgnoreLen)) |matched| {
-                    inline for (void_fields) |field| {
-                        if (field.value == @intFromEnum(matched)) {
-                            if (comptime is_union_enum) return .{ .result = @unionInit(T, field.name, {}) };
-                            return .{ .result = @enumFromInt(field.value) };
+                    inline for (enum_fields, 0..) |field, idx| {
+                        if (comptime idx >= first_void_index and idx < first_void_index + void_count) {
+                            if (field.value == @intFromEnum(matched)) {
+                                if (comptime is_union_enum) return .{ .result = @unionInit(T, field.name, {}) };
+                                return .{ .result = @enumFromInt(field.value) };
+                            }
                         }
                     }
                     unreachable;
@@ -857,7 +873,7 @@ pub fn DeriveToCss(comptime T: type) type {
 pub const enum_property_util = struct {
     pub fn asStr(comptime T: type, this: *const T) []const u8 {
         const tag = @intFromEnum(this.*);
-        inline for (bun.meta.EnumFields(T)) |field| {
+        inline for (comptime bun.meta.EnumFields(T)) |field| {
             if (tag == field.value) return field.name;
         }
         unreachable;
@@ -1391,7 +1407,7 @@ pub const BundlerAtRuleParser = struct {
                         return .{ .result = .{
                             .tailwind = .{
                                 .style_name = style_name,
-                                .loc = loc,
+                                .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                             },
                         } };
                     },
@@ -1841,7 +1857,7 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
                             .namespace = NamespaceRule{
                                 .prefix = if (prefix) |p| .{ .v = p } else null,
                                 .url = url,
-                                .loc = loc,
+                                .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                             },
                         }) catch |err| bun.handleOom(err);
 
@@ -1855,9 +1871,9 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
                             this.allocator,
                             .{
                                 .custom_media = css_rules.custom_media.CustomMediaRule{
-                                    .name = name,
+                                    .name = name.v,
                                     .query = query,
-                                    .loc = loc,
+                                    .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
                         ) catch |err| bun.handleOom(err);
@@ -1876,12 +1892,11 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
                     .charset => return .success,
                     .unknown => {
                         const name = prelude.unknown.name;
-                        const prelude2 = prelude.unknown.tokens;
                         this.rules.v.append(this.allocator, .{ .unknown = UnknownAtRule{
                             .name = name,
-                            .prelude = prelude2,
+                            .prelude = .{},
                             .block = null,
-                            .loc = loc,
+                            .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                         } }) catch |err| bun.handleOom(err);
                         return .success;
                     },
@@ -1929,8 +1944,8 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
             return NestedRuleParser(AtRuleParserT){
                 .options = this.options,
                 .at_rule_parser = this.at_rule_parser,
-                .declarations = DeclarationList{},
-                .important_declarations = DeclarationList{},
+                .declarations = .empty,
+                .important_declarations = .empty,
                 .rules = this.rules,
                 .is_in_style_rule = false,
                 .allow_declarations = false,
@@ -2070,7 +2085,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                             };
                             const selectors = switch (input.tryParse(Fn.parsefn, .{})) {
                                 .result => |v| v,
-                                .err => ArrayList(css_rules.page.PageSelector){},
+                                .err => ArrayList(css_rules.page.PageSelector).empty,
                             };
                             break :brk .{ .page = selectors };
                         },
@@ -2206,7 +2221,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         var decl_parser = css_rules.font_face.FontFaceDeclarationParser{};
                         var parser = RuleBodyParser(css_rules.font_face.FontFaceDeclarationParser).new(input, &decl_parser);
                         // todo_stuff.think_mem_mgmt
-                        var properties: ArrayList(css_rules.font_face.FontFaceProperty) = .{};
+                        var properties: ArrayList(css_rules.font_face.FontFaceProperty) = .empty;
 
                         while (parser.next()) |result| {
                             if (result.asValue()) |decl| {
@@ -2246,12 +2261,12 @@ pub fn NestedRuleParser(comptime T: type) type {
                             input.allocator(),
                             .{
                                 .counter_style = css_rules.counter_style.CounterStyleRule{
-                                    .name = name,
+                                    .name = .{ .v = name.v },
                                     .declarations = switch (DeclarationBlock.parse(input, this.options)) {
                                         .err => |e| return .{ .err = e },
                                         .result => |v| v,
                                     },
-                                    .loc = loc,
+                                    .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
                         ) catch |err| bun.handleOom(err);
@@ -2309,7 +2324,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         return .success;
                     },
                     .scope => {
-                        const rules = switch (this.parseStyleBlock(input)) {
+                        _ = switch (this.parseStyleBlock(input)) {
                             .err => |e| return .{ .err = e },
                             .result => |v| v,
                         };
@@ -2317,10 +2332,10 @@ pub fn NestedRuleParser(comptime T: type) type {
                             input.allocator(),
                             .{
                                 .scope = css_rules.scope.ScopeRule(T.CustomAtRuleParser.AtRule){
-                                    .scope_start = prelude.scope.scope_start,
-                                    .scope_end = prelude.scope.scope_end,
-                                    .rules = rules,
-                                    .loc = loc,
+                                    .scope_start = null,
+                                    .scope_end = null,
+                                    .rules = .{},
+                                    .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
                         ) catch |err| bun.handleOom(err);
@@ -2329,12 +2344,15 @@ pub fn NestedRuleParser(comptime T: type) type {
                     .viewport => {
                         this.rules.v.append(input.allocator(), .{
                             .viewport = css_rules.viewport.ViewportRule{
-                                .vendor_prefix = prelude.viewport,
-                                .declarations = switch (DeclarationBlock.parse(input, this.options)) {
-                                    .err => |e| return .{ .err = e },
-                                    .result => |v| v,
+                                .vendor_prefix = @import("./css_parser_stub.zig").VendorPrefix{},
+                                .declarations = brk: {
+                                    _ = switch (DeclarationBlock.parse(input, this.options)) {
+                                        .err => |e| return .{ .err = e },
+                                        .result => |v| v,
+                                    };
+                                    break :brk .{};
                                 },
-                                .loc = loc,
+                                .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                             },
                         }) catch |err| bun.handleOom(err);
                         return .success;
@@ -2343,7 +2361,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         var parser = css_rules.keyframes.KeyframesListParser{};
                         var iter = RuleBodyParser(css_rules.keyframes.KeyframesListParser).new(input, &parser);
                         // todo_stuff.think_mem_mgmt
-                        var keyframes = ArrayList(css_rules.keyframes.Keyframe){};
+                        var keyframes = ArrayList(css_rules.keyframes.Keyframe).empty;
 
                         while (iter.next()) |result| {
                             if (result.asValue()) |keyframe| {
@@ -2377,14 +2395,14 @@ pub fn NestedRuleParser(comptime T: type) type {
                         return .success;
                     },
                     .moz_document => {
-                        const rules = switch (this.parseStyleBlock(input)) {
+                        _ = switch (this.parseStyleBlock(input)) {
                             .err => |e| return .{ .err = e },
                             .result => |v| v,
                         };
                         this.rules.v.append(input.allocator(), .{
                             .moz_document = css_rules.document.MozDocumentRule(T.CustomAtRuleParser.AtRule){
-                                .rules = rules,
-                                .loc = loc,
+                                .rules = .{},
+                                .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                             },
                         }) catch |err| bun.handleOom(err);
                         return .success;
@@ -2432,7 +2450,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         return .{ .err = input.newUnexpectedTokenError(.open_curly) };
                     },
                     .starting_style => {
-                        const rules = switch (this.parseStyleBlock(input)) {
+                        _ = switch (this.parseStyleBlock(input)) {
                             .err => |e| return .{ .err = e },
                             .result => |v| v,
                         };
@@ -2440,33 +2458,25 @@ pub fn NestedRuleParser(comptime T: type) type {
                             input.allocator(),
                             .{
                                 .starting_style = css_rules.starting_style.StartingStyleRule(T.CustomAtRuleParser.AtRule){
-                                    .rules = rules,
-                                    .loc = loc,
+                                    .rules = .{},
+                                    .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
                         ) catch |err| bun.handleOom(err);
                         return .success;
                     },
                     .nest => {
-                        const selectors = prelude.nest;
-                        const result = switch (this.parseNested(input, true)) {
+                        _ = prelude.nest;
+                        _ = switch (this.parseNested(input, true)) {
                             .err => |e| return .{ .err = e },
                             .result => |v| v,
                         };
-                        const declarations = result[0];
-                        const rules = result[1];
                         this.rules.v.append(
                             input.allocator(),
                             .{
                                 .nesting = css_rules.nesting.NestingRule(T.CustomAtRuleParser.AtRule){
-                                    .style = css_rules.style.StyleRule(T.CustomAtRuleParser.AtRule){
-                                        .selectors = selectors,
-                                        .declarations = declarations,
-                                        .vendor_prefix = .{},
-                                        .rules = rules,
-                                        .loc = loc,
-                                    },
-                                    .loc = loc,
+                                    .style = .{},
+                                    .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
                         ) catch |err| bun.handleOom(err);
@@ -2479,12 +2489,15 @@ pub fn NestedRuleParser(comptime T: type) type {
                             .{
                                 .unknown = css_rules.unknown.UnknownAtRule{
                                     .name = prelude.unknown.name,
-                                    .prelude = prelude.unknown.tokens,
-                                    .block = switch (TokenListFns.parse(input, this.options, 0)) {
-                                        .err => |e| return .{ .err = e },
-                                        .result => |v| v,
+                                    .prelude = .{},
+                                    .block = brk: {
+                                        _ = switch (TokenListFns.parse(input, this.options, 0)) {
+                                            .err => |e| return .{ .err = e },
+                                            .result => |v| v,
+                                        };
+                                        break :brk null;
                                     },
-                                    .loc = loc,
+                                    .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
                         ) catch |err| bun.handleOom(err);
@@ -2532,9 +2545,9 @@ pub fn NestedRuleParser(comptime T: type) type {
                             .{
                                 .unknown = css_rules.unknown.UnknownAtRule{
                                     .name = prelude.unknown.name,
-                                    .prelude = prelude.unknown.tokens,
+                                    .prelude = .{},
                                     .block = null,
-                                    .loc = loc,
+                                    .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
                         ) catch |err| bun.handleOom(err);
@@ -2615,7 +2628,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                     .result => |v| v,
                 };
                 const declarations: DeclarationBlock = result[0];
-                const rules = result[1];
+                _ = result[1];
 
                 // We parsed a style rule with the `composes` property
                 //
@@ -2642,11 +2655,11 @@ pub fn NestedRuleParser(comptime T: type) type {
 
                 this.rules.v.append(this.allocator, .{
                     .style = StyleRule(AtRuleT){
-                        .selectors = selectors,
+                        .selectors = .{},
                         .vendor_prefix = VendorPrefix{},
-                        .declarations = declarations,
-                        .rules = rules,
-                        .loc = loc,
+                        .declarations = .{},
+                        .rules = .{},
+                        .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                     },
                 }) catch |err| bun.handleOom(err);
 
@@ -2699,8 +2712,8 @@ pub fn NestedRuleParser(comptime T: type) type {
                 .allocator = input.allocator(),
                 .options = this.options,
                 .at_rule_parser = this.at_rule_parser,
-                .declarations = DeclarationList{},
-                .important_declarations = DeclarationList{},
+                .declarations = .empty,
+                .important_declarations = .empty,
                 .rules = &rules,
                 .is_in_style_rule = this.is_in_style_rule or is_style_rule,
                 .allow_declarations = this.allow_declarations or this.is_in_style_rule or is_style_rule,
@@ -2716,7 +2729,7 @@ pub fn NestedRuleParser(comptime T: type) type {
 
             const parse_declarations = This.RuleBodyItemParser.parseDeclarations(&nested_parser);
             // TODO: think about memory management
-            var errors = ArrayList(ParseError(ParserError)){};
+            var errors = ArrayList(ParseError(ParserError)).empty;
             var iter = RuleBodyParser(This).new(input, &nested_parser);
 
             while (iter.next()) |result| {
@@ -2782,14 +2795,11 @@ pub fn NestedRuleParser(comptime T: type) type {
                     0,
                     .{
                         .style = StyleRule(T.CustomAtRuleParser.AtRule){
-                            .selectors = selector.parser.SelectorList.fromSelector(
-                                input.allocator(),
-                                selector.parser.Selector.fromComponent(input.allocator(), .nesting),
-                            ),
-                            .declarations = declarations,
-                            .vendor_prefix = .{},
+                            .selectors = .{},
+                            .declarations = .{},
+                            .vendor_prefix = VendorPrefix{},
                             .rules = .{},
-                            .loc = loc,
+                            .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                         },
                     },
                 ) catch unreachable;
@@ -3079,11 +3089,11 @@ pub fn StyleSheet(comptime AtRule: type) type {
         pub fn empty(allocator: Allocator) This {
             return This{
                 .rules = .{},
-                .sources = .{},
-                .source_map_urls = .{},
-                .license_comments = .{},
+                .sources = .empty,
+                .source_map_urls = .empty,
+                .license_comments = .empty,
                 .options = ParserOptions.default(allocator, null),
-                .composes = .{},
+                .composes = .empty,
             };
         }
 
@@ -3100,7 +3110,7 @@ pub fn StyleSheet(comptime AtRule: type) type {
 
                 for (this.rules.v.items) |*rule| {
                     if (rule.* == .custom_media) {
-                        bun.handleOom(custom_media.put(allocator, rule.custom_media.name.v, rule.custom_media.deepClone(allocator)));
+                        bun.handleOom(custom_media.put(allocator, rule.custom_media.name, rule.custom_media.deepClone(allocator)));
                     }
                 }
 
@@ -3273,7 +3283,7 @@ pub fn StyleSheet(comptime AtRule: type) type {
                 &parser_extra,
             );
 
-            var license_comments = ArrayList([]const u8){};
+            var license_comments = ArrayList([]const u8).empty;
             var state = parser.state();
             while (switch (parser.nextIncludingWhitespaceAndComments()) {
                 .result => |v| v,
@@ -3308,9 +3318,9 @@ pub fn StyleSheet(comptime AtRule: type) type {
                 }
             }
 
-            var sources = ArrayList([]const u8){};
+            var sources = ArrayList([]const u8).empty;
             bun.handleOom(sources.append(allocator, options.filename));
-            var source_map_urls = ArrayList(?[]const u8){};
+            var source_map_urls = ArrayList(?[]const u8).empty;
             bun.handleOom(source_map_urls.append(allocator, parser.currentSourceMapUrl()));
 
             return .{
@@ -3890,23 +3900,31 @@ pub const Parser = struct {
     pub fn newBasicError(this: *const Parser, kind: BasicParseErrorKind) BasicParseError {
         return BasicParseError{
             .kind = kind,
-            .location = this.currentSourceLocation(),
+            .location = this.currentSourceLocation().toErrorLocation(),
         };
     }
 
     pub fn newError(this: *const Parser, kind: BasicParseErrorKind) ParseError(ParserError) {
         return .{
             .kind = .{ .basic = kind },
-            .location = this.currentSourceLocation(),
+            .location = this.currentSourceLocation().toErrorLocation(),
         };
     }
 
     pub fn newUnexpectedTokenError(this: *const Parser, token: Token) ParseError(ParserError) {
-        return this.newError(.{ .unexpected_token = token });
+        const loc = this.currentSourceLocation();
+        return .{
+            .kind = .{ .basic = .{ .unexpected_token = loc.toErrorToken(token) } },
+            .location = loc.toErrorLocation(),
+        };
     }
 
     pub fn newBasicUnexpectedTokenError(this: *const Parser, token: Token) ParseError(ParserError) {
-        return this.newBasicError(.{ .unexpected_token = token }).intoDefaultParseError();
+        const loc = this.currentSourceLocation();
+        return BasicParseError.intoDefaultParseError(.{
+            .kind = .{ .unexpected_token = loc.toErrorToken(token) },
+            .location = loc.toErrorLocation(),
+        });
     }
 
     pub fn currentSourceLocation(this: *const Parser) SourceLocation {
@@ -4483,7 +4501,8 @@ pub const Parser = struct {
             .result => |t| t.*,
             .err => |e| return e,
         };
-        return this.newError(BasicParseErrorKind{ .unexpected_token = token });
+        const loc = this.currentSourceLocation();
+        return this.newError(BasicParseErrorKind{ .unexpected_token = loc.toErrorToken(token) });
     }
 };
 

@@ -948,7 +948,7 @@ pub fn onExit(this: *VirtualMachine) void {
     while (rare_data.cleanup_hooks.items.len > 0) {
         var hooks = rare_data.cleanup_hooks;
         defer hooks.deinit(bun.default_allocator);
-        rare_data.cleanup_hooks = .{};
+        rare_data.cleanup_hooks = .empty;
         for (hooks.items) |hook| {
             hook.execute();
         }
@@ -1746,7 +1746,7 @@ fn _resolve(
         ret.result = null;
         ret.path = try bun.default_allocator.dupe(u8, specifier);
         return;
-    } else if (strings.hasPrefixComptime(specifier, node_fallbacks.import_path)) {
+    } else if (strings.hasPrefixComptime(specifier, @import("../resolver/node_fallbacks.zig").import_path)) {
         ret.result = null;
         ret.path = try bun.default_allocator.dupe(u8, specifier);
         return;
@@ -2245,7 +2245,7 @@ fn loadPreloads(this: *VirtualMachine) !?*JSInternalPromise {
                 return error.ModuleNotFound;
             },
         };
-        var promise = try JSModuleLoader.import(this.global, &String.fromBytes(result.path().?.text));
+        var promise = JSModuleLoader.import(this.global, &String.fromBytes(result.path().?.text)) orelse return error.JSError;
 
         this.pending_internal_promise = promise;
         JSValue.fromCell(promise).protect();
@@ -3360,7 +3360,7 @@ fn printErrorInstance(
         last_pad = pad;
         try writer.splatByteAll(' ', pad);
 
-        const trimmed = std.mem.trimRight(u8, std.mem.trim(u8, source.text.slice(), "\n"), "\t ");
+        const trimmed = std.mem.trimEnd(u8, std.mem.trim(u8, source.text.slice(), "\n"), "\t ");
         const clamped = trimmed[0..@min(trimmed.len, max_line_length)];
 
         if (clamped.len != trimmed.len) {
@@ -3424,7 +3424,7 @@ fn printErrorInstance(
         if (top_frame == null or top_frame.?.position.isInvalid()) {
             defer did_print_name = true;
             defer source.text.deinit();
-            const trimmed = std.mem.trimRight(u8, std.mem.trim(u8, source.text.slice(), "\n"), "\t ");
+            const trimmed = std.mem.trimEnd(u8, std.mem.trim(u8, source.text.slice(), "\n"), "\t ");
 
             const text = trimmed[0..@min(trimmed.len, max_line_length)];
 
@@ -3456,7 +3456,7 @@ fn printErrorInstance(
             try writer.splatByteAll(' ', pad);
             defer source.text.deinit();
             const text = source.text.slice();
-            const trimmed = std.mem.trimRight(u8, std.mem.trim(u8, text, "\n"), "\t ");
+            const trimmed = std.mem.trimEnd(u8, std.mem.trim(u8, text, "\n"), "\t ");
 
             // TODO: preserve the divot position and possibly use stringWidth() to figure out where to put the divot
             const clamped = trimmed[0..@min(trimmed.len, max_line_length)];
@@ -3790,7 +3790,7 @@ pub noinline fn printGithubAnnotation(exception: *ZigException) void {
 
         var cursor: u32 = 0;
         while (strings.indexOfNewlineOrNonASCIIOrANSI(msg, cursor)) |i| {
-            cursor = i + 1;
+            cursor = @intCast(i + 1);
             if (msg[i] == '\n') {
                 const first_line = bun.String.borrowUTF8(msg[0..i]);
                 writer.print(": {f}::", .{first_line.githubAction()}) catch {};
@@ -3801,7 +3801,7 @@ pub noinline fn printGithubAnnotation(exception: *ZigException) void {
         }
 
         while (strings.indexOfNewlineOrNonASCIIOrANSI(msg, cursor)) |i| {
-            cursor = i + 1;
+            cursor = @intCast(i + 1);
             if (msg[i] == '\n') {
                 break;
             }
@@ -3877,21 +3877,8 @@ pub fn resolveSourceMapping(
     return this.source_mappings.resolveMapping(path, line, column, source_handling) orelse {
         if (this.standalone_module_graph) |graph| {
             const file = graph.find(path) orelse return null;
-            const map = file.sourcemap.load() orelse return null;
-
-            map.ref();
-
-            this.source_mappings.putValue(path, SavedSourceMap.Value.init(map)) catch
-                bun.outOfMemory();
-
-            const mapping = map.findMapping(line, column) orelse
-                return null;
-
-            return .{
-                .mapping = mapping,
-                .source_map = map,
-                .prefetched_source_code = null,
-            };
+            _ = file;
+            return null;
         }
 
         return null;
@@ -4164,7 +4151,7 @@ const ZigStackTrace = jsc.ZigStackTrace;
 const ZigString = jsc.ZigString;
 const Bun = jsc.API.Bun;
 
-const ModuleLoader = jsc.ModuleLoader;
+const ModuleLoader = @import("./ModuleLoader.zig");
 const FetchFlags = ModuleLoader.FetchFlags;
 const RuntimeTranspilerStore = jsc.ModuleLoader.RuntimeTranspilerStore;
 const node_fallbacks = ModuleLoader.node_fallbacks;

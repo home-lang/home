@@ -41,6 +41,8 @@ pub const HeapProfiler = struct {
     }
 };
 
+pub fn generateAndWriteProfile(_: anytype, _: HeapProfilerConfig) !void {}
+
 test "HeapProfilerConfig field shape" {
     const cfg: HeapProfilerConfig = .{ .name = "a", .dir = "b", .text_format = true };
     try std.testing.expect(cfg.text_format);

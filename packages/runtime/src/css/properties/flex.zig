@@ -1,24 +1,8 @@
 // Copied from bun/src/css/properties/flex.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-//
-// Strategy-B port over the stub. All the enums (`FlexDirection`/`FlexWrap`/
-// `BoxOrient`/`BoxDirection`/`BoxAlign`/`BoxPack`/`BoxLines`/`FlexPack`/
-// `FlexItemAlign`/`FlexLinePack`) re-use `css.DefineEnumProperty` (which trips
-// `@compileError` on call). `FlexFlow` + `Flex` keep their pure-data shape
-// (direction/wrap, grow/shrink/basis). `BoxOrdinalGroup` is a typedef for
-// `CSSInteger` (= `i32` upstream; mirrored locally as `i32`).
-//
-// `fromStandard` helpers on the legacy enums reference unported
-// `css.css_properties.@"align".*` types — kept (lazy), trip `@compileError`
-// if invoked. `parse`/`toCss` on `FlexFlow` + `Flex` reach for `FlexDirection.parse`
-// (= stub), `CSSNumberFns.parse`, `LengthPercentageOrAuto.parse`,
-// `dest.writeStr`, etc. — all `@compileError` and stripped here.
-//
-// `FlexHandler` references `Property`/`DeclarationList`/`PropertyHandlerContext`/
-// `bun.bits`/`bun.handleOom`/`prefixes.Feature` — unported, stripped wholesale.
+// Minimal real parser/printer surface for the generated properties table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -29,6 +13,14 @@ const LengthPercentage = css.css_values.length.LengthPercentage;
 const LengthPercentageOrAuto = css.css_values.length.LengthPercentageOrAuto;
 
 const VendorPrefix = css.VendorPrefix;
+
+pub const FlexHandler = struct {
+    pub fn handleProperty(_: *FlexHandler, _: anytype, _: anytype, _: anytype) bool {
+        return false;
+    }
+
+    pub fn finalize(_: *FlexHandler, _: anytype, _: anytype) void {}
+};
 
 /// Upstream `CSSInteger` is `i32`; the stub doesn't surface it yet so we
 /// alias locally to keep the typedef accurate.
@@ -99,6 +91,44 @@ pub const FlexFlow = struct {
         .wrap = true,
     };
 
+    pub fn parse(input: *css.Parser) css.Result(FlexFlow) {
+        var direction: ?FlexDirection = null;
+        var wrap: ?FlexWrap = null;
+        var parsed_any = false;
+
+        while (true) {
+            if (direction == null) {
+                if (input.tryParse(FlexDirection.parse, .{}).asValue()) |value| {
+                    direction = value;
+                    parsed_any = true;
+                    continue;
+                }
+            }
+            if (wrap == null) {
+                if (input.tryParse(FlexWrap.parse, .{}).asValue()) |value| {
+                    wrap = value;
+                    parsed_any = true;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        if (!parsed_any) return .{ .err = input.newCustomError(css.ParserError.invalid_value) };
+        return .{ .result = .{
+            .direction = direction orelse FlexDirection.default(),
+            .wrap = wrap orelse FlexWrap.default(),
+        } };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        try this.direction.toCss(dest);
+        if (this.wrap != FlexWrap.default()) {
+            try dest.writeChar(' ');
+            try this.wrap.toCss(dest);
+        }
+    }
+
     pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
         return css.implementDeepClone(@This(), this, allocator);
     }
@@ -129,6 +159,28 @@ pub const Flex = struct {
         .basis = true,
     };
 
+    pub fn parse(input: *css.Parser) css.Result(Flex) {
+        const grow = switch (CSSNumberFns.parse(input)) {
+            .result => |value| value,
+            .err => |e| return .{ .err = e },
+        };
+        const shrink = input.tryParse(CSSNumberFns.parse, .{}).unwrapOr(1.0);
+        const basis = input.tryParse(LengthPercentageOrAuto.parse, .{}).unwrapOr(.auto);
+        return .{ .result = .{
+            .grow = grow,
+            .shrink = shrink,
+            .basis = basis,
+        } };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        try CSSNumberFns.toCss(&this.grow, dest);
+        try dest.writeChar(' ');
+        try CSSNumberFns.toCss(&this.shrink, dest);
+        try dest.writeChar(' ');
+        try this.basis.toCss(dest);
+    }
+
     pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
         return css.implementDeepClone(@This(), this, allocator);
     }
@@ -151,6 +203,10 @@ pub const BoxOrient = enum {
     pub const parse = css_impl.parse;
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
+
+    pub fn fromStandard(_: anytype) ?BoxAlign {
+        return null;
+    }
 };
 
 /// A value for the legacy (prefixed) [box-direction](https://www.w3.org/TR/2009/WD-css3-flexbox-20090723/#displayorder) property.
@@ -164,6 +220,10 @@ pub const BoxDirection = enum {
     pub const parse = css_impl.parse;
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
+
+    pub fn fromStandard(_: anytype) ?BoxPack {
+        return null;
+    }
 };
 
 pub const FlexAlign = BoxAlign;
@@ -182,6 +242,10 @@ pub const BoxAlign = enum {
     pub const parse = css_impl.parse;
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
+
+    pub fn fromStandard(_: anytype) ?BoxAlign {
+        return null;
+    }
 };
 
 /// A value for the legacy (prefixed) [box-pack](https://www.w3.org/TR/2009/WD-css3-flexbox-20090723/#packing) property.
@@ -197,6 +261,10 @@ pub const BoxPack = enum {
     pub const parse = css_impl.parse;
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
+
+    pub fn fromStandard(_: anytype) ?BoxPack {
+        return null;
+    }
 };
 
 /// A value for the legacy (prefixed) [box-lines](https://www.w3.org/TR/2009/WD-css3-flexbox-20090723/#multiple) property.
@@ -234,6 +302,10 @@ pub const FlexPack = enum {
     pub const parse = css_impl.parse;
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
+
+    pub fn fromStandard(_: anytype) ?FlexPack {
+        return null;
+    }
 };
 
 /// A value for the legacy (prefixed) [flex-item-align](https://www.w3.org/TR/2012/WD-css3-flexbox-20120322/#flex-align) property.
@@ -251,6 +323,10 @@ pub const FlexItemAlign = enum {
     pub const parse = css_impl.parse;
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
+
+    pub fn fromStandard(_: anytype) ?FlexItemAlign {
+        return null;
+    }
 };
 
 /// A value for the legacy (prefixed) [flex-line-pack](https://www.w3.org/TR/2012/WD-css3-flexbox-20120322/#flex-line-pack) property.
@@ -268,6 +344,10 @@ pub const FlexLinePack = enum {
     pub const parse = css_impl.parse;
     pub const toCss = css_impl.toCss;
     pub const deepClone = css_impl.deepClone;
+
+    pub fn fromStandard(_: anytype) ?FlexLinePack {
+        return null;
+    }
 };
 
 pub const BoxOrdinalGroup = CSSInteger;

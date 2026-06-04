@@ -183,6 +183,48 @@ pub const PosixSpawn = struct {
         status: u32,
     };
 
+    pub fn spawnZ(
+        path: [*:0]const u8,
+        actions: Actions,
+        attr: Attr,
+        argv: [*:null]?[*:0]const u8,
+        envp: [*:null]?[*:0]const u8,
+    ) @import("bun").sys.Maybe(pid_t) {
+        const M = @import("bun").sys.Maybe(pid_t);
+        var native_actions = PosixSpawnActions.init() catch return .{ .err = .{
+            .errno = @intFromEnum(std.posix.E.NOMEM),
+            .syscall = .posix_spawn,
+        } };
+        defer native_actions.deinit();
+
+        for (actions.actions.items) |action| {
+            switch (action.kind) {
+                .none => {},
+                .close => native_actions.close(action.fds[0]) catch {},
+                .dup2 => native_actions.dup2(action.fds[0], action.fds[1]) catch {},
+                .open => if (action.path) |action_path| {
+                    native_actions.openZ(action.fds[0], action_path, @bitCast(action.flags), @intCast(action.mode)) catch {};
+                },
+            }
+        }
+        if (actions.chdir_buf) |cwd| {
+            native_actions.chdirZ(cwd) catch {};
+        }
+
+        var native_attr = PosixSpawnAttr.init() catch return .{ .err = .{
+            .errno = @intFromEnum(std.posix.E.NOMEM),
+            .syscall = .posix_spawn,
+        } };
+        defer native_attr.deinit();
+        native_attr.set(attr.flags) catch {};
+        if (attr.reset_signals) native_attr.resetSignals() catch {};
+
+        var pid: pid_t = 0;
+        const rc = system.posix_spawn(&pid, path, &native_actions.actions, &native_attr.attr, argv, envp);
+        if (M.errnoSys(rc, .posix_spawn)) |err| return err;
+        return .{ .result = pid };
+    }
+
     /// Forward-port: std.posix.wait4 was removed in Home's Zig fork; wrap the
     /// libc wait4 directly. `usage` is a pointer to process.Rusage (layout-
     /// compatible with std.c.rusage).

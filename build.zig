@@ -72,10 +72,51 @@ fn dependOnTest(
 // non-native build still works. Only exercised once the home_rt module compiles.
 const bun_obj_root = "/Users/chrisbreuer/Code/bun/build/release/obj";
 const bun_webkit_lib = "/Users/chrisbreuer/.bun/build-cache/webkit-5488984d20e0dbfe-arm64/lib";
-const bun_rust_lib = "/Users/chrisbreuer/Code/bun/build/release/rust-target/aarch64-apple-darwin/release/libbun_rust.a";
+const link_bun_rust_archive = false;
+
+const native_vendor_roots = [_][]const u8{
+    "vendor/boringssl/",
+    "vendor/cares/",
+    "vendor/hdrhistogram/",
+    "vendor/highway/",
+    "vendor/libarchive/",
+    "vendor/libdeflate/",
+    "vendor/libjpeg-turbo/",
+    "vendor/libspng/",
+    "vendor/libwebp/",
+    "vendor/lsqpack/",
+    "vendor/lshpack/",
+    "vendor/lsquic/",
+    "vendor/picohttpparser/",
+    "vendor/tinycc/",
+};
+
+const native_skip_paths = [_][]const u8{
+    "src/jsc/bindings/uv-posix-stubs.c.o",
+    "src/jsc/bindings/napi.cpp.o",
+};
+
+fn shouldLinkBunObject(path: []const u8) bool {
+    for (native_skip_paths) |skip| {
+        if (std.mem.eql(u8, path, skip)) return false;
+    }
+
+    if (std.mem.startsWith(u8, path, "vendor/")) {
+        for (native_vendor_roots) |root| {
+            if (std.mem.startsWith(u8, path, root)) return true;
+        }
+        return false;
+    }
+
+    return true;
+}
 
 fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget) void {
     m.linkSystemLibrary("c++", .{});
+    m.linkSystemLibrary("uv", .{});
+    if (target.result.os.tag == .macos) {
+        m.linkSystemLibrary("icucore", .{});
+    }
 
     // Fork std: filesystem moved to `std.Io.Dir` (io-parameterized).
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -93,16 +134,23 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".o")) continue;
+        if (!shouldLinkBunObject(entry.path)) continue;
         m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/{s}", .{ bun_obj_root, entry.path }) });
     }
+
+    m.addObjectFile(.{ .cwd_relative = ".native/napi_weak_home_dups.cpp.o" });
 
     // WebKit static libs (JavaScriptCore engine + WTF + bmalloc).
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libJavaScriptCore.a", .{bun_webkit_lib}) });
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libWTF.a", .{bun_webkit_lib}) });
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libbmalloc.a", .{bun_webkit_lib}) });
 
-    // Bun's Rust static lib (bun_css/clap/etc.).
-    m.addObjectFile(.{ .cwd_relative = bun_rust_lib });
+    // Bun's Rust static lib (bun_css/clap/etc.) is kept opt-in during the Home
+    // runtime port because it also exports generated Bun ABI symbols now owned
+    // by Home's ZigGeneratedClasses module.
+    if (link_bun_rust_archive) {
+        m.addObjectFile(.{ .cwd_relative = ".native/libbun_rust_no_main.a" });
+    }
 
     if (target.result.os.tag == .macos) {
         for ([_][]const u8{
@@ -313,8 +361,13 @@ pub fn build(b: *std.Build) void {
     // (zig_dtsx.zig) re-exports scanner + emitter; Zig requires each
     // file to belong to exactly one module so we can't expose
     // scanner and emitter as separate modules without duplication.
+    const zig_dtsx_io = std.Io.Threaded.global_single_threaded.io();
+    const zig_dtsx_source: std.Build.LazyPath = if (std.Io.Dir.cwd().access(zig_dtsx_io, "pantry/zig-dtsx/src/zig_dtsx.zig", .{})) |_|
+        b.path("pantry/zig-dtsx/src/zig_dtsx.zig")
+    else |_|
+        .{ .cwd_relative = "/Users/chrisbreuer/Code/Home/lang/pantry/zig-dtsx/src/zig_dtsx.zig" };
     const dtsx_pkg = b.createModule(.{
-        .root_source_file = b.path("pantry/zig-dtsx/src/zig_dtsx.zig"),
+        .root_source_file = zig_dtsx_source,
         .target = target,
         .optimize = optimize,
     });
@@ -656,6 +709,7 @@ pub fn build(b: *std.Build) void {
     // `home eval`/`home run` reach the native JSC runtime through home_rt.
     // JSC itself is linked into `exe` below, gated on `enable_jsc`.
     exe.root_module.addImport("home", home_rt_pkg);
+    exe.root_module.addImport("home_rt", home_rt_pkg);
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
@@ -698,9 +752,15 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("build_options", build_options_module);
     home_rt_pkg.addImport("build_options", build_options_module);
     home_test_pkg.addImport("build_options", build_options_module);
-    if (enable_jsc) {
-        linkBunNative(b, exe.root_module, target);
+    home_rt_pkg.link_libc = true;
+    if (target.result.os.tag == .macos) {
+        home_rt_pkg.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
     }
+    home_rt_pkg.linkSystemLibrary("z", .{});
+    home_rt_pkg.linkSystemLibrary("brotlidec", .{});
+    home_rt_pkg.linkSystemLibrary("brotlienc", .{});
+    home_rt_pkg.linkSystemLibrary("zstd", .{});
+    if (enable_jsc) linkBunNative(b, home_rt_pkg, target);
 
     // Link Craft if enabled
     if (enable_craft) {
@@ -1087,22 +1147,13 @@ pub fn build(b: *std.Build) void {
 
     // Home Runtime substrate tests
     const home_rt_tests = b.addTest(.{ .root_module = home_rt_pkg });
-    // Wave-11 brotli/zlib/zstd wrappers declare extern C symbols; link
-    // libc + system libs here, mirroring the prod-exe linkage at L507.
-    // Mimalloc deferred: Bun upstream vendors mimalloc-bun (Phase 12.2).
-    home_rt_tests.root_module.link_libc = true;
-    if (target.result.os.tag == .macos) {
-        home_rt_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-    }
-    home_rt_tests.root_module.linkSystemLibrary("z", .{});
-    home_rt_tests.root_module.linkSystemLibrary("brotlidec", .{});
-    home_rt_tests.root_module.linkSystemLibrary("brotlienc", .{});
-    home_rt_tests.root_module.linkSystemLibrary("zstd", .{});
-    // Phase 12.2 M3 prep: opt-in JSC linkage. See `enable_jsc` decl above.
-    if (enable_jsc) {
-        linkBunNative(b, home_rt_tests.root_module, target);
-    }
-    const run_home_rt_tests = b.addRunArtifact(home_rt_tests);
+    // Pantry Zig's server-mode test runner deadlocks for the native-linked
+    // home_rt binary before it sends the metadata query. Run this one artifact
+    // in terminal mode while preserving the compiled test dependency.
+    const run_home_rt_tests = b.addSystemCommand(&.{"/usr/bin/env"});
+    run_home_rt_tests.setName("run test home_rt");
+    run_home_rt_tests.addFileArg(home_rt_tests.getEmittedBin());
+    run_home_rt_tests.addArg(b.fmt("--seed=0x{x}", .{b.graph.random_seed}));
     dependOnTest(test_step, &run_home_rt_tests.step, test_filter, "home_rt");
 
     // Modsign tests
@@ -1298,9 +1349,6 @@ pub fn build(b: *std.Build) void {
 
     // home_test: only the public facade is wired in.
     const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });
-    if (enable_jsc) {
-        linkBunNative(b, home_test_tests.root_module, target);
-    }
     const run_home_test_tests = b.addRunArtifact(home_test_tests);
     dependOnTest(test_step, &run_home_test_tests.step, test_filter, "home_test");
 
@@ -1776,6 +1824,7 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("home_test", home_test_pkg);
     debug_exe.root_module.addImport("build_options", build_options_module);
     debug_exe.root_module.addImport("home", home_rt_pkg);
+    debug_exe.root_module.addImport("home_rt", home_rt_pkg);
 
     const install_debug = b.addInstallArtifact(debug_exe, .{});
     const debug_step = b.step("debug", "Build Home compiler in Debug mode (with safety checks)");
@@ -1812,6 +1861,7 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("http", http_pkg);
     release_safe_exe.root_module.addImport("build_options", build_options.createModule());
     release_safe_exe.root_module.addImport("home", home_rt_pkg);
+    release_safe_exe.root_module.addImport("home_rt", home_rt_pkg);
 
     const install_release_safe = b.addInstallArtifact(release_safe_exe, .{});
     const release_safe_step = b.step("release-safe", "Build Home compiler in ReleaseSafe mode (optimized with safety)");
@@ -1848,6 +1898,7 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("http", http_pkg);
     release_small_exe.root_module.addImport("build_options", build_options.createModule());
     release_small_exe.root_module.addImport("home", home_rt_pkg);
+    release_small_exe.root_module.addImport("home_rt", home_rt_pkg);
 
     const install_release_small = b.addInstallArtifact(release_small_exe, .{});
     const release_small_step = b.step("release-small", "Build Home compiler in ReleaseSmall mode (optimized for size)");
@@ -1889,6 +1940,7 @@ pub fn build(b: *std.Build) void {
     release_fast_exe.root_module.addImport("http", http_pkg);
     release_fast_exe.root_module.addImport("build_options", build_options.createModule());
     release_fast_exe.root_module.addImport("home", home_rt_pkg);
+    release_fast_exe.root_module.addImport("home_rt", home_rt_pkg);
     // LTO is enabled by default for ReleaseFast under modern Zig
     // (whole-program optimization across modules). The §11.11
     // Tier 1 ~10–20% speedup baseline kicks in here automatically.

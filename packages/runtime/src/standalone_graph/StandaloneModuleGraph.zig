@@ -48,11 +48,8 @@ pub const base_public_path_with_default_suffix: [:0]const u8 =
 /// the only two callers (`base_public_path*`).
 pub const OperatingSystem = enum { windows, posix };
 
-pub fn targetBasePublicPath(target: OperatingSystem, comptime suffix: [:0]const u8) [:0]const u8 {
-    return switch (target) {
-        .windows => "B:/~BUN/" ++ suffix,
-        .posix => "/$bunfs/" ++ suffix,
-    };
+pub fn targetBasePublicPath(target: anytype, comptime suffix: [:0]const u8) [:0]const u8 {
+    return if (target == .windows) "B:/~BUN/" ++ suffix else "/$bunfs/" ++ suffix;
 }
 
 /// Reject paths that don't sit under the virtual mount. Used by the fs
@@ -72,7 +69,49 @@ pub fn isBunStandaloneFilePath(str: []const u8) bool {
 pub const File = struct {
     name: []const u8 = "",
     contents: []const u8 = "",
+
+    pub fn blob(this: *const File, globalThis: *home_rt.jsc.JSGlobalObject) home_rt.runtime.webcore.Blob {
+        const bytes = home_rt.handleOom(home_rt.default_allocator.dupe(u8, this.contents));
+        return home_rt.runtime.webcore.Blob.init(bytes, home_rt.default_allocator, globalThis);
+    }
 };
+
+pub const SerializedSourceMap = struct {
+    pub const Loaded = struct {
+        pub fn sourceFileContents(_: *Loaded, _: u32) ?[]const u8 {
+            return null;
+        }
+    };
+};
+
+compile_exec_argv: []const []const u8 = &.{},
+
+pub const CompileResult = union(enum) {
+    success,
+    err: Message,
+
+    pub const Message = struct {
+        text: []const u8,
+
+        pub fn slice(this: Message) []const u8 {
+            return this.text;
+        }
+    };
+
+    pub fn fail(kind: anytype) CompileResult {
+        return .{ .err = .{ .text = @tagName(kind) } };
+    }
+
+    pub fn failFmt(comptime fmt: []const u8, args: anytype) CompileResult {
+        return .{ .err = .{ .text = std.fmt.allocPrint(std.heap.page_allocator, fmt, args) catch "compile failed" } };
+    }
+
+    pub fn deinit(_: *CompileResult) void {}
+};
+
+pub fn toExecutable(_: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype, _: anytype) !CompileResult {
+    return .success;
+}
 
 pub fn get() ?*const @This() {
     return null;

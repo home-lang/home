@@ -1056,6 +1056,11 @@ const TypeAndFlags = packed struct(i32) {
 fn @"export"() void {
     _ = BakeProdResolve;
     _ = BakeProdLoad;
+    _ = BakeProdSourceMap;
+}
+
+comptime {
+    @"export"();
 }
 
 const std = @import("std");

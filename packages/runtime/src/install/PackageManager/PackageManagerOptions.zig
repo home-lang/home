@@ -251,8 +251,10 @@ pub fn load(
         }
 
         if (config.scoped) |scoped| {
-            for (scoped.scopes.keys(), scoped.scopes.values()) |name, *registry_| {
-                var registry = registry_.*;
+            var registry_iter = scoped.scopes.iterator();
+            while (registry_iter.next()) |entry| {
+                const name = entry.key_ptr.*;
+                var registry = entry.value_ptr.*;
                 if (registry.url.len == 0) registry.url = base.url;
                 try this.registries.put(allocator, Npm.Registry.Scope.hash(name), try Npm.Registry.Scope.fromAPI(name, registry, allocator, env));
             }

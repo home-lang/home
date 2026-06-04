@@ -473,6 +473,8 @@ pub const JSValue = enum(i64) {
 
             return ZigType.fromJS(value);
         }
+
+        return null;
     }
 
     extern fn JSC__JSValue__dateInstanceFromNullTerminatedString(*JSGlobalObject, [*:0]const u8) JSValue;

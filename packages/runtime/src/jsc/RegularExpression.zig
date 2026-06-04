@@ -5,17 +5,7 @@
 // struct with the same layout. The JSC bridge re-attaches in Phase 12.2.
 
 const std = @import("std");
-
-// JSC bridge bun.String stubbed — re-attaches in Phase 12.2.
-// `BunString` C ABI is `{tag: u8, impl: *anyopaque}` (see
-// upstream src/string/BunString.h). We mirror the on-the-wire layout so
-// pass-by-value extern signatures stay correct, without depending on the
-// real String API.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-};
+const String = @import("home").String;
 
 pub const RegularExpression = opaque {
     pub const Flags = enum(u16) {

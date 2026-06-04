@@ -105,63 +105,7 @@ pub fn deinit(this: *ThreadSafeStreamBuffer) void {
     default_allocator.destroy(this);
 }
 
-/// PORT NOTE: subset of upstream `bun.io.StreamBuffer` (defined in
-/// `src/io/PipeWriter.zig` lines 1111-1230). Only the methods
-/// `ThreadSafeStreamBuffer` itself dispatches on — `isEmpty`, `deinit`,
-/// plus `write`/`slice`/`wrote`/`size` since those are the canonical
-/// drain-API entry points that any code reaching into `.acquire().*` will
-/// expect to find. The `writeLatin1` / `writeUTF16` / `writeOrFallback`
-/// branches stay parked until `bun.ByteList` ports.
-pub const StreamBuffer = struct {
-    list: std.ArrayListUnmanaged(u8) = .empty,
-    cursor: usize = 0,
-
-    pub fn reset(this: *StreamBuffer) void {
-        this.cursor = 0;
-        this.list.clearRetainingCapacity();
-    }
-
-    pub fn memoryCost(this: *const StreamBuffer) usize {
-        return this.list.capacity;
-    }
-
-    pub fn size(this: *const StreamBuffer) usize {
-        return this.list.items.len - this.cursor;
-    }
-
-    pub fn isEmpty(this: *const StreamBuffer) bool {
-        return this.size() == 0;
-    }
-
-    pub fn isNotEmpty(this: *const StreamBuffer) bool {
-        return this.size() > 0;
-    }
-
-    pub fn write(this: *StreamBuffer, buffer: []const u8) std.mem.Allocator.Error!void {
-        try this.list.appendSlice(default_allocator, buffer);
-    }
-
-    pub fn wrote(this: *StreamBuffer, amount: usize) void {
-        this.cursor += amount;
-    }
-
-    pub fn writeAssumeCapacity(this: *StreamBuffer, buffer: []const u8) void {
-        this.list.appendSliceAssumeCapacity(buffer);
-    }
-
-    pub fn ensureUnusedCapacity(this: *StreamBuffer, capacity: usize) std.mem.Allocator.Error!void {
-        return this.list.ensureUnusedCapacity(default_allocator, capacity);
-    }
-
-    pub fn slice(this: *const StreamBuffer) []const u8 {
-        return this.list.items[this.cursor..];
-    }
-
-    pub fn deinit(this: *StreamBuffer) void {
-        this.cursor = 0;
-        this.list.deinit(default_allocator);
-    }
-};
+pub const StreamBuffer = home_rt.io.StreamBuffer;
 
 // -- Inline tests -------------------------------------------------------
 

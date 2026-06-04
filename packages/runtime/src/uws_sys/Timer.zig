@@ -80,10 +80,7 @@ fn debug(comptime fmt: []const u8, args: anytype) void {
 
 const std = @import("std");
 
-/// Placeholder forward-declaration. Replaced when `uws_sys/Loop.zig` ports
-/// (it pulls in `InternalLoopData` + `jsc.EventLoopHandle` + libuv on
-/// Windows). Same pattern as `uws_sys/ConnectingSocket.zig`.
-pub const Loop = opaque {};
+pub const Loop = @import("./Loop.zig").Loop;
 
 test "Timer exposes the us_timer_t API surface" {
     // Compile-time sanity: every wrapper method resolves. We can't *call*

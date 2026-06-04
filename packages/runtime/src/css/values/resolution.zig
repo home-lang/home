@@ -9,7 +9,7 @@
 // inside parser methods) is dropped here since none of the kept paths reach
 // for it at comptime.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -41,6 +41,42 @@ pub const Resolution = union(enum) {
             .dppx => |dppx| .{ .dppx = dppx + other },
         };
     }
+
+    pub fn parse(input: *css.Parser) Result(Resolution) {
+        const value = switch (input.expectNumber()) {
+            .result => |v| v,
+            .err => |e| return .{ .err = e },
+        };
+        return .{ .result = .{ .dppx = value } };
+    }
+
+    pub fn tryFromToken(_: anytype) Result(Resolution) {
+        return .{ .err = css.ParseError(css.ParserError){
+            .kind = .{ .custom = .{ .unexpected_value = .{ .expected = "resolution", .received = "token" } } },
+            .location = .{ .line = 0, .column = 0 },
+        } };
+    }
+
+    pub fn toCss(this: *const Resolution, dest: anytype) PrintErr!void {
+        var buf: [64]u8 = undefined;
+        switch (this.*) {
+            .dpi => |v| {
+                const text = std.fmt.bufPrint(&buf, "{d}", .{v}) catch return dest.addFmtError();
+                try dest.writeStr(text);
+                try dest.writeStr("dpi");
+            },
+            .dpcm => |v| {
+                const text = std.fmt.bufPrint(&buf, "{d}", .{v}) catch return dest.addFmtError();
+                try dest.writeStr(text);
+                try dest.writeStr("dpcm");
+            },
+            .dppx => |v| {
+                const text = std.fmt.bufPrint(&buf, "{d}", .{v}) catch return dest.addFmtError();
+                try dest.writeStr(text);
+                try dest.writeStr("dppx");
+            },
+        }
+    }
 };
 
 test "Resolution.dpi variant" {
@@ -66,10 +102,12 @@ test "Resolution.addF32 increments value preserving variant" {
     try std.testing.expectEqual(@as(f32, 100.0), result.dpi);
 }
 
-test "Resolution.eql returns false under stub" {
+test "Resolution.eql compares matching values" {
     const a = Resolution{ .dpi = 96.0 };
     const b = Resolution{ .dpi = 96.0 };
-    try std.testing.expect(!a.eql(&b));
+    const c = Resolution{ .dpi = 97.0 };
+    try std.testing.expect(a.eql(&b));
+    try std.testing.expect(!a.eql(&c));
 }
 
 const std = @import("std");

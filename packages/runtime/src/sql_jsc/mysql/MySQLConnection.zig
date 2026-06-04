@@ -996,7 +996,7 @@ fn handleResultSetOK(this: *MySQLConnection, request: *JSMySQLQuery, statement: 
 }
 
 fn getJSConnection(this: *MySQLConnection) *JSMySQLConnection {
-    return @fieldParentPtr("#connection", this);
+    return @fieldParentPtr("_connection", this);
 }
 
 fn handleResultSet(this: *MySQLConnection, comptime Context: type, reader: NewReader(Context), header_length: u24) !void {

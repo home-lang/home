@@ -16,15 +16,14 @@
 // keeps `names: SmallList(LayerName, 1)` + `loc`; `toCss` stripped as well.
 
 pub const css = @import("../css_parser_stub.zig");
-const Printer = css.Printer;
-const PrintErr = css.PrintErr;
-const Location = css.css_rules.Location;
-const CssRuleList = css.CssRuleList;
+const Location = @import("./rules.zig").Location;
+const CssRuleList = @import("./rules.zig").CssRuleList;
+const SmallList = @import("../small_list.zig").SmallList;
 
 /// Stored as a list of strings as dot notation can be used
 /// to create sublayers.
 pub const LayerName = struct {
-    v: css.SmallList([]const u8, 1) = .{},
+    v: SmallList([]const u8, 1) = .{},
 
     pub fn deepClone(this: *const LayerName, allocator: std.mem.Allocator) LayerName {
         return LayerName{
@@ -39,6 +38,21 @@ pub const LayerName = struct {
         }
         return true;
     }
+
+    pub fn toCss(this: *const LayerName, dest: anytype) !void {
+        for (this.v.slice(), 0..) |name, i| {
+            if (i > 0) try dest.writeChar('.');
+            try dest.writeStr(name);
+        }
+    }
+
+    pub fn cloneWithImportRecords(this: *const LayerName, allocator: std.mem.Allocator, _: anytype) LayerName {
+        return this.deepClone(allocator);
+    }
+
+    pub fn parse(_: *@import("../css_parser.zig").Parser) @import("../css_parser.zig").Result(LayerName) {
+        return .{ .result = .{} };
+    }
 };
 
 /// A [@layer block](https://drafts.csswg.org/css-cascade-5/#layer-block) rule.
@@ -47,7 +61,7 @@ pub fn LayerBlockRule(comptime R: type) type {
         /// The name of the layer to declare, or null to declare an anonymous layer.
         name: ?LayerName,
         /// The rules within the `@layer` rule.
-        rules: css.CssRuleList(R),
+        rules: CssRuleList(R),
         /// The location of the rule in the source file.
         loc: Location,
 
@@ -62,7 +76,7 @@ pub fn LayerBlockRule(comptime R: type) type {
 /// See also [LayerBlockRule](LayerBlockRule).
 pub const LayerStatementRule = struct {
     /// The layer names to declare.
-    names: css.SmallList(LayerName, 1),
+    names: SmallList(LayerName, 1),
     /// The location of the rule in the source file.
     loc: Location,
 
@@ -77,16 +91,19 @@ test "LayerName default has zero parts" {
 }
 
 test "LayerName.eql compares part by part" {
-    const a = LayerName{ .v = .{ .items = &[_][]const u8{ "foo", "bar" } } };
-    const b = LayerName{ .v = .{ .items = &[_][]const u8{ "foo", "bar" } } };
-    const c = LayerName{ .v = .{ .items = &[_][]const u8{ "foo", "baz" } } };
+    const a = LayerName{ .v = SmallList([]const u8, 1).initInlined(&.{"foo"}) };
+    const b = LayerName{ .v = SmallList([]const u8, 1).initInlined(&.{"foo"}) };
+    const c = LayerName{ .v = SmallList([]const u8, 1).initInlined(&.{"bar"}) };
     try std.testing.expect(LayerName.eql(&a, &b));
     try std.testing.expect(!LayerName.eql(&a, &c));
 }
 
 test "LayerName.eql returns false for different lengths" {
-    const a = LayerName{ .v = .{ .items = &[_][]const u8{"x"} } };
-    const b = LayerName{ .v = .{ .items = &[_][]const u8{ "x", "y" } } };
+    const a = LayerName{ .v = SmallList([]const u8, 1).initInlined(&.{"x"}) };
+    var b = LayerName{};
+    b.v.append(std.testing.allocator, "x");
+    b.v.append(std.testing.allocator, "y");
+    defer b.v.deinit(std.testing.allocator);
     try std.testing.expect(!LayerName.eql(&a, &b));
 }
 
@@ -95,7 +112,7 @@ test "LayerBlockRule(void) has expected shape" {
     const r = T{
         .name = LayerName{},
         .rules = .{},
-        .loc = css.Location.dummy(),
+        .loc = Location.dummy(),
     };
     try std.testing.expect(r.name != null);
     try std.testing.expectEqual(std.math.maxInt(u32), r.loc.source_index);

@@ -170,6 +170,8 @@ pub const FrontendDevServerAgent = struct {
     // export re-attaches when they land.
 };
 
+pub const BunFrontendDevServerAgent = FrontendDevServerAgent;
+
 const std = @import("std");
 
 test "FrontendDevServerAgent: starts disabled when handle is null" {

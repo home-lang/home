@@ -1493,11 +1493,8 @@ test "CompressionStream then DecompressionStream round-trips gzip" {
 
     const ctx = engine.currentContext();
     const global = engine.currentGlobalObject();
-    // require / node:zlib / Buffer come from node_modules; install the full realm
-    // in the same order node_modules.installRealm uses (web_globals, process, node).
     install(std.testing.allocator, ctx, global);
-    @import("process.zig").install(std.testing.allocator, ctx, global, &[_][]const u8{"home"});
-    @import("node_modules.zig").install(std.testing.allocator, ctx, global);
+    @import("node_modules.zig").installZlibOnly(std.testing.allocator, ctx, global);
 
     _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
         "globalThis.__es_c = '';(function(){var input='hello hello hello';var src=new ReadableStream({start:function(c){c.enqueue(new TextEncoder().encode(input));c.close();}});var out=src.pipeThrough(new CompressionStream('gzip')).pipeThrough(new DecompressionStream('gzip'));var reader=out.getReader();var chunks=[];function loop(){return reader.read().then(function(r){if (r.done){var total=0;for(var i=0;i<chunks.length;i++)total+=chunks[i].length;var all=new Uint8Array(total);var off=0;for(var j=0;j<chunks.length;j++){all.set(chunks[j],off);off+=chunks[j].length;}globalThis.__es_c=new TextDecoder().decode(all);return;}chunks.push(r.value);return loop();});}loop();})();",

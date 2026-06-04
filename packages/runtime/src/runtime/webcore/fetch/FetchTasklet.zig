@@ -1207,7 +1207,7 @@ pub const FetchTasklet = struct {
         fetch_tasklet.http.?.client.flags.force_http1 = fetch_options.force_http1;
         fetch_tasklet.is_waiting_request_stream_start = isStream;
         if (isStream) {
-            const buffer = http.ThreadSafeStreamBuffer.new(.{});
+            const buffer = http.ThreadSafeStreamBuffer.new();
             buffer.setDrainCallback(FetchTasklet, FetchTasklet.onWriteRequestDataDrain, fetch_tasklet);
             fetch_tasklet.request_body_streaming_buffer = buffer;
             fetch_tasklet.http.?.request_body = .{

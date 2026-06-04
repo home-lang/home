@@ -20,7 +20,7 @@
 
 const ConcurrentTask = @This();
 
-task: Task = .{},
+task: Task = Task.Null,
 /// Packed representation of the next pointer and auto_delete flag.
 /// Uses the low bit to store auto_delete (since pointers are at least 2-byte aligned).
 next: PackedNextPtr = .none,
@@ -103,7 +103,7 @@ pub fn createFrom(task: anytype) *ConcurrentTask {
 pub fn fromCallback(ptr: anytype, comptime callback: anytype) *ConcurrentTask {
     markBinding(@src());
 
-    return create(Task.init(ManagedTask.New(std.meta.Child(@TypeOf(ptr)), callback).init(ptr)));
+    return create(ManagedTask.New(std.meta.Child(@TypeOf(ptr)), callback).init(ptr));
 }
 
 pub fn from(this: *ConcurrentTask, of: anytype, auto_deinit: AutoDeinit) *ConcurrentTask {
@@ -131,20 +131,7 @@ pub fn autoDelete(this: *const ConcurrentTask) bool {
 
 // JSC bridge Task stubbed — must remain exactly 8 bytes. Re-attaches in
 // Phase 12.2 to the real `TaggedPointerUnion`-based `jsc.Task`.
-pub const Task = extern struct {
-    ptr: ?*anyopaque = null,
-
-    pub fn init(ctx: anytype) Task {
-        const T = @TypeOf(ctx);
-        if (@typeInfo(T) == .pointer) {
-            return .{ .ptr = @ptrCast(ctx) };
-        }
-
-        const ptr = home_rt.handleOom(home_rt.default_allocator.create(T));
-        ptr.* = ctx;
-        return .{ .ptr = @ptrCast(ptr) };
-    }
-};
+pub const Task = home_rt.jsc.Task;
 
 comptime {
     if (@sizeOf(Task) != 8) {
@@ -242,16 +229,21 @@ test "ConcurrentTask: atomicLoadPtr/atomicStorePtr keep auto_delete bit" {
 }
 
 test "ConcurrentTask: create / from set next correctly" {
-    var sentinel: u32 = 0;
+    var sentinel: ManagedTask = .{
+        .ctx = null,
+        .callback = &struct {
+            fn run(_: *anyopaque) home_rt.JSError!void {}
+        }.run,
+    };
     const made = ConcurrentTask.create(Task.init(&sentinel));
     defer made.deinit();
     try testing.expect(made.autoDelete());
-    try testing.expectEqual(@as(?*anyopaque, @ptrCast(&sentinel)), made.task.ptr);
+    try testing.expectEqual(&sentinel, made.task.as(ManagedTask));
 
     var stack: ConcurrentTask = .{};
     _ = stack.from(&sentinel, .manual_deinit);
     try testing.expect(!stack.autoDelete());
-    try testing.expectEqual(@as(?*anyopaque, @ptrCast(&sentinel)), stack.task.ptr);
+    try testing.expectEqual(&sentinel, stack.task.as(ManagedTask));
 
     var stack_auto: ConcurrentTask = .{};
     _ = stack_auto.from(&sentinel, .auto_deinit);
@@ -260,8 +252,18 @@ test "ConcurrentTask: create / from set next correctly" {
 
 test "ConcurrentTask: Queue enqueue/dequeue (UnboundedQueue substrate)" {
     var q: Queue = .{};
-    var sentinel_a: u32 = 1;
-    var sentinel_b: u32 = 2;
+    var sentinel_a: ManagedTask = .{
+        .ctx = null,
+        .callback = &struct {
+            fn run(_: *anyopaque) home_rt.JSError!void {}
+        }.run,
+    };
+    var sentinel_b: ManagedTask = .{
+        .ctx = null,
+        .callback = &struct {
+            fn run(_: *anyopaque) home_rt.JSError!void {}
+        }.run,
+    };
 
     const a = ConcurrentTask.create(Task.init(&sentinel_a));
     defer a.deinit();
@@ -272,8 +274,8 @@ test "ConcurrentTask: Queue enqueue/dequeue (UnboundedQueue substrate)" {
     q.push(b);
 
     const popped_a = q.pop().?;
-    try testing.expectEqual(@as(?*anyopaque, @ptrCast(&sentinel_a)), popped_a.task.ptr);
+    try testing.expectEqual(&sentinel_a, popped_a.task.as(ManagedTask));
     const popped_b = q.pop().?;
-    try testing.expectEqual(@as(?*anyopaque, @ptrCast(&sentinel_b)), popped_b.task.ptr);
+    try testing.expectEqual(&sentinel_b, popped_b.task.as(ManagedTask));
     try testing.expectEqual(@as(?*ConcurrentTask, null), q.pop());
 }

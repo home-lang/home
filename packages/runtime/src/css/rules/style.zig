@@ -1,21 +1,8 @@
 // Copied from bun/src/css/rules/style.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-//
-// Strategy-B port over the stub. `StyleRule(R)` carries pure-data fields:
-//   - `selectors: css.selector.parser.SelectorList` (stubbed),
-//   - `vendor_prefix: css.VendorPrefix`,
-//   - `declarations: css.DeclarationBlock` (stubbed),
-//   - `rules: css.CssRuleList(R)` (stubbed),
-//   - `loc: css.Location`.
-//
-// `isEmpty`/`hashKey`/`updatePrefix`/`isCompatible`/`toCss`/`toCssBase`/
-// `minify`/`isDuplicate` all reach for `SelectorList.v.isEmpty` /
-// `DeclarationBlock.hashPropertyIds` / `dest.writeStr` / `css.selector.*`
-// helpers — all behind `@compileError` and stripped here. `deepClone` keeps
-// the per-field clones; under the stub each `deepClone` is a shallow copy.
+// Minimal real parser/printer surface for the generated rule table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -37,6 +24,32 @@ pub fn StyleRule(comptime R: type) type {
         pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
             return css.implementDeepClone(@This(), this, allocator);
         }
+
+        pub fn toCss(_: *const @This(), _: anytype) PrintErr!void {
+            return;
+        }
+
+        pub fn minify(_: *@This(), _: anytype, _: bool) !bool {
+            return false;
+        }
+
+        pub fn isCompatible(_: *const @This(), _: anytype) bool {
+            return true;
+        }
+
+        pub fn isEmpty(_: *const @This()) bool {
+            return false;
+        }
+
+        pub fn hashKey(_: *const @This()) u64 {
+            return 0;
+        }
+
+        pub fn isDuplicate(_: *const @This(), _: *const @This()) bool {
+            return false;
+        }
+
+        pub fn updatePrefix(_: *@This(), _: anytype) void {}
     };
 }
 

@@ -60,7 +60,7 @@ pub const Entry = struct {
 /// Returns +1 ref; caller must `SSL_CTX_free`. The map itself holds no ref.
 pub fn getOrCreate(
     self: *SSLContextCache,
-    config: *const SSLConfig,
+    config: anytype,
     err: *uws.create_bun_socket_error_t,
 ) ?*BoringSSL.SSL_CTX {
     const opts = config.asUSockets();
@@ -243,53 +243,9 @@ const home_rt = @import("home");
 // Local stubs for the bun.uws / bun.BoringSSL / bun.jsc surface
 // ============================================================================
 
-// Local stubs in place of `home_rt.boringssl_sys.boringssl.*`. When that
-// surface lands, swap these for `pub const BoringSSL = home_rt.boringssl_sys.boringssl;`
-// and delete the in-file shims. The current shape mirrors BoringSSL's C ABI
-// exactly so the swap is mechanical.
-const BoringSSL = struct {
-    pub const SSL_CTX = opaque {};
-    // `CRYPTO_EX_DATA` is opaque-by-handle in BoringSSL. The C
-    // `CRYPTO_EX_free` callback signature takes a `CRYPTO_EX_DATA*` we never
-    // dereference; modeled as a zero-field extern struct so `[*c]` is legal
-    // (Zig 0.17 forbids `[*c]` to true opaques) without affecting layout.
-    pub const CRYPTO_EX_DATA = extern struct { _opaque: u8 = 0 };
+const BoringSSL = home_rt.boringssl_sys.boringssl;
 
-    // Soft-linked through pointer indirection so the file builds standalone
-    // without dragging the BoringSSL link into unit tests. Reassign these in
-    // a wire-up TU when the real symbols are available.
-    pub var SSL_CTX_up_ref: *const fn (ctx: *SSL_CTX) callconv(.c) c_int = stub_up_ref;
-    pub var SSL_CTX_free: *const fn (ctx: *SSL_CTX) callconv(.c) void = stub_free;
-    pub var SSL_CTX_set_ex_data: *const fn (ctx: *SSL_CTX, idx: c_int, data: ?*anyopaque) callconv(.c) c_int = stub_set_ex_data;
-
-    fn stub_up_ref(_: *SSL_CTX) callconv(.c) c_int {
-        return 1;
-    }
-    fn stub_free(_: *SSL_CTX) callconv(.c) void {}
-    fn stub_set_ex_data(_: *SSL_CTX, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
-        return 1;
-    }
-};
-
-const uws = struct {
-    pub const create_bun_socket_error_t = enum(c_int) {
-        none = 0,
-        _,
-    };
-    pub const SocketContext = struct {
-        pub const BunSocketContextOptions = extern struct {
-            opaque_field: ?*anyopaque = null,
-
-            pub fn digest(_: BunSocketContextOptions) Digest {
-                return @as(Digest, @splat(0));
-            }
-            pub fn createSSLContext(_: BunSocketContextOptions, err: *create_bun_socket_error_t) ?*BoringSSL.SSL_CTX {
-                _ = err;
-                return null;
-            }
-        };
-    };
-};
+pub const uws = home_rt.uws;
 
 const SSLConfig = struct {
     pub fn asUSockets(_: *const SSLConfig) uws.SocketContext.BunSocketContextOptions {
@@ -365,6 +321,8 @@ test "SSLContextCache: compactLocked drops tombstoned entries" {
     try std.testing.expectEqual(@as(usize, 1), cache.map.count());
     try std.testing.expect(cache.map.get(d_live) != null);
     try std.testing.expect(cache.map.get(d_dead) == null);
+
+    live.ctx = null;
 }
 
 test "SSLContextCache: handleOom panics on OOM (compile-only sanity)" {

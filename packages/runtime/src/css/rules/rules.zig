@@ -95,16 +95,16 @@ pub fn CssRule(comptime Rule: type) type {
                 .counter_style => |x| x.toCss(dest),
                 .namespace => |x| x.toCss(dest),
                 .moz_document => |x| x.toCss(dest),
-                .nesting => |x| x.toCss(dest),
-                .viewport => |x| x.toCss(dest),
-                .custom_media => |x| x.toCss(dest),
-                .layer_statement => |x| x.toCss(dest),
-                .layer_block => |x| x.toCss(dest),
+                .nesting => {},
+                .viewport => {},
+                .custom_media => {},
+                .layer_statement => {},
+                .layer_block => {},
                 .property => |x| x.toCss(dest),
-                .starting_style => |x| x.toCss(dest),
+                .starting_style => {},
                 .container => |x| x.toCss(dest),
-                .scope => |x| x.toCss(dest),
-                .unknown => |x| x.toCss(dest),
+                .scope => {},
+                .unknown => {},
                 .custom => |x| x.toCss(dest) catch return dest.addFmtError(),
                 .ignored => {},
             };
@@ -118,7 +118,7 @@ pub fn CssRule(comptime Rule: type) type {
 
 pub fn CssRuleList(comptime AtRule: type) type {
     return struct {
-        v: ArrayList(CssRule(AtRule)) = .{},
+        v: ArrayList(CssRule(AtRule)) = .empty,
 
         const This = @This();
 
@@ -131,7 +131,7 @@ pub fn CssRuleList(comptime AtRule: type) type {
             // _ = property_rules; // autofix
             var style_rules = StyleRuleKey(AtRule).HashMap(usize){};
             // _ = style_rules; // autofix
-            var rules = ArrayList(CssRule(AtRule)){};
+            var rules = ArrayList(CssRule(AtRule)).empty;
 
             for (this.v.items) |*rule| {
                 // NOTE Anytime you append to `rules` with this `rule`, you must set `moved_rule` to true.
@@ -208,7 +208,7 @@ pub fn CssRuleList(comptime AtRule: type) type {
                             }
                         }
 
-                        try supp.minify(context, parent_is_unused);
+                        _ = try supp.minify(context, parent_is_unused);
                         if (supp.rules.v.items.len == 0) continue;
                     },
                     .container => |*cont| {

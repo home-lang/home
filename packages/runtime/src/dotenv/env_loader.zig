@@ -453,7 +453,7 @@ pub const Loader = struct {
             }
 
             if (key_buf_len > 0) {
-                iter.reset();
+                iter = this.map.iterator();
                 key_buf = try allocator.alloc(u8, key_buf_len + key_count * "process.env.".len);
                 var key_writer = std.Io.Writer.fixed(key_buf);
                 const js_ast = bun.ast;
@@ -570,9 +570,11 @@ pub const Loader = struct {
     pub fn loadProcess(this: *Loader) OOM!void {
         if (this.did_load_process) return;
 
-        try this.map.map.ensureTotalCapacity(std.os.environ.len);
-        for (std.os.environ) |_env| {
-            var env = bun.span(_env);
+        const environ = std.mem.span(std.c.environ);
+        try this.map.map.ensureTotalCapacity(@intCast(environ.len));
+        for (environ) |_env| {
+            const envp = _env orelse continue;
+            var env = bun.span(envp);
             if (strings.indexOfChar(env, '=')) |i| {
                 const key = env[0..i];
                 const value = env[i + 1 ..];
@@ -604,10 +606,10 @@ pub const Loader = struct {
         comptime suffix: DotEnvFileSuffix,
         skip_default_env: bool,
     ) !void {
-        const start = std.time.nanoTimestamp();
+        const start = bun.nanoTimestamp();
 
         // Create a reusable buffer with stack fallback for parsing multiple files
-        var stack_fallback = std.heap.stackFallback(4096, this.allocator);
+        var stack_fallback = bun.stackFallback(4096, this.allocator);
         var value_buffer = std.array_list.Managed(u8).init(stack_fallback.get());
         defer value_buffer.deinit();
 
@@ -659,24 +661,22 @@ pub const Loader = struct {
         comptime suffix: DotEnvFileSuffix,
         value_buffer: *std.array_list.Managed(u8),
     ) !void {
-        const dir_handle: std.fs.Dir = std.fs.cwd();
-
         switch (comptime suffix) {
             .development => {
                 if (dir.hasComptimeQuery(".env.development.local")) {
-                    try this.loadEnvFile(dir_handle, ".env.development.local", false, value_buffer);
+                    try this.loadEnvFileDynamic(".env.development.local", false, value_buffer);
                     analytics.Features.dotenv += 1;
                 }
             },
             .production => {
                 if (dir.hasComptimeQuery(".env.production.local")) {
-                    try this.loadEnvFile(dir_handle, ".env.production.local", false, value_buffer);
+                    try this.loadEnvFileDynamic(".env.production.local", false, value_buffer);
                     analytics.Features.dotenv += 1;
                 }
             },
             .@"test" => {
                 if (dir.hasComptimeQuery(".env.test.local")) {
-                    try this.loadEnvFile(dir_handle, ".env.test.local", false, value_buffer);
+                    try this.loadEnvFileDynamic(".env.test.local", false, value_buffer);
                     analytics.Features.dotenv += 1;
                 }
             },
@@ -684,7 +684,7 @@ pub const Loader = struct {
 
         if (comptime suffix != .@"test") {
             if (dir.hasComptimeQuery(".env.local")) {
-                try this.loadEnvFile(dir_handle, ".env.local", false, value_buffer);
+                try this.loadEnvFileDynamic(".env.local", false, value_buffer);
                 analytics.Features.dotenv += 1;
             }
         }
@@ -692,26 +692,26 @@ pub const Loader = struct {
         switch (comptime suffix) {
             .development => {
                 if (dir.hasComptimeQuery(".env.development")) {
-                    try this.loadEnvFile(dir_handle, ".env.development", false, value_buffer);
+                    try this.loadEnvFileDynamic(".env.development", false, value_buffer);
                     analytics.Features.dotenv += 1;
                 }
             },
             .production => {
                 if (dir.hasComptimeQuery(".env.production")) {
-                    try this.loadEnvFile(dir_handle, ".env.production", false, value_buffer);
+                    try this.loadEnvFileDynamic(".env.production", false, value_buffer);
                     analytics.Features.dotenv += 1;
                 }
             },
             .@"test" => {
                 if (dir.hasComptimeQuery(".env.test")) {
-                    try this.loadEnvFile(dir_handle, ".env.test", false, value_buffer);
+                    try this.loadEnvFileDynamic(".env.test", false, value_buffer);
                     analytics.Features.dotenv += 1;
                 }
             },
         }
 
         if (dir.hasComptimeQuery(".env")) {
-            try this.loadEnvFile(dir_handle, ".env", false, value_buffer);
+            try this.loadEnvFileDynamic(".env", false, value_buffer);
             analytics.Features.dotenv += 1;
         }
     }
@@ -729,7 +729,7 @@ pub const Loader = struct {
             this.custom_files_loaded.count();
 
         if (count == 0) return;
-        const elapsed = @as(f64, @floatFromInt((std.time.nanoTimestamp() - start))) / std.time.ns_per_ms;
+        const elapsed = @as(f64, @floatFromInt((bun.nanoTimestamp() - start))) / std.time.ns_per_ms;
 
         const all = [_]string{
             ".env.development.local",
@@ -783,7 +783,7 @@ pub const Loader = struct {
 
     pub fn loadEnvFile(
         this: *Loader,
-        dir: std.fs.Dir,
+        dir: anytype,
         comptime base: string,
         comptime override: bool,
         value_buffer: *std.array_list.Managed(u8),
@@ -813,7 +813,7 @@ pub const Loader = struct {
                 },
             }
         };
-        defer file.close();
+        defer file.close(std.Io.Threaded.global_single_threaded.io());
 
         const end = brk: {
             if (comptime Environment.isWindows) {
@@ -826,7 +826,7 @@ pub const Loader = struct {
                 break :brk pos;
             }
 
-            const stat = try file.stat();
+            const stat = try file.stat(std.Io.Threaded.global_single_threaded.io());
 
             if (stat.size == 0 or stat.kind != .file) {
                 @field(this, base) = logger.Source.initPathString(base, "");
@@ -838,8 +838,8 @@ pub const Loader = struct {
 
         var buf = try this.allocator.alloc(u8, end + 1);
         errdefer this.allocator.free(buf);
-        const amount_read = file.readAll(buf[0..end]) catch |err| switch (err) {
-            error.Unexpected, error.SystemResources, error.OperationAborted, error.BrokenPipe, error.AccessDenied, error.IsDir => {
+        const amount_read = file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), buf[0..end], 0) catch |err| switch (err) {
+            error.Unexpected, error.SystemResources, error.AccessDenied, error.IsDir => {
                 if (!this.quiet) {
                     Output.prettyErrorln("<r><red>{s}<r> error loading {s} file", .{ @errorName(err), base });
                 }
@@ -886,7 +886,7 @@ pub const Loader = struct {
             try this.custom_files_loaded.put(file_path, logger.Source.initPathString(file_path, ""));
             return;
         };
-        defer file.close();
+        defer file.close(std.Io.Threaded.global_single_threaded.io());
 
         const end = brk: {
             if (comptime Environment.isWindows) {
@@ -899,7 +899,7 @@ pub const Loader = struct {
                 break :brk pos;
             }
 
-            const stat = try file.stat();
+            const stat = try file.stat(std.Io.Threaded.global_single_threaded.io());
 
             if (stat.size == 0 or stat.kind != .file) {
                 try this.custom_files_loaded.put(file_path, logger.Source.initPathString(file_path, ""));
@@ -911,8 +911,8 @@ pub const Loader = struct {
 
         var buf = try this.allocator.alloc(u8, end + 1);
         errdefer this.allocator.free(buf);
-        const amount_read = file.readAll(buf[0..end]) catch |err| switch (err) {
-            error.Unexpected, error.SystemResources, error.OperationAborted, error.BrokenPipe, error.AccessDenied, error.IsDir => {
+        const amount_read = file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), buf[0..end], 0) catch |err| switch (err) {
+            error.Unexpected, error.SystemResources, error.AccessDenied, error.IsDir => {
                 if (!this.quiet) {
                     Output.prettyErrorln("<r><red>{s}<r> error loading {s} file", .{ @errorName(err), file_path });
                 }
@@ -1160,13 +1160,10 @@ const Parser = struct {
             const value = try this.parseValue(is_process);
             const entry = try map.map.getOrPut(key);
             if (entry.found_existing) {
-                if (entry.index < count) {
-                    // Allow keys defined later in the same file to override keys defined earlier
-                    // https://github.com/oven-sh/bun/issues/1262
-                    if (comptime !override) continue;
-                } else {
-                    allocator.free(entry.value_ptr.value);
-                }
+                if (comptime !override) continue;
+                allocator.free(entry.value_ptr.value);
+            } else {
+                count += 1;
             }
             entry.value_ptr.* = .{
                 .value = try allocator.dupe(u8, value),

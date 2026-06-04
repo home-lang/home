@@ -97,7 +97,10 @@ test "PendingConnect.unregisterFrom: removes the matching entry" {
         .ssl_config = null,
     };
 
-    var ctx: NewHTTPContext(true) = undefined;
+    var ctx: NewHTTPContext(true) = .{
+        .ref_count = .init(),
+        .pending_sockets = NewHTTPContext(true).PooledSocketHiveAllocator.empty,
+    };
     ctx.pending_h2_connects = .empty;
     defer ctx.pending_h2_connects.deinit(home_rt.default_allocator);
 

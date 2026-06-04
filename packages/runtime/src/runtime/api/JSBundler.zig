@@ -199,7 +199,7 @@ pub const JSBundler = struct {
                 // This ensures Windows paths like "C:\foo\bar.js" become "C:/foo/bar.js"
                 // Use dangerouslyConvertPathToPosixInPlace which always converts \ to /
                 // (uses sep_windows constant, not sep which varies by target)
-                bun.path.dangerouslyConvertPathToPosixInPlace(u8, key);
+                _ = bun.path.dangerouslyConvertPathToPosixInPlace(u8, key);
 
                 self.map.putAssumeCapacity(key, blob_or_string);
             }
@@ -786,7 +786,7 @@ pub const JSBundler = struct {
 
                 defer path.deinit();
 
-                var dir = bun.FD.fromStdDir(std.fs.cwd().openDir(path.slice(), .{}) catch |err| {
+                var dir = bun.FD.fromStdDir(std.Io.Dir.cwd().openDir(std.Io.Threaded.global_single_threaded.io(), path.slice(), .{}) catch |err| {
                     return globalThis.throwPretty("{s}: failed to open root directory: {s}", .{ @errorName(err), path.slice() });
                 });
                 defer dir.close();

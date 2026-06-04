@@ -64,9 +64,7 @@ pub fn renameSymbolsInChunk(
         var top_level_symbols_all = renamer.StableSymbolCount.Array.init(allocator);
 
         const stable_source_indices = c.graph.stable_source_indices;
-        var freq = js_ast.CharFreq{
-            .freqs = [_]i32{0}**64,
-        };
+        var freq = js_ast.CharFreq.initEmpty();
         const ast_flags_list = c.graph.ast.items(.flags);
 
         var capacity = sorted_imports_from_other_chunks.items.len;

@@ -78,6 +78,11 @@ pub fn dequeue(this: *PosixSignalHandle) ?u8 {
     return signal;
 }
 
+pub fn drain(this: *PosixSignalHandle, event_loop: anytype) void {
+    _ = event_loop;
+    while (this.dequeue() != null) {}
+}
+
 /// Plain-data carrier emitted by `drain()` once it re-lands. The upstream
 /// extern `Bun__onSignalForJS(number: i32, globalObject: *JSGlobalObject)`
 /// is the runtime callback; the data struct itself has no JSC dependencies.

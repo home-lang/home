@@ -94,7 +94,7 @@ pub fn init(comptime T: type, ctx: *T, fs: *bun.fs.FileSystem, allocator: std.me
         .onError = &wrapped.onErrorWrapped,
         .platform = .{},
         .watch_events = try allocator.alloc(WatchEvent, max_count),
-        .changed_filepaths = [_]?[:0]u8{null} ** max_count,
+        .changed_filepaths = @splat(null),
     };
 
     try Platform.init(&watcher.platform, fs.top_level_dir);
@@ -414,7 +414,7 @@ fn appendFileAssumeCapacity(
     if (comptime Environment.isKqueue) {
         this.addFileDescriptorToKQueueWithoutChecks(fd, watchlist_id);
     } else if (comptime Environment.isLinux) {
-        // var file_path_to_use_ = std.mem.trimRight(u8, file_path_, "/");
+        // var file_path_to_use_ = std.mem.trimEnd(u8, file_path_, "/");
         // var buf: [bun.MAX_PATH_BYTES+1]u8 = undefined;
         // bun.copy(u8, &buf, file_path_to_use_);
         // buf[file_path_to_use_.len] = 0;
@@ -516,7 +516,7 @@ fn appendDirectoryAssumeCapacity(
         const path: [:0]const u8 = if (clone_file_path and file_path_.len > 0 and file_path_[file_path_.len - 1] == 0)
             file_path_[0 .. file_path_.len - 1 :0]
         else brk: {
-            const trailing_slash = if (file_path_.len > 1) std.mem.trimRight(u8, file_path_, &.{ 0, '/' }) else file_path_;
+            const trailing_slash = if (file_path_.len > 1) std.mem.trimEnd(u8, file_path_, &.{ 0, '/' }) else file_path_;
             @memcpy(buf[0..trailing_slash.len], trailing_slash);
             buf[trailing_slash.len] = 0;
             break :brk buf[0..trailing_slash.len :0];

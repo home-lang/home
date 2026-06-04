@@ -1,14 +1,9 @@
 // Copied from bun/src/css/values/position.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
 // Wave-9 (2026-05-18). Pure-data leaf — `Position`/`PositionComponent(S)`/
-// `HorizontalPositionKeyword`/`VerticalPositionKeyword`. All `parse`/`toCss`
-// method bodies reference stub members that trip `@compileError` on call;
-// Zig's lazy analysis keeps the file compiling as long as the field-decl
-// shape resolves. `LengthPercentage`/`Percentage` come from the wave-9 stub
-// extension; `enum_property_util` is the shared @compileError stub.
+// `HorizontalPositionKeyword`/`VerticalPositionKeyword`.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;

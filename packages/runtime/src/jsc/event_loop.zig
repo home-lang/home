@@ -240,7 +240,7 @@ pub fn tickImmediateTasks(this: *EventLoop, virtual_machine: *VirtualMachine) vo
     var to_run_now = this.immediate_tasks;
 
     this.immediate_tasks = this.next_immediate_tasks;
-    this.next_immediate_tasks = .{};
+    this.next_immediate_tasks = .empty;
 
     var exception_thrown = false;
     for (to_run_now.items) |task| {
@@ -606,7 +606,7 @@ pub fn ensureWaker(this: *EventLoop) void {
             this.uws_loop = bun.uws.Loop.get();
             this.virtual_machine.event_loop_handle = Async.Loop.get();
         } else {
-            this.virtual_machine.event_loop_handle = bun.Async.Loop.get();
+            this.virtual_machine.event_loop_handle = bun.uws.Loop.get();
         }
 
         this.virtual_machine.gc_controller.init(this.virtual_machine);

@@ -1,15 +1,8 @@
 // Copied from bun/src/css/properties/position.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `css.VendorPrefix` is real in the stub (bit-compatible). The `parse` body
-// reaches for `bun.ComptimeStringMap` and `input.expectIdent` — both stub-
-// deferred — so it's dropped. `toCss` reaches for `dest.writeStr` / vendor
-// prefix `toCss` (both `@compileError`) — also dropped. The pure-data shape
-// (the tagged-union variants `static`/`relative`/`absolute`/`sticky:VendorPrefix`/
-// `fixed`) is what downstream leaves need. `eql`/`deepClone` keep their
-// stubbed forms. `bun` import dropped (no comptime touchpoints remain).
+// Minimal real parser/printer surface for the generated properties table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -26,6 +19,36 @@ pub const Position = union(enum) {
     sticky: css.VendorPrefix,
     /// The box is taken out of the document flow and positioned in reference to the page viewport.
     fixed,
+
+    pub fn parse(input: *css.Parser) css.Result(Position) {
+        const location = input.currentSourceLocation();
+        const ident = switch (input.expectIdent()) {
+            .result => |value| value,
+            .err => |e| return .{ .err = e },
+        };
+
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "static")) return .{ .result = .static };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "relative")) return .{ .result = .relative };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "absolute")) return .{ .result = .absolute };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "sticky")) return .{ .result = .{ .sticky = css.VendorPrefix.NONE } };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "-webkit-sticky")) return .{ .result = .{ .sticky = css.VendorPrefix.WEBKIT } };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "fixed")) return .{ .result = .fixed };
+
+        return .{ .err = location.newUnexpectedTokenError(.{ .ident = ident }) };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        switch (this.*) {
+            .static => try dest.writeStr("static"),
+            .relative => try dest.writeStr("relative"),
+            .absolute => try dest.writeStr("absolute"),
+            .sticky => |*prefix| {
+                try prefix.toCss(dest);
+                try dest.writeStr("sticky");
+            },
+            .fixed => try dest.writeStr("fixed"),
+        }
+    }
 
     pub fn eql(lhs: *const @This(), rhs: *const @This()) bool {
         return css.implementEql(@This(), lhs, rhs);
@@ -60,11 +83,14 @@ test "Position.deepClone is a shallow copy" {
     try std.testing.expect(cloned.sticky.moz);
 }
 
-test "Position.eql returns false under stub" {
+test "Position.eql compares matching variants" {
     const a: Position = .absolute;
     const b: Position = .absolute;
-    try std.testing.expect(!a.eql(&b));
+    const c: Position = .relative;
+    try std.testing.expect(a.eql(&b));
+    try std.testing.expect(!a.eql(&c));
 }
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const bun = @import("bun");

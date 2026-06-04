@@ -295,7 +295,7 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn isZero(this: *const LengthValue) bool {
-        inline for (bun.meta.EnumFields(@This())) |field| {
+        inline for (comptime bun.meta.EnumFields(@This())) |field| {
             if (@intFromEnum(this.*) == field.value) {
                 return @field(this, field.name) == 0.0;
             }
@@ -327,7 +327,7 @@ pub const LengthValue = union(enum) {
     }
 
     pub inline fn eql(this: *const @This(), other: *const @This()) bool {
-        inline for (bun.meta.EnumFields(@This())) |field| {
+        inline for (comptime bun.meta.EnumFields(@This())) |field| {
             if (field.value == @intFromEnum(this.*) and field.value == @intFromEnum(other.*)) {
                 return @field(this, field.name) == @field(other, field.name);
             }
@@ -408,7 +408,7 @@ pub const LengthValue = union(enum) {
 
     pub fn partialCmp(this: *const LengthValue, other: *const LengthValue) ?std.math.Order {
         if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
-            inline for (bun.meta.EnumFields(LengthValue)) |field| {
+            inline for (comptime bun.meta.EnumFields(LengthValue)) |field| {
                 if (field.value == @intFromEnum(this.*)) {
                     const a = @field(this, field.name);
                     const b = @field(other, field.name);
@@ -433,7 +433,7 @@ pub const LengthValue = union(enum) {
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) f32,
     ) ?LengthValue {
         if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
-            inline for (bun.meta.EnumFields(LengthValue)) |field| {
+            inline for (comptime bun.meta.EnumFields(LengthValue)) |field| {
                 if (field.value == @intFromEnum(this.*)) {
                     const a = @field(this, field.name);
                     const b = @field(other, field.name);
@@ -459,7 +459,7 @@ pub const LengthValue = union(enum) {
         comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) R,
     ) ?R {
         if (@intFromEnum(this.*) == @intFromEnum(other.*)) {
-            inline for (bun.meta.EnumFields(LengthValue)) |field| {
+            inline for (comptime bun.meta.EnumFields(LengthValue)) |field| {
                 if (field.value == @intFromEnum(this.*)) {
                     const a = @field(this, field.name);
                     const b = @field(other, field.name);
@@ -483,7 +483,7 @@ pub const LengthValue = union(enum) {
 
     pub fn tryAdd(this: *const LengthValue, _: std.mem.Allocator, rhs: *const LengthValue) ?LengthValue {
         if (@intFromEnum(this.*) == @intFromEnum(rhs.*)) {
-            inline for (bun.meta.EnumFields(LengthValue)) |field| {
+            inline for (comptime bun.meta.EnumFields(LengthValue)) |field| {
                 if (field.value == @intFromEnum(this.*)) {
                     return @unionInit(LengthValue, field.name, @field(this, field.name) + @field(rhs, field.name));
                 }
@@ -499,7 +499,7 @@ pub const LengthValue = union(enum) {
     }
 
     pub fn isCompatible(this: *const @This(), browsers: css.targets.Browsers) bool {
-        inline for (bun.meta.EnumFields(LengthValue)) |field| {
+        inline for (comptime bun.meta.EnumFields(LengthValue)) |field| {
             if (field.value == @intFromEnum(this.*)) {
                 if (comptime @TypeOf(@field(FeatureMap, field.name)) == css.compat.Feature) {
                     const feature = @field(FeatureMap, field.name);

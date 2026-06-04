@@ -293,7 +293,7 @@ pub fn Path(comptime opts: Options) type {
 
         pub fn initTopLevelDir() @This() {
             var this = init();
-            const top_level_dir = std.process.getCwd(this._buf.pooled) catch unreachable;
+            const top_level_dir = bun.getcwd(this._buf.pooled) catch unreachable;
 
             const trimmed = switch (comptime opts.kind) {
                 .abs => trimmed: {
@@ -310,7 +310,7 @@ pub fn Path(comptime opts: Options) type {
 
         pub fn initTopLevelDirLongPath() @This() {
             var this = init();
-            const top_level_dir = std.process.getCwd(this._buf.pooled) catch unreachable;
+            const top_level_dir = bun.getcwd(this._buf.pooled) catch unreachable;
 
             const trimmed = switch (comptime opts.kind) {
                 .abs => trimmed: {
@@ -1020,6 +1020,7 @@ fn getFdPath(fd: anytype, buf: anytype) ![]const PathBufferUnit(@TypeOf(buf)) {
 
 const std = @import("std");
 const builtin = @import("builtin");
+const bun = @import("home");
 
 const Environment = struct {
     const isWindows = builtin.os.tag == .windows;

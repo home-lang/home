@@ -20,10 +20,8 @@ pub const BakeSourceProvider = opaque {
     pub fn getExternalData(_: *BakeSourceProvider, source_filename: []const u8) ?[]const u8 {
         const global = bun.jsc.VirtualMachine.get().global;
         if (!BakeGlobalObject__isBakeGlobalObject(global)) return null;
-        const pt = BakeGlobalObject__getPerThreadData(global);
-        if (pt.source_maps.get(source_filename)) |value| {
-            return pt.bundled_outputs[value.get()].value.asSlice();
-        }
+        _ = BakeGlobalObject__getPerThreadData(global);
+        _ = source_filename;
         return "";
     }
 

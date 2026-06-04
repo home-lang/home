@@ -484,7 +484,7 @@ fn patchCommitGetVersion(
 
     // maybe if someone opens it in their editor and hits save a newline will be inserted,
     // so trim that off
-    return .{ .result = std.mem.trimRight(u8, version, " \n\r\t") };
+    return .{ .result = std.mem.trimEnd(u8, version, " \n\r\t") };
 }
 
 fn escapePatchFilename(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
@@ -512,7 +512,7 @@ fn escapePatchFilename(allocator: std.mem.Allocator, name: []const u8) ?[]const 
         }
     };
     const ESCAPE_TABLE: [256]EscapeVal = comptime brk: {
-        var table: [256]EscapeVal = [_]EscapeVal{.other}**256;
+        var table: [256]EscapeVal = [_]EscapeVal{.other} * *256;
         const ty = @typeInfo(EscapeVal);
         for (ty.@"enum".fields) |field| {
             if (field.name.len == 1) {
@@ -631,7 +631,7 @@ pub fn preparePatch(manager: *PackageManager) !void {
             };
 
             const existing_patchfile_hash = existing_patchfile_hash: {
-                var __sfb = std.heap.stackFallback(1024, manager.allocator);
+                var __sfb = bun.stackFallback(1024, manager.allocator);
                 const allocator = __sfb.get();
                 const name_and_version = std.fmt.allocPrint(allocator, "{s}@{f}", .{ name, actual_package.resolution.fmt(strbuf, .posix) }) catch unreachable;
                 defer allocator.free(name_and_version);
@@ -669,7 +669,7 @@ pub fn preparePatch(manager: *PackageManager) !void {
             const pkg_name = pkg.name.slice(strbuf);
 
             const existing_patchfile_hash = existing_patchfile_hash: {
-                var __sfb = std.heap.stackFallback(1024, manager.allocator);
+                var __sfb = bun.stackFallback(1024, manager.allocator);
                 const sfballoc = __sfb.get();
                 const name_and_version = std.fmt.allocPrint(sfballoc, "{s}@{f}", .{ name, pkg.resolution.fmt(strbuf, .posix) }) catch unreachable;
                 defer sfballoc.free(name_and_version);
@@ -870,7 +870,7 @@ fn pkgInfoForNameAndVersion(
     name: []const u8,
     version: ?[]const u8,
 ) struct { PackageID, Lockfile.Tree.Iterator(.node_modules).Next } {
-    var sfb = std.heap.stackFallback(@sizeOf(IdPair) * 4, lockfile.allocator);
+    var sfb = bun.stackFallback(@sizeOf(IdPair) * 4, lockfile.allocator);
     var pairs = bun.handleOom(std.array_list.Managed(IdPair).initCapacity(sfb.get(), 8));
     defer pairs.deinit();
 

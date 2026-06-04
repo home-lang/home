@@ -257,7 +257,7 @@ pub fn crashHandler(
                     Output.flush();
                     Output.Source.Stdio.restore();
 
-                    writer.writeAll("=" ** 60 ++ "\n") catch std.posix.abort();
+                    writer.writeAll("============================================================\n") catch std.posix.abort();
                     printMetadata(writer) catch std.posix.abort();
 
                     if (inside_native_plugin) |name| {
@@ -1405,7 +1405,7 @@ fn encodeTraceString(opts: TraceString, writer: anytype) !void {
             }
             const b64_len = bun.base64.encode(&b64_bytes, compressed);
 
-            try writer.writeAll(std.mem.trimRight(u8, b64_bytes[0..b64_len], "="));
+            try writer.writeAll(std.mem.trimEnd(u8, b64_bytes[0..b64_len], "="));
         },
 
         .@"unreachable" => try writer.writeByte('1'),
@@ -2153,7 +2153,7 @@ fn printLineFromFileAnyOs(out_stream: anytype, tty_config: std.io.tty.Config, so
         }
         return;
     }
-    const line_without_newline = std.mem.trimRight(u8, fbs.getWritten(), "\n");
+    const line_without_newline = std.mem.trimEnd(u8, fbs.getWritten(), "\n");
     if (source_location.column > line_without_newline.len) {
         try out_stream.writeAll(line_without_newline);
         try out_stream.writeByte('\n');

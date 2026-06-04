@@ -1,14 +1,8 @@
 // Copied from bun/src/css/rules/namespace.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten:
-//   @import("../css_parser.zig")    → @import("../css_parser_stub.zig")
-//   @import("../values/values.zig") → dropped (re-exports unused inside this leaf)
-// `Error = css.Error` is not referenced inside this leaf (lifted verbatim from
-// upstream), so dropping the alias keeps the stub surface minimal. The `toCss`
-// body still calls into stub methods that trip `@compileError` on the runtime
-// path — the data shape (`prefix`/`url`/`loc`) is what wave-7 needs.
+// Minimal real parser/printer surface for the generated rule table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 
@@ -33,7 +27,9 @@ pub const NamespaceRule = struct {
             try dest.writeChar(' ');
         }
 
-        try css.css_values.string.CSSStringFns.toCss(&this.url, dest);
+        try dest.writeChar('"');
+        try dest.writeStr(this.url);
+        try dest.writeChar('"');
         try dest.writeChar(';');
     }
 
@@ -44,11 +40,11 @@ pub const NamespaceRule = struct {
 
 test "NamespaceRule with prefix" {
     const rule = NamespaceRule{
-        .prefix = "svg",
+        .prefix = .{ .v = "svg" },
         .url = "http://www.w3.org/2000/svg",
         .loc = css.Location.dummy(),
     };
-    try std.testing.expectEqualStrings("svg", rule.prefix.?);
+    try std.testing.expectEqualStrings("svg", rule.prefix.?.v);
     try std.testing.expectEqualStrings("http://www.w3.org/2000/svg", rule.url);
 }
 
@@ -63,11 +59,15 @@ test "NamespaceRule without prefix" {
 
 test "NamespaceRule.deepClone preserves url + loc" {
     const rule = NamespaceRule{
-        .prefix = "xhtml",
+        .prefix = .{ .v = "xhtml" },
         .url = "http://www.w3.org/1999/xhtml",
         .loc = .{ .source_index = 7, .line = 8, .column = 9 },
     };
     const cloned = rule.deepClone(std.testing.allocator);
+    defer {
+        if (cloned.prefix) |prefix| std.testing.allocator.free(prefix.v);
+        std.testing.allocator.free(cloned.url);
+    }
     try std.testing.expectEqualStrings(rule.url, cloned.url);
     try std.testing.expectEqual(rule.loc.column, cloned.loc.column);
 }

@@ -45,7 +45,7 @@ pub const TaggedPointer = packed struct(u64) {
 const TypeMapT = struct {
     value: TaggedPointer.Tag,
     ty: type,
-    name: []const u8,
+    name: [:0]const u8,
 };
 pub fn TypeMap(comptime Types: anytype) type {
     return [Types.len]TypeMapT;
@@ -55,22 +55,34 @@ pub fn TagTypeEnumWithTypeMap(comptime Types: anytype) struct {
     tag_type: type,
     ty_map: TypeMap(Types),
 } {
+    @setEvalBranchQuota(100000);
+
     var typeMap: TypeMap(Types) = undefined;
     var field_names: [Types.len][:0]const u8 = undefined;
     var field_values: [Types.len]TaggedPointer.Tag = undefined;
 
     @memset(&typeMap, TypeMapT{ .value = 0, .ty = void, .name = "" });
 
+    var field_count: usize = 0;
+
     inline for (Types, 0..) |field, i| {
         const name = comptime @typeName(field);
-        const value: TaggedPointer.Tag = 1024 - i;
-        field_names[i] = name;
-        field_values[i] = value;
+        const value: TaggedPointer.Tag = brk: {
+            for (field_names[0..field_count], field_values[0..field_count]) |existing_name, existing_value| {
+                if (std.mem.eql(u8, existing_name, name)) break :brk existing_value;
+            }
+
+            const next_value: TaggedPointer.Tag = 1024 - field_count;
+            field_names[field_count] = name;
+            field_values[field_count] = next_value;
+            field_count += 1;
+            break :brk next_value;
+        };
         typeMap[i] = .{ .value = value, .ty = field, .name = name };
     }
 
     return .{
-        .tag_type = @Enum(TaggedPointer.Tag, .nonexhaustive, &field_names, &field_values),
+        .tag_type = @Enum(TaggedPointer.Tag, .nonexhaustive, field_names[0..field_count], field_values[0..field_count]),
         .ty_map = typeMap,
     };
 }
@@ -111,9 +123,22 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         }
 
         const This = @This();
+        fn tagValueForType(comptime Type: type) ?TagInt {
+            @setEvalBranchQuota(10000000);
+
+            const name = @typeName(Type);
+            const base_name = bun.meta.typeBaseName(name);
+            inline for (type_map) |entry| {
+                if (entry.ty == Type) return entry.value;
+                if (std.mem.eql(u8, entry.name, name)) return entry.value;
+                if (std.mem.eql(u8, bun.meta.typeBaseName(entry.name), base_name)) return entry.value;
+            }
+            return null;
+        }
+
         pub fn assert_type(comptime Type: type) void {
             const name = comptime @typeName(Type);
-            if (!comptime @hasField(Tag, name)) {
+            if (comptime tagValueForType(Type) == null) {
                 @compileError("TaggedPointerUnion does not have " ++ name ++ ".");
             }
         }
@@ -128,12 +153,11 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         }
 
         pub fn case(comptime Type: type) Tag {
-            return @field(Tag, bun.meta.typeBaseName(@typeName(Type)));
+            return @enumFromInt(comptime tagValueForType(Type) orelse @compileError("TaggedPointerUnion does not have " ++ @typeName(Type) ++ "."));
         }
 
         /// unsafely cast a tagged pointer to a specific type, without checking that it's really that type
         pub inline fn as(this: This, comptime Type: type) *Type {
-            comptime assert_type(Type);
             return this.repr.get(Type);
         }
 
@@ -147,7 +171,7 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
 
         pub inline fn is(this: This, comptime Type: type) bool {
             comptime assert_type(Type);
-            return this.repr.data == comptime @intFromEnum(@field(Tag, @typeName(Type)));
+            return this.repr.data == comptime tagValueForType(Type).?;
         }
 
         pub fn set(this: *@This(), _ptr: anytype) void {
@@ -193,10 +217,8 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         pub inline fn initWithType(comptime Type: type, _ptr: anytype) @This() {
             const tyinfo = @typeInfo(@TypeOf(_ptr));
             if (tyinfo != .pointer) @compileError("Only pass pointers to TaggedPointerUnion.init(), you gave us a: " ++ @typeName(@TypeOf(_ptr)));
-            const name = comptime @typeName(Type);
-
             // there will be a compiler error if the passed in type doesn't exist in the enum
-            return This{ .repr = TaggedPointer.init(_ptr, @intFromEnum(@field(Tag, name))) };
+            return This{ .repr = TaggedPointer.init(_ptr, comptime tagValueForType(Type) orelse @compileError("TaggedPointerUnion does not have " ++ @typeName(Type) ++ ".")) };
         }
 
         pub inline fn isNull(this: This) bool {

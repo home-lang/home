@@ -1,9 +1,9 @@
 // Copied from bun/src/http_types/Method.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 // Imports rewritten: @import("bun") → local pure Zig string map. The JSC-bridge
-// references (`Map.fromJS`, `@import("../http_jsc/method_jsc.zig").toJS`,
-// `Bun__HTTPMethod__from` export) are intentionally omitted — they re-land
-// under `src/http_jsc/` in Phase 12.2 once JSC bindings exist.
+// references (`Map.fromJS`, `@import("../http_jsc/method_jsc.zig").toJS`) are
+// intentionally omitted — they re-land under `src/http_jsc/` in Phase 12.2 once
+// JSC bindings exist.
 
 pub const Method = enum(u8) {
     ACL = 0,
@@ -91,6 +91,15 @@ pub const Method = enum(u8) {
 
     pub fn find(str: []const u8) ?Method {
         return Map.get(str);
+    }
+
+    pub fn fromNative(str: [*]const u8, str_len: usize) callconv(.c) i16 {
+        const method = Method.find(str[0..str_len]) orelse return -1;
+        return @intFromEnum(method);
+    }
+
+    comptime {
+        @export(&fromNative, .{ .name = "Bun__HTTPMethod__from" });
     }
 
     const Map = ComptimeStringMap(Method, .{

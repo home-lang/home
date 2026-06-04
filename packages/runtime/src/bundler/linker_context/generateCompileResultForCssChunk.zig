@@ -54,7 +54,7 @@ fn generateCompileResultForCssChunkImpl(worker: *ThreadPool.Worker, c: *LinkerCo
                 .err => {
                     return CompileResult{
                         .css = .{
-                            .result = .{ .err = error.PrintError },
+                            .result = .{ .err = print_error },
                             .source_index = Index.invalid.get(),
                         },
                     };
@@ -93,7 +93,7 @@ fn generateCompileResultForCssChunkImpl(worker: *ThreadPool.Worker, c: *LinkerCo
                 .err => {
                     return CompileResult{
                         .css = .{
-                            .result = .{ .err = error.PrintError },
+                            .result = .{ .err = print_error },
                             .source_index = Index.invalid.get(),
                         },
                     };
@@ -129,7 +129,7 @@ fn generateCompileResultForCssChunkImpl(worker: *ThreadPool.Worker, c: *LinkerCo
                 .err => {
                     return CompileResult{
                         .css = .{
-                            .result = .{ .err = error.PrintError },
+                            .result = .{ .err = print_error },
                             .source_index = idx.get(),
                         },
                     };
@@ -173,6 +173,7 @@ const bundler = bun.bundle_v2;
 const Chunk = bundler.Chunk;
 const CompileResult = bundler.CompileResult;
 const Index = bun.bundle_v2.Index;
+const print_error = bun.sys.Error.fromCode(.INVAL, .write);
 
 const LinkerContext = bun.bundle_v2.LinkerContext;
 const PendingPartRange = LinkerContext.PendingPartRange;

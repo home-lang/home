@@ -315,7 +315,7 @@ pub fn create(
         response.body_read_ref.ref(vm);
     }
     response.poll_ref.ref(vm);
-    const js_this = response.toJS(globalObject);
+    const js_this = NodeHTTPResponse.toJS(response, globalObject);
     node_response_ptr.* = response;
     return js_this;
 }

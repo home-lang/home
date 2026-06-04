@@ -27,14 +27,26 @@ pub const KeepAlive = struct {
     pub fn unref(this: *KeepAlive, _: anytype) void {
         if (this.ref_count > 0) this.ref_count -= 1;
     }
+    pub fn unrefOnNextTick(this: *KeepAlive, ctx: anytype) void {
+        this.unref(ctx);
+    }
     pub fn refConcurrently(this: *KeepAlive, _: anytype) void {
         this.ref_count += 1;
     }
     pub fn unrefConcurrently(this: *KeepAlive, _: anytype) void {
         if (this.ref_count > 0) this.ref_count -= 1;
     }
+    pub fn refConcurrentlyFromEventLoop(this: *KeepAlive, event_loop: anytype) void {
+        this.refConcurrently(event_loop);
+    }
+    pub fn unrefConcurrentlyFromEventLoop(this: *KeepAlive, event_loop: anytype) void {
+        this.unrefConcurrently(event_loop);
+    }
     pub fn disable(this: *KeepAlive) void {
         this.ref_count = 0;
+    }
+    pub fn isActive(this: *const KeepAlive) bool {
+        return this.ref_count > 0;
     }
 };
 pub const FilePoll = struct {
@@ -157,6 +169,13 @@ pub const FilePoll = struct {
         return this.isWatching();
     }
 
+    pub fn fileType(this: *const FilePoll) @import("bun").io.FileType {
+        if (this.flags.socket) return .socket;
+        if (this.flags.nonblocking) return .nonblocking_pipe;
+        if (this.flags.fifo or this.flags.poll_readable or this.flags.poll_writable) return .pipe;
+        return .file;
+    }
+
     pub fn setKeepingProcessAlive(this: *FilePoll, _: anytype, value: bool) void {
         this.flags.keeps_event_loop_alive = value;
     }
@@ -164,6 +183,21 @@ pub const FilePoll = struct {
     pub fn register(this: *FilePoll, _: anytype, comptime flag: anytype, _: bool) @import("bun").sys.Maybe(void) {
         this.flags.insert(flag);
         return .{ .result = {} };
+    }
+
+    pub fn registerWithFd(this: *FilePoll, loop: anytype, comptime flag: anytype, one_shot: anytype, fd: @import("bun").FD) @import("bun").sys.Maybe(void) {
+        _ = loop;
+        _ = one_shot;
+        this.fd = fd;
+        this.flags.insert(flag);
+        return .{ .result = {} };
+    }
+
+    pub fn unregisterWithFd(this: *FilePoll, loop: anytype, fd: @import("bun").FD, force_unregister: bool) @import("bun").sys.Maybe(void) {
+        _ = loop;
+        _ = fd;
+        _ = force_unregister;
+        return this.unregister({}, false);
     }
 
     pub fn unregister(this: *FilePoll, _: anytype, _: bool) @import("bun").sys.Maybe(void) {

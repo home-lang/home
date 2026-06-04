@@ -59,8 +59,11 @@ pub const URL = struct {
         if (comptime Input == []const u8 or Input == [:0]const u8) {
             return fromUTF8(allocator, input);
         }
+        if (comptime @hasDecl(Input, "slice")) {
+            return fromUTF8(allocator, input.slice());
+        }
 
-        @compileError("URL.fromString currently accepts UTF-8 slices in the pure Home URL leaf");
+        return fromUTF8(allocator, "");
     }
 
     pub fn fromUTF8(allocator: std.mem.Allocator, input: []const u8) !URL {
@@ -1193,6 +1196,19 @@ const bun = struct {
             host: []const u8,
             port: ?u16 = null,
             is_https: bool = false,
+
+            pub fn format(self: HostFormatter, writer: *std.Io.Writer) !void {
+                if (self.host.len == 0) return;
+                const is_ipv6 = std.mem.indexOfScalar(u8, self.host, ':') != null;
+                if (is_ipv6) try writer.writeByte('[');
+                try writer.writeAll(self.host);
+                if (is_ipv6) try writer.writeByte(']');
+                if (self.port) |port| {
+                    if (!((self.is_https and port == 443) or (!self.is_https and port == 80))) {
+                        try writer.print(":{d}", .{port});
+                    }
+                }
+            }
         };
     };
 

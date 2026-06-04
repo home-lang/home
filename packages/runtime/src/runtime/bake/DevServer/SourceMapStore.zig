@@ -67,6 +67,8 @@ pub const SourceMapStore = struct {
     pub fn hasWeakRef(this: *const SourceMapStore, key: Key) bool {
         return this.weak_refs.contains(key);
     }
+
+    pub fn sweepWeakRefs(_: anytype, _: anytype) void {}
 };
 
 test "SourceMapStore increments decrements and removes refcounts" {

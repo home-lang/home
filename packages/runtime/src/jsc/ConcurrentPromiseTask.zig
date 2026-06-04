@@ -19,35 +19,7 @@ const WorkPoolTask = struct {
     callback: *const fn (*WorkPoolTask) void,
 };
 
-// JSC bridge JSPromise stubbed — re-attaches in Phase 12.2. The real type has
-// a `create(*JSGlobalObject) *JSPromise` and a `toJS() *anyopaque` method.
-const JSPromise = opaque {
-    pub fn create(_: *JSGlobalObject) *JSPromise {
-        unreachable; // stub
-    }
-    pub fn toJS(_: *JSPromise) JSValueOpaque {
-        unreachable; // stub
-    }
-
-    pub const Strong = struct {
-        strong: StrongInner = .{},
-        value_: JSValueOpaque = .zero,
-
-        const StrongInner = struct {
-            pub fn set(_: *StrongInner, _: *JSGlobalObject, _: JSValueOpaque) void {}
-        };
-
-        pub fn value(this: *Strong) JSValueOpaque {
-            return this.value_;
-        }
-        pub fn swap(_: *Strong) *JSPromise {
-            unreachable; // stub
-        }
-        pub fn deinit(_: *Strong) void {}
-    };
-};
-
-const JSValueOpaque = @import("./JSValue.zig").JSValue;
+const JSPromise = @import("./JSPromise.zig").JSPromise;
 
 // JSC bridge VirtualMachine stubbed — re-attaches in Phase 12.2.
 const VirtualMachine = opaque {
@@ -137,8 +109,7 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
                 .allocator = allocator,
                 .globalThis = globalThis,
             });
-            const promise = jsc.JSPromise.create(globalThis);
-            this.promise.strong.set(globalThis, promise.toJS());
+            this.promise = jsc.JSPromise.Strong.init(globalThis);
             this.ref.ref(this.event_loop.virtual_machine);
             return this;
         }

@@ -144,7 +144,7 @@ fn scanSmall(out: *align(1) Buffer, text: []const u8, delta: i32) void {
         const i: usize = switch (c) {
             'a'...'z' => @as(usize, @intCast(c)) - 'a',
             'A'...'Z' => @as(usize, @intCast(c)) - ('A' - 26),
-            '0'...'9' => @as(usize, @intCast(c)) + (53 - '0'),
+            '0'...'9' => @as(usize, @intCast(c)) + (52 - '0'),
             '_' => 62,
             '$' => 63,
             else => continue,

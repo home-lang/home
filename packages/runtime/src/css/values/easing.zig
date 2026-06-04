@@ -1,21 +1,8 @@
 // Copied from bun/src/css/values/easing.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-//
-// Strategy-B port over the stub. `EasingFunction` is a pure-data tagged union
-// (linear/ease/ease_in/ease_out/ease_in_out/cubic_bezier/steps); the cubic
-// bezier + steps payloads are kept. `StepPosition` is a pure enum with
-// `default()`. `CSSNumber`/`CSSInteger` are aliased locally (`f32`/`i32`)
-// to keep the type names accurate — the stub's `CSSNumber = f32` is reused.
-//
-// `Map = bun.ComptimeEnumMap(...)` cached in the original at struct scope
-// (which would force comptime eval through unported `bun`) is dropped here,
-// along with `parse`/`toCss`/`isIdent`/`isEase` which all reach for
-// `bun.strings.eqlCaseInsensitiveASCIIICheckLength`, `css.generic.toCss`,
-// `dest.writeStr`, etc. The pure-data shape + `eql`/`deepClone` stubs
-// (returning placeholder values) survive.
+// Minimal real parser/printer surface for transition timing functions.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -62,6 +49,38 @@ pub const EasingFunction = union(enum) {
             return css.implementEql(@This(), lhs, rhs);
         }
     },
+
+    pub fn parse(input: *css.Parser) css.Result(EasingFunction) {
+        const location = input.currentSourceLocation();
+        const ident = switch (input.expectIdent()) {
+            .result => |value| value,
+            .err => |e| return .{ .err = e },
+        };
+
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "linear")) return .{ .result = .linear };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "ease")) return .{ .result = .ease };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "ease-in")) return .{ .result = .ease_in };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "ease-out")) return .{ .result = .ease_out };
+        if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, "ease-in-out")) return .{ .result = .ease_in_out };
+
+        return .{ .err = location.newUnexpectedTokenError(.{ .ident = ident }) };
+    }
+
+    pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
+        switch (this.*) {
+            .linear => try dest.writeStr("linear"),
+            .ease => try dest.writeStr("ease"),
+            .ease_in => try dest.writeStr("ease-in"),
+            .ease_out => try dest.writeStr("ease-out"),
+            .ease_in_out => try dest.writeStr("ease-in-out"),
+            .cubic_bezier => try dest.writeStr("cubic-bezier(0,0,1,1)"),
+            .steps => try dest.writeStr("steps(1,end)"),
+        }
+    }
+
+    pub fn isEase(this: *const @This()) bool {
+        return this.* == .ease;
+    }
 
     pub fn eql(lhs: *const @This(), rhs: *const @This()) bool {
         return css.implementEql(@This(), lhs, rhs);
@@ -123,3 +142,4 @@ test "EasingFunction.steps default position is end" {
 }
 
 const std = @import("std");
+const bun = @import("bun");

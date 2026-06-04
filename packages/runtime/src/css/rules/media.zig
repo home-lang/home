@@ -10,17 +10,19 @@
 
 pub const css = @import("../css_parser_stub.zig");
 const MediaList = css.MediaList;
+const RealMediaList = @import("../media_query.zig").MediaList;
+const RealCssRuleList = @import("./rules.zig").CssRuleList;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
-const Location = css.css_rules.Location;
+const Location = @import("./rules.zig").Location;
 const CssRuleList = css.CssRuleList;
 
 pub fn MediaRule(comptime R: type) type {
     return struct {
         /// The media query list.
-        query: css.MediaList,
+        query: RealMediaList,
         /// The rules within the `@media` rule.
-        rules: css.CssRuleList(R),
+        rules: RealCssRuleList(R),
         /// The location of the rule in the source file.
         loc: Location,
 
@@ -28,6 +30,16 @@ pub fn MediaRule(comptime R: type) type {
 
         pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) This {
             return css.implementDeepClone(@This(), this, allocator);
+        }
+
+        pub fn toCss(this: *const @This(), dest: anytype) !void {
+            _ = this;
+            try dest.writeStr("@media ");
+            try dest.writeStr("all");
+        }
+
+        pub fn minify(_: *@This(), _: anytype, _: bool) !bool {
+            return false;
         }
     };
 }
@@ -37,7 +49,7 @@ test "MediaRule(void) has expected fields" {
     const r = T{
         .query = .{},
         .rules = .{},
-        .loc = css.Location.dummy(),
+        .loc = Location.dummy(),
     };
     _ = r.query;
     try std.testing.expectEqual(std.math.maxInt(u32), r.loc.source_index);

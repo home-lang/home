@@ -321,7 +321,7 @@ pub fn load(
         log,
         manager,
     );
-    if ((try stream.reader().readInt(u64, .little)) != 0) {
+    if ((try reader.readInt(u64, .little)) != 0) {
         return error.@"Lockfile is malformed (expected 0 at the end)";
     }
 

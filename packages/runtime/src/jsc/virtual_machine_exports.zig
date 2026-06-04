@@ -229,6 +229,36 @@ pub fn Bun__setSyntheticAllocationLimitForTesting(globalObject: *JSGlobalObject,
     return JSValue.jsNumber(prev);
 }
 
+comptime {
+    _ = Bun__VirtualMachine__isShuttingDown;
+    _ = Bun__getVM;
+    _ = Bun__drainMicrotasks;
+    _ = Bun__readOriginTimer;
+    _ = Bun__readOriginTimerStart;
+    _ = Bun__GlobalObject__connectedIPC;
+    _ = Bun__GlobalObject__hasIPC;
+    _ = Bun__VirtualMachine__exitDuringUncaughtException;
+    _ = Bun__isBunMain;
+    _ = Bun__ensureProcessIPCInitialized;
+    _ = Bun__queueTask;
+    _ = Bun__reportUnhandledError;
+    _ = Bun__queueTaskConcurrently;
+    _ = Bun__handleRejectedPromise;
+    _ = Bun__handleHandledPromise;
+    _ = Bun__onDidAppendPlugin;
+    _ = Bun__setTLSRejectUnauthorizedValue;
+    _ = Bun__getTLSRejectUnauthorizedValue;
+    _ = Bun__isNoProxy;
+    _ = Bun__setVerboseFetchValue;
+    _ = Bun__getVerboseFetchValue;
+    _ = Bun__addBakeSourceProviderSourceMap;
+    _ = Bun__addDevServerSourceProvider;
+    _ = Bun__removeDevServerSourceProvider;
+    _ = Bun__addSourceProviderSourceMap;
+    _ = Bun__removeSourceProviderSourceMap;
+    _ = Bun__setSyntheticAllocationLimitForTesting;
+}
+
 const IPC = @import("./ipc.zig");
 const std = @import("std");
 

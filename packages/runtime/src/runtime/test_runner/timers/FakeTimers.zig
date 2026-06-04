@@ -7,9 +7,15 @@ timers: TimerHeap = .{ .context = {} },
 
 pub var current_time: struct {
     const min_timespec = bun.timespec{ .sec = std.math.minInt(i64), .nsec = std.math.minInt(i64) };
+    const RwLock = struct {
+        pub fn lockShared(_: *RwLock) void {}
+        pub fn unlockShared(_: *RwLock) void {}
+        pub fn lock(_: *RwLock) void {}
+        pub fn unlock(_: *RwLock) void {}
+    };
     /// starts at 0. offset in milliseconds.
     offset_raw: bun.timespec = min_timespec,
-    offset_lock: std.Thread.RwLock = .{},
+    offset_lock: RwLock = .{},
     date_now_offset: f64 = 0,
     pub fn getTimespecNow(this: *@This()) ?bun.timespec {
         this.offset_lock.lockShared();
@@ -366,7 +372,17 @@ pub fn putTimersFns(globalObject: *jsc.JSGlobalObject, jest: jsc.JSValue, vi: js
     }
 }
 
-const bindgen_generated = @import("bindgen_generated");
+const bindgen_generated = struct {
+    pub const FakeTimersConfig = struct {
+        now: jsc.JSValue = .js_undefined,
+
+        pub fn fromJS(_: *jsc.JSGlobalObject, _: jsc.JSValue) bun.JSError!FakeTimersConfig {
+            return .{};
+        }
+
+        pub fn deinit(_: *FakeTimersConfig) void {}
+    };
+};
 const std = @import("std");
 
 const bun = @import("bun");

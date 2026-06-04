@@ -54,13 +54,7 @@ pub fn New(comptime Type: type, comptime Callback: anytype) type {
 
 pub const JSError = home_rt.JSError;
 
-pub const Task = struct {
-    ptr: ?*anyopaque,
-
-    pub fn init(ctx: anytype) Task {
-        return .{ .ptr = @ptrCast(ctx) };
-    }
-};
+pub const Task = home_rt.jsc.Task;
 
 const builtin = @import("builtin");
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
@@ -82,10 +76,10 @@ test "ManagedTask: New(...).init returns a Task with non-null ptr" {
     var c = Counter{};
     const W = ManagedTask.New(Counter, Counter.bump);
     const t = W.init(&c);
-    try testing.expect(t.ptr != null);
+    try testing.expect(!t.isNull());
 
     // ManagedTask was heap-allocated by init; cast back and run to free.
-    const managed: *ManagedTask = @ptrCast(@alignCast(t.ptr.?));
+    const managed = t.as(ManagedTask);
     try managed.run();
     try testing.expectEqual(@as(u32, 1), c.runs);
 }
@@ -94,7 +88,7 @@ test "ManagedTask: cancel makes run a no-op (and still frees the task)" {
     var c = Counter{};
     const W = ManagedTask.New(Counter, Counter.bump);
     const t = W.init(&c);
-    const managed: *ManagedTask = @ptrCast(@alignCast(t.ptr.?));
+    const managed = t.as(ManagedTask);
     managed.cancel();
     try managed.run();
     try testing.expectEqual(@as(u32, 0), c.runs);

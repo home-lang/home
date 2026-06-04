@@ -1,16 +1,8 @@
 // Copied from bun/src/css/values/rect.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// Wave-9 (2026-05-18). Pure generic — `Rect(T)` is a four-side box generic
-// (top/right/bottom/left) used by `border`/`margin`/`padding`. The file is
-// lazy in `T`: `Rect(T)` is only analyzed when instantiated, and our wave-9
-// landings don't instantiate it yet. The `needsDeinit(T)` switch references
-// `BorderImageSideWidth`/`BorderSideWidth` from un-ported sibling leaves —
-// since `needsDeinit` is only invoked from inside `Rect(T)`, those names
-// remain unanalyzed under lazy semantics. When border / border_image port,
-// those switch prongs become live.
+// Generic four-side value used by border/margin/padding-style shorthands.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -20,6 +12,10 @@ const LengthOrNumber = css.css_values.length.LengthOrNumber;
 const CssColor = css.css_values.color.CssColor;
 
 fn needsDeinit(comptime T: type) bool {
+    if (comptime std.mem.endsWith(u8, @typeName(T), ".LengthOrNumber")) return true;
+    if (comptime std.mem.endsWith(u8, @typeName(T), ".BorderImageSideWidth")) return true;
+    if (comptime std.mem.indexOf(u8, @typeName(T), ".Size2D(") != null) return true;
+    if (comptime std.mem.endsWith(u8, @typeName(T), ".NumberOrPercentage")) return false;
     return switch (T) {
         f32, i32, u32, []const u8 => false,
         LengthPercentage => true,

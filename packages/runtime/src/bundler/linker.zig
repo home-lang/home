@@ -144,7 +144,10 @@ pub const Linker = struct {
                             if (replacement.tag == .builtin and import_record.kind.isCommonJS())
                                 continue;
                             import_record.path.text = replacement.path;
-                            import_record.tag = replacement.tag;
+                            import_record.tag = switch (replacement.tag) {
+                                .builtin => .builtin,
+                                .bun => .bun,
+                            };
                             import_record.flags.is_external_without_side_effects = true;
                             continue;
                         }

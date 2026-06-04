@@ -7,6 +7,7 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
+const build_options = @import("build_options");
 
 pub const isWindows = builtin.os.tag == .windows;
 pub const isMac = switch (builtin.os.tag) {
@@ -38,6 +39,8 @@ pub const enable_asan = false;
 /// Upstream `bun_core/env.zig:60` ties this to `build_options.enable_tinycc`.
 /// Home does not vendor TinyCC (the FFI JIT backend) yet, so this is off.
 pub const enable_tinycc = false;
+pub const dump_source = false;
+pub const isKqueue = isMac or isFreeBSD;
 
 pub inline fn onlyMac() void {
     if (comptime !isMac) unreachable;
@@ -56,7 +59,7 @@ pub inline fn onlyWindows() void {
 /// locks the non-tracking (release) layout via the existing `@sizeOf`
 /// assertions, so this stays off here; it does not change ported behavior.
 pub const enableAllocScopes = false;
-pub const export_cpp_apis = false;
+pub const export_cpp_apis = if (build_options.override_no_export_cpp_apis) false else (builtin.output_mode == .Obj or builtin.is_test);
 /// Faithful to upstream `bun_core/env.zig:50-52` (`git_sha = build_options.sha`).
 /// Home's gate has no embedded SHA, so these are the empty-SHA branch.
 pub const git_sha: [:0]const u8 = "";
@@ -83,6 +86,16 @@ pub const OperatingSystem = enum {
     windows,
     wasm,
     freebsd,
+
+    pub const names = std.StaticStringMap(OperatingSystem).initComptime(.{
+        .{ "linux", .linux },
+        .{ "darwin", .mac },
+        .{ "mac", .mac },
+        .{ "windows", .windows },
+        .{ "win32", .windows },
+        .{ "wasm", .wasm },
+        .{ "freebsd", .freebsd },
+    });
 
     pub fn displayString(this: OperatingSystem) []const u8 {
         return switch (this) {
@@ -140,6 +153,12 @@ pub const Architecture = enum {
     x64,
     arm64,
     wasm,
+
+    pub const names = std.StaticStringMap(Architecture).initComptime(.{
+        .{ "x64", .x64 },
+        .{ "arm64", .arm64 },
+        .{ "wasm", .wasm },
+    });
 
     pub fn npmName(this: Architecture) []const u8 {
         return switch (this) {

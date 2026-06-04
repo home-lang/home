@@ -23,21 +23,7 @@ const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 // JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
 const JSValue = @import("home").jsc.JSValue;
 
-// `bun.WTF.StringImpl` C ABI stub — re-attaches in Phase 12.2. The real
-// type is an opaque pointer to a `WTF::StringImpl` whose ref/deref bump
-// an atomic refcount on the C++ side.
-const StringImpl = opaque {
-    pub fn ref(this: *StringImpl) void {
-        WTFStringImpl__ref(this);
-    }
-
-    pub fn deref(this: *StringImpl) void {
-        WTFStringImpl__deref(this);
-    }
-
-    extern fn WTFStringImpl__ref(this: *StringImpl) void;
-    extern fn WTFStringImpl__deref(this: *StringImpl) void;
-};
+const StringImpl = @import("../string/wtf.zig").WTFStringImplStruct;
 
 pub const RefString = @This();
 

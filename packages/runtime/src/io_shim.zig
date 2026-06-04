@@ -47,6 +47,12 @@ pub fn GenericWriter(
             }
         }
 
+        pub fn print(self: Self, comptime fmt: []const u8, args: anytype) Error!void {
+            const text = std.fmt.allocPrint(std.heap.smp_allocator, fmt, args) catch return error.OutOfMemory;
+            defer std.heap.smp_allocator.free(text);
+            return self.writeAll(text);
+        }
+
         pub fn writeBytesNTimes(self: Self, bytes: []const u8, n: usize) Error!void {
             var i: usize = 0;
             while (i < n) : (i += 1) {

@@ -191,9 +191,14 @@ pub fn dropSentinel(ptr: anytype, allocator: std.mem.Allocator) home_rt.OOM!Drop
         else => @compileError("only slices and many-item pointers are supported"),
     };
     const unsentinel: DropSentinel(@TypeOf(ptr)) = slice[0..slice.len];
+    const allocated = switch (comptime info.size) {
+        .many => ptr[0 .. slice.len + 1],
+        .slice => ptr.ptr[0 .. slice.len + 1],
+        else => unreachable,
+    };
 
-    if (allocator.remap(@constCast(unsentinel), unsentinel.len)) |new| return new;
-    defer allocator.free(unsentinel);
+    if (allocator.remap(@constCast(allocated), unsentinel.len)) |new| return new;
+    defer allocator.free(@constCast(allocated));
     return allocator.dupe(Child, unsentinel);
 }
 

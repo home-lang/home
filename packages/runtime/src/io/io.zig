@@ -217,7 +217,7 @@ pub const Loop = struct {
         this.updateNow();
 
         while (true) {
-            var stack_fallback = std.heap.stackFallback(@sizeOf([256]EventType), bun.default_allocator);
+            var stack_fallback = bun.stackFallback(@sizeOf([256]EventType), bun.default_allocator);
             var events_list: std.array_list.Managed(EventType) = std.array_list.Managed(EventType).initCapacity(stack_fallback.get(), 256) catch unreachable;
             defer events_list.deinit();
 

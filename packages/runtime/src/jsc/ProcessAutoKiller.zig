@@ -21,24 +21,7 @@ const home_rt = @import("home");
 
 const ProcessAutoKiller = @This();
 
-/// Stub for `bun.spawn.Process` — the refcounted subprocess handle. Real
-/// upstream is a closed-over struct that owns the OS pid + wait state. We
-/// keep only the surface this file touches so call sites compile. The full
-/// type re-attaches in Phase 12.6.
-const Process = struct {
-    pid: i32 = 0,
-
-    pub const KillResult = union(enum) { result: void, err: void };
-
-    pub fn ref(_: *Process) void {}
-    pub fn deref(_: *Process) void {}
-    pub fn hasExited(_: *Process) bool {
-        return false;
-    }
-    pub fn kill(_: *Process, _: c_int) KillResult {
-        return .{ .result = {} };
-    }
-};
+const Process = home_rt.spawn.Process;
 
 /// Stub for `bun.SignalCode`. Real upstream is a cross-platform enum mapping
 /// signal names to numeric values; only `.default` is referenced here.
@@ -80,7 +63,7 @@ fn killProcesses(this: *ProcessAutoKiller) u32 {
         defer process.key.deref();
         if (!process.key.hasExited()) {
             log("process.kill {d}", .{process.key.pid});
-            count += @as(u32, @intFromBool(process.key.kill(@intFromEnum(SignalCode.default)) == .result));
+            count += @as(u32, @intFromBool(process.key.kill(@intCast(@intFromEnum(SignalCode.default))) == .result));
         }
     }
     return count;
@@ -151,7 +134,12 @@ test "ProcessAutoKiller.kill returns a Result with the process count" {
 test "ProcessAutoKiller.onSubprocessSpawn is a no-op when disabled" {
     var killer: ProcessAutoKiller = .{};
     defer killer.deinit();
-    var proc: Process = .{ .pid = 12345 };
+    var event_loop: home_rt.jsc.EventLoop = undefined;
+    var proc: Process = .{
+        .pid = 12345,
+        .ref_count = .init(),
+        .event_loop = .{ .js = &event_loop },
+    };
     killer.onSubprocessSpawn(&proc);
     try std.testing.expectEqual(@as(usize, 0), killer.processes.count());
 }

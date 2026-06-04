@@ -15,23 +15,12 @@
 // re-established alongside the real `bun.String`.
 
 const std = @import("std");
+const bun = @import("home");
 
 const ZigStackFrame = @import("ZigStackFrame.zig").ZigStackFrame;
+const ZigString = @import("./ZigString.zig").ZigString;
 
-// `bun.String` C ABI stub — re-attaches in Phase 12.2.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const empty: String = .{};
-
-    pub fn ref(_: *const String) void {}
-    pub fn deref(_: *const String) void {}
-    pub fn isEmpty(this: *const String) bool {
-        return this.tag == 0 and this.impl == null;
-    }
-};
+const String = @import("home").String;
 
 // `jsc.SourceProvider` stubbed — opaque C++ type on the JSC side.
 const SourceProvider = opaque {};
@@ -72,6 +61,33 @@ pub const ZigStackTrace = extern struct {
 
     pub fn framesMutable(this: *ZigStackTrace) []ZigStackFrame {
         return this.frames_ptr[0..this.frames_len];
+    }
+
+    pub const SourceLine = struct {
+        line: i32,
+        text: ZigString.Slice,
+    };
+
+    pub const SourceLineIterator = struct {
+        trace: *const ZigStackTrace,
+        index: usize = 0,
+
+        pub fn untilLast(this: *SourceLineIterator) ?SourceLine {
+            if (this.index >= this.trace.source_lines_len) return null;
+            defer this.index += 1;
+            return .{
+                .line = this.trace.source_lines_numbers[this.index],
+                .text = this.trace.source_lines_ptr[this.index].toUTF8(bun.default_allocator),
+            };
+        }
+
+        pub fn next(this: *SourceLineIterator) ?SourceLine {
+            return this.untilLast();
+        }
+    };
+
+    pub fn sourceLineIterator(this: *const ZigStackTrace) SourceLineIterator {
+        return .{ .trace = this };
     }
 };
 

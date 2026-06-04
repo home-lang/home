@@ -11,11 +11,14 @@
 // ported) and are stripped here. The original `Tag` enum is retained.
 
 pub const css = @import("../css_parser_stub.zig");
+const bun = @import("home");
 
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 
-const CSSNumber = css.css_values.number.CSSNumber;
+const number = @import("./number.zig");
+const CSSNumber = number.CSSNumber;
+const CSSNumberFns = number.CSSNumberFns;
 
 /// A CSS [`<time>`](https://www.w3.org/TR/css-values-4/#time) value, in either
 /// seconds or milliseconds.
@@ -51,8 +54,83 @@ pub const Time = union(Tag) {
         };
     }
 
+    pub fn sign(this: *const Time) f32 {
+        const ms = this.toMs();
+        if (ms == 0.0) return 0.0;
+        return if (ms > 0.0) 1.0 else -1.0;
+    }
+
+    pub fn toCss(this: *const Time, dest: anytype) PrintErr!void {
+        var buf: [64]u8 = undefined;
+        switch (this.*) {
+            .seconds => |v| {
+                const text = std.fmt.bufPrint(&buf, "{d}", .{v}) catch return dest.addFmtError();
+                try dest.writeStr(text);
+                try dest.writeChar('s');
+            },
+            .milliseconds => |v| {
+                const text = std.fmt.bufPrint(&buf, "{d}", .{v}) catch return dest.addFmtError();
+                try dest.writeStr(text);
+                try dest.writeStr("ms");
+            },
+        }
+    }
+
     pub fn tryFromAngle(_: anytype) ?@This() {
         return null;
+    }
+
+    pub fn tryFromToken(_: anytype) @import("../css_parser.zig").Result(Time) {
+        return .{ .err = @import("../css_parser.zig").ParseError(@import("../css_parser.zig").ParserError){
+            .kind = .{ .custom = .{ .unexpected_value = .{ .expected = "time", .received = "token" } } },
+            .location = .{ .line = 0, .column = 0 },
+        } };
+    }
+
+    pub fn parse(input: *@import("../css_parser.zig").Parser) @import("../css_parser.zig").Result(Time) {
+        const value = switch (CSSNumberFns.parse(input)) {
+            .result => |v| v,
+            .err => |e| return .{ .err = e },
+        };
+        return .{ .result = .{ .seconds = value } };
+    }
+
+    pub fn mulF32(this: Time, _: std.mem.Allocator, other: f32) Time {
+        return switch (this) {
+            .seconds => |v| .{ .seconds = v * other },
+            .milliseconds => |v| .{ .milliseconds = v * other },
+        };
+    }
+
+    pub fn addInternal(this: Time, _: std.mem.Allocator, other: Time) Time {
+        return .{ .milliseconds = this.toMs() + other.toMs() };
+    }
+
+    pub fn intoCalc(this: Time, allocator: std.mem.Allocator) @import("./calc.zig").Calc(Time) {
+        return .{ .value = bun.create(allocator, Time, this) };
+    }
+
+    pub fn tryOpTo(
+        lhs: *const Time,
+        rhs: *const Time,
+        comptime R: type,
+        ctx: anytype,
+        comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) R,
+    ) ?R {
+        return op_fn(ctx, lhs.toMs(), rhs.toMs());
+    }
+
+    pub fn tryOp(
+        lhs: *const Time,
+        rhs: *const Time,
+        ctx: anytype,
+        comptime op_fn: *const fn (@TypeOf(ctx), a: f32, b: f32) f32,
+    ) ?Time {
+        return .{ .milliseconds = op_fn(ctx, lhs.toMs(), rhs.toMs()) };
+    }
+
+    pub fn partialCmp(this: *const Time, other: *const Time) ?std.math.Order {
+        return std.math.order(this.toMs(), other.toMs());
     }
 
     pub fn map(this: *const @This(), comptime map_fn: *const fn (f32) f32) Time {

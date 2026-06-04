@@ -30,6 +30,10 @@ pub const JSObject = opaque {
         return @enumFromInt(@as(i64, @bitCast(@as(u64, @intCast(@intFromPtr(this))))));
     }
 
+    pub fn getCodePropertyVMInquiry(_: *JSObject, _: *home_rt.jsc.JSGlobalObject) ?home_rt.jsc.JSValue {
+        return null;
+    }
+
     /// Faithful to upstream `jsc/JSObject.zig:24`. Marshall a struct into a
     /// JSObject (each field encoded via `jsc.JSValue.fromAny`).
     pub fn create(pojo: anytype, global: *home_rt.jsc.JSGlobalObject) home_rt.JSError!*JSObject {

@@ -7,6 +7,13 @@ pub const css = struct {
     pub const SourceLocation = struct {
         line: u32,
         column: u32,
+
+        pub fn newCustomError(this: SourceLocation, err: ParserError) ParseError(ParserError) {
+            return .{
+                .kind = .{ .custom = err },
+                .location = this,
+            };
+        }
     };
 
     pub const Token = union(enum) {
@@ -437,43 +444,8 @@ pub const MinifyErrorKind = union(enum) {
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const logger = struct {
-    const Namespace = enum { file };
-
-    pub const Location = struct {
-        file: []const u8,
-        namespace: Namespace = .file,
-        line: i32,
-        column: i32,
-        line_text: ?[]const u8 = null,
-    };
-
-    pub const Source = struct {
-        path: struct {
-            text: []const u8,
-            namespace: Namespace = .file,
-        },
-        contents: []const u8 = "",
-    };
-
-    pub const Log = struct {
-        errors: usize = 0,
-
-        pub fn addMsg(_: *@This(), _: anytype) !void {}
-    };
-};
-
-const bun = struct {
-    pub const strings = struct {
-        pub const Lines = struct {
-            buffer: []const []const u8,
-        };
-
-        pub fn getLinesInText(_: []const u8, _: u32, _: u32) ?Lines {
-            return null;
-        }
-    };
-};
+const bun = @import("bun");
+const logger = bun.logger;
 
 test "fmtPrinterError returns formatting error without a location" {
     const err = fmtPrinterError();

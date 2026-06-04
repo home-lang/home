@@ -19,23 +19,9 @@
 // the layout used by `SystemError.zig` so the C ABI is identical.
 
 const std = @import("std");
+const bun = @import("home");
 
-// `bun.String` C ABI stub — re-attaches in Phase 12.2.
-// Real layout is `{tag: u8, _padding: 7 bytes, impl: *anyopaque}` (see
-// upstream src/string/BunString.h).
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const empty: String = .{};
-
-    pub fn ref(_: *const String) void {}
-    pub fn deref(_: *const String) void {}
-    pub fn isEmpty(this: *const String) bool {
-        return this.tag == 0 and this.impl == null;
-    }
-};
+const String = @import("home").String;
 
 const ZigStackFrameCode = @import("ZigStackFrameCode.zig").ZigStackFrameCode;
 const ZigStackFramePosition = @import("ZigStackFramePosition.zig").ZigStackFramePosition;
@@ -67,6 +53,24 @@ pub const ZigStackFrame = extern struct {
         .is_async = false,
         .jsc_stack_frame_index = -1,
     };
+
+    const StringFormatter = struct {
+        value: String,
+
+        pub fn format(this: @This(), writer: *std.Io.Writer) !void {
+            const slice = this.value.toUTF8(bun.default_allocator);
+            defer slice.deinit();
+            try writer.writeAll(slice.slice());
+        }
+    };
+
+    pub fn nameFormatter(this: *const ZigStackFrame, _: bool) StringFormatter {
+        return .{ .value = this.function_name };
+    }
+
+    pub fn sourceURLFormatter(this: *const ZigStackFrame, _: anytype, _: anytype, _: bool, _: bool) StringFormatter {
+        return .{ .value = this.source_url };
+    }
 };
 
 test "ZigStackFrame.Zero has expected defaults" {

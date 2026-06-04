@@ -225,9 +225,7 @@ pub const Loop = @import("./Loop.zig").PosixLoop;
 /// Shared usockets socket wrapper.
 pub const us_socket_t = @import("./us_socket_t.zig").us_socket_t;
 
-/// Placeholder forward-declaration. Replaced when `uws_sys/ListenSocket.zig`
-/// ports (it pulls in `NewSocketHandler` which needs the broader uws surface).
-pub const ListenSocket = opaque {};
+pub const ListenSocket = @import("./ListenSocket.zig").ListenSocket;
 
 /// TLS context pointer owned by BoringSSL/libusockets.
 pub const SslCtx = @import("../boringssl_sys/boringssl.zig").SSL_CTX;

@@ -12,23 +12,12 @@
 // structural variants enumerated as constants. The hardcoded-module table
 // re-attaches alongside `ModuleLoader` in Phase 12.2.
 //
-// `bun.String` and `jsc.JSValue` are not yet ported. Local stubs preserve
-// the field shape and the C ABI; the JSC bridge re-attaches in Phase 12.2.
+// `bun.String` now points at the real tagged string shape used across the
+// runtime while the rest of the JSC bridge re-attaches in Phase 12.2.
 
 const std = @import("std");
 
-// JSC bridge `bun.String` stubbed — re-attaches in Phase 12.2. Real upstream
-// shape is a 24-byte tagged union (`{ tag: u8, padding: [3]u8, ptr: usize,
-// len: usize }`); the stub matches sizeof/align so `ResolvedSource` round-trips
-// through C++ unchanged.
-const String = extern struct {
-    tag: u8 = 0, // Dead = 0
-    _padding: [3]u8 = .{ 0, 0, 0 },
-    ptr: usize = 0,
-    len: usize = 0,
-
-    pub const empty: String = .{};
-};
+const String = @import("home").String;
 
 pub const JSValue = @import("home").jsc.JSValue;
 

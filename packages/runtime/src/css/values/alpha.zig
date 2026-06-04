@@ -1,13 +1,8 @@
 // Copied from bun/src/css/values/alpha.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `CSSNumberFns`, `NumberOrPercentage` resolve via the stub. Body methods
-// (parse, toCss, hash, deepClone) reference stub members that trip
-// `@compileError` on call; Zig's lazy analysis keeps the file compiling as
-// long as the pure-data shape (`v: f32`) is the only thing exercised. `eql`
-// returns `false` under the stub `implementEql` placeholder.
+// Uses the real parser surface; alpha parsing feeds generated CSS properties.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
@@ -63,10 +58,12 @@ test "AlphaValue boundary values" {
     try std.testing.expectEqual(@as(f32, 0.0), fully_transparent.v);
 }
 
-test "AlphaValue.eql is a stub returning false" {
+test "AlphaValue.eql compares values" {
     const a = AlphaValue{ .v = 0.5 };
     const b = AlphaValue{ .v = 0.5 };
-    try std.testing.expect(!a.eql(&b));
+    const c = AlphaValue{ .v = 0.75 };
+    try std.testing.expect(a.eql(&b));
+    try std.testing.expect(!a.eql(&c));
 }
 
 test "AlphaValue.deepClone is a shallow copy" {

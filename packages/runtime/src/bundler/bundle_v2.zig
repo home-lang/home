@@ -387,7 +387,7 @@ pub const BundleV2 = struct {
 
         // Create a quick index for server-component boundaries.
         // We need to mark the generated files as reachable, or else many files will appear missing.
-        var sfa = std.heap.stackFallback(4096, this.allocator());
+        var sfa = bun.stackFallback(4096, this.allocator());
         const stack_alloc = sfa.get();
         var scb_bitset = if (this.graph.server_component_boundaries.list.len > 0)
             try this.graph.server_component_boundaries.slice().bitSet(stack_alloc, this.graph.input_files.len)
@@ -1811,7 +1811,7 @@ pub const BundleV2 = struct {
                     const loader = loaders[index];
 
                     additional_output_files.append(options.OutputFile.init(.{
-                        .source_index = .init(index),
+                        .source_index = options.OutputFile.Index.init(index).toOptional(),
                         .data = .{ .buffer = .{
                             .data = source.contents,
                             .allocator = file_allocators[index],
@@ -2219,7 +2219,7 @@ pub const BundleV2 = struct {
         {
             // We do this first to make it harder for any dangling pointers to data to be used in there.
             var on_parse_finalizers = this.finalizers;
-            this.finalizers = .{};
+            this.finalizers = .empty;
             for (on_parse_finalizers.items) |finalizer| {
                 finalizer.call();
             }
@@ -2356,16 +2356,17 @@ pub const BundleV2 = struct {
     ) !void {
         if (outdir.len > 0) {
             // Open the output directory
-            var root_dir = bun.FD.cwd().stdDir().makeOpenPath(outdir, .{}) catch |err| {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            var root_dir = bun.FD.cwd().stdDir().createDirPathOpen(io, outdir, .{}) catch |err| {
                 bun.Output.warn("Failed to open output directory '{s}': {s}", .{ outdir, @errorName(err) });
                 return;
             };
-            defer root_dir.close();
+            defer root_dir.close(io);
 
             // Create parent directories if needed (relative to outdir)
             if (std.fs.path.dirname(file_path)) |parent| {
                 if (parent.len > 0) {
-                    root_dir.makePath(parent) catch {};
+                    root_dir.createDirPath(io, parent) catch {};
                 }
             }
 
@@ -2949,7 +2950,7 @@ pub const BundleV2 = struct {
                 switch (ctx.target.isServerSide()) {
                     inline else => |is_server| {
                         const src = if (is_server) bake.server_virtual_source else bake.client_virtual_source;
-                        if (strings.eqlComptime(import_record.path.text, src.path.pretty)) {
+                        if (strings.eql(import_record.path.text, src.path.pretty)) {
                             if (this.transpiler.options.dev_server != null) {
                                 import_record.flags.is_external_without_side_effects = true;
                                 import_record.source_index = Index.invalid;
@@ -2986,7 +2987,7 @@ pub const BundleV2 = struct {
                         replacement.path[5..]
                     else
                         replacement.path;
-                    import_record.tag = replacement.tag;
+                    import_record.tag = @enumFromInt(@intFromEnum(replacement.tag));
                     import_record.source_index = Index.invalid;
                     import_record.flags.is_external_without_side_effects = true;
                     continue;
@@ -3656,7 +3657,7 @@ pub const BundleV2 = struct {
                             &result.source.path,
                             // SAFETY: when shouldCopyForBundling is true, the
                             // contents are allocated by bun.default_allocator
-                            &.fromOwnedSlice(bun.default_allocator, @constCast(result.source.contents)),
+                            @constCast(result.source.contents),
                             result.content_hash_for_additional_file,
                         ) catch |err| bun.handleOom(err);
                     }
@@ -4190,7 +4191,7 @@ pub const CompileResult = union(enum) {
         }
     },
     css: struct {
-        result: bun.Maybe([]const u8, anyerror),
+        result: bun.sys.Maybe([]const u8),
         source_index: Index.Int,
         source_map: ?bun.SourceMap.Chunk = null,
     },
@@ -4366,7 +4367,7 @@ pub const DevServerOutput = struct {
 };
 
 pub fn generateUniqueKey() u64 {
-    const key = std.crypto.random.int(u64) & @as(u64, 0x0FFFFFFF_FFFFFFFF);
+    const key = bun.fastRandom() & @as(u64, 0x0FFFFFFF_FFFFFFFF);
     // without this check, putting unique_key in an object key would
     // sometimes get converted to an identifier. ensuring it starts
     // with a number forces that optimization off.

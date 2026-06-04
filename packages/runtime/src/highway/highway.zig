@@ -26,7 +26,7 @@
 /// Count frequencies of [a-zA-Z0-9_$] characters, adding `delta` per match
 /// into a 64-entry table. Index layout: a-z → 0..25, A-Z → 26..51,
 /// 0-9 → 52..61, '_' → 62, '$' → 63. Mirrors `ScanCharFrequencyImpl`.
-export fn highway_char_frequency(
+pub fn highway_char_frequency(
     text: [*]const u8,
     text_len: usize,
     freqs: [*]i32,
@@ -52,7 +52,7 @@ export fn highway_char_frequency(
 
 /// Index of the first byte equal to `needle`, or `haystack_len` if absent.
 /// Mirrors `IndexOfCharImpl`.
-export fn highway_index_of_char(
+pub fn highway_index_of_char(
     haystack: [*]const u8,
     haystack_len: usize,
     needle: u8,
@@ -68,7 +68,7 @@ export fn highway_index_of_char(
 /// the closing `quote`, a backslash, or any byte outside printable ASCII
 /// (`< 0x20` or `> 0x7E`). Returns `text_len` if none. Mirrors
 /// `IndexOfInterestingCharacterInStringLiteralImpl`.
-export fn highway_index_of_interesting_character_in_string_literal(
+pub fn highway_index_of_interesting_character_in_string_literal(
     text: [*]const u8,
     text_len: usize,
     quote: u8,
@@ -83,7 +83,7 @@ export fn highway_index_of_interesting_character_in_string_literal(
 
 /// Index of the first newline or non-ASCII byte (`< 0x20` or `> 127`).
 /// Returns `haystack_len` if none. Mirrors `IndexOfNewlineOrNonASCIIImpl`.
-export fn highway_index_of_newline_or_non_ascii(
+pub fn highway_index_of_newline_or_non_ascii(
     haystack: [*]const u8,
     haystack_len: usize,
 ) callconv(.c) usize {
@@ -99,7 +99,7 @@ export fn highway_index_of_newline_or_non_ascii(
 /// Upstream aliases `indexOfNewlineOrNonASCIIOrANSI` to
 /// `indexOfNewlineOrNonASCII` (see Bun `src/string/immutable.zig`), so this
 /// scan uses identical semantics: first byte `< 0x20` or `> 127`.
-export fn highway_index_of_newline_or_non_ascii_or_ansi(
+pub fn highway_index_of_newline_or_non_ascii_or_ansi(
     haystack: [*]const u8,
     haystack_len: usize,
 ) callconv(.c) usize {
@@ -114,7 +114,7 @@ export fn highway_index_of_newline_or_non_ascii_or_ansi(
 /// Index of the first `#`, `@`, newline, or non-ASCII byte
 /// (`< 0x20` or `> 127`). Returns `haystack_len` if none. Mirrors
 /// `IndexOfNewlineOrNonASCIIOrHashOrAtImpl`.
-export fn highway_index_of_newline_or_non_ascii_or_hash_or_at(
+pub fn highway_index_of_newline_or_non_ascii_or_hash_or_at(
     haystack: [*]const u8,
     haystack_len: usize,
 ) callconv(.c) usize {
@@ -129,7 +129,7 @@ export fn highway_index_of_newline_or_non_ascii_or_hash_or_at(
 /// Index of the first space-or-below byte (`<= ' '`) or non-ASCII byte
 /// (`> 127`). Returns `haystack_len` if none. Mirrors
 /// `IndexOfSpaceOrNewlineOrNonASCIIImpl`.
-export fn highway_index_of_space_or_newline_or_non_ascii(
+pub fn highway_index_of_space_or_newline_or_non_ascii(
     haystack: [*]const u8,
     haystack_len: usize,
 ) callconv(.c) usize {
@@ -144,7 +144,7 @@ export fn highway_index_of_space_or_newline_or_non_ascii(
 /// True if the text contains any newline/control byte (`< 0x20`),
 /// non-ASCII byte (`> 127`), or a double-quote (`"`). Mirrors
 /// `ContainsNewlineOrNonASCIIOrQuoteImpl`.
-export fn highway_contains_newline_or_non_ascii_or_quote(
+pub fn highway_contains_newline_or_non_ascii_or_quote(
     text: [*]const u8,
     text_len: usize,
 ) callconv(.c) bool {
@@ -161,7 +161,7 @@ export fn highway_contains_newline_or_non_ascii_or_quote(
 /// is a backtick — also `$`. Returns `text_len` if none. Mirrors
 /// `IndexOfNeedsEscapeForJavaScriptStringImpl<is_backtick>` with the
 /// `is_backtick` branch selected by `quote_char == '`'`.
-export fn highway_index_of_needs_escape_for_javascript_string(
+pub fn highway_index_of_needs_escape_for_javascript_string(
     text: [*]const u8,
     text_len: usize,
     quote_char: u8,
@@ -177,7 +177,7 @@ export fn highway_index_of_needs_escape_for_javascript_string(
 
 /// Index of the first byte in `text` equal to any byte in `chars`.
 /// Returns `text_len` if none. Mirrors `IndexOfAnyCharImpl`.
-export fn highway_index_of_any_char(
+pub fn highway_index_of_any_char(
     text: [*]const u8,
     text_len: usize,
     chars: [*]const u8,
@@ -198,7 +198,7 @@ export fn highway_index_of_any_char(
 /// Apply a 4-byte WebSocket mask (XOR) to `input`, writing to `output`.
 /// When `skip_mask` is set the input is copied verbatim. Mirrors
 /// `FillWithSkipMaskImpl`.
-export fn highway_fill_with_skip_mask(
+pub fn highway_fill_with_skip_mask(
     mask: [*]const u8,
     mask_len: usize,
     output: [*]u8,
@@ -384,7 +384,7 @@ pub fn indexOfAnyChar(haystack: string, chars: string) ?usize {
 
 /// Truncate each u16 to a u8 (low byte) into `output`. Mirrors
 /// `CopyU16ToU8Impl` (the scalar `output[i] = (u8)input[i]` body).
-export fn highway_copy_u16_to_u8(
+pub fn highway_copy_u16_to_u8(
     input: [*]align(1) const u16,
     count: usize,
     output: [*]u8,
@@ -393,6 +393,21 @@ export fn highway_copy_u16_to_u8(
     while (i < count) : (i += 1) {
         output[i] = @truncate(input[i]);
     }
+}
+
+comptime {
+    @export(&highway_char_frequency, .{ .name = "highway_char_frequency", .linkage = .weak });
+    @export(&highway_index_of_char, .{ .name = "highway_index_of_char", .linkage = .weak });
+    @export(&highway_index_of_interesting_character_in_string_literal, .{ .name = "highway_index_of_interesting_character_in_string_literal", .linkage = .weak });
+    @export(&highway_index_of_newline_or_non_ascii, .{ .name = "highway_index_of_newline_or_non_ascii", .linkage = .weak });
+    @export(&highway_index_of_newline_or_non_ascii_or_ansi, .{ .name = "highway_index_of_newline_or_non_ascii_or_ansi", .linkage = .weak });
+    @export(&highway_index_of_newline_or_non_ascii_or_hash_or_at, .{ .name = "highway_index_of_newline_or_non_ascii_or_hash_or_at", .linkage = .weak });
+    @export(&highway_index_of_space_or_newline_or_non_ascii, .{ .name = "highway_index_of_space_or_newline_or_non_ascii", .linkage = .weak });
+    @export(&highway_contains_newline_or_non_ascii_or_quote, .{ .name = "highway_contains_newline_or_non_ascii_or_quote", .linkage = .weak });
+    @export(&highway_index_of_needs_escape_for_javascript_string, .{ .name = "highway_index_of_needs_escape_for_javascript_string", .linkage = .weak });
+    @export(&highway_index_of_any_char, .{ .name = "highway_index_of_any_char", .linkage = .weak });
+    @export(&highway_fill_with_skip_mask, .{ .name = "highway_fill_with_skip_mask", .linkage = .weak });
+    @export(&highway_copy_u16_to_u8, .{ .name = "highway_copy_u16_to_u8", .linkage = .weak });
 }
 
 pub fn copyU16ToU8(input: []align(1) const u16, output: []u8) void {

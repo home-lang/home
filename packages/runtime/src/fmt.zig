@@ -4,6 +4,8 @@
 // source needs. Coverage grows as more files land.
 
 const std = @import("std");
+pub const formatJSONStringUTF8 = @import("bun_core/fmt.zig").formatJSONStringUTF8;
+pub const fmtSlice = @import("bun_core/fmt.zig").fmtSlice;
 
 const strings = @import("strings.zig");
 const bun = @import("home");
@@ -62,6 +64,15 @@ pub fn quote(text: []const u8) QuotedFormatter {
     return .{ .text = text };
 }
 
+pub fn githubActionWriter(writer: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
+    for (text) |c| switch (c) {
+        '\n' => try writer.writeAll("%0A"),
+        '\r' => try writer.writeAll("%0D"),
+        ':' => try writer.writeAll("%3A"),
+        else => try writer.writeByte(c),
+    };
+}
+
 /// Lowercase / uppercase hex-int formatter. Used by Bun's source as
 /// `bun.fmt.hexIntLower(value)` to print things like ETag hashes.
 pub const HexIntFormatter = struct {
@@ -114,6 +125,22 @@ pub fn trimmedPrecision(value: f64, comptime precision: usize) TrimmedPrecisionF
 
 pub fn hexIntUpper(value: anytype) HexIntFormatter {
     return .{ .value = @intCast(value), .upper = true };
+}
+
+pub const DurationOneDecimalFormatter = struct {
+    ns: u64,
+
+    pub fn format(self: DurationOneDecimalFormatter, writer: *std.Io.Writer) !void {
+        if (self.ns >= std.time.ns_per_s) {
+            try writer.print("{d:.1}s", .{@as(f64, @floatFromInt(self.ns)) / @as(f64, @floatFromInt(std.time.ns_per_s))});
+        } else {
+            try writer.print("{d:.1}ms", .{@as(f64, @floatFromInt(self.ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms))});
+        }
+    }
+};
+
+pub fn fmtDurationOneDecimal(ns: u64) DurationOneDecimalFormatter {
+    return .{ .ns = ns };
 }
 
 pub fn fastDigitCount(value: anytype) u64 {

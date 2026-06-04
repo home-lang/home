@@ -275,7 +275,7 @@ pub const YarnLock = struct {
         var current_dep_type: ?DependencyType = null;
 
         while (lines.next()) |line_| {
-            const line = std.mem.trimRight(u8, line_, " \r\t");
+            const line = std.mem.trimEnd(u8, line_, " \r\t");
             if (line.len == 0 or line[0] == '#') continue;
 
             var indent: usize = 0;
@@ -488,7 +488,7 @@ fn processDeps(
 ) ![]Install.PackageID {
     var deps_it = deps.iterator();
     var count: usize = 0;
-    var dep_spec_name_stack = std.heap.stackFallback(1024, bun.default_allocator);
+    var dep_spec_name_stack = bun.stackFallback(1024, bun.default_allocator);
     const temp_allocator = dep_spec_name_stack.get();
 
     while (deps_it.next()) |dep| {

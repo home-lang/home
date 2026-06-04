@@ -494,6 +494,31 @@ pub const css_properties = struct {
                 return .none;
             }
         };
+
+        pub const BorderSideWidth = union(enum) {
+            length: css_values.length.LengthValue,
+            thin,
+            medium,
+            thick,
+
+            pub fn default() BorderSideWidth {
+                return .medium;
+            }
+        };
+    };
+
+    pub const border_image = struct {
+        pub const BorderImageSideWidth = union(enum) {
+            length: css_values.length.LengthPercentage,
+            number: css_values.number.CSSNumber,
+            auto,
+
+            pub fn default() BorderImageSideWidth {
+                return .{ .number = 1 };
+            }
+
+            pub fn deinit(_: *const BorderImageSideWidth, _: std.mem.Allocator) void {}
+        };
     };
 };
 

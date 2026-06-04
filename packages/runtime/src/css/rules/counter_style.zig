@@ -1,22 +1,19 @@
 // Copied from bun/src/css/rules/counter_style.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// CustomIdent / DeclarationBlock / Printer / PrintErr / Location resolve via
-// the local stub. The `toCss` body references stub methods that trip
-// `@compileError` if exercised — the data shape (`name`/`declarations`/`loc`)
-// compiles cleanly, which is the wave-7 deliverable.
+// Minimal real parser/printer surface for the generated rule table.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 const Location = css.Location;
+const DeclarationBlock = @import("../declaration.zig").DeclarationBlock;
 
 /// A [@counter-style](https://drafts.csswg.org/css-counter-styles/#the-counter-style-rule) rule.
 pub const CounterStyleRule = struct {
     /// The name of the counter style to declare.
     name: css.css_values.ident.CustomIdent,
     /// Declarations in the `@counter-style` rule.
-    declarations: css.DeclarationBlock,
+    declarations: DeclarationBlock,
     /// The location of the rule in the source file.
     loc: Location,
 
@@ -38,21 +35,22 @@ pub const CounterStyleRule = struct {
 
 test "CounterStyleRule holds name, declarations, loc" {
     const rule = CounterStyleRule{
-        .name = "thumbs",
+        .name = .{ .v = "thumbs" },
         .declarations = .{},
         .loc = css.Location.dummy(),
     };
-    try std.testing.expectEqualStrings("thumbs", rule.name);
+    try std.testing.expectEqualStrings("thumbs", rule.name.v);
 }
 
 test "CounterStyleRule.deepClone shallow-copies under the stub" {
     const rule = CounterStyleRule{
-        .name = "stars",
+        .name = .{ .v = "stars" },
         .declarations = .{},
         .loc = .{ .source_index = 4, .line = 5, .column = 6 },
     };
     const cloned = rule.deepClone(std.testing.allocator);
-    try std.testing.expectEqualStrings(rule.name, cloned.name);
+    defer std.testing.allocator.free(cloned.name.v);
+    try std.testing.expectEqualStrings(rule.name.v, cloned.name.v);
     try std.testing.expectEqual(rule.loc.line, cloned.loc.line);
 }
 

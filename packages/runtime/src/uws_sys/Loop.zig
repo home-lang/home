@@ -94,6 +94,12 @@ pub const PosixLoop = extern struct {
         return c.uws_get_loop();
     }
 
+    pub fn schedule(_: *PosixLoop, request: anytype) void {
+        if (request.scheduled) return;
+        request.scheduled = true;
+        _ = request.callback(request);
+    }
+
     /// Packetize HTTP/3 stream writes that happened since the last
     /// process_conns. Early-returns when nothing wrote, so safe to call
     /// from drainMicrotasks without per-iteration cost.

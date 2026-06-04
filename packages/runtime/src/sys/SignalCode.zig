@@ -56,8 +56,26 @@ pub const SignalCode = enum(u8) {
         return null;
     }
 
+    pub fn fmt(value: SignalCode, _: bool) Formatter {
+        return .{ .value = value };
+    }
+
+    pub const Formatter = struct {
+        value: SignalCode,
+
+        pub fn format(this: Formatter, writer: *std.Io.Writer) !void {
+            try writer.writeAll(SignalCode.name(this.value) orelse "SIGUNKNOWN");
+        }
+    };
+
     pub fn valid(value: SignalCode) bool {
         return @intFromEnum(value) <= @intFromEnum(SignalCode.SIGSYS) and @intFromEnum(value) >= @intFromEnum(SignalCode.SIGHUP);
+    }
+
+    pub fn fromJS(value: anytype, globalThis: anytype) !SignalCode {
+        _ = value;
+        _ = globalThis;
+        return SignalCode.default;
     }
 
     /// Shell scripts use exit codes 128 + signal number

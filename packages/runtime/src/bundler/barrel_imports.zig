@@ -81,7 +81,7 @@ fn applyBarrelOptimizationImpl(this: *BundleV2, parse_result: *ParseTask.Result)
 
     // Build the set of needed import_record_indices from already-requested
     // export names. Export * records are always needed.
-    var needed_records_stack = std.heap.stackFallback(8192, this.allocator());
+    var needed_records_stack = bun.stackFallback(8192, this.allocator());
     const needed_records_alloc = needed_records_stack.get();
     var needed_records = std.AutoArrayHashMapUnmanaged(u32, void){};
     defer needed_records.deinit(needed_records_alloc);
@@ -110,9 +110,8 @@ fn applyBarrelOptimizationImpl(this: *BundleV2, parse_result: *ParseTask.Result)
     // be re-deferred because only B's requests are in requested_exports.
     if (this.transpiler.options.dev_server) |dev| {
         if (dev.barrel_needed_exports.get(result.source.path.text)) |persisted| {
-            var persisted_iter = persisted.keyIterator();
-            while (persisted_iter.next()) |alias_ptr| {
-                if (resolveBarrelExport(alias_ptr.*, named_exports, named_imports)) |resolution| {
+            for (persisted.keys()) |alias| {
+                if (resolveBarrelExport(alias, named_exports, named_imports)) |resolution| {
                     try needed_records.put(needed_records_alloc, resolution.import_record_index, {});
                 }
             }
@@ -128,7 +127,7 @@ fn applyBarrelOptimizationImpl(this: *BundleV2, parse_result: *ParseTask.Result)
     // import records that share a path with any needed record.
     if (this.transpiler.options.dev_server != null) {
         // Collect paths of needed records.
-        var needed_paths_stack = std.heap.stackFallback(4096, this.allocator());
+        var needed_paths_stack = bun.stackFallback(4096, this.allocator());
         const needed_paths_alloc = needed_paths_stack.get();
         var needed_paths = bun.StringArrayHashMapUnmanaged(void){};
         defer needed_paths.deinit(needed_paths_alloc);
@@ -248,7 +247,7 @@ pub fn scheduleBarrelDeferredImports(this: *BundleV2, result: *ParseTask.Result.
 
     // Build a set of import_record_indices that have named_imports entries,
     // so we can detect bare imports (those with no specific export bindings).
-    var named_ir_indices_stack = std.heap.stackFallback(4096, this.allocator());
+    var named_ir_indices_stack = bun.stackFallback(4096, this.allocator());
     const named_ir_indices_alloc = named_ir_indices_stack.get();
     var named_ir_indices = std.AutoArrayHashMapUnmanaged(u32, void){};
     defer named_ir_indices.deinit(named_ir_indices_alloc);
@@ -358,7 +357,7 @@ pub fn scheduleBarrelDeferredImports(this: *BundleV2, result: *ParseTask.Result.
     // Build work queue from this file's named_imports, then propagate
     // through chains of barrels. Only runs real work when barrels exist
     // (targets with deferred records).
-    var queue_stack = std.heap.stackFallback(8192, this.allocator());
+    var queue_stack = bun.stackFallback(8192, this.allocator());
     const queue_alloc = queue_stack.get();
     var queue = std.ArrayListUnmanaged(BarrelWorkItem).empty;
     defer queue.deinit(queue_alloc);
@@ -432,7 +431,7 @@ pub fn scheduleBarrelDeferredImports(this: *BundleV2, result: *ParseTask.Result.
     const initial_queue_len = queue.items.len;
 
     var barrels_to_resolve = std.AutoArrayHashMapUnmanaged(u32, void){};
-    var barrels_to_resolve_stack = std.heap.stackFallback(1024, this.allocator());
+    var barrels_to_resolve_stack = bun.stackFallback(1024, this.allocator());
     const barrels_to_resolve_alloc = barrels_to_resolve_stack.get();
     defer barrels_to_resolve.deinit(barrels_to_resolve_alloc);
 

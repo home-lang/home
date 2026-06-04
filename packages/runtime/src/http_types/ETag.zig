@@ -4,7 +4,7 @@
 // `appendToHeaders` helper takes an opaque `*Headers` because the full
 // HTTP header container lands in Phase 12.5 — callers supply any type
 // that exposes `append(name, value) !void`. Marker: HOME_RT_STUB_HEADERS.
-// Zig 0.17 fixup: `std.mem.trimLeft` → `std.mem.trimStart`.
+// Zig 0.17 fixup: `std.mem.trimStart` → `std.mem.trimStart`.
 
 const ETag = @This();
 

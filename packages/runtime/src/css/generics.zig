@@ -39,7 +39,8 @@ pub inline fn implementDeepClone(comptime T: type, this: *const T, allocator: Al
             return strct;
         },
         .@"union" => {
-            inline for (bun.meta.EnumFields(T), tyinfo.@"union".fields) |enum_field, union_field| {
+            const enum_fields = comptime bun.meta.EnumFields(T);
+            inline for (enum_fields, tyinfo.@"union".fields) |enum_field, union_field| {
                 if (@intFromEnum(this.*) == enum_field.value) {
                     if (comptime canTransitivelyImplementDeepClone(union_field.type) and @hasDecl(union_field.type, "__generateDeepClone")) {
                         return @unionInit(T, enum_field.name, implementDeepClone(union_field.type, &@field(this, enum_field.name), allocator));
@@ -117,7 +118,7 @@ pub fn implementEql(comptime T: type, this: *const T, other: *const T) bool {
         .@"union" => {
             if (tyinfo.@"union".tag_type == null) @compileError("Unions must have a tag type");
             if (@intFromEnum(this.*) != @intFromEnum(other.*)) return false;
-            const enum_fields = bun.meta.EnumFields(T);
+            const enum_fields = comptime bun.meta.EnumFields(T);
             inline for (enum_fields, std.meta.fields(T)) |enum_field, union_field| {
                 if (enum_field.value == @intFromEnum(this.*)) {
                     if (union_field.type != void) {
@@ -199,7 +200,7 @@ pub fn implementHash(comptime T: type, this: *const T, hasher: *std.hash.Wyhash)
         .@"union" => {
             if (tyinfo.@"union".tag_type == null) @compileError("Unions must have a tag type");
             bun.writeAnyToHasher(hasher, @intFromEnum(this.*));
-            const enum_fields = bun.meta.EnumFields(T);
+            const enum_fields = comptime bun.meta.EnumFields(T);
             inline for (enum_fields, std.meta.fields(T)) |enum_field, union_field| {
                 if (enum_field.value == @intFromEnum(this.*)) {
                     const field = union_field;

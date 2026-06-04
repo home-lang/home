@@ -299,7 +299,7 @@ fn findSourceMappingURL(comptime T: type, source: []const T, alloc: std.mem.Allo
     const needle = comptime bun.strings.literal(T, "\n//# sourceMappingURL=");
     const found = std.mem.lastIndexOf(T, source, needle) orelse return null;
     const end = std.mem.indexOfScalarPos(T, source, found + needle.len, '\n') orelse source.len;
-    const url = std.mem.trimRight(T, source[found + needle.len .. end], &.{ ' ', '\r' });
+    const url = std.mem.trimEnd(T, source[found + needle.len .. end], &.{ ' ', '\r' });
     return switch (T) {
         u8 => bun.jsc.ZigString.Slice.fromUTF8NeverFree(url),
         u16 => bun.jsc.ZigString.Slice.init(
@@ -326,7 +326,7 @@ pub fn getSourceMapImpl(
     // TODO: Experiment in debug builds calculating how much stack space we have left and using that to
     //       adjust the size
     const STACK_SPACE_TO_USE = 1024;
-    var sfb = std.heap.stackFallback(STACK_SPACE_TO_USE, bun.default_allocator);
+    var sfb = bun.stackFallback(STACK_SPACE_TO_USE, bun.default_allocator);
     var arena = bun.ArenaAllocator.init(sfb.get());
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -429,13 +429,14 @@ pub fn getSourceMapImpl(
             }
             var load_path_buf: *bun.PathBuffer = bun.path_buffer_pool.get();
             defer bun.path_buffer_pool.put(load_path_buf);
-            if (source_filename.len + 4 > load_path_buf.len)
+            if (source_filename.len + 5 > load_path_buf.len)
                 break :try_external;
             @memcpy(load_path_buf[0..source_filename.len], source_filename);
             @memcpy(load_path_buf[source_filename.len..][0..4], ".map");
+            load_path_buf[source_filename.len + 4] = 0;
 
-            const load_path = load_path_buf[0 .. source_filename.len + 4];
-            const data = switch (bun.sys.File.readFrom(std.fs.cwd(), load_path, allocator)) {
+            const load_path = load_path_buf[0 .. source_filename.len + 4 :0];
+            const data = switch (bun.sys.File.readFrom(bun.FD.cwd(), load_path, allocator)) {
                 .err => break :try_external,
                 .result => |data| data,
             };
@@ -696,7 +697,7 @@ pub const SourceMapPieces = struct {
         // the joiner's node allocator contains string join nodes as well as some vlq encodings
         // it doesnt contain json payloads or source code, so 16kb is probably going to cover
         // most applications.
-        var sfb = std.heap.stackFallback(16384, bun.default_allocator);
+        var sfb = bun.stackFallback(16384, bun.default_allocator);
         var j = StringJoiner{ .allocator = sfb.get() };
 
         j.pushStatic(this.prefix.items);

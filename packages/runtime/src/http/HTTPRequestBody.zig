@@ -9,50 +9,11 @@
 // client (Phase 12.5).
 
 const std = @import("std");
-const home_rt = @import("home");
+const home = @import("home");
 
-/// Opaque stub for upstream `bun/src/http/SendFile.zig`. Only
-/// `content_size` is referenced by `HTTPRequestBody.len`.
-pub const SendFile = struct {
-    /// File descriptor — upstream uses `bun.FD`. Kept as a Zig
-    /// `std.posix.fd_t` placeholder until the FD wrapper is ported.
-    fd: std.posix.fd_t = 0,
-    remain: usize = 0,
-    offset: usize = 0,
-    content_size: usize = 0,
+pub const SendFile = @import("./SendFile.zig");
 
-    pub fn write(_: *SendFile, _: anytype) Status {
-        return .done;
-    }
-
-    pub const Status = union(enum) {
-        done: void,
-        err: anyerror,
-        again: void,
-    };
-};
-
-/// Opaque stub for upstream `bun/src/http/ThreadSafeStreamBuffer.zig`. The
-/// only method referenced from this file is `deref`, which the upstream
-/// impl wires through `bun.ptr.ThreadSafeRefCount`. The stub no-ops it so
-/// the union's `.detach()` path compiles.
-pub const ThreadSafeStreamBuffer = struct {
-    const Buffer = home_rt.io.StreamBuffer;
-
-    buffer: Buffer = .{},
-
-    pub fn acquire(self: *ThreadSafeStreamBuffer) *Buffer {
-        return &self.buffer;
-    }
-
-    pub fn reportDrain(_: *ThreadSafeStreamBuffer) void {}
-
-    pub fn release(_: *ThreadSafeStreamBuffer) void {}
-
-    pub fn deref(self: *ThreadSafeStreamBuffer) void {
-        _ = self;
-    }
-};
+pub const ThreadSafeStreamBuffer = @import("./ThreadSafeStreamBuffer.zig");
 
 pub const HTTPRequestBody = union(enum) {
     bytes: []const u8,
@@ -98,7 +59,7 @@ test "HTTPRequestBody.bytes reports underlying slice length" {
 }
 
 test "HTTPRequestBody.sendfile threads content_size through .len" {
-    var body: HTTPRequestBody = .{ .sendfile = .{ .content_size = 4096 } };
+    var body: HTTPRequestBody = .{ .sendfile = .{ .fd = home.invalid_fd, .content_size = 4096 } };
     try std.testing.expectEqual(@as(usize, 4096), body.len());
     try std.testing.expect(!body.isStream());
     body.deinit(); // no-op for .sendfile

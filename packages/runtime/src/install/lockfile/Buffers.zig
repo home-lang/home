@@ -41,7 +41,7 @@ const sizes = blk: {
         elem.* = .{
             .size = @sizeOf(field_info.type),
             .name = field_info.name,
-            .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment,
+            .alignment = if (@sizeOf(field_info.type) == 0) 1 else field_info.alignment orelse 1,
             .type = field_info.type.Slice,
         };
     }

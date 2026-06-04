@@ -784,10 +784,11 @@ pub const GetAddrInfoRequest = struct {
                     // Reserve the last byte for the NUL terminator so the index below
                     // can never exceed the buffer even if the upstream length guard in
                     // `doLookup` is bypassed.
-                    const copied = strings.copy(hostname[0 .. hostname.len - 1], query.name);
-                    hostname[copied.len] = 0;
+                    strings.copy(hostname[0 .. hostname.len - 1], query.name);
+                    const copied_len = query.name.len;
+                    hostname[copied_len] = 0;
                     var addrinfo: ?*std.c.addrinfo = null;
-                    const host = hostname[0..copied.len :0];
+                    const host = hostname[0..copied_len :0];
                     const debug_timer = bun.Output.DebugTimer.start();
                     const err = std.c.getaddrinfo(
                         host.ptr,

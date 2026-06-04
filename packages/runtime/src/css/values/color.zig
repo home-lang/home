@@ -408,7 +408,7 @@ pub const CssColor = union(enum) {
                             .expected = "convertible color",
                             .received = "system color",
                         } } },
-                        .location = css.SourceLocation{ .line = 0, .column = 0 },
+                        .location = .{ .line = 0, .column = 0 },
                     } },
                     // We checked these above
                     .light_dark, .current_color => unreachable,
@@ -2994,12 +2994,7 @@ pub const ColorFallbackKind = packed struct(u8) {
             else => bun.unreachablePanic("Expected P3 or LAB. This is a bug in Bun.", .{}),
         };
 
-        return css.SupportsCondition{
-            .declaration = .{
-                .property_id = .color,
-                .value = s,
-            },
-        };
+        return css.SupportsCondition{ .unknown = s };
     }
 
     pub fn isEmpty(cfk: ColorFallbackKind) bool {
