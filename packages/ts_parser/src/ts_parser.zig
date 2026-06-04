@@ -16336,7 +16336,12 @@ pub const Parser = struct {
                         last_child_end = self.hir.spanOf(node).end;
                         continue;
                     }
-                    const expr = try self.parseExpression();
+                    const expr = if (self.match(.dot_dot_dot)) blk: {
+                        const dot_tok = self.tokens[self.cursor - 1];
+                        const inner = try self.parseAssignmentExpression();
+                        const end = self.hir.spanOf(inner).end;
+                        break :blk try self.builder.addSpread(.{ .start = dot_tok.span.start, .end = end }, inner);
+                    } else try self.parseExpression();
                     try self.reportJsxCommaExpressionIfNeeded(expr);
                     const close = try self.expectClosingMatch(.close_brace, "'}' to close JSX child expression", t.span.start, "{", "}");
                     const node = try self.builder.addJsxExpression(
@@ -21922,6 +21927,19 @@ test "parser: jsx with expression child" {
     const children = hir_mod.jsxChildren(&s.hir, init_node);
     try T.expectEqual(@as(usize, 1), children.len);
     try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(children[0]));
+}
+
+test "parser: jsx with spread expression child" {
+    var s = try newTsxTestSetup("let v = <Foo>{...children}</Foo>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const children = hir_mod.jsxChildren(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 1), children.len);
+    try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(children[0]));
+    const ex = hir_mod.jsxExpressionOf(&s.hir, children[0]);
+    try T.expectEqual(hir_mod.NodeKind.spread, s.hir.kindOf(ex.expression));
 }
 
 test "parser: jsx text child preserves same-line whitespace" {

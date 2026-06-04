@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 758 |
-| reachable (parity targets) | 291 |
+| catalog-only total | 757 |
+| reachable (parity targets) | 290 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 156 |
+| 2xxx — checker / type engine | 155 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (156)
+### 2xxx — checker / type engine (155)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -77,7 +77,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2602 `JSX_element_implicitly_has_type_any_because_the_global_type_JSX_Element_does_not_exist_2602`
 - TS2607 `JSX_element_class_does_not_support_attributes_because_it_does_not_have_a_0_property_2607`
 - TS2608 `The_global_type_JSX_0_may_not_have_more_than_one_property_2608`
-- TS2609 `JSX_spread_child_must_be_an_array_type_2609`
 - TS2612 `Property_0_will_overwrite_the_base_property_in_1_If_this_is_intentional_add_an_initializer_Otherwise_2612`
 - TS2613 `Module_0_has_no_default_export_Did_you_mean_to_use_import_1_from_0_instead_2613`
 - TS2614 `Module_0_has_no_exported_member_1_Did_you_mean_to_use_import_1_from_0_instead_2614`
