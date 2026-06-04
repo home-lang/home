@@ -419,16 +419,22 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
 
     // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
     // input/output mtime comparison). Skipped under `--force`.
-    if (!force and projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts)) {
-        if (verbose) {
-            buildStatusMessage(6400, "Project '{s}' is up to date but needs to update timestamps of output files that are older than input files\n", .{config_path});
-            buildStatusMessage(6359, "Updating output timestamps of project '{s}'...\n", .{config_path});
+    if (!force) {
+        if (projectBuildInfoVersionMismatch(gpa, arena, config_path, cfg)) |stored_version| {
+            if (verbose) {
+                const default_options = ts_emit.tsbuildinfo.Options{};
+                buildStatusMessage(6381, "Project '{s}' is out of date because output for it was generated with version '{s}' that differs with current version '{s}'\n", .{ config_path, stored_version, default_options.compiler_version });
+            }
+        } else if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts)) {
+            if (verbose) {
+                buildStatusMessage(6400, "Project '{s}' is up to date but needs to update timestamps of output files that are older than input files\n", .{config_path});
+                buildStatusMessage(6359, "Updating output timestamps of project '{s}'...\n", .{config_path});
+            }
+            touchProjectOutputs(gpa, input_files.items, out_dir, declaration_dir, emit_dts);
+            return false;
+        } else if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, verbose)) {
+            return false;
         }
-        touchProjectOutputs(gpa, input_files.items, out_dir, declaration_dir, emit_dts);
-        return false;
-    }
-    if (!force and projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, verbose)) {
-        return false;
     }
     // TS6388 — under `--force`, tsc rebuilds regardless of up-to-dateness.
     if (force and verbose) buildStatusMessage(6388, "Project '{s}' is being forcibly rebuilt\n", .{config_path});
@@ -567,6 +573,23 @@ fn buildInfoVersionForPath(info: ts_emit.tsbuildinfo.BuildInfo, path: []const u8
         if (std.mem.eql(u8, name, path)) return info.file_infos[i].version;
     }
     return null;
+}
+
+fn projectBuildInfoVersionMismatch(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    cfg: tsconfig_mod.TsConfig,
+) ?[]const u8 {
+    const buildinfo_path = (projectBuildInfoFilePath(arena, config_path, cfg) catch null) orelse return null;
+    const buildinfo_src = RealFs.read(gpa, buildinfo_path) catch return null;
+    defer gpa.free(buildinfo_src);
+    var info = ts_emit.tsbuildinfo.read(gpa, buildinfo_src) catch return null;
+    defer info.deinit(gpa);
+    const default_options = ts_emit.tsbuildinfo.Options{};
+    const current_version = default_options.compiler_version;
+    if (std.mem.eql(u8, info.version, current_version)) return null;
+    return arena.dupe(u8, info.version) catch null;
 }
 
 fn sourceSha1Hex(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
