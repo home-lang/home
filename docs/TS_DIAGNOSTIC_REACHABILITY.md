@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 693 |
-| reachable (parity targets) | 229 |
+| catalog-only total | 692 |
+| reachable (parity targets) | 228 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 107 |
+| 2xxx — checker / type engine | 106 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (107)
+### 2xxx — checker / type engine (106)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -124,7 +124,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2736 `Operator_0_cannot_be_applied_to_type_1_2736`
 - TS2738 `An_outer_value_of_this_is_shadowed_by_this_container_2738`
 - TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
-- TS2748 `Cannot_access_ambient_const_enums_when_0_is_enabled_2748`
 - TS2749 `_0_refers_to_a_value_but_is_being_used_as_a_type_here_Did_you_mean_typeof_0_2749`
 - TS2751 `Circularity_originates_in_type_at_this_location_2751`
 - TS2758 `Each_member_of_the_union_type_0_has_signatures_but_none_of_those_signatures_are_compatible_with_each_2758`
