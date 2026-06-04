@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 687 |
-| reachable (parity targets) | 223 |
+| catalog-only total | 686 |
+| reachable (parity targets) | 222 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 101 |
+| 2xxx — checker / type engine | 100 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (101)
+### 2xxx — checker / type engine (100)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -41,7 +41,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2319 `Named_property_0_of_types_1_and_2_are_not_identical_2319`
 - TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
 - TS2324 `Property_0_is_missing_in_type_1_2324`
-- TS2330 `_0_and_1_index_signatures_are_incompatible_2330`
 - TS2418 `Type_of_computed_property_s_value_is_0_which_is_not_assignable_to_type_1_2418`
 - TS2468 `Cannot_find_global_value_0_2468`
 - TS2484 `Export_declaration_conflicts_with_exported_declaration_of_0_2484`
