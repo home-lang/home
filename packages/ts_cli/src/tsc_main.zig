@@ -953,9 +953,39 @@ pub fn main(init: std.process.Init) !void {
         }
         // Build each project (dependencies first). The per-project builder
         // handles up-to-date checks unless `--force` is set.
+        const BuildProjectStatus = enum { ok, errors, skipped };
+        const project_status = try gpa.alloc(BuildProjectStatus, graph.paths.len);
+        defer gpa.free(project_status);
+        @memset(project_status, .ok);
         var build_had_errors = false;
         for (ord.order) |pi| {
+            var blocked_dep: ?usize = null;
+            var blocked_dep_status: BuildProjectStatus = .ok;
+            for (graph.nodes[pi].deps) |dep| {
+                if (project_status[dep] != .ok) {
+                    blocked_dep = dep;
+                    blocked_dep_status = project_status[dep];
+                    break;
+                }
+            }
+            if (blocked_dep) |dep| {
+                if (bp.options.verbose) {
+                    if (blocked_dep_status == .skipped) {
+                        // TS6383 / TS6382 — transitive dependency was not built.
+                        buildStatusMessage(6383, "Project '{s}' can't be built because its dependency '{s}' was not built\n", .{ graph.paths[pi], graph.paths[dep] });
+                        buildStatusMessage(6382, "Skipping build of project '{s}' because its dependency '{s}' was not built\n", .{ graph.paths[pi], graph.paths[dep] });
+                    } else {
+                        // TS6363 / TS6362 — direct dependency has errors.
+                        buildStatusMessage(6363, "Project '{s}' can't be built because its dependency '{s}' has errors\n", .{ graph.paths[pi], graph.paths[dep] });
+                        buildStatusMessage(6362, "Skipping build of project '{s}' because its dependency '{s}' has errors\n", .{ graph.paths[pi], graph.paths[dep] });
+                    }
+                }
+                project_status[pi] = .skipped;
+                build_had_errors = true;
+                continue;
+            }
             if (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force)) {
+                project_status[pi] = .errors;
                 build_had_errors = true;
             }
         }
