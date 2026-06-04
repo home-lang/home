@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 712 |
-| reachable (parity targets) | 247 |
+| catalog-only total | 711 |
+| reachable (parity targets) | 246 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 125 |
+| 2xxx — checker / type engine | 124 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (125)
+### 2xxx — checker / type engine (124)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -149,7 +149,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2782 `_0_needs_an_explicit_type_annotation_2782`
 - TS2788 `Its_instance_type_0_is_not_a_valid_JSX_element_2788`
 - TS2789 `Its_element_type_0_is_not_a_valid_JSX_element_2789`
-- TS2793 `The_call_would_have_succeeded_against_this_implementation_but_implementation_signatures_of_overloads_2793`
 - TS2796 `It_is_likely_that_you_are_missing_a_comma_to_separate_these_two_template_expressions_They_form_a_tag_2796`
 - TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
 - TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
