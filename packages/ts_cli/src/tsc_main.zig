@@ -425,6 +425,10 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
                 const default_options = ts_emit.tsbuildinfo.Options{};
                 buildStatusMessage(6381, "Project '{s}' is out of date because output for it was generated with version '{s}' that differs with current version '{s}'\n", .{ config_path, stored_version, default_options.compiler_version });
             }
+        } else if (projectBuildInfoRootMismatch(gpa, arena, config_path, cfg, input_files.items)) |mismatch| {
+            if (verbose) {
+                buildStatusMessage(6412, "Project '{s}' is out of date because buildinfo file '{s}' indicates that file '{s}' was root file of compilation but not any more.\n", .{ config_path, mismatch.buildinfo_path, mismatch.root_path });
+            }
         } else if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts)) {
             if (verbose) {
                 buildStatusMessage(6400, "Project '{s}' is up to date but needs to update timestamps of output files that are older than input files\n", .{config_path});
@@ -590,6 +594,34 @@ fn projectBuildInfoVersionMismatch(
     const current_version = default_options.compiler_version;
     if (std.mem.eql(u8, info.version, current_version)) return null;
     return arena.dupe(u8, info.version) catch null;
+}
+
+const BuildInfoRootMismatch = struct {
+    buildinfo_path: []const u8,
+    root_path: []const u8,
+};
+
+fn projectBuildInfoRootMismatch(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    cfg: tsconfig_mod.TsConfig,
+    inputs: []const []const u8,
+) ?BuildInfoRootMismatch {
+    const buildinfo_path = (projectBuildInfoFilePath(arena, config_path, cfg) catch null) orelse return null;
+    const buildinfo_src = RealFs.read(gpa, buildinfo_path) catch return null;
+    defer gpa.free(buildinfo_src);
+    var info = ts_emit.tsbuildinfo.read(gpa, buildinfo_src) catch return null;
+    defer info.deinit(gpa);
+    for (info.file_names) |name| {
+        if (!isTsLikeExtension(name)) continue;
+        if (pathInList(inputs, name)) continue;
+        return .{
+            .buildinfo_path = buildinfo_path,
+            .root_path = arena.dupe(u8, name) catch return null,
+        };
+    }
+    return null;
 }
 
 fn sourceSha1Hex(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
