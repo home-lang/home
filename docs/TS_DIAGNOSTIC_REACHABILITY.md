@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 772 |
-| reachable (parity targets) | 305 |
+| catalog-only total | 771 |
+| reachable (parity targets) | 304 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -27,7 +27,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 12 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 11 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
 | 5xxx — tsconfig / build-option validation | 5 |
 
@@ -323,7 +323,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS18044 `_0_is_automatically_exported_here_18044`
 - TS80007 `await_has_no_effect_on_the_type_of_this_expression_80007`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (12)
+### 6xxx — CLI / build / watch / resolution-trace messages (11)
 
 - TS6212 `Did_you_mean_to_call_this_expression_6212`
 - TS6213 `Did_you_mean_to_use_new_with_this_expression_6213`
@@ -331,7 +331,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
 - TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
 - TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
-- TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
 - TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
 - TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
