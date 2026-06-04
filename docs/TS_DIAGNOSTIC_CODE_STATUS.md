@@ -29,10 +29,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1287 |
+| emitted | 1295 |
 | declared | 4 |
 | tested-only | 1 |
-| catalog-only | 787 |
+| catalog-only | 779 |
 | total upstream codes | 2079 |
 
 ## Codes
@@ -1270,49 +1270,49 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6083 | message | catalog-only |  | Base_directory_to_resolve_non_absolute_module_names_6083 |
 | TS6084 | message | catalog-only |  | Deprecated_Use_jsxFactory_instead_Specify_the_object_invoked_for_createElement_when_targeting_react__6084 |
 | TS6085 | message | catalog-only |  | Enable_tracing_of_the_name_resolution_process_6085 |
-| TS6086 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:357<br>packages/ts_resolver/src/ts_resolver.zig:2495 | Resolving_module_0_from_1_6086 |
-| TS6087 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:329<br>packages/ts_resolver/src/ts_resolver.zig:2562 | Explicitly_specified_module_resolution_kind_Colon_0_6087 |
-| TS6088 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:331<br>packages/ts_resolver/src/ts_resolver.zig:2549 | Module_resolution_kind_is_not_specified_using_0_6088 |
-| TS6089 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:363<br>packages/ts_resolver/src/ts_resolver.zig:313<br>packages/ts_resolver/src/ts_resolver.zig:3693 | Module_name_0_was_successfully_resolved_to_1_6089 |
-| TS6090 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:366<br>packages/ts_resolver/src/ts_resolver.zig:313<br>packages/ts_resolver/src/ts_resolver.zig:2582 | Module_name_0_was_not_resolved_6090 |
-| TS6091 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1031 | paths_option_is_specified_looking_for_a_pattern_to_match_module_name_0_6091 |
-| TS6092 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1035<br>packages/ts_resolver/src/ts_resolver.zig:2443 | Module_name_0_matched_pattern_1_6092 |
-| TS6093 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1043<br>packages/ts_resolver/src/ts_resolver.zig:2443 | Trying_substitution_0_candidate_module_location_Colon_1_6093 |
+| TS6086 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:391<br>packages/ts_resolver/src/ts_resolver.zig:2638 | Resolving_module_0_from_1_6086 |
+| TS6087 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:329<br>packages/ts_resolver/src/ts_resolver.zig:2705 | Explicitly_specified_module_resolution_kind_Colon_0_6087 |
+| TS6088 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:331<br>packages/ts_resolver/src/ts_resolver.zig:2692 | Module_resolution_kind_is_not_specified_using_0_6088 |
+| TS6089 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:397<br>packages/ts_resolver/src/ts_resolver.zig:313<br>packages/ts_resolver/src/ts_resolver.zig:383 | Module_name_0_was_successfully_resolved_to_1_6089 |
+| TS6090 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:400<br>packages/ts_resolver/src/ts_resolver.zig:313<br>packages/ts_resolver/src/ts_resolver.zig:383 | Module_name_0_was_not_resolved_6090 |
+| TS6091 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1107 | paths_option_is_specified_looking_for_a_pattern_to_match_module_name_0_6091 |
+| TS6092 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1111<br>packages/ts_resolver/src/ts_resolver.zig:2586 | Module_name_0_matched_pattern_1_6092 |
+| TS6093 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1119<br>packages/ts_resolver/src/ts_resolver.zig:2586 | Trying_substitution_0_candidate_module_location_Colon_1_6093 |
 | TS6094 | message | catalog-only |  | Resolving_module_name_0_relative_to_base_url_1_2_6094 |
-| TS6095 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:717<br>packages/ts_resolver/src/ts_resolver.zig:718 | Loading_module_as_file_Slash_folder_candidate_module_location_0_target_file_types_Colon_1_6095 |
-| TS6096 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:709 | File_0_does_not_exist_6096 |
-| TS6097 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:707 | File_0_exists_use_it_as_a_name_resolution_result_6097 |
-| TS6098 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1117 | Loading_module_0_from_node_modules_folder_target_file_types_Colon_1_6098 |
-| TS6099 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:459 | Found_package_json_at_0_6099 |
-| TS6100 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1480 | package_json_does_not_have_a_0_field_6100 |
-| TS6101 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:870 | package_json_has_0_field_1_that_references_2_6101 |
+| TS6095 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:793<br>packages/ts_resolver/src/ts_resolver.zig:794 | Loading_module_as_file_Slash_folder_candidate_module_location_0_target_file_types_Colon_1_6095 |
+| TS6096 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:785 | File_0_does_not_exist_6096 |
+| TS6097 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:783 | File_0_exists_use_it_as_a_name_resolution_result_6097 |
+| TS6098 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1193 | Loading_module_0_from_node_modules_folder_target_file_types_Colon_1_6098 |
+| TS6099 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:535 | Found_package_json_at_0_6099 |
+| TS6100 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1623 | package_json_does_not_have_a_0_field_6100 |
+| TS6101 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:946 | package_json_has_0_field_1_that_references_2_6101 |
 | TS6102 | message | catalog-only |  | Allow_javascript_files_to_be_compiled_6102 |
-| TS6104 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1077 | Checking_if_0_is_the_longest_matching_prefix_for_1_2_6104 |
-| TS6105 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:908<br>packages/ts_resolver/src/ts_resolver.zig:1484<br>packages/ts_resolver/src/ts_resolver.zig:1501 | Expected_type_of_0_field_in_package_json_to_be_1_got_2_6105 |
+| TS6104 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1153 | Checking_if_0_is_the_longest_matching_prefix_for_1_2_6104 |
+| TS6105 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:984<br>packages/ts_resolver/src/ts_resolver.zig:1627<br>packages/ts_resolver/src/ts_resolver.zig:1644 | Expected_type_of_0_field_in_package_json_to_be_1_got_2_6105 |
 | TS6106 | message | catalog-only |  | baseUrl_option_is_set_to_0_using_this_value_to_resolve_non_relative_module_name_1_6106 |
-| TS6107 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1071 | rootDirs_option_is_set_using_it_to_resolve_relative_module_name_0_6107 |
-| TS6108 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1090 | Longest_matching_prefix_for_0_is_1_6108 |
-| TS6109 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1100 | Loading_0_from_the_root_dir_1_candidate_location_2_6109 |
-| TS6110 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1091 | Trying_other_entries_in_rootDirs_6110 |
-| TS6111 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1087<br>packages/ts_resolver/src/ts_resolver.zig:1109<br>packages/ts_resolver/src/ts_resolver.zig:2649 | Module_resolution_using_rootDirs_has_failed_6111 |
+| TS6107 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1147 | rootDirs_option_is_set_using_it_to_resolve_relative_module_name_0_6107 |
+| TS6108 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1166 | Longest_matching_prefix_for_0_is_1_6108 |
+| TS6109 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1176 | Loading_0_from_the_root_dir_1_candidate_location_2_6109 |
+| TS6110 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1167 | Trying_other_entries_in_rootDirs_6110 |
+| TS6111 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1163<br>packages/ts_resolver/src/ts_resolver.zig:1185<br>packages/ts_resolver/src/ts_resolver.zig:2792 | Module_resolution_using_rootDirs_has_failed_6111 |
 | TS6112 | message | catalog-only |  | Do_not_emit_use_strict_directives_in_module_output_6112 |
 | TS6113 | message | catalog-only |  | Enable_strict_null_checks_6113 |
 | TS6114 | err | emitted | packages/tsconfig/src/tsconfig.zig:512 | Unknown_option_excludes_Did_you_mean_exclude_6114 |
 | TS6115 | message | catalog-only |  | Raise_error_on_this_expressions_with_an_implied_any_type_6115 |
-| TS6116 | message | catalog-only |  | Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116 |
-| TS6119 | message | catalog-only |  | Type_reference_directive_0_was_successfully_resolved_to_1_primary_Colon_2_6119 |
-| TS6120 | message | catalog-only |  | Type_reference_directive_0_was_not_resolved_6120 |
-| TS6121 | message | catalog-only |  | Resolving_with_primary_search_path_0_6121 |
-| TS6122 | message | catalog-only |  | Root_directory_cannot_be_determined_skipping_primary_search_paths_6122 |
+| TS6116 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:361 | Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116 |
+| TS6119 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:372 | Type_reference_directive_0_was_successfully_resolved_to_1_primary_Colon_2_6119 |
+| TS6120 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:377 | Type_reference_directive_0_was_not_resolved_6120 |
+| TS6121 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:493 | Resolving_with_primary_search_path_0_6121 |
+| TS6122 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:505 | Root_directory_cannot_be_determined_skipping_primary_search_paths_6122 |
 | TS6123 | message | catalog-only |  | Resolving_type_reference_directive_0_containing_file_1_root_directory_not_set_6123 |
 | TS6124 | message | catalog-only |  | Type_declaration_files_to_be_included_in_compilation_6124 |
-| TS6125 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1118 | Looking_up_in_node_modules_folder_initial_location_0_6125 |
+| TS6125 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1194 | Looking_up_in_node_modules_folder_initial_location_0_6125 |
 | TS6126 | message | catalog-only |  | Containing_file_is_not_specified_and_root_directory_cannot_be_determined_skipping_lookup_in_node_mod_6126 |
 | TS6127 | message | catalog-only |  | Resolving_type_reference_directive_0_containing_file_not_set_root_directory_1_6127 |
 | TS6128 | message | catalog-only |  | Resolving_type_reference_directive_0_containing_file_not_set_root_directory_not_set_6128 |
 | TS6130 | message | catalog-only |  | Resolving_real_path_for_0_result_1_6130 |
 | TS6131 | err | catalog-only |  | Cannot_compile_modules_using_option_0_unless_the_module_flag_is_amd_or_system_6131 |
-| TS6132 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:773<br>packages/ts_resolver/src/ts_resolver.zig:774<br>packages/ts_resolver/src/ts_resolver.zig:2877 | File_name_0_has_a_1_extension_stripping_it_6132 |
+| TS6132 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:849<br>packages/ts_resolver/src/ts_resolver.zig:850<br>packages/ts_resolver/src/ts_resolver.zig:3093 | File_name_0_has_a_1_extension_stripping_it_6132 |
 | TS6134 | message | catalog-only |  | Report_errors_on_unused_locals_6134 |
 | TS6135 | message | catalog-only |  | Report_errors_on_unused_parameters_6135 |
 | TS6136 | message | catalog-only |  | The_maximum_dependency_depth_to_search_under_node_modules_and_load_JavaScript_files_6136 |
@@ -1324,7 +1324,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6144 | message | catalog-only |  | Module_0_was_resolved_as_locally_declared_ambient_module_in_file_1_6144 |
 | TS6146 | message | catalog-only |  | Specify_the_JSX_factory_function_to_use_when_targeting_react_JSX_emit_e_g_React_createElement_or_h_6146 |
 | TS6147 | message | catalog-only |  | Resolution_for_module_0_was_found_in_cache_from_location_1_6147 |
-| TS6148 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1196 | Directory_0_does_not_exist_skipping_all_lookups_in_it_6148 |
+| TS6148 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1272 | Directory_0_does_not_exist_skipping_all_lookups_in_it_6148 |
 | TS6149 | message | catalog-only |  | Show_diagnostic_information_6149 |
 | TS6150 | message | catalog-only |  | Show_verbose_diagnostic_information_6150 |
 | TS6151 | message | catalog-only |  | Emit_a_single_file_with_source_maps_instead_of_having_a_separate_file_6151 |
@@ -1340,7 +1340,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6161 | message | catalog-only |  | List_of_folders_to_include_type_definitions_from_6161 |
 | TS6162 | message | catalog-only |  | Disable_size_limitations_on_JavaScript_projects_6162 |
 | TS6163 | message | catalog-only |  | The_character_set_of_the_input_files_6163 |
-| TS6164 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:434<br>packages/ts_resolver/src/ts_resolver.zig:435 | Skipping_module_0_that_looks_like_an_absolute_URI_target_file_types_Colon_1_6164 |
+| TS6164 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:468<br>packages/ts_resolver/src/ts_resolver.zig:469 | Skipping_module_0_that_looks_like_an_absolute_URI_target_file_types_Colon_1_6164 |
 | TS6165 | message | catalog-only |  | Do_not_truncate_error_messages_6165 |
 | TS6166 | message | catalog-only |  | Output_directory_for_generated_declaration_files_6166 |
 | TS6167 | message | catalog-only |  | A_series_of_entries_which_re_map_imports_to_lookup_locations_relative_to_the_baseUrl_6167 |
@@ -1350,7 +1350,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6171 | message | emitted | packages/ts_cli/src/options_table.zig:31<br>packages/ts_cli/src/options_table.zig:32<br>packages/ts_cli/src/options_table.zig:33 | Command_line_Options_6171 |
 | TS6179 | message | catalog-only |  | Provide_full_support_for_iterables_in_for_of_spread_and_destructuring_when_targeting_ES5_6179 |
 | TS6180 | message | emitted | packages/ts_cli/src/options_table.zig:85 | Enable_all_strict_type_checking_options_6180 |
-| TS6182 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1121 | Scoped_package_detected_looking_in_0_6182 |
+| TS6182 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1197 | Scoped_package_detected_looking_in_0_6182 |
 | TS6183 | message | catalog-only |  | Reusing_resolution_of_module_0_from_1_of_old_program_it_was_successfully_resolved_to_2_6183 |
 | TS6184 | message | catalog-only |  | Reusing_resolution_of_module_0_from_1_of_old_program_it_was_successfully_resolved_to_2_with_Package__6184 |
 | TS6186 | message | catalog-only |  | Enable_strict_checking_of_function_types_6186 |
@@ -1369,10 +1369,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6203 | message | emitted | packages/ts_checker/src/check.zig:26204<br>packages/ts_checker/src/check.zig:90543 | _0_was_also_declared_here_6203 |
 | TS6204 | message | emitted | packages/ts_checker/src/check.zig:10672 | and_here_6204 |
 | TS6205 | err | emitted | packages/ts_checker/src/check.zig:14308<br>packages/ts_checker/src/check.zig:97532<br>packages/ts_checker/src/check.zig:97548 | All_type_parameters_are_unused_6205 |
-| TS6206 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1488<br>packages/ts_resolver/src/ts_resolver.zig:3600<br>packages/ts_resolver/src/ts_resolver.zig:3641 | package_json_has_a_typesVersions_field_with_version_specific_path_mappings_6206 |
-| TS6207 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1511<br>packages/ts_resolver/src/ts_resolver.zig:3643 | package_json_does_not_have_a_typesVersions_entry_that_matches_version_0_6207 |
-| TS6208 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1505<br>packages/ts_resolver/src/ts_resolver.zig:3601 | package_json_has_a_typesVersions_entry_0_that_matches_compiler_version_1_looking_for_a_pattern_to_ma_6208 |
-| TS6209 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1494<br>packages/ts_resolver/src/ts_resolver.zig:3642 | package_json_has_a_typesVersions_entry_0_that_is_not_a_valid_semver_range_6209 |
+| TS6206 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1631<br>packages/ts_resolver/src/ts_resolver.zig:3816<br>packages/ts_resolver/src/ts_resolver.zig:3857 | package_json_has_a_typesVersions_field_with_version_specific_path_mappings_6206 |
+| TS6207 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1654<br>packages/ts_resolver/src/ts_resolver.zig:3859 | package_json_does_not_have_a_typesVersions_entry_that_matches_version_0_6207 |
+| TS6208 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1648<br>packages/ts_resolver/src/ts_resolver.zig:3817 | package_json_has_a_typesVersions_entry_0_that_matches_compiler_version_1_looking_for_a_pattern_to_ma_6208 |
+| TS6209 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1637<br>packages/ts_resolver/src/ts_resolver.zig:3858 | package_json_has_a_typesVersions_entry_0_that_is_not_a_valid_semver_range_6209 |
 | TS6210 | message | catalog-only |  | An_argument_for_0_was_not_provided_6210 |
 | TS6211 | message | catalog-only |  | An_argument_matching_this_binding_pattern_was_not_provided_6211 |
 | TS6212 | message | catalog-only |  | Did_you_mean_to_call_this_expression_6212 |
@@ -1381,9 +1381,9 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6215 | message | catalog-only |  | Using_compiler_options_of_project_reference_redirect_0_6215 |
 | TS6216 | message | emitted | packages/ts_cli/src/tsc_main.zig:2080 | Found_1_error_6216 |
 | TS6217 | message | emitted | packages/ts_cli/src/tsc_main.zig:2089 | Found_0_errors_6217 |
-| TS6218 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:361<br>packages/ts_resolver/src/ts_resolver.zig:3691 | Module_name_0_was_successfully_resolved_to_1_with_Package_ID_2_6218 |
-| TS6219 | message | catalog-only |  | Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219 |
-| TS6220 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:866<br>packages/ts_resolver/src/ts_resolver.zig:906 | package_json_had_a_falsy_0_field_6220 |
+| TS6218 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:395<br>packages/ts_resolver/src/ts_resolver.zig:3907 | Module_name_0_was_successfully_resolved_to_1_with_Package_ID_2_6218 |
+| TS6219 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:370 | Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219 |
+| TS6220 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:942<br>packages/ts_resolver/src/ts_resolver.zig:982 | package_json_had_a_falsy_0_field_6220 |
 | TS6221 | message | catalog-only |  | Disable_use_of_source_files_instead_of_declaration_files_from_referenced_projects_6221 |
 | TS6222 | message | catalog-only |  | Emit_class_fields_with_Define_instead_of_Set_6222 |
 | TS6223 | message | catalog-only |  | Generates_a_CPU_profile_6223 |
@@ -1401,10 +1401,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6236 | err | catalog-only |  | Arguments_for_the_rest_parameter_0_were_not_provided_6236 |
 | TS6237 | message | emitted | packages/ts_cli/src/options_table.zig:43 | Generates_an_event_trace_and_a_list_of_types_6237 |
 | TS6238 | err | catalog-only |  | Specify_the_module_specifier_to_be_used_to_import_the_jsx_and_jsxs_factory_functions_from_eg_react_6238 |
-| TS6239 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:688 | File_0_exists_according_to_earlier_cached_lookups_6239 |
-| TS6240 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:690 | File_0_does_not_exist_according_to_earlier_cached_lookups_6240 |
+| TS6239 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:764 | File_0_exists_according_to_earlier_cached_lookups_6239 |
+| TS6240 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:766 | File_0_does_not_exist_according_to_earlier_cached_lookups_6240 |
 | TS6241 | message | catalog-only |  | Resolution_for_type_reference_directive_0_was_found_in_cache_from_location_1_6241 |
-| TS6242 | message | catalog-only |  | Resolving_type_reference_directive_0_containing_file_1_6242 |
+| TS6242 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:363 | Resolving_type_reference_directive_0_containing_file_1_6242 |
 | TS6243 | message | emitted | packages/ts_cli/src/options_table.zig:98 | Interpret_optional_property_types_as_written_rather_than_adding_undefined_6243 |
 | TS6244 | message | emitted | packages/ts_cli/src/options_table.zig:67<br>packages/ts_cli/src/options_table.zig:74<br>packages/ts_cli/src/options_table.zig:104 | Modules_6244 |
 | TS6245 | message | catalog-only |  | File_Management_6245 |
@@ -1427,22 +1427,22 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6262 | message | catalog-only |  | File_name_0_has_a_1_extension_looking_up_2_instead_6262 |
 | TS6263 | err | emitted | packages/ts_checker/src/check.zig:32106<br>packages/ts_checker/src/check.zig:32122<br>packages/ts_checker/src/check.zig:100708 | Module_0_was_resolved_to_1_but_allowArbitraryExtensions_is_not_set_6263 |
 | TS6264 | message | emitted | packages/ts_cli/src/options_table.zig:130 | Enable_importing_files_with_any_extension_provided_a_declaration_file_is_present_6264 |
-| TS6265 | message | catalog-only |  | Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265 |
+| TS6265 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:500 | Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265 |
 | TS6266 | err | emitted | packages/tsconfig/src/tsconfig.zig:441<br>packages/tsconfig/src/tsconfig.zig:1752<br>packages/tsconfig/src/tsconfig.zig:438 | Option_0_can_only_be_specified_on_command_line_6266 |
-| TS6270 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:524<br>packages/ts_resolver/src/ts_resolver.zig:4361 | Directory_0_has_no_containing_package_json_scope_Imports_will_not_resolve_6270 |
-| TS6271 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:553<br>packages/ts_resolver/src/ts_resolver.zig:559 | Import_specifier_0_does_not_exist_in_package_json_scope_at_path_1_6271 |
-| TS6272 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:420<br>packages/ts_resolver/src/ts_resolver.zig:4342 | Invalid_import_specifier_0_has_no_possible_resolutions_6272 |
-| TS6273 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:534 | package_json_scope_0_has_no_imports_defined_6273 |
-| TS6274 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:542 | package_json_scope_0_explicitly_maps_specifier_1_to_null_6274 |
-| TS6275 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1634<br>packages/ts_resolver/src/ts_resolver.zig:3223<br>packages/ts_resolver/src/ts_resolver.zig:4302 | package_json_scope_0_has_invalid_type_for_target_of_specifier_1_6275 |
-| TS6276 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1438 | Export_specifier_0_does_not_exist_in_package_json_scope_at_path_1_6276 |
-| TS6277 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:594<br>packages/ts_resolver/src/ts_resolver.zig:3331 | Resolution_of_non_relative_name_failed_trying_with_modern_Node_resolution_features_disabled_to_see_i_6277 |
-| TS6278 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:607<br>packages/ts_resolver/src/ts_resolver.zig:3332 | There_are_types_at_0_but_this_result_could_not_be_resolved_when_respecting_package_json_exports_The__6278 |
+| TS6270 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:600<br>packages/ts_resolver/src/ts_resolver.zig:4577 | Directory_0_has_no_containing_package_json_scope_Imports_will_not_resolve_6270 |
+| TS6271 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:629<br>packages/ts_resolver/src/ts_resolver.zig:635 | Import_specifier_0_does_not_exist_in_package_json_scope_at_path_1_6271 |
+| TS6272 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:454<br>packages/ts_resolver/src/ts_resolver.zig:4558 | Invalid_import_specifier_0_has_no_possible_resolutions_6272 |
+| TS6273 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:610 | package_json_scope_0_has_no_imports_defined_6273 |
+| TS6274 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:618 | package_json_scope_0_explicitly_maps_specifier_1_to_null_6274 |
+| TS6275 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1777<br>packages/ts_resolver/src/ts_resolver.zig:3439<br>packages/ts_resolver/src/ts_resolver.zig:4518 | package_json_scope_0_has_invalid_type_for_target_of_specifier_1_6275 |
+| TS6276 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1581 | Export_specifier_0_does_not_exist_in_package_json_scope_at_path_1_6276 |
+| TS6277 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:670<br>packages/ts_resolver/src/ts_resolver.zig:3547 | Resolution_of_non_relative_name_failed_trying_with_modern_Node_resolution_features_disabled_to_see_i_6277 |
+| TS6278 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:683<br>packages/ts_resolver/src/ts_resolver.zig:3548 | There_are_types_at_0_but_this_result_could_not_be_resolved_when_respecting_package_json_exports_The__6278 |
 | TS6279 | message | catalog-only |  | Resolution_of_non_relative_name_failed_trying_with_moduleResolution_bundler_to_see_if_project_may_ne_6279 |
 | TS6280 | message | catalog-only |  | There_are_types_at_0_but_this_result_could_not_be_resolved_under_your_current_moduleResolution_setti_6280 |
-| TS6281 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:976<br>packages/ts_resolver/src/ts_resolver.zig:2434<br>packages/ts_resolver/src/ts_resolver.zig:3729 | package_json_has_a_peerDependencies_field_6281 |
-| TS6282 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1006<br>packages/ts_resolver/src/ts_resolver.zig:2435<br>packages/ts_resolver/src/ts_resolver.zig:3730 | Found_peerDependency_0_with_1_version_6282 |
-| TS6283 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1010<br>packages/ts_resolver/src/ts_resolver.zig:2436 | Failed_to_find_peerDependency_0_6283 |
+| TS6281 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1052<br>packages/ts_resolver/src/ts_resolver.zig:2577<br>packages/ts_resolver/src/ts_resolver.zig:3945 | package_json_has_a_peerDependencies_field_6281 |
+| TS6282 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1082<br>packages/ts_resolver/src/ts_resolver.zig:2578<br>packages/ts_resolver/src/ts_resolver.zig:3946 | Found_peerDependency_0_with_1_version_6282 |
+| TS6283 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1086<br>packages/ts_resolver/src/ts_resolver.zig:2579 | Failed_to_find_peerDependency_0_6283 |
 | TS6302 | message | catalog-only |  | Enable_project_compilation_6302 |
 | TS6304 | err | emitted | packages/tsconfig/src/tsconfig.zig:687 | Composite_projects_may_not_disable_declaration_emit_6304 |
 | TS6305 | err | catalog-only |  | Output_file_0_has_not_been_built_from_source_file_1_6305 |
@@ -1491,10 +1491,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6399 | message | emitted | packages/ts_cli/src/tsc_main.zig:430 | Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_some_of_the_changes_were_not_emitte_6399 |
 | TS6400 | message | emitted | packages/ts_cli/src/tsc_main.zig:446 | Project_0_is_up_to_date_but_needs_to_update_timestamps_of_output_files_that_are_older_than_input_fil_6400 |
 | TS6401 | message | catalog-only |  | Project_0_is_out_of_date_because_there_was_error_reading_file_1_6401 |
-| TS6402 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:407<br>packages/ts_resolver/src/ts_resolver.zig:3173 | Resolving_in_0_mode_with_conditions_1_6402 |
-| TS6403 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1691<br>packages/ts_resolver/src/ts_resolver.zig:1708<br>packages/ts_resolver/src/ts_resolver.zig:1724 | Matched_0_condition_1_6403 |
-| TS6404 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1536<br>packages/ts_resolver/src/ts_resolver.zig:1545<br>packages/ts_resolver/src/ts_resolver.zig:1574 | Using_0_subpath_1_with_target_2_6404 |
-| TS6405 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1683<br>packages/ts_resolver/src/ts_resolver.zig:3176 | Saw_non_matching_condition_0_6405 |
+| TS6402 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:441<br>packages/ts_resolver/src/ts_resolver.zig:3389 | Resolving_in_0_mode_with_conditions_1_6402 |
+| TS6403 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1834<br>packages/ts_resolver/src/ts_resolver.zig:1851<br>packages/ts_resolver/src/ts_resolver.zig:1867 | Matched_0_condition_1_6403 |
+| TS6404 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1679<br>packages/ts_resolver/src/ts_resolver.zig:1688<br>packages/ts_resolver/src/ts_resolver.zig:1717 | Using_0_subpath_1_with_target_2_6404 |
+| TS6405 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1826<br>packages/ts_resolver/src/ts_resolver.zig:3392 | Saw_non_matching_condition_0_6405 |
 | TS6406 | message | emitted | packages/ts_cli/src/tsc_main.zig:438 | Project_0_is_out_of_date_because_buildinfo_file_1_indicates_there_is_change_in_compilerOptions_6406 |
 | TS6407 | message | emitted | packages/ts_cli/src/options_table.zig:115 | Allow_imports_to_include_TypeScript_file_extensions_Requires_moduleResolution_bundler_and_either_noE_6407 |
 | TS6408 | message | emitted | packages/ts_cli/src/options_table.zig:117 | Use_the_package_json_exports_field_when_resolving_package_imports_6408 |
@@ -1502,12 +1502,12 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6410 | message | emitted | packages/ts_cli/src/options_table.zig:119 | Conditions_to_set_in_addition_to_the_resolver_specific_defaults_when_resolving_imports_6410 |
 | TS6411 | message | emitted | packages/ts_cli/src/options_table.zig:117<br>packages/ts_cli/src/options_table.zig:118 | true_when_moduleResolution_is_node16_nodenext_or_bundler_otherwise_false_6411 |
 | TS6412 | message | emitted | packages/ts_cli/src/tsc_main.zig:442 | Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_file_2_was_root_file_of_compilation_6412 |
-| TS6413 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1670<br>packages/ts_resolver/src/ts_resolver.zig:3177 | Entering_conditional_exports_6413 |
-| TS6414 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1695<br>packages/ts_resolver/src/ts_resolver.zig:1712<br>packages/ts_resolver/src/ts_resolver.zig:1728 | Resolved_under_condition_0_6414 |
-| TS6415 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1703<br>packages/ts_resolver/src/ts_resolver.zig:1720<br>packages/ts_resolver/src/ts_resolver.zig:1736 | Failed_to_resolve_under_condition_0_6415 |
-| TS6416 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1671<br>packages/ts_resolver/src/ts_resolver.zig:3180 | Exiting_conditional_exports_6416 |
-| TS6417 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1132 | Searching_all_ancestor_node_modules_directories_for_preferred_extensions_Colon_0_6417 |
-| TS6418 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1137 | Searching_all_ancestor_node_modules_directories_for_fallback_extensions_Colon_0_6418 |
+| TS6413 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1813<br>packages/ts_resolver/src/ts_resolver.zig:3393 | Entering_conditional_exports_6413 |
+| TS6414 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1838<br>packages/ts_resolver/src/ts_resolver.zig:1855<br>packages/ts_resolver/src/ts_resolver.zig:1871 | Resolved_under_condition_0_6414 |
+| TS6415 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1846<br>packages/ts_resolver/src/ts_resolver.zig:1863<br>packages/ts_resolver/src/ts_resolver.zig:1879 | Failed_to_resolve_under_condition_0_6415 |
+| TS6416 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1814<br>packages/ts_resolver/src/ts_resolver.zig:3396 | Exiting_conditional_exports_6416 |
+| TS6417 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1208 | Searching_all_ancestor_node_modules_directories_for_preferred_extensions_Colon_0_6417 |
+| TS6418 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1213 | Searching_all_ancestor_node_modules_directories_for_fallback_extensions_Colon_0_6418 |
 | TS6419 | message | emitted | packages/ts_cli/src/tsc_main.zig:434 | Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_program_needs_to_report_errors_6419 |
 | TS6420 | message | catalog-only |  | Project_0_is_out_of_date_because_1_6420 |
 | TS6421 | message | emitted | packages/ts_cli/src/options_table.zig:116 | Rewrite_ts_tsx_mts_and_cts_file_extensions_in_relative_import_paths_to_their_JavaScript_equivalent_i_6421 |

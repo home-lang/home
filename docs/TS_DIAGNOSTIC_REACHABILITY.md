@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 787 |
-| reachable (parity targets) | 320 |
+| catalog-only total | 779 |
+| reachable (parity targets) | 312 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -24,8 +24,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 27 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 19 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
@@ -260,36 +260,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1543 `Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543`
 - TS1544 `Named_imports_from_a_JSON_file_into_an_ECMAScript_module_are_not_allowed_when_module_is_set_to_0_1544`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (27)
-
-- TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
-- TS6119 `Type_reference_directive_0_was_successfully_resolved_to_1_primary_Colon_2_6119`
-- TS6120 `Type_reference_directive_0_was_not_resolved_6120`
-- TS6121 `Resolving_with_primary_search_path_0_6121`
-- TS6122 `Root_directory_cannot_be_determined_skipping_primary_search_paths_6122`
-- TS6130 `Resolving_real_path_for_0_result_1_6130`
-- TS6140 `Auto_discovery_for_typings_is_enabled_in_project_0_Running_extra_resolution_pass_for_module_1_using__6140`
-- TS6210 `An_argument_for_0_was_not_provided_6210`
-- TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
-- TS6212 `Did_you_mean_to_call_this_expression_6212`
-- TS6213 `Did_you_mean_to_use_new_with_this_expression_6213`
-- TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
-- TS6219 `Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219`
-- TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
-- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
-- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
-- TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
-- TS6236 `Arguments_for_the_rest_parameter_0_were_not_provided_6236`
-- TS6242 `Resolving_type_reference_directive_0_containing_file_1_6242`
-- TS6245 `File_Management_6245`
-- TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`
-- TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
-- TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
-- TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
-- TS6501 `The_expected_type_comes_from_this_index_signature_6501`
-- TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
-- TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
-
 ### 4xxx — declaration-emit (privacy / serialization) (22)
 
 - TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
@@ -314,6 +284,28 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS4120 `This_parameter_property_must_have_a_JSDoc_comment_with_an_override_tag_because_it_overrides_a_member_4120`
 - TS4125 `Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125`
 - TS4126 `One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126`
+
+### 6xxx — CLI / build / watch / resolution-trace messages (19)
+
+- TS6130 `Resolving_real_path_for_0_result_1_6130`
+- TS6140 `Auto_discovery_for_typings_is_enabled_in_project_0_Running_extra_resolution_pass_for_module_1_using__6140`
+- TS6210 `An_argument_for_0_was_not_provided_6210`
+- TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
+- TS6212 `Did_you_mean_to_call_this_expression_6212`
+- TS6213 `Did_you_mean_to_use_new_with_this_expression_6213`
+- TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
+- TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
+- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
+- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
+- TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
+- TS6236 `Arguments_for_the_rest_parameter_0_were_not_provided_6236`
+- TS6245 `File_Management_6245`
+- TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
+- TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
+- TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
+- TS6501 `The_expected_type_comes_from_this_index_signature_6501`
+- TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
+- TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
 
 ### 9xxxx — editor code-fix / refactor (language service) (17)
 

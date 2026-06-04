@@ -346,6 +346,40 @@ pub const Resolver = struct {
         return result;
     }
 
+    /// Resolve a triple-slash `<reference types="...">` directive.
+    /// Kept as a sibling API to module resolution because tsc traces
+    /// type-reference directives with their own TS6116/6119/6120/etc.
+    /// banners and searches custom `typeRoots` before `node_modules/@types`.
+    pub fn resolveTypeReferenceDirective(
+        self: *Resolver,
+        directive: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!Resolution {
+        if (directive.len == 0) return error.InvalidSpecifier;
+        if (self.trace != null) {
+            if (try self.typeReferenceRootDir(containing_file)) |root_dir| {
+                self.traceMsg(6116, "======== Resolving type reference directive '{s}', containing file '{s}', root directory '{s}'. ========", .{ directive, containing_file, root_dir });
+            } else {
+                self.traceMsg(6242, "======== Resolving type reference directive '{s}', containing file '{s}'. ========", .{ directive, containing_file });
+            }
+        }
+        const result = self.resolveTypeReferenceDirectiveImpl(directive, containing_file);
+        if (result) |found| {
+            const primary = if (found.primary) "true" else "false";
+            if (found.resolution.package_id) |package_id| {
+                self.traceMsg(6219, "======== Type reference directive '{s}' was successfully resolved to '{s}' with Package ID '{s}', primary: {s}. ========", .{ directive, found.resolution.path, package_id, primary });
+            } else {
+                self.traceMsg(6119, "======== Type reference directive '{s}' was successfully resolved to '{s}', primary: {s}. ========", .{ directive, found.resolution.path, primary });
+            }
+            return found.resolution;
+        } else |e| {
+            if (e == error.NotFound) {
+                self.traceMsg(6120, "======== Type reference directive '{s}' was not resolved. ========", .{directive});
+            }
+            return e;
+        }
+    }
+
     /// `resolveImpl` plus the TS6086/6089/6090 banner traces. Separated
     /// so `resolve` can apply the memo around it.
     fn resolveTraced(
@@ -442,6 +476,48 @@ pub const Resolver = struct {
             return try self.attachExportsAlternateResult(r, specifier, containing_file);
         }
         if (try self.tryTypeRoots(specifier)) |r| return r;
+        return error.NotFound;
+    }
+
+    const TypeReferenceLookup = struct {
+        resolution: Resolution,
+        primary: bool,
+    };
+
+    fn resolveTypeReferenceDirectiveImpl(
+        self: *Resolver,
+        directive: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!TypeReferenceLookup {
+        if (self.config.type_roots.len > 0) {
+            self.traceMsg(6121, "Resolving with primary search path '{s}'.", .{self.typeRootsTraceText()});
+            for (self.config.type_roots) |root| {
+                if (root.len == 0) continue;
+                if (try self.tryTypeReferenceRoot(root, directive)) |r| {
+                    return .{ .resolution = r, .primary = true };
+                }
+            }
+            self.traceMsg(6265, "Resolving type reference directive for program that specifies custom typeRoots, skipping lookup in 'node_modules' folder.", .{});
+            return error.NotFound;
+        }
+
+        if (containing_file.len == 0) {
+            self.traceMsg(6122, "Root directory cannot be determined, skipping primary search paths.", .{});
+            return error.NotFound;
+        }
+
+        var dir = dirname(containing_file);
+        while (true) {
+            const nm = try self.joinPath(dir, "node_modules");
+            const at_types = try self.joinPath(nm, "@types");
+            if (try self.tryTypeReferenceAtTypesRoot(at_types, directive)) |r| {
+                return .{ .resolution = r, .primary = false };
+            }
+            if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
+            const parent = dirname(dir);
+            if (std.mem.eql(u8, parent, dir)) break;
+            dir = parent;
+        }
         return error.NotFound;
     }
 
@@ -1291,6 +1367,73 @@ pub const Resolver = struct {
             if (try self.tryTypeRootCandidate(candidate)) |r| return r;
         }
         return null;
+    }
+
+    fn typeReferenceRootDir(self: *Resolver, containing_file: []const u8) ResolveError!?[]const u8 {
+        if (self.config.root_dir.len != 0) return try self.configuredRootDir(self.config.root_dir);
+        if (self.config.config_file_path.len != 0) return dirname(self.config.config_file_path);
+        if (containing_file.len != 0) return dirname(containing_file);
+        return null;
+    }
+
+    fn typeRootsTraceText(self: *Resolver) []const u8 {
+        const sink = self.trace orelse return "";
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const a = sink.arena.allocator();
+        for (self.config.type_roots, 0..) |root, i| {
+            if (i != 0) buf.appendSlice(a, ", ") catch return "";
+            buf.appendSlice(a, root) catch return "";
+        }
+        return buf.items;
+    }
+
+    fn tryTypeReferenceRoot(
+        self: *Resolver,
+        root: []const u8,
+        directive: []const u8,
+    ) ResolveError!?Resolution {
+        if (std.mem.endsWith(u8, root, "/node_modules/@types") or
+            std.mem.eql(u8, root, "node_modules/@types"))
+        {
+            return self.tryTypeReferenceAtTypesRoot(root, directive);
+        }
+        const candidate = try self.joinPath(root, directive);
+        const resolution = (try self.tryTypeRootCandidate(candidate)) orelse return null;
+        return try self.withTypeReferencePackageId(resolution, candidate);
+    }
+
+    fn tryTypeReferenceAtTypesRoot(
+        self: *Resolver,
+        root: []const u8,
+        directive: []const u8,
+    ) ResolveError!?Resolution {
+        const pkg_dir = try self.atTypesPackageDir(root, directive);
+        const resolution = (try self.tryTypeRootCandidate(pkg_dir)) orelse return null;
+        return try self.withTypeReferencePackageId(resolution, pkg_dir);
+    }
+
+    fn atTypesPackageDir(self: *Resolver, root: []const u8, specifier: []const u8) ResolveError![]const u8 {
+        const split = packageNameSplit(specifier);
+        if (split.name.len == 0) return try self.joinPath(root, specifier);
+        const pkg_root: []const u8 = if (split.name[0] == '@') blk: {
+            const slash = std.mem.indexOfScalar(u8, split.name, '/') orelse return try self.joinPath(root, specifier);
+            const scope = split.name[1..slash];
+            const tail = split.name[slash + 1 ..];
+            const mangled = try std.fmt.allocPrint(self.ar(), "{s}__{s}", .{ scope, tail });
+            break :blk try self.joinPath(root, mangled);
+        } else try self.joinPath(root, split.name);
+        if (split.subpath.len == 0) return pkg_root;
+        return try self.joinPath(pkg_root, split.subpath);
+    }
+
+    fn withTypeReferencePackageId(
+        self: *Resolver,
+        resolution: Resolution,
+        pkg_dir: []const u8,
+    ) ResolveError!Resolution {
+        const pkg_json = try self.joinPath(pkg_dir, "package.json");
+        if (!self.fs.fileExists(pkg_json)) return resolution;
+        return try self.withPackageId(resolution, pkg_dir, pkg_json, false);
     }
 
     fn tryAtTypesRoot(self: *Resolver, root: []const u8, specifier: []const u8) ResolveError!?Resolution {
@@ -2816,6 +2959,79 @@ test "Resolver: custom typeRoots resolve scoped packages literally" {
     const at_types = try r.resolve("@mangled/attypescache", "/a.ts");
     try T.expectEqualStrings("/a/node_modules/@types/mangled__attypescache/index.d.ts", at_types.path);
     try T.expectEqual(Resolution.Source.type_roots, at_types.source);
+}
+
+test "Resolver: type reference directives trace custom typeRoots primary lookup" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/types/node/index.d.ts", "declare const process: unknown;");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    const roots = [_][]const u8{"/proj/types"};
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .root_dir = "/proj", .type_roots = &roots });
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolveTypeReferenceDirective("node", "/proj/src/app.ts");
+    try T.expectEqualStrings("/proj/types/node/index.d.ts", res.path);
+    try T.expectError(error.NotFound, r.resolveTypeReferenceDirective("missing", "/proj/src/app.ts"));
+
+    var saw_6116 = false;
+    var saw_6119 = false;
+    var saw_6120 = false;
+    var saw_6121 = false;
+    var saw_6265 = false;
+    for (sink.entries.items) |entry| {
+        switch (entry.code) {
+            6116 => saw_6116 = true,
+            6119 => saw_6119 = true,
+            6120 => saw_6120 = true,
+            6121 => saw_6121 = true,
+            6265 => saw_6265 = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_6116);
+    try T.expect(saw_6119);
+    try T.expect(saw_6120);
+    try T.expect(saw_6121);
+    try T.expect(saw_6265);
+}
+
+test "Resolver: type reference directives trace @types package IDs and missing root" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/node_modules/@types/node/package.json",
+        \\{ "name": "@types/node", "version": "1.0.0", "types": "index.d.ts" }
+    );
+    try vfs.addFile("/proj/node_modules/@types/node/index.d.ts", "declare const process: unknown;");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolveTypeReferenceDirective("node", "/proj/src/app.ts");
+    try T.expectEqualStrings("/proj/node_modules/@types/node/index.d.ts", res.path);
+    try T.expectEqualStrings("@types/node/index.d.ts@1.0.0", res.package_id.?);
+    try T.expectError(error.NotFound, r.resolveTypeReferenceDirective("missing", ""));
+
+    var saw_6122 = false;
+    var saw_6219 = false;
+    var saw_6242 = false;
+    for (sink.entries.items) |entry| {
+        switch (entry.code) {
+            6122 => saw_6122 = true,
+            6219 => saw_6219 = true,
+            6242 => saw_6242 = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_6122);
+    try T.expect(saw_6219);
+    try T.expect(saw_6242);
 }
 
 test "Resolver: prefers types over main" {
