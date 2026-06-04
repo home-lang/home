@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 738 |
-| reachable (parity targets) | 273 |
+| catalog-only total | 737 |
+| reachable (parity targets) | 272 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 151 |
+| 2xxx — checker / type engine | 150 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,12 +31,11 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (151)
+### 2xxx — checker / type engine (150)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
 - TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
-- TS2311 `Cannot_find_name_0_Did_you_mean_to_write_this_in_an_async_function_2311`
 - TS2316 `Global_type_0_must_be_a_class_or_interface_type_2316`
 - TS2317 `Global_type_0_must_have_1_type_parameter_s_2317`
 - TS2319 `Named_property_0_of_types_1_and_2_are_not_identical_2319`
