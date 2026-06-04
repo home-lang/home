@@ -1075,6 +1075,12 @@ fn jsxFragmentFactoryCompilerOptionPresent(source: []const u8, options: CompileO
     return !std.mem.eql(u8, options.emit.jsx_fragment_factory, "React.Fragment");
 }
 
+fn jsxFragmentFactoryScopeRequired(source: []const u8, options: CompileOptions) bool {
+    const fragment_factory = compilerOptionDirectiveValue(source, "jsxFragmentFactory") orelse options.emit.jsx_fragment_factory;
+    if (std.mem.eql(u8, fragment_factory, "null")) return false;
+    return options.emit.jsx_runtime == .classic or jsxFragmentFactoryCompilerOptionPresent(source, options);
+}
+
 fn sourceMentionsIdentifierOutsideComments(source: []const u8, name: []const u8) bool {
     if (name.len == 0) return false;
     var i: usize = 0;
@@ -1564,6 +1570,8 @@ pub fn compileSource(
         jsxTransformEnabled(options),
         jsxFactoryCompilerOptionPresent(source, options),
         jsxFragmentFactoryCompilerOptionPresent(source, options),
+        compilerOptionDirectiveValue(source, "jsxFragmentFactory") orelse options.emit.jsx_fragment_factory,
+        jsxFragmentFactoryScopeRequired(source, options),
     );
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
@@ -3736,6 +3744,75 @@ test "driver: missing reactNamespace classic JSX scope reports TS2874" {
         }
     }
     try T.expect(found);
+}
+
+test "driver: classic JSX fragment missing factory scope reports TS2879" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react" } }
+        ,
+    );
+    var opts = optionsFromConfig(&cfg);
+    opts.no_emit = true;
+    var c = try compileSource(T.allocator,
+        \\let v = <></>;
+    , opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2879 and
+            std.mem.eql(u8, d.message, "Using JSX fragments requires fragment factory 'React' to be in scope, but it could not be found."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: classic JSX fragment factory scope can be declared" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react" } }
+        ,
+    );
+    var opts = optionsFromConfig(&cfg);
+    opts.no_emit = true;
+    var c = try compileSource(T.allocator,
+        \\declare var React: any;
+        \\let v = <></>;
+    , opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2879);
+    }
+}
+
+test "driver: automatic JSX fragment does not require classic fragment factory scope" {
+    var c = try compileSource(T.allocator,
+        \\// @jsx: react-jsx
+        \\let v = <></>;
+    , .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2879);
+    }
 }
 
 test "driver: declaration importer path permits export as namespace" {
