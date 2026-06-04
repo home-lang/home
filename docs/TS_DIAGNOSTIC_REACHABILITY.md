@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 776 |
-| reachable (parity targets) | 309 |
+| catalog-only total | 773 |
+| reachable (parity targets) | 306 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -26,8 +26,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 16 |
 | other | 15 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 13 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
 | 5xxx — tsconfig / build-option validation | 5 |
 
@@ -305,25 +305,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (16)
-
-- TS6210 `An_argument_for_0_was_not_provided_6210`
-- TS6211 `An_argument_matching_this_binding_pattern_was_not_provided_6211`
-- TS6212 `Did_you_mean_to_call_this_expression_6212`
-- TS6213 `Did_you_mean_to_use_new_with_this_expression_6213`
-- TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
-- TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
-- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
-- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
-- TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
-- TS6236 `Arguments_for_the_rest_parameter_0_were_not_provided_6236`
-- TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
-- TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
-- TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
-- TS6501 `The_expected_type_comes_from_this_index_signature_6501`
-- TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
-- TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
-
 ### other (15)
 
 - TS8001 `You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001`
@@ -341,6 +322,22 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 - TS80007 `await_has_no_effect_on_the_type_of_this_expression_80007`
+
+### 6xxx — CLI / build / watch / resolution-trace messages (13)
+
+- TS6212 `Did_you_mean_to_call_this_expression_6212`
+- TS6213 `Did_you_mean_to_use_new_with_this_expression_6213`
+- TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
+- TS6229 `Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229`
+- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
+- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
+- TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
+- TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
+- TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
+- TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
+- TS6501 `The_expected_type_comes_from_this_index_signature_6501`
+- TS6502 `The_expected_type_comes_from_the_return_type_of_this_signature_6502`
+- TS6807 `This_operation_can_be_simplified_This_shift_is_identical_to_0_1_2_6807`
 
 ### 7xxx — noImplicitAny / implicit-type family (11)
 

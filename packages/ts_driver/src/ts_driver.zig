@@ -3017,6 +3017,48 @@ test "driver: TS2554 argument count mismatch" {
     try T.expect(c.has_errors);
 }
 
+test "driver: too-few argument diagnostics carry missing-parameter related info" {
+    var c = try compileSource(T.allocator,
+        \\function named(a: number): void {}
+        \\function binding({ x }: { x: number }): void {}
+        \\function rest(...items: [number]): void {}
+        \\named();
+        \\binding();
+        \\rest();
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_6210 = false;
+    var saw_6211 = false;
+    var saw_6236 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2554 and d.code != 2555) continue;
+        for (d.related) |r| {
+            switch (r.code) {
+                6210 => {
+                    saw_6210 = true;
+                    try T.expectEqualStrings("An argument for 'a' was not provided.", r.message);
+                },
+                6211 => {
+                    saw_6211 = true;
+                    try T.expectEqualStrings("An argument matching this binding pattern was not provided.", r.message);
+                },
+                6236 => {
+                    saw_6236 = true;
+                    try T.expectEqualStrings("Arguments for the rest parameter 'items' were not provided.", r.message);
+                },
+                else => {},
+            }
+        }
+    }
+    try T.expect(saw_6210);
+    try T.expect(saw_6211);
+    try T.expect(saw_6236);
+}
+
 test "driver: TS2345 argument type mismatch" {
     var c = try compileSource(T.allocator,
         \\function f(a: number): number { return a; }
