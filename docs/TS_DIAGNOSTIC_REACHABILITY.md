@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 761 |
-| reachable (parity targets) | 294 |
+| catalog-only total | 759 |
+| reachable (parity targets) | 292 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -28,7 +28,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
-| 5xxx — tsconfig / build-option validation | 4 |
+| 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
 ### 2xxx — checker / type engine (157)
@@ -337,12 +337,10 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 - TS7058 `If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058`
 
-### 5xxx — tsconfig / build-option validation (4)
+### 5xxx — tsconfig / build-option validation (2)
 
-- TS5075 `_0_is_assignable_to_the_constraint_of_type_1_but_1_could_be_instantiated_with_a_different_subtype_of_5075`
 - TS5078 `Unknown_watch_option_0_5078`
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
-- TS5082 `_0_could_be_instantiated_with_an_arbitrary_type_which_could_be_unrelated_to_1_5082`
 
 ### 6xxx — CLI / build / watch / resolution-trace messages (2)
 
