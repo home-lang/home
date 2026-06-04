@@ -505,6 +505,88 @@ fn projectWouldBuild(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pa
     return !projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, false);
 }
 
+fn appendCleanOutputIfPresent(
+    gpa: std.mem.Allocator,
+    inputs: []const []const u8,
+    outputs: *std.ArrayListUnmanaged([]u8),
+    output_path: []const u8,
+) !void {
+    if (pathInList(inputs, output_path)) return;
+    if (fileMtimeNanos(output_path) == null) return;
+    try outputs.append(gpa, try gpa.dupe(u8, output_path));
+}
+
+fn appendProjectCleanOutputs(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    outputs: *std.ArrayListUnmanaged([]u8),
+) !void {
+    const cfg_src = RealFs.read(arena, config_path) catch return;
+    var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch return;
+    cfg.file_path = config_path;
+    const project_dir = std.fs.path.dirname(config_path) orelse ".";
+
+    var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer input_files.deinit(gpa);
+    var owned: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned.items) |p| gpa.free(p);
+        owned.deinit(gpa);
+    }
+    if (cfg.files) |fs_list| {
+        for (fs_list) |f| {
+            const p = try std.fs.path.join(gpa, &.{ project_dir, f });
+            try owned.append(gpa, p);
+            try input_files.append(gpa, p);
+        }
+    } else {
+        var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer excludes.deinit(gpa);
+        if (cfg.exclude) |ex| {
+            for (ex) |e| try excludes.append(gpa, e);
+        }
+        if (cfg.compiler_options.out_dir) |d| {
+            try excludes.append(gpa, d);
+            try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
+        }
+        if (cfg.compiler_options.declaration_dir) |d| {
+            try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
+        }
+        try excludes.append(gpa, "**/node_modules/**");
+        try expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned);
+    }
+
+    const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
+        try std.fs.path.join(arena, &.{ project_dir, d })
+    else
+        null;
+    const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
+    const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
+        try std.fs.path.join(arena, &.{ project_dir, d })
+    else
+        out_dir;
+
+    for (input_files.items) |path| {
+        const js = try computeOutPath(gpa, path, out_dir, ".js");
+        defer gpa.free(js);
+        try appendCleanOutputIfPresent(gpa, input_files.items, outputs, js);
+        if (emit_dts) {
+            const dts = try computeOutPath(gpa, path, declaration_dir, ".d.ts");
+            defer gpa.free(dts);
+            try appendCleanOutputIfPresent(gpa, input_files.items, outputs, dts);
+        }
+    }
+}
+
+fn printDryCleanOutputs(outputs: []const []u8) void {
+    // TS6356 — dry clean status with one bullet per would-delete output.
+    buildStatusMessage(6356, "A non-dry build would delete the following files:\n", .{});
+    for (outputs) |path| {
+        std.debug.print(" * {s}\n", .{path});
+    }
+}
+
 /// How a root (input) file was specified, for `--explainFiles`.
 const RootInclusion = struct {
     /// TS1427 / TS1409 / TS1457 / TS1407 — chosen by provenance.
@@ -896,7 +978,7 @@ pub fn main(init: std.process.Init) !void {
         // Parse the build flags (TS5072/5073/5077/5094/6369/6370). Phase A:
         // on clean parse, build each project via the normal per-project
         // compile flow (full topological/incremental orchestration is a
-        // follow-up). `--clean` is not yet implemented.
+        // follow-up). Non-dry `--clean` is not yet implemented.
         var bp = ts_cli.parseBuildArgs(gpa, argv.items[1..]) catch
             std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
         defer bp.deinit(gpa);
@@ -906,7 +988,7 @@ pub fn main(init: std.process.Init) !void {
             had_build_err = true;
         }
         if (had_build_err) std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
-        if (bp.options.clean) {
+        if (bp.options.clean and !bp.options.dry) {
             std.debug.print("home tsc --build: '--clean' is not yet implemented.\n", .{});
             return;
         }
@@ -937,6 +1019,18 @@ pub fn main(init: std.process.Init) !void {
             // TS6355 — `Projects in this build: {0}` (the project list).
             buildStatusMessage(6355, "Projects in this build:\n", .{});
             for (graph.paths) |p| std.debug.print("    * {s}\n", .{p});
+        }
+        if (bp.options.clean and bp.options.dry) {
+            var clean_outputs: std.ArrayListUnmanaged([]u8) = .empty;
+            defer {
+                for (clean_outputs.items) |p| gpa.free(p);
+                clean_outputs.deinit(gpa);
+            }
+            for (ord.order) |pi| {
+                try appendProjectCleanOutputs(gpa, args_arena.allocator(), graph.paths[pi], &clean_outputs);
+            }
+            printDryCleanOutputs(clean_outputs.items);
+            return;
         }
         if (bp.options.dry) {
             for (ord.order) |pi| {
