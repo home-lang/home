@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 709 |
-| reachable (parity targets) | 244 |
-| dead in tsgo (leave catalog-only) | 465 |
+| catalog-only total | 694 |
+| reachable (parity targets) | 230 |
+| dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 122 |
+| 2xxx — checker / type engine | 108 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (122)
+### 2xxx — checker / type engine (108)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -88,7 +88,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2627 `Type_at_positions_0_through_1_in_source_is_not_compatible_with_type_at_position_2_in_target_2627`
 - TS2633 `JSX_property_access_expressions_cannot_include_JSX_namespace_names_2633`
 - TS2634 `_0_index_signatures_are_incompatible_2634`
-- TS2635 `Type_0_has_no_signatures_for_which_the_type_argument_list_is_applicable_2635`
 - TS2636 `Type_0_is_not_assignable_to_type_1_as_implied_by_variance_annotation_2636`
 - TS2637 `Variance_annotations_are_only_supported_in_type_aliases_for_object_function_constructor_and_mapped_t_2637`
 - TS2638 `Type_0_may_represent_a_primitive_value_which_is_not_permitted_as_the_right_operand_of_the_in_operato_2638`
@@ -114,45 +113,32 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2696 `The_Object_type_is_assignable_to_very_few_other_types_Did_you_mean_to_use_the_any_type_instead_2696`
 - TS2697 `An_async_function_or_method_must_return_a_Promise_Make_sure_you_have_a_declaration_for_Promise_or_in_2697`
 - TS2705 `An_async_function_or_method_in_ES5_requires_the_Promise_constructor_Make_sure_you_have_a_declaration_2705`
-- TS2707 `Generic_type_0_requires_between_1_and_2_type_arguments_2707`
 - TS2711 `A_dynamic_import_call_returns_a_Promise_Make_sure_you_have_a_declaration_for_Promise_or_include_ES20_2711`
 - TS2712 `A_dynamic_import_call_in_ES5_requires_the_Promise_constructor_Make_sure_you_have_a_declaration_for_t_2712`
-- TS2713 `Cannot_access_0_1_because_0_is_a_type_but_not_a_namespace_Did_you_mean_to_retrieve_the_type_of_the_p_2713`
 - TS2715 `Abstract_property_0_in_class_1_cannot_be_accessed_in_the_constructor_2715`
 - TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
 - TS2720 `Class_0_incorrectly_implements_class_1_Did_you_mean_to_extend_1_and_inherit_its_members_as_a_subclas_2720`
 - TS2726 `Cannot_find_lib_definition_for_0_2726`
 - TS2727 `Cannot_find_lib_definition_for_0_Did_you_mean_1_2727`
 - TS2732 `Cannot_find_module_0_Consider_using_resolveJsonModule_to_import_module_with_json_extension_2732`
-- TS2734 `Are_you_missing_a_semicolon_2734`
 - TS2735 `Did_you_mean_for_0_to_be_constrained_to_type_new_args_Colon_any_1_2735`
 - TS2736 `Operator_0_cannot_be_applied_to_type_1_2736`
 - TS2738 `An_outer_value_of_this_is_shadowed_by_this_container_2738`
 - TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
-- TS2743 `No_overload_expects_0_type_arguments_but_overloads_do_exist_that_expect_either_1_or_2_type_arguments_2743`
-- TS2745 `This_JSX_tag_s_0_prop_expects_type_1_which_requires_multiple_children_but_only_a_single_child_was_pr_2745`
 - TS2748 `Cannot_access_ambient_const_enums_when_0_is_enabled_2748`
 - TS2749 `_0_refers_to_a_value_but_is_being_used_as_a_type_here_Did_you_mean_typeof_0_2749`
 - TS2751 `Circularity_originates_in_type_at_this_location_2751`
-- TS2752 `The_first_export_default_is_here_2752`
-- TS2753 `Another_export_default_is_here_2753`
-- TS2755 `No_constituent_of_type_0_is_callable_2755`
-- TS2756 `Not_all_constituents_of_type_0_are_callable_2756`
 - TS2758 `Each_member_of_the_union_type_0_has_signatures_but_none_of_those_signatures_are_compatible_with_each_2758`
-- TS2759 `No_constituent_of_type_0_is_constructable_2759`
-- TS2760 `Not_all_constituents_of_type_0_are_constructable_2760`
 - TS2762 `Each_member_of_the_union_type_0_has_construct_signatures_but_none_of_those_signatures_are_compatible_2762`
 - TS2763 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_for_of_will_always_s_2763`
 - TS2764 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_spread_will_al_2764`
 - TS2765 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_destructuring__2765`
 - TS2766 `Cannot_delegate_iteration_to_value_because_the_next_method_of_its_iterator_expects_type_1_but_the_co_2766`
 - TS2782 `_0_needs_an_explicit_type_annotation_2782`
-- TS2796 `It_is_likely_that_you_are_missing_a_comma_to_separate_these_two_template_expressions_They_form_a_tag_2796`
 - TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
 - TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
 - TS2800 `Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800`
 - TS2812 `Property_0_does_not_exist_on_type_1_Try_changing_the_lib_compiler_option_to_include_dom_2812`
-- TS2843 `We_can_only_write_a_type_for_0_by_adding_a_type_for_the_entire_parameter_here_2843`
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
@@ -317,7 +303,7 @@ dead. Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully catalog-only)
 
-465 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
+464 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
 
 <details><summary>Show dead codes</summary>
 
@@ -363,7 +349,6 @@ dead. Confirm against this list before picking one:
 - TS2606 `Property_0_of_JSX_spread_attribute_is_not_assignable_to_target_property_2606`
 - TS2617 `_0_can_only_be_imported_by_using_import_1_require_2_or_by_turning_on_the_esModuleInterop_flag_and_us_2617`
 - TS2733 `Property_0_was_also_declared_here_2733`
-- TS2772 `Overload_0_of_1_2_gave_the_following_error_2772`
 - TS2807 `This_syntax_requires_an_imported_helper_named_1_with_2_parameters_which_is_not_compatible_with_the_o_2807`
 - TS2811 `Initializer_for_property_0_2811`
 - TS2817 `Property_0_has_no_initializer_and_is_not_definitely_assigned_in_a_class_static_block_2817`
