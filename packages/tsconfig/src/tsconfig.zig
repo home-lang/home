@@ -291,6 +291,31 @@ pub const ExtraEntry = struct {
     value: jsonc.Value,
 };
 
+pub const RootOptionDecl = struct {
+    name: []const u8,
+    kind: []const u8,
+    /// TSxxxx code of the tsconfig root-option category header.
+    category: u32 = 0,
+};
+
+/// Root-level tsconfig options that TypeScript declares outside
+/// `compilerOptions`. The File Management category is used by editor
+/// configuration/help surfaces and mirrors tsgo's tsconfig parser
+/// declarations.
+pub const root_option_decls = [_]RootOptionDecl{
+    .{ .name = "extends", .kind = "listOrElement", .category = 6245 },
+    .{ .name = "files", .kind = "list", .category = 6245 },
+    .{ .name = "include", .kind = "list", .category = 6245 },
+    .{ .name = "exclude", .kind = "list", .category = 6245 },
+};
+
+pub fn rootOptionCategoryCode(name: []const u8) ?u32 {
+    for (root_option_decls) |decl| {
+        if (std.mem.eql(u8, decl.name, name)) return decl.category;
+    }
+    return null;
+}
+
 /// Diagnostic captured by the parser (`fillCompilerOptions`) for an
 /// option whose value or placement is malformed. Stored on the parsed
 /// `TsConfig` so `validate` can re-emit it with an owned message rather
@@ -2203,6 +2228,14 @@ test "tsconfig: include / exclude / files" {
     try t.expectEqualStrings("src/**/*", cfg.include.?[0]);
     try t.expectEqualStrings("node_modules", cfg.exclude.?[0]);
     try t.expectEqualStrings("dist", cfg.exclude.?[1]);
+}
+
+test "tsconfig: root file-management options carry TS6245 category" {
+    try t.expectEqual(@as(?u32, 6245), rootOptionCategoryCode("extends"));
+    try t.expectEqual(@as(?u32, 6245), rootOptionCategoryCode("files"));
+    try t.expectEqual(@as(?u32, 6245), rootOptionCategoryCode("include"));
+    try t.expectEqual(@as(?u32, 6245), rootOptionCategoryCode("exclude"));
+    try t.expectEqual(@as(?u32, null), rootOptionCategoryCode("compilerOptions"));
 }
 
 test "tsconfig: extends as string" {

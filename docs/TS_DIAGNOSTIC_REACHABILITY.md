@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 779 |
-| reachable (parity targets) | 312 |
+| catalog-only total | 778 |
+| reachable (parity targets) | 311 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -25,7 +25,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 2xxx — checker / type engine | 157 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 19 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 18 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
@@ -285,7 +285,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS4125 `Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125`
 - TS4126 `One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (19)
+### 6xxx — CLI / build / watch / resolution-trace messages (18)
 
 - TS6130 `Resolving_real_path_for_0_result_1_6130`
 - TS6140 `Auto_discovery_for_typings_is_enabled_in_project_0_Running_extra_resolution_pass_for_module_1_using__6140`
@@ -299,7 +299,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
 - TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
 - TS6236 `Arguments_for_the_rest_parameter_0_were_not_provided_6236`
-- TS6245 `File_Management_6245`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
 - TS6354 `Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354`
 - TS6500 `The_expected_type_comes_from_property_0_which_is_declared_here_on_type_1_6500`
