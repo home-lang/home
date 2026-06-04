@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 736 |
-| reachable (parity targets) | 271 |
+| catalog-only total | 735 |
+| reachable (parity targets) | 270 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 149 |
+| 2xxx — checker / type engine | 148 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (149)
+### 2xxx — checker / type engine (148)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -149,7 +149,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2768 `The_0_property_of_an_async_iterator_must_be_a_method_2768`
 - TS2770 `The_last_overload_gave_the_following_error_2770`
 - TS2771 `The_last_overload_is_declared_here_2771`
-- TS2774 `This_condition_will_always_return_true_since_this_function_is_always_defined_Did_you_mean_to_call_it_2774`
 - TS2775 `Assertions_require_every_name_in_the_call_target_to_be_declared_with_an_explicit_type_annotation_2775`
 - TS2776 `Assertions_require_the_call_target_to_be_an_identifier_or_qualified_name_2776`
 - TS2782 `_0_needs_an_explicit_type_annotation_2782`
