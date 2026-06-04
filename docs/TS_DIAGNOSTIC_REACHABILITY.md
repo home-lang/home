@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 749 |
-| reachable (parity targets) | 284 |
+| catalog-only total | 748 |
+| reachable (parity targets) | 283 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 151 |
-| 1xxx — parser / syntactic + program file-inclusion | 64 |
+| 1xxx — parser / syntactic + program file-inclusion | 63 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -185,7 +185,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 1xxx — parser / syntactic + program file-inclusion (64)
+### 1xxx — parser / syntactic + program file-inclusion (63)
 
 - TS1012 `Unexpected_token_1012`
 - TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
@@ -208,7 +208,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1322 `Type_of_iterated_elements_of_a_yield_Asterisk_operand_must_either_be_a_valid_promise_or_must_not_con_1322`
 - TS1339 `Module_0_does_not_refer_to_a_value_but_is_used_as_a_value_here_1339`
 - TS1340 `Module_0_does_not_refer_to_a_type_but_is_used_as_a_type_here_Did_you_mean_typeof_import_0_1340`
-- TS1369 `Did_you_mean_0_1369`
 - TS1394 `Imported_via_0_from_file_1_with_packageId_2_1394`
 - TS1395 `Imported_via_0_from_file_1_to_import_importHelpers_as_specified_in_compilerOptions_1395`
 - TS1396 `Imported_via_0_from_file_1_with_packageId_2_to_import_importHelpers_as_specified_in_compilerOptions_1396`

@@ -13646,6 +13646,7 @@ pub const Parser = struct {
                     try self.reportCodeAtWithSpan(@intCast(i), start_tok.line, 0, 1523, "Expected a Unicode property name.");
                 } else if (canonicalNonBinaryUnicodeProperty(name_or_value) == null) {
                     try self.reportCodeAtWithSpan(@intCast(name_or_value_start), start_tok.line, @intCast(name_or_value.len), 1524, "Unknown Unicode property name.");
+                    try self.reportRegexUnicodeSuggestion(name_or_value_start, start_tok.line, name_or_value, regexUnicodePropertyNameSuggestion(name_or_value));
                 }
                 const canonical = canonicalNonBinaryUnicodeProperty(name_or_value);
                 i += 1; // past `=`
@@ -13657,6 +13658,7 @@ pub const Parser = struct {
                 } else if (canonical) |prop| {
                     if (!nonBinaryUnicodePropertyValueIsValid(prop, value)) {
                         try self.reportCodeAtWithSpan(@intCast(value_start), start_tok.line, @intCast(value.len), 1526, "Unknown Unicode property value.");
+                        try self.reportRegexUnicodeSuggestion(value_start, start_tok.line, value, regexUnicodePropertyValueSuggestion(prop, value));
                     }
                 }
             } else {
@@ -13673,6 +13675,7 @@ pub const Parser = struct {
                     !isBinaryUnicodeProperty(name_or_value))
                 {
                     try self.reportCodeAtWithSpan(@intCast(name_or_value_start), start_tok.line, @intCast(name_or_value.len), 1529, "Unknown Unicode property name or value.");
+                    try self.reportRegexUnicodeSuggestion(name_or_value_start, start_tok.line, name_or_value, regexUnicodePropertyNameOrValueSuggestion(name_or_value));
                 }
             }
             // Consume the closing `}`.
@@ -13906,12 +13909,63 @@ pub const Parser = struct {
         return false;
     }
 
+    fn reportRegexUnicodeSuggestion(self: *Parser, start: usize, line: u32, typo: []const u8, suggestion: ?[]const u8) ParseError!void {
+        const sug = suggestion orelse return;
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Did you mean '{s}'?", .{sug});
+        try self.reportCodeAtWithSpan(@intCast(start), line, @intCast(typo.len), 1369, msg);
+    }
+
+    fn closestRegexCandidate(typo: []const u8, candidates: []const []const u8) ?[]const u8 {
+        var best: ?[]const u8 = null;
+        var best_distance: usize = std.math.maxInt(usize);
+        for (candidates) |candidate| {
+            const distance = levenshteinIcase(typo, candidate);
+            if (distance < best_distance) {
+                best = candidate;
+                best_distance = distance;
+            }
+        }
+        const threshold = @max(@as(usize, 2), typo.len / 4);
+        return if (best != null and best_distance <= threshold) best else null;
+    }
+
     /// Table 66: non-binary Unicode property aliases → canonical name.
     fn canonicalNonBinaryUnicodeProperty(name: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, name, "General_Category") or std.mem.eql(u8, name, "gc")) return "General_Category";
         if (std.mem.eql(u8, name, "Script") or std.mem.eql(u8, name, "sc")) return "Script";
         if (std.mem.eql(u8, name, "Script_Extensions") or std.mem.eql(u8, name, "scx")) return "Script_Extensions";
         return null;
+    }
+
+    fn regexUnicodePropertyNameSuggestion(name: []const u8) ?[]const u8 {
+        const candidates = [_][]const u8{ "General_Category", "gc", "Script", "sc", "Script_Extensions", "scx" };
+        return closestRegexCandidate(name, &candidates);
+    }
+
+    fn regexUnicodePropertyValueSuggestion(canonical: []const u8, value: []const u8) ?[]const u8 {
+        if (std.mem.eql(u8, canonical, "General_Category")) {
+            return closestRegexCandidate(value, &general_category_values);
+        }
+        if (std.mem.eql(u8, canonical, "Script") or std.mem.eql(u8, canonical, "Script_Extensions")) {
+            return closestRegexCandidate(value, &script_values);
+        }
+        return null;
+    }
+
+    fn regexUnicodePropertyNameOrValueSuggestion(name: []const u8) ?[]const u8 {
+        var best: ?[]const u8 = null;
+        var best_distance: usize = std.math.maxInt(usize);
+        for ([_][]const []const u8{ &general_category_values, &binary_unicode_properties, &binary_unicode_properties_of_strings }) |candidates| {
+            for (candidates) |candidate| {
+                const distance = levenshteinIcase(name, candidate);
+                if (distance < best_distance) {
+                    best = candidate;
+                    best_distance = distance;
+                }
+            }
+        }
+        const threshold = @max(@as(usize, 2), name.len / 4);
+        return if (best != null and best_distance <= threshold) best else null;
     }
 
     fn nonBinaryUnicodePropertyValueIsValid(canonical: []const u8, value: []const u8) bool {
@@ -23584,6 +23638,28 @@ test "parser: unknown unicode property value reports TS1526" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), countDiagCode(s, 1526));
     try T.expectEqualStrings("Unknown Unicode property value.", firstDiagCode(s, 1526).?.message);
+}
+
+test "parser: unicode property typos report TS1369 suggestions" {
+    var s = try newTestSetup(
+        "let a = /\\p{Scirpt=Greek}/u; let b = /\\p{Script=Grek}/u; let c = /\\p{Alphabeticc}/u;",
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 3), countDiagCode(s, 1369));
+    var saw_script = false;
+    var saw_greek = false;
+    var saw_alphabetic = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1369) continue;
+        if (std.mem.eql(u8, d.message, "Did you mean 'Script'?")) saw_script = true;
+        if (std.mem.eql(u8, d.message, "Did you mean 'Greek'?")) saw_greek = true;
+        if (std.mem.eql(u8, d.message, "Did you mean 'Alphabetic'?")) saw_alphabetic = true;
+    }
+    try T.expect(saw_script);
+    try T.expect(saw_greek);
+    try T.expect(saw_alphabetic);
 }
 
 test "parser: unicode property without u/v flag reports TS1530" {
