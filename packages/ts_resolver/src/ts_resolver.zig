@@ -91,6 +91,12 @@ pub const Config = struct {
     /// explicit `node_modules/@types` roots still use TypeScript's
     /// scoped-name mangling.
     type_roots: []const []const u8 = &.{},
+    /// Project display name for automatic typings discovery traces.
+    project_name: []const u8 = "",
+    /// Automatic typings cache directory. When set, unresolved or JS-only
+    /// bare module resolutions get one declaration-only retry under this
+    /// directory's immediate `node_modules`, matching tsc's TS6140 path.
+    typings_location: []const u8 = "",
 
     pub const PathEntry = struct {
         pattern: []const u8,
@@ -392,19 +398,109 @@ pub const Resolver = struct {
         specifier: []const u8,
         containing_file: []const u8,
     ) ResolveError!Resolution {
-        if (self.trace == null) return self.resolveImpl(specifier, containing_file);
-        self.traceMsg(6086, "======== Resolving module '{s}' from '{s}'. ========", .{ specifier, containing_file });
+        if (self.trace != null) {
+            self.traceMsg(6086, "======== Resolving module '{s}' from '{s}'. ========", .{ specifier, containing_file });
+        }
         const result = self.resolveImpl(specifier, containing_file);
         if (result) |r| {
-            if (r.package_id) |package_id| {
-                self.traceMsg(6218, "======== Module name '{s}' was successfully resolved to '{s}' with Package ID '{s}'. ========", .{ specifier, r.path, package_id });
-            } else {
-                self.traceMsg(6089, "======== Module name '{s}' was successfully resolved to '{s}'. ========", .{ specifier, r.path });
+            if (self.trace != null) {
+                if (r.package_id) |package_id| {
+                    self.traceMsg(6218, "======== Module name '{s}' was successfully resolved to '{s}' with Package ID '{s}'. ========", .{ specifier, r.path, package_id });
+                } else {
+                    self.traceMsg(6089, "======== Module name '{s}' was successfully resolved to '{s}'. ========", .{ specifier, r.path });
+                }
             }
         } else |_| {
-            self.traceMsg(6090, "======== Module name '{s}' was not resolved. ========", .{specifier});
+            if (self.trace != null) {
+                self.traceMsg(6090, "======== Module name '{s}' was not resolved. ========", .{specifier});
+            }
         }
-        return result;
+        return self.tryResolveFromTypingsLocation(specifier, result);
+    }
+
+    fn tryResolveFromTypingsLocation(
+        self: *Resolver,
+        specifier: []const u8,
+        original_result: ResolveError!Resolution,
+    ) ResolveError!Resolution {
+        if (self.config.typings_location.len == 0 or
+            isRelative(specifier) or
+            isAbsolute(specifier))
+        {
+            return original_result;
+        }
+
+        if (original_result) |r| {
+            if (isSupportedTsOrJsonPath(r.path)) return r;
+        } else |err| {
+            if (err != error.NotFound) return err;
+        }
+
+        self.traceMsg(
+            6140,
+            "Auto discovery for typings is enabled in project '{s}'. Running extra resolution pass for module '{s}' using cache location '{s}'.",
+            .{ self.config.project_name, specifier, self.config.typings_location },
+        );
+        if (try self.tryAutomaticTypingsLocation(specifier)) |r| return r;
+        return original_result;
+    }
+
+    fn tryAutomaticTypingsLocation(
+        self: *Resolver,
+        specifier: []const u8,
+    ) ResolveError!?Resolution {
+        const declaration_extensions = [_][]const u8{ ".d.ts", ".d.mts", ".d.cts", ".d.hm", ".d.home" };
+        const saved_exts = self.config.extensions;
+        const saved_resolve_json = self.config.resolve_json;
+        self.config.extensions = &declaration_extensions;
+        self.config.resolve_json = false;
+        defer {
+            self.config.extensions = saved_exts;
+            self.config.resolve_json = saved_resolve_json;
+        }
+
+        const nm = try self.joinPath(self.config.typings_location, "node_modules");
+        if (!self.fs.directoryExists(nm)) {
+            self.traceMsg(6148, "Directory '{s}' does not exist, skipping all lookups in it.", .{nm});
+            return null;
+        }
+
+        const split = packageNameSplit(specifier);
+        const pkg_root = try self.joinPath(nm, split.name);
+        const root_pkg_json = try self.joinPath(pkg_root, "package.json");
+        const has_root_pkg_json = self.fs.fileExists(root_pkg_json);
+        if (split.subpath.len > 0) {
+            if (has_root_pkg_json) {
+                const sub_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, split.subpath);
+                switch (sub_outcome) {
+                    .resolved => |r| if (r.is_declaration) {
+                        return try self.withPackageId(.{ .path = r.path, .source = .node_modules, .is_declaration = true }, pkg_root, root_pkg_json, false);
+                    },
+                    .blocked => return null,
+                    .none => {},
+                }
+            }
+        } else if (has_root_pkg_json) {
+            const root_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, ".");
+            switch (root_outcome) {
+                .resolved => |r| if (r.is_declaration) {
+                    return try self.withPackageId(.{ .path = r.path, .source = .node_modules, .is_declaration = true }, pkg_root, root_pkg_json, false);
+                },
+                .blocked => return null,
+                .none => {},
+            }
+        }
+
+        if (try self.tryAtTypesFallback(nm, split.name, split.subpath)) |r| return r;
+
+        const candidate = try self.joinPath(nm, specifier);
+        if (try self.tryFileWithExtensions(candidate)) |r| {
+            if (r.is_declaration) return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+        }
+        if (try self.tryDirectoryIndex(candidate)) |r| {
+            if (r.is_declaration) return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+        }
+        return null;
     }
 
     fn resolveImpl(
@@ -2195,6 +2291,16 @@ fn isDeclarationPath(s: []const u8) bool {
         (std.mem.endsWith(u8, s, ".ts") and std.mem.indexOf(u8, s, ".d.") != null);
 }
 
+fn isSupportedTsOrJsonPath(s: []const u8) bool {
+    return std.mem.endsWith(u8, s, ".ts") or
+        std.mem.endsWith(u8, s, ".tsx") or
+        std.mem.endsWith(u8, s, ".mts") or
+        std.mem.endsWith(u8, s, ".cts") or
+        std.mem.endsWith(u8, s, ".hm") or
+        std.mem.endsWith(u8, s, ".home") or
+        std.mem.endsWith(u8, s, ".json");
+}
+
 fn isPreferredNodeModuleExtension(ext: []const u8) bool {
     return isDeclarationPath(ext) or
         std.mem.eql(u8, ext, ".ts") or
@@ -2655,6 +2761,39 @@ test "Resolver: package peerDependencies trace realpath lookup TS6130" {
     }
     try T.expect(saw_6130);
     try T.expect(saw_real_peer);
+}
+
+test "Resolver: automatic typings cache traces TS6140 and replaces JS-only package" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/node_modules/dep/index.js", "module.exports = {};");
+    try vfs.addFile("/cache/node_modules/@types/dep/index.d.ts", "export declare const value: number;");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .project_name = "/proj/tsconfig.json",
+        .typings_location = "/cache",
+    });
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("dep", "/proj/src/main.ts");
+    try T.expectEqualStrings("/cache/node_modules/@types/dep/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+
+    var saw_6089_js = false;
+    var saw_6140 = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6089 and std.mem.indexOf(u8, entry.text, "/proj/node_modules/dep/index.js") != null) saw_6089_js = true;
+        if (entry.code == 6140 and
+            std.mem.indexOf(u8, entry.text, "/proj/tsconfig.json") != null and
+            std.mem.indexOf(u8, entry.text, "dep") != null and
+            std.mem.indexOf(u8, entry.text, "/cache") != null) saw_6140 = true;
+    }
+    try T.expect(saw_6089_js);
+    try T.expect(saw_6140);
 }
 
 test "Resolver: paths mapping traces TS6091/6092/6093" {
