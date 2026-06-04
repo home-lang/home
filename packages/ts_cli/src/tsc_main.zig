@@ -419,6 +419,14 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
 
     // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
     // input/output mtime comparison). Skipped under `--force`.
+    if (!force and projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts)) {
+        if (verbose) {
+            buildStatusMessage(6400, "Project '{s}' is up to date but needs to update timestamps of output files that are older than input files\n", .{config_path});
+            buildStatusMessage(6359, "Updating output timestamps of project '{s}'...\n", .{config_path});
+        }
+        touchProjectOutputs(gpa, input_files.items, out_dir, declaration_dir, emit_dts);
+        return false;
+    }
     if (!force and projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, verbose)) {
         return false;
     }
@@ -494,11 +502,13 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     return had_errors;
 }
 
-fn projectWouldBuild(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8) bool {
-    const cfg_src = RealFs.read(arena, config_path) catch return true;
-    var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch return true;
+const ProjectDryStatus = enum { build, up_to_date, update_timestamps };
+
+fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8) ProjectDryStatus {
+    const cfg_src = RealFs.read(arena, config_path) catch return .build;
+    var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch return .build;
     cfg.file_path = config_path;
-    if (printConfigValidationDiagnostics(gpa, cfg) catch true) return true;
+    if (printConfigValidationDiagnostics(gpa, cfg) catch true) return .build;
     const project_dir = std.fs.path.dirname(config_path) orelse ".";
 
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -510,39 +520,139 @@ fn projectWouldBuild(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pa
     }
     if (cfg.files) |fs_list| {
         for (fs_list) |f| {
-            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return true;
-            owned.append(gpa, p) catch return true;
-            input_files.append(gpa, p) catch return true;
+            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return .build;
+            owned.append(gpa, p) catch return .build;
+            input_files.append(gpa, p) catch return .build;
         }
     } else {
         var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
         defer excludes.deinit(gpa);
         if (cfg.exclude) |ex| {
-            for (ex) |e| excludes.append(gpa, e) catch return true;
+            for (ex) |e| excludes.append(gpa, e) catch return .build;
         }
         if (cfg.compiler_options.out_dir) |d| {
-            excludes.append(gpa, d) catch return true;
-            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return true) catch return true;
+            excludes.append(gpa, d) catch return .build;
+            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .build) catch return .build;
         }
         if (cfg.compiler_options.declaration_dir) |d| {
-            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return true) catch return true;
+            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .build) catch return .build;
         }
-        excludes.append(gpa, "**/node_modules/**") catch return true;
-        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return true;
+        excludes.append(gpa, "**/node_modules/**") catch return .build;
+        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return .build;
     }
-    if (input_files.items.len == 0) return false;
+    if (input_files.items.len == 0) return .up_to_date;
 
     const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .build)
     else
         null;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return true)
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .build)
     else
         out_dir;
 
-    return !projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, false);
+    if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts)) {
+        return .update_timestamps;
+    }
+    return if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, false))
+        .up_to_date
+    else
+        .build;
+}
+
+fn buildInfoVersionForPath(info: ts_emit.tsbuildinfo.BuildInfo, path: []const u8) ?[]const u8 {
+    for (info.file_names, 0..) |name, i| {
+        if (std.mem.eql(u8, name, path)) return info.file_infos[i].version;
+    }
+    return null;
+}
+
+fn sourceSha1Hex(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
+    var hasher = std.crypto.hash.Sha1.init(.{});
+    hasher.update(source);
+    var digest: [20]u8 = undefined;
+    hasher.final(&digest);
+    const hex = try gpa.alloc(u8, digest.len * 2);
+    const hex_chars = "0123456789abcdef";
+    for (digest, 0..) |b, i| {
+        hex[i * 2] = hex_chars[b >> 4];
+        hex[i * 2 + 1] = hex_chars[b & 0x0F];
+    }
+    return hex;
+}
+
+fn projectNeedsTimestampUpdate(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    cfg: tsconfig_mod.TsConfig,
+    inputs: []const []const u8,
+    out_dir: ?[]const u8,
+    declaration_dir: ?[]const u8,
+    emit_dts: bool,
+) bool {
+    const buildinfo_path = (projectBuildInfoFilePath(arena, config_path, cfg) catch null) orelse return false;
+    const buildinfo_src = RealFs.read(gpa, buildinfo_path) catch return false;
+    defer gpa.free(buildinfo_src);
+    var info = ts_emit.tsbuildinfo.read(gpa, buildinfo_src) catch return false;
+    defer info.deinit(gpa);
+
+    var newest_input: i128 = std.math.minInt(i128);
+    for (inputs) |path| {
+        const input_mtime = fileMtimeNanos(path) orelse return false;
+        if (input_mtime > newest_input) newest_input = input_mtime;
+        const source = RealFs.read(gpa, path) catch return false;
+        defer gpa.free(source);
+        const current_hash = sourceSha1Hex(gpa, source) catch return false;
+        defer gpa.free(current_hash);
+        const stored_hash = buildInfoVersionForPath(info, path) orelse return false;
+        if (!std.mem.eql(u8, current_hash, stored_hash)) return false;
+    }
+
+    var found_older_output = false;
+    for (inputs) |path| {
+        const js = computeOutPath(gpa, path, out_dir, ".js") catch return false;
+        defer gpa.free(js);
+        const js_mtime = fileMtimeNanos(js) orelse return false;
+        if (js_mtime < newest_input) found_older_output = true;
+        if (emit_dts) {
+            const dts = computeOutPath(gpa, path, declaration_dir, ".d.ts") catch return false;
+            defer gpa.free(dts);
+            const dts_mtime = fileMtimeNanos(dts) orelse return false;
+            if (dts_mtime < newest_input) found_older_output = true;
+        }
+    }
+    return found_older_output;
+}
+
+fn touchFileNow(path: []const u8) void {
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    var file = cwd.openFile(io, path, .{}) catch return;
+    defer file.close(io);
+    file.setTimestampsNow(io) catch {};
+}
+
+fn touchProjectOutputs(
+    gpa: std.mem.Allocator,
+    inputs: []const []const u8,
+    out_dir: ?[]const u8,
+    declaration_dir: ?[]const u8,
+    emit_dts: bool,
+) void {
+    for (inputs) |path| {
+        const js = computeOutPath(gpa, path, out_dir, ".js") catch continue;
+        defer gpa.free(js);
+        touchFileNow(js);
+        if (emit_dts) {
+            const dts = computeOutPath(gpa, path, declaration_dir, ".d.ts") catch continue;
+            defer gpa.free(dts);
+            touchFileNow(dts);
+        }
+    }
 }
 
 fn appendCleanOutputIfPresent(
@@ -1075,12 +1185,19 @@ pub fn main(init: std.process.Init) !void {
         if (bp.options.dry) {
             for (ord.order) |pi| {
                 const project_path = graph.paths[pi];
-                if (projectWouldBuild(gpa, args_arena.allocator(), project_path)) {
-                    // TS6357 — dry build status for a project that would build.
-                    buildStatusMessage(6357, "A non-dry build would build project '{s}'\n", .{project_path});
-                } else {
-                    // TS6361 — dry build status for a project that is already current.
-                    buildStatusMessage(6361, "Project '{s}' is up to date\n", .{project_path});
+                switch (projectDryStatus(gpa, args_arena.allocator(), project_path)) {
+                    .build => {
+                        // TS6357 — dry build status for a project that would build.
+                        buildStatusMessage(6357, "A non-dry build would build project '{s}'\n", .{project_path});
+                    },
+                    .update_timestamps => {
+                        // TS6374 — dry build status for a timestamp-only pseudo build.
+                        buildStatusMessage(6374, "A non-dry build would update timestamps for output of project '{s}'\n", .{project_path});
+                    },
+                    .up_to_date => {
+                        // TS6361 — dry build status for a project that is already current.
+                        buildStatusMessage(6361, "Project '{s}' is up to date\n", .{project_path});
+                    },
                 }
             }
             return;
