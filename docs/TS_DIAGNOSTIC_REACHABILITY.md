@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 734 |
-| reachable (parity targets) | 269 |
+| catalog-only total | 733 |
+| reachable (parity targets) | 268 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 147 |
+| 2xxx — checker / type engine | 146 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (147)
+### 2xxx — checker / type engine (146)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -167,7 +167,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2816 `Cannot_use_this_in_a_static_property_initializer_of_a_decorated_class_2816`
 - TS2818 `Duplicate_identifier_0_Compiler_reserves_name_1_when_emitting_super_references_in_static_initializer_2818`
 - TS2843 `We_can_only_write_a_type_for_0_by_adding_a_type_for_the_entire_parameter_here_2843`
-- TS2845 `This_condition_will_always_return_0_2845`
 - TS2849 `Target_signature_provides_too_few_arguments_Expected_0_or_more_but_got_1_2849`
 - TS2850 `The_initializer_of_a_using_declaration_must_be_either_an_object_with_a_Symbol_dispose_method_or_be_n_2850`
 - TS2851 `The_initializer_of_an_await_using_declaration_must_be_either_an_object_with_a_Symbol_asyncDispose_or_2851`
