@@ -424,6 +424,9 @@ pub const TsConfig = struct {
         // ahead of the cross-field consistency checks below.
         for (self.option_parse_diagnostics) |opt_diag| {
             switch (opt_diag.code) {
+                1328 => {
+                    try appendInvalidJsonPropertyValueDiagnostic(gpa, &diags, opt_diag.option);
+                },
                 5024 => {
                     const msg = try std.fmt.allocPrint(gpa, "Compiler option '{s}' requires a value of type {s}.", .{ opt_diag.option, opt_diag.expected_type });
                     try diags.append(gpa, .{
@@ -490,6 +493,9 @@ pub const TsConfig = struct {
                 .owns_message = true,
                 .field = entry.key,
             });
+            if (containsInvalidJsonValue(entry.value)) {
+                try appendInvalidJsonPropertyValueDiagnostic(gpa, &diags, entry.key);
+            }
         }
 
         // TS5108 / TS5106: options removed in TypeScript 7. tsc emits
@@ -761,6 +767,18 @@ fn rootConfigBaseName(file_path: []const u8) []const u8 {
     const base = std.fs.path.basename(file_path);
     if (std.mem.eql(u8, base, "jsconfig.json")) return "jsconfig.json";
     return "tsconfig.json";
+}
+
+fn appendInvalidJsonPropertyValueDiagnostic(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+) !void {
+    try diags.append(gpa, .{
+        .code = 1328,
+        .message = "Property value can only be string literal, numeric literal, 'true', 'false', 'null', object literal or array literal.",
+        .field = field,
+    });
 }
 
 /// All valid `compilerOptions` keys recognized by `tsc` (the
@@ -1606,6 +1624,9 @@ pub fn parseString(
         .root_not_object = root_not_object,
     };
 
+    var config_diags: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
+    try collectRootInvalidJsonValueDiagnostics(arena, root, &config_diags);
+
     // extends: string or [string]
     if (root.get("extends")) |ext_v| {
         cfg.has_extends = true;
@@ -1667,11 +1688,74 @@ pub fn parseString(
         if (co_v.asObject()) |co| {
             var opt_diags: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
             try fillCompilerOptions(arena, &cfg.compiler_options, co, &opt_diags);
-            cfg.option_parse_diagnostics = try opt_diags.toOwnedSlice(arena);
+            try config_diags.appendSlice(arena, opt_diags.items);
         }
     }
+    cfg.option_parse_diagnostics = try config_diags.toOwnedSlice(arena);
 
     return cfg;
+}
+
+fn collectRootInvalidJsonValueDiagnostics(
+    arena: std.mem.Allocator,
+    root: jsonc.Value.Object,
+    diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+) !void {
+    for (root.keys, 0..) |key, i| {
+        const value = root.values[i];
+        if (std.mem.eql(u8, key, "compilerOptions") or
+            std.mem.eql(u8, key, "extends") or
+            std.mem.eql(u8, key, "files") or
+            std.mem.eql(u8, key, "include") or
+            std.mem.eql(u8, key, "exclude") or
+            std.mem.eql(u8, key, "references"))
+        {
+            continue;
+        }
+        if (std.mem.eql(u8, key, "typeAcquisition")) {
+            if (value.asObject()) |obj| {
+                for (obj.keys, 0..) |ta_key, ta_i| {
+                    if (!isKnownTypeAcquisitionOptionName(ta_key) and containsInvalidJsonValue(obj.values[ta_i])) {
+                        try recordInvalidJsonPropertyValue(arena, diags, ta_key);
+                    }
+                }
+            }
+            continue;
+        }
+        if (containsInvalidJsonValue(value)) {
+            try recordInvalidJsonPropertyValue(arena, diags, key);
+        }
+    }
+}
+
+fn containsInvalidJsonValue(value: jsonc.Value) bool {
+    return switch (value) {
+        .invalid => true,
+        .array => |items| blk: {
+            for (items) |item| {
+                if (containsInvalidJsonValue(item)) break :blk true;
+            }
+            break :blk false;
+        },
+        .object => |obj| blk: {
+            for (obj.values) |item| {
+                if (containsInvalidJsonValue(item)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn recordInvalidJsonPropertyValue(
+    arena: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+    field: []const u8,
+) !void {
+    try diags.append(arena, .{
+        .code = 1328,
+        .option = field,
+    });
 }
 
 fn parseStringArray(arena: std.mem.Allocator, v: jsonc.Value) ![][]const u8 {
@@ -1730,6 +1814,19 @@ fn typeAcquisitionOptionSuggestion(option: []const u8) ?[]const u8 {
     }
     const threshold = @max(@as(usize, 2), option.len / 4);
     return if (best != null and best_distance <= threshold) best else null;
+}
+
+fn isKnownTypeAcquisitionOptionName(option: []const u8) bool {
+    const allowed = comptime [_][]const u8{
+        "enable",
+        "include",
+        "exclude",
+        "disableFilenameBasedTypeAcquisition",
+    };
+    inline for (allowed) |candidate| {
+        if (std.mem.eql(u8, option, candidate)) return true;
+    }
+    return false;
 }
 
 pub fn levenshteinIcase(a: []const u8, b: []const u8) usize {
@@ -1800,6 +1897,7 @@ fn jsonValueTypeName(v: jsonc.Value) []const u8 {
         .string => "string",
         .array => "object",
         .object => "object",
+        .invalid => "undefined",
     };
 }
 
@@ -1821,6 +1919,7 @@ fn jsonValueDisplay(arena: std.mem.Allocator, v: jsonc.Value) ![]const u8 {
         },
         .array => "[object Array]",
         .object => "[object Object]",
+        .invalid => "undefined",
     };
 }
 
@@ -3454,6 +3553,47 @@ test "tsconfig.validate: unknown compiler option reports TS5023" {
     try t.expectEqualStrings("Unknown compiler option 'totallyMadeUpOption'.", d.message);
     try t.expectEqualStrings("totallyMadeUpOption", d.field);
     try t.expectEqual(@as(usize, 0), countCode(diags, 5025));
+}
+
+test "tsconfig.validate: invalid unknown root value reports TS1328" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "foo": [undefined] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 1328));
+    const d = findCode(diags, 1328).?;
+    try t.expectEqualStrings("foo", d.field);
+    try t.expectEqualStrings("Property value can only be string literal, numeric literal, 'true', 'false', 'null', object literal or array literal.", d.message);
+}
+
+test "tsconfig.validate: invalid unknown compiler option value reports TS1328 after TS5023" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "totallyMadeUpOption": undefined } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5023));
+    try t.expectEqual(@as(usize, 1), countCode(diags, 1328));
+    try t.expect(diags.len >= 2);
+    try t.expectEqual(@as(u32, 5023), diags[0].code);
+    try t.expectEqual(@as(u32, 1328), diags[1].code);
+}
+
+test "tsconfig.validate: invalid known compiler option value stays TS5024" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strict": undefined } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5024));
+    try t.expectEqual(@as(usize, 0), countCode(diags, 1328));
 }
 
 test "tsconfig.validate: misspelled compiler option reports TS5025 with suggestion" {

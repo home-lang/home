@@ -26,6 +26,7 @@ pub const Value = union(enum) {
     string: []const u8,
     array: []Value,
     object: Object,
+    invalid: Invalid,
 
     pub const Object = struct {
         /// Keys and values held in parallel arrays. Order is preserved
@@ -43,6 +44,12 @@ pub const Value = union(enum) {
         pub fn contains(self: Object, key: []const u8) bool {
             return self.get(key) != null;
         }
+    };
+
+    pub const Invalid = struct {
+        pos: u32,
+        line: u32,
+        column: u32,
     };
 
     pub fn asString(self: Value) ?[]const u8 {
@@ -178,14 +185,79 @@ const Parser = struct {
             '{' => try self.parseObject(),
             '[' => try self.parseArray(),
             '"' => Value{ .string = try self.parseString() },
-            't', 'f' => try self.parseBool(),
-            'n' => try self.parseNull(),
+            't' => if (self.startsWith("true")) try self.parseBool() else Value{ .invalid = self.parseInvalidValue() },
+            'f' => if (self.startsWith("false")) try self.parseBool() else Value{ .invalid = self.parseInvalidValue() },
+            'n' => if (self.startsWith("null")) try self.parseNull() else Value{ .invalid = self.parseInvalidValue() },
             '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => Value{ .number = try self.parseNumber() },
-            else => {
-                self.report("unexpected character");
-                return error.UnexpectedCharacter;
-            },
+            else => Value{ .invalid = self.parseInvalidValue() },
         };
+    }
+
+    fn startsWith(self: *const Parser, text: []const u8) bool {
+        return self.pos + text.len <= self.source.len and
+            std.mem.eql(u8, self.source[self.pos .. self.pos + text.len], text);
+    }
+
+    fn parseInvalidValue(self: *Parser) Value.Invalid {
+        const start = Value.Invalid{
+            .pos = self.pos,
+            .line = self.line,
+            .column = self.pos - self.line_start,
+        };
+        var depth: u32 = 0;
+        var consumed_any = false;
+        while (self.pos < self.source.len) {
+            const c = self.peek();
+            if (depth == 0 and (c == ',' or c == '}' or c == ']')) break;
+            consumed_any = true;
+            switch (c) {
+                '"' => self.skipStringLiteral(),
+                '\'' => self.skipSingleQuotedLiteral(),
+                '/' => if (self.peekAt(1) == '/' or self.peekAt(1) == '*') {
+                    self.skipWhitespace();
+                } else {
+                    _ = self.advance();
+                },
+                '(', '{', '[' => {
+                    depth += 1;
+                    _ = self.advance();
+                },
+                ')', '}', ']' => {
+                    if (depth == 0) break;
+                    depth -= 1;
+                    _ = self.advance();
+                },
+                else => _ = self.advance(),
+            }
+        }
+        if (!consumed_any and self.pos < self.source.len) _ = self.advance();
+        return start;
+    }
+
+    fn skipStringLiteral(self: *Parser) void {
+        if (self.peek() != '"') return;
+        _ = self.advance();
+        while (self.pos < self.source.len) {
+            const c = self.advance();
+            if (c == '\\') {
+                _ = self.advance();
+                continue;
+            }
+            if (c == '"') break;
+        }
+    }
+
+    fn skipSingleQuotedLiteral(self: *Parser) void {
+        if (self.peek() != '\'') return;
+        _ = self.advance();
+        while (self.pos < self.source.len) {
+            const c = self.advance();
+            if (c == '\\') {
+                _ = self.advance();
+                continue;
+            }
+            if (c == '\'') break;
+        }
     }
 
     fn parseObject(self: *Parser) ParseError!Value {
@@ -639,6 +711,19 @@ test "jsonc: trailing content is an error" {
     try t.expectError(error.UnexpectedCharacter, parseString(
         \\{} {}
     , arena.allocator()));
+}
+
+test "jsonc: invalid property values recover as sentinel values" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const v = try parseString(
+        \\{"a": undefined, "b": [function() {}, 1]}
+    , arena.allocator());
+    const root = v.asObject().?;
+    try t.expect(root.get("a").? == .invalid);
+    const arr = root.get("b").?.asArray().?;
+    try t.expect(arr[0] == .invalid);
+    try t.expectApproxEqRel(@as(f64, 1), arr[1].asNumber().?, 1e-9);
 }
 
 test "jsonc: real tsconfig fragment" {
