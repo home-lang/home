@@ -10123,11 +10123,23 @@ pub const Parser = struct {
             "'{s}' is an unused renaming of '{s}'. Did you intend to use it as a type annotation?",
             .{ to, from },
         );
+        const related_msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "We can only write a type for '{s}' by adding a type for the entire parameter here.",
+            .{from},
+        );
+        const related = try self.diag_arena.allocator().alloc(RelatedInfo, 1);
+        related[0] = .{
+            .pos = pos,
+            .code = 2843,
+            .message = related_msg,
+        };
         try self.diagnostics.append(self.gpa, .{
             .pos = pos,
             .line = line,
             .code = 2842,
             .message = msg,
+            .related = related,
         });
     }
 
@@ -21712,6 +21724,7 @@ test "parser: function type destructuring renames report TS2842" {
     var count: usize = 0;
     var saw_b_from_a = false;
     var saw_a_from_b = false;
+    var saw_related = false;
     for (s.parser.diagnostics.items) |d| {
         if (d.code != 2842) continue;
         count += 1;
@@ -21721,10 +21734,14 @@ test "parser: function type destructuring renames report TS2842" {
         if (std.mem.eql(u8, d.message, "'a' is an unused renaming of 'b'. Did you intend to use it as a type annotation?")) {
             saw_a_from_b = true;
         }
+        for (d.related) |rel| {
+            if (rel.code == 2843) saw_related = true;
+        }
     }
     try T.expectEqual(@as(usize, 2), count);
     try T.expect(saw_b_from_a);
     try T.expect(saw_a_from_b);
+    try T.expect(saw_related);
 }
 
 test "parser: type annotation — literal types" {
