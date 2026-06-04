@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 800 |
-| reachable (parity targets) | 333 |
+| catalog-only total | 799 |
+| reachable (parity targets) | 332 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -24,7 +24,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 40 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 39 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -260,7 +260,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1543 `Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543`
 - TS1544 `Named_imports_from_a_JSON_file_into_an_ECMAScript_module_are_not_allowed_when_module_is_set_to_0_1544`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (40)
+### 6xxx — CLI / build / watch / resolution-trace messages (39)
 
 - TS6041 `Errors_Files_6041`
 - TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
@@ -291,7 +291,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS6359 `Updating_output_timestamps_of_project_0_6359`
 - TS6371 `Updating_unchanged_output_timestamps_of_project_0_6371`
 - TS6374 `A_non_dry_build_would_update_timestamps_for_output_of_project_0_6374`
-- TS6377 `Cannot_write_file_0_because_it_will_overwrite_tsbuildinfo_file_generated_by_referenced_project_1_6377`
 - TS6381 `Project_0_is_out_of_date_because_output_for_it_was_generated_with_version_1_that_differs_with_curren_6381`
 - TS6399 `Project_0_is_out_of_date_because_buildinfo_file_1_indicates_that_some_of_the_changes_were_not_emitte_6399`
 - TS6400 `Project_0_is_up_to_date_but_needs_to_update_timestamps_of_output_files_that_are_older_than_input_fil_6400`
