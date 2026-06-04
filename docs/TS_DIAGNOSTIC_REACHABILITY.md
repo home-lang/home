@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 789 |
-| reachable (parity targets) | 322 |
+| catalog-only total | 787 |
+| reachable (parity targets) | 320 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -24,7 +24,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | --- | ---: |
 | 2xxx — checker / type engine | 157 |
 | 1xxx — parser / syntactic + program file-inclusion | 66 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 29 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 27 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -260,7 +260,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1543 `Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543`
 - TS1544 `Named_imports_from_a_JSON_file_into_an_ECMAScript_module_are_not_allowed_when_module_is_set_to_0_1544`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (29)
+### 6xxx — CLI / build / watch / resolution-trace messages (27)
 
 - TS6116 `Resolving_type_reference_directive_0_containing_file_1_root_directory_2_6116`
 - TS6119 `Type_reference_directive_0_was_successfully_resolved_to_1_primary_Colon_2_6119`
@@ -280,8 +280,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
 - TS6234 `This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234`
 - TS6236 `Arguments_for_the_rest_parameter_0_were_not_provided_6236`
-- TS6239 `File_0_exists_according_to_earlier_cached_lookups_6239`
-- TS6240 `File_0_does_not_exist_according_to_earlier_cached_lookups_6240`
 - TS6242 `Resolving_type_reference_directive_0_containing_file_1_6242`
 - TS6245 `File_Management_6245`
 - TS6265 `Resolving_type_reference_directive_for_program_that_specifies_custom_typeRoots_skipping_lookup_in_no_6265`

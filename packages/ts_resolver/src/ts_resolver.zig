@@ -234,6 +234,10 @@ pub const Resolver = struct {
     /// DIRECTORY (relative joins + the package-scope walk both start from
     /// `dirname(containing_file)`), so a per-dir key is sound.
     cache: std.StringHashMapUnmanaged(?Resolution) = .empty,
+    /// Per-file existence memo used by traced candidate probes. This
+    /// mirrors tsc's lower-level lookup cache so repeated candidates can
+    /// report TS6239/TS6240 instead of hitting the filesystem again.
+    file_exists_cache: std.StringHashMapUnmanaged(bool) = .empty,
     /// Set transiently by `attachExportsAlternateResult` while probing
     /// the exports-disabled "alternate" resolution. In this mode the
     /// legacy `main`/`types`/`module` fields only count when they
@@ -252,6 +256,7 @@ pub const Resolver = struct {
     }
 
     pub fn deinit(self: *Resolver) void {
+        self.file_exists_cache.deinit(self.gpa);
         self.cache.deinit(self.gpa);
         self.arena.deinit();
     }
@@ -674,9 +679,29 @@ pub const Resolver = struct {
 
     /// `fileExists` wrapped with tsc's per-candidate resolution traces
     /// (TS6097 "File 'X' exists - use it as a name resolution result." /
-    /// TS6096 "File 'X' does not exist."). No-op tracing when no sink.
+    /// TS6096 "File 'X' does not exist."). Repeated probes use the
+    /// lookup cache traces TS6239/TS6240. No-op tracing when no sink.
     fn fileExistsTraced(self: *Resolver, path: []const u8) bool {
+        if (self.trace == null) return self.fs.fileExists(path);
+        if (self.file_exists_cache.get(path)) |exists| {
+            if (exists) {
+                self.traceMsg(6239, "File '{s}' exists according to earlier cached lookups.", .{path});
+            } else {
+                self.traceMsg(6240, "File '{s}' does not exist according to earlier cached lookups.", .{path});
+            }
+            return exists;
+        }
         const exists = self.fs.fileExists(path);
+        const key = self.ar().dupe(u8, path) catch {
+            self.traceFileExists(path, exists);
+            return exists;
+        };
+        self.file_exists_cache.put(self.gpa, key, exists) catch {};
+        self.traceFileExists(path, exists);
+        return exists;
+    }
+
+    fn traceFileExists(self: *Resolver, path: []const u8, exists: bool) void {
         if (self.trace != null) {
             if (exists) {
                 self.traceMsg(6097, "File '{s}' exists - use it as a name resolution result.", .{path});
@@ -684,7 +709,6 @@ pub const Resolver = struct {
                 self.traceMsg(6096, "File '{s}' does not exist.", .{path});
             }
         }
-        return exists;
     }
 
     /// Probe `base` then `base.ext` for each configured extension and
@@ -2471,6 +2495,39 @@ test "Resolver: resolution cache dedupes repeated resolves (one trace set, not N
         if (e.code == 6086) count_6086 += 1;
     }
     try T.expectEqual(@as(usize, 1), count_6086);
+}
+
+test "Resolver: traceResolution reports cached file existence lookups" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/dep.ts", "export const x = 1;");
+    try vfs.addFile("/proj/src/app.ts", "import './dep';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    const dep = try r.resolve("./dep", "/proj/src/app.ts");
+    try T.expectEqualStrings("/proj/src/dep.ts", dep.path);
+    const dep_explicit = try r.resolve("./dep.ts", "/proj/src/app.ts");
+    try T.expectEqualStrings("/proj/src/dep.ts", dep_explicit.path);
+
+    _ = r.resolve("./missing", "/proj/src/app.ts") catch {};
+    _ = r.resolve("./missing.ts", "/proj/src/app.ts") catch {};
+
+    var saw_6239 = false;
+    var saw_6240 = false;
+    for (sink.entries.items) |e| {
+        switch (e.code) {
+            6239 => saw_6239 = true,
+            6240 => saw_6240 = true,
+            else => {},
+        }
+    }
+    try T.expect(saw_6239);
+    try T.expect(saw_6240);
 }
 
 test "Resolver: resolution-kind banner TS6088 (default) / TS6087 (explicit), once" {
