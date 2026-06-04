@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 720 |
-| reachable (parity targets) | 255 |
+| catalog-only total | 719 |
+| reachable (parity targets) | 254 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 133 |
+| 2xxx — checker / type engine | 132 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (133)
+### 2xxx — checker / type engine (132)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -164,7 +164,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2812 `Property_0_does_not_exist_on_type_1_Try_changing_the_lib_compiler_option_to_include_dom_2812`
 - TS2843 `We_can_only_write_a_type_for_0_by_adding_a_type_for_the_entire_parameter_here_2843`
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
-- TS2877 `This_import_uses_a_0_extension_to_resolve_to_an_input_TypeScript_file_but_will_not_be_rewritten_duri_2877`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
 ### 1xxx — parser / syntactic + program file-inclusion (53)
