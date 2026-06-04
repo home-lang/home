@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 741 |
-| reachable (parity targets) | 276 |
+| catalog-only total | 740 |
+| reachable (parity targets) | 275 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 2xxx — checker / type engine | 151 |
-| 1xxx — parser / syntactic + program file-inclusion | 56 |
+| 1xxx — parser / syntactic + program file-inclusion | 55 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 15 |
@@ -185,7 +185,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 - TS2879 `Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879`
 
-### 1xxx — parser / syntactic + program file-inclusion (56)
+### 1xxx — parser / syntactic + program file-inclusion (55)
 
 - TS1012 `Unexpected_token_1012`
 - TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
@@ -238,7 +238,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1481 `To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_add_the_field_type_Co_1481`
 - TS1482 `To_convert_this_file_to_an_ECMAScript_module_add_the_field_type_Colon_module_to_0_1482`
 - TS1483 `To_convert_this_file_to_an_ECMAScript_module_create_a_local_package_json_file_with_type_Colon_module_1483`
-- TS1513 `Undetermined_character_escape_1513`
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 - TS1543 `Importing_a_JSON_file_into_an_ECMAScript_module_requires_a_type_Colon_json_import_attribute_when_mod_1543`

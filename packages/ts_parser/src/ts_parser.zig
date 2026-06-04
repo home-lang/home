@@ -13024,10 +13024,10 @@ pub const Parser = struct {
     ///     expression.` — an identity escape of an identifier-part
     ///     character that is not a recognized escape, only diagnosed in
     ///     Unicode mode (mirrors the non-AnnexB default arm).
-    /// `slash_pos` points at the `\`. (tsc's TS1513 "Undetermined
-    /// character escape" arm fires only for a trailing `\` at the body
-    /// end, which Home's recovery instead reports as an unterminated
-    /// regex literal, so it is not reachable here.)
+    ///   - TS1513 `Undetermined character escape.` — the escape marker
+    ///     reaches the end of the regex body without an escaped
+    ///     character.
+    /// `slash_pos` points at the `\`.
     fn reportRegexAtomEscapeDiagnostics(
         self: *Parser,
         slash_pos: usize,
@@ -13035,7 +13035,10 @@ pub const Parser = struct {
         line: u32,
         unicode_mode: bool,
     ) ParseError!void {
-        if (slash_pos + 1 >= limit or slash_pos + 1 >= self.source.len) return;
+        if (slash_pos + 1 >= limit or slash_pos + 1 >= self.source.len) {
+            try self.reportCodeAtWithSpan(@intCast(slash_pos), line, 1, 1513, "Undetermined character escape.");
+            return;
+        }
         const esc = self.source[slash_pos + 1];
         // Extended `\u{...}` escapes require Unicode mode.
         if (esc == 'u' and slash_pos + 2 < limit and self.source[slash_pos + 2] == '{' and !unicode_mode) {
@@ -27616,4 +27619,16 @@ test "parser: TS2207 stays clean for a plain export type" {
         _ = s.parser.parseSourceFile() catch {};
         try T.expectEqual(@as(u32, 0), countDiag(s, 2207));
     }
+}
+
+test "parser: regex atom escape reports undetermined character escape" {
+    var s = try newTestSetup("let x = /\\");
+    defer destroyTestSetup(s);
+
+    try s.parser.reportRegexAtomEscapeDiagnostics(9, 10, 1, false);
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1513), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Undetermined character escape.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 9), s.parser.diagnostics.items[0].pos);
+    try T.expectEqual(@as(u32, 1), s.parser.diagnostics.items[0].span_len);
 }
