@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 682 |
-| reachable (parity targets) | 218 |
+| catalog-only total | 681 |
+| reachable (parity targets) | 217 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 96 |
+| 2xxx — checker / type engine | 95 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (96)
+### 2xxx — checker / type engine (95)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -41,7 +41,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2418 `Type_of_computed_property_s_value_is_0_which_is_not_assignable_to_type_1_2418`
 - TS2484 `Export_declaration_conflicts_with_exported_declaration_of_0_2484`
 - TS2489 `An_iterator_must_have_a_next_method_2489`
-- TS2498 `Module_0_uses_export_and_cannot_be_used_with_export_Asterisk_2498`
 - TS2508 `No_base_constructor_has_the_specified_number_of_type_arguments_2508`
 - TS2509 `Base_constructor_return_type_0_is_not_an_object_type_or_intersection_of_object_types_with_statically_2509`
 - TS2510 `Base_constructors_must_all_have_the_same_return_type_2510`
