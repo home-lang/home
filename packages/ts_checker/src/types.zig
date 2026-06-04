@@ -310,6 +310,7 @@ pub const ObjectMember = struct {
     is_readonly: bool,
     is_method: bool,
     visibility: MemberVisibility = .public,
+    decl_node: hir.NodeId = hir.none_node_id,
 };
 
 pub const ObjectTypePayload = struct {

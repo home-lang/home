@@ -112,6 +112,7 @@ pub const Lowerer = struct {
                 .is_optional = im.is_optional,
                 .is_readonly = im.is_readonly,
                 .is_method = im.is_method,
+                .decl_node = m,
             });
         }
         return self.interner.internObjectType(built.items) catch error.OutOfMemory;
