@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 710 |
-| reachable (parity targets) | 245 |
+| catalog-only total | 709 |
+| reachable (parity targets) | 244 |
 | dead in tsgo (leave catalog-only) | 465 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 123 |
+| 2xxx — checker / type engine | 122 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (123)
+### 2xxx — checker / type engine (122)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -147,7 +147,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2765 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_destructuring__2765`
 - TS2766 `Cannot_delegate_iteration_to_value_because_the_next_method_of_its_iterator_expects_type_1_but_the_co_2766`
 - TS2782 `_0_needs_an_explicit_type_annotation_2782`
-- TS2789 `Its_element_type_0_is_not_a_valid_JSX_element_2789`
 - TS2796 `It_is_likely_that_you_are_missing_a_comma_to_separate_these_two_template_expressions_They_form_a_tag_2796`
 - TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
 - TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
