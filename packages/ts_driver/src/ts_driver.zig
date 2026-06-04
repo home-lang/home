@@ -1559,6 +1559,7 @@ pub fn compileSource(
     checker.setSource(source);
     checker.setIsDeclarationFile(is_declaration_file);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
+    checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
     checker.setJsxFragmentFactoryContext(
         jsxTransformEnabled(options),
         jsxFactoryCompilerOptionPresent(source, options),
