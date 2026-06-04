@@ -176,6 +176,8 @@ pub const FileSystem = struct {
         directoryExists: *const fn (self: *anyopaque, path: []const u8) bool,
         /// Reads the file's bytes into the given allocator. Caller frees.
         readFile: *const fn (self: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8,
+        /// Returns the filesystem real path. Caller frees.
+        realpath: *const fn (self: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8,
     };
 
     pub fn fileExists(self: FileSystem, path: []const u8) bool {
@@ -186,6 +188,9 @@ pub const FileSystem = struct {
     }
     pub fn readFile(self: FileSystem, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
         return self.vtable.readFile(self.ptr, gpa, path);
+    }
+    pub fn realpath(self: FileSystem, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        return self.vtable.realpath(self.ptr, gpa, path);
     }
 };
 
@@ -1051,9 +1056,10 @@ pub const Resolver = struct {
         if (should_trace) {
             self.traceMsg(6281, "'package.json' has a 'peerDependencies' field.", .{});
         }
+        const package_dir = try self.realPath(pkg_dir);
         const marker = "/node_modules";
-        const nm_end = (std.mem.lastIndexOf(u8, pkg_dir, marker) orelse return "") + marker.len;
-        const node_modules = pkg_dir[0..nm_end];
+        const nm_end = (std.mem.lastIndexOf(u8, package_dir, marker) orelse return "") + marker.len;
+        const node_modules = package_dir[0..nm_end];
 
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
         defer names.deinit(self.gpa);
@@ -1089,6 +1095,12 @@ pub const Resolver = struct {
         }
         if (suffix.items.len == 0) return "";
         return try self.ar().dupe(u8, suffix.items);
+    }
+
+    fn realPath(self: *Resolver, path: []const u8) ResolveError![]const u8 {
+        const rp = self.fs.realpath(self.ar(), path) catch try self.ar().dupe(u8, path);
+        self.traceMsg(6130, "Resolving real path for '{s}', result '{s}'.", .{ path, rp });
+        return rp;
     }
 
     fn packageJsonVersion(self: *Resolver, pkg_json: []const u8) ResolveError!?[]const u8 {
@@ -2298,9 +2310,10 @@ pub const VirtualFs = struct {
     gpa: std.mem.Allocator,
     files: std.StringHashMapUnmanaged([]const u8),
     dirs: std.StringHashMapUnmanaged(void),
+    realpaths: std.StringHashMapUnmanaged([]const u8),
 
     pub fn init(gpa: std.mem.Allocator) VirtualFs {
-        return .{ .gpa = gpa, .files = .empty, .dirs = .empty };
+        return .{ .gpa = gpa, .files = .empty, .dirs = .empty, .realpaths = .empty };
     }
 
     pub fn deinit(self: *VirtualFs) void {
@@ -2311,8 +2324,14 @@ pub const VirtualFs = struct {
         }
         var dit = self.dirs.iterator();
         while (dit.next()) |entry| self.gpa.free(entry.key_ptr.*);
+        var rit = self.realpaths.iterator();
+        while (rit.next()) |entry| {
+            self.gpa.free(entry.key_ptr.*);
+            self.gpa.free(entry.value_ptr.*);
+        }
         self.files.deinit(self.gpa);
         self.dirs.deinit(self.gpa);
+        self.realpaths.deinit(self.gpa);
     }
 
     pub fn addFile(self: *VirtualFs, path: []const u8, content: []const u8) !void {
@@ -2337,6 +2356,16 @@ pub const VirtualFs = struct {
         }
     }
 
+    pub fn addRealPath(self: *VirtualFs, path: []const u8, real_path: []const u8) !void {
+        if (self.realpaths.fetchRemove(path)) |old| {
+            self.gpa.free(old.key);
+            self.gpa.free(old.value);
+        }
+        const key = try self.gpa.dupe(u8, path);
+        const val = try self.gpa.dupe(u8, real_path);
+        try self.realpaths.put(self.gpa, key, val);
+    }
+
     pub fn fs(self: *VirtualFs) FileSystem {
         return .{ .ptr = self, .vtable = &vt };
     }
@@ -2345,6 +2374,7 @@ pub const VirtualFs = struct {
         .fileExists = vfsFileExists,
         .directoryExists = vfsDirExists,
         .readFile = vfsReadFile,
+        .realpath = vfsRealpath,
     };
 
     fn vfsFileExists(p: *anyopaque, path: []const u8) bool {
@@ -2360,6 +2390,12 @@ pub const VirtualFs = struct {
     fn vfsReadFile(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
         const self: *VirtualFs = @ptrCast(@alignCast(p));
         const v = self.files.get(path) orelse return error.FileNotFound;
+        return gpa.dupe(u8, v);
+    }
+
+    fn vfsRealpath(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        const self: *VirtualFs = @ptrCast(@alignCast(p));
+        const v = self.realpaths.get(path) orelse path;
         return gpa.dupe(u8, v);
     }
 };
@@ -2581,6 +2617,44 @@ test "Resolver: package peerDependencies trace found and missing peers" {
     try T.expect(saw_field);
     try T.expect(saw_found);
     try T.expect(saw_missing);
+}
+
+test "Resolver: package peerDependencies trace realpath lookup TS6130" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/node_modules/dep/package.json",
+        \\{
+        \\  "name": "dep",
+        \\  "version": "1.0.0",
+        \\  "types": "./index.d.ts",
+        \\  "peerDependencies": { "react": "*" }
+        \\}
+    );
+    try vfs.addFile("/proj/node_modules/dep/index.d.ts", "");
+    try vfs.addRealPath("/proj/node_modules/dep", "/real/node_modules/dep");
+    try vfs.addFile("/real/node_modules/react/package.json", "{\"version\":\"18.2.0\"}");
+    try vfs.addFile("/proj/src/main.ts", "");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    r.trace = &sink;
+
+    const res = try r.resolve("dep", "/proj/src/main.ts");
+    try T.expectEqualStrings("/proj/node_modules/dep/index.d.ts", res.path);
+    try T.expectEqualStrings("dep/index.d.ts@1.0.0+react@18.2.0", res.package_id.?);
+
+    var saw_6130 = false;
+    var saw_real_peer = false;
+    for (sink.entries.items) |entry| {
+        if (entry.code == 6130 and
+            std.mem.indexOf(u8, entry.text, "/proj/node_modules/dep") != null and
+            std.mem.indexOf(u8, entry.text, "/real/node_modules/dep") != null) saw_6130 = true;
+        if (entry.code == 6282 and std.mem.indexOf(u8, entry.text, "react") != null) saw_real_peer = true;
+    }
+    try T.expect(saw_6130);
+    try T.expect(saw_real_peer);
 }
 
 test "Resolver: paths mapping traces TS6091/6092/6093" {

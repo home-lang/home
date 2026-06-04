@@ -1341,6 +1341,7 @@ const ResolverRealFs = struct {
         .fileExists = fileExists,
         .directoryExists = directoryExists,
         .readFile = readFile,
+        .realpath = realpath,
     };
 
     fn fileExists(_: *anyopaque, path: []const u8) bool {
@@ -1366,6 +1367,14 @@ const ResolverRealFs = struct {
     fn readFile(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
         const bytes = try RealFs.read(gpa, path);
         return @constCast(bytes);
+    }
+
+    fn realpath(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        var threaded = std.Io.Threaded.init(gpa, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const cwd = std.Io.Dir.cwd();
+        return cwd.realpathAlloc(io, gpa, path);
     }
 };
 
