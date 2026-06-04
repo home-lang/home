@@ -531,7 +531,7 @@ pub const LifecycleScriptSubprocess = struct {
             const dirname = std.fs.path.dirname(this.scripts.cwd) orelse break :try_delete_dir;
             const basename = std.fs.path.basename(this.scripts.cwd);
             const dir = bun.openDirAbsolute(dirname) catch break :try_delete_dir;
-            dir.deleteTree(basename) catch break :try_delete_dir;
+            dir.deleteTree(std.Io.Threaded.global_single_threaded.io(), basename) catch break :try_delete_dir;
         }
 
         this.deinit();

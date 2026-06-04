@@ -111,9 +111,10 @@ pub const SignalCode = enum(u8) {
         return @enumFromInt(std.mem.asBytes(&value)[0]);
     }
 
+    pub const fromJS = @import("../sys_jsc/signal_code_jsc.zig").fromJS;
+
     // stubbed: `fmt(SignalCode, bool) Fmt` re-attaches when
     // `home_rt.Output.prettyFmt` lands.
-    // stubbed: `fromJS` (JSC-bridge) re-lands in Phase 12.2.
 };
 
 /// Local helper mirroring `bun.asByteSlice` — coerce a comptime/array string

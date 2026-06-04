@@ -1597,7 +1597,7 @@ pub fn spawnProcessPosix(
                 try extra_fds.append(.{ .owned_fd = fds[0] });
             },
             .pipe => |fd| {
-                try actions.dup2(fd, fileno);
+                try actions.dup2(fd.native(), fileno.native());
                 // The fd was supplied by the caller (a number in the stdio array) and is
                 // not owned by us. Record it so `stdio[N]` returns the caller's fd, but
                 // mark it unowned so finalizeStreams leaves it open.

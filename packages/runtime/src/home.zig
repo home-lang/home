@@ -1748,6 +1748,8 @@ pub const cli = struct {
     pub var Bun__Node__ProcessTitle: ?[]const u8 = null;
     // Faithful to upstream `cli.Command` (`runtime/cli/cli.zig:306`).
     pub const Command = @import("runtime/cli/cli.zig").Command;
+    // Faithful to upstream `cli.RunCommand` (`runtime/cli/cli.zig:79`).
+    pub const RunCommand = @import("runtime/cli/run_command.zig").RunCommand;
 };
 
 // ---- src/jsc/ ----------------------------------------------------------
@@ -2462,6 +2464,8 @@ pub const io = struct {
     pub const ReadState = @import("io/pipes.zig").ReadState;
     // Fifth-wave port batch (2026-05-18):
     pub const MaxBuf = @import("io/MaxBuf.zig");
+    // Add io.Waker from posix_event_loop.zig (platform-dependent: KEventWaker on macOS, LinuxWaker on Linux/FreeBSD)
+    pub const Waker = @import("io/posix_event_loop.zig").Waker;
     pub const BufferedReader = struct {
         _buffer: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(default_allocator),
         maxbuf: ?*MaxBuf = null,
@@ -2586,6 +2590,10 @@ pub const io = struct {
             return &this._buffer;
         }
 
+        pub fn finalBuffer(this: *BufferedReader) *std.array_list.Managed(u8) {
+            return &this._buffer;
+        }
+
         pub fn unpause(this: *BufferedReader) void {
             _ = this;
         }
@@ -2614,6 +2622,11 @@ pub const io = struct {
 
         pub fn writeAssumeCapacity(this: *StreamBuffer, bytes: []const u8) void {
             this.list.appendSliceAssumeCapacity(bytes);
+        }
+
+        /// Faithful to upstream `io/PipeWriter.zig` StreamBuffer.writeTypeAsBytesAssumeCapacity.
+        pub fn writeTypeAsBytesAssumeCapacity(this: *StreamBuffer, comptime T: type, data: T) void {
+            this.list.appendSliceAssumeCapacity(std.mem.asBytes(&data));
         }
 
         pub fn ensureUnusedCapacity(this: *StreamBuffer, capacity: usize) OOM!void {
@@ -4110,6 +4123,7 @@ pub const sys = struct {
     pub const unlink = @import("sys/sys.zig").unlink;
     pub const rmdir = @import("sys/sys.zig").rmdir;
     pub const munmap = @import("sys/sys.zig").munmap;
+    pub const mmap = @import("sys/sys.zig").mmap;
     pub const chmod = @import("sys/sys.zig").chmod;
     pub const chown = @import("sys/sys.zig").chown;
     pub const access = @import("sys/sys.zig").access;

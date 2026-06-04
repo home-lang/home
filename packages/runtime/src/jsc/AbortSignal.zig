@@ -34,11 +34,99 @@ fn castPtr(comptime T: type, p: *anyopaque) T {
 }
 
 pub const AbortSignal = opaque {
-    /// Marker type for timeout-backed abort signals (used by EventLoopTimer's
-    /// comptime owner dispatch). Full port pending; minimal struct so
-    /// @fieldParentPtr resolves.
     pub const Timeout = struct {
-        flags: u8 = 0,
+        event_loop_timer: jsc.API.Timer.EventLoopTimer,
+
+        // The `Timeout`'s lifetime is owned by the AbortSignal.
+        // But this does have a ref count increment.
+        signal: *AbortSignal,
+
+        /// "epoch" is reused.
+        flags: jsc.API.Timer.TimerObjectInternals.Flags = .{},
+
+        /// See `swapGlobalForTestIsolation`: timers from a prior isolated test
+        /// file must not fire abort handlers in the new global.
+        generation: u32 = 0,
+
+        const new = bun.TrivialNew(Timeout);
+
+        fn init(vm: *jsc.VirtualMachine, signal_: *AbortSignal, milliseconds: u64) *Timeout {
+            const this: *Timeout = .new(.{
+                .signal = signal_,
+                .generation = vm.test_isolation_generation,
+                .event_loop_timer = .{
+                    .next = bun.timespec.now(.allow_mocked_time).addMs(@intCast(milliseconds)),
+                    .tag = .AbortSignalTimeout,
+                    .state = .CANCELLED,
+                },
+            });
+
+            if (comptime bun.Environment.ci_assert) {
+                if (signal_.aborted()) {
+                    @panic("unreachable: signal is already aborted");
+                }
+            }
+
+            // We default to not keeping the event loop alive with this timeout.
+            vm.timer.insert(&this.event_loop_timer);
+
+            return this;
+        }
+
+        fn cancel(this: *Timeout, vm: *jsc.VirtualMachine) void {
+            if (this.event_loop_timer.state == .ACTIVE) {
+                vm.timer.remove(&this.event_loop_timer);
+            }
+        }
+
+        pub fn run(this: *Timeout, vm: *jsc.VirtualMachine) void {
+            this.event_loop_timer.state = .FIRED;
+            this.cancel(vm);
+
+            // The signal and its handlers belong to a previous isolated test
+            // file's global; firing now would run them against the new global.
+            // Drop the extra ref that signalAbort() would have released.
+            if (this.generation != vm.test_isolation_generation) {
+                this.signal.unref();
+                return;
+            }
+
+            // Dispatching the signal may cause the Timeout to get freed.
+            dispatch(vm, this.signal);
+        }
+
+        fn dispatch(vm: *jsc.VirtualMachine, signal_ptr: *AbortSignal) void {
+            const loop = vm.eventLoop();
+            loop.enter();
+            defer loop.exit();
+            // signalAbort() releases the extra ref from timeout() after all
+            // abort work completes, so we must not unref here.
+            signal_ptr.signal(vm.global, .Timeout);
+        }
+
+        // This may run inside the "signal" call.
+        fn deinit(this: *Timeout, vm: *jsc.VirtualMachine) void {
+            this.cancel(vm);
+            bun.destroy(this);
+        }
+
+        /// Caller is expected to have already ref'd the AbortSignal.
+        export fn AbortSignal__Timeout__create(vm: *jsc.VirtualMachine, signal_: *AbortSignal, milliseconds: u64) *Timeout {
+            return Timeout.init(vm, signal_, milliseconds);
+        }
+
+        export fn AbortSignal__Timeout__run(this: *Timeout, vm: *jsc.VirtualMachine) void {
+            this.run(vm);
+        }
+
+        export fn AbortSignal__Timeout__deinit(this: *Timeout) void {
+            // Called from ~AbortSignal() / cancelTimer(). The AbortSignal's
+            // ScriptExecutionContext may be a dead global under --isolate, so
+            // we resolve the VM via the threadlocal instead of taking it as a
+            // parameter (which the caller would have to dereference the dead
+            // context to obtain).
+            this.deinit(jsc.VirtualMachine.get());
+        }
     };
 
     extern fn WebCore__AbortSignal__aborted(arg0: *AbortSignal) bool;
