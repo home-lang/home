@@ -476,11 +476,12 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
     }
     if (compile_opts.no_emit) return had_errors;
 
+    var reported_unchanged_timestamps = false;
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
         const out_path = computeOutPath(gpa, f.path, out_dir, ".js") catch continue;
         defer gpa.free(out_path);
-        writeOrDie(gpa, out_path, c.js);
+        writeProjectOutput(gpa, out_path, c.js, config_path, verbose, &reported_unchanged_timestamps);
         if (emit_dts) {
             const dts_path = computeOutPath(gpa, f.path, declaration_dir, ".d.ts") catch continue;
             defer gpa.free(dts_path);
@@ -488,14 +489,14 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
             // back to the symbol-driven emitter if it can't process the file.
             if (ts_emit.d_ts_fast.emit(gpa, f.source)) |dts| {
                 defer gpa.free(dts);
-                writeOrDie(gpa, dts_path, dts);
+                writeProjectOutput(gpa, dts_path, dts, config_path, verbose, &reported_unchanged_timestamps);
             } else |_| {
                 var emitter = ts_emit.DtsEmitter.initWithTypes(gpa, &c.hir, &c.interner, &c.type_interner, .{});
                 defer emitter.deinit();
                 emitter.emitSourceFile(c.root) catch continue;
                 const dts_bytes = emitter.toOwnedSlice() catch continue;
                 defer gpa.free(dts_bytes);
-                writeOrDie(gpa, dts_path, dts_bytes);
+                writeProjectOutput(gpa, dts_path, dts_bytes, config_path, verbose, &reported_unchanged_timestamps);
             }
         }
     }
@@ -653,6 +654,28 @@ fn touchProjectOutputs(
             touchFileNow(dts);
         }
     }
+}
+
+fn writeProjectOutput(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    bytes: []const u8,
+    project: []const u8,
+    verbose: bool,
+    reported_unchanged_timestamps: *bool,
+) void {
+    if (RealFs.read(gpa, path)) |existing| {
+        defer gpa.free(existing);
+        if (std.mem.eql(u8, existing, bytes)) {
+            if (verbose and !reported_unchanged_timestamps.*) {
+                buildStatusMessage(6371, "Updating unchanged output timestamps of project '{s}'...\n", .{project});
+                reported_unchanged_timestamps.* = true;
+            }
+            touchFileNow(path);
+            return;
+        }
+    } else |_| {}
+    writeOrDie(gpa, path, bytes);
 }
 
 fn appendCleanOutputIfPresent(
