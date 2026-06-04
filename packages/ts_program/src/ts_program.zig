@@ -348,7 +348,7 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation) = .empty;
         errdefer out.deinit(self.gpa);
         for (self.files.items) |f| {
-            try collectRelativeModuleInterfaceAugmentationsFromSource(self.gpa, f.source, &out);
+            try self.collectRelativeModuleInterfaceAugmentationsFromSource(f.path, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
     }
@@ -725,7 +725,8 @@ pub const Program = struct {
     }
 
     fn collectRelativeModuleInterfaceAugmentationsFromSource(
-        gpa: std.mem.Allocator,
+        self: *const Program,
+        path: []const u8,
         source: []const u8,
         out: *std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation),
     ) ProgramError!void {
@@ -746,13 +747,14 @@ pub const Program = struct {
             if (!std.mem.startsWith(u8, spec, ".")) continue;
             const body_open = std.mem.indexOfScalarPos(u8, source, spec_end + 1, '{') orelse continue;
             const body_close = findMatchingBrace(source, body_open) orelse continue;
-            try collectInterfaceMethodAugmentations(gpa, source, spec, body_open + 1, body_close, out);
+            try self.collectInterfaceMethodAugmentations(path, source, spec, body_open + 1, body_close, out);
             search_start = body_close + 1;
         }
     }
 
     fn collectInterfaceMethodAugmentations(
-        gpa: std.mem.Allocator,
+        self: *const Program,
+        path: []const u8,
         source: []const u8,
         spec: []const u8,
         body_start: usize,
@@ -773,16 +775,31 @@ pub const Program = struct {
             if (iface_open >= body_end) continue;
             const iface_close = findMatchingBrace(source, iface_open) orelse continue;
             if (iface_close > body_end) continue;
-            try collectInterfaceMethodAugmentationsFromBody(gpa, source, spec, iface_name, iface_open + 1, iface_close, out);
+            const target_decl = try self.findRelativeModuleInterfaceDeclaration(path, spec, iface_name);
+            try collectInterfaceMethodAugmentationsFromBody(
+                self.gpa,
+                path,
+                source,
+                spec,
+                iface_name,
+                @intCast(name_start),
+                target_decl,
+                iface_open + 1,
+                iface_close,
+                out,
+            );
             search_start = iface_close + 1;
         }
     }
 
     fn collectInterfaceMethodAugmentationsFromBody(
         gpa: std.mem.Allocator,
+        path: []const u8,
         source: []const u8,
         spec: []const u8,
         iface_name: []const u8,
+        iface_name_pos: u32,
+        target_decl: ?ProgramInterfaceDeclaration,
         body_start: usize,
         body_end: usize,
         out: *std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation),
@@ -817,6 +834,10 @@ pub const Program = struct {
             };
             try out.append(gpa, .{
                 .target_path = spec,
+                .source_path = path,
+                .source_pos = iface_name_pos,
+                .target_decl_path = if (target_decl) |decl| decl.path else null,
+                .target_decl_pos = if (target_decl) |decl| decl.pos else null,
                 .interface_name = iface_name,
                 .member_name = source[member_start..member_end],
                 .return_type_name = source[return_start..return_end],
@@ -824,6 +845,51 @@ pub const Program = struct {
             });
             i = return_end;
         }
+    }
+
+    const ProgramInterfaceDeclaration = struct {
+        path: []const u8,
+        pos: u32,
+    };
+
+    fn findRelativeModuleInterfaceDeclaration(
+        self: *const Program,
+        from_path: []const u8,
+        spec: []const u8,
+        interface_name: []const u8,
+    ) ProgramError!?ProgramInterfaceDeclaration {
+        const target_path = try resolveProgramRelativeModulePath(self.gpa, from_path, spec);
+        defer self.gpa.free(target_path);
+        for (self.files.items) |f| {
+            if (!programModulePathMatches(f.path, target_path)) continue;
+            const pos = findTopLevelInterfaceDeclarationPos(f.source, interface_name) orelse return null;
+            return .{ .path = f.path, .pos = pos };
+        }
+        return null;
+    }
+
+    fn findTopLevelInterfaceDeclarationPos(source: []const u8, interface_name: []const u8) ?u32 {
+        var depth: usize = 0;
+        var i: usize = 0;
+        while (i < source.len) : (i += 1) {
+            const c = source[i];
+            if (c == '{') {
+                depth += 1;
+                continue;
+            }
+            if (c == '}') {
+                if (depth > 0) depth -= 1;
+                continue;
+            }
+            if (depth != 0) continue;
+            if (!identifierKeywordAt(source, i, "interface")) continue;
+            var name_start = i + "interface".len;
+            while (name_start < source.len and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
+            const name_end = parseIdentifierEnd(source, name_start, source.len) orelse continue;
+            if (std.mem.eql(u8, source[name_start..name_end], interface_name)) return @intCast(name_start);
+            i = name_end;
+        }
+        return null;
     }
 
     fn parseIdentifierEnd(source: []const u8, start: usize, limit: usize) ?usize {
@@ -2258,6 +2324,43 @@ test "Program: compileAll routes per-file is_declaration_file (no TS1039 from .t
     for (app.diagnostics.items) |d| {
         try T.expect(d.code != 1039);
     }
+}
+
+test "Program: declaration emit reports nonlocal module interface augmentation (TS6232 with TS6233 related)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "export interface A { value: string; }");
+    _ = try p.add(
+        "/augment.ts",
+        \\import "./a";
+        \\declare module "./a" {
+        \\  interface A { extra(): string; }
+        \\}
+    );
+    try p.compileAll(.{ .strict_flags = .{ .declaration = true } });
+    const augmentation = p.fileById(1).compilation orelse return error.TestFailed;
+    var saw_6232 = false;
+    var saw_6233_related = false;
+    for (augmentation.diagnostics.items) |d| {
+        if (d.code != 6232) continue;
+        saw_6232 = true;
+        try T.expectEqualStrings("Declaration augments declaration in another file. This cannot be serialized.", d.message);
+        for (d.related) |rel| {
+            if (rel.code == 6233 and rel.file != null and std.mem.eql(u8, rel.file.?, "/a.ts")) {
+                try T.expectEqualStrings(
+                    "This is the declaration being augmented. Consider moving the augmenting declaration into the same file.",
+                    rel.message,
+                );
+                saw_6233_related = true;
+            }
+        }
+    }
+    try T.expect(saw_6232);
+    try T.expect(saw_6233_related);
 }
 
 test "Program: reaches detects transitive imports" {

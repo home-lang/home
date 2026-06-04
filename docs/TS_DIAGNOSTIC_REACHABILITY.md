@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 763 |
-| reachable (parity targets) | 296 |
+| catalog-only total | 761 |
+| reachable (parity targets) | 294 |
 | dead in tsgo (leave catalog-only) | 467 |
 
 ## Reachable worklist by range
@@ -29,7 +29,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | other | 15 |
 | 7xxx — noImplicitAny / implicit-type family | 11 |
 | 5xxx — tsconfig / build-option validation | 4 |
-| 6xxx — CLI / build / watch / resolution-trace messages | 4 |
+| 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
 ### 2xxx — checker / type engine (157)
 
@@ -344,11 +344,9 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079`
 - TS5082 `_0_could_be_instantiated_with_an_arbitrary_type_which_could_be_unrelated_to_1_5082`
 
-### 6xxx — CLI / build / watch / resolution-trace messages (4)
+### 6xxx — CLI / build / watch / resolution-trace messages (2)
 
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
-- TS6232 `Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232`
-- TS6233 `This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
 
 ## Notes: heuristic false-positives & subsystem-gated clusters
