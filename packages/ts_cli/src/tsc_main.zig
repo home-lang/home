@@ -425,6 +425,10 @@ fn buildOneProject(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path
                 const default_options = ts_emit.tsbuildinfo.Options{};
                 buildStatusMessage(6381, "Project '{s}' is out of date because output for it was generated with version '{s}' that differs with current version '{s}'\n", .{ config_path, stored_version, default_options.compiler_version });
             }
+        } else if (projectBuildInfoOptionsMismatch(gpa, arena, config_path, cfg)) |buildinfo_path| {
+            if (verbose) {
+                buildStatusMessage(6406, "Project '{s}' is out of date because buildinfo file '{s}' indicates there is change in compilerOptions\n", .{ config_path, buildinfo_path });
+            }
         } else if (projectBuildInfoRootMismatch(gpa, arena, config_path, cfg, input_files.items)) |mismatch| {
             if (verbose) {
                 buildStatusMessage(6412, "Project '{s}' is out of date because buildinfo file '{s}' indicates that file '{s}' was root file of compilation but not any more.\n", .{ config_path, mismatch.buildinfo_path, mismatch.root_path });
@@ -596,6 +600,23 @@ fn projectBuildInfoVersionMismatch(
     return arena.dupe(u8, info.version) catch null;
 }
 
+fn projectBuildInfoOptionsMismatch(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    config_path: []const u8,
+    cfg: tsconfig_mod.TsConfig,
+) ?[]const u8 {
+    const buildinfo_path = (projectBuildInfoFilePath(arena, config_path, cfg) catch null) orelse return null;
+    const buildinfo_src = RealFs.read(gpa, buildinfo_path) catch return null;
+    defer gpa.free(buildinfo_src);
+    var info = ts_emit.tsbuildinfo.read(gpa, buildinfo_src) catch return null;
+    defer info.deinit(gpa);
+    const current_options = buildInfoOptionsJson(gpa, cfg) catch return null;
+    defer gpa.free(current_options);
+    if (std.mem.eql(u8, info.options_json, current_options)) return null;
+    return buildinfo_path;
+}
+
 const BuildInfoRootMismatch = struct {
     buildinfo_path: []const u8,
     root_path: []const u8,
@@ -622,6 +643,223 @@ fn projectBuildInfoRootMismatch(
         };
     }
     return null;
+}
+
+fn buildInfoOptionsJson(gpa: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.append(gpa, '{');
+    var first = true;
+    const co = cfg.compiler_options;
+
+    const BoolEntry = struct { name: []const u8, field: []const u8 };
+    const bool_fields = comptime [_]BoolEntry{
+        .{ .name = "strict", .field = "strict" },
+        .{ .name = "noImplicitAny", .field = "no_implicit_any" },
+        .{ .name = "strictNullChecks", .field = "strict_null_checks" },
+        .{ .name = "strictFunctionTypes", .field = "strict_function_types" },
+        .{ .name = "strictBindCallApply", .field = "strict_bind_call_apply" },
+        .{ .name = "strictPropertyInitialization", .field = "strict_property_initialization" },
+        .{ .name = "noImplicitThis", .field = "no_implicit_this" },
+        .{ .name = "useUnknownInCatchVariables", .field = "use_unknown_in_catch_variables" },
+        .{ .name = "alwaysStrict", .field = "always_strict" },
+        .{ .name = "noUnusedLocals", .field = "no_unused_locals" },
+        .{ .name = "noUnusedParameters", .field = "no_unused_parameters" },
+        .{ .name = "exactOptionalPropertyTypes", .field = "exact_optional_property_types" },
+        .{ .name = "noImplicitReturns", .field = "no_implicit_returns" },
+        .{ .name = "noFallthroughCasesInSwitch", .field = "no_fallthrough_cases_in_switch" },
+        .{ .name = "noUncheckedIndexedAccess", .field = "no_unchecked_indexed_access" },
+        .{ .name = "noImplicitOverride", .field = "no_implicit_override" },
+        .{ .name = "noPropertyAccessFromIndexSignature", .field = "no_property_access_from_index_signature" },
+        .{ .name = "erasableSyntaxOnly", .field = "erasable_syntax_only" },
+        .{ .name = "skipLibCheck", .field = "skip_lib_check" },
+        .{ .name = "skipDefaultLibCheck", .field = "skip_default_lib_check" },
+        .{ .name = "forceConsistentCasingInFileNames", .field = "force_consistent_casing_in_file_names" },
+        .{ .name = "keyofStringsOnly", .field = "keyof_strings_only" },
+        .{ .name = "suppressExcessPropertyErrors", .field = "suppress_excess_property_errors" },
+        .{ .name = "suppressImplicitAnyIndexErrors", .field = "suppress_implicit_any_index_errors" },
+        .{ .name = "resolveJsonModule", .field = "resolve_json_module" },
+        .{ .name = "resolvePackageJsonExports", .field = "resolve_package_json_exports" },
+        .{ .name = "resolvePackageJsonImports", .field = "resolve_package_json_imports" },
+        .{ .name = "allowImportingTsExtensions", .field = "allow_importing_ts_extensions" },
+        .{ .name = "rewriteRelativeImportExtensions", .field = "rewrite_relative_import_extensions" },
+        .{ .name = "esModuleInterop", .field = "es_module_interop" },
+        .{ .name = "isolatedModules", .field = "isolated_modules" },
+        .{ .name = "isolatedDeclarations", .field = "isolated_declarations" },
+        .{ .name = "verbatimModuleSyntax", .field = "verbatim_module_syntax" },
+        .{ .name = "allowSyntheticDefaultImports", .field = "allow_synthetic_default_imports" },
+        .{ .name = "noLib", .field = "no_lib" },
+        .{ .name = "declaration", .field = "declaration" },
+        .{ .name = "declarationMap", .field = "declaration_map" },
+        .{ .name = "emitDeclarationOnly", .field = "emit_declaration_only" },
+        .{ .name = "composite", .field = "composite" },
+        .{ .name = "incremental", .field = "incremental" },
+        .{ .name = "assumeChangesOnlyAffectDirectDependencies", .field = "assume_changes_only_affect_direct_dependencies" },
+        .{ .name = "disableSizeLimit", .field = "disable_size_limit" },
+        .{ .name = "removeComments", .field = "remove_comments" },
+        .{ .name = "noEmit", .field = "no_emit" },
+        .{ .name = "importHelpers", .field = "import_helpers" },
+        .{ .name = "noEmitHelpers", .field = "no_emit_helpers" },
+        .{ .name = "downlevelIteration", .field = "down_level_iteration" },
+        .{ .name = "preserveConstEnums", .field = "preserve_const_enums" },
+        .{ .name = "experimentalDecorators", .field = "experimental_decorators" },
+        .{ .name = "emitDecoratorMetadata", .field = "emit_decorator_metadata" },
+        .{ .name = "sourceMap", .field = "source_map" },
+        .{ .name = "inlineSourceMap", .field = "inline_source_map" },
+        .{ .name = "inlineSources", .field = "inline_sources" },
+        .{ .name = "allowJs", .field = "allow_js" },
+        .{ .name = "checkJs", .field = "check_js" },
+        .{ .name = "useDefineForClassFields", .field = "use_define_for_class_fields" },
+    };
+    inline for (bool_fields) |entry| {
+        try appendBuildInfoBoolOption(gpa, &buf, &first, entry.name, @field(co, entry.field));
+    }
+
+    try appendBuildInfoStringOption(gpa, &buf, &first, "baseUrl", co.base_url);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "moduleDetection", co.module_detection);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "ignoreDeprecations", co.ignore_deprecations);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "jsxFactory", co.jsx_factory);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "jsxFragmentFactory", co.jsx_fragment_factory);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "jsxImportSource", co.jsx_import_source);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "reactNamespace", co.react_namespace);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "outDir", co.out_dir);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "rootDir", co.root_dir);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "declarationDir", co.declaration_dir);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "mapRoot", co.map_root);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "sourceRoot", co.source_root);
+    try appendBuildInfoStringOption(gpa, &buf, &first, "tsBuildInfoFile", co.ts_buildinfo_file);
+
+    if (co.module) |value| try appendBuildInfoStringOption(gpa, &buf, &first, "module", moduleOptionName(value));
+    if (co.module_resolution) |value| try appendBuildInfoStringOption(gpa, &buf, &first, "moduleResolution", moduleResolutionOptionName(value));
+    if (co.target) |value| try appendBuildInfoStringOption(gpa, &buf, &first, "target", targetOptionName(value));
+    if (co.jsx) |value| try appendBuildInfoStringOption(gpa, &buf, &first, "jsx", jsxOptionName(value));
+
+    try appendBuildInfoStringArrayOption(gpa, &buf, &first, "rootDirs", co.root_dirs);
+    try appendBuildInfoStringArrayOption(gpa, &buf, &first, "typeRoots", co.type_roots);
+    try appendBuildInfoStringArrayOption(gpa, &buf, &first, "types", co.types);
+    try appendBuildInfoStringArrayOption(gpa, &buf, &first, "customConditions", co.custom_conditions);
+    try appendBuildInfoStringArrayOption(gpa, &buf, &first, "lib", co.lib);
+    if (co.paths) |paths| try appendBuildInfoPathsOption(gpa, &buf, &first, paths);
+
+    try buf.append(gpa, '}');
+    return buf.toOwnedSlice(gpa);
+}
+
+fn appendBuildInfoOptionKey(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    first: *bool,
+    name: []const u8,
+) !void {
+    if (!first.*) try buf.append(gpa, ',');
+    first.* = false;
+    try buf.append(gpa, '"');
+    try appendJsonStringBody(gpa, buf, name);
+    try buf.appendSlice(gpa, "\":");
+}
+
+fn appendBuildInfoBoolOption(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    first: *bool,
+    name: []const u8,
+    value: ?bool,
+) !void {
+    const actual = value orelse return;
+    try appendBuildInfoOptionKey(gpa, buf, first, name);
+    try buf.appendSlice(gpa, if (actual) "true" else "false");
+}
+
+fn appendBuildInfoStringOption(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    first: *bool,
+    name: []const u8,
+    value: ?[]const u8,
+) !void {
+    const actual = value orelse return;
+    try appendBuildInfoOptionKey(gpa, buf, first, name);
+    try buf.append(gpa, '"');
+    try appendJsonStringBody(gpa, buf, actual);
+    try buf.append(gpa, '"');
+}
+
+fn appendBuildInfoStringArrayOption(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    first: *bool,
+    name: []const u8,
+    value: ?[][]const u8,
+) !void {
+    const actual = value orelse return;
+    try appendBuildInfoOptionKey(gpa, buf, first, name);
+    try appendBuildInfoJsonStringArray(gpa, buf, actual);
+}
+
+fn appendBuildInfoPathsOption(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    first: *bool,
+    paths: tsconfig_mod.Paths,
+) !void {
+    try appendBuildInfoOptionKey(gpa, buf, first, "paths");
+    try buf.append(gpa, '{');
+    for (paths.patterns, 0..) |pattern, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.append(gpa, '"');
+        try appendJsonStringBody(gpa, buf, pattern);
+        try buf.appendSlice(gpa, "\":");
+        try appendBuildInfoJsonStringArray(gpa, buf, paths.substitutions[i]);
+    }
+    try buf.append(gpa, '}');
+}
+
+fn appendBuildInfoJsonStringArray(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    values: []const []const u8,
+) !void {
+    try buf.append(gpa, '[');
+    for (values, 0..) |value, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.append(gpa, '"');
+        try appendJsonStringBody(gpa, buf, value);
+        try buf.append(gpa, '"');
+    }
+    try buf.append(gpa, ']');
+}
+
+fn appendJsonStringBody(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
+    for (value) |c| switch (c) {
+        '"' => try buf.appendSlice(gpa, "\\\""),
+        '\\' => try buf.appendSlice(gpa, "\\\\"),
+        '\n' => try buf.appendSlice(gpa, "\\n"),
+        '\r' => try buf.appendSlice(gpa, "\\r"),
+        '\t' => try buf.appendSlice(gpa, "\\t"),
+        else => try buf.append(gpa, c),
+    };
+}
+
+fn moduleOptionName(value: tsconfig_mod.Module) []const u8 {
+    return @tagName(value);
+}
+
+fn moduleResolutionOptionName(value: tsconfig_mod.ModuleResolution) []const u8 {
+    return @tagName(value);
+}
+
+fn targetOptionName(value: tsconfig_mod.Target) []const u8 {
+    return @tagName(value);
+}
+
+fn jsxOptionName(value: tsconfig_mod.Jsx) []const u8 {
+    return switch (value) {
+        .preserve => "preserve",
+        .react => "react",
+        .react_jsx => "react-jsx",
+        .react_jsxdev => "react-jsxdev",
+        .react_native => "react-native",
+    };
 }
 
 fn sourceSha1Hex(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -2022,11 +2260,13 @@ pub fn main(init: std.process.Init) !void {
                 }
                 try file_infos.append(gpa, .{ .version = hex });
             }
+            const options_json = buildInfoOptionsJson(gpa, cfg_ptr) catch null;
+            defer if (options_json) |json| gpa.free(json);
             const buildinfo = ts_emit.tsbuildinfo.emit(
                 gpa,
                 file_names.items,
                 file_infos.items,
-                "{}", // options blob: tsc serialises a few normalized options here; placeholder
+                options_json orelse "{}",
                 .{},
             ) catch null;
             if (buildinfo) |bi| {

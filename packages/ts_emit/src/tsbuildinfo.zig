@@ -113,6 +113,7 @@ pub const BuildInfo = struct {
     version: []const u8,
     file_names: [][]const u8,
     file_infos: []FileInfo,
+    options_json: []const u8,
 
     pub fn deinit(self: *BuildInfo, gpa: std.mem.Allocator) void {
         gpa.free(self.version);
@@ -120,6 +121,7 @@ pub const BuildInfo = struct {
         gpa.free(self.file_names);
         for (self.file_infos) |fi| gpa.free(fi.version);
         gpa.free(self.file_infos);
+        gpa.free(self.options_json);
         self.* = undefined;
     }
 };
@@ -136,9 +138,6 @@ pub const ReadError = error{
 ///
 /// Round-trips with `emit` — index-keyed `"fileInfos"` entries are
 /// re-aligned with `"fileNames"` so callers consume parallel arrays.
-/// Any `"options"` blob is intentionally ignored; reading it back
-/// would require an arbitrary value tree, and incremental builds key
-/// off file hashes plus the (separately tracked) tsconfig hash.
 pub fn read(gpa: std.mem.Allocator, json_bytes: []const u8) ReadError!BuildInfo {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, json_bytes, .{}) catch
         return error.InvalidJson;
@@ -215,12 +214,71 @@ pub fn read(gpa: std.mem.Allocator, json_bytes: []const u8) ReadError!BuildInfo 
     for (seen) |s| if (!s) return error.InvalidFileInfoIndex;
 
     const version_dup = try gpa.dupe(u8, version_val.string);
+    errdefer gpa.free(version_dup);
+
+    const options_json = if (root.get("options")) |options_val|
+        try stringifyJsonValue(gpa, options_val)
+    else
+        try gpa.dupe(u8, "{}");
 
     return BuildInfo{
         .version = version_dup,
         .file_names = file_names,
         .file_infos = file_infos,
+        .options_json = options_json,
     };
+}
+
+fn stringifyJsonValue(gpa: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try appendJsonValue(gpa, &buf, value);
+    return buf.toOwnedSlice(gpa);
+}
+
+fn appendJsonValue(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), value: std.json.Value) !void {
+    switch (value) {
+        .null => try buf.appendSlice(gpa, "null"),
+        .bool => |b| try buf.appendSlice(gpa, if (b) "true" else "false"),
+        .integer => |n| {
+            const s = try std.fmt.allocPrint(gpa, "{d}", .{n});
+            defer gpa.free(s);
+            try buf.appendSlice(gpa, s);
+        },
+        .float => |n| {
+            const s = try std.fmt.allocPrint(gpa, "{d}", .{n});
+            defer gpa.free(s);
+            try buf.appendSlice(gpa, s);
+        },
+        .number_string => |s| try buf.appendSlice(gpa, s),
+        .string => |s| {
+            try buf.append(gpa, '"');
+            try appendJsonString(gpa, buf, s);
+            try buf.append(gpa, '"');
+        },
+        .array => |array| {
+            try buf.append(gpa, '[');
+            for (array.items, 0..) |item, i| {
+                if (i > 0) try buf.append(gpa, ',');
+                try appendJsonValue(gpa, buf, item);
+            }
+            try buf.append(gpa, ']');
+        },
+        .object => |object| {
+            try buf.append(gpa, '{');
+            var it = object.iterator();
+            var first = true;
+            while (it.next()) |entry| {
+                if (!first) try buf.append(gpa, ',');
+                first = false;
+                try buf.append(gpa, '"');
+                try appendJsonString(gpa, buf, entry.key_ptr.*);
+                try buf.appendSlice(gpa, "\":");
+                try appendJsonValue(gpa, buf, entry.value_ptr.*);
+            }
+            try buf.append(gpa, '}');
+        },
+    }
 }
 
 const T = std.testing;
@@ -287,6 +345,7 @@ test "tsbuildinfo: round-trip emit then read preserves fields" {
     try T.expectEqualStrings("util-hash", info.file_infos[2].version);
     try T.expectEqual(false, info.file_infos[2].affects_global_scope);
     try T.expectEqual(true, info.file_infos[2].is_declaration);
+    try T.expectEqualStrings("{\"strict\":true}", info.options_json);
 }
 
 test "tsbuildinfo: round-trip on empty inputs is a no-op" {
@@ -322,4 +381,5 @@ test "tsbuildinfo: read parses a hand-written minimal document" {
     try T.expectEqual(false, info.file_infos[0].affects_global_scope);
     try T.expectEqualStrings("h1", info.file_infos[1].version);
     try T.expectEqual(true, info.file_infos[1].affects_global_scope);
+    try T.expectEqualStrings("{\"target\":7}", info.options_json);
 }
