@@ -168,6 +168,11 @@ out.push("  tsgo, so it is never emitted: **TS5078 / TS5079** (`Unknown_watch_op
 out.push("  live in `watchOptionsDidYouMeanDiagnostics`, but tsgo's JSON `watchOptions`");
 out.push("  parsing is commented out. The live command-line watch-option type");
 out.push("  mismatch path is TS5080.");
+out.push("- **Effectively dead despite a JSX precondition reference** — **TS2602**");
+out.push("  is still referenced by `checkJsxPreconditions`, but tsgo's");
+out.push("  `getJsxElementTypeAt` currently returns `errorType` rather than nil for");
+out.push("  a missing `JSX.Element`, so the nil-check never fires. Observable");
+out.push("  no-namespace JSX cases emit TS7026 instead.");
 out.push("- **`tsc --build` mode (not yet in Home)** — **TS5072 / TS5073 / TS5077**");
 out.push("  (build-option parse errors) and **TS5093 / TS5094** (`--build`-only vs");
 out.push("  non-`--build` option gating) require the project-references build");

@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 632 |
-| reachable (parity targets) | 171 |
+| catalog-only total | 631 |
+| reachable (parity targets) | 170 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
-| 2xxx — checker / type engine | 51 |
+| 2xxx — checker / type engine | 50 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
@@ -87,7 +87,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 
-### 2xxx — checker / type engine (51)
+### 2xxx — checker / type engine (50)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -102,7 +102,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
 - TS2597 `_0_can_only_be_imported_by_using_a_require_call_or_by_using_a_default_import_2597`
 - TS2602 `JSX_element_implicitly_has_type_any_because_the_global_type_JSX_Element_does_not_exist_2602`
-- TS2612 `Property_0_will_overwrite_the_base_property_in_1_If_this_is_intentional_add_an_initializer_Otherwise_2612`
 - TS2613 `Module_0_has_no_default_export_Did_you_mean_to_use_import_1_from_0_instead_2613`
 - TS2614 `Module_0_has_no_exported_member_1_Did_you_mean_to_use_import_1_from_0_instead_2614`
 - TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
@@ -237,6 +236,11 @@ dead. Confirm against this list before picking one:
   live in `watchOptionsDidYouMeanDiagnostics`, but tsgo's JSON `watchOptions`
   parsing is commented out. The live command-line watch-option type
   mismatch path is TS5080.
+- **Effectively dead despite a JSX precondition reference** — **TS2602**
+  is still referenced by `checkJsxPreconditions`, but tsgo's
+  `getJsxElementTypeAt` currently returns `errorType` rather than nil for
+  a missing `JSX.Element`, so the nil-check never fires. Observable
+  no-namespace JSX cases emit TS7026 instead.
 - **`tsc --build` mode (not yet in Home)** — **TS5072 / TS5073 / TS5077**
   (build-option parse errors) and **TS5093 / TS5094** (`--build`-only vs
   non-`--build` option gating) require the project-references build
