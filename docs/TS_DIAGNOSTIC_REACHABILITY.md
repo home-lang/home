@@ -14,79 +14,22 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 635 |
-| reachable (parity targets) | 174 |
+| catalog-only total | 634 |
+| reachable (parity targets) | 173 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 54 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
+| 2xxx — checker / type engine | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 7xxx — noImplicitAny / implicit-type family | 10 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
-
-### 2xxx — checker / type engine (54)
-
-- TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
-- TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
-- TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
-- TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
-- TS2324 `Property_0_is_missing_in_type_1_2324`
-- TS2518 `A_this_based_type_guard_is_not_compatible_with_a_parameter_based_type_guard_2518`
-- TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
-- TS2529 `Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_containing_async_func_2529`
-- TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
-- TS2577 `Return_type_annotation_circularly_references_itself_2577`
-- TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
-- TS2597 `_0_can_only_be_imported_by_using_a_require_call_or_by_using_a_default_import_2597`
-- TS2602 `JSX_element_implicitly_has_type_any_because_the_global_type_JSX_Element_does_not_exist_2602`
-- TS2607 `JSX_element_class_does_not_support_attributes_because_it_does_not_have_a_0_property_2607`
-- TS2608 `The_global_type_JSX_0_may_not_have_more_than_one_property_2608`
-- TS2612 `Property_0_will_overwrite_the_base_property_in_1_If_this_is_intentional_add_an_initializer_Otherwise_2612`
-- TS2613 `Module_0_has_no_default_export_Did_you_mean_to_use_import_1_from_0_instead_2613`
-- TS2614 `Module_0_has_no_exported_member_1_Did_you_mean_to_use_import_1_from_0_instead_2614`
-- TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
-- TS2616 `_0_can_only_be_imported_by_using_import_1_require_2_or_a_default_import_2616`
-- TS2618 `Source_has_0_element_s_but_target_requires_1_2618`
-- TS2619 `Source_has_0_element_s_but_target_allows_only_1_2619`
-- TS2620 `Target_requires_0_element_s_but_source_may_have_fewer_2620`
-- TS2621 `Target_allows_only_0_element_s_but_source_may_have_more_2621`
-- TS2623 `Source_provides_no_match_for_required_element_at_position_0_in_target_2623`
-- TS2624 `Source_provides_no_match_for_variadic_element_at_position_0_in_target_2624`
-- TS2625 `Variadic_element_at_position_0_in_source_does_not_match_element_at_position_1_in_target_2625`
-- TS2626 `Type_at_position_0_in_source_is_not_compatible_with_type_at_position_1_in_target_2626`
-- TS2627 `Type_at_positions_0_through_1_in_source_is_not_compatible_with_type_at_position_2_in_target_2627`
-- TS2633 `JSX_property_access_expressions_cannot_include_JSX_namespace_names_2633`
-- TS2636 `Type_0_is_not_assignable_to_type_1_as_implied_by_variance_annotation_2636`
-- TS2649 `Cannot_augment_module_0_with_value_exports_because_it_resolves_to_a_non_module_entity_2649`
-- TS2658 `Type_0_provides_no_match_for_the_signature_1_2658`
-- TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
-- TS2671 `Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671`
-- TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
-- TS2686 `_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686`
-- TS2688 `Cannot_find_type_definition_file_for_0_2688`
-- TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
-- TS2735 `Did_you_mean_for_0_to_be_constrained_to_type_new_args_Colon_any_1_2735`
-- TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
-- TS2751 `Circularity_originates_in_type_at_this_location_2751`
-- TS2758 `Each_member_of_the_union_type_0_has_signatures_but_none_of_those_signatures_are_compatible_with_each_2758`
-- TS2762 `Each_member_of_the_union_type_0_has_construct_signatures_but_none_of_those_signatures_are_compatible_2762`
-- TS2763 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_for_of_will_always_s_2763`
-- TS2764 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_spread_will_al_2764`
-- TS2765 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_destructuring__2765`
-- TS2766 `Cannot_delegate_iteration_to_value_because_the_next_method_of_its_iterator_expects_type_1_but_the_co_2766`
-- TS2782 `_0_needs_an_explicit_type_annotation_2782`
-- TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
-- TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
-- TS2800 `Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800`
-- TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
-- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
 ### 1xxx — parser / syntactic + program file-inclusion (53)
 
@@ -143,6 +86,62 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1483 `To_convert_this_file_to_an_ECMAScript_module_create_a_local_package_json_file_with_type_Colon_module_1483`
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
+
+### 2xxx — checker / type engine (53)
+
+- TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
+- TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
+- TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
+- TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
+- TS2324 `Property_0_is_missing_in_type_1_2324`
+- TS2518 `A_this_based_type_guard_is_not_compatible_with_a_parameter_based_type_guard_2518`
+- TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
+- TS2529 `Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_containing_async_func_2529`
+- TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
+- TS2577 `Return_type_annotation_circularly_references_itself_2577`
+- TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
+- TS2597 `_0_can_only_be_imported_by_using_a_require_call_or_by_using_a_default_import_2597`
+- TS2602 `JSX_element_implicitly_has_type_any_because_the_global_type_JSX_Element_does_not_exist_2602`
+- TS2607 `JSX_element_class_does_not_support_attributes_because_it_does_not_have_a_0_property_2607`
+- TS2608 `The_global_type_JSX_0_may_not_have_more_than_one_property_2608`
+- TS2612 `Property_0_will_overwrite_the_base_property_in_1_If_this_is_intentional_add_an_initializer_Otherwise_2612`
+- TS2613 `Module_0_has_no_default_export_Did_you_mean_to_use_import_1_from_0_instead_2613`
+- TS2614 `Module_0_has_no_exported_member_1_Did_you_mean_to_use_import_1_from_0_instead_2614`
+- TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
+- TS2616 `_0_can_only_be_imported_by_using_import_1_require_2_or_a_default_import_2616`
+- TS2618 `Source_has_0_element_s_but_target_requires_1_2618`
+- TS2619 `Source_has_0_element_s_but_target_allows_only_1_2619`
+- TS2620 `Target_requires_0_element_s_but_source_may_have_fewer_2620`
+- TS2621 `Target_allows_only_0_element_s_but_source_may_have_more_2621`
+- TS2623 `Source_provides_no_match_for_required_element_at_position_0_in_target_2623`
+- TS2624 `Source_provides_no_match_for_variadic_element_at_position_0_in_target_2624`
+- TS2625 `Variadic_element_at_position_0_in_source_does_not_match_element_at_position_1_in_target_2625`
+- TS2626 `Type_at_position_0_in_source_is_not_compatible_with_type_at_position_1_in_target_2626`
+- TS2627 `Type_at_positions_0_through_1_in_source_is_not_compatible_with_type_at_position_2_in_target_2627`
+- TS2636 `Type_0_is_not_assignable_to_type_1_as_implied_by_variance_annotation_2636`
+- TS2649 `Cannot_augment_module_0_with_value_exports_because_it_resolves_to_a_non_module_entity_2649`
+- TS2658 `Type_0_provides_no_match_for_the_signature_1_2658`
+- TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
+- TS2671 `Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671`
+- TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
+- TS2686 `_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686`
+- TS2688 `Cannot_find_type_definition_file_for_0_2688`
+- TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
+- TS2735 `Did_you_mean_for_0_to_be_constrained_to_type_new_args_Colon_any_1_2735`
+- TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
+- TS2751 `Circularity_originates_in_type_at_this_location_2751`
+- TS2758 `Each_member_of_the_union_type_0_has_signatures_but_none_of_those_signatures_are_compatible_with_each_2758`
+- TS2762 `Each_member_of_the_union_type_0_has_construct_signatures_but_none_of_those_signatures_are_compatible_2762`
+- TS2763 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_for_of_will_always_s_2763`
+- TS2764 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_spread_will_al_2764`
+- TS2765 `Cannot_iterate_value_because_the_next_method_of_its_iterator_expects_type_1_but_array_destructuring__2765`
+- TS2766 `Cannot_delegate_iteration_to_value_because_the_next_method_of_its_iterator_expects_type_1_but_the_co_2766`
+- TS2782 `_0_needs_an_explicit_type_annotation_2782`
+- TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
+- TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
+- TS2800 `Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800`
+- TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
+- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
 ### 4xxx — declaration-emit (privacy / serialization) (22)
 
