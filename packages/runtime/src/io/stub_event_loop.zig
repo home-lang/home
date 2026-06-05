@@ -27,6 +27,12 @@ pub const KeepAlive = struct {
     pub fn unref(this: *KeepAlive, _: anytype) void {
         if (this.ref_count > 0) this.ref_count -= 1;
     }
+    pub fn refConcurrentlyFromEventLoop(this: *KeepAlive, _: anytype) void {
+        this.ref_count += 1;
+    }
+    pub fn unrefConcurrentlyFromEventLoop(this: *KeepAlive, _: anytype) void {
+        if (this.ref_count > 0) this.ref_count -= 1;
+    }
     pub fn refConcurrently(this: *KeepAlive, _: anytype) void {
         this.ref_count += 1;
     }
