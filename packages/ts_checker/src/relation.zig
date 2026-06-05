@@ -1114,28 +1114,44 @@ pub const Engine = struct {
         }
     }
 
+    fn sourceHasCallOrConstructSignature(self: *Engine, source: TypeId) bool {
+        if (source < Primitive.first_dynamic or source >= self.pool().typeCount()) return false;
+        const flags = self.pool().flagsOf(source);
+        if (flags.is_signature) return true;
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(source)) |member| {
+                if (self.sourceHasCallOrConstructSignature(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(source)) |member| {
+            if (self.isCallOrConstructMember(member.name) and self.interner.isSignature(member.type)) return true;
+        }
+        return false;
+    }
+
     /// tsc's weak-type / common-property rule (TS2559): when the target
-    /// is a weak type and the source (an object or intersection of
-    /// objects with at least one property) shares NO property name with
-    /// it, the relation fails. This is checked independently of the
-    /// structural relation — an all-optional target would otherwise
-    /// accept the source vacuously. See relater.go's
+    /// is a weak type and the source (an object/intersection with at
+    /// least one property or a call/construct signature) shares NO
+    /// property name with it, the relation fails. This is checked
+    /// independently of the structural relation — an all-optional
+    /// target would otherwise accept the source vacuously. See relater.go's
     /// `isPerformingCommonPropertyChecks`/`hasCommonProperties`.
     pub fn weakTypeNoCommonProperties(self: *Engine, source: TypeId, target: TypeId) bool {
         if (source < Primitive.first_dynamic or source >= self.pool().typeCount()) return false;
         if (target < Primitive.first_dynamic or target >= self.pool().typeCount()) return false;
         const sf = self.pool().flagsOf(source);
-        // Only object types and intersections-of-objects qualify as a
-        // source here (tsc also admits primitives with call/construct
-        // signatures, which our model doesn't represent).
-        if (!sf.is_object_type and !sf.is_intersection) return false;
+        // Object/intersection sources qualify when they carry
+        // properties, and callable/constructable signature sources
+        // qualify through the same common-property check.
+        if (!sf.is_object_type and !sf.is_intersection and !sf.is_signature) return false;
         if (!self.isWeakType(target)) return false;
         var had_props = false;
         var had_common = false;
         self.collectSourcePropertyOverlap(source, target, &had_props, &had_common);
-        // Fire only when the source actually carries properties and none
-        // of them overlap the target.
-        return had_props and !had_common;
+        const had_signature = self.sourceHasCallOrConstructSignature(source);
+        return (had_props or had_signature) and !had_common;
     }
 
     fn primitiveApparentAssignableToObject(self: *Engine, source: TypeId, target: TypeId) bool {
