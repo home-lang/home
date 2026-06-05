@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 663 |
-| reachable (parity targets) | 199 |
+| catalog-only total | 662 |
+| reachable (parity targets) | 198 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 79 |
+| 2xxx — checker / type engine | 78 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (79)
+### 2xxx — checker / type engine (78)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -109,7 +109,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
 - TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
 - TS2800 `Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800`
-- TS2812 `Property_0_does_not_exist_on_type_1_Try_changing_the_lib_compiler_option_to_include_dom_2812`
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
