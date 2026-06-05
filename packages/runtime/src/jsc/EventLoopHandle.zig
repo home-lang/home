@@ -143,7 +143,7 @@ test "EventLoopKind tag values" {
 test "EventLoopHandle.cast returns the right pointer" {
     // We can't materialize an opaque on the stack, but a dangling `*EventLoop`
     // is enough to prove the union round-trips and `cast()` dispatches.
-    const fake: *EventLoop = @ptrFromInt(0xdead_bee0);
+    const fake: *EventLoop = @ptrFromInt(0xdead_b000);
     const h: EventLoopHandle = .{ .js = fake };
     try std.testing.expectEqual(fake, h.cast(.js));
 }

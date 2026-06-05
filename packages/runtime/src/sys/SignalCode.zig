@@ -45,8 +45,7 @@ pub const SignalCode = enum(u8) {
     // The `subprocess.kill()` method sends a signal to the child process. If no
     // argument is given, the process will be sent the 'SIGTERM' signal.
     pub const default = SignalCode.SIGTERM;
-    // stubbed: `Map = home_rt.ComptimeEnumMap(SignalCode)` re-attaches when
-    // `ComptimeEnumMap` is exposed via home_rt.
+    pub const Map = home_rt.ComptimeEnumMap(SignalCode);
 
     pub fn name(value: SignalCode) ?[]const u8 {
         if (@intFromEnum(value) <= @intFromEnum(SignalCode.SIGSYS)) {
@@ -127,6 +126,7 @@ fn asByteSlice(buffer: anytype) []const u8 {
 }
 
 const std = @import("std");
+const home_rt = @import("home");
 
 test "SignalCode.name and description round-trip for SIGTERM" {
     try std.testing.expectEqualStrings("SIGTERM", SignalCode.SIGTERM.name().?);

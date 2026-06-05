@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const home_rt = @import("home");
+const jsc = home_rt.jsc;
 
 const PosixSignalHandle = @This();
 
@@ -81,6 +82,16 @@ pub fn dequeue(this: *PosixSignalHandle) ?u8 {
 /// Plain-data carrier emitted by `drain()` once it re-lands. The upstream
 /// extern `Bun__onSignalForJS(number: i32, globalObject: *JSGlobalObject)`
 /// is the runtime callback; the data struct itself has no JSC dependencies.
+pub fn drain(this: *PosixSignalHandle, event_loop: *jsc.EventLoop) void {
+    while (this.dequeue()) |signal| {
+        // Example: wrap the signal into a Task structure
+        var posix_signal_task: PosixSignalTask = undefined;
+        var task = jsc.Task.init(&posix_signal_task);
+        task.setUintptr(signal);
+        event_loop.enqueueTask(task);
+    }
+}
+
 pub const PosixSignalTask = struct {
     number: u8,
 };
