@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 650 |
-| reachable (parity targets) | 186 |
+| catalog-only total | 647 |
+| reachable (parity targets) | 183 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 66 |
+| 2xxx — checker / type engine | 63 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (66)
+### 2xxx — checker / type engine (63)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -73,9 +73,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2657 `JSX_expressions_must_have_one_parent_element_2657`
 - TS2658 `Type_0_provides_no_match_for_the_signature_1_2658`
 - TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
-- TS2666 `Exports_and_export_assignments_are_not_permitted_in_module_augmentations_2666`
-- TS2667 `Imports_are_not_permitted_in_module_augmentations_Consider_moving_them_to_the_enclosing_external_mod_2667`
-- TS2668 `export_modifier_cannot_be_applied_to_ambient_modules_and_module_augmentations_since_they_are_always__2668`
 - TS2670 `Augmentations_for_the_global_scope_should_have_declare_modifier_unless_they_appear_in_already_ambien_2670`
 - TS2671 `Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671`
 - TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`

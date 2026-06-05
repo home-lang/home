@@ -180,6 +180,7 @@ pub const Parser = struct {
     /// case clause clears the flag.
     in_switch_case_clause: bool,
     namespace_depth: u32,
+    module_augmentation_depth: u32,
     /// True while parsing the body of an ambient external module — a
     /// namespace/module declared with a string-literal name
     /// (`declare module "foo" { ... }`). Reflects only the *immediately*
@@ -304,6 +305,7 @@ pub const Parser = struct {
             .outer_loop_or_switch_active = false,
             .in_switch_case_clause = false,
             .namespace_depth = 0,
+            .module_augmentation_depth = 0,
             .in_string_named_module = false,
             .strict_mode = false,
             .target_es2015_or_later = false,
@@ -885,13 +887,40 @@ pub const Parser = struct {
         const lit = self.source[mod_tok.span.start..mod_tok.span.end];
         if (lit.len < 3) return;
         const inner = lit[1 .. lit.len - 1];
-        if (std.mem.startsWith(u8, inner, "./") or
-            std.mem.startsWith(u8, inner, "../") or
-            std.mem.eql(u8, inner, ".") or
-            std.mem.eql(u8, inner, ".."))
-        {
+        if (moduleNameTextIsRelative(inner)) {
             try self.reportCodeAt(mod_tok.span.start, mod_tok.line, 2439, "Import or export declaration in an ambient module declaration cannot reference module through relative module name.");
         }
+    }
+
+    fn moduleNameTextIsRelative(inner: []const u8) bool {
+        return std.mem.startsWith(u8, inner, "./") or
+            std.mem.startsWith(u8, inner, "../") or
+            std.mem.eql(u8, inner, ".") or
+            std.mem.eql(u8, inner, "..");
+    }
+
+    fn stringLiteralTokenIsRelativeModuleName(self: *Parser, tok: Token) bool {
+        if (tok.kind != .string_literal) return false;
+        if (tok.span.end <= tok.span.start) return false;
+        const lit = self.source[tok.span.start..tok.span.end];
+        if (lit.len < 3) return false;
+        return moduleNameTextIsRelative(lit[1 .. lit.len - 1]);
+    }
+
+    fn namespaceDeclarationIsKnownExternalModuleAugmentation(
+        self: *Parser,
+        name_tok: Token,
+        enclosing_string_named_module: bool,
+    ) bool {
+        if (name_tok.kind != .string_literal) return false;
+        if (self.top_level_external_module_indicator and
+            self.block_depth == 0 and
+            self.namespace_depth == 0 and
+            self.stringLiteralTokenIsRelativeModuleName(name_tok))
+        {
+            return true;
+        }
+        return enclosing_string_named_module and self.ambient_depth > 0;
     }
 
     fn internPropertyName(self: *Parser, tok: Token, span_: Span) ParseError!hir_mod.StringId {
@@ -7042,10 +7071,7 @@ pub const Parser = struct {
             const lit = self.source[name_tok.span.start..name_tok.span.end];
             if (lit.len >= 3) {
                 const inner = lit[1 .. lit.len - 1];
-                const is_relative_name = std.mem.startsWith(u8, inner, "./") or
-                    std.mem.startsWith(u8, inner, "../") or
-                    std.mem.eql(u8, inner, ".") or
-                    std.mem.eql(u8, inner, "..");
+                const is_relative_name = moduleNameTextIsRelative(inner);
                 const is_external_module_augmentation = is_relative_name and
                     self.top_level_external_module_indicator and
                     self.block_depth == 0 and
@@ -7092,9 +7118,14 @@ pub const Parser = struct {
             );
         }
         const ns_body_open = try self.expect(.open_brace, "'{' to open namespace body");
+        const old_in_string_named_module = self.in_string_named_module;
+        const is_known_module_augmentation = self.namespaceDeclarationIsKnownExternalModuleAugmentation(name_tok, old_in_string_named_module);
         self.namespace_depth += 1;
         defer self.namespace_depth -= 1;
-        const old_in_string_named_module = self.in_string_named_module;
+        if (is_known_module_augmentation) self.module_augmentation_depth += 1;
+        defer {
+            if (is_known_module_augmentation) self.module_augmentation_depth -= 1;
+        }
         self.in_string_named_module = name_tok.kind == .string_literal;
         defer self.in_string_named_module = old_in_string_named_module;
         var body: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -7135,6 +7166,7 @@ pub const Parser = struct {
 
     fn parseImportDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // import
+        const import_idx = self.cursor - 1;
         if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
             self.top_level_external_module_indicator = true;
             self.top_level_module_syntax_indicator = true;
@@ -7148,6 +7180,9 @@ pub const Parser = struct {
             } else {
                 try self.reportCodeAt(start.span.start, start.line, 1232, "An import declaration can only be used at the top level of a namespace or module.");
             }
+        }
+        if (self.module_augmentation_depth > 0 and !self.importKeywordBeginsImportEquals(import_idx)) {
+            try self.reportCodeAt(start.span.start, start.line, 2667, "Imports are not permitted in module augmentations. Consider moving them to the enclosing external module.");
         }
         var is_type_only = false;
         var type_kw_start: u32 = start.span.start;
@@ -7248,6 +7283,9 @@ pub const Parser = struct {
                 is_type_only,
             );
             if (is_require_equals) {
+                if (self.module_augmentation_depth > 0) {
+                    try self.reportCodeAt(start.span.start, start.line, 2667, "Imports are not permitted in module augmentations. Consider moving them to the enclosing external module.");
+                }
                 self.hir.import_payloads.items[self.hir.payloads.items[import_node]].is_require_equals = true;
             }
             return import_node;
@@ -7745,6 +7783,11 @@ pub const Parser = struct {
             self.top_level_module_syntax_indicator = true;
             self.top_level_export_indicator = true;
         }
+        if ((self.peek().kind == .kw_module and self.peekAt(1).kind == .string_literal) or
+            (self.peek().kind == .kw_declare and self.peekAt(1).kind == .kw_module and self.peekAt(2).kind == .string_literal))
+        {
+            try self.reportCodeAt(start.span.start, start.line, 2668, "'export' modifier cannot be applied to ambient modules and module augmentations since they are always visible.");
+        }
         if (self.peek().kind == .kw_export) {
             // `export export = x` / `export export { … }` / `export export * …`
             // — here the leading `export` is a *modifier* on an export
@@ -7781,6 +7824,12 @@ pub const Parser = struct {
             }
         }
         const empty_string = self.interner.intern("") catch return error.OutOfMemory;
+        if (self.module_augmentation_depth > 0) {
+            switch (self.peek().kind) {
+                .equal, .open_brace, .asterisk, .kw_default => try self.reportCodeAt(start.span.start, start.line, 2666, "Exports and export assignments are not permitted in module augmentations."),
+                else => {},
+            }
+        }
 
         // CommonJS-style `export = value;`. The ES-facing HIR has no
         // dedicated export-assignment node yet; parse and preserve the
@@ -20959,6 +21008,59 @@ test "parser: TS2439 not reported outside ambient string-named modules" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 2439);
     }
+}
+
+test "parser: TS2666 and TS2667 report disallowed module augmentation imports and exports" {
+    var s = try newTestSetup(
+        \\export {};
+        \\import * as ns from "./foo";
+        \\declare module "./foo" {
+        \\    export = x;
+        \\    export { y };
+        \\    export * from "other";
+        \\    export default 1;
+        \\    import { z } from "z";
+        \\    import "side-effect";
+        \\    import req = require("req");
+        \\    import internal = ns.existing;
+        \\    export interface I {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts2666_count: usize = 0;
+    var ts2667_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2666) {
+            ts2666_count += 1;
+            try T.expectEqualStrings("Exports and export assignments are not permitted in module augmentations.", d.message);
+        }
+        if (d.code == 2667) {
+            ts2667_count += 1;
+            try T.expectEqualStrings("Imports are not permitted in module augmentations. Consider moving them to the enclosing external module.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 4), ts2666_count);
+    try T.expectEqual(@as(usize, 3), ts2667_count);
+}
+
+test "parser: TS2668 reports export modifier on ambient modules" {
+    var s = try newTestSetup(
+        \\export module "bad" {}
+        \\export declare module "decl" {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts2668_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2668) {
+            ts2668_count += 1;
+            try T.expectEqualStrings("'export' modifier cannot be applied to ambient modules and module augmentations since they are always visible.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), ts2668_count);
 }
 
 test "parser: TS1337 fires for literal-type index signature keys" {
