@@ -963,12 +963,10 @@ pub const FFI = struct {
         var symbols = bun.StringArrayHashMapUnmanaged(Function){};
         if (generateSymbols(global, bun.default_allocator, &symbols, obj) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
-            var key_iter = symbols.keyIterator();
-            while (key_iter.next()) |key| {
-                allocator.free(@constCast(key.*));
+            for (symbols.keys()) |key| {
+                allocator.free(@constCast(key));
             }
-            var function_iter = symbols.valueIterator();
-            while (function_iter.next()) |function_| {
+            for (symbols.values()) |*function_| {
                 function_.arg_types.deinit(allocator);
             }
             symbols.clearAndFree(allocator);
@@ -1220,12 +1218,10 @@ pub const FFI = struct {
         var symbols = bun.StringArrayHashMapUnmanaged(Function){};
         if (generateSymbols(global, allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
-            var key_iter = symbols.keyIterator();
-            while (key_iter.next()) |key| {
-                allocator.free(@constCast(key.*));
+            for (symbols.keys()) |key| {
+                allocator.free(@constCast(key));
             }
-            var function_iter = symbols.valueIterator();
-            while (function_iter.next()) |function_| {
+            for (symbols.values()) |*function_| {
                 function_.arg_types.deinit(allocator);
             }
             symbols.clearAndFree(allocator);

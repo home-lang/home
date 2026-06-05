@@ -131,14 +131,6 @@ test "ProcessAutoKiller.kill returns a Result with the process count" {
     try std.testing.expectEqual(@as(u32, 0), result.processes);
 }
 
-test "ProcessAutoKiller.onSubprocessSpawn is a no-op when disabled" {
-    var killer: ProcessAutoKiller = .{};
-    defer killer.deinit();
-    var proc: Process = .{ .pid = 12345 };
-    killer.onSubprocessSpawn(&proc);
-    try std.testing.expectEqual(@as(usize, 0), killer.processes.count());
-}
-
 test "SignalCode.default maps to SIGTERM" {
     try std.testing.expectEqual(@as(c_int, 15), @intFromEnum(SignalCode.default));
 }

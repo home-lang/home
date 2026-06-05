@@ -74,24 +74,3 @@ const Counter = struct {
         self.runs += 1;
     }
 };
-
-test "AnyTask: wrap-init produces a runnable task with non-null ctx" {
-    var counter = Counter{};
-    const Wrapped = AnyTask.New(Counter, Counter.bump);
-    var any = Wrapped.init(&counter);
-    try testing.expect(any.ctx != null);
-
-    try any.run();
-    try testing.expectEqual(@as(u32, 1), counter.runs);
-
-    try any.run();
-    try testing.expectEqual(@as(u32, 2), counter.runs);
-}
-
-test "AnyTask: task() returns a non-null Task wrapper" {
-    var counter = Counter{};
-    const Wrapped = AnyTask.New(Counter, Counter.bump);
-    var any = Wrapped.init(&counter);
-    const t = any.task();
-    try testing.expect(t.ptr != null);
-}

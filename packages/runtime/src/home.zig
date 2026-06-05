@@ -61,6 +61,14 @@ pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 /// Faithful to upstream `bun.zig:196` (`sha = @import("./sha_hmac/sha.zig")`).
 pub const sha = @import("sha_hmac/sha.zig");
 
+/// Comptime index range `[start, end)` for `inline for` unrolling.
+/// Faithful to upstream Bun's `bun.range` helper used by escapeHTML et al.
+pub fn range(comptime start: usize, comptime end: usize) [end - start]usize {
+    var r: [end - start]usize = undefined;
+    inline for (&r, 0..) |*v, i| v.* = start + i;
+    return r;
+}
+
 pub fn isWritable(fd: FD) PollFlag {
     if (comptime Environment.isWindows) {
         var polls = [_]std.posix.pollfd{

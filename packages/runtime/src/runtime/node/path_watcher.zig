@@ -83,7 +83,7 @@ pub const PathWatcherManager = struct {
         while (iter.next()) |entry| {
             if (entry.value_ptr.* == watcher) {
                 const key = entry.key_ptr.*;
-                _ = this.watchers.remove(key);
+                _ = this.watchers.swapRemove(key);
                 bun.default_allocator.free(key);
                 return;
             }

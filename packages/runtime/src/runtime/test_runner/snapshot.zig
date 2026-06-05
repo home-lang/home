@@ -144,7 +144,7 @@ pub const Snapshots = struct {
         remain[0] = 0;
         const snapshot_file_path = snapshot_file_path_buf[0 .. snapshot_file_path_buf.len - remain.len :0];
 
-        const source = &logger.Source.initPathString(snapshot_file_path, this.file_buf.items);
+        const source = &logger.Source.initPathString(snapshot_file_path, this.file_buf.items());
 
         var parser = try js_parser.Parser.init(
             opts,
@@ -197,7 +197,7 @@ pub const Snapshots = struct {
     pub fn writeSnapshotFile(this: *Snapshots) !void {
         if (this._current_file) |_file| {
             var file = _file;
-            file.file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), this.file_buf.items) catch {
+            file.file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), this.file_buf.items()) catch {
                 return error.FailedToWriteSnapshotFile;
             };
             file.file.close(std.Io.Threaded.global_single_threaded.io());

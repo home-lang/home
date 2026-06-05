@@ -11,7 +11,7 @@ pub const SubscriptionCtx = struct {
         const callback_map = jsc.JSMap.create(valkey_parent.globalObject);
         const parent_this = valkey_parent.this_value.tryGet() orelse unreachable;
 
-        ParentJS.gc.set(.subscriptionCallbackMap, parent_this, valkey_parent.globalObject, JSValue.cast(callback_map));
+        ParentJS.gc.set(.subscriptionCallbackMap, parent_this, valkey_parent.globalObject, callback_map);
 
         const self = Self{
             .original_enable_offline_queue = valkey_parent.client.flags.enable_offline_queue,
