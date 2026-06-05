@@ -703,6 +703,59 @@ fn reportMissingReferencePathDiagnostics(
     }
 }
 
+fn reportMissingReferenceTypesDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+) CompileError!void {
+    if (std.mem.indexOf(u8, source, "<reference") == null or
+        std.mem.indexOf(u8, source, "types") == null)
+    {
+        return;
+    }
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var offset: usize = 0;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line_without_cr = std.mem.trim(u8, raw_line, "\r");
+        defer offset += raw_line.len + 1;
+        var leading: usize = 0;
+        while (leading < line_without_cr.len and
+            (line_without_cr[leading] == ' ' or line_without_cr[leading] == '\t')) : (leading += 1)
+        {}
+        const line = line_without_cr[leading..];
+        if (!std.mem.startsWith(u8, line, "///")) continue;
+        const ref_rel = std.mem.indexOf(u8, line, "<reference") orelse continue;
+        const types_rel = std.mem.indexOf(u8, line[ref_rel..], "types") orelse continue;
+        var idx = ref_rel + types_rel + "types".len;
+        while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+        if (idx >= line.len or line[idx] != '=') continue;
+        idx += 1;
+        while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+        if (idx >= line.len or (line[idx] != '\'' and line[idx] != '"')) continue;
+        const quote = line[idx];
+        idx += 1;
+        const types_start = idx;
+        while (idx < line.len and line[idx] != quote) : (idx += 1) {}
+        if (idx >= line.len) continue;
+        const name = line[types_start..idx];
+        if (name.len == 0) continue;
+        if (try referenceTypesDirectiveExists(gpa, io, source, name)) continue;
+
+        const message = try std.fmt.allocPrint(gpa, "Cannot find type definition file for '{s}'.", .{name});
+        defer gpa.free(message);
+        try appendDriverDiagnostic(
+            gpa,
+            c,
+            @intCast(offset + leading + types_start),
+            2688,
+            message,
+        );
+    }
+}
+
 const ts_reference_supported_extensions = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".cts", ".d.cts", ".mts", ".d.mts" };
 const ts_reference_supported_extensions_display = "'.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'";
 
@@ -731,6 +784,196 @@ fn referencePathExistsWithSupportedExtension(
         return true;
     }
     return false;
+}
+
+fn referenceTypesDirectiveExists(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    name: []const u8,
+) CompileError!bool {
+    if (try virtualReferenceTypesDirectiveExists(gpa, source, name)) return true;
+    if (try physicalReferenceTypesDirectiveExists(gpa, io, source, name)) return true;
+    return false;
+}
+
+fn physicalReferenceTypesDirectiveExists(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    name: []const u8,
+) CompileError!bool {
+    if (sourceDirectiveValue(source, "typeRoots")) |raw_roots| {
+        var roots = std.mem.splitScalar(u8, raw_roots, ',');
+        while (roots.next()) |raw_root| {
+            const root = trimReferenceRoot(raw_root);
+            if (root.len == 0) continue;
+            if (try physicalReferenceTypesRootExists(gpa, io, root, name)) return true;
+        }
+        return false;
+    }
+    const package_name = referenceTypePackageName(name);
+    const subpath = referenceTypeSubpath(name, package_name);
+    const types_pkg = try atTypesPackageName(gpa, package_name);
+    defer gpa.free(types_pkg);
+    const candidate = try std.fmt.allocPrint(gpa, "node_modules/@types/{s}{s}", .{ types_pkg, subpath });
+    defer gpa.free(candidate);
+    return try physicalReferenceTypesPackageExists(gpa, io, candidate);
+}
+
+fn physicalReferenceTypesRootExists(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    root: []const u8,
+    name: []const u8,
+) CompileError!bool {
+    const package_name = referenceTypePackageName(name);
+    const subpath = referenceTypeSubpath(name, package_name);
+    const package_dir = if (referenceRootIsAtTypes(root)) blk: {
+        const types_pkg = try atTypesPackageName(gpa, package_name);
+        defer gpa.free(types_pkg);
+        break :blk try std.fmt.allocPrint(gpa, "{s}/{s}{s}", .{ root, types_pkg, subpath });
+    } else try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, name });
+    defer gpa.free(package_dir);
+    return try physicalReferenceTypesPackageExists(gpa, io, package_dir);
+}
+
+fn physicalReferenceTypesPackageExists(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    package_dir: []const u8,
+) CompileError!bool {
+    const direct = try std.fmt.allocPrint(gpa, "{s}.d.ts", .{package_dir});
+    defer gpa.free(direct);
+    if (std.Io.Dir.cwd().access(io, direct, .{})) return true else |_| {}
+    const index = try std.fmt.allocPrint(gpa, "{s}/index.d.ts", .{package_dir});
+    defer gpa.free(index);
+    if (std.Io.Dir.cwd().access(io, index, .{})) return true else |_| {}
+    return false;
+}
+
+fn virtualReferenceTypesDirectiveExists(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    name: []const u8,
+) CompileError!bool {
+    if (sourceDirectiveValue(source, "typeRoots")) |raw_roots| {
+        var roots = std.mem.splitScalar(u8, raw_roots, ',');
+        while (roots.next()) |raw_root| {
+            const root = trimReferenceRoot(raw_root);
+            if (root.len == 0) continue;
+            if (try virtualReferenceTypesRootExists(gpa, source, root, name)) return true;
+        }
+        return false;
+    }
+    const types_pkg = try atTypesPackageName(gpa, name);
+    defer gpa.free(types_pkg);
+    const needle = try std.fmt.allocPrint(gpa, "node_modules/@types/{s}/", .{types_pkg});
+    defer gpa.free(needle);
+    return virtualSourceHasTypePackage(source, needle, referenceTypeSubpath(name, referenceTypePackageName(name)));
+}
+
+fn virtualReferenceTypesRootExists(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    root: []const u8,
+    name: []const u8,
+) CompileError!bool {
+    const package_name = referenceTypePackageName(name);
+    const subpath = referenceTypeSubpath(name, package_name);
+    const needle = if (referenceRootIsAtTypes(root)) blk: {
+        const types_pkg = try atTypesPackageName(gpa, package_name);
+        defer gpa.free(types_pkg);
+        break :blk try std.fmt.allocPrint(gpa, "{s}/{s}/", .{ root, types_pkg });
+    } else try std.fmt.allocPrint(gpa, "{s}/{s}/", .{ root, package_name });
+    defer gpa.free(needle);
+    return virtualSourceHasTypePackage(source, needle, subpath);
+}
+
+fn virtualSourceHasTypePackage(source: []const u8, needle: []const u8, subpath: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+            (std.mem.indexOf(u8, line, "@Filename:") orelse continue);
+        var path = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+        while (std.mem.startsWith(u8, path, "/")) path = path[1..];
+        const pos = std.mem.indexOf(u8, path, needle) orelse continue;
+        const rest = path[pos + needle.len ..];
+        if (referenceTypePackageRestMatches(rest, subpath)) return true;
+    }
+    return false;
+}
+
+fn referenceTypePackageRestMatches(rest: []const u8, subpath: []const u8) bool {
+    if (std.mem.eql(u8, rest, "package.json")) return false;
+    if (subpath.len == 0) return std.mem.endsWith(u8, rest, ".d.ts");
+    const want_direct = if (std.mem.startsWith(u8, subpath, "/")) subpath[1..] else subpath;
+    if (std.mem.eql(u8, rest, want_direct)) return std.mem.endsWith(u8, rest, ".d.ts");
+    if (!std.mem.startsWith(u8, rest, want_direct)) return false;
+    const tail = rest[want_direct.len..];
+    return std.mem.eql(u8, tail, "/index.d.ts") or std.mem.eql(u8, tail, ".d.ts");
+}
+
+fn sourceDirectiveValue(source: []const u8, directive_name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        if (!std.mem.startsWith(u8, line, "//")) break;
+        const at = std.mem.indexOfScalar(u8, line, '@') orelse continue;
+        var rest = line[at + 1 ..];
+        if (!std.mem.startsWith(u8, rest, directive_name)) continue;
+        rest = rest[directive_name.len..];
+        if (rest.len > 0 and rest[0] != ':' and rest[0] != ' ' and rest[0] != '\t' and rest[0] != '\r') continue;
+        return std.mem.trim(u8, rest, " \t\r:");
+    }
+    return null;
+}
+
+fn trimReferenceRoot(raw: []const u8) []const u8 {
+    var root = std.mem.trim(u8, raw, " \t\r");
+    while (std.mem.startsWith(u8, root, "/")) root = root[1..];
+    while (std.mem.startsWith(u8, root, "./")) root = root[2..];
+    while (root.len > 0 and root[root.len - 1] == '/') root = root[0 .. root.len - 1];
+    return root;
+}
+
+fn referenceRootIsAtTypes(root: []const u8) bool {
+    return std.mem.endsWith(u8, root, "/node_modules/@types") or
+        std.mem.eql(u8, root, "node_modules/@types");
+}
+
+fn referenceTypePackageName(name: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, name, "@")) {
+        const slash = std.mem.indexOfScalar(u8, name[1..], '/') orelse return name;
+        const end = 1 + slash + 1;
+        if (std.mem.indexOfScalar(u8, name[end..], '/')) |sub_slash| return name[0 .. end + sub_slash];
+        return name;
+    }
+    const slash = std.mem.indexOfScalar(u8, name, '/') orelse return name;
+    return name[0..slash];
+}
+
+fn referenceTypeSubpath(name: []const u8, package_name: []const u8) []const u8 {
+    if (package_name.len >= name.len) return "";
+    return name[package_name.len..];
+}
+
+fn atTypesPackageName(gpa: std.mem.Allocator, name: []const u8) CompileError![]u8 {
+    if (std.mem.startsWith(u8, name, "@types/")) return gpa.dupe(u8, name["@types/".len..]);
+    if (std.mem.startsWith(u8, name, "@")) {
+        const slash = std.mem.indexOfScalar(u8, name[1..], '/') orelse return gpa.dupe(u8, name);
+        const scope = name[1 .. 1 + slash];
+        const tail_start = 1 + slash + 1;
+        const tail_end = if (std.mem.indexOfScalar(u8, name[tail_start..], '/')) |sub_slash|
+            tail_start + sub_slash
+        else
+            name.len;
+        const tail = name[tail_start..tail_end];
+        return std.fmt.allocPrint(gpa, "{s}__{s}", .{ scope, tail });
+    }
+    return gpa.dupe(u8, name);
 }
 
 fn normalizeReferencePathForDiagnostic(gpa: std.mem.Allocator, path: []const u8) CompileError![]u8 {
@@ -1361,6 +1604,7 @@ pub fn compileSource(
     try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
     try reportSelfReferencePathDiagnostics(gpa, c, source, options);
     try reportMissingReferencePathDiagnostics(gpa, c, source);
+    try reportMissingReferenceTypesDiagnostics(gpa, c, source);
     try extractReferenceDirectives(gpa, c, source);
 
     const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
@@ -4273,6 +4517,64 @@ test "driver: valid triple-slash reference directives do not report TS1084" {
     }
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 1084);
+    }
+}
+
+test "driver: missing triple-slash types reference reports TS2688" {
+    const source = "/// <reference types=\"definitely-missing\" />\nlet x = 1;";
+    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, source, "definitely-missing") orelse return error.MissingFixtureText);
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2688) {
+            found = true;
+            try T.expectEqual(expected_pos, d.pos);
+            try T.expectEqualStrings("Cannot find type definition file for 'definitely-missing'.", d.message);
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: virtual triple-slash types reference resolves through node_modules @types" {
+    var c = try compileSource(T.allocator,
+        \\// @filename: /node_modules/@types/node/index.d.ts
+        \\declare const process: unknown;
+        \\// @filename: /app.ts
+        \\/// <reference types="node" />
+        \\process;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2688);
+    }
+}
+
+test "driver: virtual triple-slash types reference respects custom typeRoots" {
+    var c = try compileSource(T.allocator,
+        \\// @typeRoots: /a/types,/a/node_modules/@types
+        \\// @filename: /a/types/@scoped/typescache/index.d.ts
+        \\declare const typesCache: unknown;
+        \\// @filename: /a/node_modules/@types/mangled__attypescache/index.d.ts
+        \\declare const atTypesCache: unknown;
+        \\// @filename: /a.ts
+        \\/// <reference types="@scoped/typescache" />
+        \\/// <reference types="@mangled/attypescache" />
+        \\typesCache;
+        \\atTypesCache;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2688);
     }
 }
 
