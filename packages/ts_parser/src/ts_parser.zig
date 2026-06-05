@@ -16104,7 +16104,18 @@ pub const Parser = struct {
     // The parser diagnoses these and continues.
 
     fn parseJsx(self: *Parser) ParseError!NodeId {
-        return try self.parseJsxElementOrFragment();
+        const node = try self.parseJsxElementOrFragment();
+        if (self.peek().kind == .less_than and self.peekAt(1).kind != .slash) {
+            const node_span = self.hir.spanOf(node);
+            try self.reportCodeAt(node_span.start, self.lineForPos(node_span.start), 2657, "JSX expressions must have one parent element.");
+            while (self.peek().kind == .less_than and self.peekAt(1).kind != .slash) {
+                _ = self.parseJsxElementOrFragment() catch |err| switch (err) {
+                    error.UnexpectedToken => return node,
+                    else => return err,
+                };
+            }
+        }
+        return node;
     }
 
     fn jsxTagText(self: *const Parser, tag: NodeId) []const u8 {
@@ -22246,6 +22257,38 @@ test "parser: jsx grammar diagnostics report duplicate attrs comma expressions a
     try T.expectEqual(@as(usize, 1), ts17002_count);
     try T.expectEqual(@as(usize, 1), ts17008_count);
     try T.expectEqual(@as(usize, 2), ts18007_count);
+}
+
+test "parser: adjacent JSX roots report TS2657" {
+    var s = try newTsxTestSetup("let v = <div /><span />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(init_node));
+
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2657) {
+            count += 1;
+            try T.expectEqualStrings("JSX expressions must have one parent element.", d.message);
+            try T.expectEqual(@as(u32, 8), d.pos);
+        }
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "parser: adjacent JSX children inside a parent do not report TS2657" {
+    var s = try newTsxTestSetup("let v = <Outer><A /><B /></Outer>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const children = hir_mod.jsxChildren(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 2), children.len);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2657);
+    }
 }
 
 test "parser: jsx empty attribute initializer reports TS1145" {

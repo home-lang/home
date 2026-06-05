@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 646 |
-| reachable (parity targets) | 182 |
+| catalog-only total | 645 |
+| reachable (parity targets) | 181 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 62 |
+| 2xxx — checker / type engine | 61 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (62)
+### 2xxx — checker / type engine (61)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -70,7 +70,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2649 `Cannot_augment_module_0_with_value_exports_because_it_resolves_to_a_non_module_entity_2649`
 - TS2651 `A_member_initializer_in_a_enum_declaration_cannot_reference_members_declared_after_it_including_memb_2651`
 - TS2653 `Non_abstract_class_expression_does_not_implement_inherited_abstract_member_0_from_class_1_2653`
-- TS2657 `JSX_expressions_must_have_one_parent_element_2657`
 - TS2658 `Type_0_provides_no_match_for_the_signature_1_2658`
 - TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
 - TS2671 `Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671`
