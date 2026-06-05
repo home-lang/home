@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 679 |
-| reachable (parity targets) | 215 |
+| catalog-only total | 678 |
+| reachable (parity targets) | 214 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 93 |
+| 2xxx — checker / type engine | 92 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (93)
+### 2xxx — checker / type engine (92)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -44,7 +44,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2510 `Base_constructors_must_all_have_the_same_return_type_2510`
 - TS2517 `Cannot_assign_an_abstract_constructor_type_to_a_non_abstract_constructor_type_2517`
 - TS2518 `A_this_based_type_guard_is_not_compatible_with_a_parameter_based_type_guard_2518`
-- TS2519 `An_async_iterator_must_have_a_next_method_2519`
 - TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
 - TS2529 `Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_containing_async_func_2529`
 - TS2547 `The_type_returned_by_the_0_method_of_an_async_iterator_must_be_a_promise_for_a_type_with_a_value_pro_2547`
