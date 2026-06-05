@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 641 |
-| reachable (parity targets) | 177 |
-| dead in tsgo (leave catalog-only) | 464 |
+| catalog-only total | 636 |
+| reachable (parity targets) | 175 |
+| dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 57 |
+| 2xxx — checker / type engine | 55 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (57)
+### 2xxx — checker / type engine (55)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -65,13 +65,11 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2627 `Type_at_positions_0_through_1_in_source_is_not_compatible_with_type_at_position_2_in_target_2627`
 - TS2633 `JSX_property_access_expressions_cannot_include_JSX_namespace_names_2633`
 - TS2636 `Type_0_is_not_assignable_to_type_1_as_implied_by_variance_annotation_2636`
-- TS2637 `Variance_annotations_are_only_supported_in_type_aliases_for_object_function_constructor_and_mapped_t_2637`
 - TS2649 `Cannot_augment_module_0_with_value_exports_because_it_resolves_to_a_non_module_entity_2649`
 - TS2658 `Type_0_provides_no_match_for_the_signature_1_2658`
 - TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
 - TS2671 `Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671`
 - TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
-- TS2685 `The_this_types_of_each_signature_are_incompatible_2685`
 - TS2686 `_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686`
 - TS2688 `Cannot_find_type_definition_file_for_0_2688`
 - TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
@@ -250,7 +248,7 @@ dead. Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully catalog-only)
 
-464 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
+461 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
 
 <details><summary>Show dead codes</summary>
 
@@ -299,9 +297,7 @@ dead. Confirm against this list before picking one:
 - TS2807 `This_syntax_requires_an_imported_helper_named_1_with_2_parameters_which_is_not_compatible_with_the_o_2807`
 - TS2811 `Initializer_for_property_0_2811`
 - TS2817 `Property_0_has_no_initializer_and_is_not_definitely_assigned_in_a_class_static_block_2817`
-- TS2821 `Import_assertions_are_only_supported_when_the_module_option_is_set_to_esnext_nodenext_or_preserve_2821`
 - TS2822 `Import_assertions_cannot_be_used_with_type_only_imports_or_exports_2822`
-- TS2823 `Import_attributes_are_only_supported_when_the_module_option_is_set_to_esnext_nodenext_or_preserve_2823`
 - TS2836 `Import_assertions_are_not_allowed_on_statements_that_compile_to_CommonJS_require_calls_2836`
 - TS2837 `Import_assertion_values_must_be_string_literal_expressions_2837`
 - TS2870 `This_binary_expression_is_never_nullish_Are_you_missing_parentheses_2870`
@@ -474,7 +470,6 @@ dead. Confirm against this list before picking one:
 - TS7037 `Enables_emit_interoperability_between_CommonJS_and_ES_Modules_via_creation_of_namespace_objects_for__7037`
 - TS7048 `Property_0_implicitly_has_type_any_but_a_better_type_for_its_get_accessor_may_be_inferred_from_usage_7048`
 - TS7049 `Property_0_implicitly_has_type_any_but_a_better_type_for_its_set_accessor_may_be_inferred_from_usage_7049`
-- TS7059 `This_syntax_is_reserved_in_files_with_the_mts_or_cts_extension_Use_an_as_expression_instead_7059`
 - TS8019 `Report_errors_in_js_files_8019`
 - TS8028 `JSDoc_may_only_appear_in_the_last_parameter_of_a_signature_8028`
 - TS9005 `Declaration_emit_for_this_file_requires_using_private_name_0_An_explicit_type_annotation_may_unblock_9005`

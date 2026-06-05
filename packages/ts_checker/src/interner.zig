@@ -140,13 +140,14 @@ pub const TypeKey = union(Kind) {
         args: []const TypeId,
     },
     /// Function signature: `(p1: T1, p2: T2) => R` — `params`
-    /// captures the parameter type ids in declaration order; the
-    /// final element is conventionally the return type.
+    /// captures the parameter type ids in declaration order. Explicit
+    /// `this` parameters are keyed separately from ordinary params.
     signature: struct {
         params: []const TypeId,
         return_type: TypeId,
         is_construct: bool,
         is_abstract_construct: bool = false,
+        this_type: TypeId = types.Primitive.none,
     },
 
     pub const Kind = enum(u8) {
@@ -241,6 +242,7 @@ pub const TypeKey = union(Kind) {
                 hasher.update(std.mem.asBytes(&sig.return_type));
                 hasher.update(&[_]u8{@intFromBool(sig.is_construct)});
                 hasher.update(&[_]u8{@intFromBool(sig.is_abstract_construct)});
+                hasher.update(std.mem.asBytes(&sig.this_type));
             },
         }
         return hasher.final();
@@ -321,6 +323,7 @@ pub const TypeKey = union(Kind) {
                 return a.is_construct == b.is_construct and
                     a.is_abstract_construct == b.is_abstract_construct and
                     a.return_type == b.return_type and
+                    a.this_type == b.this_type and
                     std.mem.eql(TypeId, a.params, b.params);
             },
         };
@@ -777,11 +780,29 @@ pub const Interner = struct {
         is_construct: bool,
         is_abstract_construct: bool,
     ) !TypeId {
+        return try self.internSignatureWithThisType(
+            param_types,
+            return_type,
+            is_construct,
+            is_abstract_construct,
+            types.Primitive.none,
+        );
+    }
+
+    pub fn internSignatureWithThisType(
+        self: *Interner,
+        param_types: []const TypeId,
+        return_type: TypeId,
+        is_construct: bool,
+        is_abstract_construct: bool,
+        this_type: TypeId,
+    ) !TypeId {
         const probe: TypeKey = .{ .signature = .{
             .params = param_types,
             .return_type = return_type,
             .is_construct = is_construct,
             .is_abstract_construct = is_abstract_construct and is_construct,
+            .this_type = this_type,
         } };
         const h = probe.hash();
         const shard_idx = shardIndexFor(h);
@@ -804,6 +825,7 @@ pub const Interner = struct {
             .return_type = return_type,
             .is_construct = is_construct,
             .is_abstract_construct = is_abstract_construct and is_construct,
+            .this_type = this_type,
         } };
         return try self.publishKeyLocked(shard, owned_key, .{ .is_signature = true });
     }
@@ -1199,7 +1221,8 @@ pub const Interner = struct {
                     .return_type = sig.return_type,
                     .is_construct = sig.is_construct,
                     .is_abstract_construct = sig.is_abstract_construct,
-                    .has_this_type = false,
+                    .has_this_type = sig.this_type != types.Primitive.none,
+                    .this_type = sig.this_type,
                 });
                 break :blk idx;
             },

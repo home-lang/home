@@ -289,6 +289,8 @@ pub const SignaturePayload = struct {
     is_abstract_construct: bool = false,
     /// True if this is the `this` parameter signature variant.
     has_this_type: bool,
+    /// Explicit `this` parameter type when `has_this_type` is true.
+    this_type: TypeId = Primitive.none,
 };
 
 /// Member accessibility, mirroring TS's legacy `public`/`protected`/
