@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 642 |
-| reachable (parity targets) | 178 |
+| catalog-only total | 641 |
+| reachable (parity targets) | 177 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 58 |
+| 2xxx — checker / type engine | 57 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (58)
+### 2xxx — checker / type engine (57)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -71,7 +71,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
 - TS2671 `Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671`
 - TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
-- TS2679 `A_function_that_is_called_with_the_new_keyword_cannot_have_a_this_type_that_is_void_2679`
 - TS2685 `The_this_types_of_each_signature_are_incompatible_2685`
 - TS2686 `_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686`
 - TS2688 `Cannot_find_type_definition_file_for_0_2688`
