@@ -54,18 +54,14 @@ pub fn New(comptime Type: type, comptime Callback: anytype) type {
 
 pub const JSError = home_rt.JSError;
 
-pub const Task = struct {
-    ptr: ?*anyopaque,
-
-    pub fn init(ctx: anytype) Task {
-        return .{ .ptr = @ptrCast(ctx) };
-    }
-};
+// Phase 12.2: re-attached to the real jsc.Task.
+pub const Task = jsc.Task;
 
 const builtin = @import("builtin");
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
 
 const home_rt = @import("home");
+const jsc = home_rt.jsc;
 const std = @import("std");
 
 // ---- Inline tests -----------------------------------------------------

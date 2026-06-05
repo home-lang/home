@@ -20,7 +20,7 @@
 
 const ConcurrentTask = @This();
 
-task: Task = .{},
+task: Task = undefined,
 /// Packed representation of the next pointer and auto_delete flag.
 /// Uses the low bit to store auto_delete (since pointers are at least 2-byte aligned).
 next: PackedNextPtr = .none,
@@ -103,7 +103,7 @@ pub fn createFrom(task: anytype) *ConcurrentTask {
 pub fn fromCallback(ptr: anytype, comptime callback: anytype) *ConcurrentTask {
     markBinding(@src());
 
-    return create(Task.init(ManagedTask.New(std.meta.Child(@TypeOf(ptr)), callback).init(ptr)));
+    return create(ManagedTask.New(std.meta.Child(@TypeOf(ptr)), callback).init(ptr));
 }
 
 pub fn from(this: *ConcurrentTask, of: anytype, auto_deinit: AutoDeinit) *ConcurrentTask {
