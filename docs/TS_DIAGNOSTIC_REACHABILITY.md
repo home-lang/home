@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 627 |
-| reachable (parity targets) | 166 |
+| catalog-only total | 626 |
+| reachable (parity targets) | 165 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
-| 2xxx — checker / type engine | 46 |
+| 2xxx — checker / type engine | 45 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
@@ -87,7 +87,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 
-### 2xxx — checker / type engine (46)
+### 2xxx — checker / type engine (45)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -115,7 +115,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2649 `Cannot_augment_module_0_with_value_exports_because_it_resolves_to_a_non_module_entity_2649`
 - TS2658 `Type_0_provides_no_match_for_the_signature_1_2658`
 - TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
-- TS2671 `Cannot_augment_module_0_because_it_resolves_to_a_non_module_entity_2671`
 - TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
 - TS2686 `_0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686`
 - TS2688 `Cannot_find_type_definition_file_for_0_2688`
