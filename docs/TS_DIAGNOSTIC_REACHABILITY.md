@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 614 |
-| reachable (parity targets) | 153 |
+| catalog-only total | 612 |
+| reachable (parity targets) | 151 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -23,8 +23,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
-| 2xxx — checker / type engine | 33 |
-| 4xxx — declaration-emit (privacy / serialization) | 22 |
+| 2xxx — checker / type engine | 32 |
+| 4xxx — declaration-emit (privacy / serialization) | 21 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 7xxx — noImplicitAny / implicit-type family | 10 |
@@ -87,7 +87,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 
-### 2xxx — checker / type engine (33)
+### 2xxx — checker / type engine (32)
 
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
 - TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
@@ -106,7 +106,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2625 `Variadic_element_at_position_0_in_source_does_not_match_element_at_position_1_in_target_2625`
 - TS2626 `Type_at_position_0_in_source_is_not_compatible_with_type_at_position_1_in_target_2626`
 - TS2627 `Type_at_positions_0_through_1_in_source_is_not_compatible_with_type_at_position_2_in_target_2627`
-- TS2636 `Type_0_is_not_assignable_to_type_1_as_implied_by_variance_annotation_2636`
 - TS2658 `Type_0_provides_no_match_for_the_signature_1_2658`
 - TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
 - TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
@@ -123,7 +122,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
-### 4xxx — declaration-emit (privacy / serialization) (22)
+### 4xxx — declaration-emit (privacy / serialization) (21)
 
 - TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
 - TS4085 `Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085`
@@ -137,7 +136,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS4101 `Method_0_of_exported_interface_has_or_is_using_name_1_from_private_module_2_4101`
 - TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
 - TS4104 `The_type_0_is_readonly_and_cannot_be_assigned_to_the_mutable_type_1_4104`
-- TS4105 `Private_or_protected_member_0_cannot_be_accessed_on_a_type_parameter_4105`
 - TS4106 `Parameter_0_of_accessor_has_or_is_using_private_name_1_4106`
 - TS4107 `Parameter_0_of_accessor_has_or_is_using_name_1_from_private_module_2_4107`
 - TS4108 `Parameter_0_of_accessor_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4108`
