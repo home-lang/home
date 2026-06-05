@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 617 |
-| reachable (parity targets) | 156 |
+| catalog-only total | 616 |
+| reachable (parity targets) | 155 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
-| 2xxx — checker / type engine | 36 |
+| 2xxx — checker / type engine | 35 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
@@ -87,7 +87,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 
-### 2xxx — checker / type engine (36)
+### 2xxx — checker / type engine (35)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -97,7 +97,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
 - TS2529 `Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_containing_async_func_2529`
 - TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
-- TS2577 `Return_type_annotation_circularly_references_itself_2577`
 - TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
 - TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
 - TS2618 `Source_has_0_element_s_but_target_requires_1_2618`
