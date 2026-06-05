@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 667 |
-| reachable (parity targets) | 203 |
+| catalog-only total | 666 |
+| reachable (parity targets) | 202 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
@@ -26,7 +26,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| other | 15 |
+| other | 14 |
 | 7xxx — noImplicitAny / implicit-type family | 10 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
@@ -217,7 +217,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### other (15)
+### other (14)
 
 - TS8001 `You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001`
 - TS8031 `You_cannot_rename_a_module_via_a_global_import_8031`
@@ -233,7 +233,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS9036 `Move_the_expression_in_default_export_to_a_variable_and_add_a_type_annotation_to_it_9036`
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
-- TS80007 `await_has_no_effect_on_the_type_of_this_expression_80007`
 
 ### 7xxx — noImplicitAny / implicit-type family (10)
 
