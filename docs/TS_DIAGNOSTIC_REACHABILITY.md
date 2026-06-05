@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 611 |
-| reachable (parity targets) | 150 |
+| catalog-only total | 609 |
+| reachable (parity targets) | 148 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
-| 2xxx — checker / type engine | 32 |
+| 2xxx — checker / type engine | 30 |
 | 4xxx — declaration-emit (privacy / serialization) | 20 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
@@ -87,7 +87,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 
-### 2xxx — checker / type engine (32)
+### 2xxx — checker / type engine (30)
 
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
 - TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
@@ -97,8 +97,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
 - TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
 - TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
-- TS2618 `Source_has_0_element_s_but_target_requires_1_2618`
-- TS2619 `Source_has_0_element_s_but_target_allows_only_1_2619`
 - TS2620 `Target_requires_0_element_s_but_source_may_have_fewer_2620`
 - TS2621 `Target_allows_only_0_element_s_but_source_may_have_more_2621`
 - TS2623 `Source_provides_no_match_for_required_element_at_position_0_in_target_2623`
