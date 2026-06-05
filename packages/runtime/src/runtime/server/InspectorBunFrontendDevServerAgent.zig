@@ -81,6 +81,9 @@ const InspectorBunFrontendDevServerAgentHandle = opaque {
     const notifyConsoleLog = c.InspectorBunFrontendDevServerAgent__notifyConsoleLog;
 };
 
+// Upstream Bun names this `BunFrontendDevServerAgent`; expose that name too so
+// `jsc.Debugger.BunFrontendDevServerAgent` re-exports correctly.
+pub const BunFrontendDevServerAgent = FrontendDevServerAgent;
 pub const FrontendDevServerAgent = struct {
     next_inspector_connection_id: i32 = 0,
     handle: ?*InspectorBunFrontendDevServerAgentHandle = null,

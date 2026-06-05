@@ -3080,7 +3080,7 @@ pub fn mmap(
     offset: u64,
 ) Maybe([]align(page_size_min) u8) {
     const ioffset = @as(i64, @bitCast(offset)); // the OS treats this as unsigned
-    const rc = std.c.mmap(ptr, length, prot, flags, fd.cast(), ioffset);
+    const rc = std.c.mmap(ptr, length, @bitCast(prot), flags, fd.cast(), ioffset);
     const fail = std.c.MAP_FAILED;
     if (rc == fail) {
         return .initErr(.{

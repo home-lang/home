@@ -194,6 +194,67 @@ pub const PosixSpawn = struct {
         return .{ .result = .{ .pid = @intCast(rc), .status = @bitCast(status) } };
     }
 
+    /// macOS system posix_spawn path (Home targets darwin; the Linux vfork
+    /// `BunSpawnRequest` and PTY branches from upstream Bun are not ported).
+    /// Converts the `BunSpawn.Actions`/`Attr` action list into the system
+    /// `PosixSpawnActions`/`PosixSpawnAttr` and calls `posix_spawn(3)`.
+    pub fn spawnZ(
+        path: [*:0]const u8,
+        actions: ?Actions,
+        attr: ?Attr,
+        argv: [*:null]?[*:0]const u8,
+        envp: [*:null]?[*:0]const u8,
+    ) @import("bun").sys.Maybe(pid_t) {
+        const M = @import("bun").sys.Maybe(pid_t);
+
+        var posix_actions = PosixSpawnActions.init() catch return M{ .err = .{
+            .errno = @intFromEnum(std.c.E.NOMEM),
+            .syscall = .posix_spawn,
+        } };
+        defer posix_actions.deinit();
+
+        var posix_attr = PosixSpawnAttr.init() catch return M{ .err = .{
+            .errno = @intFromEnum(std.c.E.NOMEM),
+            .syscall = .posix_spawn,
+        } };
+        defer posix_attr.deinit();
+
+        if (attr) |a| {
+            var flags = a.flags;
+            if (a.new_process_group) {
+                if (comptime spawnFlagFieldBits("SETPGROUP")) |bits| flags |= bits;
+            }
+            if (flags != 0) posix_attr.set(flags) catch {};
+            if (a.reset_signals) posix_attr.resetSignals() catch {};
+        }
+
+        if (actions) |act| {
+            for (act.actions.items) |action| {
+                switch (action.kind) {
+                    .close => posix_actions.close(action.fds[0]) catch {},
+                    .dup2 => posix_actions.dup2(action.fds[0], action.fds[1]) catch {},
+                    .open => posix_actions.openZ(action.fds[0], action.path.?, @intCast(action.flags), @intCast(action.mode)) catch {},
+                    .none => {},
+                }
+            }
+            if (act.chdir_buf) |chdir_path| {
+                posix_actions.chdir(std.mem.span(chdir_path)) catch {};
+            }
+        }
+
+        var pid: pid_t = undefined;
+        const rc = system.posix_spawn(&pid, path, &posix_actions.actions, &posix_attr.attr, argv, envp);
+
+        // posix_spawn returns 0 on success and an errno on failure (not -1).
+        if (rc == 0) return M{ .result = pid };
+
+        return M{ .err = .{
+            .errno = @as(@import("bun").sys.Error.Int, @truncate(@intFromEnum(@as(std.c.E, @enumFromInt(rc))))),
+            .syscall = .posix_spawn,
+            .path = std.mem.span(path),
+        } };
+    }
+
     pub const PosixSpawnAttr = struct {
         attr: system.posix_spawnattr_t,
         detached: bool = false,
