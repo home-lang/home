@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 616 |
-| reachable (parity targets) | 155 |
+| catalog-only total | 615 |
+| reachable (parity targets) | 154 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
-| 2xxx — checker / type engine | 35 |
+| 2xxx — checker / type engine | 34 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
@@ -87,9 +87,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 
-### 2xxx — checker / type engine (35)
+### 2xxx — checker / type engine (34)
 
-- TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
 - TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
 - TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
