@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 654 |
-| reachable (parity targets) | 190 |
+| catalog-only total | 653 |
+| reachable (parity targets) | 189 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 70 |
+| 2xxx — checker / type engine | 69 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (70)
+### 2xxx — checker / type engine (69)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -89,7 +89,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
 - TS2735 `Did_you_mean_for_0_to_be_constrained_to_type_new_args_Colon_any_1_2735`
 - TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
-- TS2749 `_0_refers_to_a_value_but_is_being_used_as_a_type_here_Did_you_mean_typeof_0_2749`
 - TS2751 `Circularity_originates_in_type_at_this_location_2751`
 - TS2758 `Each_member_of_the_union_type_0_has_signatures_but_none_of_those_signatures_are_compatible_with_each_2758`
 - TS2762 `Each_member_of_the_union_type_0_has_construct_signatures_but_none_of_those_signatures_are_compatible_2762`
