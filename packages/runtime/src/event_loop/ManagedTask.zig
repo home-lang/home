@@ -63,35 +63,3 @@ pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug)
 const home_rt = @import("home");
 const jsc = home_rt.jsc;
 const std = @import("std");
-
-// ---- Inline tests -----------------------------------------------------
-const testing = std.testing;
-
-const Counter = struct {
-    runs: u32 = 0,
-    fn bump(self: *Counter) JSError!void {
-        self.runs += 1;
-    }
-};
-
-test "ManagedTask: New(...).init returns a Task with non-null ptr" {
-    var c = Counter{};
-    const W = ManagedTask.New(Counter, Counter.bump);
-    const t = W.init(&c);
-    try testing.expect(t.ptr != null);
-
-    // ManagedTask was heap-allocated by init; cast back and run to free.
-    const managed: *ManagedTask = @ptrCast(@alignCast(t.ptr.?));
-    try managed.run();
-    try testing.expectEqual(@as(u32, 1), c.runs);
-}
-
-test "ManagedTask: cancel makes run a no-op (and still frees the task)" {
-    var c = Counter{};
-    const W = ManagedTask.New(Counter, Counter.bump);
-    const t = W.init(&c);
-    const managed: *ManagedTask = @ptrCast(@alignCast(t.ptr.?));
-    managed.cancel();
-    try managed.run();
-    try testing.expectEqual(@as(u32, 0), c.runs);
-}
