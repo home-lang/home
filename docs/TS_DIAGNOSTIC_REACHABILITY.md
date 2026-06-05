@@ -14,15 +14,15 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 644 |
-| reachable (parity targets) | 180 |
+| catalog-only total | 643 |
+| reachable (parity targets) | 179 |
 | dead in tsgo (leave catalog-only) | 464 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 60 |
+| 2xxx — checker / type engine | 59 |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
@@ -31,7 +31,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 2xxx — checker / type engine (60)
+### 2xxx — checker / type engine (59)
 
 - TS2208 `This_type_parameter_might_need_an_extends_0_constraint_2208`
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -67,7 +67,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2636 `Type_0_is_not_assignable_to_type_1_as_implied_by_variance_annotation_2636`
 - TS2637 `Variance_annotations_are_only_supported_in_type_aliases_for_object_function_constructor_and_mapped_t_2637`
 - TS2649 `Cannot_augment_module_0_with_value_exports_because_it_resolves_to_a_non_module_entity_2649`
-- TS2651 `A_member_initializer_in_a_enum_declaration_cannot_reference_members_declared_after_it_including_memb_2651`
 - TS2653 `Non_abstract_class_expression_does_not_implement_inherited_abstract_member_0_from_class_1_2653`
 - TS2658 `Type_0_provides_no_match_for_the_signature_1_2658`
 - TS2664 `Invalid_module_name_in_augmentation_module_0_cannot_be_found_2664`
