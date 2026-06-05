@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 612 |
-| reachable (parity targets) | 151 |
+| catalog-only total | 611 |
+| reachable (parity targets) | 150 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -24,7 +24,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 2xxx — checker / type engine | 32 |
-| 4xxx — declaration-emit (privacy / serialization) | 21 |
+| 4xxx — declaration-emit (privacy / serialization) | 20 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 7xxx — noImplicitAny / implicit-type family | 10 |
@@ -122,7 +122,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
-### 4xxx — declaration-emit (privacy / serialization) (21)
+### 4xxx — declaration-emit (privacy / serialization) (20)
 
 - TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
 - TS4085 `Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085`
@@ -135,7 +135,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS4100 `Public_method_0_of_exported_class_has_or_is_using_private_name_1_4100`
 - TS4101 `Method_0_of_exported_interface_has_or_is_using_name_1_from_private_module_2_4101`
 - TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
-- TS4104 `The_type_0_is_readonly_and_cannot_be_assigned_to_the_mutable_type_1_4104`
 - TS4106 `Parameter_0_of_accessor_has_or_is_using_private_name_1_4106`
 - TS4107 `Parameter_0_of_accessor_has_or_is_using_name_1_from_private_module_2_4107`
 - TS4108 `Parameter_0_of_accessor_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4108`
