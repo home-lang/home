@@ -129,28 +129,8 @@ pub fn autoDelete(this: *const ConcurrentTask) bool {
 // port at `event_loop/ManagedTask.zig` (re-exported via
 // `home_rt.event_loop.ManagedTask`).
 
-// JSC bridge Task stubbed — must remain exactly 8 bytes. Re-attaches in
-// Phase 12.2 to the real `TaggedPointerUnion`-based `jsc.Task`.
-pub const Task = extern struct {
-    ptr: ?*anyopaque = null,
-
-    pub fn init(ctx: anytype) Task {
-        const T = @TypeOf(ctx);
-        if (@typeInfo(T) == .pointer) {
-            return .{ .ptr = @ptrCast(ctx) };
-        }
-
-        const ptr = home_rt.handleOom(home_rt.default_allocator.create(T));
-        ptr.* = ctx;
-        return .{ .ptr = @ptrCast(ptr) };
-    }
-};
-
-comptime {
-    if (@sizeOf(Task) != 8) {
-        @compileError("Task stub must be exactly 8 bytes, found " ++ std.fmt.comptimePrint("{}", .{@sizeOf(Task)}));
-    }
-}
+// Phase 12.2: re-attached to the real `TaggedPointerUnion`-based `jsc.Task`.
+pub const Task = jsc.Task;
 
 // `TrivialNew` / `TrivialDeinit` re-attach to the real `home_rt.memory`
 // helpers in Phase 12.2. The behavior matches upstream Bun: both go
@@ -182,6 +162,7 @@ fn markBinding(comptime _: std.builtin.SourceLocation) void {}
 const std = @import("std");
 
 const home_rt = @import("home");
+const jsc = home_rt.jsc;
 const UnboundedQueue = home_rt.threading.UnboundedQueue;
 const ManagedTask = home_rt.event_loop.ManagedTask;
 
