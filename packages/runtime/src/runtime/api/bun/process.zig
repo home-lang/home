@@ -1593,7 +1593,7 @@ pub fn spawnProcessPosix(
 
                 try actions.dup2(fds[1].native(), fileno.native());
                 if (fds[1] != fileno)
-                    try actions.close(fds[1]);
+                    try actions.close(fds[1].native());
                 try extra_fds.append(.{ .owned_fd = fds[0] });
             },
             .pipe => |fd| {

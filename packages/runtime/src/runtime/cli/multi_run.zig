@@ -59,8 +59,8 @@ pub const ProcessHandle = struct {
     } = null,
     options: bun.spawn.SpawnOptions,
 
-    start_time: ?std.time.Instant = null,
-    end_time: ?std.time.Instant = null,
+    start_time: ?bun.Instant = null,
+    end_time: ?bun.Instant = null,
 
     remaining_dependencies: usize = 0,
     /// Dependents within the same script group (pre->main->post chain).
@@ -80,7 +80,7 @@ pub const ProcessHandle = struct {
             null,
         };
 
-        this.start_time = std.time.Instant.now() catch null;
+        this.start_time = bun.Instant.now() catch null;
         var spawned: bun.spawn.process.SpawnProcessResult = brk: {
             var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
             defer arena.deinit();
@@ -130,7 +130,7 @@ pub const ProcessHandle = struct {
 
     pub fn onProcessExit(this: *This, proc: *bun.spawn.Process, status: bun.spawn.Status, _: *const bun.spawn.Rusage) void {
         this.process.?.status = status;
-        this.end_time = std.time.Instant.now() catch null;
+        this.end_time = bun.Instant.now() catch null;
         _ = proc;
         this.state.processExit(this) catch {};
     }
