@@ -366,7 +366,7 @@ pub const Config = struct {
                 defer iter.deinit();
 
                 if (iter.len > 0) {
-                    try replacements.ensureUnusedCapacity(allocator, iter.len);
+                    try replacements.ensureUnusedCapacity(allocator, @as(u32, @intCast(iter.len)));
 
                     // We cannot set the exception before `try` because it could be
                     // a double free with the `errdefer`.

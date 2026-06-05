@@ -163,6 +163,20 @@ pub const FilePoll = struct {
         return this.isWatching();
     }
 
+    pub fn fileType(this: *const FilePoll) @import("pipes.zig").FileType {
+        const flags = this.flags;
+        if (flags.contains(.socket)) {
+            return .socket;
+        }
+        if (flags.contains(.nonblocking)) {
+            return .nonblocking_pipe;
+        }
+        if (flags.contains(.fifo)) {
+            return .pipe;
+        }
+        return .file;
+    }
+
     pub fn setKeepingProcessAlive(this: *FilePoll, _: anytype, value: bool) void {
         this.flags.keeps_event_loop_alive = value;
     }

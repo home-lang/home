@@ -103,10 +103,45 @@ pub const DOMFormData = opaque {
 
     extern fn DOMFormData__forEach(*DOMFormData, ?*anyopaque, ForEachFunction) void;
 
-    // `forEach(comptime Context, ctx, callback_wrapper)` omitted —
-    // its `FormDataEntry` union references `jsc.WebCore.Blob`, which the
-    // runtime has not yet ported. Callers can drop down to the
-    // `DOMFormData__forEach` extern in the meantime.
+    pub const FormDataEntry = union(enum) {
+        string: ZigString,
+        file: struct {
+            blob: *home_rt.jsc.WebCore.Blob,
+            filename: ZigString,
+        },
+    };
+
+    pub fn forEach(
+        this: *DOMFormData,
+        comptime Context: type,
+        ctx: *Context,
+        comptime callback_wrapper: *const fn (ctx: *Context, name: ZigString, value: FormDataEntry) void,
+    ) void {
+        const Wrap = struct {
+            const wrapper = callback_wrapper;
+            pub fn forEachWrapper(
+                ctx_ptr: ?*anyopaque,
+                name_: *ZigString,
+                value_ptr: *anyopaque,
+                filename: ?*ZigString,
+                is_blob: u8,
+            ) callconv(.c) void {
+                const ctx_ = @as(*Context, @ptrCast(ctx_ptr.?));
+                const value = if (is_blob == 0)
+                    FormDataEntry{ .string = name_.* }
+                else
+                    FormDataEntry{
+                        .file = .{
+                            .blob = @as(*home_rt.jsc.WebCore.Blob, @ptrCast(value_ptr)),
+                            .filename = (filename orelse &ZigString.Empty).*,
+                        },
+                    };
+
+                wrapper(ctx_, name_.*, value);
+            }
+        };
+        DOMFormData__forEach(this, ctx, Wrap.forEachWrapper);
+    }
 };
 
 test "DOMFormData is an opaque pointer-only type" {

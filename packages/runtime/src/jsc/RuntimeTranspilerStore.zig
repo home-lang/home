@@ -623,6 +623,10 @@ pub const RuntimeTranspilerStore = struct {
     };
 };
 
+// Copied from bun/src/jsc/RuntimeTranspilerStore.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
+// Imports rewritten: @import("bun") → @import("home").
+
 const Fs = @import("../resolver/fs.zig");
 const analyze_transpiled_module = @import("../bundler/analyze_transpiled_module.zig");
 const node_fallbacks = @import("../resolver/node_fallbacks.zig");
@@ -636,7 +640,7 @@ const ModuleType = options.ModuleType;
 const MacroRemap = @import("../resolver/package_json.zig").MacroMap;
 const PackageJSON = @import("../resolver/package_json.zig").PackageJSON;
 
-const bun = @import("bun");
+const bun = @import("home");
 const Async = bun.Async;
 const Environment = bun.Environment;
 const FD = bun.FD;

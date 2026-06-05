@@ -206,7 +206,7 @@ pub fn ArrayHashMap(
         }
 
         pub fn ensureUnusedCapacity(self: *Self, additional_capacity: usize) Allocator.Error!void {
-            return self.unmanaged.ensureUnusedCapacity(self.allocator, additional_capacity);
+            return self.unmanaged.ensureUnusedCapacity(self.allocator, @intCast(additional_capacity));
         }
 
         pub fn sort(self: *Self, sort_ctx: anytype) void {

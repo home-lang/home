@@ -72,6 +72,12 @@ pub fn isBunStandaloneFilePath(str: []const u8) bool {
 pub const File = struct {
     name: []const u8 = "",
     contents: []const u8 = "",
+
+    pub fn blob(this: *const File, globalThis: *home_rt.jsc.JSGlobalObject) *home_rt.webcore.Blob {
+        _ = this;
+        _ = globalThis;
+        @panic("File.blob is not implemented in Home runtime (requires JSC bridge)");
+    }
 };
 
 pub fn get() ?*const @This() {
@@ -137,6 +143,11 @@ pub const Flags = packed struct(u32) {
     disable_autoload_tsconfig: bool = false,
     disable_autoload_package_json: bool = false,
     _padding: u28 = 0,
+};
+
+pub const StandaloneModuleGraph = struct {
+    compile_exec_argv: []const u8 = "",
+    flags: Flags = .{},
 };
 
 const std = @import("std");

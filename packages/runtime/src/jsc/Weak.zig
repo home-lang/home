@@ -2,37 +2,11 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
 // JSC weak-reference handles. `Weak(T)` is the type-erased generic wrapper;
-// `WeakImpl` is the opaque C++ pointer. `JSGlobalObject` and `JSValue` are not
-// yet ported, so we stub them locally (the C++ ABI uses the same enum(i64)
-// JSValue and an opaque global object). The real JSC bridge re-attaches in
-// Phase 12.2.
+// `WeakImpl` is the opaque C++ pointer. Uses real bun.jsc types during porting.
 
 const std = @import("std");
-
-// JSC bridge stubs — re-attach in Phase 12.2.
-const jsc = struct {
-    pub const JSGlobalObject = opaque {};
-    /// Real upstream JSValue is `enum(i64)` with many methods. `.zero` is the
-    /// sentinel for "no value" that the C++ side returns when the weak ref
-    /// has been collected. We preserve the same representation so that
-    /// pass-by-value extern signatures stay ABI-compatible.
-    pub const JSValue = enum(i64) {
-        zero = 0,
-        _,
-
-        /// `function.call(global, args)` upstream lives on the full JSValue
-        /// API. Until that re-attaches, we stub it as a no-op returning
-        /// `.zero`; callers that hit this in tests should mock the WeakRef
-        /// at the seam above this file.
-        pub fn call(_: JSValue, _: *JSGlobalObject, _: []const JSValue) JSValue {
-            return .zero;
-        }
-    };
-
-    /// `markBinding` stubbed — re-attaches in Phase 12.2 once the binding
-    /// trace infrastructure lands.
-    pub inline fn markBinding(_: std.builtin.SourceLocation) void {}
-};
+const bun = @import("bun");
+const jsc = bun.jsc;
 
 pub const WeakRefType = enum(u32) {
     None = 0,

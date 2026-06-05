@@ -20,7 +20,7 @@
 const std = @import("std");
 
 // `bun.String` C ABI stub — re-attaches in Phase 12.2.
-const String = extern struct {
+pub const String = extern struct {
     tag: u8 = 0,
     _padding: [7]u8 = @splat(0),
     impl: ?*anyopaque = null,

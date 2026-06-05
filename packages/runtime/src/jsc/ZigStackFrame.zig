@@ -35,6 +35,16 @@ const String = extern struct {
     pub fn isEmpty(this: *const String) bool {
         return this.tag == 0 and this.impl == null;
     }
+
+    pub fn toUTF8(this: String, allocator: std.mem.Allocator) @import("home").strings.InternedString.Slice {
+        return @import("home").strings.InternedString.slice(this, allocator);
+    }
+
+    pub fn eqlComptime(this: String, comptime value: []const u8) bool {
+        _ = this;
+        _ = value;
+        return false;
+    }
 };
 
 const ZigStackFrameCode = @import("ZigStackFrameCode.zig").ZigStackFrameCode;

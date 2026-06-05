@@ -60,6 +60,47 @@ pub const fmt = @import("fmt.zig");
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
 /// Faithful to upstream `bun.zig:196` (`sha = @import("./sha_hmac/sha.zig")`).
 pub const sha = @import("sha_hmac/sha.zig");
+
+pub fn isWritable(fd: FD) PollFlag {
+    if (comptime Environment.isWindows) {
+        var polls = [_]std.posix.pollfd{
+            .{
+                .fd = fd.asSocketFd(),
+                .events = std.posix.POLL.WRNORM,
+                .revents = 0,
+            },
+        };
+        const rc = std.os.windows.ws2_32.WSAPoll(&polls, 1, 0);
+        const result = (if (rc != std.os.windows.ws2_32.SOCKET_ERROR) @as(usize, @intCast(rc)) else 0) != 0;
+        if (result and polls[0].revents & std.posix.POLL.WRNORM != 0) {
+            return .hup;
+        } else if (result) {
+            return .ready;
+        } else {
+            return .not_ready;
+        }
+    } else if (comptime Environment.isMac) {
+        var polls = [_]std.posix.pollfd{
+            .{
+                .fd = fd.int(),
+                .events = std.posix.POLL.WRNORM,
+                .revents = 0,
+            },
+        };
+        _ = std.posix.poll(&polls, 1, 0) catch return .not_ready;
+        return if (polls[0].revents & std.posix.POLL.WRNORM != 0) .ready else .not_ready;
+    } else {
+        var polls = [_]std.posix.pollfd{
+            .{
+                .fd = fd.int(),
+                .events = std.posix.POLL.WRNORM,
+                .revents = 0,
+            },
+        };
+        _ = std.posix.poll(&polls, 1, 0) catch return .not_ready;
+        return if (polls[0].revents & std.posix.POLL.WRNORM != 0) .ready else .not_ready;
+    }
+}
 /// Faithful to upstream `bun.zig:3218` (`dns = @import("./dns/dns.zig")`).
 pub const dns = @import("dns/dns.zig");
 /// Faithful to upstream `bun.zig:1442` (`Watcher = @import("./watcher/Watcher.zig")`).
@@ -127,6 +168,16 @@ pub fn milliTimestamp() i64 {
     return @as(i64, @intCast(ts.sec)) * std.time.ms_per_s + @divFloor(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
 }
 
+/// Forward-port: Home's Zig fork removed `std.time.timestamp` (wall-clock
+/// time now goes through `std.Io`). This is the old behavior — seconds since
+/// the Unix epoch via `clock_gettime(REALTIME)` — for the copied sites that used
+/// `std.time.timestamp()` directly.
+pub fn timestamp() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return ts.sec;
+}
+
 /// Faithful to upstream `bun.selfExePath()`: cache the executable path as a
 /// null-terminated slice so copied CLI/install code can keep borrowing it.
 pub fn selfExePath() ![:0]u8 {
@@ -182,6 +233,18 @@ pub const net = @import("net_shim.zig");
 // copied Bun maps (`std.AutoArrayHashMap`/`std.ArrayHashMap`) compile unchanged.
 pub const AutoArrayHashMap = @import("collections/managed_array_hash_map.zig").AutoArrayHashMap;
 pub const ArrayHashMap = @import("collections/managed_array_hash_map.zig").ArrayHashMap;
+/// Compatibility wrapper for std.array_list.Managed.writer() which was removed in Zig 0.13+.
+/// Returns a std.io.Writer-compatible interface for writing to a managed array list.
+/// Used by copied bun shell builtin code that expects the .writer() method.
+pub fn getManagedArrayListWriter(list: *std.array_list.Managed(u8)) std.io.Writer(*std.array_list.Managed(u8), std.mem.Allocator.Error, appendBytes) {
+    return .{ .context = list };
+}
+
+fn appendBytes(list: *std.array_list.Managed(u8), bytes: []const u8) std.mem.Allocator.Error!usize {
+    try list.appendSlice(bytes);
+    return bytes.len;
+}
+
 /// Faithful to upstream `bun.zig:393`. Generic length over arrays/vectors/
 /// pointers/tuples (sentinel-terminated many/c pointers scan to the sentinel).
 pub fn len(value: anytype) usize {
@@ -518,12 +581,12 @@ pub fn StackFallbackAllocator(comptime size: usize) type {
             return self.fallback_allocator.rawResize(buf, alignment, new_len, ra);
         }
 
-        fn sfaRemap(ctx: *anyopaque, mem: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        fn sfaRemap(ctx: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            if (self.fixed_buffer_allocator.ownsPtr(mem.ptr)) {
-                return std.heap.FixedBufferAllocator.remap(&self.fixed_buffer_allocator, mem, alignment, new_len, ra);
+            if (self.fixed_buffer_allocator.ownsPtr(bytes.ptr)) {
+                return std.heap.FixedBufferAllocator.remap(&self.fixed_buffer_allocator, bytes, alignment, new_len, ra);
             }
-            return self.fallback_allocator.rawRemap(mem, alignment, new_len, ra);
+            return self.fallback_allocator.rawRemap(bytes, alignment, new_len, ra);
         }
 
         fn sfaFree(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
@@ -622,6 +685,18 @@ pub const deprecated = struct {
     /// test body still trips the pinned Zig 0.17.0-dev.263 `**` tokenizer bug,
     /// so importing it would eagerly parse that file).
     pub const SinglyLinkedList = @import("bun_core/singly_linked_list.zig").SinglyLinkedList;
+
+    pub fn autoFormatLabelFallback(comptime ty: type, comptime fallback: []const u8) []const u8 {
+        comptime if (std.meta.hasFn(ty, "format")) {
+            return "{f}";
+        } else {
+            return fallback;
+        };
+    }
+
+    pub fn autoFormatLabel(comptime ty: type) []const u8 {
+        return autoFormatLabelFallback(ty, "{s}");
+    }
 };
 
 pub fn DebugOnlyDisabler(comptime Type: type) type {
@@ -1153,6 +1228,10 @@ pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memmove(dest[0..src.len], src);
 }
 
+pub fn csprng(bytes: []u8) void {
+    _ = BoringSSL.c.RAND_bytes(bytes.ptr, bytes.len);
+}
+
 /// Faithful to upstream `bun.zig:3468`. Overlap-safe byte copy. Bun routes the
 /// native path through `c.memmove`; Home uses the `@memmove` builtin (identical
 /// overlap semantics) so it needs no libc extern.
@@ -1505,11 +1584,11 @@ pub const StringHashMapContext = struct {
 };
 
 pub fn StringArrayHashMap(comptime Type: type) type {
-    return StringHashMap(Type);
+    return std.ArrayHashMap([]const u8, Type, StringArrayHashMapContext, true);
 }
 
 pub fn StringArrayHashMapUnmanaged(comptime Type: type) type {
-    return StringHashMapUnmanaged(Type);
+    return std.ArrayHashMapUnmanaged([]const u8, Type, StringArrayHashMapContext, true);
 }
 
 pub const StringMap = struct {
@@ -2246,6 +2325,8 @@ pub const jsc = struct {
     };
     // Faithful to upstream jsc/jsc.zig:112.
     pub const ZigStackFrame = @import("jsc/ZigStackFrame.zig").ZigStackFrame;
+    // Faithful to upstream jsc/jsc.zig:113.
+    pub const ZigStackFramePosition = @import("jsc/ZigStackFramePosition.zig").ZigStackFramePosition;
     // Faithful to upstream jsc/jsc.zig:98.
     pub const SavedSourceMap = @import("jsc/SavedSourceMap.zig");
     // Faithful to upstream jsc/jsc.zig:97.
@@ -2267,15 +2348,9 @@ pub const jsc = struct {
     pub const ModuleLoader = struct {
         pub const HardcodedModule = @import("resolve_builtins/HardcodedModule.zig").HardcodedModule;
         pub const RuntimeTranspilerStore = @import("jsc/RuntimeTranspilerStore.zig").RuntimeTranspilerStore;
-        pub const AsyncModule = struct {
-            pub const Queue = struct {
-                pub fn init() Queue {
-                    return .{};
-                }
-
-                pub fn deinit(_: *Queue) void {}
-            };
-        };
+        pub const AsyncModule = @import("jsc/AsyncModule.zig").AsyncModule;
+        pub const node_fallbacks = @import("resolver/node_fallbacks.zig");
+        pub const eval_source: ?*@import("logger/logger.zig").Source = null;
     };
     pub const URL = @import("jsc/URL.zig").URL;
     pub const DOMFormData = @import("jsc/DOMFormData.zig").DOMFormData;
@@ -2443,7 +2518,7 @@ pub const io = struct {
     pub const heap = @import("io/heap.zig");
     pub const Loop = @import("io/stub_event_loop.zig").Loop;
     pub const KeepAlive = @import("io/stub_event_loop.zig").KeepAlive;
-    pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
+    pub const FilePoll = if (Environment.isPosix) @import("io/posix_event_loop.zig").FilePoll else @import("io/stub_event_loop.zig").FilePoll;
     pub const Closer = struct {
         pub fn close(fd: anytype, loop: anytype) void {
             _ = loop;
@@ -2488,6 +2563,13 @@ pub const io = struct {
             // Qualify to the nested Poll (the top-level `io.Poll` alias would
             // otherwise make the unqualified `Poll` an ambiguous container ref).
             poll: BufferedReader.Poll,
+
+            pub fn getPoll(this: *const @This()) ?*BufferedReader.Poll {
+                return switch (this.*) {
+                    .closed => null,
+                    .poll => |*p| p,
+                };
+            }
         };
 
         pub const Poll = struct {
@@ -2511,6 +2593,9 @@ pub const io = struct {
             nonblocking: bool = false,
             pollable: bool = false,
             close_handle: bool = true,
+            memfd: bool = false,
+            received_eof: bool = false,
+            closed_without_reporting: bool = false,
         };
 
         pub fn takeBuffer(this: *BufferedReader) std.array_list.Managed(u8) {
@@ -2550,6 +2635,14 @@ pub const io = struct {
             _ = this;
             _ = fd;
             _ = is_pollable;
+            return .success;
+        }
+
+        pub fn startFileOffset(this: *BufferedReader, fd: FD, is_pollable: bool, offset: usize) @import("home").sys.Maybe(void) {
+            _ = this;
+            _ = fd;
+            _ = is_pollable;
+            _ = offset;
             return .success;
         }
 
@@ -2610,6 +2703,12 @@ pub const io = struct {
         pub fn deinit(this: *BufferedReader) void {
             this._buffer.deinit();
             this.* = .{};
+        }
+
+        pub fn from(to: *BufferedReader, other: *BufferedReader, parent_: *anyopaque) void {
+            _ = to;
+            _ = other;
+            _ = parent_;
         }
     };
     pub const StreamBuffer = struct {
@@ -3554,6 +3653,7 @@ pub const alloc = struct {
     };
 };
 pub const memory = @import("bun_alloc/memory.zig");
+pub const mem = std.mem;
 pub const allocators = struct {
     pub const MimallocArena = @import("bun_alloc/MimallocArena.zig");
     pub const AllocationScope = @import("bun_alloc/allocation_scope.zig").AllocationScope;
@@ -3813,6 +3913,15 @@ pub const allocators = struct {
                 try self.index.put(self.allocator, result.hash, result.index);
                 return &self.values.items[result.index.index];
             }
+
+            pub fn remove(self: *Self, denormalized_key: []const u8) bool {
+                const key = if (comptime remove_trailing_slashes)
+                    std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str)
+                else
+                    denormalized_key;
+                const _key = hash(key);
+                return self.index.remove(_key);
+            }
         };
     }
 
@@ -4009,6 +4118,8 @@ pub const threading = struct {
 };
 pub const UnboundedQueue = threading.UnboundedQueue;
 pub const ThreadPool = threading.ThreadPool;
+pub const Futex = threading.Futex;
+pub const default_thread_stack_size = ThreadPool.default_thread_stack_size;
 pub const DotEnv = @import("dotenv/env_loader.zig");
 pub fn handleErrorReturnTrace(err: anytype, trace: anytype) void {
     _ = @errorName(err);
@@ -4110,6 +4221,8 @@ pub const sys = struct {
     pub const rmdirat = @import("sys/sys.zig").rmdirat;
     pub const setNonblocking = @import("sys/sys.zig").setNonblocking;
     pub const setCloseOnExec = @import("sys/sys.zig").setCloseOnExec;
+    pub const sendNonBlock = @import("sys/sys.zig").sendNonBlock;
+    pub const writeNonblocking = @import("sys/sys.zig").writeNonblocking;
 
     // Faithful to upstream `bun.sys.workaround_symbols`
     // (`src/sys/sys.zig:20`): the platform-selected stat/memmem shims from
@@ -4172,6 +4285,7 @@ pub const sys = struct {
     pub const fchown = @import("sys/sys.zig").fchown;
     pub const futimens = @import("sys/sys.zig").futimens;
     pub const exists = @import("sys/sys.zig").exists;
+    pub const chdir = @import("sys/sys.zig").chdir;
     pub const copyFile = @import("sys/copy_file.zig").copyFile;
 
     pub fn mkdirat(dir_fd: FD, file_path: []const u8, mode: Mode) Maybe(void) {
@@ -4843,6 +4957,7 @@ pub const platform = struct {
 // values/rules/properties tree re-attaches once `css_parser.zig`
 // lands. Strategy A (self-contained-only) per agent #5's analysis.
 pub const css = struct {
+    pub const BundlerStyleSheet = @import("css/css_parser.zig").BundlerStyleSheet;
     pub const CssColor = @import("css/css_parser.zig").CssColor;
     pub const Parser = css_parser_stub.Parser;
     pub const ParserInput = @import("css/css_parser.zig").ParserInput;
@@ -5016,24 +5131,7 @@ pub const s3_signing = struct {
     pub const credentials = @import("s3_signing/credentials.zig");
 };
 
-pub const S3 = struct {
-    pub const ACL = s3_signing.ACL;
-    pub const StorageClass = s3_signing.StorageClass;
-    pub const S3Error = s3_signing.sign_error.S3Error;
-    pub const S3Credentials = s3_signing.credentials.S3Credentials;
-    pub const S3CredentialsWithOptions = s3_signing.credentials.S3CredentialsWithOptions;
-    pub const MultiPartUploadOptions = @import("runtime/webcore/s3/multipart_options.zig").MultiPartUploadOptions;
-
-    pub const S3DownloadResult = union(enum) { success: []const u8, failure: S3Error };
-    pub const S3UploadResult = union(enum) { success: void, failure: S3Error };
-    pub const S3DeleteResult = union(enum) { success: void, failure: S3Error };
-    pub const S3StatResult = union(enum) { success: void, failure: S3Error };
-    pub const S3ListObjectsResult = union(enum) { success: void, failure: S3Error };
-    pub const S3ListObjectsOptions = struct {};
-    pub const MultiPartUpload = opaque {};
-    pub const S3HttpDownloadStreamingTask = opaque {};
-    pub const S3HttpSimpleTask = opaque {};
-};
+pub const S3 = @import("runtime/webcore/s3/client.zig");
 
 // ---- src/errno/ --------------------------------------------------------
 // Seventh-wave port batch (2026-05-18). POSIX errno tables per platform.

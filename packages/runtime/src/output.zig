@@ -15,6 +15,13 @@ pub var is_github_action = false;
 pub const ElapsedFormatter = @import("bun_core/output.zig").ElapsedFormatter;
 
 const CSI = "\x1b[";
+
+/// https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036
+pub const synchronized_start = "\x1b[?2026h";
+
+/// https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036
+pub const synchronized_end = "\x1b[?2026l";
+
 var error_writer_buffer: [4096]u8 = undefined;
 var error_file_writer: ?std.Io.File.Writer = null;
 
@@ -340,9 +347,13 @@ pub fn isVerbose() bool {
 }
 
 /// `Output.stderr_descriptor_type` — Bun reports the stderr stream kind
-/// (file / terminal / pipe). Home returns `.pipe` until the TTY probe lands.
-pub const OutputStreamDescriptor = enum { file, terminal, pipe };
-pub var stderr_descriptor_type: OutputStreamDescriptor = .pipe;
+/// (unknown / terminal). Home defaults to `.unknown` until the TTY probe lands.
+pub const OutputStreamDescriptor = enum {
+    unknown,
+    terminal,
+};
+pub var stderr_descriptor_type: OutputStreamDescriptor = .unknown;
+pub var stdout_descriptor_type: OutputStreamDescriptor = .unknown;
 
 /// Narrowed `Output.DebugTimer` — measures elapsed time for `BUN_DEBUG`
 /// scoped logging. Faithful to Bun's `(comptime fmt)`-friendly formatter.

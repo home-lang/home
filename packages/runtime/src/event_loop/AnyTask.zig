@@ -13,9 +13,9 @@ const AnyTask = @This();
 ctx: ?*anyopaque,
 callback: *const (fn (*anyopaque) JSError!void),
 
-pub fn task(this: *AnyTask) Task {
+pub fn task(this: *AnyTask) home_rt.jsc.Task {
     // JSC bridge Task.init stubbed — re-attaches in Phase 12.2.
-    return Task.init(this);
+    return home_rt.jsc.Task.init(this);
 }
 
 pub fn run(this: *AnyTask) JSError!void {

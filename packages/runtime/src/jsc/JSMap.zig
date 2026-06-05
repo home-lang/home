@@ -12,7 +12,7 @@ const JSValue = bun.jsc.JSValue;
 
 /// Opaque type for working with JavaScript `Map` objects.
 pub const JSMap = opaque {
-    extern fn JSC__JSMap__create(*anyopaque) *JSMap;
+    extern fn JSC__JSMap__create(*anyopaque) JSValue;
     extern fn JSC__JSMap__set(*JSMap, *anyopaque, JSValue, JSValue) void;
     extern fn JSC__JSMap__get(*JSMap, *anyopaque, JSValue) JSValue;
     extern fn JSC__JSMap__has(*JSMap, *anyopaque, JSValue) bool;

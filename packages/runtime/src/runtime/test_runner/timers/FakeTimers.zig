@@ -366,7 +366,22 @@ pub fn putTimersFns(globalObject: *jsc.JSGlobalObject, jest: jsc.JSValue, vi: js
     }
 }
 
-const bindgen_generated = @import("bindgen_generated");
+// Bindgen codegen for FakeTimersConfig is deferred — the `.generated/bindgen_generated/`
+// subtree is not emitted in this tree yet (see home.zig `generated` note). Hand-stub
+// the single config this file needs, faithful to upstream's `{ now }` shape.
+const bindgen_generated = struct {
+    pub const FakeTimersConfig = struct {
+        now: jsc.JSValue = .js_undefined,
+
+        pub fn fromJS(globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError!FakeTimersConfig {
+            var config = FakeTimersConfig{};
+            if (try value.getOwn(globalObject, "now")) |now| config.now = now;
+            return config;
+        }
+
+        pub fn deinit(_: *FakeTimersConfig) void {}
+    };
+};
 const std = @import("std");
 
 const bun = @import("bun");

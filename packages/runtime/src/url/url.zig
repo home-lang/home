@@ -58,9 +58,13 @@ pub const URL = struct {
         const Input = @TypeOf(input);
         if (comptime Input == []const u8 or Input == [:0]const u8) {
             return fromUTF8(allocator, input);
+        } else if (comptime Input == bun.String) {
+            const owned = try input.toOwnedSlice(allocator);
+            defer allocator.free(owned);
+            return fromUTF8(allocator, owned);
         }
 
-        @compileError("URL.fromString currently accepts UTF-8 slices in the pure Home URL leaf");
+        @compileError("URL.fromString currently accepts UTF-8 slices or bun.String in the pure Home URL leaf");
     }
 
     pub fn fromUTF8(allocator: std.mem.Allocator, input: []const u8) !URL {

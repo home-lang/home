@@ -732,7 +732,7 @@ pub const BunTest = struct {
             }
         }
 
-        if (dcb_ref) {
+        if (dcb_ref) |_| {
             // completed asynchronously
             group.log("callTestCallback -> wait for done callback", .{});
             return null;

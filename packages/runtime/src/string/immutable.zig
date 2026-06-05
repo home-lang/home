@@ -2409,11 +2409,11 @@ pub const ANSIIterator = extern struct {
     extern fn Bun__ANSI__next(it: *ANSIIterator) bool;
 };
 
+const std = @import("std");
+const unicode = @import("./immutable/unicode.zig");
 const escapeHTML_ = @import("./immutable/escapeHTML.zig");
 const escapeRegExp_ = @import("./escapeRegExp.zig");
 const paths_ = @import("./immutable/paths.zig");
-const std = @import("std");
-const unicode = @import("./immutable/unicode.zig");
 const visible_ = @import("./immutable/visible.zig");
 
 const bun = @import("bun");

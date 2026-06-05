@@ -570,8 +570,8 @@ pub const Loader = struct {
     pub fn loadProcess(this: *Loader) OOM!void {
         if (this.did_load_process) return;
 
-        try this.map.map.ensureTotalCapacity(std.os.environ.len);
-        for (std.os.environ) |_env| {
+        try this.map.map.ensureTotalCapacity(bun.os.environ.len);
+        for (bun.os.environ) |_env| {
             var env = bun.span(_env);
             if (strings.indexOfChar(env, '=')) |i| {
                 const key = env[0..i];
@@ -604,7 +604,7 @@ pub const Loader = struct {
         comptime suffix: DotEnvFileSuffix,
         skip_default_env: bool,
     ) !void {
-        const start = std.time.nanoTimestamp();
+        const start = bun.time.nanoTimestamp();
 
         // Create a reusable buffer with stack fallback for parsing multiple files
         var stack_fallback = std.heap.stackFallback(4096, this.allocator);
@@ -729,7 +729,7 @@ pub const Loader = struct {
             this.custom_files_loaded.count();
 
         if (count == 0) return;
-        const elapsed = @as(f64, @floatFromInt((std.time.nanoTimestamp() - start))) / std.time.ns_per_ms;
+        const elapsed = @as(f64, @floatFromInt((bun.time.nanoTimestamp() - start))) / bun.time.ns_per_ms;
 
         const all = [_]string{
             ".env.development.local",

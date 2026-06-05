@@ -238,6 +238,7 @@ fn destroyEntry(p: *Entry) void {
 
 const std = @import("std");
 const home_rt = @import("home");
+const jsc = home_rt.jsc;
 
 // ============================================================================
 // Local stubs for the bun.uws / bun.BoringSSL / bun.jsc surface
@@ -271,31 +272,9 @@ const BoringSSL = struct {
     }
 };
 
-const uws = struct {
-    pub const create_bun_socket_error_t = enum(c_int) {
-        none = 0,
-        _,
-    };
-    pub const SocketContext = struct {
-        pub const BunSocketContextOptions = extern struct {
-            opaque_field: ?*anyopaque = null,
+const uws = home_rt.uws;
 
-            pub fn digest(_: BunSocketContextOptions) Digest {
-                return @as(Digest, @splat(0));
-            }
-            pub fn createSSLContext(_: BunSocketContextOptions, err: *create_bun_socket_error_t) ?*BoringSSL.SSL_CTX {
-                _ = err;
-                return null;
-            }
-        };
-    };
-};
-
-const SSLConfig = struct {
-    pub fn asUSockets(_: *const SSLConfig) uws.SocketContext.BunSocketContextOptions {
-        return .{};
-    }
-};
+const SSLConfig = home_rt.api.ServerConfig.SSLConfig;
 
 // ============================================================================
 // Tests

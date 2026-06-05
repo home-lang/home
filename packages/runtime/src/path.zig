@@ -37,7 +37,12 @@ pub const relative = @import("paths/resolve_path.zig").relative;
 pub const relativePlatform = @import("paths/resolve_path.zig").relativePlatform;
 pub const relativePlatformBuf = @import("paths/resolve_path.zig").relativePlatformBuf;
 pub const relativeBufZ = @import("paths/resolve_path.zig").relativeBufZ;
+pub const relativeNormalizedBuf = @import("paths/resolve_path.zig").relativeNormalizedBuf;
+pub const relativeNormalized = @import("paths/resolve_path.zig").relativeNormalized;
+pub const platformToPosixInPlace = @import("paths/resolve_path.zig").platformToPosixInPlace;
 pub const z = @import("paths/resolve_path.zig").z;
+pub const dangerouslyConvertPathToPosixInPlace = @import("paths/resolve_path.zig").dangerouslyConvertPathToPosixInPlace;
+pub const dangerouslyConvertPathToWindowsInPlace = @import("paths/resolve_path.zig").dangerouslyConvertPathToWindowsInPlace;
 
 pub fn dirname(path: []const u8, style: anytype) []const u8 {
     _ = style;

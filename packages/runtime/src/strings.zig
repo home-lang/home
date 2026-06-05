@@ -62,6 +62,7 @@ pub const copyCP1252IntoUTF16 = @import("string/immutable.zig").copyCP1252IntoUT
 pub const withoutNTPrefix = @import("string/immutable.zig").withoutNTPrefix;
 pub const inMapCaseInsensitive = @import("string/immutable.zig").inMapCaseInsensitive;
 pub const isIPAddress = @import("string/immutable.zig").isIPAddress;
+pub const isIPV6Address = @import("string/immutable.zig").isIPV6Address;
 pub const toUTF16AllocMaybeBuffered = @import("string/immutable.zig").toUTF16AllocMaybeBuffered;
 pub const withoutUTF8BOM = @import("string/immutable.zig").withoutUTF8BOM;
 pub const toUTF8ListWithType = @import("string/immutable.zig").toUTF8ListWithType;
@@ -78,6 +79,7 @@ pub const copyU8IntoU16 = @import("string/immutable.zig").copyU8IntoU16;
 pub const copyUTF16IntoUTF8Impl = @import("string/immutable.zig").copyUTF16IntoUTF8Impl;
 pub const elementLengthLatin1IntoUTF8 = @import("string/immutable.zig").elementLengthLatin1IntoUTF8;
 pub const encodeBytesToHex = @import("string/immutable.zig").encodeBytesToHex;
+pub const escapeHTMLForLatin1Input = @import("string/immutable.zig").escapeHTMLForLatin1Input;
 pub const escapeHTMLForUTF16Input = @import("string/immutable.zig").escapeHTMLForUTF16Input;
 pub const indexOfCharPos = @import("string/immutable.zig").indexOfCharPos;
 pub const OptionalUsize = @import("string/immutable.zig").OptionalUsize;
@@ -106,9 +108,14 @@ pub const toWPathMaybeDir = @import("string/immutable.zig").toWPathMaybeDir;
 pub const toWPathNormalizeAutoExtend = @import("string/immutable.zig").toWPathNormalizeAutoExtend;
 pub const toWPathNormalized = @import("string/immutable.zig").toWPathNormalized;
 pub const toWPathNormalized16 = @import("string/immutable.zig").toWPathNormalized16;
+pub const normalizeSlashesOnly = @import("string/immutable.zig").normalizeSlashesOnly;
+pub const normalizeSlashesOnlyT = @import("string/immutable.zig").normalizeSlashesOnlyT;
 
-pub fn copy(dest: []u8, src: []const u8) void {
-    std.mem.copyForwards(u8, dest, src);
+pub fn copy(dest: []u8, src: []const u8) []const u8 {
+    const len = @min(dest.len, src.len);
+    if (len > 0)
+        std.mem.copyForwards(u8, dest[0..len], src[0..len]);
+    return dest[0..len];
 }
 
 pub fn indexOfNewlineOrNonASCII(input: []const u8, offset: anytype) ?u32 {
@@ -245,6 +252,35 @@ pub fn withoutTrailingSlashWindowsPath(input: []const u8) []const u8 {
         path.len -= 1;
     }
     return path;
+}
+
+pub fn cloneNormalizingSeparators(
+    allocator: std.mem.Allocator,
+    input: []const u8,
+) ![]u8 {
+    // remove duplicate slashes in the file path
+    const base = withoutTrailingSlash(input);
+    var tokenized = std.mem.tokenizeScalar(u8, base, std.fs.path.sep);
+    var buf = try allocator.alloc(u8, base.len + 2);
+    if (base.len == 0) return buf[0..0];
+    if (base[0] == std.fs.path.sep) {
+        buf[0] = std.fs.path.sep;
+    }
+    var remain = buf[@as(usize, @intFromBool(base[0] == std.fs.path.sep))..];
+
+    while (tokenized.next()) |token| {
+        if (token.len == 0) continue;
+        copy(remain, token);
+        remain[token.len..][0] = std.fs.path.sep;
+        remain = remain[token.len + 1 ..];
+    }
+    if ((remain.ptr - 1) != buf.ptr and (remain.ptr - 1)[0] != std.fs.path.sep) {
+        remain[0] = std.fs.path.sep;
+        remain = remain[1..];
+    }
+    remain[0] = 0;
+
+    return buf[0 .. @intFromPtr(remain.ptr) - @intFromPtr(buf.ptr)];
 }
 
 pub fn pathContainsNodeModulesFolder(path: []const u8) bool {

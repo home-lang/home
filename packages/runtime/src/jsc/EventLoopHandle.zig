@@ -77,6 +77,13 @@ pub const EventLoopHandle = union(EventLoopKind) {
         return this.bunVM().?.transpiler.env;
     }
 
+    pub inline fn allocator(this: EventLoopHandle) std.mem.Allocator {
+        return switch (this) {
+            .js => this.js.virtual_machine.allocator,
+            .mini => this.mini.allocator,
+        };
+    }
+
     pub fn stdout(this: EventLoopHandle) *home_rt.jsc.WebCore.Blob.Store {
         return switch (this) {
             .js => this.js.virtual_machine.rareData().stdout(),
@@ -89,6 +96,20 @@ pub const EventLoopHandle = union(EventLoopKind) {
             .js => this.js.virtual_machine.rareData().stderr(),
             .mini => this.mini.stderr(),
         };
+    }
+
+    pub fn enter(this: EventLoopHandle) void {
+        switch (this) {
+            .js => this.js.enter(),
+            .mini => {},
+        }
+    }
+
+    pub fn exit(this: EventLoopHandle) void {
+        switch (this) {
+            .js => this.js.exit(),
+            .mini => {},
+        }
     }
 
     pub fn enqueueTaskConcurrent(this: EventLoopHandle, task: EventLoopTask) void {

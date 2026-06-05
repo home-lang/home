@@ -1,5 +1,35 @@
 const debug = bun.Output.scoped(.Transpiler, .visible);
 
+const string = []const u8;
+
+const CompileTarget = @import("../../options_types/CompileTarget.zig");
+const Fs = @import("../../resolver/fs.zig");
+const _resolver = @import("../../resolver/resolver.zig");
+const resolve_path = @import("../../paths/resolve_path.zig");
+const std = @import("std");
+
+const options = @import("../../bundler/options.zig");
+const Loader = options.Loader;
+const Target = options.Target;
+
+const bun = @import("bun");
+const JSError = bun.JSError;
+const Output = bun.Output;
+const String = bun.String;
+const Transpiler = bun.transpiler;
+const WebCore = bun.webcore;
+const logger = bun.logger;
+const strings = bun.strings;
+const BundleV2 = bun.bundle_v2.BundleV2;
+const Index = bun.ast.Index;
+const api = bun.schema.api;
+
+const jsc = bun.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSValue = bun.jsc.JSValue;
+const ZigString = jsc.ZigString;
+const Blob = jsc.WebCore.Blob;
+
 pub const JSBundler = struct {
     const OwnedString = bun.MutableString;
 
@@ -2018,33 +2048,3 @@ pub const BuildArtifact = struct {
         formatter.resetLine();
     }
 };
-
-const string = []const u8;
-
-const CompileTarget = @import("../../options_types/CompileTarget.zig");
-const Fs = @import("../../resolver/fs.zig");
-const _resolver = @import("../../resolver/resolver.zig");
-const resolve_path = @import("../../paths/resolve_path.zig");
-const std = @import("std");
-
-const options = @import("../../bundler/options.zig");
-const Loader = options.Loader;
-const Target = options.Target;
-
-const bun = @import("bun");
-const JSError = bun.JSError;
-const Output = bun.Output;
-const String = bun.String;
-const Transpiler = bun.transpiler;
-const WebCore = bun.webcore;
-const logger = bun.logger;
-const strings = bun.strings;
-const BundleV2 = bun.bundle_v2.BundleV2;
-const Index = bun.ast.Index;
-const api = bun.schema.api;
-
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = bun.jsc.JSValue;
-const ZigString = jsc.ZigString;
-const Blob = jsc.WebCore.Blob;

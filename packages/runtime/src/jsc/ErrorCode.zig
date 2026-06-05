@@ -22,6 +22,9 @@ pub const ErrorCode = enum(ErrorCodeInt) {
     pub const Type = ErrorCodeInt;
 };
 
+// Re-export the real Error enum from the generated ErrorCode module
+pub const Error = @import("../.generated/ErrorCode.zig").Error;
+
 comptime {
     @export(&ErrorCode.ParserError, .{ .name = "Zig_ErrorCodeParserError" });
     @export(&ErrorCode.JSErrorObject, .{ .name = "Zig_ErrorCodeJSErrorObject" });

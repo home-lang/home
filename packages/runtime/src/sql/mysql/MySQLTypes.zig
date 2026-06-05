@@ -278,7 +278,7 @@ pub const FieldType = enum(u8) {
     MYSQL_TYPE_GEOMETRY = 0xff,
     _,
 
-    // JSC-bridge `fromJS` omitted — re-lands in Phase 12.2.
+    pub const fromJS = @import("../../sql_jsc/mysql/MySQLValue.zig").fieldTypeFromJS;
 
     pub fn isBinaryFormatSupported(this: FieldType) bool {
         return switch (this) {

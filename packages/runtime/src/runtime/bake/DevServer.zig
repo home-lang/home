@@ -371,6 +371,10 @@ test "DevServer queues duplicate hot updates FIFO for sockets" {
     socket.close();
 }
 
+pub fn emitMemoryVisualizerMessageTimer(_: *anyopaque, _: *const anyopaque) void {
+    // Stub: only used when bake_debugging_features is enabled
+}
+
 test "DevServer HTMLRouter stores catch-all route as fallback" {
     var router = HTMLRouter.init(std.testing.allocator);
     defer router.deinit(std.testing.allocator);
