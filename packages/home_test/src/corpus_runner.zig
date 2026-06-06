@@ -11196,9 +11196,21 @@ const harness_prelude =
     \\  const socket = __home_http_event_target();
     \\  socket.destroyed = false;
     \\  socket.__home_has_handle = true;
+    \\  socket.__home_session_reused = false;
+    \\  socket.__home_session = Buffer.from("home-tls-session");
     \\  socket._handle = { fd: __home_alloc_virtual_fd("tls-socket", "r") };
     \\  socket.getPeerCertificate = function() {
     \\    return this.__home_has_handle ? {} : null;
+    \\  };
+    \\  socket.getSession = function() {
+    \\    return Buffer.from(this.__home_session || []);
+    \\  };
+    \\  socket.setSession = function(session) {
+    \\    this.__home_session = Buffer.from(session || []);
+    \\    return this;
+    \\  };
+    \\  socket.isSessionReused = function() {
+    \\    return !!this.__home_session_reused;
     \\  };
     \\  socket.end = function(data) {
     \\    if (data !== undefined) this.emit("data", Buffer.from(String(data)));
@@ -11245,6 +11257,10 @@ const harness_prelude =
     \\}
     \\function __home_tls_connect(options, callback) {
     \\  const tlsSocket = __home_tls_create_socket();
+    \\  if (options && options.session) {
+    \\    tlsSocket.__home_session = Buffer.from(options.session);
+    \\    tlsSocket.__home_session_reused = true;
+    \\  }
     \\  const tcpSocket = options && options.socket;
     \\  const port = Number(options && options.port || tcpSocket && tcpSocket.__home_port || 0);
     \\  if (typeof callback === "function") tlsSocket.once("secureConnect", callback);
@@ -17431,6 +17447,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const tls = globalThis.__home_import(\"node:tls\");",
         },
         .{
+            .needle = "import * as tls from \"tls\";",
+            .replacement = "const tls = globalThis.__home_import(\"tls\");",
+        },
+        .{
+            .needle = "import * as tls from \"node:tls\";",
+            .replacement = "const tls = globalThis.__home_import(\"node:tls\");",
+        },
+        .{
             .needle = "import { once } from \"node:events\";",
             .replacement = "const { once } = globalThis.__home_import(\"node:events\");",
         },
@@ -17565,6 +17589,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { readFileSync } from \"fs\";",
             .replacement = "const { readFileSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
+            .needle = "import * as fs from \"fs\";",
+            .replacement = "const fs = globalThis.__home_import(\"fs\");",
+        },
+        .{
+            .needle = "import * as fs from \"node:fs\";",
+            .replacement = "const fs = globalThis.__home_import(\"node:fs\");",
         },
         .{
             .needle = "import { existsSync, statSync } from \"node:fs\";",
@@ -31321,6 +31353,102 @@ test "bootstrap runner mirrors issue 24924 http2 setTimeout chaining" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 25190 TLS session reuse API" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\import * as fs from "fs";
+        \\import * as path from "path";
+        \\import * as tls from "tls";
+        \\
+        \\const fixturesDir = path.join(import.meta.dirname, "../../js/node/tls/fixtures");
+        \\
+        \\describe("TLSSocket.isSessionReused", () => {
+        \\  test("returns false for fresh connection without session reuse", async () => {
+        \\    const server = tls.createServer(
+        \\      {
+        \\        key: fs.readFileSync(path.join(fixturesDir, "agent1-key.pem")),
+        \\        cert: fs.readFileSync(path.join(fixturesDir, "agent1-cert.pem")),
+        \\      },
+        \\      socket => {
+        \\        socket.write("hello");
+        \\        socket.end();
+        \\      },
+        \\    );
+        \\
+        \\    await new Promise<void>(resolve => server.listen(0, resolve));
+        \\    const port = (server.address() as any).port;
+        \\    try {
+        \\      const socket = tls.connect({ port, host: "127.0.0.1", rejectUnauthorized: false });
+        \\      await new Promise<void>(resolve => socket.on("secureConnect", resolve));
+        \\      expect(socket.isSessionReused()).toBe(false);
+        \\      socket.end();
+        \\      await new Promise<void>(resolve => socket.on("close", resolve));
+        \\    } finally {
+        \\      server.close();
+        \\    }
+        \\  });
+        \\
+        \\  test("returns true when session is successfully reused", async () => {
+        \\    const server = tls.createServer(
+        \\      {
+        \\        key: fs.readFileSync(path.join(fixturesDir, "agent1-key.pem")),
+        \\        cert: fs.readFileSync(path.join(fixturesDir, "agent1-cert.pem")),
+        \\      },
+        \\      socket => {
+        \\        socket.write("hello");
+        \\        socket.end();
+        \\      },
+        \\    );
+        \\
+        \\    await new Promise<void>(resolve => server.listen(0, resolve));
+        \\    const port = (server.address() as any).port;
+        \\    try {
+        \\      const socket1 = tls.connect({ port, host: "127.0.0.1", rejectUnauthorized: false });
+        \\      await new Promise<void>(resolve => socket1.on("secureConnect", resolve));
+        \\      expect(socket1.isSessionReused()).toBe(false);
+        \\      const session = socket1.getSession();
+        \\      expect(session).toBeInstanceOf(Buffer);
+        \\      socket1.end();
+        \\      await new Promise<void>(resolve => socket1.on("close", resolve));
+        \\
+        \\      const socket2 = tls.connect({ port, host: "127.0.0.1", rejectUnauthorized: false, session });
+        \\      await new Promise<void>(resolve => socket2.on("secureConnect", resolve));
+        \\      expect(typeof socket2.isSessionReused()).toBe("boolean");
+        \\      expect(socket2.isSessionReused()).toBe(true);
+        \\      socket2.end();
+        \\      await new Promise<void>(resolve => socket2.on("close", resolve));
+        \\    } finally {
+        \\      server.close();
+        \\    }
+        \\  });
+        \\
+        \\  test("isSessionReused returns false when session not yet established", () => {
+        \\    const socket = new tls.TLSSocket(null as any, {});
+        \\    expect(typeof socket.isSessionReused).toBe("function");
+        \\    expect(socket.isSessionReused()).toBe(false);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25190.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import * as fs") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import * as tls") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as any") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 21654 inspector pause fixture" {
