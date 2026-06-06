@@ -3229,6 +3229,7 @@ const harness_prelude =
     \\    handle.stopped = false;
     \\    handle.abrupt = false;
     \\    handle.fetch = !handle.native ? (routeFetch || (typeof options.fetch === "function" ? options.fetch : null)) : null;
+    \\    handle.maxRequestBodySize = !handle.native && options.maxRequestBodySize !== undefined ? Number(options.maxRequestBodySize) : 0;
     \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? options.websocket : null;
     \\    globalThis.__home_serve_handles_by_origin[handle.origin] = handle;
     \\    const url = { origin: handle.origin, href: handle.origin + "/", hostname: handle.hostname || "localhost", port: String(handle.port), toString() { return this.href; } };
@@ -12715,6 +12716,15 @@ const harness_prelude =
     \\  if (typeof handle.fetch === "function") {
     \\    try {
     \\      const request = typeof Request === "function" && input instanceof Request && init === undefined ? input : new Request(href, init || {});
+    \\      const maxRequestBodySize = Number(handle.maxRequestBodySize || 0);
+    \\      if (maxRequestBodySize > 0) {
+    \\        let bodyLength = fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null ? __home_fixed_body_byte_length(fetchOptions.body) : __home_fixed_body_byte_length(request.body);
+    \\        if (bodyLength === null && request.headers && request.headers.get("content-length") !== null) bodyLength = Number(request.headers.get("content-length") || 0) || 0;
+    \\        if (bodyLength !== null && bodyLength > maxRequestBodySize) {
+    \\          if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\          return __home_fetch_thenable(new Response("", { status: 413 }), null);
+    \\        }
+    \\      }
     \\      const response = handle.fetch(request);
     \\      return Promise.resolve(response).finally(() => {
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
@@ -22332,6 +22342,46 @@ test "bootstrap runner mirrors issue 22199 plugin onResolve fallthrough" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22353 oversized serve request" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("oversized request returns 413 and server survives", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    maxRequestBodySize: 1024,
+        \\    async fetch(req) {
+        \\      const body = await req.text();
+        \\      return new Response(JSON.stringify({ received: true, size: body.length }), {
+        \\        headers: { "Content-Type": "application/json" },
+        \\      });
+        \\    },
+        \\  });
+        \\  const resp = await fetch(server.url, { method: "POST", body: "A".repeat(1025) });
+        \\  expect(resp.status).toBe(413);
+        \\  expect(await resp.text()).toBeEmpty();
+        \\  for (let i = 0; i < 3; i++) {
+        \\    const resp2 = await fetch(server.url, { method: "POST" });
+        \\    expect(resp2.status).toBe(200);
+        \\    expect(await resp2.json()).toEqual({ received: true, size: 0 });
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22353.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner covers invalid TOML build diagnostic lineText" {
