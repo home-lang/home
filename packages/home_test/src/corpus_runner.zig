@@ -10253,6 +10253,57 @@ const harness_prelude =
     \\__home_node_net.default = __home_node_net;
     \\globalThis.__home_modules["net"] = __home_node_net;
     \\globalThis.__home_modules["node:net"] = __home_node_net;
+    \\function __home_dns_addresses(recordType) {
+    \\  const type = String(recordType || "A").toUpperCase();
+    \\  if (type === "AAAA") return ["2001:4860:4860::8888"];
+    \\  return ["8.8.8.8"];
+    \\}
+    \\function __home_dns_resolve(hostname, rrtype, callback) {
+    \\  let recordType = rrtype;
+    \\  let cb = callback;
+    \\  if (typeof recordType === "function") {
+    \\    cb = recordType;
+    \\    recordType = "A";
+    \\  }
+    \\  const addresses = __home_dns_addresses(recordType);
+    \\  if (typeof cb === "function") Promise.resolve().then(() => cb(null, addresses.slice()));
+    \\}
+    \\function __home_dns_lookup(hostname, options, callback) {
+    \\  let cb = callback;
+    \\  let opts = options;
+    \\  if (typeof opts === "function") {
+    \\    cb = opts;
+    \\    opts = {};
+    \\  }
+    \\  const family = opts && Number(opts.family) === 6 ? 6 : 4;
+    \\  const address = family === 6 ? "2001:4860:4860::8888" : "8.8.8.8";
+    \\  if (opts && opts.all) Promise.resolve().then(() => cb(null, [{ address, family }]));
+    \\  else Promise.resolve().then(() => cb(null, address, family));
+    \\}
+    \\const __home_dns_promises = {
+    \\  resolve(hostname, rrtype) { return Promise.resolve(__home_dns_addresses(rrtype)); },
+    \\  resolve4(hostname) { return Promise.resolve(__home_dns_addresses("A")); },
+    \\  resolve6(hostname) { return Promise.resolve(__home_dns_addresses("AAAA")); },
+    \\  lookup(hostname, options) {
+    \\    const family = options && Number(options.family) === 6 ? 6 : 4;
+    \\    const address = family === 6 ? "2001:4860:4860::8888" : "8.8.8.8";
+    \\    return Promise.resolve(options && options.all ? [{ address, family }] : { address, family });
+    \\  },
+    \\  getDefaultResultOrder() { return "verbatim"; },
+    \\};
+    \\const __home_node_dns = {
+    \\  resolve: __home_dns_resolve,
+    \\  resolve4(hostname, callback) { return __home_dns_resolve(hostname, "A", callback); },
+    \\  resolve6(hostname, callback) { return __home_dns_resolve(hostname, "AAAA", callback); },
+    \\  lookup: __home_dns_lookup,
+    \\  promises: __home_dns_promises,
+    \\  getDefaultResultOrder() { return "verbatim"; },
+    \\};
+    \\__home_node_dns.default = __home_node_dns;
+    \\globalThis.__home_modules["dns"] = __home_node_dns;
+    \\globalThis.__home_modules["node:dns"] = __home_node_dns;
+    \\globalThis.__home_modules["dns/promises"] = __home_dns_promises;
+    \\globalThis.__home_modules["node:dns/promises"] = __home_dns_promises;
     \\const __home_node_events = {
     \\  once(target, name) {
     \\    return new Promise(resolve => {
@@ -16351,6 +16402,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import net from \"node:net\";",
             .replacement = "const net = globalThis.__home_import(\"node:net\");",
+        },
+        .{
+            .needle = "import dns from \"node:dns\";",
+            .replacement = "const dns = globalThis.__home_import(\"node:dns\");",
         },
         .{
             .needle = "import { createConnection, createServer } from \"node:net\";",
@@ -22757,6 +22812,42 @@ test "bootstrap runner mirrors issue 22650 bun exec shell chain" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22712 dns resolve arity" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import dns from "node:dns";
+        \\
+        \\test("dns.resolve callback arity", done => {
+        \\  dns.resolve("dns.google", "A", (...args) => {
+        \\    expect(args.length).toBe(2);
+        \\    expect(args[0]).toBe(null);
+        \\    expect(Array.isArray(args[1])).toBe(true);
+        \\    expect(args[1].every(addr => typeof addr === "string")).toBe(true);
+        \\    done();
+        \\  });
+        \\});
+        \\
+        \\test("dns.promises.resolve", async () => {
+        \\  const result = await dns.promises.resolve("google.com", "AAAA");
+        \\  expect(Array.isArray(result)).toBe(true);
+        \\  expect(result.every(addr => typeof addr === "string")).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22712.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner covers invalid TOML build diagnostic lineText" {
