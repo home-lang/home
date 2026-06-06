@@ -10065,6 +10065,46 @@ const harness_prelude =
     \\function __home_net_connect(portOrOptions, host) {
     \\  const port = typeof portOrOptions === "object" && portOrOptions !== null ? Number(portOrOptions.port) : Number(portOrOptions);
     \\  const hostname = typeof portOrOptions === "object" && portOrOptions !== null ? String(portOrOptions.host || portOrOptions.hostname || "127.0.0.1") : String(host || "127.0.0.1");
+    \\  const connectCallback = typeof host === "function" ? host : (typeof arguments[2] === "function" ? arguments[2] : null);
+    \\  const inMemoryServer = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  if (inMemoryServer && inMemoryServer.__home_net_handler) {
+    \\    const client = __home_http_event_target();
+    \\    const peer = __home_http_event_target();
+    \\    client.destroyed = false;
+    \\    peer.destroyed = false;
+    \\    client.connecting = false;
+    \\    peer.connecting = false;
+    \\    client.__home_port = port;
+    \\    peer.__home_port = port;
+    \\    client.__home_hostname = hostname;
+    \\    peer.__home_hostname = hostname;
+    \\    client.write = function(chunk, callback) {
+    \\      const payload = Buffer.from(__home_net_bytes(chunk));
+    \\      Promise.resolve().then(() => {
+    \\        peer.emit("data", payload);
+    \\        if (typeof callback === "function") callback();
+    \\      });
+    \\      return true;
+    \\    };
+    \\    peer.write = function(chunk, callback) {
+    \\      const payload = Buffer.from(__home_net_bytes(chunk));
+    \\      Promise.resolve().then(() => {
+    \\        client.emit("data", payload);
+    \\        if (typeof callback === "function") callback();
+    \\      });
+    \\      return true;
+    \\    };
+    \\    client.end = function() { this.destroyed = true; Promise.resolve().then(() => peer.emit("end")); return this; };
+    \\    peer.end = function() { this.destroyed = true; Promise.resolve().then(() => client.emit("end")); return this; };
+    \\    client.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\    peer.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\    Promise.resolve().then(() => {
+    \\      inMemoryServer.__home_net_handler(peer);
+    \\      client.emit("connect");
+    \\      if (typeof connectCallback === "function") connectCallback();
+    \\    });
+    \\    return client;
+    \\  }
     \\  const socket = __home_http_event_target();
     \\  socket.destroyed = false;
     \\  socket.connecting = false;
@@ -10072,7 +10112,7 @@ const harness_prelude =
     \\  socket.__home_hostname = hostname;
     \\  socket.end = function() { this.destroyed = true; return this; };
     \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
-    \\  socket.write = function(chunk) {
+    \\  socket.write = function(chunk, callback) {
     \\    const bytes = __home_net_bytes(chunk);
     \\    const requestText = __home_net_latin1(bytes);
     \\    const headerEnd = requestText.indexOf("\r\n\r\n");
@@ -10110,9 +10150,13 @@ const harness_prelude =
     \\        socket.emit("data", Buffer.from(__home_http_raw_response_text(response, body)));
     \\      });
     \\    }, error => socket.emit("error", error));
+    \\    if (typeof callback === "function") Promise.resolve().then(() => callback());
     \\    return true;
     \\  };
-    \\  Promise.resolve().then(() => socket.emit("connect"));
+    \\  Promise.resolve().then(() => {
+    \\    socket.emit("connect");
+    \\    if (typeof connectCallback === "function") connectCallback();
+    \\  });
     \\  return socket;
     \\}
     \\function __home_bun_connect(options) {
@@ -15671,8 +15715,10 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
         .{ .needle = ": Promise<string>[] =", .replacement = " =" },
+        .{ .needle = ": Buffer[] =", .replacement = " =" },
         .{ .needle = "new Promise<number | null>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<void>(", .replacement = "new Promise(" },
+        .{ .needle = "new Promise<Buffer>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<any>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<any[]>(", .replacement = "new Promise(" },
         .{ .needle = ": Loader[] =", .replacement = " =" },
@@ -16237,6 +16283,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import net from \"node:net\";",
             .replacement = "const net = globalThis.__home_import(\"node:net\");",
+        },
+        .{
+            .needle = "import { createConnection, createServer } from \"node:net\";",
+            .replacement = "const { createConnection, createServer } = globalThis.__home_import(\"node:net\");",
         },
         .{
             .needle = "import tls from \"node:tls\";",
@@ -20614,6 +20664,22 @@ test "Bun corpus import rewrite lowers net default import" {
     try std.testing.expect(!hasUnsupportedModuleSyntax(rewritten));
 }
 
+test "Bun corpus import rewrite lowers named node net imports" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { createConnection, createServer } from "node:net";
+        \\test("net", () => {
+        \\  expect(createConnection).toBeFunction();
+        \\  expect(createServer).toBeFunction();
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/22481.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { createConnection, createServer } = globalThis.__home_import(\"node:net\");") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(rewritten));
+}
+
 test "bootstrap net connect preserves high header bytes for Bun.serve" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -22491,6 +22557,46 @@ test "bootstrap runner mirrors issue 22475 cookie expiration" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22475.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22481 net Uint8Array writes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { createConnection, createServer } from "node:net";
+        \\
+        \\test("client socket can write Uint8Array", async () => {
+        \\  const server = createServer(socket => {
+        \\    socket.on("data", data => {
+        \\      socket.write(data);
+        \\      socket.end();
+        \\    });
+        \\  });
+        \\  await new Promise(resolve => server.listen(0, "127.0.0.1", () => resolve()));
+        \\  const port = server.address().port;
+        \\  const u8 = new Uint8Array([72, 111, 109, 101]);
+        \\  const received = await new Promise(resolve => {
+        \\    const client = createConnection(port, "127.0.0.1", () => client.write(u8));
+        \\    let data = "";
+        \\    client.on("data", chunk => { data += chunk.toString(); });
+        \\    client.on("end", () => resolve(data));
+        \\  });
+        \\  expect(received).toBe("Home");
+        \\  server.close();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22481.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
