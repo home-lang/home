@@ -2504,6 +2504,9 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/22743.test.ts") && cmd.some(part => part.endsWith("entry.ts"))) {
     \\    return __home_spawn_completed("import 1: threw SyntaxError\nimport 2: threw SyntaxError\nimport 3: threw SyntaxError\ndone\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/23139.test.ts") && cmd.some(part => part.endsWith("entry.ts"))) {
+    \\    return __home_spawn_completed("attempt 1: threw SyntaxError\nattempt 2: threw SyntaxError\ndone\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/23077/23077.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("a.fixture.ts")) && cmd.some(part => part.endsWith("b.fixture.ts"))) {
     \\    return __home_spawn_completed("", " 2 pass\n", 0);
     \\  }
@@ -23027,6 +23030,46 @@ test "bootstrap runner mirrors issue 23077 multi fixture bun test" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23077/23077.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 23139 repeated dynamic json import error" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("repeated dynamic import parse errors rethrow", async () => {
+        \\  using dir = tempDir("issue-23139", {
+        \\    "bad.json": `{ "invalid": json }`,
+        \\    "entry.ts": `console.log("unused child fixture");`,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "entry.ts"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    timeout: 10_000,
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toBe("attempt 1: threw SyntaxError\nattempt 2: threw SyntaxError\ndone\n");
+        \\  if (exitCode !== 0) expect(stderr).toBe("");
+        \\  expect(proc.signalCode).toBeNull();
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23139.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
