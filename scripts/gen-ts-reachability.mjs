@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Classifies every `catalog-only` diagnostic code in
-// docs/TS_DIAGNOSTIC_CODE_STATUS.md as either REACHABLE (the reference
-// compiler, typescript-go, actually references the diagnostic in its own
-// source — a genuine parity target Home should eventually emit) or DEAD
-// (present only in the upstream message table, never referenced by tsgo —
-// obsolete wording, e.g. the pre-Go TS6015 option descriptions superseded
-// by TS6705, or codes that exist only in the classic tsc that tsgo dropped).
+// docs/TS_DIAGNOSTIC_CODE_STATUS.md as ACTIVE (the reference compiler,
+// typescript-go, actually references the diagnostic in live source — a
+// genuine parity target Home should eventually emit), BLOCKED/EFFECTIVELY
+// DEAD (referenced by tsgo but only through a known dead or subsystem-gated
+// path), or DEAD (present only in the upstream message table, never referenced
+// by tsgo — obsolete wording, e.g. the pre-Go TS6015 option descriptions
+// superseded by TS6705, or codes that exist only in classic tsc that tsgo
+// dropped).
 //
 // This makes "100% faithful parity" well-defined: faithful parity means
 // emitting the REACHABLE set, not chasing DEAD codes the reference compiler
@@ -89,8 +91,29 @@ function isReachable(name) {
 }
 
 const reachable = [];
+const effectivelyDead = [];
 const dead = [];
-for (const row of catalogOnly) (isReachable(row.name) ? reachable : dead).push(row);
+
+const effectivelyDeadByCode = new Map([
+  [
+    "TS5078",
+    "Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.",
+  ],
+  [
+    "TS5079",
+    "Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.",
+  ],
+]);
+
+for (const row of catalogOnly) {
+  if (!isReachable(row.name)) {
+    dead.push(row);
+  } else if (effectivelyDeadByCode.has(row.code)) {
+    effectivelyDead.push(row);
+  } else {
+    reachable.push(row);
+  }
+}
 
 // --- range buckets for the reachable worklist -----------------------------
 function bucket(code) {
@@ -121,24 +144,29 @@ out.push(
   "Splits the `catalog-only` rows of [TS_DIAGNOSTIC_CODE_STATUS.md](./TS_DIAGNOSTIC_CODE_STATUS.md)",
 );
 out.push(
-  "into codes the reference compiler (typescript-go) **actually references in source**",
+  "into active parity targets the reference compiler (typescript-go) **actually",
 );
 out.push(
-  "(*reachable* — genuine parity targets) versus codes present only in the upstream",
+  "references in live source**, known blocked/effectively-dead references,",
 );
 out.push(
-  "message table that tsgo never emits (*dead* — obsolete wording, test-only fixtures, or classic-tsc-only).",
+  "and codes present only in the upstream",
+);
+out.push(
+  "message table that tsgo never emits (`dead` — obsolete wording, test-only fixtures, or classic-tsc-only).",
 );
 out.push("");
-out.push("**Faithful parity = emit the reachable set.** Dead codes correctly stay");
-out.push("`catalog-only`; emitting them would diverge from the reference compiler.");
+out.push("**Faithful parity = emit the active parity-target set.** Dead and");
+out.push("effectively-dead codes correctly stay `catalog-only`; emitting them would");
+out.push("diverge from the reference compiler.");
 out.push("");
 out.push("## Summary");
 out.push("");
 out.push("| Bucket | Count |");
 out.push("| --- | ---: |");
 out.push(`| catalog-only total | ${catalogOnly.length} |`);
-out.push(`| reachable (parity targets) | ${reachable.length} |`);
+out.push(`| active reachable (parity targets) | ${reachable.length} |`);
+out.push(`| blocked/effectively-dead references | ${effectivelyDead.length} |`);
 out.push(`| dead in tsgo (leave catalog-only) | ${dead.length} |`);
 out.push("");
 out.push("## Reachable worklist by range");
@@ -157,24 +185,27 @@ for (const [b, rows] of [...byBucket.entries()].sort((a, c) => c[1].length - a[1
   }
   out.push("");
 }
+out.push("## Blocked/effectively-dead references");
+out.push("");
+out.push("These codes have production-looking tsgo references, but the reachable");
+out.push("consumer path is currently dead or subsystem-gated. They stay");
+out.push("`catalog-only` until the reference compiler grows a live emission path.");
+out.push("");
+for (const r of effectivelyDead.sort((x, y) => Number(x.code.slice(2)) - Number(y.code.slice(2)))) {
+  out.push(`- ${r.code} \`${r.key}\` — ${effectivelyDeadByCode.get(r.code)}`);
+}
+out.push("");
 out.push("## Notes: heuristic false-positives & subsystem-gated clusters");
 out.push("");
-out.push("Some codes the heuristic marks *reachable* are blocked or effectively");
-out.push("dead. Confirm against this list before picking one:");
+out.push("Confirm against this list before picking one:");
 out.push("");
-out.push("- **Effectively dead despite a reference** — the diagnostic name appears");
-out.push("  only inside a config struct literal whose consumer is dead/commented in");
-out.push("  tsgo, so it is never emitted: **TS5078 / TS5079** (`Unknown_watch_option…`)");
-out.push("  live in `watchOptionsDidYouMeanDiagnostics`, but tsgo's JSON `watchOptions`");
-out.push("  parsing is commented out. The live command-line watch-option type");
-out.push("  mismatch path is TS5080.");
-out.push("- **Effectively dead despite a JSX precondition reference** — **TS2602**");
+out.push("- Effectively dead despite a JSX precondition reference — `TS2602`");
 out.push("  is still referenced by `checkJsxPreconditions`, but tsgo's");
 out.push("  `getJsxElementTypeAt` currently returns `errorType` rather than nil for");
 out.push("  a missing `JSX.Element`, so the nil-check never fires. Observable");
 out.push("  no-namespace JSX cases emit TS7026 instead.");
-out.push("- **`tsc --build` mode (not yet in Home)** — **TS5072 / TS5073 / TS5077**");
-out.push("  (build-option parse errors) and **TS5093 / TS5094** (`--build`-only vs");
+out.push("- `tsc --build` mode (not yet in Home) — `TS5072` / `TS5073` / `TS5077`");
+out.push("  (build-option parse errors) and `TS5093` / `TS5094` (`--build`-only vs");
 out.push("  non-`--build` option gating) require the project-references build");
 out.push("  orchestrator. Implement `tsc -b` before these.");
 out.push("");
@@ -192,6 +223,6 @@ out.push("</details>");
 out.push("");
 
 process.stderr.write(
-  `catalog-only ${catalogOnly.length} = reachable ${reachable.length} + dead ${dead.length}\n`,
+  `catalog-only ${catalogOnly.length} = active ${reachable.length} + effectively-dead ${effectivelyDead.length} + dead ${dead.length}\n`,
 );
 process.stdout.write(out.join("\n"));
