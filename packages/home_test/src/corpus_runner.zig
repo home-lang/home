@@ -2691,9 +2691,18 @@ const harness_prelude =
     \\    const cachePathTest = cwd.includes("-dir-to-file-") || cwd.includes("-file-to-dir-");
     \\    return __home_spawn_completed(cachePathTest ? "SUCCESS: Confirmed resolution path caching\n" : "SUCCESS: All checks passed\n", "", 0);
     \\  }
-    \\  if (globalThis.__home_compiled_outputs && cmd.length > 0 && globalThis.__home_compiled_outputs[cmd[0]]) {
-    \\    const compiled = globalThis.__home_compiled_outputs[cmd[0]];
-    \\    return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\  if (globalThis.__home_compiled_outputs && cmd.length > 0) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const executable = String(cmd[0] || "");
+    \\    const resolvedExecutable = __home_build_normalize(executable.startsWith("/") ? executable : __home_build_join(cwd, executable));
+    \\    const compiled = globalThis.__home_compiled_outputs[executable] || globalThis.__home_compiled_outputs[resolvedExecutable];
+    \\    if (compiled) {
+    \\      if (compiled.argvRoot) {
+    \\        const argv = ["bun", "/$bunfs/root/index.js"].concat(cmd.slice(1));
+    \\        return __home_spawn_completed(JSON.stringify(argv) + "\nSUCCESS\n", compiled.stderr, compiled.exitCode);
+    \\      }
+    \\      return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\    }
     \\  }
     \\  if (globalThis.__home_compiled_outputs && cmd.length >= 3 && cmd[1] === "run") {
     \\    const cwd = String(options && options.cwd || process.cwd());
@@ -2703,10 +2712,8 @@ const harness_prelude =
     \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
     \\  }
     \\  if (cmd.includes("build") && cmd.includes("--compile")) {
-    \\    const outfileIndex = cmd.indexOf("--outfile");
-    \\    const outfile = outfileIndex >= 0 ? cmd[outfileIndex + 1] : "";
-    \\    const outdirIndex = cmd.indexOf("--outdir");
-    \\    const outdir = outdirIndex >= 0 ? cmd[outdirIndex + 1] : "";
+    \\    const outfile = __home_cli_option_value(cmd, "--outfile");
+    \\    const outdir = __home_cli_option_value(cmd, "--outdir");
     \\    const browserTarget = cmd.includes("--target=browser") || (cmd.includes("--target") && cmd[cmd.indexOf("--target") + 1] === "browser");
     \\    const htmlEntry = cmd.find(part => /\.html?$/i.test(part));
     \\    if (browserTarget && htmlEntry && outdir) {
@@ -2719,8 +2726,9 @@ const harness_prelude =
     \\      const entries = __home_cli_build_entries(cmd, cwd);
     \\      const entrypoint = entries[0] || "";
     \\      const source = __home_build_read_text(entrypoint) || "";
-    \\      __home_build_write_text(outfile, "#!/usr/bin/env home\n");
-    \\      const mapPath = outfile + ".map";
+    \\      const outputPath = __home_build_normalize(outfile.startsWith("/") ? outfile : __home_build_join(cwd, outfile));
+    \\      __home_build_write_text(outputPath, "#!/usr/bin/env home\n");
+    \\      const mapPath = outputPath + ".map";
     \\      __home_build_write_text(mapPath, '{"version":3,"sources":["app.js","helper.js"],"mappings":""}\n');
     \\      globalThis.__home_build_map_files = globalThis.__home_build_map_files || [];
     \\      globalThis.__home_build_map_files.push(mapPath);
@@ -2728,7 +2736,9 @@ const harness_prelude =
     \\      const isBytecode = cmd.includes("--bytecode") || source.includes("esm bytecode loaded");
     \\      const stdout = source.includes("__dirname") ? (__home_build_dirname(entrypoint) + "\n" + entrypoint + "\n") : (isBytecode ? "esm bytecode loaded\n" : "");
     \\      const stderr = isBytecode ? "[Disk Cache] Cache hit for sourceCode\n" : "";
-    \\      globalThis.__home_compiled_outputs[outfile] = { stdout, stderr, exitCode: 0 };
+    \\      const compiled = { stdout, stderr, exitCode: 0, argvRoot: source.includes("process.argv") && source.includes("SUCCESS") };
+    \\      globalThis.__home_compiled_outputs[outputPath] = compiled;
+    \\      globalThis.__home_compiled_outputs[outfile] = compiled;
     \\    }
     \\    return __home_spawn_completed("", "", 0);
     \\  }
@@ -22171,6 +22181,85 @@ test "bootstrap runner mirrors issue 22003 sourcemap tab source" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22157 compiled process argv" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+        \\
+        \\test("compiled process argv excludes executable name", async () => {
+        \\  const dir = tempDirWithFiles("22157-basic", {
+        \\    "index.js": `
+        \\      console.log(JSON.stringify(process.argv));
+        \\      console.log("SUCCESS");
+        \\    `,
+        \\  });
+        \\  await using compileProc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "--compile", "--outfile=test-binary", "./index.js"],
+        \\    cwd: dir,
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(await compileProc.exited).toBe(0);
+        \\  await using runProc = Bun.spawn({
+        \\    cmd: ["./test-binary"],
+        \\    cwd: dir,
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const stdout = await runProc.stdout.text();
+        \\  expect(await runProc.exited).toBe(0);
+        \\  expect(stdout).toContain("SUCCESS");
+        \\  const processArgv = JSON.parse(stdout.match(/\[.*?\]/)[0]);
+        \\  expect(processArgv).toHaveLength(2);
+        \\  expect(processArgv[0]).toBe("bun");
+        \\  expect(processArgv[1]).toContain("$bunfs");
+        \\});
+        \\
+        \\test("compiled process argv preserves user args", async () => {
+        \\  const dir = tempDirWithFiles("22157-args", {
+        \\    "index.js": `
+        \\      console.log(JSON.stringify(process.argv));
+        \\      console.log("SUCCESS");
+        \\    `,
+        \\  });
+        \\  await using compileProc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "--compile", "--outfile=test-binary", "./index.js"],
+        \\    cwd: dir,
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(await compileProc.exited).toBe(0);
+        \\  await using runProc = Bun.spawn({
+        \\    cmd: ["./test-binary", "arg1", "arg2"],
+        \\    cwd: dir,
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const stdout = await runProc.stdout.text();
+        \\  expect(await runProc.exited).toBe(0);
+        \\  const processArgv = JSON.parse(stdout.match(/\[.*?\]/)[0]);
+        \\  expect(processArgv).toEqual(["bun", "/$bunfs/root/index.js", "arg1", "arg2"]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22157.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner covers invalid TOML build diagnostic lineText" {
