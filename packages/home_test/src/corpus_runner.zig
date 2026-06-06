@@ -3543,10 +3543,12 @@ const harness_prelude =
     \\  for (const name of Object.keys(cookieJar.__home_values)) out.push(name + "=" + cookieJar.__home_values[name] + "; Path=/; SameSite=Lax");
     \\  return out;
     \\}
-    \\function __home_serve_response_with_cookies(value, request) {
+    \\function __home_serve_response_with_cookies(value, request, staticRouteDefaultTextType) {
     \\  if (value && value.__home_upgrade_response) return value;
     \\  const out = value instanceof Response ? value : new Response(value);
     \\  const headers = new Headers(out.headers);
+    \\  const bodyValue = out.body && Object.prototype.hasOwnProperty.call(out.body, "__home_body_value") ? out.body.__home_body_value : undefined;
+    \\  if (staticRouteDefaultTextType && headers.get("content-type") === null && typeof bodyValue === "string") headers.set("content-type", "text/plain; charset=utf-8");
     \\  const cookieHeaders = __home_serve_cookie_headers(request.cookies);
     \\  if (cookieHeaders.length > 0) headers.set("set-cookie", cookieHeaders.join(", "));
     \\  return new Response(out.body, { status: out.status, statusText: out.statusText, headers });
@@ -3601,11 +3603,13 @@ const harness_prelude =
     \\        cloned.cookies = __home_serve_cookie_jar(request.cookies && request.cookies.__home_values);
     \\        return cloned;
     \\      };
-    \\      const response = routes[pattern](request);
+    \\      const route = routes[pattern];
+    \\      const isStaticRoute = typeof route !== "function";
+    \\      const response = isStaticRoute ? route : route(request);
     \\      if (request.__home_upgrade_response) return request.__home_upgrade_response;
     \\      return Promise.resolve(response).then(value => {
     \\        if (request.__home_upgrade_response) return request.__home_upgrade_response;
-    \\        return __home_serve_response_with_cookies(value, request);
+    \\        return __home_serve_response_with_cookies(value, request, isStaticRoute);
     \\      });
     \\    }
     \\    if (typeof fallbackFetch === "function") {
@@ -23254,6 +23258,62 @@ test "bootstrap runner accepts Bun.serve static HTML route shape" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24817 static unicode routes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("static routes should handle unicode correctly", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    routes: {
+        \\      "/dynamic": () => new Response("\u25b2"),
+        \\      "/static": new Response("\u25b2"),
+        \\      "/unicode-string": new Response("\u3053\u3093\u306b\u3061\u306f\u4e16\u754c"),
+        \\      "/emoji": new Response("\ud83c\udf89\ud83d\ude80\u2728"),
+        \\    },
+        \\  });
+        \\  const baseUrl = server.url.href;
+        \\
+        \\  const staticResp = await fetch(`${baseUrl}/static`);
+        \\  expect(await staticResp.text()).toBe("\u25b2");
+        \\  expect(staticResp.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+        \\
+        \\  const unicodeResp = await fetch(`${baseUrl}/unicode-string`);
+        \\  expect(await unicodeResp.text()).toBe("\u3053\u3093\u306b\u3061\u306f\u4e16\u754c");
+        \\  expect(unicodeResp.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+        \\
+        \\  const emojiResp = await fetch(`${baseUrl}/emoji`);
+        \\  expect(await emojiResp.text()).toBe("\ud83c\udf89\ud83d\ude80\u2728");
+        \\  expect(emojiResp.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+        \\});
+        \\
+        \\test("static routes with explicit content-type should not override", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    routes: {
+        \\      "/custom": new Response("\u25b2", { headers: { "content-type": "text/html" } }),
+        \\    },
+        \\  });
+        \\  const resp = await fetch(`${server.url.href}/custom`);
+        \\  expect(await resp.text()).toBe("\u25b2");
+        \\  expect(resp.headers.get("content-type")).toBe("text/html");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24817.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap rewrite lowers node buffer default and named imports" {
