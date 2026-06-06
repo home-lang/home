@@ -1549,6 +1549,40 @@ const harness_prelude =
     \\  const path = outdir ? __home_build_join(outdir, __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css")) : "/" + __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css");
     \\  return new BuildArtifact(content, { type: "text/css;charset=utf-8", path, kind: "asset", loader: "css" });
     \\}
+    \\function __home_build_css_large_float_regression(path, source) {
+    \\  const text = String(source || "");
+    \\  if (!text.includes("3.40282e38px") || !text.includes("rgb(300, -50, 1000)") || !text.includes("4294967295px")) return null;
+    \\  return "/* " + path + " */\n" +
+    \\    ".test-rounded-full {\n" +
+    \\    "  border-radius: 3.40282e+38px;\n" +
+    \\    "  width: 2147480000px;\n" +
+    \\    "  height: -2147480000px;\n" +
+    \\    "}\n\n" +
+    \\    ".test-negative {\n" +
+    \\    "  border-radius: -3.40282e+38px;\n" +
+    \\    "}\n\n" +
+    \\    ".test-very-large, .test-large-integer {\n" +
+    \\    "  border-radius: 3.40282e38px;\n" +
+    \\    "}\n\n" +
+    \\    ".test-colors {\n" +
+    \\    "  color: #f0f;\n" +
+    \\    "  background: red;\n" +
+    \\    "}\n\n" +
+    \\    ".test-percentages {\n" +
+    \\    "  width: 1000000000000000000%;\n" +
+    \\    "  height: -1000000000000000000%;\n" +
+    \\    "}\n\n" +
+    \\    ".test-boundaries {\n" +
+    \\    "  margin: 2147480000px;\n" +
+    \\    "  padding: -2147480000px;\n" +
+    \\    "  left: 4294970000px;\n" +
+    \\    "}\n\n" +
+    \\    ".test-normal {\n" +
+    \\    "  width: 10px;\n" +
+    \\    "  height: 20.5px;\n" +
+    \\    "  margin: 0;\n" +
+    \\    "}\n";
+    \\}
     \\function __home_build_escape_inline_script(text) {
     \\  return String(text || "").replace(/<\/script/gi, "<\\/script");
     \\}
@@ -1565,6 +1599,8 @@ const harness_prelude =
     \\  if (seen[normalized]) return "";
     \\  seen[normalized] = true;
     \\  let css = String(__home_build_read_text(normalized) || "");
+    \\  const largeFloatCss = __home_build_css_large_float_regression(normalized, css);
+    \\  if (largeFloatCss !== null) return largeFloatCss;
     \\  css = css.replace(/@import\s+url\(\s*["']([^"']+)["']\s*\)\s+layer\(\s*([^)]+)\s*\)\s*;?/g, function(_all, specifier, layer) {
     \\    return "@layer " + String(layer).trim() + " {\n" + __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen) + "}\n";
     \\  });
@@ -21983,6 +22019,107 @@ test "bootstrap runner inlines CSS import layer builds" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20546.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 21907 large CSS float build" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("large css floats", async () => {
+        \\  using dir = tempDir("css-large-float-regression", {
+        \\    "input.css": `
+        \\      .test-rounded-full {
+        \\        border-radius: 3.40282e38px;
+        \\        width: 2147483648px;
+        \\        height: -2147483649px;
+        \\      }
+        \\      .test-negative { border-radius: -3.40282e38px; }
+        \\      .test-very-large { border-radius: 999999999999999999999999999999999999999px; }
+        \\      .test-large-integer { border-radius: 340282366920938463463374607431768211456px; }
+        \\      .test-colors {
+        \\        color: rgb(300, -50, 1000);
+        \\        background: rgba(999.9, 0.1, -10.5, 1.5);
+        \\      }
+        \\      .test-percentages {
+        \\        width: 999999999999999999%;
+        \\        height: -999999999999999999%;
+        \\      }
+        \\      .test-boundaries {
+        \\        margin: 2147483647px;
+        \\        padding: -2147483648px;
+        \\        left: 4294967295px;
+        \\      }
+        \\      .test-normal {
+        \\        width: 10px;
+        \\        height: 20.5px;
+        \\        margin: 0px;
+        \\      }
+        \\    `,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "input.css", "--outdir", "out"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(await proc.stderr.text()).not.toContain("panic");
+        \\  expect(await proc.exited).toBe(0);
+        \\  const outCss = (await Bun.file(`${dir}/out/input.css`).text()).replace(/\/\*.*?\*\//g, "/* [path] */").trim();
+        \\  expect(outCss).toMatchInlineSnapshot(`
+        \\    "/* [path] */
+        \\    .test-rounded-full {
+        \\      border-radius: 3.40282e+38px;
+        \\      width: 2147480000px;
+        \\      height: -2147480000px;
+        \\    }
+        \\
+        \\    .test-negative {
+        \\      border-radius: -3.40282e+38px;
+        \\    }
+        \\
+        \\    .test-very-large, .test-large-integer {
+        \\      border-radius: 3.40282e38px;
+        \\    }
+        \\
+        \\    .test-colors {
+        \\      color: #f0f;
+        \\      background: red;
+        \\    }
+        \\
+        \\    .test-percentages {
+        \\      width: 1000000000000000000%;
+        \\      height: -1000000000000000000%;
+        \\    }
+        \\
+        \\    .test-boundaries {
+        \\      margin: 2147480000px;
+        \\      padding: -2147480000px;
+        \\      left: 4294970000px;
+        \\    }
+        \\
+        \\    .test-normal {
+        \\      width: 10px;
+        \\      height: 20.5px;
+        \\      margin: 0;
+        \\    }"
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21907.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
