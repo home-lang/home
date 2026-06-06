@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 588 |
-| reachable (parity targets) | 127 |
+| catalog-only total | 587 |
+| reachable (parity targets) | 126 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -27,7 +27,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | 2xxx — checker / type engine | 14 |
 | other | 14 |
-| 7xxx — noImplicitAny / implicit-type family | 7 |
+| 7xxx — noImplicitAny / implicit-type family | 6 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
@@ -162,9 +162,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 7xxx — noImplicitAny / implicit-type family (7)
+### 7xxx — noImplicitAny / implicit-type family (6)
 
-- TS7012 `This_overload_implicitly_returns_the_type_0_because_it_lacks_a_return_type_annotation_7012`
 - TS7035 `Try_npm_i_save_dev_types_Slash_1_if_it_exists_or_add_a_new_declaration_d_ts_file_containing_declare__7035`
 - TS7038 `Type_originates_at_this_import_A_namespace_style_import_cannot_be_called_or_constructed_and_will_cau_7038`
 - TS7040 `If_the_0_package_actually_exposes_this_module_consider_sending_a_pull_request_to_amend_https_Colon_S_7040`
