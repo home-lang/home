@@ -670,9 +670,11 @@ const harness_prelude =
     \\  return value;
     \\}
     \\function __home_timer_handle(id, record) {
+    \\  const idleStart = record && typeof record.idleStart === "number" ? record.idleStart : Date.now();
     \\  const handle = {
     \\    __home_timer_id: id,
     \\    __home_timer_record: record || null,
+    \\    _idleStart: idleStart,
     \\    ref() { return this; },
     \\    unref() {
     \\      const item = this.__home_timer_record || __home_all_timer_records.get(id);
@@ -702,7 +704,7 @@ const harness_prelude =
     \\function __home_schedule_fake_timer(callback, delay, args, interval) {
     \\  const id = __home_next_timer_id++;
     \\  const delayMs = __home_normalize_timer_delay(delay);
-    \\  const item = { id, callback, args, delay: delayMs, interval: !!interval, time: __home_fake_timers_now + delayMs, cleared: false, active: true };
+    \\  const item = { id, callback, args, delay: delayMs, interval: !!interval, idleStart: __home_fake_timers_now, time: __home_fake_timers_now + delayMs, cleared: false, active: true };
     \\  __home_fake_timer_records.set(id, item);
     \\  __home_all_timer_records.set(id, item);
     \\  return __home_timer_handle(id, item);
@@ -789,12 +791,15 @@ const harness_prelude =
     \\    Promise.resolve().then(() => process.emitWarning("Timeout duration was set to 1.", "TimeoutNaNWarning"));
     \\  }
     \\  const delayMs = Math.max(0, Number(delay) || 0);
+    \\  const record = { id, delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true };
+    \\  __home_all_timer_records.set(id, record);
     \\  let turn = Promise.resolve();
     \\  if (delayMs > 0) {
     \\    turn = turn.then(() => undefined).then(() => undefined).then(() => undefined).then(() => undefined);
     \\  }
     \\  turn.then(() => {
     \\    if (__home_cancelled_timers.has(id)) return;
+    \\    if (record.cleared || !record.active) return;
     \\    if (delayMs > 0 && delayMs <= 250) {
     \\      const started = Date.now();
     \\      while (Date.now() - started < delayMs) {}
@@ -805,8 +810,9 @@ const harness_prelude =
     \\      globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
     \\    }
     \\    if (typeof callback === "function") callback.apply(undefined, args);
+    \\    record.active = false;
     \\  });
-    \\  return __home_timer_handle(id, null);
+    \\  return __home_timer_handle(id, record);
     \\}
     \\function clearTimeout(id) {
     \\  __home_clear_fake_timer(id);
@@ -816,7 +822,7 @@ const harness_prelude =
     \\  const id = __home_next_timer_id++;
     \\  const args = Array.prototype.slice.call(arguments, 2);
     \\  const delayMs = __home_normalize_timer_delay(delay);
-    \\  const record = { id, callback, args, delay: delayMs, interval: true, time: Date.now(), cleared: false, active: true, ticks: 0 };
+    \\  const record = { id, callback, args, delay: delayMs, interval: true, idleStart: Date.now(), time: Date.now(), cleared: false, active: true, ticks: 0 };
     \\  const run = () => {
     \\    if (record.cleared || !record.active || __home_cancelled_timers.has(id)) return;
     \\    record.ticks++;
@@ -21145,6 +21151,32 @@ test "bootstrap runner mirrors frontend files splitting corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors timer idleStart corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25639.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25639.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "_idleStart") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "_idleStart: idleStart") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
