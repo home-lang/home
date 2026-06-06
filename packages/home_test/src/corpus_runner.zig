@@ -9485,6 +9485,42 @@ const harness_prelude =
     \\}
     \\globalThis.__home_modules["module"] = { SourceMap };
     \\globalThis.__home_modules["node:module"] = globalThis.__home_modules["module"];
+    \\class __home_AssertionError extends Error {
+    \\  constructor(options) {
+    \\    super(options && options.message ? options.message : "Assertion failed");
+    \\    this.name = "AssertionError";
+    \\    this.code = "ERR_ASSERTION";
+    \\    if (options) {
+    \\      this.actual = options.actual;
+    \\      this.expected = options.expected;
+    \\      this.operator = options.operator;
+    \\    }
+    \\  }
+    \\}
+    \\function __home_partial_deep_equal(actual, expected, seen) {
+    \\  if (Object.is(actual, expected)) return true;
+    \\  if (expected === null || typeof expected !== "object") return false;
+    \\  if (actual === null || typeof actual !== "object") return false;
+    \\  const previous = seen.get(actual);
+    \\  if (previous === expected) return true;
+    \\  seen.set(actual, expected);
+    \\  if (actual instanceof Map || expected instanceof Map) {
+    \\    if (!(actual instanceof Map) || !(expected instanceof Map)) return false;
+    \\    if (expected.size > actual.size) return false;
+    \\    for (const entry of expected) {
+    \\      const key = entry[0];
+    \\      const value = entry[1];
+    \\      if (!actual.has(key) || !__home_partial_deep_equal(actual.get(key), value, seen)) return false;
+    \\    }
+    \\    return true;
+    \\  }
+    \\  if (Array.isArray(actual) || Array.isArray(expected)) return __home_deep_equal(actual, expected, true, seen);
+    \\  for (const key of Object.keys(expected)) {
+    \\    if (!Object.prototype.hasOwnProperty.call(actual, key)) return false;
+    \\    if (!__home_partial_deep_equal(actual[key], expected[key], seen)) return false;
+    \\  }
+    \\  return true;
+    \\}
     \\function __home_assert_module(value, message) {
     \\  if (!value) throw new Error(message || "Assertion failed");
     \\}
@@ -9500,6 +9536,10 @@ const harness_prelude =
     \\__home_assert_module.deepStrictEqual = function(actual, expected, message) {
     \\  if (!__home_deep_equal(actual, expected, true, new Map())) throw new Error(message || ("Expected " + __home_format(actual) + " to deeply equal " + __home_format(expected)));
     \\};
+    \\__home_assert_module.partialDeepStrictEqual = function(actual, expected, message) {
+    \\  if (!__home_partial_deep_equal(actual, expected, new Map())) throw new __home_AssertionError({ message: message || ("Expected " + __home_format(actual) + " to partially deeply equal " + __home_format(expected)), actual, expected, operator: "partialDeepStrictEqual" });
+    \\};
+    \\__home_assert_module.AssertionError = __home_AssertionError;
     \\__home_assert_module.fail = function(message) {
     \\  throw new Error(message || "Failed");
     \\};
@@ -16479,6 +16519,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "new Promise<Buffer>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<any>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<any[]>(", .replacement = "new Promise(" },
+        .{ .needle = "new Map<string, unknown>()", .replacement = "new Map()" },
         .{ .needle = ": Loader[] =", .replacement = " =" },
         .{ .needle = ": MetafileInput | null =", .replacement = " =" },
         .{ .needle = ": MetafileImport[] | null =", .replacement = " =" },
@@ -29719,6 +29760,78 @@ test "bootstrap runner mirrors issue 24314 pm pack lifecycle tarball" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24338 partialDeepStrictEqual maps" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import assert from "node:assert";
+        \\import { test } from "node:test";
+        \\
+        \\test("partialDeepStrictEqual with Map subset - basic case", () => {
+        \\  assert.partialDeepStrictEqual(
+        \\    new Map([
+        \\      ["key1", "value1"],
+        \\      ["key2", "value2"],
+        \\    ]),
+        \\    new Map([["key2", "value2"]]),
+        \\  );
+        \\});
+        \\
+        \\test("partialDeepStrictEqual with Map - nested objects as values", () => {
+        \\  assert.partialDeepStrictEqual(
+        \\    new Map([
+        \\      ["config", { debug: true, verbose: false }],
+        \\      ["data", { items: [1, 2, 3] }],
+        \\    ]),
+        \\    new Map([["config", { debug: true }]]),
+        \\  );
+        \\});
+        \\
+        \\test("partialDeepStrictEqual with Map - should fail when expected has more keys", () => {
+        \\  assert.throws(
+        \\    () =>
+        \\      assert.partialDeepStrictEqual(
+        \\        new Map([["key1", "value1"]]),
+        \\        new Map([
+        \\          ["key1", "value1"],
+        \\          ["key2", "value2"],
+        \\        ]),
+        \\      ),
+        \\    assert.AssertionError,
+        \\  );
+        \\});
+        \\
+        \\test("partialDeepStrictEqual with Map - nested Map values", () => {
+        \\  assert.partialDeepStrictEqual(
+        \\    new Map([["outer", new Map([["inner1", 1], ["inner2", 2]])]]),
+        \\    new Map([["outer", new Map([["inner1", 1]])]]),
+        \\  );
+        \\});
+        \\
+        \\test("partialDeepStrictEqual with Map - circular reference", () => {
+        \\  const actualMap = new Map<string, unknown>();
+        \\  actualMap.set("self", actualMap);
+        \\  actualMap.set("other", "value");
+        \\
+        \\  const expectedMap = new Map<string, unknown>();
+        \\  expectedMap.set("self", expectedMap);
+        \\
+        \\  assert.partialDeepStrictEqual(actualMap, expectedMap);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24338.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner supports node fs rename and unlink sync methods" {
