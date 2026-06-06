@@ -1092,6 +1092,50 @@ const harness_prelude =
     \\  }
     \\  return Object.keys(entries);
     \\}
+    \\function __home_fs_dirent(name, parentPath, isDirectory) {
+    \\  return {
+    \\    name: String(name || ""),
+    \\    parentPath: String(parentPath || ""),
+    \\    path: String(parentPath || ""),
+    \\    isBlockDevice() { return false; },
+    \\    isCharacterDevice() { return false; },
+    \\    isDirectory() { return !!isDirectory; },
+    \\    isFIFO() { return false; },
+    \\    isFile() { return !isDirectory; },
+    \\    isSocket() { return false; },
+    \\    isSymbolicLink() { return false; },
+    \\  };
+    \\}
+    \\function __home_fs_entry_is_directory(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  if (__home_fs_dir_exists(text)) return true;
+    \\  if (__home_build_file_exists(text)) return false;
+    \\  return false;
+    \\}
+    \\function __home_fs_readdir_recursive(path, options) {
+    \\  const root = __home_fs_normalize_path(path);
+    \\  const withFileTypes = !!(options && typeof options === "object" && options.withFileTypes);
+    \\  const out = [];
+    \\  function visit(dir, prefix) {
+    \\    const names = __home_fs_readdir_sync(dir).sort();
+    \\    for (const name of names) {
+    \\      const full = __home_build_join(dir, name);
+    \\      const relative = prefix ? __home_build_join(prefix, name) : name;
+    \\      const isDirectory = __home_fs_entry_is_directory(full);
+    \\      if (withFileTypes) out.push(__home_fs_dirent(name, dir, isDirectory));
+    \\      else out.push(relative);
+    \\      if (isDirectory) visit(full, relative);
+    \\    }
+    \\  }
+    \\  visit(root, "");
+    \\  return out;
+    \\}
+    \\function __home_fs_glob_sync(pattern, options) {
+    \\  const cwd = __home_fs_normalize_path(options && typeof options === "object" && options.cwd !== undefined ? options.cwd : process.cwd());
+    \\  const text = String(pattern || "");
+    \\  const files = __home_fs_readdir_recursive(cwd, { recursive: true }).filter(name => !__home_fs_entry_is_directory(__home_build_join(cwd, name)));
+    \\  return files.filter(name => __home_path_posix_matches_glob(name, text)).sort();
+    \\}
     \\function __home_build_read_text(path) {
     \\  if (__home_fs_is_deleted(path)) return null;
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, String(path))) return globalThis.__home_written_files[String(path)];
@@ -3874,8 +3918,12 @@ const harness_prelude =
     \\        }
     \\        return files.sort();
     \\      }
-    \\      if (typeof __home_bake_glob_scan !== "function") __home_unsupported("Bun.Glob virtual Bake scanner is not installed");
-    \\      return __home_bake_glob_scan(this.pattern, String(root || ""));
+    \\      if (typeof __home_bake_glob_scan === "function") {
+    \\        const bake = __home_bake_glob_scan(this.pattern, String(root || ""));
+    \\        if (bake && bake.length) return bake;
+    \\      }
+    \\      const cwd = root && typeof root === "object" && root.cwd !== undefined ? root.cwd : root;
+    \\      return __home_fs_glob_sync(this.pattern, { cwd: cwd || process.cwd() });
     \\    };
     \\  },
     \\  $(strings) {
@@ -10264,8 +10312,15 @@ const harness_prelude =
     \\    return wantsBuffer ? Buffer.from(text) : text;
     \\  },
     \\  readdirSync(path, options) {
-    \\    if (options && typeof options === "object" && options.withFileTypes) __home_unsupported("node:fs.readdirSync withFileTypes is not supported by the Home Bun corpus bootstrap runner");
+    \\    if (options && typeof options === "object" && options.recursive) return __home_fs_readdir_recursive(path, options);
+    \\    if (options && typeof options === "object" && options.withFileTypes) return __home_fs_readdir_sync(path).sort().map(name => {
+    \\      const parent = __home_fs_normalize_path(path);
+    \\      return __home_fs_dirent(name, parent, __home_fs_entry_is_directory(__home_build_join(parent, name)));
+    \\    });
     \\    return __home_fs_readdir_sync(path);
+    \\  },
+    \\  globSync(pattern, options) {
+    \\    return __home_fs_glob_sync(pattern, options || {});
     \\  },
     \\  realpathSync(path) {
     \\    if (typeof globalThis.__home_realpathSyncNative !== "function") __home_unsupported("node:fs.realpathSync native bridge is not installed");
@@ -28954,6 +29009,120 @@ test "bootstrap runner supports node fs sync utf8 file methods" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24007 recursive fs glob and readdir" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { tempDir } from "harness";
+        \\import fs from "node:fs";
+        \\import path from "node:path";
+        \\
+        \\test("recursive glob pattern **/*.ts finds nested files", () => {
+        \\  using dir = tempDir("issue-24007", {
+        \\    "server/api/health.get.ts": "x",
+        \\    "server/api/users/list.ts": "x",
+        \\    "server/routes/index.ts": "x",
+        \\    "server/routes/admin/dashboard.ts": "x",
+        \\    "config.ts": "x",
+        \\  });
+        \\  const cwd = String(dir);
+        \\  const results = fs.globSync("**/*.ts", { cwd });
+        \\  expect(results).toContain("config.ts");
+        \\  expect(results).toContain(path.join("server", "api", "health.get.ts"));
+        \\  expect(results).toContain(path.join("server", "api", "users", "list.ts"));
+        \\  expect(results).toContain(path.join("server", "routes", "index.ts"));
+        \\  expect(results).toContain(path.join("server", "routes", "admin", "dashboard.ts"));
+        \\  expect(results.length).toBe(5);
+        \\});
+        \\
+        \\test("recursive glob pattern server/**/*.ts finds files in subdirectory", () => {
+        \\  using dir = tempDir("issue-24007-subdir", {
+        \\    "server/api/health.get.ts": "x",
+        \\    "server/routes/status.ts": "x",
+        \\    "other/file.ts": "x",
+        \\  });
+        \\  const cwd = String(dir);
+        \\  const results = fs.globSync("server/**/*.ts", { cwd });
+        \\  expect(results).toContain(path.join("server", "api", "health.get.ts"));
+        \\  expect(results).toContain(path.join("server", "routes", "status.ts"));
+        \\  expect(results).not.toContain(path.join("other", "file.ts"));
+        \\  expect(results.length).toBe(2);
+        \\});
+        \\
+        \\test("top-level glob pattern server/*.ts finds direct children", () => {
+        \\  using dir = tempDir("issue-24007-toplevel", {
+        \\    "server/index.ts": "x",
+        \\    "server/config.ts": "x",
+        \\    "server/nested/deep.ts": "x",
+        \\  });
+        \\  const cwd = String(dir);
+        \\  const results = fs.globSync("server/*.ts", { cwd });
+        \\  expect(results).toContain(path.join("server", "index.ts"));
+        \\  expect(results).toContain(path.join("server", "config.ts"));
+        \\  expect(results).not.toContain(path.join("server", "nested", "deep.ts"));
+        \\  expect(results.length).toBe(2);
+        \\});
+        \\
+        \\test("Bun.Glob recursive scan finds nested files", () => {
+        \\  using dir = tempDir("issue-24007-bun-glob", {
+        \\    "api/health.get.ts": "x",
+        \\    "api/users/index.ts": "x",
+        \\    "routes/home.ts": "x",
+        \\  });
+        \\  const cwd = String(dir);
+        \\  const glob = new Bun.Glob("**/*.ts");
+        \\  const results = Array.from(glob.scanSync({ cwd }));
+        \\  expect(results).toContain(path.join("api", "health.get.ts"));
+        \\  expect(results).toContain(path.join("api", "users", "index.ts"));
+        \\  expect(results).toContain(path.join("routes", "home.ts"));
+        \\  expect(results.length).toBe(3);
+        \\});
+        \\
+        \\test("fs.readdirSync with recursive option finds all files", () => {
+        \\  using dir = tempDir("issue-24007-readdir", {
+        \\    "a/b/c/file.txt": "content",
+        \\    "a/b/file.txt": "content",
+        \\    "a/file.txt": "content",
+        \\    "file.txt": "content",
+        \\  });
+        \\  const cwd = String(dir);
+        \\  const results = fs.readdirSync(cwd, { recursive: true });
+        \\  expect(results).toContain("file.txt");
+        \\  expect(results).toContain(path.join("a", "file.txt"));
+        \\  expect(results).toContain(path.join("a", "b", "file.txt"));
+        \\  expect(results).toContain(path.join("a", "b", "c", "file.txt"));
+        \\});
+        \\
+        \\test("fs.readdirSync with recursive and withFileTypes returns correct types", () => {
+        \\  using dir = tempDir("issue-24007-dirent", {
+        \\    "dir/subdir/file.txt": "content",
+        \\    "dir/another.txt": "content",
+        \\  });
+        \\  const cwd = String(dir);
+        \\  const results = fs.readdirSync(cwd, { recursive: true, withFileTypes: true });
+        \\  const expectedParent = path.join(cwd, "dir", "subdir");
+        \\  const nestedFile = results.find(d => d.name === "file.txt" && d.parentPath === expectedParent);
+        \\  expect(nestedFile).toBeDefined();
+        \\  expect(nestedFile.isFile()).toBe(true);
+        \\  const dirEntry = results.find(d => d.name === "subdir");
+        \\  expect(dirEntry).toBeDefined();
+        \\  expect(dirEntry.isDirectory()).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24007.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner supports node fs rename and unlink sync methods" {
