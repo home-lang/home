@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 578 |
-| reachable (parity targets) | 117 |
+| catalog-only total | 577 |
+| reachable (parity targets) | 116 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -23,7 +23,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
-| 4xxx — declaration-emit (privacy / serialization) | 18 |
+| 4xxx — declaration-emit (privacy / serialization) | 17 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 2xxx — checker / type engine | 11 |
@@ -86,7 +86,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 
-### 4xxx — declaration-emit (privacy / serialization) (18)
+### 4xxx — declaration-emit (privacy / serialization) (17)
 
 - TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
 - TS4085 `Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085`
@@ -105,7 +105,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS4109 `Type_arguments_for_0_circularly_reference_themselves_4109`
 - TS4110 `Tuple_type_arguments_circularly_reference_themselves_4110`
 - TS4118 `The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118`
-- TS4120 `This_parameter_property_must_have_a_JSDoc_comment_with_an_override_tag_because_it_overrides_a_member_4120`
 
 ### 9xxxx — editor code-fix / refactor (language service) (17)
 
