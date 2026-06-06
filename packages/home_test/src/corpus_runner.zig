@@ -3105,25 +3105,56 @@ const harness_prelude =
     \\};
     \\function __home_serve_cookie_jar(seed) {
     \\  const values = Object.assign(Object.create(null), seed || {});
+    \\  const cookies = [];
     \\  return {
     \\    __home_values: values,
-    \\    set(name, value) {
-    \\      values[String(name)] = String(value);
+    \\    __home_cookies: cookies,
+    \\    set(name, value, options) {
+    \\      const key = String(name);
+    \\      const text = String(value);
+    \\      values[key] = text;
+    \\      const parts = [key + "=" + text];
+    \\      const opts = options && typeof options === "object" ? options : {};
+    \\      parts.push("Path=" + String(opts.path !== undefined ? opts.path : "/"));
+    \\      parts.push("SameSite=" + String(opts.sameSite !== undefined ? opts.sameSite : "Lax"));
+    \\      if (opts.httpOnly) parts.push("HttpOnly");
+    \\      cookies.push(parts.join("; "));
     \\    },
     \\    get(name) {
     \\      return Object.prototype.hasOwnProperty.call(values, String(name)) ? values[String(name)] : undefined;
     \\    },
     \\  };
     \\}
+    \\function __home_serve_cookie_headers(cookieJar) {
+    \\  if (!cookieJar) return [];
+    \\  if (Array.isArray(cookieJar.__home_cookies) && cookieJar.__home_cookies.length > 0) return cookieJar.__home_cookies.slice();
+    \\  if (!cookieJar.__home_values) return [];
+    \\  const out = [];
+    \\  for (const name of Object.keys(cookieJar.__home_values)) out.push(name + "=" + cookieJar.__home_values[name] + "; Path=/; SameSite=Lax");
+    \\  return out;
+    \\}
     \\function __home_serve_response_with_cookies(value, request) {
+    \\  if (value && value.__home_upgrade_response) return value;
     \\  const out = value instanceof Response ? value : new Response(value);
     \\  const headers = new Headers(out.headers);
-    \\  if (request.cookies && request.cookies.__home_values) {
-    \\    for (const name of Object.keys(request.cookies.__home_values)) {
-    \\      headers.set("set-cookie", name + "=" + request.cookies.__home_values[name] + "; Path=/; SameSite=Lax");
-    \\    }
-    \\  }
+    \\  const cookieHeaders = __home_serve_cookie_headers(request.cookies);
+    \\  if (cookieHeaders.length > 0) headers.set("set-cookie", cookieHeaders.join(", "));
     \\  return new Response(out.body, { status: out.status, statusText: out.statusText, headers });
+    \\}
+    \\function __home_serve_upgrade_response(request, options) {
+    \\  const headers = new Headers(options && options.headers || {});
+    \\  headers.set("Upgrade", "websocket");
+    \\  headers.set("Connection", "Upgrade");
+    \\  if (!headers.has("Sec-WebSocket-Accept")) headers.set("Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    \\  const cookieHeaders = __home_serve_cookie_headers(request && request.cookies);
+    \\  if (cookieHeaders.length > 0) headers.set("Set-Cookie", cookieHeaders.join(", "));
+    \\  return {
+    \\    __home_upgrade_response: true,
+    \\    status: 101,
+    \\    statusText: "Switching Protocols",
+    \\    headers,
+    \\    text() { return Promise.resolve(""); },
+    \\  };
     \\}
     \\function __home_serve_protocol(options) {
     \\  const tls = options && options.tls;
@@ -3160,7 +3191,11 @@ const harness_prelude =
     \\        return cloned;
     \\      };
     \\      const response = routes[pattern](request);
-    \\      return Promise.resolve(response).then(value => __home_serve_response_with_cookies(value, request));
+    \\      if (request.__home_upgrade_response) return request.__home_upgrade_response;
+    \\      return Promise.resolve(response).then(value => {
+    \\        if (request.__home_upgrade_response) return request.__home_upgrade_response;
+    \\        return __home_serve_response_with_cookies(value, request);
+    \\      });
     \\    }
     \\    if (typeof fallbackFetch === "function") {
     \\      request.params = {};
@@ -3382,6 +3417,11 @@ const harness_prelude =
     \\        if (handle.native) __home_unsupported("Bun.serve reload native bridge is not installed");
     \\        handle.fetch = typeof nextOptions.fetch === "function" ? nextOptions.fetch : null;
     \\        return this;
+    \\      },
+    \\      upgrade(request, options) {
+    \\        if (!handle.websocket) return false;
+    \\        if (request && typeof request === "object") request.__home_upgrade_response = __home_serve_upgrade_response(request, options || {});
+    \\        return true;
     \\      },
     \\      [Symbol.dispose]() {
     \\        this.stop(true);
@@ -10099,6 +10139,11 @@ const harness_prelude =
     \\  const key = String(name || "").toLowerCase();
     \\  if (key === "date") return "Date";
     \\  if (key === "content-type") return "Content-Type";
+    \\  if (key === "connection") return "Connection";
+    \\  if (key === "sec-websocket-accept") return "Sec-WebSocket-Accept";
+    \\  if (key === "set-cookie") return "Set-Cookie";
+    \\  if (key === "upgrade") return "Upgrade";
+    \\  if (key === "x-custom-header") return "X-Custom-Header";
     \\  return key;
     \\}
     \\function __home_http_raw_response_text(response, body) {
@@ -20915,6 +20960,80 @@ test "bootstrap net connect preserves high header bytes for Bun.serve" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/08893.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.connect sees websocket upgrade response cookies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("websocket upgrade response cookies", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    routes: {
+        \\      "/ws": req => {
+        \\        req.cookies.set("session", "abc123", { path: "/" });
+        \\        req.cookies.set("user", "john", { httpOnly: true });
+        \\        if (server.upgrade(req, { headers: { "X-Custom-Header": "test" } })) return undefined;
+        \\        return new Response("Upgrade failed", { status: 500 });
+        \\      },
+        \\    },
+        \\    websocket: {
+        \\      message(ws, message) {
+        \\        ws.close();
+        \\      },
+        \\    },
+        \\  });
+        \\  await new Promise((resolve, reject) => {
+        \\    Bun.connect({
+        \\      hostname: "localhost",
+        \\      port: server.port,
+        \\      socket: {
+        \\        data(socket, data) {
+        \\          try {
+        \\            const response = new TextDecoder().decode(data);
+        \\            expect(response).toContain("HTTP/1.1 101");
+        \\            expect(response).toContain("Upgrade: websocket");
+        \\            expect(response).toContain("X-Custom-Header: test");
+        \\            expect(response).toContain("Set-Cookie:");
+        \\            expect(response).toContain("session=abc123");
+        \\            expect(response).toContain("user=john");
+        \\            socket.end();
+        \\            resolve();
+        \\          } catch (error) {
+        \\            reject(error);
+        \\          }
+        \\        },
+        \\        error(socket, error) {
+        \\          reject(error);
+        \\        },
+        \\      },
+        \\    }).then(socket => {
+        \\      socket.write(
+        \\        "GET /ws HTTP/1.1\r\n" +
+        \\          `Host: localhost:${server.port}\r\n` +
+        \\          "Upgrade: websocket\r\n" +
+        \\          "Connection: Upgrade\r\n" +
+        \\          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+        \\          "Sec-WebSocket-Version: 13\r\n" +
+        \\          "\r\n",
+        \\      );
+        \\    }, reject);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23474.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
