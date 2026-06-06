@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 581 |
-| reachable (parity targets) | 120 |
+| catalog-only total | 580 |
+| reachable (parity targets) | 119 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -25,8 +25,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 18 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| 2xxx — checker / type engine | 14 |
 | other | 14 |
+| 2xxx — checker / type engine | 13 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
@@ -127,23 +127,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### 2xxx — checker / type engine (14)
-
-- TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
-- TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
-- TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
-- TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
-- TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
-- TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
-- TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
-- TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
-- TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
-- TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
-- TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
-- TS2800 `Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800`
-- TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
-- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
-
 ### other (14)
 
 - TS8001 `You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001`
@@ -160,6 +143,22 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS9036 `Move_the_expression_in_default_export_to_a_variable_and_add_a_type_annotation_to_it_9036`
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
+
+### 2xxx — checker / type engine (13)
+
+- TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
+- TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
+- TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
+- TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
+- TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
+- TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
+- TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
+- TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
+- TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
+- TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
+- TS2800 `Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800`
+- TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
+- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
 ### 5xxx — tsconfig / build-option validation (2)
 
