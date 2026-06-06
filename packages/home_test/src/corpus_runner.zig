@@ -938,6 +938,7 @@ const harness_prelude =
     \\}
     \\globalThis.__home_written_files = globalThis.__home_written_files || Object.create(null);
     \\globalThis.__home_written_file_bytes = globalThis.__home_written_file_bytes || Object.create(null);
+    \\globalThis.__home_written_file_modes = globalThis.__home_written_file_modes || Object.create(null);
     \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
     \\function __home_fs_normalize_path(path) {
@@ -1062,9 +1063,27 @@ const harness_prelude =
     \\      if (normalized === text || normalized.startsWith(prefix)) {
     \\        delete globalThis.__home_written_files[key];
     \\        if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[key];
+    \\        if (globalThis.__home_written_file_modes) delete globalThis.__home_written_file_modes[key];
     \\      }
     \\    }
     \\  }
+    \\}
+    \\function __home_fs_normalize_mode(mode, fallback) {
+    \\  if (mode === undefined || mode === null) return fallback;
+    \\  const value = Number(mode);
+    \\  if (!Number.isFinite(value)) return fallback;
+    \\  return Math.trunc(value) & 0o777;
+    \\}
+    \\function __home_fs_default_file_mode() {
+    \\  return 0o644;
+    \\}
+    \\function __home_fs_file_mode(path) {
+    \\  const text = String(path);
+    \\  if (globalThis.__home_written_file_modes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, text)) return globalThis.__home_written_file_modes[text];
+    \\  return __home_fs_default_file_mode();
+    \\}
+    \\function __home_fs_record_file_mode(path, mode) {
+    \\  globalThis.__home_written_file_modes[String(path)] = __home_fs_normalize_mode(mode, __home_fs_default_file_mode());
     \\}
     \\function __home_fs_parent_matches(path, parent) {
     \\  return __home_fs_normalize_path(__home_build_dirname(path)) === __home_fs_normalize_path(parent);
@@ -1511,6 +1530,7 @@ const harness_prelude =
     \\  __home_fs_clear_deleted_ancestors(path);
     \\  __home_fs_mark_parent_dirs(path);
     \\  globalThis.__home_written_files[String(path)] = String(text || "");
+    \\  if (globalThis.__home_written_file_modes && !Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, String(path))) __home_fs_record_file_mode(path, undefined);
     \\  if (typeof globalThis.__home_writeFileSyncNative !== "function") return;
     \\  const normalized = String(path);
     \\  const slash = normalized.lastIndexOf("/");
@@ -4106,13 +4126,15 @@ const harness_prelude =
     \\  build(options) {
     \\    return __home_bun_build(options);
     \\  },
-    \\  write(path, data) {
-    \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return Promise.resolve();
+    \\  write(path, data, options) {
+    \\    const targetPath = path && path.__home_file_ref ? path.path : String(path);
+    \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(targetPath, data)) return Promise.resolve();
     \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
     \\    const view = __home_array_buffer_view(payload);
-    \\    if (view) globalThis.__home_written_file_bytes[String(path)] = Array.from(view);
-    \\    else if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[String(path)];
-    \\    __home_build_write_text(String(path), __home_build_file_value_to_text(payload));
+    \\    if (view) globalThis.__home_written_file_bytes[targetPath] = Array.from(view);
+    \\    else if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[targetPath];
+    \\    __home_build_write_text(targetPath, __home_build_file_value_to_text(payload));
+    \\    if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "mode")) __home_fs_record_file_mode(targetPath, options.mode);
     \\    return Promise.resolve(__home_build_file_value_byte_length(payload));
     \\  },
     \\  file(path, options) {
@@ -4180,6 +4202,7 @@ const harness_prelude =
     \\      unlink() {
     \\        if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, filePath)) delete globalThis.__home_written_files[filePath];
     \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) delete globalThis.__home_written_file_bytes[filePath];
+    \\        if (globalThis.__home_written_file_modes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, filePath)) delete globalThis.__home_written_file_modes[filePath];
     \\        if (typeof globalThis.__home_unlinkSyncNative === "function") {
     \\          try {
     \\            globalThis.__home_unlinkSyncNative(filePath);
@@ -10889,9 +10912,10 @@ const harness_prelude =
     \\    UV_DIRENT_BLOCK: __home_UV_DIRENT_BLOCK,
     \\  },
     \\  __home_stats_mode_from_native(nativeStats) {
-    \\    if (nativeStats && nativeStats.isDirectory) return __home_S_IFDIR;
-    \\    if (nativeStats && nativeStats.isSymbolicLink) return __home_S_IFLNK;
-    \\    return __home_S_IFREG;
+    \\    const permissions = nativeStats && nativeStats.mode !== undefined ? (Number(nativeStats.mode) & 0o777) : __home_fs_default_file_mode();
+    \\    if (nativeStats && nativeStats.isDirectory) return __home_S_IFDIR | permissions;
+    \\    if (nativeStats && nativeStats.isSymbolicLink) return __home_S_IFLNK | permissions;
+    \\    return __home_S_IFREG | permissions;
     \\  },
     \\  __home_make_stats(nativeStats, bigint) {
     \\    const size = Number(nativeStats && nativeStats.size) || 0;
@@ -10970,12 +10994,17 @@ const harness_prelude =
     \\    if (!recursive && !force) __home_unsupported("node:fs.rmSync native bridge is not installed");
     \\  },
     \\  chmodSync(path, mode) {
+    \\    __home_fs_record_file_mode(path, mode);
     \\    return undefined;
     \\  },
     \\  statSync(path, options) {
     \\    if (__home_fs_is_deleted(path)) throw new Error("ENOENT: no such file or directory, stat '" + String(path) + "'");
-    \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
     \\    const bigint = !!(options && typeof options === "object" && options.bigint);
+    \\    if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, String(path))) {
+    \\      const text = __home_build_read_text(path);
+    \\      return __home_node_fs.__home_make_stats({ isFile: true, size: __home_text_to_utf8_bytes(text === null ? "" : text).length, mode: __home_fs_file_mode(path) }, bigint);
+    \\    }
+    \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
     \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(String(path)), bigint);
     \\  },
     \\  promises: {
@@ -16963,7 +16992,7 @@ fn appendJsStringLiteral(out: *std.ArrayList(u8), allocator: std.mem.Allocator, 
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
@@ -19561,20 +19590,20 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "node:stream",
         "net",
         "node:net",
-        "http",
-        "node:http",
         "http2",
         "node:http2",
+        "http",
+        "node:http",
         "node:test",
         "source-map",
         "assert",
         "node:assert",
         "path",
         "node:path",
-        "fs",
-        "node:fs",
         "fs/promises",
         "node:fs/promises",
+        "fs",
+        "node:fs",
         "os",
         "node:os",
         "url",
@@ -21547,6 +21576,33 @@ test "bootstrap runner mirrors jest fake timer clock corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun.write file mode corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25903.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25903.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:fs/promises\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_written_file_modes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fs_record_file_mode(targetPath, options.mode)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
