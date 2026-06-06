@@ -6454,6 +6454,29 @@ const harness_prelude =
     \\    vi.setSystemTime(value);
     \\    return jest;
     \\  },
+    \\  advanceTimersByTime(milliseconds) {
+    \\    vi.advanceTimersByTime(milliseconds);
+    \\    return jest;
+    \\  },
+    \\  advanceTimersToNextTimer() {
+    \\    vi.advanceTimersToNextTimer();
+    \\    return jest;
+    \\  },
+    \\  runOnlyPendingTimers() {
+    \\    vi.runOnlyPendingTimers();
+    \\    return jest;
+    \\  },
+    \\  runAllTimers() {
+    \\    vi.runAllTimers();
+    \\    return jest;
+    \\  },
+    \\  getTimerCount() {
+    \\    return vi.getTimerCount();
+    \\  },
+    \\  clearAllTimers() {
+    \\    vi.clearAllTimers();
+    \\    return jest;
+    \\  },
     \\  useRealTimers() {
     \\    vi.useRealTimers();
     \\    return jest;
@@ -11108,7 +11131,12 @@ const harness_prelude =
     \\  socket.connecting = false;
     \\  socket.__home_port = port;
     \\  socket.__home_hostname = hostname;
-    \\  socket.end = function() { this.destroyed = true; return this; };
+    \\  socket.end = function() {
+    \\    if (this.destroyed) return this;
+    \\    this.destroyed = true;
+    \\    Promise.resolve().then(() => socket.emit("close"));
+    \\    return this;
+    \\  };
     \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
     \\  socket.write = function(chunk, callback) {
     \\    const bytes = __home_net_bytes(chunk);
@@ -11124,6 +11152,33 @@ const harness_prelude =
     \\      const colon = line.indexOf(":");
     \\      if (colon === -1) continue;
     \\      headers.set(line.slice(0, colon), __home_net_trim_header_value(line.slice(colon + 1)));
+    \\    }
+    \\    const httpServer = typeof __home_http_servers === "object" ? __home_http_servers[port] : null;
+    \\    if (String(method).toUpperCase() === "CONNECT" && httpServer && typeof httpServer.emit === "function") {
+    \\      const serverSocket = __home_http_event_target();
+    \\      serverSocket._handle = { fd: __home_alloc_virtual_fd("tcp-server:" + String(port), "r") };
+    \\      serverSocket.destroyed = false;
+    \\      serverSocket.write = function(serverChunk, serverCallback) {
+    \\        const payload = Buffer.from(__home_net_bytes(serverChunk));
+    \\        Promise.resolve().then(() => {
+    \\          socket.emit("data", payload);
+    \\          if (typeof serverCallback === "function") serverCallback();
+    \\        });
+    \\        return true;
+    \\      };
+    \\      serverSocket.end = function(serverChunk) {
+    \\        if (serverChunk !== undefined) this.write(serverChunk);
+    \\        if (this.destroyed) return this;
+    \\        this.destroyed = true;
+    \\        Promise.resolve().then(() => socket.emit("close"));
+    \\        return this;
+    \\      };
+    \\      serverSocket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\      const req = Object.assign(__home_http_event_target(), { method: "CONNECT", url: path, headers });
+    \\      const head = Buffer.from(bytes.slice(headerEnd + 4));
+    \\      Promise.resolve().then(() => httpServer.emit("connect", req, serverSocket, head));
+    \\      if (typeof callback === "function") Promise.resolve().then(() => callback());
+    \\      return true;
     \\    }
     \\    const origins = [
     \\      "http://localhost:" + String(port),
@@ -11611,10 +11666,11 @@ const harness_prelude =
     \\  return response;
     \\}
     \\function __home_http_create_server(handler) {
-    \\  const server = {
+    \\  const server = Object.assign(__home_http_event_target(), {
     \\    __home_handler: typeof handler === "function" ? handler : function() {},
     \\    __home_port: 0,
-    \\    listen(port, callback) {
+    \\    listen(port, host, callback) {
+    \\      if (typeof host === "function") callback = host;
     \\      this.__home_port = Number(port) || (__home_http_next_port++);
     \\      __home_http_servers[this.__home_port] = this;
     \\      const origin = "http://localhost:" + String(this.__home_port);
@@ -11647,7 +11703,8 @@ const harness_prelude =
     \\          });
     \\        },
     \\      };
-    \\      if (typeof callback === "function") Promise.resolve().then(callback);
+    \\      if (typeof callback === "function") this.once("listening", callback);
+    \\      Promise.resolve().then(() => this.emit("listening"));
     \\      return this;
     \\    },
     \\    address() {
@@ -11656,9 +11713,10 @@ const harness_prelude =
     \\    close(callback) {
     \\      delete __home_http_servers[this.__home_port];
     \\      delete globalThis.__home_serve_handles_by_origin["http://localhost:" + String(this.__home_port)];
-    \\      if (typeof callback === "function") Promise.resolve().then(callback);
+    \\      if (typeof callback === "function") this.once("close", callback);
+    \\      Promise.resolve().then(() => this.emit("close"));
     \\    },
-    \\  };
+    \\  });
     \\  return server;
     \\}
     \\function __home_http_request(options, callback) {
@@ -17319,6 +17377,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "Promise.withResolvers<unknown>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<Error>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<URL>()", .replacement = "Promise.withResolvers()" },
+        .{ .needle = "Promise.withResolvers<Buffer>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<void>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "server.address() as { port: number }", .replacement = "server.address()" },
         .{ .needle = "(hostname: string, cert: any) =>", .replacement = "(hostname, cert) =>" },
@@ -17382,6 +17441,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as AggregateError", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as never", .replacement = "" },
+        .{ .needle = " as AddressInfo", .replacement = "" },
         .{ .needle = " as net.AddressInfo", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
         .{ .needle = " as Error", .replacement = "" },
@@ -17776,6 +17836,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import net from \"node:net\";",
             .replacement = "const net = globalThis.__home_import(\"node:net\");",
+        },
+        .{
+            .needle = "import http from \"node:http\";",
+            .replacement = "const http = globalThis.__home_import(\"node:http\");",
         },
         .{
             .needle = "import dns from \"node:dns\";",
@@ -19495,6 +19559,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "node:zlib",
         "stream",
         "node:stream",
+        "net",
+        "node:net",
         "http",
         "node:http",
         "http2",
@@ -21427,6 +21493,60 @@ test "bootstrap runner mirrors nested logical inset CSS corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors http connect pipelined head corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25862.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25862.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:net\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Promise.withResolvers<Buffer>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "httpServer.emit(\"connect\"") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors jest fake timer clock corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25869.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25869.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "advanceTimersByTime") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "advanceTimersByTime(milliseconds)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.setTimeout, \"clock\"") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
