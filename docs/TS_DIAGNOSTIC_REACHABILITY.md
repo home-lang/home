@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 577 |
-| reachable (parity targets) | 116 |
+| catalog-only total | 573 |
+| reachable (parity targets) | 112 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -23,9 +23,9 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | Range | Count |
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
-| 4xxx — declaration-emit (privacy / serialization) | 17 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
+| 4xxx — declaration-emit (privacy / serialization) | 13 |
 | 2xxx — checker / type engine | 11 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
@@ -86,26 +86,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS1541 `Type_only_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribut_1541`
 - TS1542 `Type_import_of_an_ECMAScript_module_from_a_CommonJS_module_must_have_a_resolution_mode_attribute_1542`
 
-### 4xxx — declaration-emit (privacy / serialization) (17)
-
-- TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
-- TS4085 `Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085`
-- TS4094 `Property_0_of_exported_anonymous_class_type_may_not_be_private_or_protected_4094`
-- TS4095 `Public_static_method_0_of_exported_class_has_or_is_using_name_1_from_external_module_2_but_cannot_be_4095`
-- TS4096 `Public_static_method_0_of_exported_class_has_or_is_using_name_1_from_private_module_2_4096`
-- TS4097 `Public_static_method_0_of_exported_class_has_or_is_using_private_name_1_4097`
-- TS4098 `Public_method_0_of_exported_class_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4098`
-- TS4099 `Public_method_0_of_exported_class_has_or_is_using_name_1_from_private_module_2_4099`
-- TS4100 `Public_method_0_of_exported_class_has_or_is_using_private_name_1_4100`
-- TS4101 `Method_0_of_exported_interface_has_or_is_using_name_1_from_private_module_2_4101`
-- TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
-- TS4106 `Parameter_0_of_accessor_has_or_is_using_private_name_1_4106`
-- TS4107 `Parameter_0_of_accessor_has_or_is_using_name_1_from_private_module_2_4107`
-- TS4108 `Parameter_0_of_accessor_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4108`
-- TS4109 `Type_arguments_for_0_circularly_reference_themselves_4109`
-- TS4110 `Tuple_type_arguments_circularly_reference_themselves_4110`
-- TS4118 `The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118`
-
 ### 9xxxx — editor code-fix / refactor (language service) (17)
 
 - TS90014 `Change_0_to_1_90014`
@@ -142,6 +122,22 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS9036 `Move_the_expression_in_default_export_to_a_variable_and_add_a_type_annotation_to_it_9036`
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
+
+### 4xxx — declaration-emit (privacy / serialization) (13)
+
+- TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
+- TS4085 `Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085`
+- TS4094 `Property_0_of_exported_anonymous_class_type_may_not_be_private_or_protected_4094`
+- TS4097 `Public_static_method_0_of_exported_class_has_or_is_using_private_name_1_4097`
+- TS4100 `Public_method_0_of_exported_class_has_or_is_using_private_name_1_4100`
+- TS4101 `Method_0_of_exported_interface_has_or_is_using_name_1_from_private_module_2_4101`
+- TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
+- TS4106 `Parameter_0_of_accessor_has_or_is_using_private_name_1_4106`
+- TS4107 `Parameter_0_of_accessor_has_or_is_using_name_1_from_private_module_2_4107`
+- TS4108 `Parameter_0_of_accessor_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4108`
+- TS4109 `Type_arguments_for_0_circularly_reference_themselves_4109`
+- TS4110 `Tuple_type_arguments_circularly_reference_themselves_4110`
+- TS4118 `The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118`
 
 ### 2xxx — checker / type engine (11)
 
