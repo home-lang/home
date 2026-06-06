@@ -16893,6 +16893,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "function createMockIncomingMessage(url: string): IncomingMessage", .replacement = "function createMockIncomingMessage(url)" },
         .{ .needle = "function createServerResponse(incomingMessage: IncomingMessage)", .replacement = "function createServerResponse(incomingMessage)" },
         .{ .needle = "function loadProtoFile(file: string)", .replacement = "function loadProtoFile(file)" },
+        .{ .needle = "function readInterp(buf: Buffer): string | null", .replacement = "function readInterp(buf)" },
+        .{ .needle = "function readHead(path: string, bytes = 4096): Buffer", .replacement = "function readHead(path, bytes = 4096)" },
+        .{ .needle = "function hostLooksNix(): boolean", .replacement = "function hostLooksNix()" },
         .{ .needle = "new Promise<{\n    readable: Readable;\n    headers: Record<string, any>;\n    statusCode: number;\n  }>", .replacement = "new Promise" },
         .{ .needle = "(err: Error) =>", .replacement = "(err) =>" },
         .{ .needle = "(err: Error | null, response: any) =>", .replacement = "(err, response) =>" },
@@ -20555,6 +20558,53 @@ test "bootstrap runner mirrors child_process stdio enumerable assign compatibili
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24742 nix interpreter helper prep" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { isLinux } from "harness";
+        \\
+        \\const patchelf = Bun.which("patchelf");
+        \\const ldsoBasename = "/lib64/ld-linux-x86-64.so.2".split("/").pop()!;
+        \\
+        \\function readInterp(buf: Buffer): string | null {
+        \\  if (buf.length < 64 || buf.readUInt32BE(0) !== 0x7f454c46) return null;
+        \\  return ldsoBasename;
+        \\}
+        \\
+        \\function readHead(path: string, bytes = 4096): Buffer {
+        \\  void path;
+        \\  return Buffer.alloc(bytes);
+        \\}
+        \\
+        \\function hostLooksNix(): boolean {
+        \\  return readInterp(readHead(process.execPath)) === "/nix/store/ld";
+        \\}
+        \\
+        \\test.skipIf(!isLinux || !patchelf || hostLooksNix())("nix interpreter helper parses before host skip", () => {
+        \\  expect.unreachable();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24742.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Buffer):") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "): string | null") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "): boolean") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ".pop()!") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner supports recursive mkdir existing path smoke" {
