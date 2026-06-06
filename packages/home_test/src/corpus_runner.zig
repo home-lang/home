@@ -9925,6 +9925,11 @@ const harness_prelude =
     \\    __home_fs_clear_deleted_ancestors(path);
     \\    return __home_fs_create_dir(path, recursive);
     \\  },
+    \\  mkdtempSync(prefix) {
+    \\    const root = String(prefix || "") + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + String(++__home_temp_dir_counter);
+    \\    __home_node_fs.mkdirSync(root, { recursive: true });
+    \\    return root;
+    \\  },
     \\  readFileSync(path, encoding) {
     \\    const wantsBuffer = encoding === undefined || encoding === null;
     \\    if (!wantsBuffer && encoding !== "utf8" && encoding !== "utf-8") __home_unsupported("Only utf8 node:fs.readFileSync is supported by the Home Bun corpus bootstrap runner");
@@ -9987,9 +9992,7 @@ const harness_prelude =
     \\      return Promise.resolve(__home_node_fs.statSync(path, options));
     \\    },
     \\    mkdtemp(prefix) {
-    \\      const root = String(prefix || "") + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + String(++__home_temp_dir_counter);
-    \\      __home_node_fs.mkdirSync(root, { recursive: true });
-    \\      return Promise.resolve(root);
+    \\      return Promise.resolve(__home_node_fs.mkdtempSync(prefix));
     \\    },
     \\    writeFile(path, data) {
     \\      __home_node_fs.writeFileSync(path, String(data || ""));
@@ -22882,6 +22885,39 @@ test "bootstrap runner mirrors issue 22743 dynamic json import errors" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22743.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22929 fs mkdtempSync" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { existsSync, mkdtempSync, writeFileSync } from "fs";
+        \\import { tmpdir } from "os";
+        \\import { join } from "path";
+        \\
+        \\test("fs.mkdtempSync creates a usable temporary directory", () => {
+        \\  const dir = mkdtempSync(join(tmpdir(), "bun-module-extensions-asi-"));
+        \\  const file = join(dir, "module-no-semi.js");
+        \\  writeFileSync(file, `function f() {}
+        \\module.exports = f
+        \\f.f = f`);
+        \\  expect(dir).toContain("bun-module-extensions-asi-");
+        \\  expect(existsSync(dir)).toBe(true);
+        \\  expect(existsSync(file)).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22929-module-extensions-asi.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
