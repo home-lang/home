@@ -10751,6 +10751,8 @@ const harness_prelude =
     \\  if (inMemoryServer && inMemoryServer.__home_net_handler) {
     \\    const client = __home_http_event_target();
     \\    const peer = __home_http_event_target();
+    \\    client._handle = { fd: __home_alloc_virtual_fd("tcp-client:" + String(port), "r") };
+    \\    peer._handle = { fd: __home_alloc_virtual_fd("tcp-server:" + String(port), "r") };
     \\    client.destroyed = false;
     \\    peer.destroyed = false;
     \\    client.connecting = false;
@@ -10775,8 +10777,18 @@ const harness_prelude =
     \\      });
     \\      return true;
     \\    };
-    \\    client.end = function() { this.destroyed = true; Promise.resolve().then(() => peer.emit("end")); return this; };
-    \\    peer.end = function() { this.destroyed = true; Promise.resolve().then(() => client.emit("end")); return this; };
+    \\    client.end = function(chunk) {
+    \\      if (chunk !== undefined) this.write(chunk);
+    \\      this.destroyed = true;
+    \\      Promise.resolve().then(() => peer.emit("end"));
+    \\      return this;
+    \\    };
+    \\    peer.end = function(chunk) {
+    \\      if (chunk !== undefined) this.write(chunk);
+    \\      this.destroyed = true;
+    \\      Promise.resolve().then(() => client.emit("end"));
+    \\      return this;
+    \\    };
     \\    client.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
     \\    peer.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
     \\    Promise.resolve().then(() => {
@@ -10787,6 +10799,7 @@ const harness_prelude =
     \\    return client;
     \\  }
     \\  const socket = __home_http_event_target();
+    \\  socket._handle = { fd: __home_alloc_virtual_fd("tcp-client:" + String(port), "r") };
     \\  socket.destroyed = false;
     \\  socket.connecting = false;
     \\  socket.__home_port = port;
@@ -11149,6 +11162,7 @@ const harness_prelude =
     \\  const socket = __home_http_event_target();
     \\  socket.destroyed = false;
     \\  socket.__home_has_handle = true;
+    \\  socket._handle = { fd: __home_alloc_virtual_fd("tls-socket", "r") };
     \\  socket.getPeerCertificate = function() {
     \\    return this.__home_has_handle ? {} : null;
     \\  };
@@ -16734,6 +16748,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "let controller: ReadableStreamDefaultController;", .replacement = "let controller;" },
         .{ .needle = ".body!", .replacement = ".body" },
         .{ .needle = ": number | null | undefined;", .replacement = ";" },
+        .{ .needle = ": number | undefined;", .replacement = ";" },
+        .{ .needle = ": number;", .replacement = ";" },
         .{ .needle = ": Bun.BuildOutput | null =", .replacement = " =" },
         .{ .needle = ": Error | null =", .replacement = " =" },
         .{ .needle = ": Error | undefined;", .replacement = ";" },
@@ -16858,6 +16874,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "JSON.parse(line) as { cpuMs: number; elapsedMs: number }", .replacement = "JSON.parse(line)" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
+        .{ .needle = "await import(\"harness\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"harness\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
         .{ .needle = "await import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
         .{ .needle = "await import(\"./runtime-transpiler-json-fixture.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-json-fixture.json\")" },
@@ -31228,6 +31245,172 @@ test "bootstrap runner supports TLS upgrade leak regression flow" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24575 socket handle fds" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import net from "node:net";
+        \\import tls from "node:tls";
+        \\
+        \\test("socket._handle.fd should be accessible on TCP sockets", async () => {
+        \\  const { promise, resolve, reject } = Promise.withResolvers<void>();
+        \\
+        \\  let serverFd: number | undefined;
+        \\  let clientFd: number | undefined;
+        \\
+        \\  const server = net.createServer(socket => {
+        \\    expect(socket._handle).toBeDefined();
+        \\    expect(socket._handle.fd).toBeTypeOf("number");
+        \\    expect(socket._handle.fd).toBeGreaterThan(0);
+        \\    serverFd = socket._handle.fd;
+        \\
+        \\    socket.end(`server fd: ${socket._handle.fd}`);
+        \\  });
+        \\
+        \\  server.listen(0, "127.0.0.1", () => {
+        \\    const client = net.connect({
+        \\      host: "127.0.0.1",
+        \\      port: (server.address() as any).port,
+        \\    });
+        \\
+        \\    client.on("connect", () => {
+        \\      expect(client._handle).toBeDefined();
+        \\      expect(client._handle.fd).toBeTypeOf("number");
+        \\      expect(client._handle.fd).toBeGreaterThan(0);
+        \\      clientFd = client._handle.fd;
+        \\    });
+        \\
+        \\    client.on("data", data => {
+        \\      const response = data.toString();
+        \\      expect(response).toStartWith("server fd: ");
+        \\      expect(serverFd).toBeTypeOf("number");
+        \\      expect(clientFd).toBeTypeOf("number");
+        \\      expect(serverFd).toBeGreaterThan(0);
+        \\      expect(clientFd).toBeGreaterThan(0);
+        \\      expect(serverFd).not.toBe(clientFd);
+        \\      server.close();
+        \\      resolve();
+        \\    });
+        \\
+        \\    client.on("error", reject);
+        \\  });
+        \\
+        \\  server.on("error", reject);
+        \\
+        \\  await promise;
+        \\});
+        \\
+        \\test("socket._handle.fd should remain consistent during connection lifetime", async () => {
+        \\  const { promise, resolve, reject } = Promise.withResolvers<void>();
+        \\
+        \\  const server = net.createServer(socket => {
+        \\    const initialFd = socket._handle.fd;
+        \\    socket.write("message1\n");
+        \\    expect(socket._handle.fd).toBe(initialFd);
+        \\    socket.write("message2\n");
+        \\    expect(socket._handle.fd).toBe(initialFd);
+        \\    socket.end("message3\n");
+        \\    expect(socket._handle.fd).toBe(initialFd);
+        \\  });
+        \\
+        \\  server.listen(0, "127.0.0.1", () => {
+        \\    const client = net.connect({
+        \\      host: "127.0.0.1",
+        \\      port: (server.address() as any).port,
+        \\    });
+        \\
+        \\    let initialClientFd: number;
+        \\    let buffer = "";
+        \\
+        \\    client.on("connect", () => {
+        \\      initialClientFd = client._handle.fd;
+        \\      expect(initialClientFd).toBeGreaterThan(0);
+        \\    });
+        \\
+        \\    client.on("data", data => {
+        \\      buffer += data.toString();
+        \\      expect(client._handle.fd).toBe(initialClientFd);
+        \\    });
+        \\
+        \\    client.on("end", () => {
+        \\      expect(buffer).toBe("message1\nmessage2\nmessage3\n");
+        \\      server.close();
+        \\      resolve();
+        \\    });
+        \\
+        \\    client.on("error", reject);
+        \\  });
+        \\
+        \\  server.on("error", reject);
+        \\
+        \\  await promise;
+        \\});
+        \\
+        \\test("socket._handle.fd should be accessible on TLS sockets", async () => {
+        \\  const { tls: tlsCert } = await import("harness");
+        \\  const { promise, resolve, reject } = Promise.withResolvers<void>();
+        \\
+        \\  let serverFd: number | undefined;
+        \\  let clientFd: number | undefined;
+        \\
+        \\  const server = tls.createServer(tlsCert, socket => {
+        \\    expect(socket._handle).toBeDefined();
+        \\    expect(socket._handle.fd).toBeTypeOf("number");
+        \\    expect(typeof socket._handle.fd).toBe("number");
+        \\    serverFd = socket._handle.fd;
+        \\
+        \\    socket.end(`server fd: ${socket._handle.fd}`);
+        \\  });
+        \\
+        \\  server.listen(0, "127.0.0.1", () => {
+        \\    const client = tls.connect({
+        \\      host: "127.0.0.1",
+        \\      port: (server.address() as any).port,
+        \\      rejectUnauthorized: false,
+        \\    });
+        \\
+        \\    client.on("secureConnect", () => {
+        \\      expect(client._handle).toBeDefined();
+        \\      expect(client._handle.fd).toBeTypeOf("number");
+        \\      expect(typeof client._handle.fd).toBe("number");
+        \\      clientFd = client._handle.fd;
+        \\    });
+        \\
+        \\    client.on("data", data => {
+        \\      const response = data.toString();
+        \\      expect(response).toMatch(/server fd: -?\d+/);
+        \\      expect(serverFd).toBeTypeOf("number");
+        \\      expect(clientFd).toBeTypeOf("number");
+        \\      server.close();
+        \\      resolve();
+        \\    });
+        \\
+        \\    client.on("error", reject);
+        \\  });
+        \\
+        \\  server.on("error", reject);
+        \\
+        \\  await promise;
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24575.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ": number") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await import(\"harness\")") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner supports async failing test for bail hook regression" {
