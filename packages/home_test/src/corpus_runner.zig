@@ -7235,13 +7235,15 @@ const harness_prelude =
     \\globalThis.__home_modules["_util/collection"] = { cartesianProduct(left, right) { return left.flatMap(leftItem => right.map(rightItem => [leftItem, rightItem])); } };
     \\let __home_http2_next_port = 44200;
     \\const __home_http2_servers = Object.create(null);
-    \\function __home_http2_create_server() {
+    \\function __home_http2_create_server(options) {
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
-    \\  server.listen = function(port, callback) {
+    \\  server.__home_settings = options && options.settings ? options.settings : {};
+    \\  server.listen = function(port, host, callback) {
     \\    this.__home_port = Number(port) || __home_http2_next_port++;
     \\    __home_http2_servers[this.__home_port] = this;
-    \\    if (typeof callback === "function") Promise.resolve().then(callback);
+    \\    const cb = typeof host === "function" ? host : callback;
+    \\    if (typeof cb === "function") Promise.resolve().then(cb);
     \\    return this;
     \\  };
     \\  server.address = function() {
@@ -7260,7 +7262,7 @@ const harness_prelude =
     \\  return match ? Number(match[1]) : 0;
     \\}
     \\function __home_http2_connect(authority, options) {
-    \\  void authority;
+    \\  const server = __home_http2_servers[__home_http2_port(authority)];
     \\  const client = __home_http_event_target();
     \\  client.closed = false;
     \\  client.destroyed = false;
@@ -7279,7 +7281,6 @@ const harness_prelude =
     \\  };
     \\  client.request = function(headers) {
     \\    const stream = __home_http_event_target();
-    \\    const server = __home_http2_servers[__home_http2_port(authority)];
     \\    const serverStream = __home_http_event_target();
     \\    serverStream.respond = function(responseHeaders) {
     \\      stream.emit("response", responseHeaders || { ":status": 200 });
@@ -7311,9 +7312,9 @@ const harness_prelude =
     \\    return stream;
     \\  };
     \\  Promise.resolve().then(() => {
-    \\    const settings = options && options.settings ? options.settings : {};
+    \\    const settings = server && server.__home_settings ? server.__home_settings : (options && options.settings ? options.settings : {});
     \\    client.emit("connect");
-    \\    client.emit("remoteSettings", { maxFrameSize: Number(settings.maxFrameSize) || 16384 });
+    \\    client.emit("remoteSettings", { maxFrameSize: Number(settings.maxFrameSize) || 16384, initialWindowSize: Number(settings.initialWindowSize) || 65535, maxConcurrentStreams: Number(settings.maxConcurrentStreams) || 100 });
     \\  });
     \\  return client;
     \\}
@@ -15086,6 +15087,28 @@ const harness_prelude =
     \\    for (let i = 0; i < count; i++) target[targetIndex + i] = bytes[i];
     \\    return count;
     \\  };
+    \\  Buffer.prototype.readUInt32BE = function(offset) {
+    \\    const start = offset === undefined ? 0 : Math.trunc(Number(offset));
+    \\    if (start < 0 || start + 4 > this.length) throw new RangeError("Index out of range");
+    \\    return ((this[start] << 24) >>> 0) + ((this[start + 1] << 16) >>> 0) + ((this[start + 2] << 8) >>> 0) + (this[start + 3] >>> 0);
+    \\  };
+    \\  Buffer.prototype.writeUInt32BE = function(value, offset) {
+    \\    const start = offset === undefined ? 0 : Math.trunc(Number(offset));
+    \\    if (start < 0 || start + 4 > this.length) throw new RangeError("Index out of range");
+    \\    const number = Number(value) >>> 0;
+    \\    this[start] = (number >>> 24) & 0xff;
+    \\    this[start + 1] = (number >>> 16) & 0xff;
+    \\    this[start + 2] = (number >>> 8) & 0xff;
+    \\    this[start + 3] = number & 0xff;
+    \\    return start + 4;
+    \\  };
+    \\  Buffer.prototype.subarray = function(start, end) {
+    \\    const view = Uint8Array.prototype.subarray.call(this, start, end);
+    \\    const buffer = new Buffer(view.length);
+    \\    for (let i = 0; i < view.length; i++) buffer[i] = view[i] & 0xff;
+    \\    return buffer;
+    \\  };
+    \\  Buffer.prototype.slice = Buffer.prototype.subarray;
     \\  Buffer.prototype.toString = function(encoding) {
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
     \\    if (normalized === "hex") {
@@ -16997,6 +17020,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Record<Component, Component[]> =", .replacement = " =" },
         .{ .needle = ": Array<{ length: number; flags: number }> =", .replacement = " =" },
         .{ .needle = ": Array<{ length: number }> =", .replacement = " =" },
+        .{ .needle = "interface TestContext {\n  server: http2.Http2SecureServer;\n  serverPort: number;\n  serverUrl: string;\n}\n\n", .replacement = "" },
         .{ .needle = "(hook: \"onLoad\" | \"onResolve\") =>", .replacement = "(hook) =>" },
         .{ .needle = "(...segs: string[]): string =>", .replacement = "(...segs) =>" },
         .{ .needle = "(path: string): Promise<number> =>", .replacement = "(path) =>" },
@@ -17029,6 +17053,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "new Promise<any[]>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<ServerAddress>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<http2.Settings>(", .replacement = "new Promise(" },
+        .{ .needle = "new Promise<{ receivedBytes: number }>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<{ value: string; value2: number }>(", .replacement = "new Promise(" },
         .{ .needle = "new Map<string, unknown>()", .replacement = "new Map()" },
         .{ .needle = ": Loader[] =", .replacement = " =" },
@@ -17108,6 +17133,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "let server: grpc.Server;", .replacement = "let server;" },
         .{ .needle = "let client: InstanceType<typeof echoService>;", .replacement = "let client;" },
         .{ .needle = "let serverPort: number;", .replacement = "let serverPort;" },
+        .{ .needle = "let ctx: TestContext;", .replacement = "let ctx;" },
         .{ .needle = "call: grpc.ServerUnaryCall<any, any>", .replacement = "call" },
         .{ .needle = "callback: grpc.sendUnaryData<any>", .replacement = "callback" },
         .{ .needle = "call: grpc.ServerWritableStream<any, any>", .replacement = "call" },
@@ -17120,6 +17146,14 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "function createServerResponse(incomingMessage: IncomingMessage)", .replacement = "function createServerResponse(incomingMessage)" },
         .{ .needle = "function loadProtoFile(file: string)", .replacement = "function loadProtoFile(file)" },
         .{ .needle = "function readInterp(buf: Buffer): string | null", .replacement = "function readInterp(buf)" },
+        .{ .needle = "async function createServer(settings: http2.Settings): Promise<TestContext>", .replacement = "async function createServer(settings)" },
+        .{ .needle = "async function sendRequest(\n  client: http2.ClientHttp2Session,\n  data: Buffer,\n  path = \"/test\",\n): Promise<{ receivedBytes: number }>", .replacement = "async function sendRequest(\n  client,\n  data,\n  path = \"/test\",\n)" },
+        .{ .needle = "function waitForSettings(client: http2.ClientHttp2Session): Promise<http2.Settings>", .replacement = "function waitForSettings(client)" },
+        .{ .needle = "function closeClient(client: http2.ClientHttp2Session): Promise<void>", .replacement = "function closeClient(client)" },
+        .{ .needle = "function closeServer(server: http2.Http2SecureServer): Promise<void>", .replacement = "function closeServer(server)" },
+        .{ .needle = "function createGrpcMessage(payload: Buffer): Buffer", .replacement = "function createGrpcMessage(payload)" },
+        .{ .needle = "function parseGrpcResponse(data: Buffer): { receivedBytes: number }", .replacement = "function parseGrpcResponse(data)" },
+        .{ .needle = "async function sendGrpcRequest(\n    client: http2.ClientHttp2Session,\n    payload: Buffer,\n    path = \"/test.Service/Method\",\n  ): Promise<{ receivedBytes: number }>", .replacement = "async function sendGrpcRequest(\n    client,\n    payload,\n    path = \"/test.Service/Method\",\n  )" },
         .{ .needle = "async function startServer(): Promise<ServerAddress>", .replacement = "async function startServer()" },
         .{ .needle = "function stopServer(): Promise<void>", .replacement = "function stopServer()" },
         .{ .needle = "function createClient(address: ServerAddress): InstanceType<typeof echoService>", .replacement = "function createClient(address)" },
@@ -21051,6 +21085,38 @@ test "bootstrap runner mirrors http2 write end corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const http2 = globalThis.__home_import(\"node:http2\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_http2_servers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "server.emit(\"stream\", serverStream") != null);
+}
+
+test "bootstrap runner mirrors http2 settings flow-control corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25589.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25589.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "interface TestContext") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "http2.ClientHttp2Session") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Promise<TestContext>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Promise<{ receivedBytes: number }>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "let ctx: TestContext") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const http2 = globalThis.__home_import(\"node:http2\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_settings") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "initialWindowSize: Number(settings.initialWindowSize)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
