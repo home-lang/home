@@ -2740,6 +2740,13 @@ const harness_prelude =
     \\    const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
     \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
     \\  }
+    \\  if (cmd.includes("build") && cmd.includes("--no-bundle")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const entries = __home_cli_build_entries(cmd, cwd);
+    \\    if (entries.some(entry => /\.html?$/i.test(entry))) {
+    \\      return __home_spawn_completed("", "HTML imports are only supported when bundling\n", 1);
+    \\    }
+    \\  }
     \\  if (cmd.includes("build") && cmd.includes("--compile")) {
     \\    const outfile = __home_cli_option_value(cmd, "--outfile");
     \\    const outdir = __home_cli_option_value(cmd, "--outdir");
@@ -21248,6 +21255,60 @@ test "bootstrap runner mirrors YAML ellipsis parsing and imports" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23489.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors html no-bundle build error" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("html no-bundle build errors", async () => {
+        \\  using dir = tempDir("23569-html-no-bundle", {
+        \\    "index.html": `<!DOCTYPE html><script src="./script.js"></script>`,
+        \\    "script.js": `console.log("Hello");`,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "./index.html", "--no-bundle"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stderr, exitCode] = await Promise.all([proc.stderr.text(), proc.exited]);
+        \\  expect(exitCode).toBe(1);
+        \\  expect(stderr).toContain("HTML imports are only supported when bundling");
+        \\});
+        \\
+        \\test("html bundled build succeeds", async () => {
+        \\  using dir = tempDir("23569-html-bundle", {
+        \\    "index.html": `<!DOCTYPE html><script src="./script.js"></script>`,
+        \\    "script.js": `console.log("Hello");`,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "./index.html", "--outdir", "./build"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stderr, exitCode] = await Promise.all([proc.stderr.text(), proc.exited]);
+        \\  expect(exitCode).toBe(0);
+        \\  expect(stderr).not.toContain("HTML imports are only supported when bundling");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23569.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
