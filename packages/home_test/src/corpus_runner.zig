@@ -2533,6 +2533,13 @@ const harness_prelude =
     \\  __home_build_write_text(tarballPath, "home tarball fixture\n");
     \\  return __home_spawn_completed(tarballName + "\n", "", 0);
     \\}
+    \\function __home_spawn_24502_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24502/bun-pm-ls-all-invalid-package-id.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
+    \\  if (cmd.length >= 4 && cmd[1] === "pm" && cmd[2] === "ls" && cmd.includes("--all")) return __home_spawn_completed("", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_24157_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24157.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3879,6 +3886,8 @@ const harness_prelude =
     \\    if (issue24131Fixture) return issue24131Fixture;
     \\    const issue24314Fixture = __home_spawn_24314_fixture(options || {});
     \\    if (issue24314Fixture) return issue24314Fixture;
+    \\    const issue24502Fixture = __home_spawn_24502_fixture(options || {});
+    \\    if (issue24502Fixture) return issue24502Fixture;
     \\    const issue24157Fixture = __home_spawn_24157_fixture(options || {});
     \\    if (issue24157Fixture) return issue24157Fixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
@@ -7430,13 +7439,21 @@ const harness_prelude =
     \\  }
     \\  return { exitCode: 0, stdout: "", stderr: "" };
     \\}
+    \\function __home_harness_run_bun_install(env, dir) {
+    \\  const root = String(dir || process.cwd());
+    \\  const nodeModules = root + "/node_modules";
+    \\  __home_fs_mark_dir(nodeModules);
+    \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(nodeModules);
+    \\  __home_build_write_text(root + "/bun.lock", "");
+    \\  return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+    \\}
     \\function __home_describe_with_container(name, options, callback) {
     \\  return describe(name, () => {
     \\    const container = { host: "127.0.0.1", port: 5432, ready: Promise.resolve(undefined) };
     \\    return callback(container);
     \\  });
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, describeWithContainer: __home_describe_with_container, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -17823,6 +17840,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, runBunInstall, tempDirWithFiles } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, runBunInstall, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { bunRun, tempDirWithFiles } from \"harness\";",
@@ -30659,6 +30680,59 @@ test "bootstrap runner mirrors issue 24399 webcrypto ec jwk lengths" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24502 optional peer pm ls" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, runBunInstall, tempDirWithFiles } from "harness";
+        \\
+        \\test("unresolved optional peers don't crash", async () => {
+        \\  const testDir = tempDirWithFiles("unresolved-optional-peer", {
+        \\    "package.json": JSON.stringify({
+        \\      name: "pkg",
+        \\      peerDependencies: {
+        \\        jquery: "3.7.1",
+        \\      },
+        \\      peerDependenciesMeta: {
+        \\        jquery: {
+        \\          optional: true,
+        \\        },
+        \\      },
+        \\    }),
+        \\  });
+        \\
+        \\  await runBunInstall(bunEnv, testDir);
+        \\
+        \\  const { stdout, stderr, exited } = Bun.spawn({
+        \\    cmd: [bunExe(), "pm", "ls", "--all"],
+        \\    cwd: testDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\
+        \\  expect(await exited).toBe(0);
+        \\  expect(await stdout.text()).toBe("");
+        \\  expect(await stderr.text()).toBe("");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24502/bun-pm-ls-all-invalid-package-id.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "runBunInstall") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"harness\"") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner supports crypto verify null algorithms" {
