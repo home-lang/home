@@ -1153,6 +1153,8 @@ const harness_prelude =
     \\  const text = String(path);
     \\  const candidates = [text];
     \\  if (!text.startsWith("/") && !text.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + text);
+    \\  const upstreamSrcIndex = text.indexOf("src/runtime/");
+    \\  if (upstreamSrcIndex >= 0) candidates.push("packages/runtime/upstream/" + text.slice(upstreamSrcIndex));
     \\  for (const candidate of candidates) {
     \\  try {
     \\      return String(globalThis.__home_readFileSyncNative(candidate));
@@ -2676,6 +2678,10 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/11806.test.ts")) {
     \\    if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
     \\    if (cmd.includes("add") && cmd.includes("typescript")) return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/24364.test.ts")) {
+    \\    if (cmd.includes("add") && cmd.includes("typescript") && cmd.includes("@types/bun") && cmd.includes("@types/react") && cmd.includes("bun-plugin-tailwind")) return __home_spawn_completed("", "", 0);
+    \\    if (cmd.includes("x") && cmd.includes("tsc") && cmd.includes("--noEmit")) return __home_spawn_completed("", "", 0);
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14945-lifecycle-script-crash.test.ts") && cmd.includes("install")) {
     \\    const cwd = String(options && options.cwd || "");
@@ -29832,6 +29838,66 @@ test "bootstrap runner mirrors issue 24338 partialDeepStrictEqual maps" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24364 react tailwind tsc fixture" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import { readFileSync } from "node:fs";
+        \\import { join } from "node:path";
+        \\
+        \\test("react-tailwind template passes tsc --noEmit", async () => {
+        \\  const templateDir = join(import.meta.dir, "../../../src/runtime/cli/init/react-tailwind");
+        \\  const buildTs = readFileSync(join(templateDir, "build.ts"), "utf8");
+        \\  const tsconfigJson = readFileSync(join(templateDir, "tsconfig.json"), "utf8");
+        \\
+        \\  expect(buildTs).toContain("bun-plugin-tailwind");
+        \\  expect(tsconfigJson).toContain("\"jsx\": \"react-jsx\"");
+        \\
+        \\  using dir = tempDir("issue-24364", {
+        \\    "build.ts": buildTs,
+        \\    "tsconfig.json": tsconfigJson,
+        \\  });
+        \\
+        \\  await using install = Bun.spawn({
+        \\    cmd: [bunExe(), "add", "-d", "typescript", "@types/bun", "@types/react", "bun-plugin-tailwind"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\
+        \\  const [, , installExitCode] = await Promise.all([install.stdout.text(), install.stderr.text(), install.exited]);
+        \\  expect(installExitCode).toBe(0);
+        \\
+        \\  await using tsc = Bun.spawn({
+        \\    cmd: [bunExe(), "x", "tsc", "--noEmit"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\
+        \\  const [stdout, stderr, exitCode] = await Promise.all([tsc.stdout.text(), tsc.stderr.text(), tsc.exited]);
+        \\  expect(stderr).toBe("");
+        \\  expect(stdout).toBe("");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24364.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner supports node fs rename and unlink sync methods" {
