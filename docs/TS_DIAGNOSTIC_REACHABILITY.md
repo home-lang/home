@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 582 |
-| reachable (parity targets) | 121 |
+| catalog-only total | 581 |
+| reachable (parity targets) | 120 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -29,7 +29,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | other | 14 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
-| 7xxx — noImplicitAny / implicit-type family | 1 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (53)
 
@@ -171,10 +170,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
-
-### 7xxx — noImplicitAny / implicit-type family (1)
-
-- TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 
 ## Notes: heuristic false-positives & subsystem-gated clusters
 

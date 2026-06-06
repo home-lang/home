@@ -35,6 +35,7 @@ pub const Hir = hir_mod.Hir;
 pub const Options = struct {
     indent: []const u8 = "  ",
     newline: []const u8 = "\n",
+    max_inferred_type_serialization_len: usize = 1_000_000,
 };
 
 pub const Diagnostic = struct {
@@ -199,13 +200,20 @@ pub const Emitter = struct {
         if (t == 0) return null;
         if (!ti.pool.flagsOf(t).is_signature) return null;
         const ret = ti.signatureReturn(t) orelse return null;
-        return ts_checker.renderType(self.gpa, ti, self.interner, ret) catch |err| switch (err) {
+        const rendered = ts_checker.renderType(self.gpa, ti, self.interner, ret) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.CyclicStructure => {
                 try self.reportCyclicStructure(node, name_node);
                 return null;
             },
         };
+        errdefer self.gpa.free(rendered);
+        if (rendered.len > self.options.max_inferred_type_serialization_len) {
+            try self.reportInferredTypeTooLong(node);
+            self.gpa.free(rendered);
+            return null;
+        }
+        return rendered;
     }
 
     fn reportCyclicStructure(self: *Emitter, node: NodeId, name_node: NodeId) !void {
@@ -222,6 +230,16 @@ pub const Emitter = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = 5088,
+            .message = message,
+        });
+    }
+
+    fn reportInferredTypeTooLong(self: *Emitter, node: NodeId) !void {
+        const message = try self.gpa.dupe(u8, "The inferred type of this node exceeds the maximum length the compiler will serialize. An explicit type annotation is needed.");
+        errdefer self.gpa.free(message);
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = 7056,
             .message = message,
         });
     }
@@ -798,6 +816,28 @@ test "d.ts: inferred cyclic return reports TS5088 instead of eliding" {
     try T.expectEqual(@as(usize, 1), em.diagnostics.items.len);
     try T.expectEqual(@as(u32, 5088), em.diagnostics.items[0].code);
     try T.expect(std.mem.indexOf(u8, em.diagnostics.items[0].message, "The inferred type of 'foo'") != null);
+}
+
+test "d.ts: inferred return exceeding serialization limit reports TS7056" {
+    const s = try newSetup("function add(a: number, b: number) { return a + b; }");
+    defer destroySetup(s);
+    var ti = try ts_checker.Interner.init(T.allocator);
+    defer ti.deinit();
+    var engine = try ts_checker.Engine.init(T.allocator, &ti);
+    defer engine.deinit();
+    var checker = ts_checker.Checker.init(T.allocator, &s.hir, &ti, &s.sint, &engine);
+    defer checker.deinit();
+    try checker.checkSourceFile(s.root);
+
+    var em = Emitter.initWithTypes(T.allocator, &s.hir, &s.sint, &ti, .{
+        .max_inferred_type_serialization_len = 3,
+    });
+    defer em.deinit();
+    try em.emitSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), em.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 7056), em.diagnostics.items[0].code);
+    try T.expect(std.mem.indexOf(u8, em.diagnostics.items[0].message, "exceeds the maximum length") != null);
+    try T.expect(std.mem.indexOf(u8, em.out.items, "declare function add(a: number, b: number);") != null);
 }
 
 test "d.ts: inferred void return for body without returns" {

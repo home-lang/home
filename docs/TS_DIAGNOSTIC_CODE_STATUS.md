@@ -29,10 +29,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1492 |
+| emitted | 1493 |
 | declared | 4 |
 | tested-only | 1 |
-| catalog-only | 582 |
+| catalog-only | 581 |
 | total upstream codes | 2079 |
 
 ## Codes
@@ -1180,7 +1180,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5085 | err | emitted | packages/ts_parser/src/ts_parser.zig:10311 | A_tuple_member_cannot_be_both_optional_and_rest_5085 |
 | TS5086 | err | emitted | packages/ts_parser/src/ts_parser.zig:10316 | A_labeled_tuple_element_is_declared_as_optional_with_a_question_mark_after_the_name_and_before_the_c_5086 |
 | TS5087 | err | emitted | packages/ts_parser/src/ts_parser.zig:10314<br>packages/ts_parser/src/ts_parser.zig:19673 | A_labeled_tuple_element_is_declared_as_rest_with_a_before_the_name_rather_than_before_the_type_5087 |
-| TS5088 | err | emitted | packages/ts_emit/src/d_ts_emit.zig:224 | The_inferred_type_of_0_references_a_type_with_a_cyclic_structure_which_cannot_be_trivially_serialize_5088 |
+| TS5088 | err | emitted | packages/ts_emit/src/d_ts_emit.zig:232 | The_inferred_type_of_0_references_a_type_with_a_cyclic_structure_which_cannot_be_trivially_serialize_5088 |
 | TS5089 | err | emitted | packages/tsconfig/src/tsconfig.zig:1435 | Option_0_cannot_be_specified_when_option_jsx_is_1_5089 |
 | TS5090 | err | emitted | packages/tsconfig/src/tsconfig.zig:1247 | Non_relative_paths_are_not_allowed_when_baseUrl_is_not_set_Did_you_forget_a_leading_Slash_5090 |
 | TS5091 | err | emitted | packages/tsconfig/src/tsconfig.zig:1450 | Option_preserveConstEnums_cannot_be_disabled_when_0_is_enabled_5091 |
@@ -1718,7 +1718,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS7053 | err | emitted | packages/ts_checker/src/check.zig:60033<br>packages/ts_checker/src/check.zig:60098<br>packages/ts_checker/src/check.zig:60119 | Element_implicitly_has_an_any_type_because_expression_of_type_0_can_t_be_used_to_index_type_1_7053 |
 | TS7054 | err | emitted | packages/ts_checker/src/check.zig:80860<br>packages/ts_checker/src/check.zig:110930 | No_index_signature_with_a_parameter_of_type_0_was_found_on_type_1_7054 |
 | TS7055 | err | emitted | packages/ts_checker/src/check.zig:19850<br>packages/ts_checker/src/check.zig:98365 | _0_which_lacks_return_type_annotation_implicitly_has_an_1_yield_type_7055 |
-| TS7056 | err | catalog-only |  | The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056 |
+| TS7056 | err | emitted | packages/ts_emit/src/d_ts_emit.zig:242 | The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056 |
 | TS7057 | err | emitted | packages/ts_checker/src/check.zig:19714<br>packages/ts_checker/src/check.zig:19725<br>packages/ts_parser/src/ts_parser.zig:14894 | yield_expression_implicitly_results_in_an_any_type_because_its_containing_generator_lacks_a_return_t_7057 |
 | TS7058 | err | emitted | packages/ts_checker/src/check.zig:35750<br>packages/ts_checker/src/check.zig:112124 | If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058 |
 | TS7059 | err | emitted | packages/ts_checker/src/check.zig:11037 | This_syntax_is_reserved_in_files_with_the_mts_or_cts_extension_Use_an_as_expression_instead_7059 |
