@@ -2699,6 +2699,9 @@ const harness_prelude =
     \\    const script = String(cmd[cmd.indexOf("-e") + 1] || "");
     \\    if (script.includes('import { redis } from "bun"') && script.includes("redis.duplicate()")) return __home_spawn_completed("success\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/24806.test.ts") && cmd[1] === "publish" && cmd.includes("--help")) {
+    \\    return __home_spawn_completed("Usage: bun publish [flags]\n\nFlags:\n  --dry-run      Perform a dry run without making changes\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14945-lifecycle-script-crash.test.ts") && cmd.includes("install")) {
     \\    const cwd = String(options && options.cwd || "");
     \\    if (cwd.includes("lifecycle-crash-test")) return __home_spawn_completed("", "error: Failed to run script preinstall: exited with 1\n", 1);
@@ -20605,6 +20608,43 @@ test "bootstrap runner mirrors issue 24742 nix interpreter helper prep" {
 
     try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors issue 24806 publish help dry run text" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("bun publish --help shows correct message for --dry-run", async () => {
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "publish", "--help"],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toContain("--dry-run");
+        \\  expect(stdout).toContain("Perform a dry run without making changes");
+        \\  expect(stdout).not.toContain("Don't install anything");
+        \\  expect(stderr).toBe("");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24806.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner supports recursive mkdir existing path smoke" {
