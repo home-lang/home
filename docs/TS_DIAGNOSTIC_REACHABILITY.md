@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 590 |
-| reachable (parity targets) | 129 |
+| catalog-only total | 589 |
+| reachable (parity targets) | 128 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -27,7 +27,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | 2xxx — checker / type engine | 14 |
 | other | 14 |
-| 7xxx — noImplicitAny / implicit-type family | 9 |
+| 7xxx — noImplicitAny / implicit-type family | 8 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
@@ -162,7 +162,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 7xxx — noImplicitAny / implicit-type family (9)
+### 7xxx — noImplicitAny / implicit-type family (8)
 
 - TS7012 `This_overload_implicitly_returns_the_type_0_because_it_lacks_a_return_type_annotation_7012`
 - TS7024 `Function_implicitly_has_return_type_any_because_it_does_not_have_a_return_type_annotation_and_is_ref_7024`
@@ -170,7 +170,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS7038 `Type_originates_at_this_import_A_namespace_style_import_cannot_be_called_or_constructed_and_will_cau_7038`
 - TS7040 `If_the_0_package_actually_exposes_this_module_consider_sending_a_pull_request_to_amend_https_Colon_S_7040`
 - TS7042 `Module_0_was_resolved_to_1_but_resolveJsonModule_is_not_used_7042`
-- TS7052 `Element_implicitly_has_an_any_type_because_type_0_has_no_index_signature_Did_you_mean_to_call_1_7052`
 - TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 - TS7058 `If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058`
 
