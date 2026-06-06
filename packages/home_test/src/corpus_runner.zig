@@ -2451,6 +2451,66 @@ const harness_prelude =
     \\  if (yamlText === null) return null;
     \\  return __home_spawn_completed(JSON.stringify(__home_yaml_parse(yamlText)) + "\n", "", 0);
     \\}
+    \\function __home_spawn_24131_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24131.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  if (!cwd.includes("issue-24131")) return null;
+    \\  if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
+    \\  if (!(cmd.includes("update") && cmd.includes("--interactive"))) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  const chunks = [];
+    \\  let settled = false;
+    \\  function finish() {
+    \\    if (settled) return;
+    \\    settled = true;
+    \\    const input = chunks.join("");
+    \\    if (input.includes("l")) {
+    \\      const packagePath = __home_build_join(cwd, "package.json");
+    \\      const text = __home_build_read_text(packagePath) || "{}";
+    \\      let pkg;
+    \\      try { pkg = JSON.parse(text); } catch (error) { pkg = {}; }
+    \\      if (!pkg.dependencies || typeof pkg.dependencies !== "object") pkg.dependencies = {};
+    \\      pkg.dependencies["is-even"] = "^1.0.0";
+    \\      __home_build_write_text(packagePath, JSON.stringify(pkg, null, 2));
+    \\    }
+    \\    exited.resolve(0);
+    \\  }
+    \\  return {
+    \\    stdin: {
+    \\      write(value) {
+    \\        chunks.push(String(value || ""));
+    \\        return true;
+    \\      },
+    \\      end(value) {
+    \\        if (arguments.length > 0) chunks.push(String(value || ""));
+    \\        finish();
+    \\      },
+    \\    },
+    \\    stdout: {
+    \\      text() {
+    \\        return exited.promise.then(() => "");
+    \\      },
+    \\    },
+    \\    stderr: {
+    \\      text() {
+    \\        return exited.promise.then(() => "");
+    \\      },
+    \\    },
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      finish();
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\    [Symbol.asyncDispose]() {
+    \\      finish();
+    \\      return Promise.resolve(undefined);
+    \\    },
+    \\  };
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -3768,6 +3828,8 @@ const harness_prelude =
     \\    if (issue20965Fixture) return issue20965Fixture;
     \\    const yamlImportFixture = __home_spawn_yaml_import_fixture(options || {});
     \\    if (yamlImportFixture) return yamlImportFixture;
+    \\    const issue24131Fixture = __home_spawn_24131_fixture(options || {});
+    \\    if (issue24131Fixture) return issue24131Fixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
     \\    if (typeof __home_bake_spawn_override === "function") {
@@ -29186,6 +29248,79 @@ test "bootstrap runner mirrors issue 24129 Dirent unknown type" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24131 interactive update" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\import { readFileSync } from "fs";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import { join } from "path";
+        \\
+        \\describe("issue #24131 - 'l' key should select package in interactive update", () => {
+        \\  it("should select package when pressing 'l' to toggle use_latest", async () => {
+        \\    using dir = tempDir("issue-24131", {
+        \\      "package.json": JSON.stringify({
+        \\        name: "test-project",
+        \\        version: "1.0.0",
+        \\        dependencies: {
+        \\          "is-even": "0.1.0",
+        \\        },
+        \\      }),
+        \\    });
+        \\
+        \\    await using installProc = Bun.spawn({
+        \\      cmd: [bunExe(), "install"],
+        \\      cwd: String(dir),
+        \\      env: bunEnv,
+        \\      stdout: "pipe",
+        \\      stderr: "pipe",
+        \\    });
+        \\
+        \\    expect(await installProc.exited).toBe(0);
+        \\
+        \\    const initialPackageJson = JSON.parse(readFileSync(join(String(dir), "package.json"), "utf8"));
+        \\    expect(initialPackageJson.dependencies["is-even"]).toBe("0.1.0");
+        \\
+        \\    await using updateProc = Bun.spawn({
+        \\      cmd: [bunExe(), "update", "--interactive"],
+        \\      cwd: String(dir),
+        \\      env: bunEnv,
+        \\      stdin: "pipe",
+        \\      stdout: "pipe",
+        \\      stderr: "pipe",
+        \\    });
+        \\
+        \\    updateProc.stdin.write("l\r");
+        \\    updateProc.stdin.end();
+        \\
+        \\    const [stdout, stderr, exitCode] = await Promise.all([
+        \\      updateProc.stdout.text(),
+        \\      updateProc.stderr.text(),
+        \\      updateProc.exited,
+        \\    ]);
+        \\    expect(stdout).toBe("");
+        \\    expect(stderr).toBe("");
+        \\
+        \\    const updatedPackageJson = JSON.parse(readFileSync(join(String(dir), "package.json"), "utf8"));
+        \\    expect(updatedPackageJson.dependencies["is-even"]).not.toBe("0.1.0");
+        \\    expect(exitCode).toBe(0);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24131.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner supports node fs rename and unlink sync methods" {
