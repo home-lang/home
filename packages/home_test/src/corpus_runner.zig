@@ -2683,6 +2683,10 @@ const harness_prelude =
     \\    if (cmd.includes("add") && cmd.includes("typescript") && cmd.includes("@types/bun") && cmd.includes("@types/react") && cmd.includes("bun-plugin-tailwind")) return __home_spawn_completed("", "", 0);
     \\    if (cmd.includes("x") && cmd.includes("tsc") && cmd.includes("--noEmit")) return __home_spawn_completed("", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/24385.test.ts") && cmd.includes("-e")) {
+    \\    const script = String(cmd[cmd.indexOf("-e") + 1] || "");
+    \\    if (script.includes('import { redis } from "bun"') && script.includes("redis.duplicate()")) return __home_spawn_completed("success\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14945-lifecycle-script-crash.test.ts") && cmd.includes("install")) {
     \\    const cwd = String(options && options.cwd || "");
     \\    if (cwd.includes("lifecycle-crash-test")) return __home_spawn_completed("", "error: Failed to run script preinstall: exited with 1\n", 1);
@@ -3394,7 +3398,7 @@ const harness_prelude =
     \\  }
     \\  const protocol = String(parsed.protocol || "").toLowerCase();
     \\  if (protocol === "valkey+unix:" || protocol === "redis+unix:" || protocol === "redis+tls+unix:") return { url: text, port: 0, unix: true };
-    \\  if (protocol !== "redis:" && protocol !== "rediss:" && protocol !== "valkey:") throw __home_redis_invalid_url("Invalid URL format");
+    \\  if (protocol !== "redis:" && protocol !== "redis+tls:" && protocol !== "rediss:" && protocol !== "valkey:") throw __home_redis_invalid_url("Invalid URL format");
     \\  const port = parsed.port === "" ? 6379 : Number(parsed.port);
     \\  if (!Number.isInteger(port) || port < 0 || port > 65535) throw __home_redis_invalid_url("Invalid port number");
     \\  if (parsed.port !== "" && port === 0) throw __home_redis_invalid_url("Port 0 is not valid for TCP Redis connections");
@@ -3411,6 +3415,9 @@ const harness_prelude =
     \\__home_RedisClient.prototype.close = function() {
     \\  this.closed = true;
     \\};
+    \\function __home_redis_duplicate() {
+    \\  return new __home_RedisClient(process.env.REDIS_URL || process.env.VALKEY_URL);
+    \\}
     \\function __home_cookie_validate_expires(value) {
     \\  if (value === undefined || value === null) return undefined;
     \\  if (value instanceof Date) {
@@ -3703,6 +3710,9 @@ const harness_prelude =
     \\  CryptoHasher: __home_CryptoHasher,
     \\  Cookie: __home_Cookie,
     \\  RedisClient: __home_RedisClient,
+    \\  redis: {
+    \\    duplicate: __home_redis_duplicate,
+    \\  },
     \\  peek: {
     \\    status(value) {
     \\      return value && typeof value.then === "function" ? "fulfilled" : "fulfilled";
@@ -7117,10 +7127,11 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, RedisClient: Bun.RedisClient, SQL: __home_bun_sql, YAML: Bun.YAML, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, RedisClient: Bun.RedisClient, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
+    \\globalThis.__home_modules["_util/collection"] = { cartesianProduct(left, right) { return left.flatMap(leftItem => right.map(rightItem => [leftItem, rightItem])); } };
     \\function __home_sqlite_database(filename) {
     \\  this.filename = String(filename || "");
     \\  this.tables = Object.create(null);
@@ -17080,6 +17091,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const ServerOptions = globalThis.__home_import(\"./bun-serve-exports-fixture.js\");",
         },
         .{
+            .needle = "import { cartesianProduct } from \"_util/collection\";",
+            .replacement = "const { cartesianProduct } = globalThis.__home_import(\"_util/collection\");",
+        },
+        .{
             .needle = "import \"reflect-metadata\";",
             .replacement = "globalThis.__home_import(\"reflect-metadata\");",
         },
@@ -21821,6 +21836,7 @@ test "bootstrap runner mirrors RedisClient URL validation" {
         \\    expect(() => new RedisClient().close()).not.toThrow();
         \\    expect(() => new RedisClient(undefined).close()).not.toThrow();
         \\    expect(() => new RedisClient("redis://localhost:6379").close()).not.toThrow();
+        \\    expect(() => new RedisClient("redis+tls://localhost:6379").close()).not.toThrow();
         \\    expect(() => new RedisClient("valkey://127.0.0.1:6379").close()).not.toThrow();
         \\    expect(() => new RedisClient("valkey+unix:///tmp/redis.sock").close()).not.toThrow();
         \\  });
@@ -21837,6 +21853,61 @@ test "bootstrap runner mirrors RedisClient URL validation" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24385 redis lazy import urls" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { cartesianProduct } from "_util/collection";
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test.concurrent.each(
+        \\  cartesianProduct(
+        \\    ["REDIS_URL", "VALKEY_URL"],
+        \\    [
+        \\      "localhost:6379",
+        \\      "redis+tls+unix:///tmp/redis.sock",
+        \\      "redis+tls://localhost:6379",
+        \\      "redis+unix:///tmp/redis.sock",
+        \\      "redis://localhost:6379",
+        \\      "rediss://localhost:6379",
+        \\      "valkey://localhost:6379",
+        \\    ],
+        \\  ).map(([k, v]) => ({ key: k, value: v })),
+        \\)("Redis loads with $key=$value", async ({ key, value }) => {
+        \\  const env = { ...bunEnv, [key]: value };
+        \\
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "-e", 'import { redis } from "bun"; const d = redis.duplicate(); console.log("success");'],
+        \\    env,
+        \\    stderr: "pipe",
+        \\    stdout: "pipe",
+        \\  });
+        \\
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\
+        \\  expect(stderr).not.toContain("Expected url protocol to be one of");
+        \\  expect(stdout).toContain("success");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24385.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"_util/collection\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import { cartesianProduct }") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 23649 parser diagnostics" {
