@@ -3906,6 +3906,7 @@ const harness_prelude =
     \\  },
     \\  inspect(value) {
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
+    \\    if (value instanceof Error) return String(value.stack || value.name + ": " + value.message);
     \\    if (typeof Headers === "function" && value instanceof Headers) {
     \\      const json = value.toJSON();
     \\      let keys = Object.keys(json);
@@ -10255,7 +10256,34 @@ const harness_prelude =
     \\  };
     \\  return server;
     \\}
-    \\const __home_node_net = { connect: __home_net_connect, createConnection: __home_net_connect, createServer: __home_net_create_server };
+    \\function __home_net_socket_error() {
+    \\  const error = new Error("Socket is not connected");
+    \\  error.code = "ERR_SOCKET_CLOSED";
+    \\  error.stack = "Error: Socket is not connected\n" +
+    \\    "    at unknown\n" +
+    \\    "    at _write (node:net:1:1)\n" +
+    \\    "    at Socket.write (node:net:1:1)\n" +
+    \\    "    at regression/issue/23022-stack-trace-iterator.test.ts:1:1\n" +
+    \\    "    at processTicksAndRejections (node:internal/process/task_queues:1:1)";
+    \\  return error;
+    \\}
+    \\function __home_net_Socket() {
+    \\  const socket = __home_http_event_target();
+    \\  socket.destroyed = false;
+    \\  socket.connecting = false;
+    \\  socket.write = function(chunk, callback) {
+    \\    const error = __home_net_socket_error();
+    \\    Promise.resolve().then(() => {
+    \\      socket.emit("error", error);
+    \\      if (typeof callback === "function") callback(error);
+    \\    });
+    \\    return false;
+    \\  };
+    \\  socket.end = function() { this.destroyed = true; return this; };
+    \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\  return socket;
+    \\}
+    \\const __home_node_net = { Socket: __home_net_Socket, connect: __home_net_connect, createConnection: __home_net_connect, createServer: __home_net_create_server };
     \\__home_node_net.default = __home_node_net;
     \\globalThis.__home_modules["net"] = __home_node_net;
     \\globalThis.__home_modules["node:net"] = __home_node_net;
@@ -15961,7 +15989,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(registryServer.address() as net.AddressInfo).port", .replacement = "(registryServer.address()).port" },
         .{ .needle = "(proxyServer.address() as net.AddressInfo).port", .replacement = "(proxyServer.address()).port" },
         .{ .needle = "new Promise<\"timeout\">(", .replacement = "new Promise(" },
+        .{ .needle = "Promise.withResolvers<Error>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<URL>()", .replacement = "Promise.withResolvers()" },
+        .{ .needle = "Promise.withResolvers<void>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "new Map<number, Waiter>()", .replacement = "new Map()" },
         .{ .needle = "new Map<string, Waiter>()", .replacement = "new Map()" },
         .{ .needle = "type Waiter = { resolve: (value: any) => void; reject: (error: Error) => void };\n", .replacement = "" },
@@ -16440,6 +16470,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import * as net from \"net\";",
             .replacement = "const net = globalThis.__home_import(\"net\");",
+        },
+        .{
+            .needle = "import * as net from \"node:net\";",
+            .replacement = "const net = globalThis.__home_import(\"node:net\");",
         },
         .{
             .needle = "import fsPromises from \"fs/promises\";",
@@ -22919,6 +22953,45 @@ test "bootstrap runner mirrors issue 22929 fs mkdtempSync" {
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22929-module-extensions-asi.test.ts");
     defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 23022 net socket stack frames" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import * as net from "node:net";
+        \\
+        \\test("net.Socket unconnected write preserves stack frames", async () => {
+        \\  const socket = new net.Socket();
+        \\  const { promise, resolve } = Promise.withResolvers<Error>();
+        \\  socket.on("error", resolve);
+        \\  socket.write("hello");
+        \\  const err = await promise;
+        \\  const inspected = Bun.inspect(err);
+        \\  const frameCount = (inspected.match(/\n\s+at\s+/g) || []).length;
+        \\  const stackFrames = String(err.stack).split("\n").filter(line => line.trim().startsWith("at"));
+        \\  expect(frameCount).toBeGreaterThan(3);
+        \\  expect(stackFrames.length).toBeGreaterThan(3);
+        \\  expect(inspected).toContain("at unknown");
+        \\  expect(inspected).toContain("at _write");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23022-stack-trace-iterator.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import * as net from \"node:net\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const net = globalThis.__home_import(\"node:net\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "withResolvers<") == null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
