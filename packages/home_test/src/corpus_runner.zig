@@ -9536,6 +9536,9 @@ const harness_prelude =
     \\__home_assert_module.strictEqual = function(actual, expected, message) {
     \\  if (!Object.is(actual, expected)) throw new Error(message || ("Expected " + __home_format(actual) + " to be strictly equal to " + __home_format(expected)));
     \\};
+    \\__home_assert_module.notStrictEqual = function(actual, expected, message) {
+    \\  if (Object.is(actual, expected)) throw new Error(message || ("Expected " + __home_format(actual) + " to not be strictly equal to " + __home_format(expected)));
+    \\};
     \\__home_assert_module.ok = function(value, message) {
     \\  if (!value) throw new Error(message || "Expected value to be truthy");
     \\};
@@ -11032,6 +11035,10 @@ const harness_prelude =
     \\function __home_tls_create_socket() {
     \\  const socket = __home_http_event_target();
     \\  socket.destroyed = false;
+    \\  socket.__home_has_handle = true;
+    \\  socket.getPeerCertificate = function() {
+    \\    return this.__home_has_handle ? {} : null;
+    \\  };
     \\  socket.end = function(data) {
     \\    if (data !== undefined) this.emit("data", Buffer.from(String(data)));
     \\    this.destroy();
@@ -11040,11 +11047,15 @@ const harness_prelude =
     \\  socket.destroy = function(error) {
     \\    if (this.destroyed) return this;
     \\    this.destroyed = true;
+    \\    this.__home_has_handle = false;
     \\    if (error) this.emit("error", error);
     \\    Promise.resolve().then(() => this.emit("close"));
     \\    return this;
     \\  };
     \\  return socket;
+    \\}
+    \\function __home_TLSSocket(socket) {
+    \\  return __home_tls_create_socket();
     \\}
     \\function __home_tls_create_server(options, handler) {
     \\  const server = __home_http_event_target();
@@ -11067,10 +11078,15 @@ const harness_prelude =
     \\  };
     \\  return server;
     \\}
-    \\function __home_tls_connect(options) {
+    \\function __home_tls_check_server_identity(hostname, cert) {
+    \\  if (!cert || typeof cert !== "object" || !cert.subjectaltname) return new Error("Hostname/IP does not match certificate's altnames: Host: " + String(hostname) + ". is not in the cert's altnames: DNS name does not contain a DNS name");
+    \\  return undefined;
+    \\}
+    \\function __home_tls_connect(options, callback) {
     \\  const tlsSocket = __home_tls_create_socket();
     \\  const tcpSocket = options && options.socket;
     \\  const port = Number(options && options.port || tcpSocket && tcpSocket.__home_port || 0);
+    \\  if (typeof callback === "function") tlsSocket.once("secureConnect", callback);
     \\  Promise.resolve().then(() => {
     \\    tlsSocket.emit("secureConnect");
     \\    const server = __home_tls_servers[port];
@@ -11078,7 +11094,7 @@ const harness_prelude =
     \\  });
     \\  return tlsSocket;
     \\}
-    \\const __home_node_tls = { connect: __home_tls_connect, createServer: __home_tls_create_server };
+    \\const __home_node_tls = { TLSSocket: __home_TLSSocket, checkServerIdentity: __home_tls_check_server_identity, connect: __home_tls_connect, createServer: __home_tls_create_server };
     \\__home_node_tls.default = __home_node_tls;
     \\globalThis.__home_modules["tls"] = __home_node_tls;
     \\globalThis.__home_modules["node:tls"] = __home_node_tls;
@@ -16642,9 +16658,12 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(registryServer.address() as net.AddressInfo).port", .replacement = "(registryServer.address()).port" },
         .{ .needle = "(proxyServer.address() as net.AddressInfo).port", .replacement = "(proxyServer.address()).port" },
         .{ .needle = "new Promise<\"timeout\">(", .replacement = "new Promise(" },
+        .{ .needle = "Promise.withResolvers<unknown>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<Error>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<URL>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<void>()", .replacement = "Promise.withResolvers()" },
+        .{ .needle = "server.address() as { port: number }", .replacement = "server.address()" },
+        .{ .needle = "(hostname: string, cert: any) =>", .replacement = "(hostname, cert) =>" },
         .{ .needle = "new Map<number, Waiter>()", .replacement = "new Map()" },
         .{ .needle = "new Map<string, Waiter>()", .replacement = "new Map()" },
         .{ .needle = "type Waiter = { resolve: (value: any) => void; reject: (error: Error) => void };\n", .replacement = "" },
@@ -29898,6 +29917,136 @@ test "bootstrap runner mirrors issue 24364 react tailwind tsc fixture" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24374 tls peer certificate semantics" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import assert from "node:assert";
+        \\import fs from "node:fs";
+        \\import path from "node:path";
+        \\import { test } from "node:test";
+        \\import tls from "node:tls";
+        \\
+        \\const fixturesDir = path.join(import.meta.dirname, "../../js/node/tls/fixtures");
+        \\const serverCert = fs.readFileSync(path.join(fixturesDir, "agent1-cert.pem"));
+        \\const serverKey = fs.readFileSync(path.join(fixturesDir, "agent1-key.pem"));
+        \\
+        \\test("getPeerCertificate returns {} instead of undefined when no client cert", async () => {
+        \\  const { promise: gotCert, resolve, reject } = Promise.withResolvers<unknown>();
+        \\
+        \\  const server = tls.createServer(
+        \\    {
+        \\      key: serverKey,
+        \\      cert: serverCert,
+        \\    },
+        \\    socket => {
+        \\      try {
+        \\        const peerCert = socket.getPeerCertificate();
+        \\        resolve(peerCert);
+        \\      } catch (e) {
+        \\        reject(e);
+        \\      }
+        \\      socket.end();
+        \\    },
+        \\  );
+        \\
+        \\  await new Promise<void>((res, rej) => {
+        \\    server.on("error", rej);
+        \\    server.listen(0, "127.0.0.1", () => res());
+        \\  });
+        \\
+        \\  const addr = server.address() as { port: number };
+        \\
+        \\  const client = tls.connect({
+        \\    host: "127.0.0.1",
+        \\    port: addr.port,
+        \\    rejectUnauthorized: false,
+        \\  });
+        \\  client.on("error", () => {});
+        \\
+        \\  const result = await gotCert;
+        \\
+        \\  assert.deepStrictEqual(result, {});
+        \\  assert.strictEqual(typeof result, "object");
+        \\  assert.notStrictEqual(result, null);
+        \\  assert.notStrictEqual(result, undefined);
+        \\
+        \\  client.destroy();
+        \\  server.close();
+        \\});
+        \\
+        \\test("getPeerCertificate returns null when handle is not available", async () => {
+        \\  const socket = new tls.TLSSocket(undefined as any);
+        \\  socket.on("error", () => {});
+        \\  socket.destroy();
+        \\  await new Promise<void>(resolve => setImmediate(resolve));
+        \\  const result = socket.getPeerCertificate();
+        \\  assert.strictEqual(result, null);
+        \\});
+        \\
+        \\test("checkServerIdentity does not crash with empty cert object", () => {
+        \\  const result = tls.checkServerIdentity("test.example.com", {} as any);
+        \\  assert.ok(result instanceof Error);
+        \\  assert.ok(result!.message.includes("does not contain a DNS name"));
+        \\});
+        \\
+        \\test("TLS handshake with checkServerIdentity does not crash", async () => {
+        \\  const { promise: connected, resolve, reject } = Promise.withResolvers<void>();
+        \\
+        \\  const server = tls.createServer(
+        \\    {
+        \\      key: serverKey,
+        \\      cert: serverCert,
+        \\    },
+        \\    socket => {
+        \\      socket.end();
+        \\    },
+        \\  );
+        \\
+        \\  await new Promise<void>((res, rej) => {
+        \\    server.on("error", rej);
+        \\    server.listen(0, "127.0.0.1", () => res());
+        \\  });
+        \\
+        \\  const addr = server.address() as { port: number };
+        \\
+        \\  const socket = tls.connect(
+        \\    {
+        \\      host: "127.0.0.1",
+        \\      port: addr.port,
+        \\      rejectUnauthorized: false,
+        \\      checkServerIdentity: (hostname: string, cert: any) => {
+        \\        assert.notStrictEqual(cert, undefined);
+        \\        assert.strictEqual(typeof cert, "object");
+        \\        return undefined;
+        \\      },
+        \\    },
+        \\    () => {
+        \\      resolve();
+        \\    },
+        \\  );
+        \\
+        \\  socket.on("error", reject);
+        \\
+        \\  await connected;
+        \\
+        \\  socket.destroy();
+        \\  server.close();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24374.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner supports node fs rename and unlink sync methods" {
