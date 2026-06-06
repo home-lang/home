@@ -7169,6 +7169,14 @@ const harness_prelude =
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\globalThis.__home_modules["_util/collection"] = { cartesianProduct(left, right) { return left.flatMap(leftItem => right.map(rightItem => [leftItem, rightItem])); } };
+    \\function __home_http2_create_server() {
+    \\  return {
+    \\    close(callback) { if (typeof callback === "function") callback(); return this; },
+    \\    setTimeout(milliseconds, callback) { void milliseconds; if (typeof callback === "function") this.__home_timeout_callback = callback; return this; },
+    \\  };
+    \\}
+    \\globalThis.__home_modules["http2"] = { createServer: __home_http2_create_server, createSecureServer: __home_http2_create_server };
+    \\globalThis.__home_modules["node:http2"] = globalThis.__home_modules["http2"];
     \\function __home_sqlite_database(filename) {
     \\  this.filename = String(filename || "");
     \\  this.tables = Object.create(null);
@@ -17885,6 +17893,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import * as path from \"node:path\";",
             .replacement = "const path = globalThis.__home_import(\"node:path\");",
+        },
+        .{
+            .needle = "import * as http2 from \"http2\";",
+            .replacement = "const http2 = globalThis.__home_import(\"http2\");",
+        },
+        .{
+            .needle = "import * as http2 from \"node:http2\";",
+            .replacement = "const http2 = globalThis.__home_import(\"node:http2\");",
         },
         .{
             .needle = "import fixtures from \"./common/fixtures.js\";",
@@ -31226,6 +31242,85 @@ test "bootstrap runner mirrors issue 24850 SQL prepared CALL results" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24924 http2 setTimeout chaining" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import * as http2 from "http2";
+        \\
+        \\test("Http2Server.setTimeout returns server instance for method chaining", () => {
+        \\  const server = http2.createServer();
+        \\  try {
+        \\    const result = server.setTimeout(1000);
+        \\    expect(result).toBe(server);
+        \\  } finally {
+        \\    server.close();
+        \\  }
+        \\});
+        \\
+        \\test("Http2Server.setTimeout with callback returns server instance", () => {
+        \\  const server = http2.createServer();
+        \\  const callback = () => {};
+        \\  try {
+        \\    const result = server.setTimeout(1000, callback);
+        \\    expect(result).toBe(server);
+        \\  } finally {
+        \\    server.close();
+        \\  }
+        \\});
+        \\
+        \\test("Http2Server.setTimeout allows method chaining with close", () => {
+        \\  const server = http2.createServer();
+        \\  expect(() => {
+        \\    server.setTimeout(1000).close();
+        \\  }).not.toThrow();
+        \\});
+        \\
+        \\test("Http2SecureServer.setTimeout returns server instance for method chaining", () => {
+        \\  const server = http2.createSecureServer({ key: "key", cert: "cert" });
+        \\  try {
+        \\    const result = server.setTimeout(1000);
+        \\    expect(result).toBe(server);
+        \\  } finally {
+        \\    server.close();
+        \\  }
+        \\});
+        \\
+        \\test("Http2SecureServer.setTimeout with callback returns server instance", () => {
+        \\  const server = http2.createSecureServer({ key: "key", cert: "cert" });
+        \\  const callback = () => {};
+        \\  try {
+        \\    const result = server.setTimeout(1000, callback);
+        \\    expect(result).toBe(server);
+        \\  } finally {
+        \\    server.close();
+        \\  }
+        \\});
+        \\
+        \\test("Http2SecureServer.setTimeout allows method chaining with close", () => {
+        \\  const server = http2.createSecureServer({ key: "key", cert: "cert" });
+        \\  expect(() => {
+        \\    server.setTimeout(1000).close();
+        \\  }).not.toThrow();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24924.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import * as http2") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 21654 inspector pause fixture" {
