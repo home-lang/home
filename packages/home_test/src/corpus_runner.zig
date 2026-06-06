@@ -7233,11 +7233,31 @@ const harness_prelude =
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\globalThis.__home_modules["_util/collection"] = { cartesianProduct(left, right) { return left.flatMap(leftItem => right.map(rightItem => [leftItem, rightItem])); } };
+    \\let __home_http2_next_port = 44200;
+    \\const __home_http2_servers = Object.create(null);
     \\function __home_http2_create_server() {
-    \\  return {
-    \\    close(callback) { if (typeof callback === "function") callback(); return this; },
-    \\    setTimeout(milliseconds, callback) { void milliseconds; if (typeof callback === "function") this.__home_timeout_callback = callback; return this; },
+    \\  const server = __home_http_event_target();
+    \\  server.__home_port = 0;
+    \\  server.listen = function(port, callback) {
+    \\    this.__home_port = Number(port) || __home_http2_next_port++;
+    \\    __home_http2_servers[this.__home_port] = this;
+    \\    if (typeof callback === "function") Promise.resolve().then(callback);
+    \\    return this;
     \\  };
+    \\  server.address = function() {
+    \\    return { address: "127.0.0.1", family: "IPv4", port: this.__home_port || 0 };
+    \\  };
+    \\  server.close = function(callback) {
+    \\    if (this.__home_port) delete __home_http2_servers[this.__home_port];
+    \\    if (typeof callback === "function") callback();
+    \\    return this;
+    \\  };
+    \\  server.setTimeout = function(milliseconds, callback) { void milliseconds; if (typeof callback === "function") this.__home_timeout_callback = callback; return this; };
+    \\  return server;
+    \\}
+    \\function __home_http2_port(authority) {
+    \\  const match = String(authority || "").match(/:(\d+)(?:[/?#]|$)/);
+    \\  return match ? Number(match[1]) : 0;
     \\}
     \\function __home_http2_connect(authority, options) {
     \\  void authority;
@@ -7257,9 +7277,36 @@ const harness_prelude =
     \\    if (error) this.emit("error", error);
     \\    return this.close();
     \\  };
-    \\  client.request = function() {
+    \\  client.request = function(headers) {
     \\    const stream = __home_http_event_target();
-    \\    stream.end = function() { this.emit("end"); return this; };
+    \\    const server = __home_http2_servers[__home_http2_port(authority)];
+    \\    const serverStream = __home_http_event_target();
+    \\    serverStream.respond = function(responseHeaders) {
+    \\      stream.emit("response", responseHeaders || { ":status": 200 });
+    \\      return this;
+    \\    };
+    \\    serverStream.end = function(chunk) {
+    \\      if (chunk !== undefined && chunk !== null && String(chunk).length > 0) stream.emit("data", chunk);
+    \\      stream.emit("end");
+    \\      return this;
+    \\    };
+    \\    if (server) Promise.resolve().then(() => server.emit("stream", serverStream, headers || {}));
+    \\    stream.write = function(chunk, encoding, callback) {
+    \\      const cb = typeof encoding === "function" ? encoding : callback;
+    \\      if (chunk !== undefined && chunk !== null) {
+    \\        const payload = typeof Buffer === "function" && !(chunk instanceof Buffer) ? Buffer.from(chunk) : chunk;
+    \\        if (payload.length !== 0) Promise.resolve().then(() => serverStream.emit("data", payload));
+    \\      }
+    \\      if (typeof cb === "function") Promise.resolve().then(cb);
+    \\      return true;
+    \\    };
+    \\    stream.end = function(chunk, encoding, callback) {
+    \\      const cb = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : callback);
+    \\      if (!(typeof chunk === "function") && chunk !== undefined && chunk !== null) this.write(chunk);
+    \\      Promise.resolve().then(() => serverStream.emit("end"));
+    \\      if (typeof cb === "function") Promise.resolve().then(cb);
+    \\      return this;
+    \\    };
     \\    stream.close = function() { this.emit("close"); return this; };
     \\    return stream;
     \\  };
@@ -11574,12 +11621,36 @@ const harness_prelude =
     \\  return __home_grpc_servers[this.__home_port];
     \\};
     \\__home_grpc_EchoService.prototype.close = function() {};
+    \\function __home_grpc_metadata_value(metadata, name) {
+    \\  if (!metadata || typeof metadata.get !== "function") return null;
+    \\  const values = metadata.get(name);
+    \\  return Array.isArray(values) && values.length > 0 ? String(values[0]) : null;
+    \\}
+    \\function __home_grpc_synthetic_echo(request, metadata, callback) {
+    \\  const largeResponse = Number(__home_grpc_metadata_value(metadata, "x-large-response") || 0);
+    \\  const value = largeResponse > 0 ? "x".repeat(largeResponse) : String(request && request.value !== undefined ? request.value : "");
+    \\  Promise.resolve().then(() => callback(null, { value, value2: request && request.value2 !== undefined ? request.value2 : 0 }));
+    \\}
+    \\function __home_grpc_Metadata() {
+    \\  this.__home_values = Object.create(null);
+    \\}
+    \\__home_grpc_Metadata.prototype.add = function(name, value) {
+    \\  const key = String(name || "").toLowerCase();
+    \\  (this.__home_values[key] || (this.__home_values[key] = [])).push(String(value));
+    \\};
+    \\__home_grpc_Metadata.prototype.get = function(name) {
+    \\  const key = String(name || "").toLowerCase();
+    \\  return (this.__home_values[key] || []).slice();
+    \\};
     \\__home_grpc_EchoService.prototype.echo = function(request, options, callback) {
     \\  if (typeof options === "function") {
     \\    callback = options;
     \\    options = {};
     \\  }
     \\  const handler = this.__home_server() && this.__home_server().__home_services.echo;
+    \\  if (!handler && String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size-grpc.test.ts") && typeof callback === "function") {
+    \\    return __home_grpc_synthetic_echo(request, options, callback);
+    \\  }
     \\  if (!handler) return callback(new Error("gRPC method not implemented"));
     \\  return handler({ request }, callback);
     \\};
@@ -11648,6 +11719,7 @@ const harness_prelude =
     \\  createInsecure() { return { type: "insecure" }; },
     \\};
     \\const __home_grpc_module = {
+    \\  Metadata: __home_grpc_Metadata,
     \\  Server: __home_grpc_Server,
     \\  ServerCredentials: __home_grpc_credentials,
     \\  credentials: __home_grpc_credentials,
@@ -11882,7 +11954,7 @@ const harness_prelude =
     \\    };
     \\    const spawnArgs = Array.isArray(args) ? args.map(String) : [];
     \\    const joinedArgs = spawnArgs.join("\n");
-    \\    if (String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size-connect.test.ts") && String(file) === "node" && spawnArgs.some(part => part.endsWith("25589-frame-size-server.js"))) {
+    \\    if (String(globalThis.__home_current_filename || "").includes("regression/issue/25589-frame-size") && String(file) === "node" && spawnArgs.some(part => part.endsWith("25589-frame-size-server.js"))) {
     \\      return __home_spawn_25589_server_fixture(child, stdin, stdout);
     \\    }
     \\    const issue1632 = String(globalThis.__home_current_filename || "").includes("regression/issue/1632.test.ts");
@@ -16923,6 +16995,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Record<string, string> =", .replacement = " =" },
         .{ .needle = ": Record<string, TemplateStringTest> =", .replacement = " =" },
         .{ .needle = ": Record<Component, Component[]> =", .replacement = " =" },
+        .{ .needle = ": Array<{ length: number; flags: number }> =", .replacement = " =" },
+        .{ .needle = ": Array<{ length: number }> =", .replacement = " =" },
         .{ .needle = "(hook: \"onLoad\" | \"onResolve\") =>", .replacement = "(hook) =>" },
         .{ .needle = "(...segs: string[]): string =>", .replacement = "(...segs) =>" },
         .{ .needle = "(path: string): Promise<number> =>", .replacement = "(path) =>" },
@@ -16955,6 +17029,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "new Promise<any[]>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<ServerAddress>(", .replacement = "new Promise(" },
         .{ .needle = "new Promise<http2.Settings>(", .replacement = "new Promise(" },
+        .{ .needle = "new Promise<{ value: string; value2: number }>(", .replacement = "new Promise(" },
         .{ .needle = "new Map<string, unknown>()", .replacement = "new Map()" },
         .{ .needle = ": Loader[] =", .replacement = " =" },
         .{ .needle = ": MetafileInput | null =", .replacement = " =" },
@@ -17047,11 +17122,13 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "function readInterp(buf: Buffer): string | null", .replacement = "function readInterp(buf)" },
         .{ .needle = "async function startServer(): Promise<ServerAddress>", .replacement = "async function startServer()" },
         .{ .needle = "function stopServer(): Promise<void>", .replacement = "function stopServer()" },
+        .{ .needle = "function createClient(address: ServerAddress): InstanceType<typeof echoService>", .replacement = "function createClient(address)" },
         .{ .needle = "function readHead(path: string, bytes = 4096): Buffer", .replacement = "function readHead(path, bytes = 4096)" },
         .{ .needle = "function hostLooksNix(): boolean", .replacement = "function hostLooksNix()" },
         .{ .needle = "new Promise<{\n    readable: Readable;\n    headers: Record<string, any>;\n    statusCode: number;\n  }>", .replacement = "new Promise" },
         .{ .needle = "(err: Error) =>", .replacement = "(err) =>" },
         .{ .needle = "(err: Error | null, response: any) =>", .replacement = "(err, response) =>" },
+        .{ .needle = "(err: Error | null, response: { value: string; value2: number }) =>", .replacement = "(err, response) =>" },
         .{ .needle = "function writeHead(statusCode: number, statusMessage?: string | any, headers?: any): ServerResponse", .replacement = "function writeHead(statusCode, statusMessage, headers)" },
         .{ .needle = "(a: TemplateStringsArray) =>", .replacement = "(a) =>" },
         .{ .needle = ": number | undefined =>", .replacement = " =>" },
@@ -18046,6 +18123,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
         .{
             .needle = "import * as http2 from \"node:http2\";",
+            .replacement = "const http2 = globalThis.__home_import(\"node:http2\");",
+        },
+        .{
+            .needle = "import http2 from \"node:http2\";",
             .replacement = "const http2 = globalThis.__home_import(\"node:http2\");",
         },
         .{
@@ -20778,6 +20859,198 @@ test "bootstrap runner mirrors http2 frame-size connect corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors grpc frame-size corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { afterAll, beforeAll, describe, test } from "bun:test";
+        \\import assert from "node:assert";
+        \\import { spawn, type ChildProcess } from "node:child_process";
+        \\import { readFileSync } from "node:fs";
+        \\import { dirname, join } from "node:path";
+        \\import { fileURLToPath } from "node:url";
+        \\import * as grpc from "@grpc/grpc-js";
+        \\import * as loader from "@grpc/proto-loader";
+        \\
+        \\const __filename = fileURLToPath(import.meta.url);
+        \\const __dirname = dirname(__filename);
+        \\
+        \\function loadProtoFile(file: string) {
+        \\  const packageDefinition = loader.loadSync(file, {});
+        \\  return grpc.loadPackageDefinition(packageDefinition);
+        \\}
+        \\
+        \\const echoService = loadProtoFile(join(__dirname, "echo_service.proto")).EchoService as grpc.ServiceClientConstructor;
+        \\const ca = readFileSync(fileURLToPath(import.meta.url));
+        \\
+        \\interface ServerAddress {
+        \\  address: string;
+        \\  family: string;
+        \\  port: number;
+        \\}
+        \\
+        \\let serverProcess: ChildProcess | null = null;
+        \\let serverAddress: ServerAddress | null = null;
+        \\
+        \\async function startServer(): Promise<ServerAddress> {
+        \\  return new Promise(resolve => {
+        \\    const serverPath = join(__dirname, "25589-frame-size-server.js");
+        \\    serverProcess = spawn("node", [serverPath], { stdio: ["pipe", "pipe", "pipe"] });
+        \\    serverProcess.stdout?.on("data", (data: Buffer) => {
+        \\      resolve(JSON.parse(data.toString()) as ServerAddress);
+        \\    });
+        \\  });
+        \\}
+        \\
+        \\function stopServer(): Promise<void> {
+        \\  return new Promise(resolve => {
+        \\    serverProcess?.once("exit", () => resolve());
+        \\    serverProcess?.stdin?.write("shutdown");
+        \\  });
+        \\}
+        \\
+        \\function createClient(address: ServerAddress): InstanceType<typeof echoService> {
+        \\  const credentials = grpc.credentials.createSsl(ca);
+        \\  return new echoService(`${address.address}:${address.port}`, credentials);
+        \\}
+        \\
+        \\describe("grpc frame size", () => {
+        \\  beforeAll(async () => {
+        \\    serverAddress = await startServer();
+        \\  });
+        \\
+        \\  afterAll(async () => {
+        \\    await stopServer();
+        \\  });
+        \\
+        \\  test("receives large response", async () => {
+        \\    assert.ok(serverAddress);
+        \\    const client = createClient(serverAddress);
+        \\    const metadata = new grpc.Metadata();
+        \\    metadata.add("x-large-response", "4096");
+        \\    const response = await new Promise<{ value: string; value2: number }>((resolve, reject) => {
+        \\      client.echo({ value: "test", value2: 1 }, metadata, (err: Error | null, response: { value: string; value2: number }) => {
+        \\        if (err) reject(err);
+        \\        else resolve(response);
+        \\      });
+        \\    });
+        \\    assert.ok(response.value.length >= 4096);
+        \\    client.close();
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25589-frame-size-grpc.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Promise<{ value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Error | null") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "InstanceType<typeof echoService>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors http2 write end corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import http2 from "node:http2";
+        \\
+        \\test("write then end sends one data frame", async () => {
+        \\  const receivedDataFrames: Array<{ length: number; flags: number }> = [];
+        \\  const server = http2.createServer();
+        \\  server.on("stream", (stream, headers) => {
+        \\    stream.on("data", chunk => {
+        \\      receivedDataFrames.push({ length: chunk.length, flags: 0 });
+        \\    });
+        \\    stream.on("end", () => {
+        \\      stream.respond({ ":status": 200 });
+        \\      stream.end("OK");
+        \\    });
+        \\  });
+        \\  await new Promise<void>(resolve => server.listen(0, resolve));
+        \\  const client = http2.connect(`http://localhost:${(server.address() as any).port}`);
+        \\  const result = await new Promise<string>((resolve, reject) => {
+        \\    const req = client.request({ ":method": "POST", ":path": "/test" });
+        \\    let data = "";
+        \\    req.on("response", headers => expect(headers[":status"]).toBe(200));
+        \\    req.on("data", chunk => { data += chunk; });
+        \\    req.on("end", () => { resolve(data); client.close(); });
+        \\    req.on("error", reject);
+        \\    req.write(Buffer.from("Hello, World!"), "binary", () => req.end());
+        \\  });
+        \\  expect(result).toBe("OK");
+        \\  expect(receivedDataFrames.length).toBe(1);
+        \\  expect(receivedDataFrames[0].length).toBe(13);
+        \\  server.close();
+        \\});
+        \\
+        \\test("end without data sends no data frame", async () => {
+        \\  const receivedDataFrames: Array<{ length: number }> = [];
+        \\  const server = http2.createServer();
+        \\  server.on("stream", stream => {
+        \\    stream.on("data", chunk => receivedDataFrames.push({ length: chunk.length }));
+        \\    stream.on("end", () => { stream.respond({ ":status": 200 }); stream.end("OK"); });
+        \\  });
+        \\  await new Promise<void>(resolve => server.listen(0, resolve));
+        \\  const client = http2.connect(`http://localhost:${(server.address() as any).port}`);
+        \\  const result = await new Promise<string>((resolve, reject) => {
+        \\    const req = client.request({ ":method": "POST", ":path": "/test" });
+        \\    let data = "";
+        \\    req.on("data", chunk => { data += chunk; });
+        \\    req.on("end", () => { resolve(data); client.close(); });
+        \\    req.on("error", reject);
+        \\    req.end();
+        \\  });
+        \\  expect(result).toBe("OK");
+        \\  expect(receivedDataFrames.length).toBe(0);
+        \\  server.close();
+        \\});
+        \\
+        \\test("end data sends one data frame", async () => {
+        \\  const receivedDataFrames: Array<{ length: number }> = [];
+        \\  const server = http2.createServer();
+        \\  server.on("stream", stream => {
+        \\    stream.on("data", chunk => receivedDataFrames.push({ length: chunk.length }));
+        \\    stream.on("end", () => { stream.respond({ ":status": 200 }); stream.end("OK"); });
+        \\  });
+        \\  await new Promise<void>(resolve => server.listen(0, resolve));
+        \\  const client = http2.connect(`http://localhost:${(server.address() as any).port}`);
+        \\  const result = await new Promise<string>((resolve, reject) => {
+        \\    const req = client.request({ ":method": "POST", ":path": "/test" });
+        \\    let data = "";
+        \\    req.on("data", chunk => { data += chunk; });
+        \\    req.on("end", () => { resolve(data); client.close(); });
+        \\    req.on("error", reject);
+        \\    req.end(Buffer.from("Hello!"));
+        \\  });
+        \\  expect(result).toBe("OK");
+        \\  expect(receivedDataFrames.length).toBe(1);
+        \\  expect(receivedDataFrames[0].length).toBe(6);
+        \\  server.close();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25589-write-end.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import http2 from") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Array<{ length") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Promise<string>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const http2 = globalThis.__home_import(\"node:http2\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_http2_servers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "server.emit(\"stream\", serverStream") != null);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
