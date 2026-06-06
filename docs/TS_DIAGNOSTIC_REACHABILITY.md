@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 569 |
-| reachable (parity targets) | 108 |
+| catalog-only total | 568 |
+| reachable (parity targets) | 107 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -26,7 +26,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 2xxx — checker / type engine | 11 |
-| 4xxx — declaration-emit (privacy / serialization) | 9 |
+| 4xxx — declaration-emit (privacy / serialization) | 8 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
@@ -137,11 +137,10 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
-### 4xxx — declaration-emit (privacy / serialization) (9)
+### 4xxx — declaration-emit (privacy / serialization) (8)
 
 - TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
 - TS4085 `Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085`
-- TS4094 `Property_0_of_exported_anonymous_class_type_may_not_be_private_or_protected_4094`
 - TS4097 `Public_static_method_0_of_exported_class_has_or_is_using_private_name_1_4097`
 - TS4100 `Public_method_0_of_exported_class_has_or_is_using_private_name_1_4100`
 - TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
