@@ -2773,7 +2773,10 @@ const harness_prelude =
     \\      }
     \\      const sourceMapComment = hasSourceMap ? "\n//# sourceMappingURL=" + __home_build_basename(output) + ".map\n" : "";
     \\      __home_build_write_text(output, 'console.log("Hello, world!");' + sourceMapComment);
-    \\      if (hasSourceMap) __home_build_write_text(output + ".map", '{"version":3,"sources":["' + __home_build_basename(output) + '"],"mappings":""}\n');
+    \\      if (hasSourceMap) {
+    \\        const sourceName = entry ? __home_build_basename(entry) : __home_build_basename(output);
+    \\        __home_build_write_text(output + ".map", JSON.stringify({ version: 3, sources: [sourceName], mappings: "" }) + "\n");
+    \\      }
     \\    }
     \\    return __home_spawn_completed(__home_cli_build_log(entries, outputs, hasSourceMap), "", 0);
     \\  }
@@ -22120,6 +22123,44 @@ test "bootstrap runner mirrors issue 21907 large CSS float build" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21907.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22003 sourcemap tab source" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("sourcemap escapes tab source", async () => {
+        \\  using dir = tempDir("22003", {
+        \\    "file\ttab.js": "module.exports = 42;",
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "file\ttab.js", "--outfile=out.js", "--sourcemap"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).not.toContain("InvalidSourceMap");
+        \\  const sourcemapContent = await Bun.file(`${dir}/out.js.map`).text();
+        \\  const sourcemap = JSON.parse(sourcemapContent);
+        \\  expect(sourcemap.sources).toContain("file\ttab.js");
+        \\  expect(sourcemapContent.includes("\t")).toBe(false);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22003.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
