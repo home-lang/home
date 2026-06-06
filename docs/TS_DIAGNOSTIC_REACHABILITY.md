@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 596 |
-| reachable (parity targets) | 135 |
+| catalog-only total | 595 |
+| reachable (parity targets) | 134 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -24,8 +24,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 4xxx — declaration-emit (privacy / serialization) | 20 |
-| 2xxx — checker / type engine | 17 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
+| 2xxx — checker / type engine | 16 |
 | other | 14 |
 | 7xxx — noImplicitAny / implicit-type family | 10 |
 | 5xxx — tsconfig / build-option validation | 2 |
@@ -110,26 +110,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS4125 `Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125`
 - TS4126 `One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126`
 
-### 2xxx — checker / type engine (17)
-
-- TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
-- TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
-- TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
-- TS2324 `Property_0_is_missing_in_type_1_2324`
-- TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
-- TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
-- TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
-- TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
-- TS2625 `Variadic_element_at_position_0_in_source_does_not_match_element_at_position_1_in_target_2625`
-- TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
-- TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
-- TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
-- TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
-- TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
-- TS2800 `Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800`
-- TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
-- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
-
 ### 9xxxx — editor code-fix / refactor (language service) (17)
 
 - TS90014 `Change_0_to_1_90014`
@@ -149,6 +129,25 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS90071 `Annotate_types_of_properties_expando_function_in_a_namespace_90071`
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
+
+### 2xxx — checker / type engine (16)
+
+- TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
+- TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
+- TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
+- TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
+- TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
+- TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
+- TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
+- TS2625 `Variadic_element_at_position_0_in_source_does_not_match_element_at_position_1_in_target_2625`
+- TS2672 `Cannot_assign_a_0_constructor_type_to_a_1_constructor_type_2672`
+- TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
+- TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
+- TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
+- TS2799 `Type_produces_a_tuple_type_that_is_too_large_to_represent_2799`
+- TS2800 `Expression_produces_a_tuple_type_that_is_too_large_to_represent_2800`
+- TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
+- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
 ### other (14)
 
