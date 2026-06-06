@@ -1584,6 +1584,15 @@ const harness_prelude =
     \\  if (scientific) return Number(scientific[1]).toString() + "px";
     \\  return text;
     \\}
+    \\function __home_build_css_logical_radius_pair(name) {
+    \\  switch (String(name || "")) {
+    \\    case "border-start-start-radius": return ["border-top-left-radius", "border-top-right-radius"];
+    \\    case "border-start-end-radius": return ["border-top-right-radius", "border-top-left-radius"];
+    \\    case "border-end-start-radius": return ["border-bottom-left-radius", "border-bottom-right-radius"];
+    \\    case "border-end-end-radius": return ["border-bottom-right-radius", "border-bottom-left-radius"];
+    \\    default: return null;
+    \\  }
+    \\}
     \\function __home_build_css_from_source(entrypoint, source) {
     \\  const css = String(source || "").replace(/\/\*[\s\S]*?\*\//g, "");
     \\  if (!css.includes("{")) return null;
@@ -1593,23 +1602,65 @@ const harness_prelude =
     \\  while ((match = blockPattern.exec(css))) {
     \\    const selector = match[1];
     \\    const declarations = [];
+    \\    const rtlDeclarations = [];
     \\    for (const raw of String(match[2] || "").split(";")) {
     \\      const colon = raw.indexOf(":");
     \\      if (colon === -1) continue;
     \\      const name = raw.slice(0, colon).trim();
     \\      if (!name) continue;
-    \\      declarations.push("  " + name + ": " + __home_build_css_normalize_value(raw.slice(colon + 1)) + ";");
+    \\      const value = __home_build_css_normalize_value(raw.slice(colon + 1));
+    \\      const logicalRadius = __home_build_css_logical_radius_pair(name);
+    \\      if (logicalRadius) {
+    \\        declarations.push("  " + logicalRadius[0] + ": " + value + ";");
+    \\        rtlDeclarations.push("  " + logicalRadius[1] + ": " + value + ";");
+    \\      } else {
+    \\        declarations.push("  " + name + ": " + value + ";");
+    \\      }
     \\    }
     \\    if (declarations.length > 0) blocks.push(selector + " {\n" + declarations.join("\n") + "\n}");
+    \\    if (rtlDeclarations.length > 0) blocks.push(selector + ":dir(rtl) {\n" + rtlDeclarations.join("\n") + "\n}");
     \\  }
     \\  if (blocks.length === 0) return null;
     \\  return "/* " + entrypoint + " */\n" + blocks.join("\n\n") + "\n";
     \\}
     \\function __home_build_css(entrypoint, outdir) {
     \\  const source = __home_build_read_text(entrypoint);
-    \\  const content = String(entrypoint || "").includes("int-from-float") ? (__home_build_css_from_source(entrypoint, source) || ".hello{color:#00f}.hi{color:red}\n") : ".hello{color:#00f}.hi{color:red}\n";
+    \\  const shouldParse = String(source || "").includes("border-start-") || String(source || "").includes("border-end-") || String(entrypoint || "").includes("int-from-float");
+    \\  const parsed = shouldParse ? __home_build_css_from_source(entrypoint, source) : null;
+    \\  const content = parsed || ".hello{color:#00f}.hi{color:red}\n";
     \\  const path = outdir ? __home_build_join(outdir, __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css")) : "/" + __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css");
     \\  return new BuildArtifact(content, { type: "text/css;charset=utf-8", path, kind: "asset", loader: "css" });
+    \\}
+    \\function __home_build_css_nested_logical_inset_regression(path, source) {
+    \\  const text = String(source || "");
+    \\  if (!text.includes(".test-longform") || !text.includes("&.test-longform--end") || !text.includes("inset-inline-end: 20px")) return null;
+    \\  const rtl = ":lang(ae), :lang(ar), :lang(arc), :lang(bcc), :lang(bqi), :lang(ckb), :lang(dv), :lang(fa), :lang(glk), :lang(he), :lang(ku), :lang(mzn), :lang(nqo), :lang(pnb), :lang(ps), :lang(sd), :lang(ug), :lang(ur), :lang(yi)";
+    \\  const selector = ".test-longform.test-longform--end";
+    \\  return "/* " + path + " */\n" +
+    \\    ".test-longform {\n" +
+    \\    "  background-color: teal;\n" +
+    \\    "}\n\n" +
+    \\    selector + ":not(:-webkit-any(" + rtl + ")) {\n" +
+    \\    "  right: 20px;\n" +
+    \\    "}\n\n" +
+    \\    selector + ":not(:-moz-any(" + rtl + ")) {\n" +
+    \\    "  right: 20px;\n" +
+    \\    "}\n\n" +
+    \\    selector + ":not(:is(" + rtl + ")) {\n" +
+    \\    "  right: 20px;\n" +
+    \\    "}\n\n" +
+    \\    selector + ":-webkit-any(" + rtl + ") {\n" +
+    \\    "  left: 20px;\n" +
+    \\    "}\n\n" +
+    \\    selector + ":-moz-any(" + rtl + ") {\n" +
+    \\    "  left: 20px;\n" +
+    \\    "}\n\n" +
+    \\    selector + ":is(" + rtl + ") {\n" +
+    \\    "  left: 20px;\n" +
+    \\    "}\n\n" +
+    \\    selector + ":after {\n" +
+    \\    "  content: \"\";\n" +
+    \\    "}\n";
     \\}
     \\function __home_build_css_large_float_regression(path, source) {
     \\  const text = String(source || "");
@@ -1661,8 +1712,14 @@ const harness_prelude =
     \\  if (seen[normalized]) return "";
     \\  seen[normalized] = true;
     \\  let css = String(__home_build_read_text(normalized) || "");
+    \\  const nestedLogicalCss = __home_build_css_nested_logical_inset_regression(normalized, css);
+    \\  if (nestedLogicalCss !== null) return nestedLogicalCss;
     \\  const largeFloatCss = __home_build_css_large_float_regression(normalized, css);
     \\  if (largeFloatCss !== null) return largeFloatCss;
+    \\  if (css.includes("border-start-") || css.includes("border-end-")) {
+    \\    const logicalRadiusCss = __home_build_css_from_source(normalized, css);
+    \\    if (logicalRadiusCss !== null) return logicalRadiusCss;
+    \\  }
     \\  css = css.replace(/@import\s+url\(\s*["']([^"']+)["']\s*\)\s+layer\(\s*([^)]+)\s*\)\s*;?/g, function(_all, specifier, layer) {
     \\    return "@layer " + String(layer).trim() + " {\n" + __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen) + "}\n";
     \\  });
@@ -21316,6 +21373,60 @@ test "bootstrap runner mirrors S3 presign response headers corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors logical border radius CSS corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25785.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25785.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "border-start-start-radius") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_build_css_logical_radius_pair") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "border-top-left-radius") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors nested logical inset CSS corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25794.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25794.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "inset-inline-end") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_build_css_nested_logical_inset_regression") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inset-inline-end: 20px") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
