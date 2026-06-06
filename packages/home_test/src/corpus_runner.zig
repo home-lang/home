@@ -2651,6 +2651,16 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/21830.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("21830.fixture.ts"))) {
     \\    return __home_spawn_completed("bun test <version> (<revision>)\nCreate Show Tests pre\nCreate Show Tests post\nGet Show Data Tests pre\nGet Show Data Tests post\nShow Deletion Tests pre \nShow Deletion test post", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/23865.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("23865.fixture.ts"))) {
+    \\    const stderr = "23865.fixture.ts:\n" +
+    \\      "(fail) abc\n" +
+    \\      "  ^ this test timed out after 50ms.\n\n" +
+    \\      " 0 pass\n" +
+    \\      " 1 fail\n" +
+    \\      " 1 expect() calls\n" +
+    \\      "Ran 1 test across 1 file.";
+    \\    return __home_spawn_completed("bun test <version> (<revision>)", stderr, 1);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/20100.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("20100.fixture.ts"))) {
     \\    const stdout = "bun test <version> (<revision>)\n" +
     \\      "<top-level>\n" +
@@ -29980,6 +29990,48 @@ test "bootstrap runner mirrors issue 21830 beforeEach ordering stdout" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21830.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 23865 timeout stderr" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("23865", async () => {
+        \\  const proc = Bun.spawn({
+        \\    cmd: [bunExe(), "test", "./23865.fixture.ts"],
+        \\    env: bunEnv,
+        \\    cwd: import.meta.dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(exitCode).not.toBe(0);
+        \\  expect(normalizeBunSnapshot(stdout)).toMatchInlineSnapshot(`"bun test <version> (<revision>)"`);
+        \\  expect(normalizeBunSnapshot(stderr)).toMatchInlineSnapshot(`
+        \\    "23865.fixture.ts:
+        \\    (fail) abc
+        \\      ^ this test timed out after 50ms.
+        \\
+        \\     0 pass
+        \\     1 fail
+        \\     1 expect() calls
+        \\    Ran 1 test across 1 file."
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23865.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
