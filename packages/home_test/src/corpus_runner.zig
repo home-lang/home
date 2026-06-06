@@ -1092,19 +1092,29 @@ const harness_prelude =
     \\  }
     \\  return Object.keys(entries);
     \\}
+    \\const __home_UV_DIRENT_UNKNOWN = 0;
+    \\const __home_UV_DIRENT_FILE = 1;
+    \\const __home_UV_DIRENT_DIR = 2;
+    \\const __home_UV_DIRENT_LINK = 3;
+    \\const __home_UV_DIRENT_FIFO = 4;
+    \\const __home_UV_DIRENT_SOCKET = 5;
+    \\const __home_UV_DIRENT_CHAR = 6;
+    \\const __home_UV_DIRENT_BLOCK = 7;
+    \\function Dirent(name, type, parentPath) {
+    \\  this.name = String(name || "");
+    \\  this.parentPath = String(parentPath || "");
+    \\  this.path = this.parentPath;
+    \\  this.__home_type = Number(type) || __home_UV_DIRENT_UNKNOWN;
+    \\}
+    \\Dirent.prototype.isBlockDevice = function isBlockDevice() { return this.__home_type === __home_UV_DIRENT_BLOCK; };
+    \\Dirent.prototype.isCharacterDevice = function isCharacterDevice() { return this.__home_type === __home_UV_DIRENT_CHAR; };
+    \\Dirent.prototype.isDirectory = function isDirectory() { return this.__home_type === __home_UV_DIRENT_DIR; };
+    \\Dirent.prototype.isFIFO = function isFIFO() { return this.__home_type === __home_UV_DIRENT_FIFO; };
+    \\Dirent.prototype.isFile = function isFile() { return this.__home_type === __home_UV_DIRENT_FILE; };
+    \\Dirent.prototype.isSocket = function isSocket() { return this.__home_type === __home_UV_DIRENT_SOCKET; };
+    \\Dirent.prototype.isSymbolicLink = function isSymbolicLink() { return this.__home_type === __home_UV_DIRENT_LINK; };
     \\function __home_fs_dirent(name, parentPath, isDirectory) {
-    \\  return {
-    \\    name: String(name || ""),
-    \\    parentPath: String(parentPath || ""),
-    \\    path: String(parentPath || ""),
-    \\    isBlockDevice() { return false; },
-    \\    isCharacterDevice() { return false; },
-    \\    isDirectory() { return !!isDirectory; },
-    \\    isFIFO() { return false; },
-    \\    isFile() { return !isDirectory; },
-    \\    isSocket() { return false; },
-    \\    isSymbolicLink() { return false; },
-    \\  };
+    \\  return new Dirent(name, isDirectory ? __home_UV_DIRENT_DIR : __home_UV_DIRENT_FILE, parentPath);
     \\}
     \\function __home_fs_entry_is_directory(path) {
     \\  const text = __home_fs_normalize_path(path);
@@ -10275,6 +10285,17 @@ const harness_prelude =
     \\__home_define_stats_prototype(BigIntStats.prototype, true);
     \\const __home_node_fs = {
     \\  Stats: Stats,
+    \\  Dirent: Dirent,
+    \\  constants: {
+    \\    UV_DIRENT_UNKNOWN: __home_UV_DIRENT_UNKNOWN,
+    \\    UV_DIRENT_FILE: __home_UV_DIRENT_FILE,
+    \\    UV_DIRENT_DIR: __home_UV_DIRENT_DIR,
+    \\    UV_DIRENT_LINK: __home_UV_DIRENT_LINK,
+    \\    UV_DIRENT_FIFO: __home_UV_DIRENT_FIFO,
+    \\    UV_DIRENT_SOCKET: __home_UV_DIRENT_SOCKET,
+    \\    UV_DIRENT_CHAR: __home_UV_DIRENT_CHAR,
+    \\    UV_DIRENT_BLOCK: __home_UV_DIRENT_BLOCK,
+    \\  },
     \\  __home_stats_mode_from_native(nativeStats) {
     \\    if (nativeStats && nativeStats.isDirectory) return __home_S_IFDIR;
     \\    if (nativeStats && nativeStats.isSymbolicLink) return __home_S_IFLNK;
@@ -29123,6 +29144,48 @@ test "bootstrap runner mirrors issue 24007 recursive fs glob and readdir" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24129 Dirent unknown type" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import fs from "node:fs";
+        \\
+        \\test("Dirent with unknown type should return false for all type checks", () => {
+        \\  const UV_DIRENT_UNKNOWN = fs.constants.UV_DIRENT_UNKNOWN;
+        \\  expect(UV_DIRENT_UNKNOWN).toBe(0);
+        \\  const dirent = new fs.Dirent("test-file", UV_DIRENT_UNKNOWN);
+        \\  expect(dirent.isFile()).toBe(false);
+        \\  expect(dirent.isDirectory()).toBe(false);
+        \\  expect(dirent.isSymbolicLink()).toBe(false);
+        \\  expect(dirent.isSocket()).toBe(false);
+        \\  expect(dirent.isBlockDevice()).toBe(false);
+        \\  expect(dirent.isCharacterDevice()).toBe(false);
+        \\  expect(dirent.isFIFO()).toBe(false);
+        \\});
+        \\
+        \\test("Dirent.isFIFO() should only return true for actual FIFO/named pipe", () => {
+        \\  const UV_DIRENT_FIFO = fs.constants.UV_DIRENT_FIFO;
+        \\  expect(UV_DIRENT_FIFO).toBe(4);
+        \\  const fifoDirent = new fs.Dirent("test-fifo", UV_DIRENT_FIFO);
+        \\  expect(fifoDirent.isFIFO()).toBe(true);
+        \\  expect(fifoDirent.isFile()).toBe(false);
+        \\  expect(fifoDirent.isDirectory()).toBe(false);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24129.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner supports node fs rename and unlink sync methods" {
