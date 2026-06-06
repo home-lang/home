@@ -3655,6 +3655,29 @@ const harness_prelude =
     \\  }
     \\  return result;
     \\};
+    \\function __home_ffi_ptr(value) {
+    \\  const view = __home_array_buffer_view(value);
+    \\  if (!view) throw new TypeError("Bun.FFI.ptr expects an ArrayBuffer or typed array");
+    \\  return { __home_ffi_bytes: view };
+    \\}
+    \\function __home_ffi_cstring(pointer, byteOffset, byteLength) {
+    \\  const source = pointer && pointer.__home_ffi_bytes;
+    \\  if (!source) throw new TypeError("Bun.FFI.CString expects a pointer returned by Bun.FFI.ptr");
+    \\  const start = Math.max(0, Math.trunc(Number(byteOffset) || 0));
+    \\  let end = byteLength === undefined ? source.length : Math.min(source.length, start + Math.max(0, Math.trunc(Number(byteLength) || 0)));
+    \\  if (byteLength === undefined) {
+    \\    end = start;
+    \\    while (end < source.length && source[end] !== 0) end++;
+    \\  }
+    \\  let text = "";
+    \\  for (let i = start; i < end; i++) text += String.fromCharCode(source[i] & 0xff);
+    \\  return text;
+    \\}
+    \\function __home_FFI_CString(pointer, byteOffset, byteLength) {
+    \\  const text = __home_ffi_cstring(pointer, byteOffset, byteLength);
+    \\  if (new.target) return new String(text);
+    \\  return text;
+    \\}
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -3688,6 +3711,10 @@ const harness_prelude =
     \\      if (!view) throw new TypeError("arrayBufferToString expects an ArrayBuffer or typed array");
     \\      return new TextDecoder().decode(view);
     \\    },
+    \\  },
+    \\  FFI: {
+    \\    CString: __home_FFI_CString,
+    \\    ptr: __home_ffi_ptr,
     \\  },
     \\  allocUnsafe(size) {
     \\    return new Uint8Array(Math.max(0, Number(size) || 0));
@@ -31449,6 +31476,41 @@ test "bootstrap runner mirrors issue 25190 TLS session reuse API" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 25231 FFI CString constructor" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("Bun.FFI.CString is callable with new", () => {
+        \\  const { CString, ptr } = Bun.FFI;
+        \\  const buf = Buffer.from("hello\0");
+        \\  const ptrValue = ptr(buf);
+        \\  const result = new CString(ptrValue, 0, 5);
+        \\  expect(String(result)).toBe("hello");
+        \\});
+        \\
+        \\test("Bun.FFI.CString can be called without new", () => {
+        \\  const { CString, ptr } = Bun.FFI;
+        \\  const buf = Buffer.from("hello\0");
+        \\  const ptrValue = ptr(buf);
+        \\  const result = CString(ptrValue, 0, 5);
+        \\  expect(result).toBe("hello");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25231.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 21654 inspector pause fixture" {
