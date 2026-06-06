@@ -3797,6 +3797,7 @@ const harness_prelude =
     \\    handle.fetch = !handle.native ? (routeFetch || (typeof options.fetch === "function" ? options.fetch : null)) : null;
     \\    handle.maxRequestBodySize = !handle.native && options.maxRequestBodySize !== undefined ? Number(options.maxRequestBodySize) : 0;
     \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? options.websocket : null;
+    \\    handle.__home_websocket_topics = Object.create(null);
     \\    globalThis.__home_serve_handles_by_origin[handle.origin] = handle;
     \\    const url = { origin: handle.origin, href: handle.origin + "/", hostname: handle.hostname || "localhost", port: String(handle.port), toString() { return this.href; } };
     \\    const server = {
@@ -3829,6 +3830,9 @@ const harness_prelude =
     \\        if (!handle.websocket) return false;
     \\        if (request && typeof request === "object") request.__home_upgrade_response = __home_serve_upgrade_response(request, options || {});
     \\        return true;
+    \\      },
+    \\      publish(topic, value) {
+    \\        return __home_websocket_publish(handle, topic, value);
     \\      },
     \\      [Symbol.dispose]() {
     \\        this.stop(true);
@@ -13774,11 +13778,58 @@ const harness_prelude =
     \\  try { password = decodeURIComponent(password); } catch (error) {}
     \\  return "Basic " + btoa(username + ":" + password);
     \\}
-    \\function __home_websocket_server_peer(client, data) {
+    \\function __home_websocket_payload_size(value) {
+    \\  if (typeof value === "string") return Buffer.byteLength(value);
+    \\  if (value && typeof value.byteLength === "number") return Number(value.byteLength) || 0;
+    \\  if (value && typeof value.length === "number") return Number(value.length) || 0;
+    \\  return Buffer.byteLength(String(value));
+    \\}
+    \\function __home_websocket_publish(handle, topic, value) {
+    \\  const topics = handle && handle.__home_websocket_topics;
+    \\  const subscribers = topics && topics[String(topic)];
+    \\  if (!subscribers || subscribers.size === 0) return 0;
+    \\  const bytes = __home_websocket_payload_size(value);
+    \\  let delivered = 0;
+    \\  for (const client of Array.from(subscribers)) {
+    \\    if (!client || client.readyState !== 1) continue;
+    \\    delivered += bytes;
+    \\    Promise.resolve().then(() => client.dispatchEvent(new MessageEvent("message", { data: value })));
+    \\  }
+    \\  return delivered;
+    \\}
+    \\function __home_websocket_unsubscribe_client(client) {
+    \\  const subscriptions = client && client.__home_websocket_subscriptions;
+    \\  if (!subscriptions) return;
+    \\  for (const entry of Array.from(subscriptions)) {
+    \\    if (entry && entry.subscribers) entry.subscribers.delete(client);
+    \\  }
+    \\  subscriptions.clear();
+    \\}
+    \\function __home_websocket_server_peer(client, data, handle) {
     \\  return {
     \\    data,
     \\    send(value) {
     \\      Promise.resolve().then(() => client.dispatchEvent(new MessageEvent("message", { data: value })));
+    \\      return __home_websocket_payload_size(value);
+    \\    },
+    \\    subscribe(topic) {
+    \\      const key = String(topic);
+    \\      const topics = handle.__home_websocket_topics || (handle.__home_websocket_topics = Object.create(null));
+    \\      const subscribers = topics[key] || (topics[key] = new Set());
+    \\      subscribers.add(client);
+    \\      const subscriptions = client.__home_websocket_subscriptions || (client.__home_websocket_subscriptions = new Set());
+    \\      subscriptions.add({ topic: key, subscribers });
+    \\      return undefined;
+    \\    },
+    \\    unsubscribe(topic) {
+    \\      const key = String(topic);
+    \\      const topics = handle.__home_websocket_topics;
+    \\      const subscribers = topics && topics[key];
+    \\      if (subscribers) subscribers.delete(client);
+    \\      return undefined;
+    \\    },
+    \\    publish(topic, value) {
+    \\      return __home_websocket_publish(handle, topic, value);
     \\    },
     \\  };
     \\}
@@ -13857,7 +13908,7 @@ const harness_prelude =
     \\      return;
     \\    }
     \\    const websocket = handle.websocket;
-    \\    const serverSide = __home_websocket_server_peer(this, request.__home_upgrade_response.__home_websocket_data);
+    \\    const serverSide = __home_websocket_server_peer(this, request.__home_upgrade_response.__home_websocket_data, handle);
     \\    this.__home_server_side = serverSide;
     \\    this.__home_pending_server_open = function() {
     \\      if (typeof websocket.open === "function") websocket.open(serverSide);
@@ -13882,6 +13933,7 @@ const harness_prelude =
     \\WebSocket.prototype.close = function() {
     \\  if (this.readyState === 3) return;
     \\  this.readyState = 3;
+    \\  __home_websocket_unsubscribe_client(this);
     \\  if (this.__home_handle && this.__home_socket_id != null && typeof globalThis.__home_closeHmrSocketNative === "function") {
     \\    globalThis.__home_closeHmrSocketNative(this.__home_handle.id, this.__home_socket_id);
     \\  }
@@ -13906,7 +13958,7 @@ const harness_prelude =
     \\  const handle = this.__home_handle;
     \\  const websocket = handle && handle.websocket;
     \\  if (!websocket || typeof websocket.message !== "function") return;
-    \\  const serverSide = this.__home_server_side || __home_websocket_server_peer(this, undefined);
+    \\  const serverSide = this.__home_server_side || __home_websocket_server_peer(this, undefined, handle);
     \\  websocket.message(serverSide, message);
     \\};
     \\function __home_websocket_drain_pending(socket, type) {
@@ -16730,6 +16782,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": [filepath: string, var_name: string][] =", .replacement = " =" },
         .{ .needle = ": AdditionalFile[] =", .replacement = " =" },
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
+        .{ .needle = ": boolean[] =", .replacement = " =" },
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
         .{ .needle = ": Promise<string>[] =", .replacement = " =" },
@@ -32145,6 +32198,77 @@ test "bootstrap runner mirrors WebSocket error and close ordering" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24593 websocket publish fanout" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { serve } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("server.publish delivers large messages to subscribers", async () => {
+        \\  const message = "D".repeat(16 * 1024 + 100);
+        \\  const numClients = 3;
+        \\  const clientsReceived: boolean[] = new Array(numClients).fill(false);
+        \\  using server = serve({
+        \\    port: 0,
+        \\    fetch(req, server) {
+        \\      if (server.upgrade(req)) return;
+        \\      return new Response("WebSocket server");
+        \\    },
+        \\    websocket: {
+        \\      perMessageDeflate: true,
+        \\      open(ws) {
+        \\        ws.subscribe("broadcast");
+        \\      },
+        \\      message() {},
+        \\      close() {},
+        \\    },
+        \\  });
+        \\  const clients = [];
+        \\  try {
+        \\    await Promise.all(Array.from({ length: numClients }, (_, i) => {
+        \\      return new Promise((resolve, reject) => {
+        \\        const client = new WebSocket(`ws://localhost:${server.port}`);
+        \\        clients.push(client);
+        \\        client.onopen = () => resolve();
+        \\        client.onerror = reject;
+        \\      });
+        \\    }));
+        \\    const received = Promise.all(clients.map((client, i) => {
+        \\      return new Promise(resolve => {
+        \\        client.onmessage = event => {
+        \\          expect(event.data.length).toBe(message.length);
+        \\          expect(event.data).toBe(message);
+        \\          clientsReceived[i] = true;
+        \\          resolve();
+        \\        };
+        \\      });
+        \\    }));
+        \\    const published = server.publish("broadcast", message);
+        \\    expect(published).toBeGreaterThan(0);
+        \\    await received;
+        \\    expect(clientsReceived.every(Boolean)).toBe(true);
+        \\  } finally {
+        \\    for (const client of clients) client.close();
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24593.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "boolean[]") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors uncaught rejection child test failure" {
