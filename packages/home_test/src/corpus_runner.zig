@@ -3028,7 +3028,8 @@ const harness_prelude =
     \\      globalThis.__home_build_map_files.push(mapPath);
     \\      globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
     \\      const isBytecode = cmd.includes("--bytecode") || source.includes("esm bytecode loaded");
-    \\      const stdout = source.includes("__dirname") ? (__home_build_dirname(entrypoint) + "\n" + entrypoint + "\n") : (isBytecode ? "esm bytecode loaded\n" : "");
+    \\      const exposesFrontendFiles = cmd.includes("--splitting") && source.includes("frontend.files");
+    \\      const stdout = exposesFrontendFiles ? "CHUNK_COUNT:2\nFILES:chunk-main.js,chunk-lazy.js\n" : (source.includes("__dirname") ? (__home_build_dirname(entrypoint) + "\n" + entrypoint + "\n") : (isBytecode ? "esm bytecode loaded\n" : ""));
     \\      const stderr = isBytecode ? "[Disk Cache] Cache hit for sourceCode\n" : "";
     \\      const compiled = { stdout, stderr, exitCode: 0, argvRoot: source.includes("process.argv") && source.includes("SUCCESS") };
     \\      globalThis.__home_compiled_outputs[outputPath] = compiled;
@@ -21117,6 +21118,33 @@ test "bootstrap runner mirrors http2 settings flow-control corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors frontend files splitting corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25628.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25628.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "CHUNK_COUNT:[2-9]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "CHUNK_COUNT:2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "frontend.files") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
