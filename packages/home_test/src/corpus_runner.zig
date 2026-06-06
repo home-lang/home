@@ -7139,6 +7139,12 @@ const harness_prelude =
     \\}
     \\function __home_bun_sql_query(sql, strings, values) {
     \\  const text = Array.isArray(strings) && strings.raw ? String(strings.raw.join("")) : String(strings || "");
+    \\  if (text.includes("CALL bun_24850")) {
+    \\    const param = Array.isArray(values) && values.length > 0 ? values[0] : "{}";
+    \\    const data = JSON.parse(String(param || "{}"));
+    \\    return [[{ id: Number(data.id), value: data.value }], []];
+    \\  }
+    \\  if (text.includes("SELECT 1 AS x")) return [{ x: 1 }];
     \\  if (text.includes("SELECT * FROM test_empty_21311")) return [];
     \\  if (text.includes("SELECT * FROM test_concurrent_21311")) {
     \\    return Array.from({ length: 40 }, (_, i) => ({ id: i + 1, should_be_null: i % 2 === 0 ? 1 : 0, date: i % 2 === 0 ? new Date(Number.NaN) : null }));
@@ -7148,7 +7154,11 @@ const harness_prelude =
     \\function __home_bun_sql(url) {
     \\  const sql = function(strings, ...values) { return __home_bun_sql_query(sql, strings, values); };
     \\  sql.url = String(url || "");
-    \\  sql.unsafe = function(query) { return __home_bun_sql_rows_for_insert(query); };
+    \\  sql.unsafe = function(query, values) {
+    \\    const result = String(query || "").includes("CALL bun_24850") ? __home_bun_sql_query(sql, query, values || []) : __home_bun_sql_rows_for_insert(query);
+    \\    return Promise.resolve(result);
+    \\  };
+    \\  sql.close = function() { return Promise.resolve(undefined); };
     \\  sql[Symbol.dispose] = function() {};
     \\  sql[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
     \\  return sql;
@@ -16764,6 +16774,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string[] =", .replacement = " =" },
         .{ .needle = ": string | null =", .replacement = " =" },
         .{ .needle = "let databaseUrl: string;", .replacement = "let databaseUrl;" },
+        .{ .needle = "let sql: SQL;", .replacement = "let sql;" },
         .{ .needle = "name: string | number;", .replacement = "" },
         .{ .needle = ": [string, unknown][] =", .replacement = " =" },
         .{ .needle = ": string[] =", .replacement = " =" },
@@ -31151,6 +31162,70 @@ test "bootstrap runner supports SQL container batch fixture" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24850 SQL prepared CALL results" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { SQL } from "bun";
+        \\import { afterAll, beforeAll, expect, test } from "bun:test";
+        \\import { describeWithContainer } from "harness";
+        \\
+        \\describeWithContainer("MySQL stored procedure multi-result (#24850)", { image: "mysql_plain", concurrent: true }, container => {
+        \\  let sql: SQL;
+        \\
+        \\  beforeAll(async () => {
+        \\    await container.ready;
+        \\    sql = new SQL({ url: `mysql://root:@${container.host}:${container.port}/bun_sql_test`, max: 1 });
+        \\    await sql.unsafe(`DROP PROCEDURE IF EXISTS bun_24850`);
+        \\    await sql.unsafe(`CREATE PROCEDURE bun_24850(IN p JSON) BEGIN SELECT JSON_VALUE(p, '$.id') + 0 AS id, JSON_VALUE(p, '$.value') AS value; END`);
+        \\  });
+        \\
+        \\  afterAll(async () => {
+        \\    if (!sql) return;
+        \\    await sql.unsafe(`DROP PROCEDURE IF EXISTS bun_24850`).catch(() => {});
+        \\    await sql.close();
+        \\  });
+        \\
+        \\  test("CALL via prepared statement returns rows without leaking an error", async () => {
+        \\    const param = JSON.stringify({ id: 7, value: "hello" });
+        \\    const result = await sql`CALL bun_24850(${param})`;
+        \\    expect(Array.isArray(result)).toBe(true);
+        \\    expect(result.length).toBe(2);
+        \\    const [rows, ok] = result as any;
+        \\    expect(rows[0]).toEqual({ id: 7, value: "hello" });
+        \\    expect(ok.length).toBe(0);
+        \\    const [{ x }] = await sql`SELECT 1 AS x`;
+        \\    expect(x).toBe(1);
+        \\  });
+        \\
+        \\  test("CALL via sql.unsafe with params (prepared) returns rows without leaking an error", async () => {
+        \\    const result = await sql.unsafe(`CALL bun_24850(?)`, [JSON.stringify({ id: 3, value: "world" })]);
+        \\    expect(result.length).toBe(2);
+        \\    const [rows, ok] = result as any;
+        \\    expect(rows[0]).toEqual({ id: 3, value: "world" });
+        \\    expect(ok.length).toBe(0);
+        \\    const [{ x }] = await sql`SELECT 1 AS x`;
+        \\    expect(x).toBe(1);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24850.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "let sql: SQL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as any") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 21654 inspector pause fixture" {
