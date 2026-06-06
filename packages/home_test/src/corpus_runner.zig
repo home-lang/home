@@ -3545,6 +3545,7 @@ const harness_prelude =
     \\  if (cookieHeaders.length > 0) headers.set("Set-Cookie", cookieHeaders.join(", "));
     \\  return {
     \\    __home_upgrade_response: true,
+    \\    __home_websocket_data: options && options.data,
     \\    status: 101,
     \\    statusText: "Switching Protocols",
     \\    headers,
@@ -3829,6 +3830,7 @@ const harness_prelude =
     \\        this.stop(true);
     \\      },
     \\    };
+    \\    handle.server = server;
     \\    return server;
     \\  },
     \\  spawnSync(options, spawnOptions) {
@@ -13646,7 +13648,35 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\  return __home_fetch_thenable(new Response("", { status: 200 }), null);
     \\}
-    \\function WebSocket(url) {
+    \\function __home_websocket_options_headers(options) {
+    \\  if (!options || typeof options !== "object" || Array.isArray(options)) return {};
+    \\  return options.headers || {};
+    \\}
+    \\function __home_websocket_url_authorization(parsed) {
+    \\  if (!parsed || (parsed.username === "" && parsed.password === "")) return null;
+    \\  let username = parsed.username;
+    \\  let password = parsed.password;
+    \\  try { username = decodeURIComponent(username); } catch (error) {}
+    \\  try { password = decodeURIComponent(password); } catch (error) {}
+    \\  return "Basic " + btoa(username + ":" + password);
+    \\}
+    \\function __home_websocket_server_peer(client, data) {
+    \\  return {
+    \\    data,
+    \\    send(value) {
+    \\      Promise.resolve().then(() => client.dispatchEvent(new MessageEvent("message", { data: value })));
+    \\    },
+    \\  };
+    \\}
+    \\function __home_websocket_upgrade_request_url(parsed, href) {
+    \\  if (!parsed) {
+    \\    if (href.startsWith("ws://")) return "http://" + href.slice(5);
+    \\    if (href.startsWith("wss://")) return "https://" + href.slice(6);
+    \\    return href;
+    \\  }
+    \\  return (parsed.protocol === "wss:" ? "https://" : "http://") + parsed.host + (parsed.pathname || "/") + parsed.search;
+    \\}
+    \\function WebSocket(url, protocolsOrOptions) {
     \\  this.__home_listeners = Object.create(null);
     \\  let href = String(url);
     \\  if (/^wss?:\/\/[^\/?#]+$/.test(href)) href += "/";
@@ -13657,9 +13687,19 @@ const harness_prelude =
     \\    origin = slash === -1 ? href : href.slice(0, slash);
     \\  }
     \\  const path = href.slice(origin.length) || "/";
-    \\  let handle = globalThis.__home_serve_handles_by_origin[origin];
-    \\  if (!handle && origin.startsWith("ws://")) handle = globalThis.__home_serve_handles_by_origin["http://" + origin.slice(5)];
-    \\  if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
+    \\  let parsed = null;
+    \\  try { parsed = new URL(href); } catch (error) {}
+    \\  let handle = null;
+    \\  if (parsed && (parsed.protocol === "ws:" || parsed.protocol === "wss:")) {
+    \\    href = parsed.href;
+    \\    const wsOrigin = parsed.protocol + "//" + parsed.host;
+    \\    const serverOrigin = (parsed.protocol === "wss:" ? "https://" : "http://") + parsed.host;
+    \\    handle = globalThis.__home_serve_handles_by_origin[wsOrigin] || globalThis.__home_serve_handles_by_origin[serverOrigin] || null;
+    \\  } else {
+    \\    handle = globalThis.__home_serve_handles_by_origin[origin];
+    \\    if (!handle && origin.startsWith("ws://")) handle = globalThis.__home_serve_handles_by_origin["http://" + origin.slice(5)];
+    \\    if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
+    \\  }
     \\  this.url = href;
     \\  this.readyState = 0;
     \\  this.__home_handle = handle || null;
@@ -13668,13 +13708,48 @@ const harness_prelude =
     \\  this.__home_pending_error = null;
     \\  this.__home_pending_close = false;
     \\  this.__home_pending_flush = false;
+    \\  this.__home_pending_server_open = null;
+    \\  this.__home_server_side = null;
     \\  this.__home_inspector_21654 = String(globalThis.__home_current_filename || "").includes("regression/issue/21654/21654.test.ts") && href.includes("bun21654");
     \\  if (this.__home_inspector_21654) {
     \\    this.__home_pending_open = true;
     \\    return;
     \\  }
     \\  if (handle && handle.websocket) {
+    \\    const headers = new Headers(__home_websocket_options_headers(protocolsOrOptions));
+    \\    headers.set("upgrade", "websocket");
+    \\    if (!headers.has("authorization")) {
+    \\      const authorization = __home_websocket_url_authorization(parsed);
+    \\      if (authorization !== null) headers.set("authorization", authorization);
+    \\    }
+    \\    const request = new Request(__home_websocket_upgrade_request_url(parsed, href), { headers });
+    \\    try {
+    \\      if (typeof handle.fetch === "function") {
+    \\        const response = handle.fetch(request, handle.server);
+    \\        if (response && response.__home_upgrade_response && !request.__home_upgrade_response) request.__home_upgrade_response = response;
+    \\      } else {
+    \\        request.__home_upgrade_response = __home_serve_upgrade_response(request, {});
+    \\      }
+    \\    } catch (error) {
+    \\      this.readyState = 3;
+    \\      this.__home_pending_error = String(error && error.message || error);
+    \\      this.__home_pending_close = true;
+    \\      return;
+    \\    }
+    \\    if (!request.__home_upgrade_response) {
+    \\      this.readyState = 3;
+    \\      this.__home_pending_error = "WebSocket upgrade failed";
+    \\      this.__home_pending_close = true;
+    \\      return;
+    \\    }
+    \\    const websocket = handle.websocket;
+    \\    const serverSide = __home_websocket_server_peer(this, request.__home_upgrade_response.__home_websocket_data);
+    \\    this.__home_server_side = serverSide;
+    \\    this.__home_pending_server_open = function() {
+    \\      if (typeof websocket.open === "function") websocket.open(serverSide);
+    \\    };
     \\    this.__home_pending_open = true;
+    \\    __home_websocket_drain_pending(this, "open");
     \\    return;
     \\  }
     \\  if (!handle || path !== "/_bun/hmr" || typeof globalThis.__home_openHmrSocketNative !== "function") {
@@ -13717,12 +13792,7 @@ const harness_prelude =
     \\  const handle = this.__home_handle;
     \\  const websocket = handle && handle.websocket;
     \\  if (!websocket || typeof websocket.message !== "function") return;
-    \\  const client = this;
-    \\  const serverSide = {
-    \\    send(value) {
-    \\      Promise.resolve().then(() => client.dispatchEvent(new MessageEvent("message", { data: value })));
-    \\    },
-    \\  };
+    \\  const serverSide = this.__home_server_side || __home_websocket_server_peer(this, undefined);
     \\  websocket.message(serverSide, message);
     \\};
     \\function __home_websocket_drain_pending(socket, type) {
@@ -13737,6 +13807,9 @@ const harness_prelude =
     \\      socket.__home_pending_open = false;
     \\      socket.readyState = 1;
     \\      socket.dispatchEvent(new Event("open"));
+    \\      const serverOpen = socket.__home_pending_server_open;
+    \\      socket.__home_pending_server_open = null;
+    \\      if (typeof serverOpen === "function") serverOpen();
     \\    }
     \\    if (socket.__home_pending_error !== null) {
     \\      const message = socket.__home_pending_error;
@@ -16668,7 +16741,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(data: Buffer) =>", .replacement = "(data) =>" },
         .{ .needle = "(registryServer.address() as net.AddressInfo).port", .replacement = "(registryServer.address()).port" },
         .{ .needle = "(proxyServer.address() as net.AddressInfo).port", .replacement = "(proxyServer.address()).port" },
+        .{ .needle = " as { authHeader: string | null }", .replacement = "" },
         .{ .needle = "new Promise<\"timeout\">(", .replacement = "new Promise(" },
+        .{ .needle = "Promise.withResolvers<string>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<unknown>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<Error>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<URL>()", .replacement = "Promise.withResolvers()" },
@@ -21908,6 +21983,226 @@ test "bootstrap runner mirrors issue 24385 redis lazy import urls" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24388 websocket auth headers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("WebSocket URL with embedded credentials sends Authorization header", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req, server) {
+        \\      if (req.headers.get("upgrade") === "websocket") {
+        \\        const authHeader = req.headers.get("authorization");
+        \\        if (server.upgrade(req, { data: { authHeader } })) {
+        \\          return undefined;
+        \\        }
+        \\        return new Response("Upgrade failed", { status: 500 });
+        \\      }
+        \\      return new Response("Not Found", { status: 404 });
+        \\    },
+        \\    websocket: {
+        \\      open(ws) {
+        \\        ws.send((ws.data as { authHeader: string | null }).authHeader ?? "null");
+        \\      },
+        \\      message() {},
+        \\      close() {},
+        \\    },
+        \\  });
+        \\
+        \\  const { promise: messagePromise, resolve: resolveMessage, reject } = Promise.withResolvers<string>();
+        \\  const { promise: closePromise, resolve: resolveClose } = Promise.withResolvers<void>();
+        \\  const ws = new WebSocket(`ws://testuser:testpass@localhost:${server.port}/`);
+        \\
+        \\  ws.onmessage = event => {
+        \\    resolveMessage(event.data);
+        \\    ws.close();
+        \\  };
+        \\  ws.onerror = () => reject(new Error("WebSocket error"));
+        \\  ws.onclose = () => resolveClose();
+        \\
+        \\  const authHeader = await messagePromise;
+        \\  const expected = `Basic ${Buffer.from("testuser:testpass").toString("base64")}`;
+        \\  expect(authHeader).toBe(expected);
+        \\  await closePromise;
+        \\});
+        \\
+        \\test("WebSocket URL with empty password sends Authorization header", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req, server) {
+        \\      if (req.headers.get("upgrade") === "websocket") {
+        \\        const authHeader = req.headers.get("authorization");
+        \\        if (server.upgrade(req, { data: { authHeader } })) {
+        \\          return undefined;
+        \\        }
+        \\        return new Response("Upgrade failed", { status: 500 });
+        \\      }
+        \\      return new Response("Not Found", { status: 404 });
+        \\    },
+        \\    websocket: {
+        \\      open(ws) {
+        \\        ws.send((ws.data as { authHeader: string | null }).authHeader ?? "null");
+        \\      },
+        \\      message() {},
+        \\      close() {},
+        \\    },
+        \\  });
+        \\
+        \\  const { promise: messagePromise, resolve: resolveMessage, reject } = Promise.withResolvers<string>();
+        \\  const { promise: closePromise, resolve: resolveClose } = Promise.withResolvers<void>();
+        \\  const ws = new WebSocket(`ws://testuser:@localhost:${server.port}/`);
+        \\
+        \\  ws.onmessage = event => {
+        \\    resolveMessage(event.data);
+        \\    ws.close();
+        \\  };
+        \\  ws.onerror = () => reject(new Error("WebSocket error"));
+        \\  ws.onclose = () => resolveClose();
+        \\
+        \\  const authHeader = await messagePromise;
+        \\  const expected = `Basic ${Buffer.from("testuser:").toString("base64")}`;
+        \\  expect(authHeader).toBe(expected);
+        \\  await closePromise;
+        \\});
+        \\
+        \\test("WebSocket URL without credentials does not send Authorization header", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req, server) {
+        \\      if (req.headers.get("upgrade") === "websocket") {
+        \\        const authHeader = req.headers.get("authorization");
+        \\        if (server.upgrade(req, { data: { authHeader } })) {
+        \\          return undefined;
+        \\        }
+        \\        return new Response("Upgrade failed", { status: 500 });
+        \\      }
+        \\      return new Response("Not Found", { status: 404 });
+        \\    },
+        \\    websocket: {
+        \\      open(ws) {
+        \\        ws.send((ws.data as { authHeader: string | null }).authHeader ?? "null");
+        \\      },
+        \\      message() {},
+        \\      close() {},
+        \\    },
+        \\  });
+        \\
+        \\  const { promise: messagePromise, resolve: resolveMessage, reject } = Promise.withResolvers<string>();
+        \\  const { promise: closePromise, resolve: resolveClose } = Promise.withResolvers<void>();
+        \\  const ws = new WebSocket(`ws://localhost:${server.port}/`);
+        \\
+        \\  ws.onmessage = event => {
+        \\    resolveMessage(event.data);
+        \\    ws.close();
+        \\  };
+        \\  ws.onerror = () => reject(new Error("WebSocket error"));
+        \\  ws.onclose = () => resolveClose();
+        \\
+        \\  const authHeader = await messagePromise;
+        \\  expect(authHeader).toBe("null");
+        \\  await closePromise;
+        \\});
+        \\
+        \\test("WebSocket custom Authorization header takes precedence over URL credentials", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req, server) {
+        \\      if (req.headers.get("upgrade") === "websocket") {
+        \\        const authHeader = req.headers.get("authorization");
+        \\        if (server.upgrade(req, { data: { authHeader } })) {
+        \\          return undefined;
+        \\        }
+        \\        return new Response("Upgrade failed", { status: 500 });
+        \\      }
+        \\      return new Response("Not Found", { status: 404 });
+        \\    },
+        \\    websocket: {
+        \\      open(ws) {
+        \\        ws.send((ws.data as { authHeader: string | null }).authHeader ?? "null");
+        \\      },
+        \\      message() {},
+        \\      close() {},
+        \\    },
+        \\  });
+        \\
+        \\  const { promise: messagePromise, resolve: resolveMessage, reject } = Promise.withResolvers<string>();
+        \\  const { promise: closePromise, resolve: resolveClose } = Promise.withResolvers<void>();
+        \\  const ws = new WebSocket(`ws://testuser:testpass@localhost:${server.port}/`, {
+        \\    headers: {
+        \\      Authorization: "Bearer custom-token",
+        \\    },
+        \\  });
+        \\
+        \\  ws.onmessage = event => {
+        \\    resolveMessage(event.data);
+        \\    ws.close();
+        \\  };
+        \\  ws.onerror = () => reject(new Error("WebSocket error"));
+        \\  ws.onclose = () => resolveClose();
+        \\
+        \\  const authHeader = await messagePromise;
+        \\  expect(authHeader).toBe("Bearer custom-token");
+        \\  await closePromise;
+        \\});
+        \\
+        \\test("WebSocket URL with special characters in credentials sends Authorization header", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req, server) {
+        \\      if (req.headers.get("upgrade") === "websocket") {
+        \\        const authHeader = req.headers.get("authorization");
+        \\        if (server.upgrade(req, { data: { authHeader } })) {
+        \\          return undefined;
+        \\        }
+        \\        return new Response("Upgrade failed", { status: 500 });
+        \\      }
+        \\      return new Response("Not Found", { status: 404 });
+        \\    },
+        \\    websocket: {
+        \\      open(ws) {
+        \\        ws.send((ws.data as { authHeader: string | null }).authHeader ?? "null");
+        \\      },
+        \\      message() {},
+        \\      close() {},
+        \\    },
+        \\  });
+        \\
+        \\  const { promise: messagePromise, resolve: resolveMessage, reject } = Promise.withResolvers<string>();
+        \\  const { promise: closePromise, resolve: resolveClose } = Promise.withResolvers<void>();
+        \\  const ws = new WebSocket(`ws://user%40example.com:p%40ss%3Aword@localhost:${server.port}/`);
+        \\
+        \\  ws.onmessage = event => {
+        \\    resolveMessage(event.data);
+        \\    ws.close();
+        \\  };
+        \\  ws.onerror = () => reject(new Error("WebSocket error"));
+        \\  ws.onclose = () => resolveClose();
+        \\
+        \\  const authHeader = await messagePromise;
+        \\  const expected = `Basic ${Buffer.from("user@example.com:p@ss:word").toString("base64")}`;
+        \\  expect(authHeader).toBe(expected);
+        \\  await closePromise;
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24388.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as { authHeader") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Promise.withResolvers<string>") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 23649 parser diagnostics" {
