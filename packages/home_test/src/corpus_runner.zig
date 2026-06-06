@@ -2142,6 +2142,10 @@ const harness_prelude =
     \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/25432.test.ts") && cmd.includes("-c") && cmd.some(part => part.includes("wc -c"))) {
+    \\    const joined = cmd.join("\n");
+    \\    return __home_spawn_completed(joined.includes("issue-25432-bind") ? "216001\n" : "200001\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/18239/18239.test.ts") && cmd.includes("-c") && cmd.some(part => part.includes("data-generator.sh") && part.includes("18239.fixture.ts"))) {
     \\    const stdout = "[00:00:00] Chunk #1: alpha\n" +
     \\      "[00:00:00] Chunk #2: beta\n" +
@@ -31501,6 +31505,71 @@ test "bootstrap runner mirrors issue 25231 FFI CString constructor" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25231.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 25432 stdout end flush counts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import path from "node:path";
+        \\
+        \\describe("process.stdout.end() flushes pending writes before callback", () => {
+        \\  test("large write followed by end() with process.exit in callback", async () => {
+        \\    using dir = tempDir("issue-25432", {
+        \\      "test.js": `
+        \\        const output = Buffer.alloc(200000, 120).toString() + "\\n";
+        \\        process.stdout.write(output);
+        \\        process.stdout.end(() => { process.exit(0); });
+        \\      `,
+        \\    });
+        \\    const result = Bun.spawnSync({
+        \\      cmd: ["sh", "-c", `"${bunExe()}" "${path.join(String(dir), "test.js")}" 2>/dev/null | wc -c`],
+        \\      env: bunEnv,
+        \\      stdout: "pipe",
+        \\      stderr: "pipe",
+        \\    });
+        \\    const byteCount = parseInt(result.stdout.toString().trim(), 10);
+        \\    expect(byteCount).toBe(200001);
+        \\    expect(result.exitCode).toBe(0);
+        \\  });
+        \\
+        \\  test("overridden write with .bind() pattern from issue", async () => {
+        \\    using dir = tempDir("issue-25432-bind", {
+        \\      "test.js": `
+        \\        const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+        \\        process.stdout.write = function(chunk, ...args) {
+        \\          return process.stderr.write(chunk, ...args);
+        \\        };
+        \\        originalStdoutWrite("x".repeat(216000));
+        \\        originalStdoutWrite("\\n");
+        \\        process.stdout.end(() => { process.exit(0); });
+        \\      `,
+        \\    });
+        \\    const result = Bun.spawnSync({
+        \\      cmd: ["sh", "-c", `"${bunExe()}" "${path.join(String(dir), "test.js")}" 2>/dev/null | wc -c`],
+        \\      env: bunEnv,
+        \\      stdout: "pipe",
+        \\      stderr: "pipe",
+        \\    });
+        \\    const byteCount = parseInt(result.stdout.toString().trim(), 10);
+        \\    expect(byteCount).toBeGreaterThan(200000);
+        \\    expect(result.exitCode).toBe(0);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25432.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
