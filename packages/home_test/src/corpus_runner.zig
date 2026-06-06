@@ -15391,6 +15391,71 @@ const harness_prelude =
     \\  MessagePort.prototype.close = function() {};
     \\  MessagePort.prototype.start = function() {};
     \\}
+    \\function __home_message_clone(data) {
+    \\  if (typeof structuredClone === "function") {
+    \\    try { return structuredClone(data); } catch (error) {}
+    \\  }
+    \\  return data;
+    \\}
+    \\function __home_message_port() {
+    \\  const port = __home_http_event_target();
+    \\  port.postMessage = function(data) {
+    \\    const peer = this.__home_peer;
+    \\    if (!peer) return;
+    \\    const payload = __home_message_clone(data);
+    \\    Promise.resolve().then(() => {
+    \\      peer.emit("message", payload);
+    \\      if (typeof peer.onmessage === "function") peer.onmessage({ data: payload, target: peer, currentTarget: peer });
+    \\    });
+    \\  };
+    \\  port.close = function() { this.__home_closed = true; };
+    \\  port.start = function() {};
+    \\  port.ref = function() { return this; };
+    \\  port.unref = function() { return this; };
+    \\  return port;
+    \\}
+    \\function __home_MessageChannel() {
+    \\  this.port1 = __home_message_port();
+    \\  this.port2 = __home_message_port();
+    \\  this.port1.__home_peer = this.port2;
+    \\  this.port2.__home_peer = this.port1;
+    \\}
+    \\function __home_Worker(code, options) {
+    \\  const worker = __home_http_event_target();
+    \\  const parentPort = __home_http_event_target();
+    \\  parentPort.postMessage = function(data) {
+    \\    Promise.resolve().then(() => worker.emit("message", __home_message_clone(data)));
+    \\  };
+    \\  worker.postMessage = function(data, transferList) {
+    \\    void transferList;
+    \\    Promise.resolve().then(() => parentPort.emit("message", data));
+    \\  };
+    \\  worker.terminate = function() {
+    \\    this.emit("exit", 0);
+    \\    return Promise.resolve(0);
+    \\  };
+    \\  if (options && options.eval) {
+    \\    const workerModule = Object.assign({}, globalThis.__home_modules["worker_threads"] || {}, { isMainThread: false, parentPort, workerData: options.workerData });
+    \\    const workerRequire = function(name) {
+    \\      const id = String(name);
+    \\      if (id === "worker_threads" || id === "node:worker_threads") return workerModule;
+    \\      return globalThis.__home_import(id);
+    \\    };
+    \\    Promise.resolve().then(() => {
+    \\      try {
+    \\        new Function("require", String(code))(workerRequire);
+    \\        worker.emit("online");
+    \\      } catch (error) {
+    \\        worker.emit("error", error);
+    \\      }
+    \\    });
+    \\  }
+    \\  return worker;
+    \\}
+    \\const __home_worker_threads_module = { MessageChannel: __home_MessageChannel, MessagePort: typeof MessagePort === "function" ? MessagePort : function MessagePort() {}, Worker: __home_Worker, isMainThread: true, parentPort: null, threadId: 0, workerData: undefined };
+    \\__home_worker_threads_module.default = __home_worker_threads_module;
+    \\globalThis.__home_modules["worker_threads"] = __home_worker_threads_module;
+    \\globalThis.__home_modules["node:worker_threads"] = __home_worker_threads_module;
     \\if (typeof MessageEvent !== "function") {
     \\  var MessageEvent = function(type, options) {
     \\    if (arguments.length < 1) throw new TypeError("Not enough arguments");
@@ -16287,6 +16352,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { createConnection, createServer } from \"node:net\";",
             .replacement = "const { createConnection, createServer } = globalThis.__home_import(\"node:net\");",
+        },
+        .{
+            .needle = "import { MessageChannel, Worker } from \"worker_threads\";",
+            .replacement = "const { MessageChannel, Worker } = globalThis.__home_import(\"worker_threads\");",
         },
         .{
             .needle = "import tls from \"node:tls\";",
@@ -22597,6 +22666,50 @@ test "bootstrap runner mirrors issue 22481 net Uint8Array writes" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22481.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22635 worker port transfer" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { MessageChannel, Worker } from "worker_threads";
+        \\
+        \\test("MessagePort communicates after transfer", async () => {
+        \\  const { port1, port2 } = new MessageChannel();
+        \\  const worker = new Worker(`
+        \\    const { parentPort } = require("worker_threads");
+        \\    parentPort.on("message", msg => {
+        \\      const port = msg.ports[0];
+        \\      port.on("message", data => port.postMessage({ reply: "Got: " + data.text }));
+        \\      parentPort.postMessage({ ready: true });
+        \\    });
+        \\  `, { eval: true });
+        \\  await new Promise(resolve => {
+        \\    worker.once("message", msg => {
+        \\      if (msg.ready) resolve();
+        \\    });
+        \\    worker.postMessage({ ports: [port2] }, [port2]);
+        \\  });
+        \\  const response = await new Promise(resolve => {
+        \\    port1.on("message", msg => resolve(msg.reply));
+        \\    port1.postMessage({ text: "Hello from main" });
+        \\  });
+        \\  expect(response).toBe("Got: Hello from main");
+        \\  await worker.terminate();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22635/22635.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
