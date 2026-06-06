@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 572 |
-| reachable (parity targets) | 111 |
+| catalog-only total | 569 |
+| reachable (parity targets) | 108 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -25,8 +25,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 1xxx — parser / syntactic + program file-inclusion | 53 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
-| 4xxx — declaration-emit (privacy / serialization) | 12 |
 | 2xxx — checker / type engine | 11 |
+| 4xxx — declaration-emit (privacy / serialization) | 9 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
@@ -123,21 +123,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 4xxx — declaration-emit (privacy / serialization) (12)
-
-- TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
-- TS4085 `Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085`
-- TS4094 `Property_0_of_exported_anonymous_class_type_may_not_be_private_or_protected_4094`
-- TS4097 `Public_static_method_0_of_exported_class_has_or_is_using_private_name_1_4097`
-- TS4100 `Public_method_0_of_exported_class_has_or_is_using_private_name_1_4100`
-- TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
-- TS4106 `Parameter_0_of_accessor_has_or_is_using_private_name_1_4106`
-- TS4107 `Parameter_0_of_accessor_has_or_is_using_name_1_from_private_module_2_4107`
-- TS4108 `Parameter_0_of_accessor_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4108`
-- TS4109 `Type_arguments_for_0_circularly_reference_themselves_4109`
-- TS4110 `Tuple_type_arguments_circularly_reference_themselves_4110`
-- TS4118 `The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118`
-
 ### 2xxx — checker / type engine (11)
 
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
@@ -151,6 +136,18 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
+
+### 4xxx — declaration-emit (privacy / serialization) (9)
+
+- TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
+- TS4085 `Extends_clause_for_inferred_type_0_has_or_is_using_private_name_1_4085`
+- TS4094 `Property_0_of_exported_anonymous_class_type_may_not_be_private_or_protected_4094`
+- TS4097 `Public_static_method_0_of_exported_class_has_or_is_using_private_name_1_4097`
+- TS4100 `Public_method_0_of_exported_class_has_or_is_using_private_name_1_4100`
+- TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
+- TS4109 `Type_arguments_for_0_circularly_reference_themselves_4109`
+- TS4110 `Tuple_type_arguments_circularly_reference_themselves_4110`
+- TS4118 `The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118`
 
 ### 5xxx — tsconfig / build-option validation (2)
 
