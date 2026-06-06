@@ -2986,6 +2986,86 @@ const harness_prelude =
     \\function __home_zstd_sync(value) {
     \\  return __home_compressed_buffer([0x28, 0xb5, 0x2f, 0xfd], value, [0xbe, 0xef]);
     \\}
+    \\function __home_cookie_validate_expires(value) {
+    \\  if (value === undefined || value === null) return undefined;
+    \\  if (value instanceof Date) {
+    \\    if (!Number.isFinite(value.getTime())) throw new TypeError("expires must be a valid Date (or Number)");
+    \\    return new Date(value.getTime());
+    \\  }
+    \\  if (typeof value === "number") {
+    \\    if (!Number.isFinite(value)) throw new TypeError("expires must be a valid Number");
+    \\    return new Date(value * 1000);
+    \\  }
+    \\  if (typeof value === "string") {
+    \\    const timestamp = Date.parse(value);
+    \\    if (Number.isFinite(timestamp)) return new Date(timestamp);
+    \\    throw new TypeError("Invalid cookie expiration date");
+    \\  }
+    \\  throw new TypeError("The argument 'expires' Invalid expires value. Must be a Date or a number. Received " + String(value));
+    \\}
+    \\function __home_cookie_parse_string(input) {
+    \\  const text = String(input || "");
+    \\  const parts = text.split(";");
+    \\  const first = parts.shift() || "";
+    \\  const eq = first.indexOf("=");
+    \\  const init = {
+    \\    name: (eq < 0 ? first : first.slice(0, eq)).trim(),
+    \\    value: eq < 0 ? "" : first.slice(eq + 1).trim(),
+    \\  };
+    \\  for (const rawPart of parts) {
+    \\    const part = String(rawPart || "").trim();
+    \\    if (!part) continue;
+    \\    const attrEq = part.indexOf("=");
+    \\    const attrName = (attrEq < 0 ? part : part.slice(0, attrEq)).trim().toLowerCase();
+    \\    const attrValue = attrEq < 0 ? true : part.slice(attrEq + 1).trim();
+    \\    if (attrName === "expires") init.expires = attrValue;
+    \\    else if (attrName === "max-age") init.maxAge = Number(attrValue);
+    \\    else if (attrName === "domain") init.domain = String(attrValue);
+    \\    else if (attrName === "path") init.path = String(attrValue);
+    \\    else if (attrName === "samesite") init.sameSite = String(attrValue);
+    \\    else if (attrName === "httponly") init.httpOnly = true;
+    \\    else if (attrName === "secure") init.secure = true;
+    \\  }
+    \\  return init;
+    \\}
+    \\function __home_Cookie(nameOrInit, value, options) {
+    \\  if (!(this instanceof __home_Cookie)) return new __home_Cookie(nameOrInit, value, options);
+    \\  let init;
+    \\  if (arguments.length === 1 && nameOrInit && typeof nameOrInit === "object" && !(nameOrInit instanceof String)) init = nameOrInit;
+    \\  else if (arguments.length === 1 && typeof nameOrInit === "string" && String(nameOrInit).includes("=")) init = __home_cookie_parse_string(nameOrInit);
+    \\  else init = Object.assign({}, options || {}, { name: nameOrInit, value });
+    \\  this.name = String(init.name || "");
+    \\  this.value = init.value === undefined || init.value === null ? "" : String(init.value);
+    \\  const expires = __home_cookie_validate_expires(init.expires);
+    \\  if (expires !== undefined) this.expires = expires;
+    \\  if (init.maxAge !== undefined) this.maxAge = Number(init.maxAge);
+    \\  if (init.domain !== undefined) this.domain = String(init.domain);
+    \\  if (init.path !== undefined) this.path = String(init.path);
+    \\  if (init.sameSite !== undefined) this.sameSite = String(init.sameSite);
+    \\  if (init.httpOnly !== undefined) this.httpOnly = !!init.httpOnly;
+    \\  if (init.secure !== undefined) this.secure = !!init.secure;
+    \\}
+    \\__home_Cookie.from = function(name, value, options) {
+    \\  return new __home_Cookie(name, value, options);
+    \\};
+    \\__home_Cookie.parse = function(input) {
+    \\  return new __home_Cookie(__home_cookie_parse_string(input));
+    \\};
+    \\__home_Cookie.prototype.isExpired = function() {
+    \\  if (!(this.expires instanceof Date)) return false;
+    \\  return this.expires.getTime() <= Date.now();
+    \\};
+    \\__home_Cookie.prototype.toString = function() {
+    \\  const parts = [this.name + "=" + this.value];
+    \\  if (this.path !== undefined) parts.push("Path=" + this.path);
+    \\  if (this.domain !== undefined) parts.push("Domain=" + this.domain);
+    \\  if (this.expires instanceof Date) parts.push("Expires=" + this.expires.toUTCString());
+    \\  if (this.maxAge !== undefined) parts.push("Max-Age=" + String(this.maxAge));
+    \\  if (this.sameSite !== undefined) parts.push("SameSite=" + this.sameSite);
+    \\  if (this.secure) parts.push("Secure");
+    \\  if (this.httpOnly) parts.push("HttpOnly");
+    \\  return parts.join("; ");
+    \\};
     \\function __home_serve_cookie_jar(seed) {
     \\  const values = Object.assign(Object.create(null), seed || {});
     \\  return {
@@ -3155,6 +3235,7 @@ const harness_prelude =
     \\    },
     \\  },
     \\  CryptoHasher: __home_CryptoHasher,
+    \\  Cookie: __home_Cookie,
     \\  peek: {
     \\    status(value) {
     \\      return value && typeof value.then === "function" ? "fulfilled" : "fulfilled";
@@ -5877,6 +5958,9 @@ const harness_prelude =
     \\    toBeArray() {
     \\      __home_assert(Array.isArray(value), isNot, "Expected value" + (isNot ? " not" : "") + " to be an array");
     \\    },
+    \\    toBeDate() {
+    \\      __home_assert(value instanceof Date && Number.isFinite(value.getTime()), isNot, "Expected value" + (isNot ? " not" : "") + " to be a Date");
+    \\    },
     \\    toBeTypeOf(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeTypeOf() requires 1 argument");
     \\      if (typeof expected !== "string") __home_fail("toBeTypeOf() requires a string argument");
@@ -6543,7 +6627,7 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, SQL: __home_bun_sql, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, SQL: __home_bun_sql, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
@@ -22372,6 +22456,41 @@ test "bootstrap runner mirrors issue 22353 oversized serve request" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22353.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22475 cookie expiration" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("cookie expiration handles epoch", () => {
+        \\  const parsed = new Bun.Cookie("a=; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+        \\  expect(parsed.name).toBe("a");
+        \\  expect(parsed.expires).toBeDate();
+        \\  expect(parsed.expires?.getTime()).toBe(0);
+        \\  expect(parsed.isExpired()).toBe(true);
+        \\  const epoch = new Bun.Cookie("test", "value", { expires: 0 });
+        \\  expect(epoch.expires).toBeDate();
+        \\  expect(epoch.expires?.getTime()).toBe(0);
+        \\  expect(epoch.isExpired()).toBe(true);
+        \\  const negative = Bun.Cookie.from("test", "value", { expires: -1 });
+        \\  expect(negative.expires?.getTime()).toBe(-1000);
+        \\  expect(negative.isExpired()).toBe(true);
+        \\  expect(new Bun.Cookie("session", "value").isExpired()).toBe(false);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22475.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
