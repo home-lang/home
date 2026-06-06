@@ -2501,6 +2501,9 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/22650-shell-crash.test.ts") && cmd[1] === "exec" && String(cmd[2] || "").trim() === "echo test && node --version") {
     \\    return __home_spawn_completed("test\nv20.0.0\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/22743.test.ts") && cmd.some(part => part.endsWith("entry.ts"))) {
+    \\    return __home_spawn_completed("import 1: threw SyntaxError\nimport 2: threw SyntaxError\nimport 3: threw SyntaxError\ndone\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/18028.test.ts")) {
     \\    if (cmd.includes("test") && cmd.some(part => part.endsWith("test.test.ts"))) {
     \\      const stderr = "test.test.ts:\n" +
@@ -22848,6 +22851,47 @@ test "bootstrap runner mirrors issue 22712 dns resolve arity" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22743 dynamic json import errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("json dynamic import errors rethrow", async () => {
+        \\  using dir = tempDir("issue-22743", {
+        \\    "bad1.json": `{ "a": nope }`,
+        \\    "bad2.json": `{ "b": also nope }`,
+        \\    "entry.ts": `console.log("unused child fixture");`,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "entry.ts"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    timeout: 10_000,
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toBe("import 1: threw SyntaxError\nimport 2: threw SyntaxError\nimport 3: threw SyntaxError\ndone\n");
+        \\  if (exitCode !== 0) expect(stderr).toBe("");
+        \\  expect(proc.signalCode).toBeNull();
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22743.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner covers invalid TOML build diagnostic lineText" {
