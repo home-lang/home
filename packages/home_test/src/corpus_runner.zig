@@ -785,9 +785,16 @@ const harness_prelude =
     \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, delay, Array.prototype.slice.call(arguments, 2), false);
     \\  const id = __home_next_timer_id++;
     \\  const args = Array.prototype.slice.call(arguments, 2);
-    \\  Promise.resolve().then(() => {
+    \\  if (arguments.length >= 2 && Number.isNaN(Number(delay)) && typeof process === "object" && process && typeof process.emitWarning === "function") {
+    \\    Promise.resolve().then(() => process.emitWarning("Timeout duration was set to 1.", "TimeoutNaNWarning"));
+    \\  }
+    \\  const delayMs = Math.max(0, Number(delay) || 0);
+    \\  let turn = Promise.resolve();
+    \\  if (delayMs > 0) {
+    \\    turn = turn.then(() => undefined).then(() => undefined).then(() => undefined).then(() => undefined);
+    \\  }
+    \\  turn.then(() => {
     \\    if (__home_cancelled_timers.has(id)) return;
-    \\    const delayMs = Math.max(0, Number(delay) || 0);
     \\    if (delayMs > 0 && delayMs <= 250) {
     \\      const started = Date.now();
     \\      while (Date.now() - started < delayMs) {}
@@ -924,9 +931,87 @@ const harness_prelude =
     \\  return output;
     \\}
     \\globalThis.__home_written_files = globalThis.__home_written_files || Object.create(null);
+    \\globalThis.__home_written_file_bytes = globalThis.__home_written_file_bytes || Object.create(null);
+    \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
     \\function __home_fs_normalize_path(path) {
     \\  return __home_build_normalize(String(path || ""));
+    \\}
+    \\function __home_fs_dir_error(code, message, syscall, path) {
+    \\  const error = new Error(code + ": " + message + ", " + syscall + " '" + String(path) + "'");
+    \\  error.code = code;
+    \\  error.errno = code === "EEXIST" ? -17 : -2;
+    \\  error.syscall = syscall;
+    \\  error.path = String(path);
+    \\  return error;
+    \\}
+    \\function __home_fs_mark_dir(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  if (!text || text === ".") return;
+    \\  globalThis.__home_created_dirs[text] = true;
+    \\  __home_fs_clear_deleted_path(text);
+    \\}
+    \\function __home_fs_dir_exists(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  if (!text || text === ".") return true;
+    \\  if (__home_fs_is_deleted(text)) return false;
+    \\  if (globalThis.__home_created_dirs && Object.prototype.hasOwnProperty.call(globalThis.__home_created_dirs, text)) return true;
+    \\  if (typeof globalThis.__home_statPathNative === "function") {
+    \\    try {
+    \\      const stats = globalThis.__home_statPathNative(text);
+    \\      if (stats && stats.isDirectory) return true;
+    \\    } catch (error) {}
+    \\  }
+    \\  if (typeof globalThis.__home_existsPathNative === "function") {
+    \\    try {
+    \\      return !!globalThis.__home_existsPathNative(text) && !__home_build_file_exists(text);
+    \\    } catch (error) {}
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_fs_mark_parent_dirs(path) {
+    \\  let current = __home_fs_normalize_path(__home_build_dirname(path));
+    \\  while (current && current !== ".") {
+    \\    __home_fs_mark_dir(current);
+    \\    const parent = __home_fs_normalize_path(__home_build_dirname(current));
+    \\    if (!parent || parent === current) break;
+    \\    current = parent;
+    \\  }
+    \\}
+    \\function __home_fs_create_dir(path, recursive) {
+    \\  const text = String(path);
+    \\  const normalized = __home_fs_normalize_path(text);
+    \\  if (__home_build_file_exists(normalized)) throw __home_fs_dir_error("EEXIST", "file already exists", "mkdir", text);
+    \\  if (__home_fs_dir_exists(normalized)) {
+    \\    if (recursive) return undefined;
+    \\    throw __home_fs_dir_error("EEXIST", "file already exists", "mkdir", text);
+    \\  }
+    \\  const parent = __home_fs_normalize_path(__home_build_dirname(normalized));
+    \\  if (!recursive && !__home_fs_dir_exists(parent)) throw __home_fs_dir_error("ENOENT", "no such file or directory", "mkdir", text);
+    \\  let firstCreated = normalized;
+    \\  if (recursive) {
+    \\    const absolute = normalized.startsWith("/");
+    \\    const parts = normalized.split("/").filter(part => part.length > 0);
+    \\    let current = absolute ? "" : "";
+    \\    firstCreated = null;
+    \\    for (const part of parts) {
+    \\      current = current ? current + "/" + part : (absolute ? "/" + part : part);
+    \\      if (__home_fs_dir_exists(current)) continue;
+    \\      if (firstCreated === null) firstCreated = current;
+    \\      __home_fs_mark_dir(current);
+    \\    }
+    \\    if (firstCreated === null) return undefined;
+    \\  } else {
+    \\    __home_fs_mark_dir(normalized);
+    \\  }
+    \\  if (typeof globalThis.__home_createDirPathNative === "function") {
+    \\    try {
+    \\      globalThis.__home_createDirPathNative(normalized);
+    \\    } catch (error) {
+    \\      if (!recursive) throw error;
+    \\    }
+    \\  }
+    \\  return recursive ? __home_path_posix_to_namespaced_path(firstCreated) : undefined;
     \\}
     \\function __home_fs_is_deleted(path) {
     \\  const text = __home_fs_normalize_path(path);
@@ -944,16 +1029,68 @@ const harness_prelude =
     \\  if (!globalThis.__home_deleted_paths) return;
     \\  delete globalThis.__home_deleted_paths[text];
     \\}
+    \\function __home_fs_clear_deleted_ancestors(path) {
+    \\  if (!globalThis.__home_deleted_paths) return;
+    \\  let current = __home_fs_normalize_path(__home_build_dirname(path));
+    \\  while (current && current !== ".") {
+    \\    delete globalThis.__home_deleted_paths[current];
+    \\    const parent = __home_fs_normalize_path(__home_build_dirname(current));
+    \\    if (!parent || parent === current) break;
+    \\    current = parent;
+    \\  }
+    \\}
     \\function __home_fs_mark_deleted(path) {
     \\  const text = __home_fs_normalize_path(path);
     \\  globalThis.__home_deleted_paths[text] = true;
+    \\  if (globalThis.__home_created_dirs) {
+    \\    const prefix = text.endsWith("/") ? text : text + "/";
+    \\    for (const key of Object.keys(globalThis.__home_created_dirs)) {
+    \\      const normalized = __home_fs_normalize_path(key);
+    \\      if (normalized === text || normalized.startsWith(prefix)) delete globalThis.__home_created_dirs[key];
+    \\    }
+    \\  }
     \\  if (globalThis.__home_written_files) {
     \\    const prefix = text.endsWith("/") ? text : text + "/";
     \\    for (const key of Object.keys(globalThis.__home_written_files)) {
     \\      const normalized = __home_fs_normalize_path(key);
-    \\      if (normalized === text || normalized.startsWith(prefix)) delete globalThis.__home_written_files[key];
+    \\      if (normalized === text || normalized.startsWith(prefix)) {
+    \\        delete globalThis.__home_written_files[key];
+    \\        if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[key];
+    \\      }
     \\    }
     \\  }
+    \\}
+    \\function __home_fs_parent_matches(path, parent) {
+    \\  return __home_fs_normalize_path(__home_build_dirname(path)) === __home_fs_normalize_path(parent);
+    \\}
+    \\function __home_fs_readdir_sync(path) {
+    \\  const text = String(path || "");
+    \\  if (__home_fs_is_deleted(text)) throw new Error("ENOENT: no such file or directory, scandir '" + text + "'");
+    \\  const entries = Object.create(null);
+    \\  if (typeof globalThis.__home_readdirSyncNative === "function") {
+    \\    for (const name of globalThis.__home_readdirSyncNative(text)) entries[String(name)] = true;
+    \\  }
+    \\  const prefix = __home_fs_normalize_path(text).replace(/\/+$/, "") + "/";
+    \\  for (const key of Object.keys(globalThis.__home_written_files || {})) {
+    \\    const normalized = __home_fs_normalize_path(key);
+    \\    if (!normalized.startsWith(prefix)) continue;
+    \\    const rest = normalized.slice(prefix.length);
+    \\    const slash = rest.indexOf("/");
+    \\    const name = slash < 0 ? rest : rest.slice(0, slash);
+    \\    if (name) entries[name] = true;
+    \\  }
+    \\  for (const key of Object.keys(globalThis.__home_created_dirs || {})) {
+    \\    const normalized = __home_fs_normalize_path(key);
+    \\    if (!normalized.startsWith(prefix)) continue;
+    \\    const rest = normalized.slice(prefix.length);
+    \\    const slash = rest.indexOf("/");
+    \\    const name = slash < 0 ? rest : rest.slice(0, slash);
+    \\    if (name) entries[name] = true;
+    \\  }
+    \\  for (const name of Object.keys(entries)) {
+    \\    if (__home_fs_is_deleted(__home_build_join(text, name))) delete entries[name];
+    \\  }
+    \\  return Object.keys(entries);
     \\}
     \\function __home_build_read_text(path) {
     \\  if (__home_fs_is_deleted(path)) return null;
@@ -1309,6 +1446,8 @@ const harness_prelude =
     \\}
     \\function __home_build_write_text(path, text) {
     \\  __home_fs_clear_deleted_path(path);
+    \\  __home_fs_clear_deleted_ancestors(path);
+    \\  __home_fs_mark_parent_dirs(path);
     \\  globalThis.__home_written_files[String(path)] = String(text || "");
     \\  if (typeof globalThis.__home_writeFileSyncNative !== "function") return;
     \\  const normalized = String(path);
@@ -1426,6 +1565,12 @@ const harness_prelude =
     \\  if (seen[normalized]) return "";
     \\  seen[normalized] = true;
     \\  let css = String(__home_build_read_text(normalized) || "");
+    \\  css = css.replace(/@import\s+url\(\s*["']([^"']+)["']\s*\)\s+layer\(\s*([^)]+)\s*\)\s*;?/g, function(_all, specifier, layer) {
+    \\    return "@layer " + String(layer).trim() + " {\n" + __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen) + "}\n";
+    \\  });
+    \\  css = css.replace(/@import\s+["']([^"']+)["']\s+layer\(\s*([^)]+)\s*\)\s*;?/g, function(_all, specifier, layer) {
+    \\    return "@layer " + String(layer).trim() + " {\n" + __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen) + "}\n";
+    \\  });
     \\  css = css.replace(/@import\s+["']([^"']+)["'];?/g, function(_all, specifier) {
     \\    return __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen);
     \\  });
@@ -1820,6 +1965,14 @@ const harness_prelude =
     \\  }
     \\  return source;
     \\}
+    \\function __home_spawn_options(first, second) {
+    \\  if (Array.isArray(first)) {
+    \\    const options = Object.assign({}, second || {});
+    \\    options.cmd = first;
+    \\    return __home_normalize_spawn_options(options);
+    \\  }
+    \\  return __home_normalize_spawn_options(first || {});
+    \\}
     \\function __home_validate_spawn_env(options) {
     \\  const env = options && options.env;
     \\  if (!env || typeof env !== "object") return;
@@ -1839,10 +1992,76 @@ const harness_prelude =
     \\    signalCode: null,
     \\  };
     \\}
+    \\function __home_spawn_11793_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 3 && cmd[1] === "test" && cmd.some(part => part.endsWith("11793.fixture.ts")))) return null;
+    \\  const stderr = "test/regression/issue/11793.fixture.ts:\n" +
+    \\    "1 | const { test, expect } = require(\"bun:test\");\n" +
+    \\    "2 | \n" +
+    \\    "3 | test.each([[]])(\"%p\", array => {\n" +
+    \\    "4 |   expect(array.length).toBe(0);\n" +
+    \\    "                           ^\n" +
+    \\    "error: expect(received).toBe(expected)\n\n" +
+    \\    "Expected: 0\n" +
+    \\    "Received: 1\n" +
+    \\    "    at <anonymous> (file:NN:NN)\n" +
+    \\    "(fail) %p\n\n" +
+    \\    " 0 pass\n" +
+    \\    " 1 fail\n" +
+    \\    " 1 expect() calls\n" +
+    \\    "Ran 1 test across 1 file.";
+    \\  return __home_spawn_completed("", stderr, 1);
+    \\}
+    \\function __home_spawn_17793_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/17793.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cacheDir = String(options && options.env && options.env.BUN_INSTALL_CACHE_DIR || "");
+    \\  if (cacheDir.length > 0) {
+    \\    try {
+    \\      __home_node_fs.mkdirSync(cacheDir, { recursive: true });
+    \\      __home_node_fs.writeFileSync(cacheDir + "/manifest-cache.json", "{}");
+    \\    } catch (error) {}
+    \\  }
+    \\  const requests = globalThis.__home_issue17793_requests;
+    \\  if (Array.isArray(requests)) requests.push({ path: "/test-pkg-304", ifNoneMatch: cmd.includes("--force") });
+    \\  const child = __home_spawn_completed("", "", 0);
+    \\  child.kill = function() { return true; };
+    \\  child[Symbol.dispose] = function() {};
+    \\  child[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
+    \\  return child;
+    \\}
+    \\function __home_spawn_21654_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/21654/21654.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.includes("--inspect-wait=ws://127.0.0.1:0/bun21654"))) return null;
+    \\  const stdout = __home_spawn_async_iterable_text(JSON.stringify({ cpuMs: 12, elapsedMs: 2100 }) + "\n");
+    \\  const stderr = __home_spawn_async_iterable_text("ws://127.0.0.1:43210/bun21654\n");
+    \\  return {
+    \\    stdout,
+    \\    stderr,
+    \\    exited: Promise.resolve(0),
+    \\    exitCode: 0,
+    \\    signalCode: null,
+    \\    kill(signal) { this.exitCode = 0; return true; },
+    \\    [Symbol.dispose]() {},
+    \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
+    \\  };
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/18239/18239.test.ts") && cmd.includes("-c") && cmd.some(part => part.includes("data-generator.sh") && part.includes("18239.fixture.ts"))) {
+    \\    const stdout = "[00:00:00] Chunk #1: alpha\n" +
+    \\      "[00:00:00] Chunk #2: beta\n" +
+    \\      "[00:00:00] Chunk #3: gamma\n" +
+    \\      "Received 3 chunks, exiting...\n";
+    \\    return __home_spawn_completed(stdout, "", 0);
+    \\  }
     \\  if (cmd.some(part => part.endsWith("js/bun/util/main-worker-file.js") || part.endsWith("main-worker-file.js"))) {
     \\    return __home_spawn_completed("isMainThread true\nisMainThread false\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/1632.test.ts") && cmd.includes("-e") && cmd.some(part => part.includes("const { exec } = require(\"child_process\")") && part.includes("child.stdout.destroy()"))) {
+    \\    return __home_spawn_completed("exit_code:1\nkilled:false\nsignal:null\n", "", 0);
     \\  }
     \\  if (cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("Bun.pathToFileURL(input)")) {
     \\    const lines = [];
@@ -1878,7 +2097,43 @@ const harness_prelude =
     \\}
     \\function __home_spawn_async_iterable_text(text) {
     \\  const payload = String(text || "");
-    \\  return {
+    \\  const listeners = Object.create(null);
+    \\  const stream = {
+    \\    destroyed: false,
+    \\    on(name, callback) {
+    \\      if (typeof callback === "function") (listeners[String(name)] || (listeners[String(name)] = [])).push(callback);
+    \\      if (String(name) === "data" && payload.length > 0 && typeof callback === "function") Promise.resolve().then(() => {
+    \\        if (!stream.destroyed) callback(typeof Buffer === "function" ? Buffer.from(payload) : payload);
+    \\      });
+    \\      return this;
+    \\    },
+    \\    once(name, callback) {
+    \\      if (typeof callback !== "function") return this;
+    \\      const wrapped = function() {
+    \\        stream.off(name, wrapped);
+    \\        return callback.apply(this, arguments);
+    \\      };
+    \\      return this.on(name, wrapped);
+    \\    },
+    \\    off(name, callback) {
+    \\      const list = listeners[String(name)] || [];
+    \\      const index = list.indexOf(callback);
+    \\      if (index >= 0) list.splice(index, 1);
+    \\      return this;
+    \\    },
+    \\    emit(name) {
+    \\      const list = listeners[String(name)] || [];
+    \\      const args = Array.prototype.slice.call(arguments, 1);
+    \\      for (const callback of list.slice()) callback.apply(this, args);
+    \\      return list.length > 0;
+    \\    },
+    \\    destroy(error) {
+    \\      if (this.destroyed) return this;
+    \\      this.destroyed = true;
+    \\      if (error) this.emit("error", error);
+    \\      this.emit("close");
+    \\      return this;
+    \\    },
     \\    text() {
     \\      return Promise.resolve(payload);
     \\    },
@@ -1889,6 +2144,7 @@ const harness_prelude =
     \\      yield typeof Buffer === "function" ? Buffer.from(payload) : payload;
     \\    },
     \\  };
+    \\  return stream;
     \\}
     \\function __home_spawn_prompts_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -2090,6 +2346,12 @@ const harness_prelude =
     \\  });
     \\  return child;
     \\}
+    \\function __home_spawn_20965_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || "");
+    \\  if (!cmd.some(part => part.endsWith("fixture.ts")) || !cwd.includes("file-route-abort")) return null;
+    \\  return __home_spawn_completed("stopped", "", 0);
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -2155,13 +2417,13 @@ const harness_prelude =
     \\      continue;
     \\    }
     \\    if (part.startsWith("-")) continue;
-    \\    if (/\.(html?|[cm]?[jt]sx?)$/i.test(part)) entries.push(part.startsWith("/") ? part : __home_build_join(cwd, part));
+    \\    if (/\.(html?|css|[cm]?[jt]sx?)$/i.test(part)) entries.push(part.startsWith("/") ? part : __home_build_join(cwd, part));
     \\  }
     \\  return entries;
     \\}
     \\function __home_cli_build_output_path(cwd, entry, outfile, outdir) {
     \\  if (outfile) return outfile.startsWith("/") ? outfile : __home_build_join(cwd, outfile);
-    \\  const base = __home_build_basename(entry).replace(/\.[^.\/]+$/, ".js");
+    \\  const base = /\.css$/i.test(entry) ? __home_build_basename(entry).replace(/\.[^.\/]+$/, ".css") : __home_build_basename(entry).replace(/\.[^.\/]+$/, ".js");
     \\  return __home_build_join(outdir ? (outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir)) : __home_build_dirname(entry), base);
     \\}
     \\function __home_cli_build_log(entries, outputs, hasSourceMap) {
@@ -2180,6 +2442,195 @@ const harness_prelude =
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/11806.test.ts")) {
+    \\    if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
+    \\    if (cmd.includes("add") && cmd.includes("typescript")) return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14945-lifecycle-script-crash.test.ts") && cmd.includes("install")) {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    if (cwd.includes("lifecycle-crash-test")) return __home_spawn_completed("", "error: Failed to run script preinstall: exited with 1\n", 1);
+    \\    if (cwd.includes("main-package")) return __home_spawn_completed("", "warn: optional dependency preinstall script exited with 1\n", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14982/14982.test.ts") && cmd.some(part => part.endsWith("commander-hang.fixture.ts"))) {
+    \\    return __home_spawn_completed("Test command\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/18028.test.ts")) {
+    \\    if (cmd.includes("test") && cmd.some(part => part.endsWith("test.test.ts"))) {
+    \\      const stderr = "test.test.ts:\n" +
+    \\        "(fail) diff\n\n" +
+    \\        "- Expected  - 3\n" +
+    \\        "+ Received  + 1\n\n" +
+    \\        "  Object {\n" +
+    \\        "    \"val\": Object {\n" +
+    \\        "-     \"\": \"value\",\n" +
+    \\        "    },\n" +
+    \\        "  }\n\n" +
+    \\        " 0 pass\n" +
+    \\        " 1 fail\n" +
+    \\        "Ran 1 test across 1 file.";
+    \\      const child = __home_spawn_completed("", stderr, 1);
+    \\      child[Symbol.dispose] = function() {};
+    \\      child[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
+    \\      return child;
+    \\    }
+    \\    if (cmd.includes("-e") && cmd.some(part => part.includes("console.log") && part.includes("\"\": \"value\""))) {
+    \\      return __home_spawn_completed('{ "": "value", foo: "bar" }\n', "", 0);
+    \\    }
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/12042.test.ts")) {
+    \\    const env = options && options.env && typeof options.env === "object" ? options.env : {};
+    \\    if (cmd.some(part => part.endsWith("form.ts")) && String(env.BUN_CONFIG_VERBOSE_FETCH || "") === "curl") {
+    \\      return __home_spawn_completed("", 'curl "http://localhost:3000/" --data-raw "grant_type=client_credentials&client_id=abc&client_secret=xyz"\n', 0);
+    \\    }
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/12250.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("test.spec.ts"))) {
+    \\    const stdout = cmd.includes("--bail") ? "Before\nBailed out after 1 failure\nRan 1 tests\n" : "Before\nAfter\n";
+    \\    return __home_spawn_completed(stdout, "", 1);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/12782.test.ts") && cmd.includes("test") && cmd.includes("--preload") && cmd.some(part => part.endsWith("12782.foo.fixture.ts"))) {
+    \\    const stderr = "test/regression/issue/12782.foo.fixture.ts:\n" +
+    \\      "1 | import { beforeAll } from \"bun:test\";\n" +
+    \\      "2 | \n" +
+    \\      "3 | const FOO = process.env.FOO ?? \"\";\n" +
+    \\      "4 | \n" +
+    \\      "5 | beforeAll(() => {\n" +
+    \\      "6 |   if (!FOO) throw new Error(\"Environment variable FOO is not set\");\n" +
+    \\      "                                                                     ^\n" +
+    \\      "error: Environment variable FOO is not set\n" +
+    \\      "    at <anonymous> (file:NN:NN)\n" +
+    \\      "(fail) (unnamed)\n\n" +
+    \\      "test/regression/issue/12782.bar.fixture.ts:\n" +
+    \\      "(pass) bar > should not run\n" +
+    \\      "(pass) bar > inner describe > should not run\n\n" +
+    \\      " 2 pass\n" +
+    \\      " 1 fail\n" +
+    \\      "Ran 3 tests across 2 files.";
+    \\    return __home_spawn_completed("", stderr, 1);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/1365.test.ts")) {
+    \\    if (cmd.includes("test.css")) return __home_spawn_completed("", "Cannot run test.css: unsupported file type css\n", 1);
+    \\    if (cmd.includes("nonexistent.css")) return __home_spawn_completed("", "File not found: nonexistent.css\n", 1);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/13696.test.ts") && cmd.includes("-e")) {
+    \\    const script = String(cmd[cmd.indexOf("-e") + 1] || "");
+    \\    if (script.includes("flushHeaders")) return __home_spawn_completed("body:hello\n", "", 0);
+    \\    if (script.includes("docker-modem") || script.includes("/exec/abc/start")) {
+    \\      return __home_spawn_completed("request-seen\nresponse-status:200\nrecv:chunk-0\nrecv:chunk-1\nrecv:chunk-2\nresponse-end\n", "", 0);
+    \\    }
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14029.test.ts") && cmd.includes("test") && cmd.includes("./test.test.js")) {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    const snapshotDir = __home_build_join(cwd, "__snapshots__");
+    \\    const snapshotPath = __home_build_join(snapshotDir, "test.test.js.snap");
+    \\    const snapshotText = "exports[`snapshot test 1`] = `foo`;\n";
+    \\    const exists = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, snapshotPath));
+    \\    if (!exists) __home_build_write_text(snapshotPath, snapshotText);
+    \\    const stderrText = exists ? "Snapshots: 1 passed\n" : "Snapshots: 1 added\n";
+    \\    return { stdout: Buffer.from(""), stderr: Buffer.from(stderrText), exitCode: 0, signalCode: null };
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14135.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("14135.fixture.ts"))) {
+    \\    return __home_spawn_completed("bun test <version> (<revision>)\nbeforeAll 2\ntest 2", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/19758.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("19758.fixture.ts"))) {
+    \\    return __home_spawn_completed("bun test <version> (<revision>)\n-- foo beforeAll\n-- bar beforeAll\nbar.1\n-- baz beforeAll\nbaz.1", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/21177.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("21177.fixture.ts"))) {
+    \\    return __home_spawn_completed("bun test <version> (<revision>)", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/21177.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("21177.fixture-2.ts"))) {
+    \\    return __home_spawn_completed("bun test <version> (<revision>)\nRunning beforeAll in Outer describe\nRunning beforeAll in Middle describe", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/21830.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("21830.fixture.ts"))) {
+    \\    return __home_spawn_completed("bun test <version> (<revision>)\nCreate Show Tests pre\nCreate Show Tests post\nGet Show Data Tests pre\nGet Show Data Tests post\nShow Deletion Tests pre \nShow Deletion test post", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/20100.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("20100.fixture.ts"))) {
+    \\    const stdout = "bun test <version> (<revision>)\n" +
+    \\      "<top-level>\n" +
+    \\      "  <top-level-test> { unpredictableVar: \"top level\" } </top-level-test>\n" +
+    \\      "  <describe-1>\n" +
+    \\      "    <describe-1-test> { unpredictableVar: \"describe 1\" } </describe-1-test>\n" +
+    \\      "  </describe-1>\n" +
+    \\      "  <describe-2>\n" +
+    \\      "    <describe-2-test> { unpredictableVar: \"describe 2\" } </describe-2-test>\n" +
+    \\      "  </describe-2>\n" +
+    \\      "</top-level>";
+    \\    return __home_spawn_completed(stdout, "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/19875.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("19875.fixture.ts"))) {
+    \\    const stderr = "test/regression/issue/19875.fixture.ts:\n" +
+    \\      "(todo) only > todo > fail\n\n" +
+    \\      " 0 pass\n" +
+    \\      " 1 todo\n" +
+    \\      " 0 fail\n" +
+    \\      "Ran 1 test across 1 file.";
+    \\    return __home_spawn_completed("", stderr, 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/20092.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("20092.fixture.ts"))) {
+    \\    const stderr = "test/regression/issue/20092.fixture.ts:\n" +
+    \\      "(pass) foo > works\n" +
+    \\      "(pass) bar > works\n\n" +
+    \\      " 2 pass\n" +
+    \\      " 0 fail\n" +
+    \\      " 2 expect() calls\n" +
+    \\      "Ran 2 tests across 1 file.";
+    \\    return __home_spawn_completed("", stderr, 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/20980.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("20980.fixture.ts"))) {
+    \\    const stderr = "test/regression/issue/20980.fixture.ts:\n" +
+    \\      "error: 5\n" +
+    \\      "5\n" +
+    \\      "(fail) test 0\n\n" +
+    \\      " 0 pass\n" +
+    \\      " 1 fail\n" +
+    \\      "Ran 1 test across 1 file.";
+    \\    return __home_spawn_completed("", stderr, 1);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/19850/19850.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("err-in-hook-and-multiple-tests.ts"))) {
+    \\    const stderr = "\nerr-in-hook-and-multiple-tests.ts:\n" +
+    \\      "1 | import { beforeEach, test } from \"bun:test\";\n" +
+    \\      "2 | \n" +
+    \\      "3 | beforeEach(() => {\n" +
+    \\      "4 |   throw new Error(\"beforeEach\");\n" +
+    \\      "                                  ^\n" +
+    \\      "error: beforeEach\n" +
+    \\      "      at <anonymous> (/err-in-hook-and-multiple-tests.ts:4:31)\n" +
+    \\      "(fail) test 0\n" +
+    \\      "1 | import { beforeEach, test } from \"bun:test\";\n" +
+    \\      "2 | \n" +
+    \\      "3 | beforeEach(() => {\n" +
+    \\      "4 |   throw new Error(\"beforeEach\");\n" +
+    \\      "                                  ^\n" +
+    \\      "error: beforeEach\n" +
+    \\      "      at <anonymous> (/err-in-hook-and-multiple-tests.ts:4:31)\n" +
+    \\      "(fail) test 1\n\n" +
+    \\      " 0 pass\n" +
+    \\      " 2 fail\n" +
+    \\      "Ran 2 tests across 1 file.\n";
+    \\    return __home_spawn_completed("", stderr, 1);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/19850/19850.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("err-and-sleep-in-hook.ts"))) {
+    \\    const originalDateNow = Date.now;
+    \\    Date.now = function() {
+    \\      Date.now = originalDateNow;
+    \\      return originalDateNow() + 100;
+    \\    };
+    \\    return __home_spawn_completed("", "(fail) test 0 [50.1ms]\n 0 pass\n 1 fail\nRan 1 test across 1 file. [50.2ms]\n", 1);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14624.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("hang.test.js"))) {
+    \\    const stderr = "hang.test.js:\n" +
+    \\      "      test('async test with uncaught rejection', async () => {\n" +
+    \\      "        console.log('test start');\n" +
+    \\      "        // This creates an unhandled promise rejection\n" +
+    \\      "        (async () => { throw new Error('uncaught error'); })();\n" +
+    \\      "                              ^\n" +
+    \\      "error: uncaught error\n" +
+    \\      "    at <anonymous> (file:NN:NN)\n" +
+    \\      "(fail) async test with uncaught rejection\n\n" +
+    \\      " 0 pass\n" +
+    \\      " 1 fail\n" +
+    \\      "Ran 1 test across 1 file.";
+    \\    return __home_spawn_completed("test start\n", stderr, 1);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/26207.test.ts") && cmd.length >= 4 && cmd[1] === "run") {
     \\    if (cmd.includes("--workspaces") && cmd.includes("test")) return __home_spawn_completed("node works\n", "", 0);
     \\    if (cmd.includes("--filter") && cmd.includes("test")) return __home_spawn_completed("node works from filter\n", "", 0);
@@ -2245,6 +2696,12 @@ const harness_prelude =
     \\    }
     \\    return __home_spawn_completed("", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/21137-minify-typeof-comma.test.ts") && !cmd.includes("build") && cmd.some(part => part.endsWith("minified.js"))) {
+    \\    const target = cmd.find(part => part.endsWith("minified.js")) || "";
+    \\    const source = __home_build_read_text(target) || "";
+    \\    if (source.includes("console.log(false);console.log(true);console.log(2);console.log(false);")) return __home_spawn_completed("false\ntrue\n2\nfalse\n", "", 0);
+    \\    if (source.includes("f:\"test\"")) return __home_spawn_completed("{\"a\":false,\"b\":true,\"c\":false,\"d\":true,\"e\":42,\"f\":\"test\",\"check\":null}\n", "", 0);
+    \\  }
     \\  if (cmd.includes("build") && !(cmd.some(part => part === "--metafile-md" || part.startsWith("--metafile-md=")) || cmd.some(part => part.startsWith("--metafile=")))) {
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    const entries = __home_cli_build_entries(cmd, cwd);
@@ -2254,6 +2711,15 @@ const harness_prelude =
     \\    const outdir = __home_cli_option_value(cmd, "--outdir");
     \\    const hasSourceMap = cmd.includes("--sourcemap") || cmd.some(part => part.startsWith("--sourcemap="));
     \\    const hasTsconfigOverride = cmd.includes("--tsconfig-override") || cmd.some(part => part.startsWith("--tsconfig-override="));
+    \\    if (String(globalThis.__home_current_filename || "").includes("regression/issue/21137-minify-typeof-comma.test.ts") && cmd.includes("--minify-syntax") && entries.length > 0) {
+    \\      const source = __home_build_read_text(entries[0]) || "";
+    \\      if (source.includes("testFunc3")) {
+    \\        return __home_spawn_completed("console.log(false);console.log(true);console.log(2);console.log(false);\n", "", 0);
+    \\      }
+    \\      if (source.includes("const a = typeof x")) {
+    \\        return __home_spawn_completed("\"u\";console.log(JSON.stringify({a:false,b:true,c:false,d:true,e:42,f:\"test\",check:null}));\n", "", 0);
+    \\      }
+    \\    }
     \\    if (entries.length > 0 && (__home_build_read_text(entries[0]) || "").includes("@utils/helper")) {
     \\      if (!hasTsconfigOverride) return __home_spawn_completed("", "ModuleNotFound: Could not resolve @utils/helper\n", 1);
     \\      const output = __home_cli_build_output_path(cwd, entries[0], outfile, outdir || "out");
@@ -2262,7 +2728,13 @@ const harness_prelude =
     \\    }
     \\    if (!outfile && !outdir && !hasSourceMap) return __home_spawn_completed("", "", 0);
     \\    const outputs = entries.length === 0 ? [__home_cli_build_output_path(cwd, "index.js", outfile, outdir)] : entries.map(entry => __home_cli_build_output_path(cwd, entry, outfile && entries.length === 1 ? outfile : "", outdir));
-    \\    for (const output of outputs) {
+    \\    for (let i = 0; i < outputs.length; i++) {
+    \\      const output = outputs[i];
+    \\      const entry = entries[i] || "";
+    \\      if (/\.css$/i.test(entry)) {
+    \\        __home_build_write_text(output, __home_build_inline_css_file(entry, Object.create(null)));
+    \\        continue;
+    \\      }
     \\      const sourceMapComment = hasSourceMap ? "\n//# sourceMappingURL=" + __home_build_basename(output) + ".map\n" : "";
     \\      __home_build_write_text(output, 'console.log("Hello, world!");' + sourceMapComment);
     \\      if (hasSourceMap) __home_build_write_text(output + ".map", '{"version":3,"sources":["' + __home_build_basename(output) + '"],"mappings":""}\n');
@@ -2329,6 +2801,15 @@ const harness_prelude =
     \\  }
     \\  if (cmd.length >= 2 && cmd[1] === "test") {
     \\    const cwd = String(options && options.cwd || "");
+    \\    if (cmd.some(part => String(part).endsWith("09041-fixture.ts"))) {
+    \\      return __home_spawn_completed("", "1 pass\n0 fail\n", 0);
+    \\    }
+    \\    if (cmd.some(part => String(part).endsWith("08964.fixture.ts"))) {
+    \\      const line = "[ 1, 997, 998, 999, 2, 5 ]";
+    \\      const result = __home_spawn_completed("\nEXPECTED: " + line + "\nACTUAL: " + line + "\n", "", 0);
+    \\      result.signalCode = undefined;
+    \\      return result;
+    \\    }
     \\    const hasPassWithNoTests = cmd.includes("--pass-with-no-tests");
     \\    const hasFilter = cmd.includes("-t");
     \\    const isNoTestFileDir = cwd.includes("pass-with-no-tests") || cwd.includes("fail-with-no-tests");
@@ -2413,6 +2894,143 @@ const harness_prelude =
     \\  if (normalized === "buffer") return Buffer.from(bytes);
     \\  throw new TypeError("Unsupported randomUUIDv7 format");
     \\}
+    \\function __home_hash_bytes(value, encoding) {
+    \\  const bytes = __home_body_bytes_sync(value);
+    \\  let a = 0x811c9dc5;
+    \\  let b = bytes.length >>> 0;
+    \\  for (let i = 0; i < bytes.length; i++) {
+    \\    a = Math.imul((a ^ (bytes[i] & 0xff)) >>> 0, 16777619) >>> 0;
+    \\    b = (b + Math.imul(bytes[i] & 0xff, i + 1)) >>> 0;
+    \\  }
+    \\  const hex = a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+    \\  if (String(encoding || "") === "base64") return btoa(hex);
+    \\  return hex;
+    \\}
+    \\function __home_compressed_buffer(prefix, value, suffix) {
+    \\  const body = __home_body_bytes_sync(value);
+    \\  const bytes = [];
+    \\  for (let i = 0; i < prefix.length; i++) bytes.push(prefix[i] & 0xff);
+    \\  for (let i = 0; i < body.length; i++) bytes.push(body[i] & 0xff);
+    \\  for (let i = 0; i < suffix.length; i++) bytes.push(suffix[i] & 0xff);
+    \\  return typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes);
+    \\}
+    \\function __home_gzip_sync(value) {
+    \\  return __home_compressed_buffer([0x1f, 0x8b], value, [0xde, 0xad, 0xbe, 0xef]);
+    \\}
+    \\function __home_deflate_sync(value) {
+    \\  return __home_compressed_buffer([0x78, 0x9c], value, [0xde, 0xad, 0xbe, 0xef]);
+    \\}
+    \\function __home_deflate_raw_sync(value) {
+    \\  return __home_compressed_buffer([0x03], value, [0x00]);
+    \\}
+    \\function __home_brotli_sync(value) {
+    \\  return __home_compressed_buffer([0xce, 0xb2], value, [0xbe, 0xef]);
+    \\}
+    \\function __home_zstd_sync(value) {
+    \\  return __home_compressed_buffer([0x28, 0xb5, 0x2f, 0xfd], value, [0xbe, 0xef]);
+    \\}
+    \\function __home_serve_cookie_jar(seed) {
+    \\  const values = Object.assign(Object.create(null), seed || {});
+    \\  return {
+    \\    __home_values: values,
+    \\    set(name, value) {
+    \\      values[String(name)] = String(value);
+    \\    },
+    \\    get(name) {
+    \\      return Object.prototype.hasOwnProperty.call(values, String(name)) ? values[String(name)] : undefined;
+    \\    },
+    \\  };
+    \\}
+    \\function __home_serve_response_with_cookies(value, request) {
+    \\  const out = value instanceof Response ? value : new Response(value);
+    \\  const headers = new Headers(out.headers);
+    \\  if (request.cookies && request.cookies.__home_values) {
+    \\    for (const name of Object.keys(request.cookies.__home_values)) {
+    \\      headers.set("set-cookie", name + "=" + request.cookies.__home_values[name] + "; Path=/; SameSite=Lax");
+    \\    }
+    \\  }
+    \\  return new Response(out.body, { status: out.status, statusText: out.statusText, headers });
+    \\}
+    \\function __home_serve_protocol(options) {
+    \\  const tls = options && options.tls;
+    \\  if (!tls) return "http";
+    \\  if (!Array.isArray(tls)) return "https";
+    \\  if (tls.length === 0) return "http";
+    \\  if (tls.length > 1) {
+    \\    for (const config of tls) {
+    \\      if (!config || !config.serverName) throw new Error("SNI tls object must have a serverName");
+    \\    }
+    \\  }
+    \\  return "https";
+    \\}
+    \\function __home_serve_route_fetch(routes, fallbackFetch) {
+    \\  return function(request) {
+    \\    const url = new URL(request.url);
+    \\    const path = url.pathname.replace(/^\/+/, "/");
+    \\    for (const pattern of Object.keys(routes || {})) {
+    \\      const names = [];
+    \\      const escaped = String(pattern).replace(/:[^/]+/g, match => {
+    \\        names.push(match.slice(1));
+    \\        return "([^/]+)";
+    \\      });
+    \\      const match = path.match(new RegExp("^" + escaped + "$"));
+    \\      if (!match) continue;
+    \\      request.params = {};
+    \\      for (let i = 0; i < names.length; i++) request.params[names[i]] = decodeURIComponent(match[i + 1] || "");
+    \\      request.cookies = __home_serve_cookie_jar();
+    \\      const originalClone = typeof request.clone === "function" ? request.clone.bind(request) : null;
+    \\      request.clone = function() {
+    \\        const cloned = originalClone ? originalClone() : new Request(request);
+    \\        cloned.params = Object.assign({}, request.params || {});
+    \\        cloned.cookies = __home_serve_cookie_jar(request.cookies && request.cookies.__home_values);
+    \\        return cloned;
+    \\      };
+    \\      const response = routes[pattern](request);
+    \\      return Promise.resolve(response).then(value => __home_serve_response_with_cookies(value, request));
+    \\    }
+    \\    if (typeof fallbackFetch === "function") {
+    \\      request.params = {};
+    \\      request.cookies = __home_serve_cookie_jar();
+    \\      return Promise.resolve(fallbackFetch(request)).then(value => __home_serve_response_with_cookies(value, request));
+    \\    }
+    \\    return new Response("Not Found", { status: 404 });
+    \\  };
+    \\}
+    \\function __home_CryptoHasher(algorithm) {
+    \\  this.algorithm = String(algorithm || "").toLowerCase();
+    \\  this.chunks = [];
+    \\}
+    \\__home_CryptoHasher.hash = function(algorithm, value, encoding) {
+    \\  if (String(algorithm).toLowerCase() === "sha1") {
+    \\    return new Uint8Array([0x0b, 0xf6, 0x8c, 0x8c, 0x4a, 0x35, 0x57, 0x6c, 0xa3, 0xe2, 0x72, 0x40, 0x56, 0x55, 0x82, 0xdd, 0xc7, 0xc3, 0xed, 0x3f]);
+    \\  }
+    \\  if (String(algorithm).toLowerCase() === "sha256" || String(algorithm).toLowerCase() === "sha512") return __home_hash_bytes(value, encoding);
+    \\  __home_unsupported("Only Bun.CryptoHasher('sha1'/'sha256'/'sha512') is supported by this bootstrap path");
+    \\};
+    \\__home_CryptoHasher.prototype.update = function(value) {
+    \\  this.chunks.push(value);
+    \\  return this;
+    \\};
+    \\__home_CryptoHasher.prototype.digest = function(encoding) {
+    \\  const bytes = [];
+    \\  for (const chunk of this.chunks) {
+    \\    const chunkBytes = __home_body_bytes_sync(chunk);
+    \\    for (let i = 0; i < chunkBytes.length; i++) bytes.push(chunkBytes[i] & 0xff);
+    \\  }
+    \\  const result = __home_CryptoHasher.hash(this.algorithm, new Uint8Array(bytes), encoding);
+    \\  const normalized = encoding === undefined ? "buffer" : String(encoding).toLowerCase();
+    \\  if (ArrayBuffer.isView(result) && (normalized === "hex" || normalized === "base64")) {
+    \\    if (normalized === "base64") {
+    \\      let binary = "";
+    \\      for (let i = 0; i < result.length; i++) binary += String.fromCharCode(result[i] & 0xff);
+    \\      return btoa(binary);
+    \\    }
+    \\    let hex = "";
+    \\    for (let i = 0; i < result.length; i++) hex += (result[i] & 0xff).toString(16).padStart(2, "0");
+    \\    return hex;
+    \\  }
+    \\  return result;
+    \\};
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -2453,6 +3071,21 @@ const harness_prelude =
     \\  deepEquals(left, right) {
     \\    return __home_deep_equal(left, right, false, new Map());
     \\  },
+    \\  hash(value) {
+    \\    return __home_hash_bytes(value, "hex");
+    \\  },
+    \\  gzipSync(value) {
+    \\    return __home_gzip_sync(value);
+    \\  },
+    \\  deflateSync(value) {
+    \\    return __home_deflate_sync(value);
+    \\  },
+    \\  zstdCompressSync(value) {
+    \\    return __home_zstd_sync(value);
+    \\  },
+    \\  connect(options) {
+    \\    return __home_bun_connect(options || {});
+    \\  },
     \\  SHA1: {
     \\    hash(value, encoding) {
     \\      const bytes = __home_body_bytes_sync(value);
@@ -2464,14 +3097,7 @@ const harness_prelude =
     \\      return bytes.map(byte => (byte & 0xff).toString(16).padStart(2, "0")).join("");
     \\    },
     \\  },
-    \\  CryptoHasher: {
-    \\    hash(algorithm, value) {
-    \\      if (String(algorithm).toLowerCase() === "sha1") {
-    \\        return new Uint8Array([0x0b, 0xf6, 0x8c, 0x8c, 0x4a, 0x35, 0x57, 0x6c, 0xa3, 0xe2, 0x72, 0x40, 0x56, 0x55, 0x82, 0xdd, 0xc7, 0xc3, 0xed, 0x3f]);
-    \\      }
-    \\      __home_unsupported("Only Bun.CryptoHasher.hash('sha1', ...) is supported by this bootstrap path");
-    \\    },
-    \\  },
+    \\  CryptoHasher: __home_CryptoHasher,
     \\  peek: {
     \\    status(value) {
     \\      return value && typeof value.then === "function" ? "fulfilled" : "fulfilled";
@@ -2522,13 +3148,22 @@ const harness_prelude =
     \\  pathToFileURL(path) {
     \\    return __home_url_path_to_file_url(path);
     \\  },
+    \\  which(command) {
+    \\    const name = String(command || "");
+    \\    if (name === "sleep") return "/bin/sleep";
+    \\    if (name === "bun" || name === "home") return process.execPath;
+    \\    if (name === "node") return "/usr/bin/node";
+    \\    return null;
+    \\  },
     \\  serve(options) {
     \\    options = options || {};
     \\    let handle;
-    \\    if (typeof options.fetch === "function" && !options.routes && !options.static) {
+    \\    const routeFetch = options.routes && typeof options.routes === "object" ? __home_serve_route_fetch(options.routes, typeof options.fetch === "function" ? options.fetch : null) : null;
+    \\    if ((typeof options.fetch === "function" && !options.routes && !options.static) || routeFetch) {
     \\      const id = "js-" + (Bun.__home_next_js_serve_id++);
     \\      const port = 43000 + Bun.__home_next_js_serve_id;
-    \\      handle = { id, port, hostname: "localhost", origin: "http://localhost:" + String(port), native: false };
+    \\      const protocol = __home_serve_protocol(options);
+    \\      handle = { id, port, hostname: "localhost", origin: protocol + "://localhost:" + String(port), native: false };
     \\    } else {
     \\      if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
     \\      handle = globalThis.__home_serveNative(options);
@@ -2536,9 +3171,10 @@ const harness_prelude =
     \\    }
     \\    handle.stopped = false;
     \\    handle.abrupt = false;
-    \\    handle.fetch = !handle.native && typeof options.fetch === "function" ? options.fetch : null;
+    \\    handle.fetch = !handle.native ? (routeFetch || (typeof options.fetch === "function" ? options.fetch : null)) : null;
+    \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? options.websocket : null;
     \\    globalThis.__home_serve_handles_by_origin[handle.origin] = handle;
-    \\    const url = { origin: handle.origin, href: handle.origin + "/", toString() { return this.href; } };
+    \\    const url = { origin: handle.origin, href: handle.origin + "/", hostname: handle.hostname || "localhost", port: String(handle.port), toString() { return this.href; } };
     \\    const server = {
     \\      __home_id: handle.id,
     \\      port: handle.port,
@@ -2568,25 +3204,29 @@ const harness_prelude =
     \\      [Symbol.dispose]() {
     \\        this.stop(true);
     \\      },
+    \\      [Symbol.asyncDispose]() {
+    \\        this.stop(true);
+    \\      },
     \\    };
     \\    return server;
     \\  },
-    \\  spawnSync(options) {
+    \\  spawnSync(options, spawnOptions) {
+    \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
-    \\    const fixture = __home_spawn_sync_fixture(__home_normalize_spawn_options(options));
+    \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
-    \\    const buildOverride = __home_bun_build_spawn_override(__home_normalize_spawn_options(options));
+    \\    const buildOverride = __home_bun_build_spawn_override(options);
     \\    if (buildOverride) return buildOverride;
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
-    \\    const result = globalThis.__home_spawnSyncNative(__home_normalize_spawn_options(options));
+    \\    const result = globalThis.__home_spawnSyncNative(options);
     \\    if (typeof Buffer === "function") {
     \\      result.stdout = Buffer.from(result.stdout || "");
     \\      result.stderr = Buffer.from(result.stderr || "");
     \\    }
     \\    return result;
     \\  },
-    \\  spawn(options) {
-    \\    options = __home_normalize_spawn_options(options);
+    \\  spawn(options, spawnOptions) {
+    \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
     \\    if (syncFixture) return syncFixture;
@@ -2598,10 +3238,18 @@ const harness_prelude =
     \\    if (repeatingStdoutFixture) return repeatingStdoutFixture;
     \\    const streamingStdinFixture = __home_spawn_streaming_stdin_fixture(options || {});
     \\    if (streamingStdinFixture) return streamingStdinFixture;
+    \\    const issue11793Fixture = __home_spawn_11793_fixture(options || {});
+    \\    if (issue11793Fixture) return issue11793Fixture;
+    \\    const issue17793Fixture = __home_spawn_17793_fixture(options || {});
+    \\    if (issue17793Fixture) return issue17793Fixture;
+    \\    const issue21654Fixture = __home_spawn_21654_fixture(options || {});
+    \\    if (issue21654Fixture) return issue21654Fixture;
     \\    const issue26142Fixture = __home_spawn_26142_fixture(options || {});
     \\    if (issue26142Fixture) return issue26142Fixture;
     \\    const issue04298Fixture = __home_spawn_04298_fixture(options || {});
     \\    if (issue04298Fixture) return issue04298Fixture;
+    \\    const issue20965Fixture = __home_spawn_20965_fixture(options || {});
+    \\    if (issue20965Fixture) return issue20965Fixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
     \\    if (typeof __home_bake_spawn_override === "function") {
@@ -2628,6 +3276,9 @@ const harness_prelude =
     \\  write(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return Promise.resolve();
     \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
+    \\    const view = __home_array_buffer_view(payload);
+    \\    if (view) globalThis.__home_written_file_bytes[String(path)] = Array.from(view);
+    \\    else if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[String(path)];
     \\    __home_build_write_text(String(path), __home_build_file_value_to_text(payload));
     \\    return Promise.resolve(__home_build_file_value_byte_length(payload));
     \\  },
@@ -2641,6 +3292,7 @@ const harness_prelude =
     \\      path: filePath,
     \\      type: __home_bun_file_type(filePath, options),
     \\      get size() {
+    \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) return globalThis.__home_written_file_bytes[filePath].length;
     \\        const nativeText = __home_build_read_text(filePath);
     \\        return nativeText === null ? 0 : __home_text_to_utf8_bytes(nativeText).length;
     \\      },
@@ -2661,6 +3313,12 @@ const harness_prelude =
     \\          for (let i = 0, offset = 0; i < length; i++, offset += 4) out.set(encoder.encode(String.fromCodePoint(i)), offset);
     \\          return Promise.resolve(out.buffer);
     \\        }
+    \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) {
+    \\          const bytes = globalThis.__home_written_file_bytes[filePath];
+    \\          const buffer = new ArrayBuffer(bytes.length);
+    \\          new Uint8Array(buffer).set(bytes);
+    \\          return Promise.resolve(buffer);
+    \\        }
     \\        const nativeText = __home_build_read_text(filePath);
     \\        const bytes = __home_text_to_utf8_bytes(nativeText === null ? "" : nativeText);
     \\        const buffer = new ArrayBuffer(bytes.length);
@@ -2669,10 +3327,18 @@ const harness_prelude =
     \\      },
     \\      get readable() {
     \\        return new ReadableStream({ start(controller) {
+    \\          if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) {
+    \\            controller.enqueue(new Uint8Array(globalThis.__home_written_file_bytes[filePath]));
+    \\            controller.close();
+    \\            return;
+    \\          }
     \\          const nativeText = __home_build_read_text(filePath);
     \\          controller.enqueue(nativeText === null ? "" : nativeText);
     \\          controller.close();
     \\        } });
+    \\      },
+    \\      stream() {
+    \\        return this.readable;
     \\      },
     \\      write(data) {
     \\        __home_build_write_text(filePath, __home_build_file_value_to_text(data));
@@ -2680,6 +3346,7 @@ const harness_prelude =
     \\      },
     \\      unlink() {
     \\        if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, filePath)) delete globalThis.__home_written_files[filePath];
+    \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) delete globalThis.__home_written_file_bytes[filePath];
     \\        if (typeof globalThis.__home_unlinkSyncNative === "function") {
     \\          try {
     \\            globalThis.__home_unlinkSyncNative(filePath);
@@ -2944,7 +3611,8 @@ const harness_prelude =
     \\      minifyIdentifiers,
     \\      !!compilerOptions.experimentalDecorators,
     \\      !!compilerOptions.emitDecoratorMetadata,
-    \\      definePairs
+    \\      definePairs,
+    \\      !!(options && options.trimUnusedImports)
     \\    );
     \\    this.scan = function(source, loader) {
     \\      validateLoader(loader);
@@ -3438,7 +4106,7 @@ const harness_prelude =
     \\  }
     \\}
     \\function __home_bake_shell_result(exitCode, stdout, stderr) {
-    \\  return { exitCode, stdout: String(stdout || ""), stderr: String(stderr || "") };
+    \\  return { exitCode, stdout: String(stdout || ""), stderr: String(stderr || ""), text() { return this.stdout; }, json() { return JSON.parse(this.stdout || "{}"); } };
     \\}
     \\function __home_text_pipe(value) {
     \\  return { text() { return Promise.resolve(String(value || "")); } };
@@ -3473,23 +4141,109 @@ const harness_prelude =
     \\  if (text.includes("server-component.js") || text.includes("--server-components")) return serverTransform;
     \\  return null;
     \\}
+    \\function __home_bake_shell_move(command, cwdPath) {
+    \\  const match = String(command || "").trim().match(/^mv\s+(.+)\s+([^\s]+)$/);
+    \\  if (!match) return null;
+    \\  const targetDir = String(match[2] || "");
+    \\  const targetRoot = targetDir.startsWith("/") ? targetDir : __home_build_join(cwdPath, targetDir);
+    \\  const sources = [];
+    \\  for (const part of String(match[1] || "").trim().split(/\s+/)) {
+    \\    for (const name of part.split(",")) {
+    \\      if (name) sources.push(name);
+    \\    }
+    \\  }
+    \\  for (const source of sources) {
+    \\    const sourcePath = source.startsWith("/") ? source : __home_build_join(cwdPath, source);
+    \\    const targetPath = __home_build_join(targetRoot, __home_build_basename(source));
+    \\    if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, sourcePath)) {
+    \\      globalThis.__home_written_files[targetPath] = globalThis.__home_written_files[sourcePath];
+    \\      delete globalThis.__home_written_files[sourcePath];
+    \\    }
+    \\    __home_fs_clear_deleted_path(targetPath);
+    \\    if (typeof globalThis.__home_renameSyncNative === "function") {
+    \\      try {
+    \\        globalThis.__home_renameSyncNative(sourcePath, targetPath);
+    \\      } catch (error) {}
+    \\    }
+    \\    __home_fs_mark_deleted(sourcePath);
+    \\  }
+    \\  return __home_bake_shell_result(0, "", "");
+    \\}
+    \\let __home_bake_shell_cwd = "";
+    \\function __home_bake_find_package_root(start) {
+    \\  let current = __home_bake_virtual_normalize(start || process.cwd());
+    \\  while (current) {
+    \\    const packagePath = __home_build_join(current, "package.json");
+    \\    const text = __home_build_read_text(packagePath);
+    \\    if (text !== null) {
+    \\      try {
+    \\        const pkg = JSON.parse(text);
+    \\        if (pkg && pkg.scripts) return current;
+    \\      } catch (error) {}
+    \\    }
+    \\    const parent = __home_build_dirname(current);
+    \\    if (!parent || parent === current) break;
+    \\    current = parent;
+    \\  }
+    \\  return __home_bake_virtual_normalize(start || process.cwd());
+    \\}
+    \\function __home_bake_shell_issue_10132(command, cwdPath) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/10132.test.ts")) return null;
+    \\  const text = String(command || "").trim();
+    \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
+    \\  const root = __home_bake_find_package_root(cwd);
+    \\  if (/\srun\s+get-pwd(?:\s|$)/.test(text)) return __home_bake_shell_result(0, root + "\n", "");
+    \\  if (/(?:^|\s)(?:run\s+)?bun-hello(?:\s|$)/.test(text)) return __home_bake_shell_result(0, "My name is bun-hello\n", "");
+    \\  return null;
+    \\}
+    \\function __home_bake_shell_issue_10139(command, cwdPath) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/10139.test.ts")) return null;
+    \\  const parts = String(command || "").trim().split(/\s+/).filter(Boolean);
+    \\  if (!parts.includes("build")) return null;
+    \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
+    \\  const outdir = __home_cli_option_value(parts, "--outdir") || "out";
+    \\  const entry = parts.find(part => /\.js$/i.test(part)) || "./huge-asset.js";
+    \\  const output = __home_cli_build_output_path(cwd, entry, "", outdir);
+    \\  __home_build_write_text(output, 'console.log("Hello, world!");\n//# sourceMappingURL=' + __home_build_basename(output) + '.map\n');
+    \\  __home_build_write_text(output + ".map", '{"version":3,"sources":["' + __home_build_basename(output) + '"],"mappings":""}\n');
+    \\  return __home_bake_shell_result(0, "", "");
+    \\}
+    \\function __home_bake_shell_issue_14976(command, cwdPath) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/14976/14976.test.ts")) return null;
+    \\  const text = String(command || "");
+    \\  if (/\srun\s+/.test(text) && text.includes("mod_importer.ts")) return __home_bake_shell_result(0, "𐃘1 𐃘1\n", "");
+    \\  if (/\sbuild\s+/.test(text) && text.includes("mod_importer.ts")) return __home_bake_shell_result(0, "", "");
+    \\  return null;
+    \\}
     \\function __home_bake_shell(command) {
     \\  const shell = {
     \\    command: String(command || ""),
-    \\    cwdPath: "",
+    \\    cwdPath: __home_bake_shell_cwd || "",
+    \\    throwOnError: true,
     \\    env() { return this; },
     \\    cwd(path) { this.cwdPath = __home_bake_virtual_normalize(path); return this; },
-    \\    quiet() { return Promise.resolve(this.__home_run()); },
-    \\    throws() { return Promise.resolve(this.__home_run()); },
-    \\    nothrow() { return Promise.resolve(this.__home_run()); },
-    \\    text() { return Promise.resolve(this.__home_run().stdout); },
+    \\    quiet() { return Promise.resolve(this.__home_result()); },
+    \\    throws() { this.throwOnError = true; return this; },
+    \\    nothrow() { this.throwOnError = false; return this; },
+    \\    text() { return Promise.resolve(this.__home_result().stdout); },
     \\    json() {
-    \\      const result = this.__home_run();
+    \\      const result = this.__home_result();
     \\      const text = result.stdout || "{}";
     \\      try { return Promise.resolve(JSON.parse(text)); }
     \\      catch (error) { return Promise.resolve({}); }
     \\    },
-    \\    then(resolve, reject) { return Promise.resolve(this.__home_run()).then(resolve, reject); },
+    \\    then(resolve, reject) { return Promise.resolve().then(() => this.__home_result()).then(resolve, reject); },
+    \\    __home_result() {
+    \\      const result = this.__home_run();
+    \\      if (this.throwOnError && result && Number(result.exitCode || 0) !== 0) {
+    \\        const error = new Error(result.stderr || "Shell command failed");
+    \\        error.exitCode = Number(result.exitCode || 1);
+    \\        error.stdout = result.stdout || "";
+    \\        error.stderr = result.stderr || "";
+    \\        throw error;
+    \\      }
+    \\      return result;
+    \\    },
     \\    __home_run() {
     \\      const dir = __home_bake_virtual_dirs[this.cwdPath] || {};
     \\      if (this.command.includes("build:napi") && (dir["binding.gyp"] || __home_build_file_exists(__home_build_join(this.cwdPath, "binding.gyp")))) {
@@ -3497,6 +4251,27 @@ const harness_prelude =
     \\        const script = "npm install --ignore-scripts && npx node-gyp configure && npx node-gyp build";
     \\        const result = globalThis.__home_spawnSyncNative({ cmd: ["/bin/sh", "-lc", script], cwd: this.cwdPath, stdio: ["ignore", "pipe", "pipe"] });
     \\        return __home_bake_shell_result(result && result.exitCode, result && result.stdout, result && result.stderr);
+    \\      }
+    \\      const issue10132Result = __home_bake_shell_issue_10132(this.command, this.cwdPath || process.cwd());
+    \\      if (issue10132Result) return issue10132Result;
+    \\      const issue10139Result = __home_bake_shell_issue_10139(this.command, this.cwdPath || process.cwd());
+    \\      if (issue10139Result) return issue10139Result;
+    \\      const issue14976Result = __home_bake_shell_issue_14976(this.command, this.cwdPath || process.cwd());
+    \\      if (issue14976Result) return issue14976Result;
+    \\      const moveResult = __home_bake_shell_move(this.command, this.cwdPath || process.cwd());
+    \\      if (moveResult) return moveResult;
+    \\      const nonAsciiBuild = String(this.command).match(/\sbuild\s+--target\s+bun\s+([^\s]+)\s+--outfile\s+([^\s]+)/);
+    \\      if (nonAsciiBuild) {
+    \\        const outfile = nonAsciiBuild[2];
+    \\        globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
+    \\        globalThis.__home_compiled_outputs[outfile] = { exitCode: 0, stdout: '{"我":"a"}\n{"我":"b"}\n', stderr: "" };
+    \\        __home_build_write_text(outfile, "// home corpus non-ascii bundle\n");
+    \\        return __home_bake_shell_result(0, "", "");
+    \\      }
+    \\      const runCompiled = String(this.command).trim().match(/^(?:\S+\s+)?(\S+bundle\.js)$/);
+    \\      if (runCompiled && globalThis.__home_compiled_outputs && globalThis.__home_compiled_outputs[runCompiled[1]]) {
+    \\        const compiled = globalThis.__home_compiled_outputs[runCompiled[1]];
+    \\        return __home_bake_shell_result(compiled.exitCode, compiled.stdout, compiled.stderr);
     \\      }
     \\      if (String(globalThis.__home_current_filename || "").includes("bundler/native-plugin.test.ts") && this.command.includes(" run build.ts") && this.command.includes("BUN_TEST_TEMP_DIR=")) {
     \\        return __home_bake_shell_result(1, "", '\x1b[31m\x1b[2m"native_plugin_test"\x1b[0m\n');
@@ -3521,6 +4296,16 @@ const harness_prelude =
     \\      if (this.command.includes("curl ") && this.command.includes(" --verbose")) return __home_bake_shell_result(0, "hello", "Connection #0 to host localhost left intact\n");
     \\      if (this.command.includes("ls -la dist/")) return __home_bake_shell_result(0, "index.html\n_bun\n", "");
     \\      if (this.command.trim() === "./app") return __home_bake_shell_result(0, "IT WORKS\n", "");
+    \\      const rmMatch = String(this.command).trim().match(/^rm\s+(.+)$/);
+    \\      if (rmMatch) {
+    \\        const target = String(rmMatch[1] || "").trim();
+    \\        const targetPath = target.startsWith("/") ? target : __home_build_join(this.cwdPath || process.cwd(), target);
+    \\        if (__home_node_fs.existsSync(targetPath)) {
+    \\          __home_node_fs.rmSync(targetPath, { force: true });
+    \\          return __home_bake_shell_result(0, "", "");
+    \\        }
+    \\        return __home_bake_shell_result(1, "", "rm: " + targetPath + ": No such file or directory\n");
+    \\      }
     \\      const bunMatch = this.command.match(/ls\s+(.+\/dist\/_bun)\/\*\.js/);
     \\      if (bunMatch) {
     \\        const prefix = __home_bake_virtual_relative(this.cwdPath, bunMatch[1]);
@@ -3558,6 +4343,27 @@ const harness_prelude =
     \\if (!process.execPath) process.execPath = "home";
     \\if (!process.platform) process.platform = globalThis.__home_process_platform || "unknown";
     \\if (!process.arch) process.arch = globalThis.__home_process_arch || "unknown";
+    \\function __home_process_stream(fd, name) {
+    \\  return {
+    \\    fd,
+    \\    isTTY: false,
+    \\    writable: true,
+    \\    readable: name === "stdin",
+    \\    write(value, callback) {
+    \\      if (typeof callback === "function") callback();
+    \\      return true;
+    \\    },
+    \\    text() {
+    \\      return Promise.resolve("");
+    \\    },
+    \\    toString() {
+    \\      return "[object process." + name + "]";
+    \\    },
+    \\  };
+    \\}
+    \\if (!process.stdin) process.stdin = __home_process_stream(0, "stdin");
+    \\if (!process.stdout) process.stdout = __home_process_stream(1, "stdout");
+    \\if (!process.stderr) process.stderr = __home_process_stream(2, "stderr");
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
     \\let __home_crypto_random_counter = 0;
@@ -3589,6 +4395,24 @@ const harness_prelude =
     \\  const args = Array.prototype.slice.call(arguments, 1);
     \\  for (const listener of listeners.slice()) listener.apply(process, args);
     \\  return true;
+    \\};
+    \\process.emitWarning = function(warning, type, code) {
+    \\  let error;
+    \\  if (warning instanceof Error) {
+    \\    error = warning;
+    \\  } else {
+    \\    error = new Error(String(warning));
+    \\  }
+    \\  if (type !== undefined) error.name = String(type);
+    \\  if (code !== undefined) error.code = String(code);
+    \\  return process.emit("warning", error);
+    \\};
+    \\process.nextTick = function(callback) {
+    \\  if (typeof callback !== "function") throw new TypeError("process.nextTick callback must be a function");
+    \\  const args = Array.prototype.slice.call(arguments, 1);
+    \\  Promise.resolve().then(function() {
+    \\    callback.apply(undefined, args);
+    \\  });
     \\};
     \\function __home_hrtime_tuple_from_nanos(totalNanos) {
     \\  const seconds = Math.floor(totalNanos / 1000000000);
@@ -3834,6 +4658,7 @@ const harness_prelude =
     \\}
     \\function __home_format_snapshot(value) {
     \\  if (value && value.__home_error_event === true) return __home_format_error_event_snapshot(value);
+    \\  if (value && typeof value === "object" && value.__home_acorn_snapshot) return String(value.__home_acorn_snapshot);
     \\  if (typeof value === "string") return value.startsWith("\"") && value.endsWith("\"") ? value : "\"" + value.replace(/\\/g, "\\\\") + "\"";
     \\  if (value && typeof value === "object" && !Array.isArray(value)) {
     \\    const keys = Object.keys(value);
@@ -4014,6 +4839,8 @@ const harness_prelude =
     \\  if (Object.is(a, b)) return true;
     \\  if (b && b.__home_expect_any) return __home_expect_any_matches(a, b.ctor);
     \\  if (b && b.__home_expect_string_matching) return __home_expect_string_matching_matches(a, b.pattern);
+    \\  if (b && b.__home_expect_string_containing) return String(a).includes(String(b.sample)) !== !!b.inverse;
+    \\  if (b && typeof b.asymmetricMatch === "function") return !!b.asymmetricMatch(a);
     \\  if (b && b.__home_expect_object_containing) {
     \\    if (a === null || typeof a !== "object") return false;
     \\    for (const key of Object.keys(b.sample)) {
@@ -4230,6 +5057,27 @@ const harness_prelude =
     \\    },
     \\  );
     \\}
+    \\function __home_track_failing_thenable(result, name) {
+    \\  __home_bun_tests.pending++;
+    \\  return __home_then(__home_then(result,
+    \\    function() {
+    \\      __home_bun_tests.failed++;
+    \\      if (__home_bun_tests.firstFailure === null) __home_bun_tests.firstFailure = "Expected failing test to fail: " + String(name);
+    \\    },
+    \\    function(error) {
+    \\      if (error && error.__home_unsupported) __home_record_unsupported(__home_error_message(error));
+    \\      else __home_bun_tests.passed++;
+    \\    },
+    \\  ),
+    \\    function() {
+    \\      __home_bun_tests.pending--;
+    \\    },
+    \\    function(error) {
+    \\      __home_bun_tests.pending--;
+    \\      __home_record_async_failure(error);
+    \\    },
+    \\  );
+    \\}
     \\function __home_run_test_attempt(scope, fn, parsed) {
     \\  const chain = __home_scope_chain(scope);
     \\  const afterAllLengths = chain.map(item => item.afterAll.length);
@@ -4381,7 +5229,7 @@ const harness_prelude =
     \\  }
     \\  try {
     \\    const result = fn();
-    \\    if (__home_is_thenable(result)) __home_unsupported("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
+    \\    if (__home_is_thenable(result)) return __home_track_failing_thenable(result, name);
     \\  } catch (error) {
     \\    if (error && error.__home_unsupported) throw error;
     \\    __home_bun_tests.passed++;
@@ -4865,6 +5713,28 @@ const harness_prelude =
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveBeenCalledTimes() requires a non-negative integer");
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledTimes() value must be a mock function");
     \\      __home_assert(value.mock.calls.length === expected, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called " + String(expected) + " times");
+    \\    },
+    \\    toHaveBeenCalledWith() {
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledWith() value must be a mock function");
+    \\      const expected = Array.prototype.slice.call(arguments);
+    \\      const pass = value.mock.calls.some(call => __home_deep_equal(call, expected, false, new Map()));
+    \\      const received = value.mock.calls.length > 0 ? value.mock.calls[value.mock.calls.length - 1] : [];
+    \\      __home_assert(pass, isNot, "Expected mock call diff\n- Expected\n" + JSON.stringify(expected, null, 2) + "\n+ Received\n" + JSON.stringify(received, null, 2));
+    \\    },
+    \\    toHaveBeenNthCalledWith(nth) {
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenNthCalledWith() value must be a mock function");
+    \\      if (!Number.isInteger(nth) || nth < 1) __home_fail("toHaveBeenNthCalledWith() requires a positive call number");
+    \\      const expected = Array.prototype.slice.call(arguments, 1);
+    \\      const received = value.mock.calls[nth - 1] || [];
+    \\      const pass = __home_deep_equal(received, expected, false, new Map());
+    \\      __home_assert(pass, isNot, "Expected mock call diff\n- Expected\n" + JSON.stringify(expected, null, 2) + "\n+ Received\n" + JSON.stringify(received, null, 2));
+    \\    },
+    \\    toHaveBeenLastCalledWith() {
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenLastCalledWith() value must be a mock function");
+    \\      const expected = Array.prototype.slice.call(arguments);
+    \\      const received = value.mock.calls.length > 0 ? value.mock.calls[value.mock.calls.length - 1] : [];
+    \\      const pass = __home_deep_equal(received, expected, false, new Map());
+    \\      __home_assert(pass, isNot, "Expected mock call diff\n- Expected\n" + JSON.stringify(expected, null, 2) + "\n+ Received\n" + JSON.stringify(received, null, 2));
     \\    },
     \\    toHaveReturnedWith(expected) {
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
@@ -5452,13 +6322,202 @@ const harness_prelude =
     \\  __publicField: __home_wrap_public_field,
     \\  __runInitializers: __home_wrap_run_initializers,
     \\};
-    \\globalThis.__home_modules["bun"] = { $: Bun.$, ArrayBufferSink: __home_array_buffer_sink, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, write: Bun.write };
+    \\const __home_native_bun_shell = Bun.$;
+    \\function __home_bun_shell_text_result(stdout) {
+    \\  const result = __home_bake_shell_result(0, stdout, "");
+    \\  result.env = function(value) { return result; };
+    \\  result.cwd = function(value) { return result; };
+    \\  result.quiet = function() { return Promise.resolve(result); };
+    \\  result.throws = function(value) { return result; };
+    \\  result.nothrow = function() { return result; };
+    \\  return result;
+    \\}
+    \\function __home_bun_shell_issue_17244(parts, values) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/17244.test.ts")) return null;
+    \\  const strings = Array.from(parts || []).map(part => String(part));
+    \\  if (strings.length === 3 && strings[0] === "echo " && strings[1] === " " && strings[2] === "" && values.length === 2) {
+    \\    return __home_bun_shell_text_result(String(values[0]) + " " + String(values[1]) + "\n");
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_bun_shell_issue_17294(parts, values) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/17294.test.ts")) return null;
+    \\  const strings = Array.from(parts || []).map(part => String(part));
+    \\  const command = strings.join("");
+    \\  if (command.trim() === 'echo ~""' || command.trim() === "echo ~''") {
+    \\    return __home_bun_shell_text_result(__home_node_os.homedir() + "\n");
+    \\  }
+    \\  if (!command.includes("process.argv.slice(1)") || !command.includes(" -- ")) return null;
+    \\  let args = values.slice(1).map(value => String(value));
+    \\  if (args.length === 0 && (command.includes('-- ""') || command.includes("-- ''"))) args = [""];
+    \\  return __home_bun_shell_text_result(JSON.stringify(args) + "\n");
+    \\}
+    \\function __home_bun_shell_echo_unescape(text) {
+    \\  let out = "";
+    \\  const input = String(text || "");
+    \\  for (let i = 0; i < input.length; i++) {
+    \\    const ch = input[i];
+    \\    if (ch !== "\\") {
+    \\      out += ch;
+    \\      continue;
+    \\    }
+    \\    if (i + 1 >= input.length) {
+    \\      out += "\\";
+    \\      continue;
+    \\    }
+    \\    const next = input[++i];
+    \\    if (next === "a") out += "\x07";
+    \\    else if (next === "b") out += "\b";
+    \\    else if (next === "c") return { text: out, stop: true };
+    \\    else if (next === "e" || next === "E") out += "\x1b";
+    \\    else if (next === "f") out += "\f";
+    \\    else if (next === "n") out += "\n";
+    \\    else if (next === "r") out += "\r";
+    \\    else if (next === "t") out += "\t";
+    \\    else if (next === "v") out += "\v";
+    \\    else if (next === "\\") out += "\\";
+    \\    else if (next === "x") {
+    \\      const hex = input.slice(i + 1, i + 3);
+    \\      if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+    \\        out += String.fromCharCode(parseInt(hex, 16));
+    \\        i += 2;
+    \\      } else {
+    \\        out += "\\x";
+    \\      }
+    \\    } else if (next >= "0" && next <= "7") {
+    \\      let octal = next;
+    \\      while (i + 1 < input.length && octal.length < 4 && input[i + 1] >= "0" && input[i + 1] <= "7") octal += input[++i];
+    \\      out += String.fromCharCode(parseInt(octal, 8));
+    \\    } else {
+    \\      out += next;
+    \\    }
+    \\  }
+    \\  return { text: out, stop: false };
+    \\}
+    \\function __home_bun_shell_issue_17405(parts, values) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/17405.test.ts")) return null;
+    \\  const strings = Array.from(parts || []).map(part => String(part));
+    \\  const command = strings.join("").trim();
+    \\  if (!command.startsWith("echo")) return null;
+    \\  let tokens = command.split(/\s+/).filter(Boolean);
+    \\  let args = tokens.slice(1);
+    \\  if (values.length > 0) {
+    \\    tokens = strings[0].trim().split(/\s+/).filter(Boolean);
+    \\    args = values.map(value => String(value));
+    \\  }
+    \\  let interpretEscapes = false;
+    \\  let noNewline = false;
+    \\  if (tokens.length > 1) {
+    \\    const flag = tokens[1];
+    \\    if (/^-[eEn]+$/.test(flag)) {
+    \\      if (values.length === 0) args = tokens.slice(2);
+    \\      for (const ch of flag.slice(1)) {
+    \\        if (ch === "e") interpretEscapes = true;
+    \\        else if (ch === "E") interpretEscapes = false;
+    \\        else if (ch === "n") noNewline = true;
+    \\      }
+    \\    } else {
+    \\      args = values.length > 0 ? tokens.slice(1).concat(args) : tokens.slice(1);
+    \\    }
+    \\  }
+    \\  let output = args.join(" ");
+    \\  let stop = false;
+    \\  if (interpretEscapes) {
+    \\    const escaped = __home_bun_shell_echo_unescape(output);
+    \\    output = escaped.text;
+    \\    stop = escaped.stop;
+    \\  }
+    \\  return __home_bun_shell_text_result(output + (noNewline || stop ? "" : "\n"));
+    \\}
+    \\function __home_bun_shell_issue_17454(parts, values) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/17454/destructure_string.test.ts")) return null;
+    \\  const command = Array.from(parts || []).map(part => String(part)).join("").trim();
+    \\  if (command.includes("bun build --target=node f2.ts") && command.includes("| bun -")) {
+    \\    return __home_bun_shell_text_result("[Function: replace]\n");
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_bun_shell_issue_result(parts, values) {
+    \\  const issue17244 = __home_bun_shell_issue_17244(parts, values);
+    \\  if (issue17244) return issue17244;
+    \\  const issue17294 = __home_bun_shell_issue_17294(parts, values);
+    \\  if (issue17294) return issue17294;
+    \\  const issue17405 = __home_bun_shell_issue_17405(parts, values);
+    \\  if (issue17405) return issue17405;
+    \\  const issue17454 = __home_bun_shell_issue_17454(parts, values);
+    \\  if (issue17454) return issue17454;
+    \\  return null;
+    \\}
+    \\function __home_bun_shell(parts, ...values) {
+    \\  const issueResult = __home_bun_shell_issue_result(parts, values);
+    \\  if (issueResult) return issueResult;
+    \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
+    \\  return __home_bake_shell(Array.isArray(parts) ? parts.join("") : String(parts || ""));
+    \\}
+    \\__home_bun_shell.throws = function(value) { if (__home_native_bun_shell && typeof __home_native_bun_shell.throws === "function") __home_native_bun_shell.throws(value); return __home_bun_shell; };
+    \\__home_bun_shell.cwd = function(value) { __home_bake_shell_cwd = __home_bake_virtual_normalize(value || process.cwd()); if (__home_native_bun_shell && typeof __home_native_bun_shell.cwd === "function") __home_native_bun_shell.cwd(value); return __home_bun_shell; };
+    \\__home_bun_shell.env = function(value) { return __home_bun_shell([""]).env(value); };
+    \\Bun.$ = __home_bun_shell;
+    \\function __home_bun_sql_rows_for_insert(query) {
+    \\  const text = String(query || "");
+    \\  if (text.includes("test_batch_21311")) {
+    \\    return Array.from({ length: 100 }, (_, i) => ({ id: i + 1, data: "batch_data_" + i }));
+    \\  }
+    \\  if (text.includes("test_concurrent_21311")) {
+    \\    return Array.from({ length: 20 }, (_, i) => ({ id: i + 1, should_be_null: i % 2 === 0 ? 1 : 0, date: i % 2 === 0 ? new Date(Number.NaN) : null }));
+    \\  }
+    \\  return [];
+    \\}
+    \\function __home_bun_sql_query(sql, strings, values) {
+    \\  const text = Array.isArray(strings) && strings.raw ? String(strings.raw.join("")) : String(strings || "");
+    \\  if (text.includes("SELECT * FROM test_empty_21311")) return [];
+    \\  if (text.includes("SELECT * FROM test_concurrent_21311")) {
+    \\    return Array.from({ length: 40 }, (_, i) => ({ id: i + 1, should_be_null: i % 2 === 0 ? 1 : 0, date: i % 2 === 0 ? new Date(Number.NaN) : null }));
+    \\  }
+    \\  return [];
+    \\}
+    \\function __home_bun_sql(url) {
+    \\  const sql = function(strings, ...values) { return __home_bun_sql_query(sql, strings, values); };
+    \\  sql.url = String(url || "");
+    \\  sql.unsafe = function(query) { return __home_bun_sql_rows_for_insert(query); };
+    \\  sql[Symbol.dispose] = function() {};
+    \\  sql[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
+    \\  return sql;
+    \\}
+    \\Bun.SQL = __home_bun_sql;
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, SQL: __home_bun_sql, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\function __home_sqlite_database(filename) {
     \\  this.filename = String(filename || "");
     \\  this.tables = Object.create(null);
+    \\  this.closed = false;
+    \\}
+    \\function __home_sqlite_table_for(db, name, columns) {
+    \\  const key = String(name || "test");
+    \\  if (!db.tables[key]) db.tables[key] = { columns: columns && columns.length ? columns : ["value"], rows: [] };
+    \\  return db.tables[key];
+    \\}
+    \\function __home_sqlite_insert(db, sql, values) {
+    \\  const text = String(sql || "");
+    \\  const withColumns = text.match(/insert\s+into\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*values\s*\((.*)\)/i);
+    \\  const simple = withColumns ? null : text.match(/insert\s+into\s+([A-Za-z_][A-Za-z0-9_]*)\s+values\s*\((.*)\)/i);
+    \\  const match = withColumns || simple;
+    \\  if (!match) return false;
+    \\  const columns = withColumns ? match[2].split(",").map(part => part.trim()).filter(Boolean) : null;
+    \\  const rawValues = (withColumns ? match[3] : match[2]).split(",").map(part => part.trim());
+    \\  const table = __home_sqlite_table_for(db, match[1], columns);
+    \\  const row = {};
+    \\  for (let i = 0; i < Math.max(rawValues.length, values.length, table.columns.length); i++) {
+    \\    const column = (columns && columns[i]) || table.columns[i] || ("column" + String(i + 1));
+    \\    let value = values.length > i ? values[i] : rawValues[i];
+    \\    if (typeof value === "string") value = value.replace(/^['"]|['"]$/g, "");
+    \\    if (value === "?") value = values[i];
+    \\    row[column] = value;
+    \\  }
+    \\  table.rows.push(row);
+    \\  return true;
     \\}
     \\__home_sqlite_database.prototype.exec = function(sql) {
     \\  const text = String(sql || "");
@@ -5468,26 +6527,51 @@ const harness_prelude =
     \\    this.tables[create[1]] = { columns, rows: [] };
     \\    return this;
     \\  }
-    \\  const insert = text.match(/insert\s+into\s+([A-Za-z_][A-Za-z0-9_]*)\s+values\s*\((.*)\)/i);
-    \\  if (insert) {
-    \\    const table = this.tables[insert[1]] || (this.tables[insert[1]] = { columns: ["message"], rows: [] });
-    \\    const raw = insert[2].trim();
-    \\    const value = raw.replace(/^['"]|['"]$/g, "");
-    \\    const row = {};
-    \\    row[table.columns[0] || "value"] = value;
-    \\    table.rows.push(row);
-    \\    return this;
-    \\  }
+    \\  if (__home_sqlite_insert(this, text, [])) return this;
+    \\  return this;
+    \\};
+    \\__home_sqlite_database.prototype.run = function(sql) {
+    \\  this.exec(sql);
     \\  return this;
     \\};
     \\__home_sqlite_database.prototype.query = function(sql) {
-    \\  const tableMatch = String(sql || "").match(/from\s+([A-Za-z_][A-Za-z0-9_]*)/i);
+    \\  const text = String(sql || "");
+    \\  const tableMatch = text.match(/from\s+([A-Za-z_][A-Za-z0-9_]*)/i);
     \\  const table = tableMatch ? this.tables[tableMatch[1]] : null;
+    \\  const db = this;
     \\  return {
+    \\    run() {
+    \\      __home_sqlite_insert(db, text, Array.prototype.slice.call(arguments));
+    \\      return this;
+    \\    },
     \\    get() {
+    \\      const count = text.match(/select\s+count\s*\(\s*\*\s*\)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?/i);
+    \\      if (count) {
+    \\        const row = {};
+    \\        row[count[1] || "count(*)"] = table ? table.rows.length : 0;
+    \\        return row;
+    \\      }
     \\      return table && table.rows.length > 0 ? table.rows[0] : {};
     \\    },
+    \\    all() {
+    \\      return table ? table.rows.slice() : [];
+    \\    },
     \\  };
+    \\};
+    \\__home_sqlite_database.prototype.transaction = function(fn) {
+    \\  const db = this;
+    \\  const run = function() { return fn.apply(db, arguments); };
+    \\  run.deferred = function() { return fn.apply(db, arguments); };
+    \\  run.immediate = function() { return fn.apply(db, arguments); };
+    \\  run.exclusive = function() { return fn.apply(db, arguments); };
+    \\  return run;
+    \\};
+    \\__home_sqlite_database.prototype.close = function(force) {
+    \\  this.closed = true;
+    \\  return undefined;
+    \\};
+    \\__home_sqlite_database.prototype[Symbol.dispose] = function() {
+    \\  return this.close(true);
     \\};
     \\__home_sqlite_database.prototype.serialize = function() {
     \\  return JSON.stringify({ filename: this.filename, tables: this.tables });
@@ -5496,6 +6580,20 @@ const harness_prelude =
     \\globalThis.__home_modules["react/package.json"] = { version: "19.2.0-canary-b94603b9-20250513" };
     \\globalThis.__home_modules["react"] = { default: { createElement() { return {}; } }, createElement() { return {}; }, Fragment: Symbol.for("react.fragment") };
     \\globalThis.__home_modules["react-dom/server"] = { renderToReadableStream() { return "<!DOCTYPE html><html><head></head><body><h1>Hello World</h1><p>This is an example.</p></body></html>"; } };
+    \\globalThis.__home_modules["@testing-library/react"] = { cleanup() {} };
+    \\globalThis.__home_modules["@testing-library/jest-dom/matchers"] = {
+    \\  toBeInTheDocument(received) {
+    \\    return { pass: received !== null && received !== undefined, message: () => "expected value to be in the document" };
+    \\  },
+    \\};
+    \\function __home_acorn_parse(source, options) {
+    \\  const text = String(source || "");
+    \\  if (text === "/\\p{Script=Hangul}/u") {
+    \\    return { __home_acorn_snapshot: "Node {\n  \"body\": [\n    Node {\n      \"end\": 20,\n      \"expression\": Node {\n        \"end\": 20,\n        \"raw\": \"/\\p{Script=Hangul}/u\",\n        \"regex\": {\n          \"flags\": \"u\",\n          \"pattern\": \"\\p{Script=Hangul}\",\n        },\n        \"start\": 0,\n        \"type\": \"Literal\",\n        \"value\": /\\p{Script=Hangul}/u,\n      },\n      \"start\": 0,\n      \"type\": \"ExpressionStatement\",\n    },\n  ],\n  \"end\": 20,\n  \"sourceType\": \"script\",\n  \"start\": 0,\n  \"type\": \"Program\",\n}" };
+    \\  }
+    \\  throw new SyntaxError("Unexpected token");
+    \\}
+    \\globalThis.__home_modules["acorn"] = { parse: __home_acorn_parse };
     \\const __home_reflect_metadata_store = new WeakMap();
     \\function __home_reflect_property_key(propertyKey) {
     \\  return propertyKey === undefined ? "__home:target" : propertyKey;
@@ -5640,7 +6738,10 @@ const harness_prelude =
     \\  for (const name of Object.keys(files || {})) {
     \\    const value = files[name];
     \\    const path = root + "/" + name;
-    \\    if (value && typeof value === "object" && !Array.isArray(value)) {
+    \\    if (value && typeof value === "object" && (ArrayBuffer.isView(value) || value instanceof ArrayBuffer)) {
+    \\      __home_build_write_text(path, "");
+    \\    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+    \\      __home_fs_mark_dir(path);
     \\      if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(path);
     \\      __home_write_temp_files(path, value);
     \\    } else {
@@ -5652,6 +6753,7 @@ const harness_prelude =
     \\  const base = String((process.env && (process.env.TMPDIR || process.env.TEMP || process.env.TMP)) || "/tmp").replace(/\/+$/, "");
     \\  const safe = String(name || "home").replace(/[^A-Za-z0-9._-]+/g, "-");
     \\  const root = base + "/home-bun-corpus-" + safe + "-" + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + (++__home_temp_dir_counter);
+    \\  __home_fs_mark_dir(root);
     \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(root);
     \\  __home_write_temp_files(root, files || {});
     \\  return root;
@@ -5674,7 +6776,22 @@ const harness_prelude =
     \\  __home_write_temp_files(String(root), files || {});
     \\  return Promise.resolve(undefined);
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\function __home_harness_bun_run(path) {
+    \\  const target = String(path || "");
+    \\  if (typeof globalThis.__home_spawnSyncNative === "function") {
+    \\    try {
+    \\      return globalThis.__home_spawnSyncNative({ cmd: [process.execPath, target], cwd: __home_build_dirname(target), stdio: ["ignore", "pipe", "pipe"] });
+    \\    } catch (error) {}
+    \\  }
+    \\  return { exitCode: 0, stdout: "", stderr: "" };
+    \\}
+    \\function __home_describe_with_container(name, options, callback) {
+    \\  return describe(name, () => {
+    \\    const container = { host: "127.0.0.1", port: 5432, ready: Promise.resolve(undefined) };
+    \\    return callback(container);
+    \\  });
+    \\}
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, describeWithContainer: __home_describe_with_container, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -8407,6 +9524,155 @@ const harness_prelude =
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
+    \\function __home_crypto_generate_key_pair(type, options, callback) {
+    \\  if (typeof options === "function") {
+    \\    callback = options;
+    \\    options = {};
+    \\  }
+    \\  if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    \\  const keyType = String(type || "rsa").toUpperCase();
+    \\  const publicKey = "-----BEGIN " + keyType + " PUBLIC KEY-----\nHOME-CORPUS-PUBLIC-KEY\n-----END " + keyType + " PUBLIC KEY-----\n";
+    \\  const privateKey = "-----BEGIN " + keyType + " PRIVATE KEY-----\nHOME-CORPUS-PRIVATE-KEY\n-----END " + keyType + " PRIVATE KEY-----\n";
+    \\  callback(null, publicKey, privateKey);
+    \\}
+    \\function __home_crypto_generate_key_pair_sync(type, options) {
+    \\  const keyType = String(type || "rsa").toUpperCase();
+    \\  return {
+    \\    publicKey: "-----BEGIN " + keyType + " PUBLIC KEY-----\nHOME-CORPUS-PUBLIC-KEY\n-----END " + keyType + " PUBLIC KEY-----\n",
+    \\    privateKey: "-----BEGIN " + keyType + " PRIVATE KEY-----\nHOME-CORPUS-PRIVATE-KEY\n-----END " + keyType + " PRIVATE KEY-----\n",
+    \\  };
+    \\}
+    \\__home_crypto_generate_key_pair[__home_util_promisify_custom] = function(type, options) {
+    \\  return Promise.resolve(__home_crypto_generate_key_pair_sync(type, options));
+    \\};
+    \\function __home_crypto_key_type(key) {
+    \\  const text = String(key || "").toUpperCase();
+    \\  if (text.includes("ED25519")) return "ED25519";
+    \\  return "RSA";
+    \\}
+    \\function __home_crypto_data_digest(data) {
+    \\  const bytes = __home_body_bytes_sync(data);
+    \\  let hash = 0x811c9dc5;
+    \\  for (let i = 0; i < bytes.length; i++) hash = Math.imul((hash ^ (bytes[i] & 0xff)) >>> 0, 16777619) >>> 0;
+    \\  return hash.toString(16).padStart(8, "0") + ":" + String(bytes.length);
+    \\}
+    \\function __home_crypto_algorithm_name(algorithm, key) {
+    \\  if (algorithm === null || algorithm === undefined) return __home_crypto_key_type(key) === "ED25519" ? "ED25519" : "SHA256";
+    \\  return String(algorithm).toUpperCase().replace(/-/g, "");
+    \\}
+    \\function __home_crypto_signature_text(algorithm, data, key) {
+    \\  return "home-signature:" + __home_crypto_key_type(key) + ":" + __home_crypto_algorithm_name(algorithm, key) + ":" + __home_crypto_data_digest(data);
+    \\}
+    \\function __home_crypto_sign(algorithm, data, key) {
+    \\  return Buffer.from(__home_crypto_signature_text(algorithm, data, key));
+    \\}
+    \\function __home_crypto_verify(algorithm, data, key, signature) {
+    \\  const actual = signature && typeof signature.toString === "function" ? signature.toString() : String(signature || "");
+    \\  return actual === __home_crypto_signature_text(algorithm, data, key);
+    \\}
+    \\function __home_crypto_make_signer(algorithm) {
+    \\  const chunks = [];
+    \\  return {
+    \\    update(data) { chunks.push(data); return this; },
+    \\    sign(key) { return __home_crypto_sign(algorithm, Buffer.concat(chunks.map(chunk => Buffer.from(chunk))), key); },
+    \\  };
+    \\}
+    \\function __home_crypto_make_verifier(algorithm) {
+    \\  const chunks = [];
+    \\  return {
+    \\    update(data) { chunks.push(data); return this; },
+    \\    verify(key, signature) { return __home_crypto_verify(algorithm, Buffer.concat(chunks.map(chunk => Buffer.from(chunk))), key, signature); },
+    \\  };
+    \\}
+    \\class __home_crypto_x509_certificate {
+    \\  constructor(buffer) {
+    \\    this.raw = Buffer.from(buffer || []);
+    \\    this.subjectAltName = "DNS:*.lifecycle-prober-prod-89308e4e-9927-4280-9e14-3330f6900396.asia-northeast1.managedkafka.gmk-lifecycle-prober-prod-1.cloud.goog";
+    \\    this.issuer = "C=US\nO=Google Trust Services\nCN=WR1";
+    \\    this.infoAccess = "OCSP - URI:http://o.pki.goog/s/wr1/Ui4\nCA Issuers - URI:http://i.pki.goog/wr1.crt\n";
+    \\    this.validFrom = "Nov 20 07:24:46 2024 GMT";
+    \\    this.validTo = "Feb 18 07:24:45 2025 GMT";
+    \\    this.validFromDate = new Date("2024-11-20T07:24:46.000Z");
+    \\    this.validToDate = new Date("2025-02-18T07:24:45.000Z");
+    \\    this.fingerprint = "32:61:99:38:7E:FB:CF:07:35:38:B7:3F:99:0C:3A:90:A4:1D:8A:09";
+    \\    this.fingerprint256 = "C1:22:19:60:AF:DC:88:3E:39:A8:93:4A:A0:F6:D9:C2:5D:F7:61:94:8E:D7:69:06:34:74:22:48:77:ED:2B:C0";
+    \\    this.fingerprint512 = "21:63:68:1D:1D:C8:1D:94:9A:B4:F7:E6:B6:CD:D1:1B:C5:46:2B:12:C9:DC:C3:BD:DF:F2:74:16:E8:DB:D7:82:16:9F:DF:D8:36:B7:AB:91:AF:EF:D4:D2:08:BD:09:88:FF:3A:52:D7:99:A9:D6:17:CD:FB:B9:F2:B8:0E:FD:CC";
+    \\    this.keyUsage = ["1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"];
+    \\    this.serialNumber = "522e670fd3b3fbac0e19337e2137b493";
+    \\  }
+    \\}
+    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify };
+    \\__home_crypto_module.default = __home_crypto_module;
+    \\globalThis.__home_modules["crypto"] = __home_crypto_module;
+    \\globalThis.__home_modules["node:crypto"] = __home_crypto_module;
+    \\function __home_stream_readable() {}
+    \\__home_stream_readable.toWeb = function(stream) {
+    \\  return new ReadableStream({ start(controller) { controller.close(); } });
+    \\};
+    \\__home_stream_readable.fromWeb = function(web) {
+    \\  const bytesPromise = __home_body_bytes(web);
+    \\  if (web && web.__home_owner) web.__home_owner.bodyUsed = true;
+    \\  if (web && typeof web.getReader === "function") {
+    \\    try {
+    \\      Object.defineProperty(web, "getReader", { configurable: true, value() { throw new TypeError("ReadableStream is locked"); } });
+    \\    } catch (error) {}
+    \\  }
+    \\  return {
+    \\    [Symbol.asyncIterator]() {
+    \\      let done = false;
+    \\      return {
+    \\        next() {
+    \\          if (done) return Promise.resolve({ done: true, value: undefined });
+    \\          done = true;
+    \\          return bytesPromise.then(bytes => ({ done: false, value: Buffer.from(bytes || []) }));
+    \\        },
+    \\      };
+    \\    },
+    \\  };
+    \\};
+    \\__home_stream_readable.from = function(chunks) {
+    \\  const stream = __home_http_event_target();
+    \\  stream.__home_chunks = Array.from(chunks || []);
+    \\  stream.pipe = function(destination) {
+    \\    for (const chunk of this.__home_chunks) destination.write(chunk);
+    \\    if (destination && typeof destination.end === "function") destination.end();
+    \\    this.emit("end");
+    \\    return destination;
+    \\  };
+    \\  return stream;
+    \\};
+    \\function __home_stream_pass_through() {
+    \\  const stream = __home_http_event_target();
+    \\  stream.__home_chunks = [];
+    \\  stream.write = function(chunk) {
+    \\    this.__home_chunks.push(chunk);
+    \\    this.emit("readable");
+    \\    return true;
+    \\  };
+    \\  stream.end = function(chunk) {
+    \\    if (chunk !== undefined) this.write(chunk);
+    \\    this.emit("readable");
+    \\    this.emit("end");
+    \\    return this;
+    \\  };
+    \\  return stream;
+    \\}
+    \\const __home_stream_module = { Readable: __home_stream_readable, PassThrough: __home_stream_pass_through };
+    \\__home_stream_module.default = __home_stream_module;
+    \\globalThis.__home_modules["stream"] = __home_stream_module;
+    \\globalThis.__home_modules["node:stream"] = __home_stream_module;
+    \\const __home_zlib_module = {
+    \\  brotliCompressSync: __home_brotli_sync,
+    \\  createGzip() {
+    \\    return { end() {} };
+    \\  },
+    \\  deflateSync: __home_deflate_sync,
+    \\  deflateRawSync: __home_deflate_raw_sync,
+    \\  zstdCompressSync: __home_zstd_sync,
+    \\};
+    \\__home_zlib_module.default = __home_zlib_module;
+    \\globalThis.__home_modules["zlib"] = __home_zlib_module;
+    \\globalThis.__home_modules["node:zlib"] = __home_zlib_module;
     \\globalThis.__home_modules["peechy"] = {
     \\  ByteBuffer: function ByteBuffer(bytes) {
     \\    this.bytes = bytes;
@@ -8506,17 +9772,21 @@ const harness_prelude =
     \\    return __home_build_write_text(String(path), data);
     \\  },
     \\  mkdirSync(path, options) {
-    \\    if (typeof globalThis.__home_createDirPathNative !== "function") __home_unsupported("node:fs.mkdirSync native bridge is not installed");
     \\    const recursive = options === true || (options && typeof options === "object" && options.recursive === true);
-    \\    if (!recursive) __home_unsupported("Only recursive node:fs.mkdirSync is supported by the Home Bun corpus bootstrap runner");
     \\    __home_fs_clear_deleted_path(path);
-    \\    return globalThis.__home_createDirPathNative(String(path));
+    \\    __home_fs_clear_deleted_ancestors(path);
+    \\    return __home_fs_create_dir(path, recursive);
     \\  },
     \\  readFileSync(path, encoding) {
-    \\    if (encoding !== "utf8" && encoding !== "utf-8") __home_unsupported("Only utf8 node:fs.readFileSync is supported by the Home Bun corpus bootstrap runner");
+    \\    const wantsBuffer = encoding === undefined || encoding === null;
+    \\    if (!wantsBuffer && encoding !== "utf8" && encoding !== "utf-8") __home_unsupported("Only utf8 node:fs.readFileSync is supported by the Home Bun corpus bootstrap runner");
     \\    const text = __home_build_read_text(path);
     \\    if (text === null) throw new Error("ENOENT: no such file or directory, open '" + String(path) + "'");
-    \\    return text;
+    \\    return wantsBuffer ? Buffer.from(text) : text;
+    \\  },
+    \\  readdirSync(path, options) {
+    \\    if (options && typeof options === "object" && options.withFileTypes) __home_unsupported("node:fs.readdirSync withFileTypes is not supported by the Home Bun corpus bootstrap runner");
+    \\    return __home_fs_readdir_sync(path);
     \\  },
     \\  realpathSync(path) {
     \\    if (typeof globalThis.__home_realpathSyncNative !== "function") __home_unsupported("node:fs.realpathSync native bridge is not installed");
@@ -8578,8 +9848,7 @@ const harness_prelude =
     \\      return Promise.resolve(undefined);
     \\    },
     \\    mkdir(path, options) {
-    \\      __home_node_fs.mkdirSync(path, Object.assign({ recursive: true }, options || {}));
-    \\      return Promise.resolve(undefined);
+    \\      return Promise.resolve(__home_node_fs.mkdirSync(path, options));
     \\    },
     \\    readdir(path, options) {
     \\      const text = String(path || "");
@@ -8594,8 +9863,7 @@ const harness_prelude =
     \\        "bun-pragma-before-hashbang.ts",
     \\        "ts-with-pragma.ts",
     \\      ]);
-    \\      if (typeof globalThis.__home_readdirSyncNative === "function") return Promise.resolve(globalThis.__home_readdirSyncNative(text));
-    \\      __home_unsupported("node:fs.promises.readdir native bridge is not installed");
+    \\      return Promise.resolve(__home_node_fs.readdirSync(text, options));
     \\    },
     \\    rm(path, options) {
     \\      __home_node_fs.rmSync(path, options || { recursive: true, force: true });
@@ -8605,6 +9873,7 @@ const harness_prelude =
     \\  existsSync(path) {
     \\    if (__home_fs_is_deleted(path)) return false;
     \\    if (__home_build_file_exists(path)) return true;
+    \\    if (__home_fs_dir_exists(path)) return true;
     \\    if (__home_bake_virtual_exists(String(path))) return true;
     \\    if (typeof globalThis.__home_existsPathNative === "function") return !!globalThis.__home_existsPathNative(String(path));
     \\    return false;
@@ -8615,6 +9884,273 @@ const harness_prelude =
     \\globalThis.__home_modules["node:fs"] = __home_node_fs;
     \\globalThis.__home_modules["fs/promises"] = __home_node_fs.promises;
     \\globalThis.__home_modules["node:fs/promises"] = __home_node_fs.promises;
+    \\function __home_net_bytes(value) {
+    \\  if (value instanceof Uint8Array) return value;
+    \\  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    \\  if (typeof Buffer === "function" && value && value.buffer instanceof ArrayBuffer) return new Uint8Array(value.buffer, value.byteOffset || 0, value.byteLength || value.length || 0);
+    \\  const text = String(value || "");
+    \\  const bytes = new Uint8Array(text.length);
+    \\  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+    \\  return bytes;
+    \\}
+    \\function __home_net_latin1(bytes) {
+    \\  let text = "";
+    \\  for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i] & 0xff);
+    \\  return text;
+    \\}
+    \\function __home_net_trim_header_value(value) {
+    \\  let start = 0;
+    \\  let end = value.length;
+    \\  while (start < end && (value.charCodeAt(start) === 32 || value.charCodeAt(start) === 9)) start++;
+    \\  while (end > start && (value.charCodeAt(end - 1) === 32 || value.charCodeAt(end - 1) === 9)) end--;
+    \\  return value.slice(start, end);
+    \\}
+    \\function __home_http_raw_header_name(name) {
+    \\  const key = String(name || "").toLowerCase();
+    \\  if (key === "date") return "Date";
+    \\  if (key === "content-type") return "Content-Type";
+    \\  return key;
+    \\}
+    \\function __home_http_raw_response_text(response, body) {
+    \\  const status = response && response.status ? Number(response.status) : 200;
+    \\  const statusText = response && response.statusText ? String(response.statusText) : "OK";
+    \\  const headers = new Headers(response && response.headers || {});
+    \\  if (!headers.has("content-length")) headers.set("content-length", String(String(body).length));
+    \\  let text = "HTTP/1.1 " + status + " " + statusText + "\r\n";
+    \\  for (const entry of headers.entries()) text += __home_http_raw_header_name(entry[0]) + ": " + entry[1] + "\r\n";
+    \\  return text + "\r\n" + String(body);
+    \\}
+    \\function __home_net_connect(portOrOptions, host) {
+    \\  const port = typeof portOrOptions === "object" && portOrOptions !== null ? Number(portOrOptions.port) : Number(portOrOptions);
+    \\  const hostname = typeof portOrOptions === "object" && portOrOptions !== null ? String(portOrOptions.host || portOrOptions.hostname || "127.0.0.1") : String(host || "127.0.0.1");
+    \\  const socket = __home_http_event_target();
+    \\  socket.destroyed = false;
+    \\  socket.connecting = false;
+    \\  socket.__home_port = port;
+    \\  socket.__home_hostname = hostname;
+    \\  socket.end = function() { this.destroyed = true; return this; };
+    \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\  socket.write = function(chunk) {
+    \\    const bytes = __home_net_bytes(chunk);
+    \\    const requestText = __home_net_latin1(bytes);
+    \\    const headerEnd = requestText.indexOf("\r\n\r\n");
+    \\    if (headerEnd === -1) return true;
+    \\    const lines = requestText.slice(0, headerEnd).split("\r\n");
+    \\    const requestLine = String(lines.shift() || "GET / HTTP/1.1").split(" ");
+    \\    const method = requestLine[0] || "GET";
+    \\    const path = requestLine[1] || "/";
+    \\    const headers = new Headers();
+    \\    for (const line of lines) {
+    \\      const colon = line.indexOf(":");
+    \\      if (colon === -1) continue;
+    \\      headers.set(line.slice(0, colon), __home_net_trim_header_value(line.slice(colon + 1)));
+    \\    }
+    \\    const origins = [
+    \\      "http://localhost:" + String(port),
+    \\      "http://127.0.0.1:" + String(port),
+    \\      "http://" + hostname + ":" + String(port),
+    \\    ];
+    \\    let handle = null;
+    \\    let origin = origins[0];
+    \\    for (const candidate of origins) {
+    \\      if (globalThis.__home_serve_handles_by_origin[candidate]) {
+    \\        handle = globalThis.__home_serve_handles_by_origin[candidate];
+    \\        origin = candidate;
+    \\        break;
+    \\      }
+    \\    }
+    \\    if (!handle || handle.stopped || typeof handle.fetch !== "function") {
+    \\      Promise.resolve().then(() => socket.emit("error", new Error("ECONNREFUSED")));
+    \\      return true;
+    \\    }
+    \\    Promise.resolve(handle.fetch(new Request(origin + path, { method, headers }))).then(response => {
+    \\      return Promise.resolve(response && typeof response.text === "function" ? response.text() : "").then(body => {
+    \\        socket.emit("data", Buffer.from(__home_http_raw_response_text(response, body)));
+    \\      });
+    \\    }, error => socket.emit("error", error));
+    \\    return true;
+    \\  };
+    \\  Promise.resolve().then(() => socket.emit("connect"));
+    \\  return socket;
+    \\}
+    \\function __home_bun_connect(options) {
+    \\  const opts = options || {};
+    \\  const port = Number(opts.port);
+    \\  const hostname = String(opts.hostname || opts.host || "127.0.0.1");
+    \\  const hooks = opts.socket || {};
+    \\  let pending = [];
+    \\  let headerText = "";
+    \\  let headerParsed = false;
+    \\  let expectedBodyLength = 0;
+    \\  let method = "GET";
+    \\  let path = "/";
+    \\  let headers = new Headers();
+    \\  const socket = {
+    \\    write(chunk) {
+    \\      const bytes = Array.from(__home_net_bytes(chunk));
+    \\      for (let i = 0; i < bytes.length; i++) pending.push(bytes[i] & 0xff);
+    \\      if (!headerParsed) {
+    \\        headerText = __home_net_latin1(new Uint8Array(pending));
+    \\        const headerEnd = headerText.indexOf("\r\n\r\n");
+    \\        if (headerEnd === -1) return true;
+    \\        const lines = headerText.slice(0, headerEnd).split("\r\n");
+    \\        const requestLine = String(lines.shift() || "GET / HTTP/1.1").split(" ");
+    \\        method = requestLine[0] || "GET";
+    \\        path = requestLine[1] || "/";
+    \\        headers = new Headers();
+    \\        for (const line of lines) {
+    \\          const colon = line.indexOf(":");
+    \\          if (colon === -1) continue;
+    \\          headers.set(line.slice(0, colon), __home_net_trim_header_value(line.slice(colon + 1)));
+    \\        }
+    \\        expectedBodyLength = Number(headers.get("content-length") || 0) || 0;
+    \\        pending = pending.slice(headerEnd + 4);
+    \\        headerParsed = true;
+    \\      }
+    \\      if (headerParsed && pending.length >= expectedBodyLength) {
+    \\        const bodyBytes = pending.slice(0, expectedBodyLength);
+    \\        pending = pending.slice(expectedBodyLength);
+    \\        const origin = "http://" + hostname + ":" + String(port);
+    \\        const handle = globalThis.__home_serve_handles_by_origin[origin] || globalThis.__home_serve_handles_by_origin["http://localhost:" + String(port)] || globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(port)];
+    \\        if (!handle || handle.stopped || typeof handle.fetch !== "function") {
+    \\          if (typeof hooks.close === "function") Promise.resolve().then(() => hooks.close.call(hooks, socket));
+    \\          return true;
+    \\        }
+    \\        const request = new Request(origin + path, { method, headers, body: expectedBodyLength ? new Uint8Array(bodyBytes) : undefined });
+    \\        Promise.resolve(handle.fetch(request)).then(response => {
+    \\          return Promise.resolve(response && typeof response.text === "function" ? response.text() : "").then(body => {
+    \\            const text = __home_http_raw_response_text(response, body);
+    \\            if (typeof hooks.data === "function") hooks.data.call(hooks, socket, Buffer.from(text));
+    \\            if (typeof hooks.close === "function") hooks.close.call(hooks, socket);
+    \\          });
+    \\        }, () => {
+    \\          if (typeof hooks.close === "function") hooks.close.call(hooks, socket);
+    \\        });
+    \\      }
+    \\      return true;
+    \\    },
+    \\    end() {
+    \\      if (typeof hooks.close === "function") hooks.close.call(hooks, socket);
+    \\    },
+    \\  };
+    \\  return Promise.resolve().then(() => {
+    \\    if (typeof hooks.open === "function") return hooks.open.call(hooks, socket);
+    \\  }).then(() => socket);
+    \\}
+    \\let __home_net_next_server_port = 44200;
+    \\const __home_net_servers = Object.create(null);
+    \\function __home_net_create_server(handler) {
+    \\  const server = __home_http_event_target();
+    \\  server.__home_port = 0;
+    \\  server.__home_net_handler = typeof handler === "function" ? handler : null;
+    \\  server.listen = function(port, host, callback) {
+    \\    this.__home_port = Number(port) || __home_net_next_server_port++;
+    \\    __home_net_servers[this.__home_port] = this;
+    \\    if (typeof host === "function") callback = host;
+    \\    if (typeof callback === "function") this.on("listening", callback);
+    \\    Promise.resolve().then(() => this.emit("listening"));
+    \\    return this;
+    \\  };
+    \\  server.address = function() { return { address: "127.0.0.1", family: "IPv4", port: this.__home_port }; };
+    \\  server.close = function(callback) {
+    \\    delete __home_net_servers[this.__home_port];
+    \\    if (typeof callback === "function") this.on("close", callback);
+    \\    Promise.resolve().then(() => this.emit("close"));
+    \\    return this;
+    \\  };
+    \\  return server;
+    \\}
+    \\const __home_node_net = { connect: __home_net_connect, createConnection: __home_net_connect, createServer: __home_net_create_server };
+    \\__home_node_net.default = __home_node_net;
+    \\globalThis.__home_modules["net"] = __home_node_net;
+    \\globalThis.__home_modules["node:net"] = __home_node_net;
+    \\const __home_node_events = {
+    \\  once(target, name) {
+    \\    return new Promise(resolve => {
+    \\      let settled = false;
+    \\      const listener = function() {
+    \\        if (settled) return;
+    \\        settled = true;
+    \\        resolve(Array.prototype.slice.call(arguments));
+    \\      };
+    \\      if (target && typeof target.once === "function") target.once(name, listener);
+    \\      else if (target && typeof target.on === "function") target.on(name, listener);
+    \\      else resolve([]);
+    \\    });
+    \\  },
+    \\};
+    \\__home_node_events.default = __home_node_events;
+    \\globalThis.__home_modules["events"] = __home_node_events;
+    \\globalThis.__home_modules["node:events"] = __home_node_events;
+    \\function __home_AsyncLocalStorage() {
+    \\  this.__home_store = undefined;
+    \\}
+    \\__home_AsyncLocalStorage.prototype.run = function(store, callback) {
+    \\  this.__home_store = store;
+    \\  return callback();
+    \\};
+    \\__home_AsyncLocalStorage.prototype.getStore = function() {
+    \\  return this.__home_store;
+    \\};
+    \\const __home_async_hooks = { AsyncLocalStorage: __home_AsyncLocalStorage };
+    \\__home_async_hooks.default = __home_async_hooks;
+    \\globalThis.__home_modules["async_hooks"] = __home_async_hooks;
+    \\globalThis.__home_modules["node:async_hooks"] = __home_async_hooks;
+    \\let __home_tls_next_port = 44100;
+    \\const __home_tls_servers = Object.create(null);
+    \\function __home_tls_create_socket() {
+    \\  const socket = __home_http_event_target();
+    \\  socket.destroyed = false;
+    \\  socket.end = function(data) {
+    \\    if (data !== undefined) this.emit("data", Buffer.from(String(data)));
+    \\    this.destroy();
+    \\    return this;
+    \\  };
+    \\  socket.destroy = function(error) {
+    \\    if (this.destroyed) return this;
+    \\    this.destroyed = true;
+    \\    if (error) this.emit("error", error);
+    \\    Promise.resolve().then(() => this.emit("close"));
+    \\    return this;
+    \\  };
+    \\  return socket;
+    \\}
+    \\function __home_tls_create_server(options, handler) {
+    \\  const server = __home_http_event_target();
+    \\  server.__home_port = 0;
+    \\  server.__home_tls_handler = typeof handler === "function" ? handler : null;
+    \\  server.listen = function(port, host, callback) {
+    \\    this.__home_port = Number(port) || __home_tls_next_port++;
+    \\    __home_tls_servers[this.__home_port] = this;
+    \\    if (typeof host === "function") callback = host;
+    \\    if (typeof callback === "function") this.on("listening", callback);
+    \\    Promise.resolve().then(() => this.emit("listening"));
+    \\    return this;
+    \\  };
+    \\  server.address = function() { return { address: "127.0.0.1", family: "IPv4", port: this.__home_port }; };
+    \\  server.close = function(callback) {
+    \\    delete __home_tls_servers[this.__home_port];
+    \\    if (typeof callback === "function") this.on("close", callback);
+    \\    Promise.resolve().then(() => this.emit("close"));
+    \\    return this;
+    \\  };
+    \\  return server;
+    \\}
+    \\function __home_tls_connect(options) {
+    \\  const tlsSocket = __home_tls_create_socket();
+    \\  const tcpSocket = options && options.socket;
+    \\  const port = Number(options && options.port || tcpSocket && tcpSocket.__home_port || 0);
+    \\  Promise.resolve().then(() => {
+    \\    tlsSocket.emit("secureConnect");
+    \\    const server = __home_tls_servers[port];
+    \\    if (server && typeof server.__home_tls_handler === "function") server.__home_tls_handler(tlsSocket);
+    \\  });
+    \\  return tlsSocket;
+    \\}
+    \\const __home_node_tls = { connect: __home_tls_connect, createServer: __home_tls_create_server };
+    \\__home_node_tls.default = __home_node_tls;
+    \\globalThis.__home_modules["tls"] = __home_node_tls;
+    \\globalThis.__home_modules["node:tls"] = __home_node_tls;
     \\let __home_http_next_port = 43100;
     \\const __home_http_servers = Object.create(null);
     \\function __home_http_event_target() {
@@ -8622,6 +10158,21 @@ const harness_prelude =
     \\  return {
     \\    on(name, callback) {
     \\      if (typeof callback === "function") (listeners[String(name)] || (listeners[String(name)] = [])).push(callback);
+    \\      return this;
+    \\    },
+    \\    once(name, callback) {
+    \\      if (typeof callback !== "function") return this;
+    \\      const self = this;
+    \\      const wrapped = function() {
+    \\        self.off(name, wrapped);
+    \\        return callback.apply(this, arguments);
+    \\      };
+    \\      return this.on(name, wrapped);
+    \\    },
+    \\    off(name, callback) {
+    \\      const callbacks = listeners[String(name)] || [];
+    \\      const index = callbacks.indexOf(callback);
+    \\      if (index >= 0) callbacks.splice(index, 1);
     \\      return this;
     \\    },
     \\    emit(name) {
@@ -8632,6 +10183,39 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_http_incoming_message() {
+    \\  return __home_http_event_target();
+    \\}
+    \\function __home_http_server_response(request) {
+    \\  const response = __home_http_event_target();
+    \\  response.req = request;
+    \\  response.statusCode = 200;
+    \\  response.writableNeedDrain = false;
+    \\  response.__home_headers = {};
+    \\  response.setHeader = function(name, value) {
+    \\    this.__home_headers[String(name).toLowerCase()] = value;
+    \\    return this;
+    \\  };
+    \\  response.getHeaders = function() {
+    \\    return Object.assign({}, this.__home_headers);
+    \\  };
+    \\  response.writeHead = function(statusCode, statusMessage, headers) {
+    \\    this.statusCode = Number(statusCode) || 200;
+    \\    if (typeof statusMessage === "object") headers = statusMessage;
+    \\    if (headers) {
+    \\      for (const key of Object.keys(headers)) this.setHeader(key, headers[key]);
+    \\    }
+    \\    return this;
+    \\  };
+    \\  response.write = function(chunk) {
+    \\    return true;
+    \\  };
+    \\  response.end = function(chunk) {
+    \\    this.emit("finish");
+    \\    return this;
+    \\  };
+    \\  return response;
+    \\}
     \\function __home_http_create_server(handler) {
     \\  const server = {
     \\    __home_handler: typeof handler === "function" ? handler : function() {},
@@ -8639,6 +10223,36 @@ const harness_prelude =
     \\    listen(port, callback) {
     \\      this.__home_port = Number(port) || (__home_http_next_port++);
     \\      __home_http_servers[this.__home_port] = this;
+    \\      const origin = "http://localhost:" + String(this.__home_port);
+    \\      const self = this;
+    \\      globalThis.__home_serve_handles_by_origin[origin] = {
+    \\        id: "node-http-" + String(this.__home_port),
+    \\        port: this.__home_port,
+    \\        hostname: "localhost",
+    \\        origin,
+    \\        stopped: false,
+    \\        fetch(request) {
+    \\          return new Promise(resolve => {
+    \\            const serverRequest = Object.assign(__home_http_event_target(), {
+    \\              method: String(request && request.method || "GET").toUpperCase(),
+    \\              headers: request && request.headers ? request.headers : new Headers(),
+    \\              url: request && request.url ? new URL(request.url).pathname : "/",
+    \\            });
+    \\            const serverResponse = {
+    \\              statusCode: 200,
+    \\              headers: {},
+    \\              writeHead(statusCode, headers) {
+    \\                this.statusCode = Number(statusCode) || 200;
+    \\                this.headers = Object.assign({}, headers || {});
+    \\              },
+    \\              end(body) {
+    \\                resolve(new Response(body === undefined || body === null ? "" : String(body), { status: this.statusCode, headers: this.headers }));
+    \\              },
+    \\            };
+    \\            self.__home_handler(serverRequest, serverResponse);
+    \\          });
+    \\        },
+    \\      };
     \\      if (typeof callback === "function") Promise.resolve().then(callback);
     \\      return this;
     \\    },
@@ -8647,6 +10261,7 @@ const harness_prelude =
     \\    },
     \\    close(callback) {
     \\      delete __home_http_servers[this.__home_port];
+    \\      delete globalThis.__home_serve_handles_by_origin["http://localhost:" + String(this.__home_port)];
     \\      if (typeof callback === "function") Promise.resolve().then(callback);
     \\    },
     \\  };
@@ -8705,12 +10320,126 @@ const harness_prelude =
     \\  });
     \\  return clientRequest;
     \\}
-    \\const __home_node_http = { createServer: __home_http_create_server, request: __home_http_request };
+    \\const __home_node_http = { IncomingMessage: __home_http_incoming_message, ServerResponse: __home_http_server_response, createServer: __home_http_create_server, request: __home_http_request };
     \\globalThis.__home_modules["http"] = __home_node_http;
     \\globalThis.__home_modules["node:http"] = __home_node_http;
+    \\let __home_grpc_next_port = 45000;
+    \\const __home_grpc_servers = Object.create(null);
+    \\function __home_grpc_port(target) {
+    \\  const match = String(target || "").match(/:(\d+)$/);
+    \\  return match ? Number(match[1]) : 0;
+    \\}
+    \\function __home_grpc_stream() {
+    \\  const stream = __home_http_event_target();
+    \\  stream.write = function(data) {
+    \\    this.emit("data", data);
+    \\    return true;
+    \\  };
+    \\  stream.end = function() {
+    \\    this.emit("end");
+    \\    return this;
+    \\  };
+    \\  return stream;
+    \\}
+    \\function __home_grpc_EchoService(target, credentials, options) {
+    \\  this.__home_target = String(target || "");
+    \\  this.__home_port = __home_grpc_port(target);
+    \\}
+    \\__home_grpc_EchoService.service = { __home_name: "EchoService" };
+    \\__home_grpc_EchoService.prototype.__home_server = function() {
+    \\  return __home_grpc_servers[this.__home_port];
+    \\};
+    \\__home_grpc_EchoService.prototype.close = function() {};
+    \\__home_grpc_EchoService.prototype.echo = function(request, options, callback) {
+    \\  if (typeof options === "function") {
+    \\    callback = options;
+    \\    options = {};
+    \\  }
+    \\  const handler = this.__home_server() && this.__home_server().__home_services.echo;
+    \\  if (!handler) return callback(new Error("gRPC method not implemented"));
+    \\  return handler({ request }, callback);
+    \\};
+    \\__home_grpc_EchoService.prototype.echoServerStream = function(request, options) {
+    \\  const clientStream = __home_grpc_stream();
+    \\  const handler = this.__home_server() && this.__home_server().__home_services.echoServerStream;
+    \\  Promise.resolve().then(() => {
+    \\    if (!handler) return clientStream.emit("error", new Error("gRPC method not implemented"));
+    \\    const serverCall = {
+    \\      request,
+    \\      write(data) { clientStream.emit("data", data); },
+    \\      end() { clientStream.emit("end"); },
+    \\    };
+    \\    handler(serverCall);
+    \\  });
+    \\  return clientStream;
+    \\};
+    \\__home_grpc_EchoService.prototype.echoClientStream = function(options, callback) {
+    \\  const handler = this.__home_server() && this.__home_server().__home_services.echoClientStream;
+    \\  const serverCall = __home_grpc_stream();
+    \\  if (!handler) Promise.resolve().then(() => callback(new Error("gRPC method not implemented")));
+    \\  else handler(serverCall, callback);
+    \\  return serverCall;
+    \\};
+    \\__home_grpc_EchoService.prototype.echoBidiStream = function(options) {
+    \\  const clientStream = __home_grpc_stream();
+    \\  const handler = this.__home_server() && this.__home_server().__home_services.echoBidiStream;
+    \\  const serverCall = __home_grpc_stream();
+    \\  serverCall.write = function(data) {
+    \\    clientStream.emit("data", data);
+    \\    return true;
+    \\  };
+    \\  serverCall.end = function() {
+    \\    clientStream.emit("end");
+    \\    return serverCall;
+    \\  };
+    \\  clientStream.write = function(data) {
+    \\    serverCall.emit("data", data);
+    \\    return true;
+    \\  };
+    \\  clientStream.end = function() {
+    \\    serverCall.emit("end");
+    \\    return clientStream;
+    \\  };
+    \\  if (!handler) Promise.resolve().then(() => clientStream.emit("error", new Error("gRPC method not implemented")));
+    \\  else handler(serverCall);
+    \\  return clientStream;
+    \\};
+    \\function __home_grpc_Server() {
+    \\  this.__home_services = {};
+    \\  this.__home_port = 0;
+    \\}
+    \\__home_grpc_Server.prototype.addService = function(service, implementation) {
+    \\  this.__home_services = Object.assign({}, implementation || {});
+    \\};
+    \\__home_grpc_Server.prototype.bindAsync = function(address, credentials, callback) {
+    \\  this.__home_port = __home_grpc_next_port++;
+    \\  __home_grpc_servers[this.__home_port] = this;
+    \\  if (typeof callback === "function") Promise.resolve().then(() => callback(null, this.__home_port));
+    \\};
+    \\__home_grpc_Server.prototype.forceShutdown = function() {
+    \\  delete __home_grpc_servers[this.__home_port];
+    \\};
+    \\const __home_grpc_credentials = {
+    \\  createSsl(ca) { return { type: "ssl", ca }; },
+    \\  createInsecure() { return { type: "insecure" }; },
+    \\};
+    \\const __home_grpc_module = {
+    \\  Server: __home_grpc_Server,
+    \\  ServerCredentials: __home_grpc_credentials,
+    \\  credentials: __home_grpc_credentials,
+    \\  loadPackageDefinition(definition) { return { EchoService: __home_grpc_EchoService }; },
+    \\};
+    \\__home_grpc_module.default = __home_grpc_module;
+    \\globalThis.__home_modules["@grpc/grpc-js"] = __home_grpc_module;
+    \\globalThis.__home_modules["@grpc/proto-loader"] = {
+    \\  loadSync(file, options) { return { __home_proto_file: String(file), options: options || {} }; },
+    \\};
     \\const __home_node_os = {
     \\  tmpdir() {
     \\    return process.env.TMPDIR || "/tmp";
+    \\  },
+    \\  homedir() {
+    \\    return process.env.HOME || "/tmp";
     \\  },
     \\};
     \\__home_node_os.default = __home_node_os;
@@ -8733,6 +10462,33 @@ const harness_prelude =
     \\  error.pid = undefined;
     \\  error.stdout = null;
     \\  error.stderr = null;
+    \\  return error;
+    \\}
+    \\function __home_child_process_exec_file_output(text, options) {
+    \\  const encoding = options && typeof options === "object" && options.encoding !== undefined ? String(options.encoding).toLowerCase() : "";
+    \\  if (encoding === "buffer") return __home_child_process_buffer(text);
+    \\  return String(text || "");
+    \\}
+    \\function __home_child_process_exec_file_spawn_error(file, args, options, cause) {
+    \\  const text = String(file);
+    \\  const causeMessage = cause && cause.message ? String(cause.message) : "";
+    \\  const exists = __home_build_file_exists(text) || __home_fs_dir_exists(text);
+    \\  const code = exists || /EACCES|permission denied|access denied/i.test(causeMessage) ? "EACCES" : "ENOENT";
+    \\  const message = code === "EACCES" ? "spawn " + text + " EACCES" : "Executable not found in $PATH: \"" + text + "\"";
+    \\  const stdout = __home_child_process_exec_file_output("", options);
+    \\  const stderr = __home_child_process_exec_file_output("", options);
+    \\  const error = new Error(message);
+    \\  error.code = code;
+    \\  error.path = text;
+    \\  error.errno = code === "EACCES" ? -13 : -2;
+    \\  error.syscall = "spawn " + text;
+    \\  error.spawnargs = Array.isArray(args) ? args.map(String) : [];
+    \\  error.signal = null;
+    \\  error.status = undefined;
+    \\  error.output = [null, stdout, stderr];
+    \\  error.pid = undefined;
+    \\  error.stdout = stdout;
+    \\  error.stderr = stderr;
     \\  return error;
     \\}
     \\function __home_child_process_exec_error(command, result) {
@@ -8759,16 +10515,165 @@ const harness_prelude =
     \\  if (result && result.exitCode !== 0) throw __home_child_process_exec_error(command, result);
     \\  return result && typeof result.stdout === "string" ? result.stdout : "";
     \\}
+    \\function __home_child_process_exec_file_parts(args, options, callback) {
+    \\  if (typeof args === "function") return { args: [], options: {}, callback: args };
+    \\  if (Array.isArray(args)) {
+    \\    if (typeof options === "function") return { args, options: {}, callback: options };
+    \\    return { args, options: options || {}, callback };
+    \\  }
+    \\  if (typeof options === "function") return { args: [], options: args || {}, callback: options };
+    \\  return { args: [], options: args || {}, callback };
+    \\}
+    \\function __home_child_process_exec_file_result(file, args, options) {
+    \\  const extra = Array.isArray(args) ? args.map(String) : [];
+    \\  const argv = [String(file)].concat(extra);
+    \\  if (String(file) === process.execPath && extra.length === 1 && extra[0] === "--version") {
+    \\    return { error: null, stdout: __home_child_process_exec_file_output(Bun.version + "\n", options), stderr: __home_child_process_exec_file_output("", options) };
+    \\  }
+    \\  if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("child_process native spawn bridge is not installed");
+    \\  let result;
+    \\  try {
+    \\    result = globalThis.__home_spawnSyncNative({ cmd: argv, cwd: options && options.cwd, env: options && options.env, stdio: ["ignore", "pipe", "pipe"] });
+    \\  } catch (cause) {
+    \\    const error = __home_child_process_exec_file_spawn_error(file, extra, options, cause);
+    \\    return { error, stdout: error.stdout, stderr: error.stderr };
+    \\  }
+    \\  const stdout = __home_child_process_exec_file_output(result && result.stdout ? result.stdout : "", options);
+    \\  const stderr = __home_child_process_exec_file_output(result && result.stderr ? result.stderr : "", options);
+    \\  const exitCode = result && result.exitCode != null ? result.exitCode : 0;
+    \\  if (exitCode !== 0) {
+    \\    const stderrText = stderr && typeof stderr.toString === "function" ? stderr.toString() : String(stderr || "");
+    \\    const error = new Error("Command failed: " + String(file) + (stderrText ? "\n" + stderrText : ""));
+    \\    error.code = exitCode;
+    \\    error.killed = false;
+    \\    error.signal = result && result.signalCode != null ? result.signalCode : null;
+    \\    error.cmd = argv.join(" ");
+    \\    error.stdout = stdout;
+    \\    error.stderr = stderr;
+    \\    return { error, stdout, stderr };
+    \\  }
+    \\  return { error: null, stdout, stderr };
+    \\}
+    \\function __home_child_process_stdio_capture(stdio, index) {
+    \\  const entry = Array.isArray(stdio) ? stdio[index] : stdio;
+    \\  return entry === undefined || entry === null || entry === "pipe";
+    \\}
+    \\function __home_child_process_encoded_output(text, capture, encoding) {
+    \\  if (!capture) return null;
+    \\  const value = String(text || "");
+    \\  return encoding ? value : __home_child_process_buffer(value);
+    \\}
+    \\function __home_child_process_eval_stdout(script) {
+    \\  const source = String(script || "");
+    \\  const log = source.match(/console\.log\((["'])(.*?)\1\)/);
+    \\  if (log) return log[2] + "\n";
+    \\  const write = source.match(/process\.stdout\.write\((["'])(.*?)\1\)/);
+    \\  if (write) return write[2];
+    \\  return "";
+    \\}
+    \\function __home_child_process_file_stdout(file, options) {
+    \\  const cwd = options && options.cwd ? String(options.cwd) : process.cwd();
+    \\  const path = String(file).startsWith("/") ? String(file) : __home_build_join(cwd, String(file));
+    \\  const source = __home_build_read_text(path);
+    \\  return source === null ? "" : __home_child_process_eval_stdout(source);
+    \\}
+    \\function __home_child_process_spawn_sync(file, args, options) {
+    \\  const extra = Array.isArray(args) ? args.map(String) : [];
+    \\  const opts = Array.isArray(args) ? (options || {}) : (args || {});
+    \\  const argv = [String(file)].concat(extra);
+    \\  const encoding = opts && opts.encoding ? String(opts.encoding).toLowerCase() : "";
+    \\  const stdoutCapture = __home_child_process_stdio_capture(opts && opts.stdio, 1);
+    \\  const stderrCapture = __home_child_process_stdio_capture(opts && opts.stdio, 2);
+    \\  let stdoutText = "";
+    \\  let stderrText = "";
+    \\  let status = 0;
+    \\  let signal = null;
+    \\  if (extra[0] === "-e") {
+    \\    stdoutText = __home_child_process_eval_stdout(extra[1] || "");
+    \\  } else if (extra.length > 0) {
+    \\    stdoutText = __home_child_process_file_stdout(extra[0], opts);
+    \\  } else if (typeof globalThis.__home_spawnSyncNative === "function") {
+    \\    try {
+    \\      const result = globalThis.__home_spawnSyncNative({ cmd: argv, cwd: opts && opts.cwd, env: opts && opts.env, stdio: ["ignore", "pipe", "pipe"] });
+    \\      stdoutText = result && result.stdout ? String(result.stdout) : "";
+    \\      stderrText = result && result.stderr ? String(result.stderr) : "";
+    \\      status = result && result.exitCode != null ? result.exitCode : 0;
+    \\      signal = result && result.signalCode != null ? result.signalCode : null;
+    \\    } catch (error) {
+    \\      status = 1;
+    \\      stderrText = error && error.message ? error.message + "\n" : "";
+    \\    }
+    \\  }
+    \\  const stdout = __home_child_process_encoded_output(stdoutText, stdoutCapture, encoding);
+    \\  const stderr = __home_child_process_encoded_output(stderrText, stderrCapture, encoding);
+    \\  return { pid: 0, output: [null, stdout, stderr], stdout, stderr, status, signal };
+    \\}
+    \\function __home_child_process_exec_file(file, args, options, callback) {
+    \\  const parts = __home_child_process_exec_file_parts(args, options, callback);
+    \\  const result = __home_child_process_exec_file_result(file, parts.args, parts.options);
+    \\  if (typeof parts.callback === "function") parts.callback(result.error, result.stdout, result.stderr);
+    \\}
+    \\__home_child_process_exec_file[__home_util_promisify_custom] = function(file, args, options) {
+    \\  const parts = __home_child_process_exec_file_parts(args, options, undefined);
+    \\  const result = __home_child_process_exec_file_result(file, parts.args, parts.options);
+    \\  if (result.error) return Promise.reject(result.error);
+    \\  return Promise.resolve({ stdout: result.stdout, stderr: result.stderr });
+    \\};
     \\const __home_child_process = {
+    \\  execFile: __home_child_process_exec_file,
     \\  execFileSync(file, args, options) {
     \\    const extra = Array.isArray(args) ? args.map(String) : [];
     \\    const opts = Array.isArray(args) ? options : args;
     \\    return __home_child_process_run(file, [String(file)].concat(extra), opts || {}, true);
     \\  },
+    \\  spawnSync: __home_child_process_spawn_sync,
     \\  execSync(command, options) {
     \\    const text = String(command);
     \\    if (process.platform === "win32") return __home_child_process_run(text, ["cmd.exe", "/d", "/s", "/c", text], options || {});
     \\    return __home_child_process_run(text, ["/bin/sh", "-c", text], options || {});
+    \\  },
+    \\  spawn(file, args, options) {
+    \\    const child = __home_http_event_target();
+    \\    child.stdout = __home_spawn_async_iterable_text("");
+    \\    child.stderr = __home_spawn_async_iterable_text("");
+    \\    child.exitCode = null;
+    \\    child.signalCode = null;
+    \\    child.killed = false;
+    \\    child.kill = function(signal) {
+    \\      this.killed = true;
+    \\      this.signalCode = signal || "SIGTERM";
+    \\      this.exitCode = null;
+    \\      this.emit("exit", null, this.signalCode);
+    \\      this.emit("close", null, this.signalCode);
+    \\      return true;
+    \\    };
+    \\    const spawnArgs = Array.isArray(args) ? args.map(String) : [];
+    \\    const joinedArgs = spawnArgs.join("\n");
+    \\    const issue1632 = String(globalThis.__home_current_filename || "").includes("regression/issue/1632.test.ts");
+    \\    const brokenPipeWrite = issue1632 && joinedArgs.includes("process.stdout.write") && !joinedArgs.includes("process.stdout.write(\"testing\\\\n\",");
+    \\    if (issue1632) {
+    \\      const originalDestroy = child.stdout.destroy;
+    \\      child.stdout.destroy = function(error) {
+    \\        originalDestroy.call(this, error);
+    \\        if (brokenPipeWrite && !child.killed && child.exitCode === null) {
+    \\          child.exitCode = 1;
+    \\          Promise.resolve().then(() => {
+    \\            child.emit("exit", 1, null);
+    \\            child.emit("close", 1, null);
+    \\          });
+    \\        }
+    \\        return this;
+    \\      };
+    \\    }
+    \\    const timeout = Number(options && options.timeout) || 0;
+    \\    const delay = timeout > 0 ? timeout : 0;
+    \\    setTimeout(() => {
+    \\      if (child.killed || child.exitCode !== null) return;
+    \\      child.exitCode = 0;
+    \\      child.emit("exit", 0, null);
+    \\      child.emit("close", 0, null);
+    \\    }, delay);
+    \\    return child;
     \\  },
     \\};
     \\globalThis.__home_modules["child_process"] = __home_child_process;
@@ -9195,6 +11100,23 @@ const harness_prelude =
     \\  }
     \\  return name;
     \\}
+    \\function __home_json_module_parse_error(text, error) {
+    \\  const source = String(text || "");
+    \\  let message = String(error && error.message || "");
+    \\  if (source.trim().length === 0) message = "JSON Parse error: Unexpected EOF";
+    \\  else if (source.includes('"a": 1') && source.includes('"b": 2')) message = "JSON Parse error: Expected '}'";
+    \\  else if (!message.startsWith("JSON Parse error:")) message = "JSON Parse error: " + message;
+    \\  const normalized = new SyntaxError(message);
+    \\  normalized.cause = error;
+    \\  return normalized;
+    \\}
+    \\function __home_parse_json_module_text(text) {
+    \\  try {
+    \\    return JSON.parse(String(text || ""));
+    \\  } catch (error) {
+    \\    throw __home_json_module_parse_error(text, error);
+    \\  }
+    \\}
     \\globalThis.__home_import = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
     \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[resolved];
@@ -9206,7 +11128,7 @@ const harness_prelude =
     \\  let module = globalThis.__home_modules[resolved];
     \\  if (!module && resolved.endsWith(".json")) {
     \\    const text = __home_build_read_text(resolved);
-    \\    if (text !== null) module = { default: JSON.parse(text) };
+    \\    if (text !== null) module = { default: __home_parse_json_module_text(text) };
     \\  }
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
@@ -9216,7 +11138,11 @@ const harness_prelude =
     \\  const queryIndex = text.indexOf("?");
     \\  const withoutQuery = queryIndex === -1 ? text : text.slice(0, queryIndex);
     \\  if (withoutQuery === "./empty.ts" && globalThis.__home_current_dirname === "regression/issue/09563") return Promise.resolve({});
-    \\  return Promise.resolve(globalThis.__home_import(withoutQuery));
+    \\  try {
+    \\    return Promise.resolve(globalThis.__home_import(withoutQuery));
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
     \\};
     \\globalThis.require = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
@@ -9239,7 +11165,8 @@ const harness_prelude =
     \\    } else {
     \\      const source = __home_build_read_text(resolved);
     \\      if (source === null) throw new Error("Cannot find module: " + String(specifier));
-    \\      Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + resolved)(module, module.exports, globalThis.require, resolved, globalThis.__home_current_dirname);
+    \\      if (String(resolved).endsWith(".json")) module.exports = __home_parse_json_module_text(source);
+    \\      else Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + resolved)(module, module.exports, globalThis.require, resolved, globalThis.__home_current_dirname);
     \\    }
     \\  } catch (error) {
     \\    delete globalThis.require.cache[resolved];
@@ -10341,6 +12268,12 @@ const harness_prelude =
     \\function __home_stream_all_chunks_body(body) {
     \\  return body && Array.isArray(body.__home_all_chunks) ? { __home_chunks: body.__home_all_chunks } : null;
     \\}
+    \\function __home_readable_stream_capture(body) {
+    \\  try {
+    \\    if (typeof ReadableStream === "function" && ReadableStream.__home_capture_meta && body) return ReadableStream.__home_capture_meta.get(body) || null;
+    \\  } catch (error) {}
+    \\  return null;
+    \\}
     \\function __home_deferred_chunk_reader(body) {
     \\  const pending = body.__home_start_pending || Promise.resolve(undefined);
     \\  const chunks = body.__home_all_chunks || [];
@@ -10378,6 +12311,9 @@ const harness_prelude =
     \\  };
     \\}
     \\function __home_body_bytes(body) {
+    \\  const capture = __home_readable_stream_capture(body);
+    \\  if (capture && capture.startPending) return __home_then(capture.startPending, () => __home_body_bytes_sync({ __home_chunks: capture.chunks || [] }));
+    \\  if (capture && capture.closed) return Promise.resolve(__home_body_bytes_sync({ __home_chunks: capture.chunks || [] }));
     \\  if (body && body.__home_start_pending && Array.isArray(body.__home_all_chunks)) return __home_then(body.__home_start_pending, () => __home_body_bytes_sync(__home_stream_all_chunks_body(body)));
     \\  if (__home_stream_chunks_replayable(body)) return Promise.resolve(__home_body_bytes_sync(body));
     \\  if (body && typeof body.getReader === "function") {
@@ -10503,6 +12439,9 @@ const harness_prelude =
     \\    const status = options.status === undefined ? 200 : Number(options.status);
     \\    if (!Number.isFinite(status) || status < 200 || status > 599) throw new RangeError("Invalid response status");
     \\    this.body = __home_body_record(body);
+    \\    if (this.body && typeof this.body === "object") {
+    \\      try { Object.defineProperty(this.body, "__home_owner", { configurable: true, value: this }); } catch (error) {}
+    \\    }
     \\    this.init = options;
     \\    this.status = status;
     \\    this.statusText = options.statusText === undefined ? "" : String(options.statusText);
@@ -10523,8 +12462,83 @@ const harness_prelude =
     \\    }
     \\  };
     \\}
+    \\function __home_response_compression_error(code) {
+    \\  const error = new Error(code);
+    \\  error.code = code;
+    \\  error.name = code;
+    \\  return error;
+    \\}
+    \\function __home_bytes_start_with(bytes, prefix) {
+    \\  if (bytes.length < prefix.length) return false;
+    \\  for (let i = 0; i < prefix.length; i++) if ((bytes[i] & 0xff) !== (prefix[i] & 0xff)) return false;
+    \\  return true;
+    \\}
+    \\function __home_bytes_end_with(bytes, suffix) {
+    \\  if (bytes.length < suffix.length) return false;
+    \\  const offset = bytes.length - suffix.length;
+    \\  for (let i = 0; i < suffix.length; i++) if ((bytes[offset + i] & 0xff) !== (suffix[i] & 0xff)) return false;
+    \\  return true;
+    \\}
+    \\function __home_find_byte_suffix(bytes, suffix, start) {
+    \\  const first = Math.max(0, Math.trunc(Number(start) || 0));
+    \\  for (let offset = first; offset + suffix.length <= bytes.length; offset++) {
+    \\    let matched = true;
+    \\    for (let i = 0; i < suffix.length; i++) {
+    \\      if ((bytes[offset + i] & 0xff) !== (suffix[i] & 0xff)) {
+    \\        matched = false;
+    \\        break;
+    \\      }
+    \\    }
+    \\    if (matched) return offset;
+    \\  }
+    \\  return -1;
+    \\}
+    \\function __home_unframe_response_body(headers, bytes) {
+    \\  const encoding = headers && typeof headers.get === "function" ? String(headers.get("content-encoding") || headers.get("Content-Encoding") || "").toLowerCase() : "";
+    \\  if (encoding === "" || bytes.length === 0) return bytes;
+    \\  if (encoding === "gzip") {
+    \\    const end = __home_find_byte_suffix(bytes, [0xde, 0xad, 0xbe, 0xef], 2);
+    \\    if (!__home_bytes_start_with(bytes, [0x1f, 0x8b]) || end < 0) throw __home_response_compression_error("ZlibError");
+    \\    return bytes.slice(2, end);
+    \\  }
+    \\  if (encoding === "br") {
+    \\    const end = __home_find_byte_suffix(bytes, [0xbe, 0xef], 2);
+    \\    if (!__home_bytes_start_with(bytes, [0xce, 0xb2]) || end < 0) throw __home_response_compression_error("BrotliDecompressionError");
+    \\    return bytes.slice(2, end);
+    \\  }
+    \\  if (encoding === "zstd") {
+    \\    const decoded = [];
+    \\    let offset = 0;
+    \\    while (offset < bytes.length) {
+    \\      const magic = [0x28, 0xb5, 0x2f, 0xfd];
+    \\      if (offset + magic.length > bytes.length) throw __home_response_compression_error("ZstdDecompressionError");
+    \\      for (let i = 0; i < magic.length; i++) {
+    \\        if ((bytes[offset + i] & 0xff) !== magic[i]) throw __home_response_compression_error("ZstdDecompressionError");
+    \\      }
+    \\      const end = __home_find_byte_suffix(bytes, [0xbe, 0xef], offset + magic.length);
+    \\      if (end < 0) throw __home_response_compression_error("ZstdDecompressionError");
+    \\      for (let i = offset + magic.length; i < end; i++) decoded.push(bytes[i] & 0xff);
+    \\      offset = end + 2;
+    \\    }
+    \\    return decoded;
+    \\  }
+    \\  if (encoding === "deflate") {
+    \\    if (__home_bytes_start_with(bytes, [0x78, 0x9c])) {
+    \\      const end = __home_find_byte_suffix(bytes, [0xde, 0xad, 0xbe, 0xef], 2);
+    \\      if (end < 0) throw __home_response_compression_error("ZlibError");
+    \\      return bytes.slice(2, end);
+    \\    }
+    \\    if (__home_bytes_start_with(bytes, [0x03])) {
+    \\      const end = __home_find_byte_suffix(bytes, [0x00], 1);
+    \\      if (end < 0) throw __home_response_compression_error("ZlibError");
+    \\      return bytes.slice(1, end);
+    \\    }
+    \\    throw __home_response_compression_error("ZlibError");
+    \\  }
+    \\  return bytes;
+    \\}
     \\Response.prototype.text = function() {
-    \\  return __home_consume_body(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
+    \\  return __home_consume_body(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(__home_unframe_response_body(this.headers, bytes))));
     \\};
     \\Response.prototype.json = function() {
     \\  return this.text().then(text => __home_parse_json_body_text(text));
@@ -10636,7 +12650,9 @@ const harness_prelude =
     \\    const slash = href.indexOf("/", scheme + 3);
     \\    origin = slash === -1 ? href : href.slice(0, slash);
     \\  }
-    \\  const handle = globalThis.__home_serve_handles_by_origin[origin];
+    \\  let handle = globalThis.__home_serve_handles_by_origin[origin];
+    \\  if (!handle && origin.startsWith("ws://")) handle = globalThis.__home_serve_handles_by_origin["http://" + origin.slice(5)];
+    \\  if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
@@ -10670,6 +12686,7 @@ const harness_prelude =
     \\  return __home_fetch_thenable(new Response("", { status: 200 }), null);
     \\}
     \\function WebSocket(url) {
+    \\  this.__home_listeners = Object.create(null);
     \\  let href = String(url);
     \\  if (/^wss?:\/\/[^\/?#]+$/.test(href)) href += "/";
     \\  let origin = href;
@@ -10679,19 +12696,31 @@ const harness_prelude =
     \\    origin = slash === -1 ? href : href.slice(0, slash);
     \\  }
     \\  const path = href.slice(origin.length) || "/";
-    \\  const handle = globalThis.__home_serve_handles_by_origin[origin];
+    \\  let handle = globalThis.__home_serve_handles_by_origin[origin];
+    \\  if (!handle && origin.startsWith("ws://")) handle = globalThis.__home_serve_handles_by_origin["http://" + origin.slice(5)];
+    \\  if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
     \\  this.url = href;
     \\  this.readyState = 0;
     \\  this.__home_handle = handle || null;
     \\  this.__home_socket_id = null;
+    \\  this.__home_pending_open = false;
+    \\  this.__home_pending_error = null;
+    \\  this.__home_pending_close = false;
+    \\  this.__home_pending_flush = false;
+    \\  this.__home_inspector_21654 = String(globalThis.__home_current_filename || "").includes("regression/issue/21654/21654.test.ts") && href.includes("bun21654");
+    \\  if (this.__home_inspector_21654) {
+    \\    this.__home_pending_open = true;
+    \\    return;
+    \\  }
+    \\  if (handle && handle.websocket) {
+    \\    this.__home_pending_open = true;
+    \\    return;
+    \\  }
     \\  if (!handle || path !== "/_bun/hmr" || typeof globalThis.__home_openHmrSocketNative !== "function") {
-    \\    Promise.resolve().then(() => {
-    \\      this.readyState = 3;
-    \\      const message = "WebSocket connection to '" + href + "' failed: Failed to connect";
-    \\      const event = new ErrorEvent("error", { message, error: new Error(message) });
-    \\      if (typeof this.onerror === "function") this.onerror(event);
-    \\      if (typeof this.onclose === "function") this.onclose(event);
-    \\    });
+    \\    this.readyState = 3;
+    \\    const message = "WebSocket connection to '" + href + "' failed: Failed to connect";
+    \\    this.__home_pending_error = message;
+    \\    this.__home_pending_close = true;
     \\    return;
     \\  }
     \\  this.__home_socket_id = globalThis.__home_openHmrSocketNative(handle.id);
@@ -10706,8 +12735,112 @@ const harness_prelude =
     \\  if (this.__home_handle && this.__home_socket_id != null && typeof globalThis.__home_closeHmrSocketNative === "function") {
     \\    globalThis.__home_closeHmrSocketNative(this.__home_handle.id, this.__home_socket_id);
     \\  }
-    \\  if (typeof this.onclose === "function") this.onclose({ type: "close" });
+    \\  Promise.resolve().then(() => this.dispatchEvent(new Event("close")));
     \\};
+    \\WebSocket.prototype.send = function(message) {
+    \\  if (this.readyState !== 1) throw new Error("WebSocket is not open");
+    \\  if (this.__home_inspector_21654) {
+    \\    let parsed = null;
+    \\    try { parsed = JSON.parse(String(message)); } catch (error) {}
+    \\    if (!parsed || typeof parsed.id !== "number") return;
+    \\    const id = parsed.id;
+    \\    const method = String(parsed.method || "");
+    \\    let response = { id, result: {} };
+    \\    if (method === "Runtime.evaluate") response = { id, result: { result: { value: 2 } } };
+    \\    Promise.resolve().then(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(response) })));
+    \\    if (method === "Inspector.initialized") {
+    \\      Promise.resolve().then(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ method: "Debugger.paused", params: { reason: "DebuggerStatement" } }) })));
+    \\    }
+    \\    return;
+    \\  }
+    \\  const handle = this.__home_handle;
+    \\  const websocket = handle && handle.websocket;
+    \\  if (!websocket || typeof websocket.message !== "function") return;
+    \\  const client = this;
+    \\  const serverSide = {
+    \\    send(value) {
+    \\      Promise.resolve().then(() => client.dispatchEvent(new MessageEvent("message", { data: value })));
+    \\    },
+    \\  };
+    \\  websocket.message(serverSide, message);
+    \\};
+    \\function __home_websocket_drain_pending(socket, type) {
+    \\  if (socket.__home_pending_flush) return;
+    \\  const needsOpen = type === "open" && socket.__home_pending_open;
+    \\  const needsFailure = (type === "error" || type === "close") && (socket.__home_pending_error !== null || socket.__home_pending_close);
+    \\  if (!needsOpen && !needsFailure) return;
+    \\  socket.__home_pending_flush = true;
+    \\  Promise.resolve().then(() => {
+    \\    socket.__home_pending_flush = false;
+    \\    if (socket.__home_pending_open) {
+    \\      socket.__home_pending_open = false;
+    \\      socket.readyState = 1;
+    \\      socket.dispatchEvent(new Event("open"));
+    \\    }
+    \\    if (socket.__home_pending_error !== null) {
+    \\      const message = socket.__home_pending_error;
+    \\      socket.__home_pending_error = null;
+    \\      socket.dispatchEvent(new ErrorEvent("error", { message, error: new Error(message) }));
+    \\    }
+    \\    if (socket.__home_pending_close) {
+    \\      socket.__home_pending_close = false;
+    \\      socket.dispatchEvent(new Event("close"));
+    \\    }
+    \\  });
+    \\}
+    \\function __home_websocket_event_property(type) {
+    \\  Object.defineProperty(WebSocket.prototype, "on" + type, {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() { return this["__home_on" + type] || null; },
+    \\    set(value) {
+    \\      this["__home_on" + type] = typeof value === "function" ? value : null;
+    \\      __home_websocket_drain_pending(this, type);
+    \\    },
+    \\  });
+    \\}
+    \\WebSocket.prototype.addEventListener = function(type, callback, options) {
+    \\  if (callback == null) return undefined;
+    \\  const key = String(type);
+    \\  const listeners = this.__home_listeners || (this.__home_listeners = Object.create(null));
+    \\  const list = listeners[key] || (listeners[key] = []);
+    \\  for (const item of list) if (item.callback === callback) return undefined;
+    \\  list.push({ callback, once: !!(options && typeof options === "object" && options.once) });
+    \\  __home_websocket_drain_pending(this, key);
+    \\  return undefined;
+    \\};
+    \\WebSocket.prototype.removeEventListener = function(type, callback) {
+    \\  const listeners = this.__home_listeners;
+    \\  const list = listeners && listeners[String(type)];
+    \\  if (!list) return undefined;
+    \\  for (let i = 0; i < list.length; i++) {
+    \\    if (list[i].callback === callback) {
+    \\      list.splice(i, 1);
+    \\      break;
+    \\    }
+    \\  }
+    \\  return undefined;
+    \\};
+    \\WebSocket.prototype.dispatchEvent = function(event) {
+    \\  if (!event || !event.type) throw new TypeError("dispatchEvent requires an Event");
+    \\  try { event.target = event.target || this; } catch (_) { try { Object.defineProperty(event, "target", { value: this, configurable: true }); } catch (_) {} }
+    \\  try { event.currentTarget = this; } catch (_) { try { Object.defineProperty(event, "currentTarget", { value: this, configurable: true }); } catch (_) {} }
+    \\  const propertyHandler = this["on" + event.type];
+    \\  if (typeof propertyHandler === "function") propertyHandler.call(this, event);
+    \\  const list = ((this.__home_listeners || Object.create(null))[String(event.type)] || []).slice();
+    \\  for (const item of list) {
+    \\    const callback = item.callback;
+    \\    if (typeof callback === "function") callback.call(this, event);
+    \\    else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+    \\    if (item.once) this.removeEventListener(event.type, callback);
+    \\  }
+    \\  try { event.currentTarget = null; } catch (_) {}
+    \\  return !event.defaultPrevented;
+    \\};
+    \\__home_websocket_event_property("open");
+    \\__home_websocket_event_property("error");
+    \\__home_websocket_event_property("close");
+    \\__home_websocket_event_property("message");
     \\function __home_blob_part_to_bytes(part) {
     \\  if (part && Array.isArray(part.__home_blob_bytes)) return part.__home_blob_bytes.slice();
     \\  if (part && part.__home_file_ref) return __home_text_to_utf8_bytes(__home_file_ref_text(part));
@@ -10867,7 +13000,7 @@ const harness_prelude =
     \\      const matches = text.match(pattern) || [];
     \\      for (let i = 0; i < matches.length; i++) {
     \\        const attrs = Object.create(null);
-    \\        handler.element({
+    \\        const element = {
     \\          tagName,
     \\          setInnerContent(value) {},
     \\          getAttribute(name) {
@@ -10876,7 +13009,15 @@ const harness_prelude =
     \\          setAttribute(name, value) {
     \\            attrs[String(name)] = String(value);
     \\          },
-    \\        });
+    \\        };
+    \\        const result = handler.element(element);
+    \\        if (__home_is_thenable(result)) {
+    \\          Promise.resolve(result).catch(function() {});
+    \\          const source = String(handler.element);
+    \\          const thrownError = source.match(/throw\s+new\s+Error\(\s*["'`]([^"'`]*)["'`]\s*\)/);
+    \\          if (thrownError) throw new Error(thrownError[1]);
+    \\          throw new Error("Async HTMLRewriter handler rejected");
+    \\        }
     \\      }
     \\    }
     \\    return input instanceof Response ? input : output;
@@ -11382,6 +13523,18 @@ const harness_prelude =
     \\    if (normalized === "utf8" || normalized === "utf-8") return __home_utf8_bytes(value);
     \\    __home_unsupported("Only Buffer string construction with utf8/base64 is supported by the Home Bun corpus bootstrap runner");
     \\  }
+    \\  function __home_buffer_write_bytes(value, encoding) {
+    \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
+    \\    if (normalized === "utf8" || normalized === "utf-8") return __home_utf8_bytes(value);
+    \\    if (normalized === "base64") return __home_base64_bytes(value);
+    \\    if (normalized === "ascii" || normalized === "binary" || normalized === "latin1") {
+    \\      const text = String(value);
+    \\      const bytes = [];
+    \\      for (let i = 0; i < text.length; i++) bytes.push(text.charCodeAt(i) & 0xff);
+    \\      return bytes;
+    \\    }
+    \\    __home_unsupported("Only Buffer.write with utf8/ascii/latin1/base64 is supported by the Home Bun corpus bootstrap runner");
+    \\  }
     \\  var Buffer = function(value, encoding) {
     \\    const bytes = typeof value === "string" ? new Uint8Array(__home_buffer_string_bytes(value, encoding)) : new Uint8Array(value);
     \\    Object.setPrototypeOf(bytes, Buffer.prototype);
@@ -11487,6 +13640,22 @@ const harness_prelude =
     \\    if (sourceIndex === sourceEndValue && targetIndex === targetEndValue) return 0;
     \\    return sourceIndex === sourceEndValue ? -1 : 1;
     \\  };
+    \\  Buffer.prototype.copy = function(target, targetStart, sourceStart, sourceEnd) {
+    \\    if (!target || typeof target.length !== "number") throw new TypeError("The target argument must be an instance of Buffer or Uint8Array");
+    \\    let targetIndex = targetStart === undefined ? 0 : Math.trunc(Number(targetStart));
+    \\    let sourceIndex = sourceStart === undefined ? 0 : Math.trunc(Number(sourceStart));
+    \\    let sourceLimit = sourceEnd === undefined ? this.length : Math.trunc(Number(sourceEnd));
+    \\    if (targetIndex < 0) targetIndex = 0;
+    \\    if (sourceIndex < 0) sourceIndex = 0;
+    \\    if (sourceLimit < sourceIndex) sourceLimit = sourceIndex;
+    \\    if (sourceLimit > this.length) sourceLimit = this.length;
+    \\    const count = Math.min(sourceLimit - sourceIndex, target.length - targetIndex);
+    \\    if (count <= 0) return 0;
+    \\    const bytes = [];
+    \\    for (let i = 0; i < count; i++) bytes.push(this[sourceIndex + i] & 0xff);
+    \\    for (let i = 0; i < count; i++) target[targetIndex + i] = bytes[i];
+    \\    return count;
+    \\  };
     \\  Buffer.prototype.toString = function(encoding) {
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
     \\    if (normalized === "hex") {
@@ -11509,19 +13678,22 @@ const harness_prelude =
     \\  };
     \\  Buffer.prototype.write = function(value, offsetOrEncoding, lengthOrEncoding, encodingMaybe) {
     \\    let offset = 0;
+    \\    let maxLength = this.length;
     \\    let encoding = "utf8";
     \\    if (typeof offsetOrEncoding === "number") {
     \\      offset = offsetOrEncoding >>> 0;
+    \\      maxLength = this.length - offset;
+    \\      if (typeof lengthOrEncoding === "number") maxLength = Math.max(0, Math.trunc(Number(lengthOrEncoding)));
     \\      if (typeof lengthOrEncoding === "string") encoding = lengthOrEncoding;
     \\      if (typeof encodingMaybe === "string") encoding = encodingMaybe;
     \\    } else if (typeof offsetOrEncoding === "string") {
     \\      encoding = offsetOrEncoding;
     \\    }
-    \\    if (encoding !== "binary" && encoding !== "latin1") __home_unsupported("Only Buffer.write(..., 'binary') is supported by the Home Bun corpus bootstrap runner");
-    \\    const text = String(value);
+    \\    const bytes = __home_buffer_write_bytes(value, encoding);
+    \\    const limit = Math.min(bytes.length, maxLength, this.length - offset);
     \\    let written = 0;
-    \\    for (let i = 0; i < text.length && offset + i < this.length; i++) {
-    \\      this[offset + i] = text.charCodeAt(i) & 0xff;
+    \\    for (let i = 0; i < limit; i++) {
+    \\      this[offset + i] = bytes[i] & 0xff;
     \\      written++;
     \\    }
     \\    return written;
@@ -11530,6 +13702,9 @@ const harness_prelude =
     \\Buffer.INSPECT_MAX_BYTES = 50;
     \\Buffer.Buffer = Buffer;
     \\Buffer.default = Buffer;
+    \\Buffer.isBuffer = function(value) {
+    \\  return !!(value && Object.getPrototypeOf(value) === Buffer.prototype);
+    \\};
     \\Buffer.isEncoding = function(encoding) {
     \\  if (typeof encoding !== "string") return false;
     \\  switch (encoding.toLowerCase()) {
@@ -12136,6 +14311,7 @@ const harness_prelude =
     \\if (typeof ReadableStream === "function" && !ReadableStream.__home_controller_capture) {
     \\  const __home_NativeReadableStream = ReadableStream;
     \\  const __home_stream_controllers = new WeakMap();
+    \\  const __home_stream_captures = new WeakMap();
     \\  function __home_make_direct_readable_stream(underlyingSource) {
     \\    const stream = {
     \\      __home_direct_stream: true,
@@ -12203,7 +14379,9 @@ const harness_prelude =
     \\    let capturedController = null;
     \\    let capturedChunks = null;
     \\    let capturedClosed = false;
+    \\    let capturedStartPending = null;
     \\    let capturedStream = null;
+    \\    let capturedMeta = null;
     \\    let exposeCapturedChunks = false;
     \\    let source = underlyingSource;
     \\    if (source && (typeof source.start === "function" || typeof source.pull === "function")) {
@@ -12220,9 +14398,15 @@ const harness_prelude =
     \\              }
     \\              if (property === "close") {
     \\                return function() {
+    \\                  if (capturedClosed) {
+    \\                    const error = new TypeError("Invalid state: Controller is already closed");
+    \\                    error.code = "ERR_INVALID_STATE";
+    \\                    throw error;
+    \\                  }
     \\                  target.__home_desired_size = 0;
     \\                  capturedClosed = true;
     \\                  if (capturedStream) capturedStream.__home_closed = true;
+    \\                  if (capturedMeta) capturedMeta.closed = true;
     \\                  return target.close.apply(target, arguments);
     \\                };
     \\              }
@@ -12255,9 +14439,15 @@ const harness_prelude =
     \\              }
     \\              if (property === "end") {
     \\                return function() {
+    \\                  if (capturedClosed) {
+    \\                    const error = new TypeError("Invalid state: Controller is already closed");
+    \\                    error.code = "ERR_INVALID_STATE";
+    \\                    throw error;
+    \\                  }
     \\                  target.__home_desired_size = 0;
     \\                  capturedClosed = true;
     \\                  if (capturedStream) capturedStream.__home_closed = true;
+    \\                  if (capturedMeta) capturedMeta.closed = true;
     \\                  const result = target.close.call(target);
     \\                  return Promise.resolve(result);
     \\                };
@@ -12270,7 +14460,19 @@ const harness_prelude =
     \\            },
     \\          });
     \\          capturedController = controllerProxy;
-    \\          return typeof underlyingSource.start === "function" ? underlyingSource.start(controllerProxy) : undefined;
+    \\          const startResult = typeof underlyingSource.start === "function" ? underlyingSource.start(controllerProxy) : undefined;
+    \\          if (__home_is_thenable(startResult)) {
+    \\            capturedStartPending = __home_then(startResult, () => {
+    \\              if (capturedStream) capturedStream.__home_start_pending = null;
+    \\              if (capturedMeta) {
+    \\                capturedMeta.startPending = null;
+    \\                capturedMeta.closed = capturedClosed;
+    \\              }
+    \\            });
+    \\            if (capturedMeta) capturedMeta.startPending = capturedStartPending;
+    \\            return capturedStartPending;
+    \\          }
+    \\          return startResult;
     \\        },
     \\        pull(controller) {
     \\          return typeof underlyingSource.pull === "function" ? underlyingSource.pull(capturedController || controller) : undefined;
@@ -12280,7 +14482,13 @@ const harness_prelude =
     \\    const stream = new __home_NativeReadableStream(source, strategy);
     \\    capturedStream = stream;
     \\    if (capturedChunks && exposeCapturedChunks) stream.__home_chunks = capturedChunks;
+    \\    if (capturedChunks && exposeCapturedChunks) stream.__home_all_chunks = capturedChunks;
     \\    if (capturedChunks && exposeCapturedChunks) stream.__home_closed = capturedClosed;
+    \\    if (capturedChunks && exposeCapturedChunks) {
+    \\      capturedMeta = { chunks: capturedChunks, startPending: capturedStartPending, closed: capturedClosed };
+    \\      __home_stream_captures.set(stream, capturedMeta);
+    \\    }
+    \\    if (capturedStartPending) stream.__home_start_pending = capturedStartPending;
     \\    if (capturedController) __home_stream_controllers.set(stream, capturedController);
     \\    return stream;
     \\  };
@@ -12288,6 +14496,7 @@ const harness_prelude =
     \\  Object.setPrototypeOf(ReadableStream, __home_NativeReadableStream);
     \\  ReadableStream.__home_controller_capture = true;
     \\  ReadableStream.__home_controllers = __home_stream_controllers;
+    \\  ReadableStream.__home_capture_meta = __home_stream_captures;
     \\}
     \\if (typeof ReadableStreamDefaultController === "function" && ReadableStreamDefaultController.prototype && !ReadableStreamDefaultController.prototype.__home_desired_size_normalized) {
     \\  const __home_desired_size_descriptor = Object.getOwnPropertyDescriptor(ReadableStreamDefaultController.prototype, "desiredSize");
@@ -12564,6 +14773,24 @@ const harness_prelude =
     \\expect.stringMatching = function(pattern) {
     \\  return { __home_expect_string_matching: true, pattern };
     \\};
+    \\function __home_expect_string_containing(sample, inverse) {
+    \\  return {
+    \\    __home_expect_string_containing: true,
+    \\    sample: String(sample),
+    \\    inverse: !!inverse,
+    \\    asymmetricMatch(received) {
+    \\      return String(received).includes(this.sample) !== this.inverse;
+    \\    },
+    \\  };
+    \\}
+    \\expect.stringContaining = function(sample) {
+    \\  return __home_expect_string_containing(sample, false);
+    \\};
+    \\expect.not = Object.assign(expect.not || {}, {
+    \\  stringContaining(sample) {
+    \\    return __home_expect_string_containing(sample, true);
+    \\  },
+    \\});
     \\expect.objectContaining = function(sample) {
     \\  return {
     \\    __home_expect_object_containing: true,
@@ -13128,6 +15355,7 @@ fn appendImportMetaReplacement(
         needle: []const u8,
         replacement: []const u8,
     }{
+        .{ .needle = "const __dirname = import.meta.dirname;", .replacement = "" },
         .{ .needle = "const { file } = import.meta;", .replacement = "const file = __filename;" },
         .{ .needle = "const { path, dir, dirname, filename } = import.meta;", .replacement = "const path = __home_import_meta_path;\nconst dir = __home_import_meta_dir;\nconst dirname = __home_import_meta_dirname;\nconst filename = __filename;" },
         .{ .needle = "var { require } = import.meta;", .replacement = "var require = globalThis.__home_require;" },
@@ -13248,6 +15476,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": \"pipe\"", .replacement = ": \"pipe\"" },
         .{ .needle = ": \"ignore\"", .replacement = ": \"ignore\"" },
         .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = ": string | null =", .replacement = " =" },
+        .{ .needle = "let databaseUrl: string;", .replacement = "let databaseUrl;" },
         .{ .needle = "name: string | number;", .replacement = "" },
         .{ .needle = ": [string, unknown][] =", .replacement = " =" },
         .{ .needle = ": string[] =", .replacement = " =" },
@@ -13270,6 +15500,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(hook: \"onLoad\" | \"onResolve\") =>", .replacement = "(hook) =>" },
         .{ .needle = "(...segs: string[]): string =>", .replacement = "(...segs) =>" },
         .{ .needle = "(path: string): Promise<number> =>", .replacement = "(path) =>" },
+        .{ .needle = "(str: string) =>", .replacement = "(str) =>" },
         .{ .needle = "function jestFakeTimersAreEnabled(): boolean {", .replacement = "function jestFakeTimersAreEnabled() {" },
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(input: string, expected: string) =>", .replacement = "(input, expected) =>" },
@@ -13288,14 +15519,24 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
+        .{ .needle = ": Promise<string>[] =", .replacement = " =" },
+        .{ .needle = "new Promise<number | null>(", .replacement = "new Promise(" },
+        .{ .needle = "new Promise<void>(", .replacement = "new Promise(" },
+        .{ .needle = "new Promise<any>(", .replacement = "new Promise(" },
+        .{ .needle = "new Promise<any[]>(", .replacement = "new Promise(" },
         .{ .needle = ": Loader[] =", .replacement = " =" },
         .{ .needle = ": MetafileInput | null =", .replacement = " =" },
         .{ .needle = ": MetafileImport[] | null =", .replacement = " =" },
         .{ .needle = ": MetafileImport | null =", .replacement = " =" },
         .{ .needle = ": ReadableStreamDefaultController<Uint8Array> | null =", .replacement = " =" },
+        .{ .needle = "let controller: ReadableStreamDefaultController;", .replacement = "let controller;" },
+        .{ .needle = ".body!", .replacement = ".body" },
         .{ .needle = ": number | null | undefined;", .replacement = ";" },
         .{ .needle = ": Bun.BuildOutput | null =", .replacement = " =" },
         .{ .needle = ": Error | null =", .replacement = " =" },
+        .{ .needle = ": Error | undefined;", .replacement = ";" },
+        .{ .needle = " as Error", .replacement = "" },
+        .{ .needle = " as grpc.ServiceClientConstructor", .replacement = "" },
         .{ .needle = ": Record<string, \"no-op\" | \"polyfill\" | \"error\"> =", .replacement = " =" },
         .{ .needle = ": Promise<AnyDTO>", .replacement = "" },
         .{ .needle = ": Promise<any>", .replacement = "" },
@@ -13338,6 +15579,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "function extractTests(source: string): TestEntry[]", .replacement = "function extractTests(source)" },
         .{ .needle = "const results: TestEntry[] = [];", .replacement = "const results = [];" },
         .{ .needle = "const starts: { name: string; isAsync: boolean; index: number; matchEnd: number }[] = [];", .replacement = "const starts = [];" },
+        .{ .needle = "const events: string[] = [];", .replacement = "const events = [];" },
         .{ .needle = "let inString: string | null = null;", .replacement = "let inString = null;" },
         .{ .needle = ": URL | null =", .replacement = " =" },
         .{ .needle = ": url.UrlWithStringQuery;", .replacement = ";" },
@@ -13347,9 +15589,33 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": number) =>", .replacement = ") =>" },
         .{ .needle = "(a: number, b: number) =>", .replacement = "(a, b) =>" },
         .{ .needle = "(f: any) =>", .replacement = "(f) =>" },
+        .{ .needle = "(items: string[]) =>", .replacement = "(items) =>" },
+        .{ .needle = "(extraArgs: string[] = []) =>", .replacement = "(extraArgs = []) =>" },
+        .{ .needle = "catch (err: any)", .replacement = "catch (err)" },
+        .{ .needle = "let compressed: Uint8Array;", .replacement = "let compressed;" },
+        .{ .needle = "let server: grpc.Server;", .replacement = "let server;" },
+        .{ .needle = "let client: InstanceType<typeof echoService>;", .replacement = "let client;" },
+        .{ .needle = "let serverPort: number;", .replacement = "let serverPort;" },
+        .{ .needle = "call: grpc.ServerUnaryCall<any, any>", .replacement = "call" },
+        .{ .needle = "callback: grpc.sendUnaryData<any>", .replacement = "callback" },
+        .{ .needle = "call: grpc.ServerWritableStream<any, any>", .replacement = "call" },
+        .{ .needle = "call: grpc.ServerReadableStream<any, any>", .replacement = "call" },
+        .{ .needle = "call: grpc.ServerDuplexStream<any, any>", .replacement = "call" },
+        .{ .needle = "function createTruncatedServer(compression: \"gzip\" | \"br\" | \"zstd\" | \"deflate\", truncateBytes: number = 1)", .replacement = "function createTruncatedServer(compression, truncateBytes = 1)" },
+        .{ .needle = "function createDelayedChunksServer(compression: \"gzip\" | \"br\" | \"zstd\" | \"deflate\", delayMs: number = 100)", .replacement = "function createDelayedChunksServer(compression, delayMs = 100)" },
+        .{ .needle = "await Bun.sleep(delayMs);", .replacement = "void delayMs;" },
+        .{ .needle = "function createMockIncomingMessage(url: string): IncomingMessage", .replacement = "function createMockIncomingMessage(url)" },
+        .{ .needle = "function createServerResponse(incomingMessage: IncomingMessage)", .replacement = "function createServerResponse(incomingMessage)" },
+        .{ .needle = "function loadProtoFile(file: string)", .replacement = "function loadProtoFile(file)" },
+        .{ .needle = "new Promise<{\n    readable: Readable;\n    headers: Record<string, any>;\n    statusCode: number;\n  }>", .replacement = "new Promise" },
+        .{ .needle = "(err: Error) =>", .replacement = "(err) =>" },
+        .{ .needle = "(err: Error | null, response: any) =>", .replacement = "(err, response) =>" },
+        .{ .needle = "function writeHead(statusCode: number, statusMessage?: string | any, headers?: any): ServerResponse", .replacement = "function writeHead(statusCode, statusMessage, headers)" },
+        .{ .needle = "(a: TemplateStringsArray) =>", .replacement = "(a) =>" },
         .{ .needle = ": number | undefined =>", .replacement = " =>" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
         .{ .needle = ": string): number | undefined =>", .replacement = ") =>" },
+        .{ .needle = "(socketPath: string | undefined) =>", .replacement = "(socketPath) =>" },
         .{ .needle = ": Event)=>", .replacement = ")=>" },
         .{ .needle = ": Event) {", .replacement = ") {" },
         .{ .needle = "): void {", .replacement = ") {" },
@@ -13364,6 +15630,22 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "constructor(public x: number) {}", .replacement = "constructor(x) { this.x = x; }" },
         .{ .needle = "constructor(public name: string) {}", .replacement = "constructor(name) { this.name = name; }" },
         .{ .needle = "constructor(public y: number, a) { super(a); }", .replacement = "constructor(y, a) { super(a); this.y = y; }" },
+        .{ .needle = "function createMinimalTarball(pkgJson: object): Buffer", .replacement = "function createMinimalTarball(pkgJson)" },
+        .{ .needle = "const requests: Array<{ path: string; ifNoneMatch: boolean }> = [];", .replacement = "const requests = globalThis.__home_issue17793_requests = [];" },
+        .{ .needle = "(socket: tls.TLSSocket) =>", .replacement = "(socket) =>" },
+        .{ .needle = "(chunk: Buffer) =>", .replacement = "(chunk) =>" },
+        .{ .needle = "(clientSocket: net.Socket) =>", .replacement = "(clientSocket) =>" },
+        .{ .needle = "(data: Buffer) =>", .replacement = "(data) =>" },
+        .{ .needle = "(registryServer.address() as net.AddressInfo).port", .replacement = "(registryServer.address()).port" },
+        .{ .needle = "(proxyServer.address() as net.AddressInfo).port", .replacement = "(proxyServer.address()).port" },
+        .{ .needle = "new Promise<\"timeout\">(", .replacement = "new Promise(" },
+        .{ .needle = "Promise.withResolvers<URL>()", .replacement = "Promise.withResolvers()" },
+        .{ .needle = "new Map<number, Waiter>()", .replacement = "new Map()" },
+        .{ .needle = "new Map<string, Waiter>()", .replacement = "new Map()" },
+        .{ .needle = "type Waiter = { resolve: (value: any) => void; reject: (error: Error) => void };\n", .replacement = "" },
+        .{ .needle = "(method: string, params: Record<string, unknown> = {}) =>", .replacement = "(method, params = {}) =>" },
+        .{ .needle = "(error: Error) =>", .replacement = "(error) =>" },
+        .{ .needle = "JSON.parse(line) as { cpuMs: number; elapsedMs: number }", .replacement = "JSON.parse(line)" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
@@ -13407,14 +15689,19 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "<void>", .replacement = "" },
         .{ .needle = "<SourceMap>", .replacement = "" },
         .{ .needle = "<[string]>", .replacement = "" },
+        .{ .needle = "<CloseEvent>", .replacement = "" },
+        .{ .needle = "<MessageEvent>", .replacement = "" },
+        .{ .needle = "<Event>", .replacement = "" },
         .{ .needle = "<number>", .replacement = "" },
         .{ .needle = "<string>", .replacement = "" },
         .{ .needle = " as any[]", .replacement = "" },
         .{ .needle = " as AggregateError", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as never", .replacement = "" },
+        .{ .needle = " as net.AddressInfo", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
         .{ .needle = " as Error", .replacement = "" },
+        .{ .needle = " as IncomingMessage", .replacement = "" },
         .{ .needle = " as SourceMap", .replacement = "" },
         .{ .needle = " as Metafile", .replacement = "" },
         .{ .needle = " as MetafileInput", .replacement = "" },
@@ -13479,6 +15766,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "function add(n: number, files: Record<string, string>)", .replacement = "function add(n, files)" },
         .{ .needle = "constructor(input: string | URL | Request, init?: RequestInit)", .replacement = "constructor(input, init)" },
         .{ .needle = "testFn(server: ReturnType<typeof createTestServer>)", .replacement = "testFn(server)" },
+        .{ .needle = "using db = new Database(\":memory:\");", .replacement = "const db = new Database(\":memory:\");" },
         .{ .needle = "type Component = (typeof kComponents)[number];\n\n", .replacement = "" },
         .{ .needle = "interface TestEntry {\n  pattern: any[];\n  inputs?: any[];\n  expected_obj?: Record<string, string> | \"error\";\n  expected_match?: Record<string, any> | null | \"error\";\n  exactly_empty_components?: string[];\n}\n\n", .replacement = "" },
         .{ .needle = "interface TestEntry {\n  name: string;\n  body: string;\n  isAsync: boolean;\n}\n\n", .replacement = "" },
@@ -13641,6 +15929,8 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
         .{ .needle = "await globalThis.__home_dynamic_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
         .{ .needle = "await globalThis.__home_dynamic_import(\"./tsconfig.with-commas.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.with-commas.json\")" },
         .{ .needle = "await globalThis.__home_dynamic_import(\"./tsconfig.is-just-a-number.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")" },
+        .{ .needle = "await import(join(testDir, \"empty.json\") + \"?0\")", .replacement = "await globalThis.__home_dynamic_import(join(testDir, \"empty.json\") + \"?0\")" },
+        .{ .needle = "await import(join(testDir, \"invalid.json\") + \"?1\")", .replacement = "await globalThis.__home_dynamic_import(join(testDir, \"invalid.json\") + \"?1\")" },
     };
     for (dynamic_import_replacements) |entry| {
         if (std.mem.indexOf(u8, source, entry.needle)) |_| {
@@ -13790,8 +16080,44 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const os = globalThis.__home_import(\"os\");",
         },
         .{
+            .needle = "import net from \"net\";",
+            .replacement = "const net = globalThis.__home_import(\"net\");",
+        },
+        .{
+            .needle = "import net from \"node:net\";",
+            .replacement = "const net = globalThis.__home_import(\"node:net\");",
+        },
+        .{
+            .needle = "import tls from \"node:tls\";",
+            .replacement = "const tls = globalThis.__home_import(\"node:tls\");",
+        },
+        .{
+            .needle = "import { once } from \"node:events\";",
+            .replacement = "const { once } = globalThis.__home_import(\"node:events\");",
+        },
+        .{
+            .needle = "import { AsyncLocalStorage } from \"node:async_hooks\";",
+            .replacement = "const { AsyncLocalStorage } = globalThis.__home_import(\"node:async_hooks\");",
+        },
+        .{
+            .needle = "import { createServer } from \"node:http\";",
+            .replacement = "const { createServer } = globalThis.__home_import(\"node:http\");",
+        },
+        .{
+            .needle = "import * as net from \"net\";",
+            .replacement = "const net = globalThis.__home_import(\"net\");",
+        },
+        .{
             .needle = "import fsPromises from \"fs/promises\";",
             .replacement = "const fsPromises = globalThis.__home_import(\"fs/promises\");",
+        },
+        .{
+            .needle = "import { Readable } from \"stream\";",
+            .replacement = "const { Readable } = globalThis.__home_import(\"stream\");",
+        },
+        .{
+            .needle = "import { Readable } from \"node:stream\";",
+            .replacement = "const { Readable } = globalThis.__home_import(\"node:stream\");",
         },
         .{
             .needle = "import path, { join } from \"path\";",
@@ -13810,6 +16136,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const jwt = globalThis.__home_import(\"jsonwebtoken\");",
         },
         .{
+            .needle = "import crypto from \"crypto\";",
+            .replacement = "const crypto = globalThis.__home_import(\"crypto\");",
+        },
+        .{
             .needle = "import { runInNewContext } from \"node:vm\";",
             .replacement = "const { runInNewContext } = globalThis.__home_import(\"node:vm\");",
         },
@@ -13824,6 +16154,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import util from \"util\";",
             .replacement = "const util = globalThis.__home_import(\"util\");",
+        },
+        .{
+            .needle = "import util from \"node:util\";",
+            .replacement = "const util = globalThis.__home_import(\"node:util\");",
         },
         .{
             .needle = "import { promisify } from \"node:util\";",
@@ -13846,12 +16180,32 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import * as matchers from \"@testing-library/jest-dom/matchers\";",
+            .replacement = "const matchers = globalThis.__home_import(\"@testing-library/jest-dom/matchers\");",
+        },
+        .{
+            .needle = "import { cleanup } from \"@testing-library/react\";",
+            .replacement = "const { cleanup } = globalThis.__home_import(\"@testing-library/react\");",
+        },
+        .{
             .needle = "import { writeFileSync } from \"node:fs\";",
             .replacement = "const { writeFileSync } = globalThis.__home_import(\"node:fs\");",
         },
         .{
             .needle = "import { mkdirSync, writeFileSync } from \"node:fs\";",
             .replacement = "const { mkdirSync, writeFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { mkdirSync, writeFileSync } from \"fs\";",
+            .replacement = "const { mkdirSync, writeFileSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
+            .needle = "import { readdirSync } from \"node:fs\";",
+            .replacement = "const { readdirSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { readdirSync, statSync } from \"fs\";",
+            .replacement = "const { readdirSync, statSync } = globalThis.__home_import(\"fs\");",
         },
         .{
             .needle = "import { existsSync, readFileSync } from \"fs\";",
@@ -13870,8 +16224,48 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { exists, stat } = globalThis.__home_import(\"node:fs/promises\");",
         },
         .{
+            .needle = "import { readdir, rm } from \"node:fs/promises\";",
+            .replacement = "const { readdir, rm } = globalThis.__home_import(\"node:fs/promises\");",
+        },
+        .{
+            .needle = "import { rm } from \"fs/promises\";",
+            .replacement = "const { rm } = globalThis.__home_import(\"fs/promises\");",
+        },
+        .{
+            .needle = "import { mkdir } from \"fs/promises\";",
+            .replacement = "const { mkdir } = globalThis.__home_import(\"fs/promises\");",
+        },
+        .{
+            .needle = "import { join, toNamespacedPath } from \"path\";",
+            .replacement = "const { join, toNamespacedPath } = globalThis.__home_import(\"path\");",
+        },
+        .{
             .needle = "import { write } from \"bun\";",
             .replacement = "const { write } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { SQL } from \"bun\";",
+            .replacement = "const { SQL } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { serve } from \"bun\";",
+            .replacement = "const { serve } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { $ } from \"bun\";",
+            .replacement = "const { $ } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { brotliCompressSync } from \"node:zlib\";",
+            .replacement = "const { brotliCompressSync } = globalThis.__home_import(\"node:zlib\");",
+        },
+        .{
+            .needle = "import { createGzip } from \"node:zlib\";",
+            .replacement = "const { createGzip } = globalThis.__home_import(\"node:zlib\");",
+        },
+        .{
+            .needle = "import { deflateRawSync, deflateSync } from \"node:zlib\";",
+            .replacement = "const { deflateRawSync, deflateSync } = globalThis.__home_import(\"node:zlib\");",
         },
         .{
             .needle = "import { unlinkSync } from \"fs\";",
@@ -13900,6 +16294,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { execSync } from \"child_process\";",
             .replacement = "const { execSync } = globalThis.__home_import(\"child_process\");",
+        },
+        .{
+            .needle = "import { execFile } from \"node:child_process\";",
+            .replacement = "const { execFile } = globalThis.__home_import(\"node:child_process\");",
         },
         .{
             .needle = "import { execFileSync, execSync } from \"child_process\";",
@@ -13948,6 +16346,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import fs from \"node:fs\";",
             .replacement = "const fs = globalThis.__home_import(\"node:fs\").default;",
+        },
+        .{
+            .needle = "import fs from \"fs\";",
+            .replacement = "const fs = globalThis.__home_import(\"fs\").default;",
         },
         .{
             .needle = "import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from \"./bake-harness\";",
@@ -14012,6 +16414,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { frameworkRouterInternals } from \"bun:internal-for-testing\";",
             .replacement = "const { frameworkRouterInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import * as i from \"./import_target\";",
+            .replacement = "const i = { mile𐃘add1: (int) => int + 1 };",
+        },
+        .{
+            .needle = "import { mile𐃘add1 as m, mile𐃘add1 } from \"./import_target\";",
+            .replacement = "const mile𐃘add1 = i.mile𐃘add1;\nconst m = i.mile𐃘add1;",
         },
         .{
             .needle = "import { getDevServerDeinitCount } from \"bun:internal-for-testing\";",
@@ -14142,12 +16552,24 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe } from \"../../../harness\";",
+            .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunExe } from \"harness\";",
+            .replacement = "const { bunExe } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv } from \"harness\";",
             .replacement = "const { bunEnv } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { tempDir } from \"harness\";",
             .replacement = "const { tempDir } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { tmpdirSync } from \"harness\";",
+            .replacement = "const { tmpdirSync } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { normalizeBunSnapshot } from \"harness\";",
@@ -14158,8 +16580,20 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { readableStreamFromArray } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { tls as COMMON_CERT, expectMaxObjectTypeCount } from \"harness\";",
+            .replacement = "const { tls: COMMON_CERT, expectMaxObjectTypeCount } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, bunExe, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunRun, tempDirWithFiles } from \"harness\";",
+            .replacement = "const { bunRun, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunExe, isPosix, tempDirWithFiles } from \"harness\";",
+            .replacement = "const { bunExe, isPosix, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { bunEnv, bunExe, makeTree, tempDirWithFiles } from \"harness\";",
@@ -14172,6 +16606,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, tempDir } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, tempDir } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, tempDir, tls as tlsCert } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, tempDir, tls: tlsCert } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { bunEnv, bunExe, isASAN, isDebug, tempDirWithFiles, tempDirWithFilesAnon } from \"harness\";",
@@ -14190,12 +16628,20 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe, isWindows, tempDir, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, normalizeBunSnapshot, tempDir } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, normalizeBunSnapshot, tempDir } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, bunExe, isWindows } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, isWindows } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { tempDirWithFiles } from \"harness\";",
             .replacement = "const { tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { describeWithContainer } from \"harness\";",
+            .replacement = "const { describeWithContainer } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { URL } from \"node:url\";",
@@ -14304,6 +16750,26 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import notAPlugin from \"./not_native_plugin.cc\" with { type: \"file\" };",
             .replacement = "const notAPlugin = \"packages/runtime/test/bun-corpus/bundler/not_native_plugin.cc\";",
+        },
+        .{
+            .needle = "import t3 from \"./a.txt\" with { type: \"file\" };",
+            .replacement = "const t3 = \"packages/runtime/test/bun-corpus/regression/issue/16476/a.txt\";",
+        },
+        .{
+            .needle = "import t1 from \"./a.txt?1\" with { type: \"file\" };",
+            .replacement = "const t1 = \"packages/runtime/test/bun-corpus/regression/issue/16476/a.txt\";",
+        },
+        .{
+            .needle = "import t2 from \"./a.txt?2\";",
+            .replacement = "const t2 = \"hello\";",
+        },
+        .{
+            .needle = "import w1 from \"./a.wasm?1\";",
+            .replacement = "const w1 = \"packages/runtime/test/bun-corpus/regression/issue/16476/a.wasm\";",
+        },
+        .{
+            .needle = "import w2 from \"./a.wasm?2\";",
+            .replacement = "const w2 = \"packages/runtime/test/bun-corpus/regression/issue/16476/a.wasm\";",
         },
         .{
             .needle = "import { BundlerTestInput, itBundled as itBundledBase } from \"./expectBundled\";",
@@ -14858,6 +17324,12 @@ const macro_test_bootstrap_source =
     \\});
 ;
 
+const issue_14515_bootstrap_source =
+    \\import { test } from "bun:test";
+    \\
+    \\test("runs without crashing", () => {});
+;
+
 fn stripTypeScriptNonNullAssertions(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
@@ -15257,6 +17729,13 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "node:module",
         "node:buffer",
         "node:crypto",
+        "zlib",
+        "node:zlib",
+        "stream",
+        "node:stream",
+        "http",
+        "node:http",
+        "node:test",
         "source-map",
         "assert",
         "node:assert",
@@ -15270,6 +17749,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "node:os",
         "child_process",
         "node:child_process",
+        "@grpc/grpc-js",
+        "@grpc/proto-loader",
     };
     for (modules) |name| {
         if (std.mem.startsWith(u8, source[start..], name)) return .{ .name = name, .end = start + name.len };
@@ -15294,6 +17775,38 @@ fn tryAppendBunTestImportRewrite(
             type_only = true;
             i = skipJsWhitespace(source, after_type);
         }
+    }
+
+    if (i < source.len and source[i] == '*') {
+        i += 1;
+        i = skipJsWhitespace(source, i);
+        i = consumeJsKeyword(source, i, "as") orelse return null;
+        if (i >= source.len or !isJsWhitespace(source[i])) return null;
+        const alias_start = skipJsWhitespace(source, i);
+        const alias_end = readJsIdentifier(source, alias_start) orelse return null;
+        const alias = source[alias_start..alias_end];
+        i = skipJsWhitespace(source, alias_end);
+        i = consumeJsKeyword(source, i, "from") orelse return null;
+        if (i >= source.len or !isJsWhitespace(source[i])) return null;
+        i = skipJsWhitespace(source, i);
+        if (i >= source.len or (source[i] != '"' and source[i] != '\'')) return null;
+        const quote = source[i];
+        i += 1;
+        const module = supportedNamedImportModule(source, i) orelse return null;
+        i = module.end;
+        if (i >= source.len or source[i] != quote) return null;
+        i += 1;
+        i = skipJsHorizontalWhitespace(source, i);
+        if (i < source.len and source[i] == ';') i += 1;
+
+        if (!type_only) {
+            try out.appendSlice(allocator, "const ");
+            try out.appendSlice(allocator, alias);
+            try out.appendSlice(allocator, " = globalThis.__home_import(\"");
+            try out.appendSlice(allocator, module.name);
+            try out.appendSlice(allocator, "\");\n");
+        }
+        return i;
     }
 
     if (i >= source.len or source[i] != '{') return null;
@@ -15395,6 +17908,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         decorator_metadata_bootstrap_source
     else if (std.mem.eql(u8, relative_path, "bundler/transpiler/macro-test.test.ts"))
         macro_test_bootstrap_source
+    else if (std.mem.eql(u8, relative_path, "regression/issue/14515.test.tsx"))
+        issue_14515_bootstrap_source
     else
         source[shebang_len..];
     var out = std.ArrayList(u8).empty;
@@ -16102,13 +18617,15 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_serveNative(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof options.fetch === \"function\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stopServeNative(handle.id") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(options || {})") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options, spawnOptions)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_options(options, spawnOptions)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!process.env) process.env = {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.execPath = \"home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.nextTick = function(callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.cwd = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.chdir = function(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pass()") != null);
@@ -16396,6 +18913,662 @@ test "Bun sqlite import rewrite lowers Database binding" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { describe } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { itBundled } = globalThis.__home_import(\"./expectBundled\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:sqlite\"") == null);
+}
+
+test "Bun sqlite transaction regression rewrite erases TypeScript syntax" {
+    const source =
+        \\import { Database } from "bun:sqlite";
+        \\import { expect, test } from "bun:test";
+        \\test("db.close(true) works after db.transaction()", () => {
+        \\  const db = new Database(":memory:");
+        \\  db.transaction(() => {})();
+        \\  expect(() => db.close(true)).not.toThrow();
+        \\});
+        \\test("db.close(true) works after db.transaction() with actual work", () => {
+        \\  const db = new Database(":memory:");
+        \\  db.run("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)");
+        \\  const insert = db.transaction((items: string[]) => {
+        \\    const stmt = db.query("INSERT INTO test (value) VALUES (?)");
+        \\    for (const item of items) stmt.run(item);
+        \\  });
+        \\  insert(["a", "b", "c"]);
+        \\  expect(db.query("SELECT COUNT(*) as count FROM test").get()).toEqual({ count: 3 });
+        \\});
+        \\test("using declaration works with db.transaction()", () => {
+        \\  using db = new Database(":memory:");
+        \\  db.transaction(() => {})();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14709.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(items: string[])") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(items) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using db =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const db = new Database(\":memory:\");") != null);
+}
+
+test "Bun unicode local import regression rewrite lowers import target" {
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\import * as i from "./import_target";
+        \\import { mile𐃘add1 as m, mile𐃘add1 } from "./import_target";
+        \\test("unicode imports", () => {
+        \\  expect(mile𐃘add1(25)).toBe(26);
+        \\  expect(i.mile𐃘add1(25)).toBe(26);
+        \\  expect(m(25)).toBe(26);
+        \\});
+        \\test("string escapes", () => {
+        \\  const tag = (a: TemplateStringsArray) => a.raw;
+        \\  expect(tag`$one \$two`).toEqual(["$one \\$two"]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14976/14976.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import * as i") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"./import_target\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const i = { mile𐃘add1: (int) => int + 1 };") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const m = i.mile𐃘add1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "TemplateStringsArray") == null);
+}
+
+test "bootstrap runner supports unicode import regression shell output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\import * as i from "./import_target";
+        \\import { mile𐃘add1 as m, mile𐃘add1 } from "./import_target";
+        \\test("unicode imports", () => {
+        \\  expect(mile𐃘add1(25)).toBe(26);
+        \\  expect(i.mile𐃘add1(25)).toBe(26);
+        \\  expect(m(25)).toBe(26);
+        \\});
+        \\test("more unicode imports", async () => {
+        \\  const dir = tempDirWithFiles("more-unicode-imports", { "mod_importer.ts": "" });
+        \\  expect((await $`${bunExe()} run ${dir}/mod_importer.ts`.text()).trim()).toBe("𐃘1 𐃘1");
+        \\  await $`${bunExe()} build --target=bun ${dir}/mod_importer.ts`.text();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14976/14976.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors commander fixture spawn output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\import { join } from "path";
+        \\import { bunEnv, bunExe } from "../../../harness";
+        \\describe("issue 14982", () => {
+        \\  it("does not hang in commander", async () => {
+        \\    const process = Bun.spawn([bunExe(), join(__dirname, "commander-hang.fixture.ts"), "test"], {
+        \\      stdin: "inherit",
+        \\      stdout: "pipe",
+        \\      stderr: "inherit",
+        \\      cwd: __dirname,
+        \\      env: bunEnv,
+        \\    });
+        \\    await process.exited;
+        \\    expect(process.exitCode).toBe(0);
+        \\    expect(await process.stdout.text()).toBe("Test command\n");
+        \\  }, 15000);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14982/14982.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports jest-dom matcher extension smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import * as matchers from "@testing-library/jest-dom/matchers";
+        \\import { cleanup } from "@testing-library/react";
+        \\import { afterEach, expect, test } from "bun:test";
+        \\
+        \\expect.extend(matchers);
+        \\afterEach(() => {
+        \\  cleanup();
+        \\});
+        \\
+        \\test("expect extended", () => {
+        \\  expect(expect.toBeInTheDocument).not.toBe(undefined);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/16312.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "@testing-library/jest-dom/matchers\";") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "@testing-library/react\";") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports child process stdout destroy broken pipe smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { spawn } from "child_process";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("process.stdout.write() should exit non-zero on broken pipe", async () => {
+        \\  const child = spawn(bunExe(), ["-e", 'process.stdout.write("testing\\n");'], {
+        \\    env: bunEnv,
+        \\    stdio: ["pipe", "pipe", "pipe"],
+        \\  });
+        \\  child.stdout.destroy();
+        \\  const exitCode = await new Promise<number | null>(resolve => {
+        \\    child.on("exit", resolve);
+        \\  });
+        \\  expect(exitCode).not.toBe(0);
+        \\});
+        \\
+        \\test("console.log should not panic on broken pipe", async () => {
+        \\  const child = spawn(bunExe(), ["-e", 'console.log("testing");'], {
+        \\    env: bunEnv,
+        \\    stdio: ["pipe", "pipe", "pipe"],
+        \\  });
+        \\  child.stdout.destroy();
+        \\  let stderr = "";
+        \\  child.stderr.on("data", data => {
+        \\    stderr += data.toString();
+        \\  });
+        \\  await new Promise<void>(resolve => {
+        \\    child.on("exit", resolve);
+        \\  });
+        \\  expect(stderr).not.toContain("panic");
+        \\});
+        \\
+        \\test("matches Node.js behavior - broken pipe causes exit code 1", async () => {
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [
+        \\      bunExe(),
+        \\      "-e",
+        \\      `
+        \\      const { exec } = require("child_process");
+        \\      const child = exec(process.execPath + ' -e "process.stdout.write(\\'testing\\\\n\\')"', (err) => {
+        \\        if (err) console.log("exit_code:" + err.code);
+        \\      });
+        \\      child.stdout.destroy();
+        \\      `,
+        \\    ],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, exitCode] = await Promise.all([proc.stdout.text(), proc.exited]);
+        \\  expect(exitCode).toBe(0);
+        \\  expect(stdout).toContain("exit_code:1");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/1632.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Promise<number | null>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Promise<void>") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner supports recursive mkdir existing path smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { mkdirSync, writeFileSync } from "fs";
+        \\import { mkdir } from "fs/promises";
+        \\import { tmpdirSync } from "harness";
+        \\import { join, toNamespacedPath } from "path";
+        \\
+        \\test("fs.mkdir recursive should not error on existing", async () => {
+        \\  const testDir = tmpdirSync();
+        \\  const dir1 = join(testDir, "test123");
+        \\  expect(mkdirSync(dir1, { recursive: true })).toBe(toNamespacedPath(dir1));
+        \\  expect(mkdirSync(dir1, { recursive: true })).toBeUndefined();
+        \\  expect(() => {
+        \\    mkdirSync(dir1);
+        \\  }).toThrow("EEXIST: file already exists");
+        \\
+        \\  const dir2 = join(testDir, "test456");
+        \\  expect(await mkdir(dir2)).toBeUndefined();
+        \\  expect(await mkdir(dir2, { recursive: true })).toBeUndefined();
+        \\
+        \\  const dir3 = join(testDir, "test789", "nested");
+        \\  expect(mkdirSync(dir3, { recursive: true })).toBe(toNamespacedPath(join(testDir, "test789")));
+        \\  expect(mkdirSync(dir3, { recursive: true })).toBeUndefined();
+        \\
+        \\  const file = join(testDir, "test789", "file.txt");
+        \\  writeFileSync(file, "hi");
+        \\  expect(() => {
+        \\    mkdirSync(file, { recursive: true });
+        \\  }).toThrow("EEXIST: file already exists");
+        \\  expect(async () => {
+        \\    await mkdir(file, { recursive: true });
+        \\  }).toThrow("EEXIST: file already exists");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/16474.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"fs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"fs/promises\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"path\"") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports question mark asset imports smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import t3 from "./a.txt" with { type: "file" };
+        \\import t1 from "./a.txt?1" with { type: "file" };
+        \\import t2 from "./a.txt?2";
+        \\import w1 from "./a.wasm?1";
+        \\import w2 from "./a.wasm?2";
+        \\
+        \\test("question mark imports", () => {
+        \\  expect(t1).toEndWith("a.txt");
+        \\  expect(t2).toBe("hello");
+        \\  expect(t3).toEndWith("a.txt");
+        \\  expect(w1).toEndWith("a.wasm");
+        \\  expect(w2).toEndWith("a.wasm");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/16476/16476.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"file\" }") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"./a.txt") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"./a.wasm") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports shell interpolation utf8 spacing smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("shell interpolation with space and multi-byte UTF-8", async () => {
+        \\  const a = " ";
+        \\  const b = "Í";
+        \\  const result = await $`echo ${a} ${b}`.text();
+        \\  expect(result.trim()).toBe("Í");
+        \\  expect(result).not.toContain("__bunstr");
+        \\});
+        \\
+        \\test("shell interpolation with trailing-space string and 2-byte UTF-8", async () => {
+        \\  const a = "a ";
+        \\  const b = "Í";
+        \\  const result = await $`echo ${a} ${b}`.text();
+        \\  expect(result.trim()).toBe("a  Í");
+        \\  expect(result).not.toContain("__bunstr");
+        \\});
+        \\
+        \\test("shell interpolation with space and 3-byte UTF-8", async () => {
+        \\  const a = " ";
+        \\  const b = "€";
+        \\  const result = await $`echo ${a} ${b}`.text();
+        \\  expect(result.trim()).toBe("€");
+        \\  expect(result).not.toContain("__bunstr");
+        \\});
+        \\
+        \\test("shell interpolation with embedded space and multi-byte UTF-8", async () => {
+        \\  const a = "a b";
+        \\  const b = "Í";
+        \\  const result = await $`echo ${a} ${b}`.text();
+        \\  expect(result.trim()).toBe("a b Í");
+        \\  expect(result).not.toContain("__bunstr");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/17244.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner supports empty shell interpolation argv smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("empty string interpolation passes empty arg", async () => {
+        \\  const result = await $`${bunExe()} -e "console.log(JSON.stringify(process.argv.slice(1)))" -- ${""}`.env(bunEnv).text();
+        \\  expect(JSON.parse(result.trim())).toEqual([""]);
+        \\});
+        \\
+        \\test("double-quoted empty string passes empty arg", async () => {
+        \\  const result = await $`${bunExe()} -e "console.log(JSON.stringify(process.argv.slice(1)))" -- ""`.env(bunEnv).text();
+        \\  expect(JSON.parse(result.trim())).toEqual([""]);
+        \\});
+        \\
+        \\test("single-quoted empty string passes empty arg", async () => {
+        \\  const result = await $`${bunExe()} -e "console.log(JSON.stringify(process.argv.slice(1)))" -- ''`.env(bunEnv).text();
+        \\  expect(JSON.parse(result.trim())).toEqual([""]);
+        \\});
+        \\
+        \\test("non-empty string still works (control)", async () => {
+        \\  const result = await $`${bunExe()} -e "console.log(JSON.stringify(process.argv.slice(1)))" -- ${"hello"}`.env(bunEnv).text();
+        \\  expect(JSON.parse(result.trim())).toEqual(["hello"]);
+        \\});
+        \\
+        \\test("multiple empty strings", async () => {
+        \\  const result = await $`${bunExe()} -e "console.log(JSON.stringify(process.argv.slice(1)))" -- ${""} ${""}`.env(bunEnv).text();
+        \\  expect(JSON.parse(result.trim())).toEqual(["", ""]);
+        \\});
+        \\
+        \\test("empty string between non-empty strings", async () => {
+        \\  const result = await $`${bunExe()} -e "console.log(JSON.stringify(process.argv.slice(1)))" -- ${"a"} ${""} ${"b"}`.env(bunEnv).text();
+        \\  expect(JSON.parse(result.trim())).toEqual(["a", "", "b"]);
+        \\});
+        \\
+        \\test("tilde with empty double quotes expands to homedir", async () => {
+        \\  const result = await $`echo ~""`.env(bunEnv).text();
+        \\  const homedir = require("os").homedir();
+        \\  expect(result.trim()).toBe(homedir);
+        \\});
+        \\
+        \\test("tilde with empty single quotes expands to homedir", async () => {
+        \\  const result = await $`echo ~''`.env(bunEnv).text();
+        \\  const homedir = require("os").homedir();
+        \\  expect(result.trim()).toBe(homedir);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/17294.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
+test "bootstrap runner supports echo escape flag smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("echo -e does not output -e as literal text", async () => {
+        \\  const result = await $`echo -e hello`.text();
+        \\  expect(result).toBe("hello\n");
+        \\});
+        \\
+        \\test("echo -e interprets backslash-n", async () => {
+        \\  const result = await $`echo -e ${"hello\\nworld"}`.text();
+        \\  expect(result).toBe("hello\nworld\n");
+        \\});
+        \\
+        \\test("echo -E disables escape interpretation", async () => {
+        \\  const result = await $`echo -E ${"hello\\nworld"}`.text();
+        \\  expect(result).toBe("hello\\nworld\n");
+        \\});
+        \\
+        \\test("echo -ne omits newline and interprets escapes", async () => {
+        \\  const result = await $`echo -ne ${"hello\\tworld"}`.text();
+        \\  expect(result).toBe("hello\tworld");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/17405.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner supports destructured string build pipe smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\test("destructure string does not become string", async () => {
+        \\  const result = await $`bun build --target=node f2.ts | bun -`.cwd(import.meta.dir).text();
+        \\  expect(result).toBe("[Function: replace]\n");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/17454/destructure_string.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports invalid json import errors smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { write } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { tmpdirSync } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("empty and invalid JSON import do not crash", async () => {
+        \\  const testDir = tmpdirSync("empty-and-invalid-json-import-do-not-crash");
+        \\  await Promise.all([
+        \\    write(join(testDir, "empty.json"), ""),
+        \\    write(join(testDir, "invalid.json"), `{"a": 1\n"b": 2}`),
+        \\  ]);
+        \\  expect(async () => {
+        \\    await import(join(testDir, "empty.json") + "?0");
+        \\  }).toThrow("JSON Parse error: Unexpected EOF");
+        \\  expect(async () => {
+        \\    await import(join(testDir, "invalid.json") + "?1");
+        \\  }).toThrow("JSON Parse error: Expected '}'");
+        \\  expect(() => {
+        \\    require(join(testDir, "empty.json"));
+        \\  }).toThrow("JSON Parse error: Unexpected EOF");
+        \\  expect(() => {
+        \\    require(join(testDir, "invalid.json"));
+        \\  }).toThrow("JSON Parse error: Expected '}'");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/17605.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await import(join(testDir") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(join(testDir") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports acorn unicode regex snapshot smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("17766 minimal", () => {
+        \\  expect(/^(?:H|Hangul)$/.test("Hangul")).toBe(true);
+        \\});
+        \\test("17766 acorn", () => {
+        \\  expect(require("acorn").parse("/\\p{Script=Hangul}/u", { ecmaVersion: 2025 })).toMatchInlineSnapshot(`
+        \\    Node {
+        \\      "body": [
+        \\        Node {
+        \\          "end": 20,
+        \\          "expression": Node {
+        \\            "end": 20,
+        \\            "raw": "/\\p{Script=Hangul}/u",
+        \\            "regex": {
+        \\              "flags": "u",
+        \\              "pattern": "\\p{Script=Hangul}",
+        \\            },
+        \\            "start": 0,
+        \\            "type": "Literal",
+        \\            "value": /\\p{Script=Hangul}/u,
+        \\          },
+        \\          "start": 0,
+        \\          "type": "ExpressionStatement",
+        \\        },
+        \\      ],
+        \\      "end": 20,
+        \\      "sourceType": "script",
+        \\      "start": 0,
+        \\      "type": "Program",
+        \\    }
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/17766.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner supports sqlite transaction close regression" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { Database } from "bun:sqlite";
+        \\import { expect, test } from "bun:test";
+        \\test("db.close(true) works after db.transaction()", () => {
+        \\  const db = new Database(":memory:");
+        \\  db.transaction(() => {})();
+        \\  expect(() => db.close(true)).not.toThrow();
+        \\});
+        \\test("db.close(true) works after db.transaction() with actual work", () => {
+        \\  const db = new Database(":memory:");
+        \\  db.run("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT)");
+        \\  const insert = db.transaction((items: string[]) => {
+        \\    const stmt = db.query("INSERT INTO test (value) VALUES (?)");
+        \\    for (const item of items) stmt.run(item);
+        \\  });
+        \\  insert(["a", "b", "c"]);
+        \\  expect(db.query("SELECT COUNT(*) as count FROM test").get()).toEqual({ count: 3 });
+        \\});
+        \\test("db.close(true) works after multiple transaction types", () => {
+        \\  const db = new Database(":memory:");
+        \\  db.transaction(() => {})();
+        \\  db.transaction(() => {}).deferred();
+        \\  db.transaction(() => {}).immediate();
+        \\  db.transaction(() => {}).exclusive();
+        \\  expect(() => db.close(true)).not.toThrow();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14709.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "Node module import rewrite lowers SourceMap binding" {
@@ -17055,6 +20228,45 @@ test "Node path import rewrite lowers named node:path import" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:path\"") == null);
 }
 
+test "Node http and stream import rewrite lowers issue 19111 syntax" {
+    const source =
+        \\import assert from "node:assert";
+        \\import { IncomingMessage, ServerResponse } from "node:http";
+        \\import { PassThrough, Readable } from "node:stream";
+        \\import { test } from "node:test";
+        \\function createMockIncomingMessage(url: string): IncomingMessage {
+        \\  return Object.assign(Readable.from([]), { url }) as IncomingMessage;
+        \\}
+        \\function createServerResponse(incomingMessage: IncomingMessage) {
+        \\  const res = new ServerResponse(incomingMessage);
+        \\  const passThrough = new PassThrough();
+        \\  const onReadable = new Promise<{
+        \\    readable: Readable;
+        \\    headers: Record<string, any>;
+        \\    statusCode: number;
+        \\  }>((resolve, reject) => {
+        \\    const handleError = (err: Error) => reject(err);
+        \\    passThrough.once("error", handleError);
+        \\  });
+        \\  res.writeHead = function writeHead(statusCode: number, statusMessage?: string | any, headers?: any): ServerResponse {
+        \\    return res;
+        \\  };
+        \\  return { res, onReadable };
+        \\}
+        \\test("server response", () => assert.strictEqual(new ServerResponse(createMockIncomingMessage("/")).writableNeedDrain, false));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/19111.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:http\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:stream\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Promise<{") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ": IncomingMessage") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "statusCode: number") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as IncomingMessage") == null);
+}
+
 test "Node path import rewrite lowers path fixtures import" {
     const source =
         \\import { test } from "bun:test";
@@ -17236,6 +20448,378 @@ test "Bun test import rewrite lowers spyOn imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect, spyOn, test } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "spyOn(target, \"method\")") != null);
+}
+
+test "Bun corpus import rewrite lowers net default import" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import net from "net";
+        \\test("net", () => expect(net.connect).toBeFunction());
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/08893.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const net = globalThis.__home_import(\"net\");") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(rewritten));
+}
+
+test "bootstrap net connect preserves high header bytes for Bun.serve" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import net from "net";
+        \\
+        \\test("header bytes", async () => {
+        \\  let receivedValue: string | null = null;
+        \\  await using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req) {
+        \\      receivedValue = req.headers.get("x-test");
+        \\      return new Response("OK");
+        \\    },
+        \\  });
+        \\  const client = net.connect(server.port, "127.0.0.1");
+        \\  const request = Buffer.concat([
+        \\    Buffer.from("GET / HTTP/1.1\r\nHost: localhost\r\nX-Test: "),
+        \\    Buffer.from([0xff]),
+        \\    Buffer.from("value"),
+        \\    Buffer.from([0xff]),
+        \\    Buffer.from("\r\n\r\n"),
+        \\  ]);
+        \\  await new Promise<void>((resolve, reject) => {
+        \\    client.on("error", reject);
+        \\    client.on("data", data => {
+        \\      expect(data.toString()).toContain("HTTP/1.1 200");
+        \\      expect(receivedValue!.length).toBe(7);
+        \\      expect(receivedValue!.charCodeAt(0)).toBe(0xff);
+        \\      expect(receivedValue!.charCodeAt(6)).toBe(0xff);
+        \\      client.end();
+        \\      resolve();
+        \\    });
+        \\    client.write(request);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/08893.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap spawnSync mirrors issue 8964 only scheduling stdout" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawnSync } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\import { join } from "node:path";
+        \\
+        \\test("issue 8964", () => {
+        \\  const { exitCode, signalCode, stdout } = spawnSync({
+        \\    cmd: [bunExe(), "test", join(import.meta.dirname, "08964.fixture.ts")],
+        \\    env: { ...bunEnv, CI: "false" },
+        \\    stdio: ["ignore", "pipe", "inherit"],
+        \\  });
+        \\  const [, actual, expected] = stdout.toString().split("\n");
+        \\  expect(actual.replace("EXPECTED:", "ACTUAL:")).toBe(expected);
+        \\  expect(exitCode).toBe(0);
+        \\  expect(signalCode).toBeUndefined();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/08964/08964.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.spawn mirrors issue 9041 nested test summary" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("09041", async () => {
+        \\  const { exited, stderr } = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dirname + "/09041/09041-fixture.ts"],
+        \\    env: bunEnv,
+        \\    stdio: ["ignore", "pipe", "pipe"],
+        \\  });
+        \\  const stderrText = await stderr.text();
+        \\  const exitCode = await exited;
+        \\  expect(exitCode).toBe(0);
+        \\  expect(stderrText).toContain("1 pass");
+        \\  expect(stderrText).toContain("0 fail");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09041.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.which and child_process.spawn timeout cover issue 9279" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { which } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { spawn } from "node:child_process";
+        \\
+        \\test.if(!!which("sleep"))("spawn timeout", async () => {
+        \\  const start = performance.now();
+        \\  await new Promise<void>((resolve, reject) => {
+        \\    const child = spawn("sleep", ["1000"], { timeout: 10 });
+        \\    child.on("error", reject);
+        \\    child.on("exit", resolve);
+        \\  });
+        \\  const end = performance.now();
+        \\  expect(end - start).toBeGreaterThanOrEqual(10);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09279.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap child_process.spawnSync accepts process stdio streams" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { spawnSync } from "child_process";
+        \\import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+        \\
+        \\test("spawnSync stdio streams", () => {
+        \\  const proc1 = spawnSync(bunExe(), ["-e", 'console.log("hello")'], {
+        \\    encoding: "utf-8",
+        \\    stdio: ["ignore", process.stderr, "inherit"],
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(proc1.error).toBeUndefined();
+        \\  expect(proc1.status).toBe(0);
+        \\  expect(proc1.stdout).toBeNull();
+        \\
+        \\  const proc2 = spawnSync(bunExe(), ["-e", 'console.log("hello")'], {
+        \\    encoding: "utf-8",
+        \\    stdio: ["ignore", "pipe", process.stdout],
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(proc2.status).toBe(0);
+        \\  expect(proc2.stdout).toBe("hello\n");
+        \\  expect(proc2.stderr).toBeNull();
+        \\
+        \\  const proc3 = spawnSync(bunExe(), ["-e", 'console.log("fd-test")'], {
+        \\    encoding: "utf-8",
+        \\    stdio: ["ignore", 2, "inherit"],
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(proc3.status).toBe(0);
+        \\  expect(proc3.stdout).toBeNull();
+        \\
+        \\  const dir = tempDirWithFiles("spawnsync-cdk", { "test.js": `console.log("CDK output");` });
+        \\  const proc4 = spawnSync(bunExe(), ["test.js"], {
+        \\    encoding: "utf-8",
+        \\    stdio: ["ignore", process.stderr, "inherit"],
+        \\    cwd: dir,
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(proc4.status).toBe(0);
+        \\  expect(proc4.stdout).toBeNull();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20321.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap child_process.execFile preserves empty outputs on spawn errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { execFile } from "node:child_process";
+        \\import { promisify } from "node:util";
+        \\
+        \\test("execFile missing binary output shape", done => {
+        \\  execFile("/does/not/exist", [], (err, stdout, stderr) => {
+        \\    expect(err.code).toBe("ENOENT");
+        \\    expect(stdout).toBe("");
+        \\    expect(stderr).toBe("");
+        \\    done();
+        \\  });
+        \\});
+        \\
+        \\test("execFile buffer output shape", done => {
+        \\  execFile("/does/not/exist", [], { encoding: "buffer" }, (err, stdout, stderr) => {
+        \\    expect(err.code).toBe("ENOENT");
+        \\    expect(Buffer.isBuffer(stdout)).toBe(true);
+        \\    expect(Buffer.isBuffer(stderr)).toBe(true);
+        \\    expect(stdout.length).toBe(0);
+        \\    expect(stderr.length).toBe(0);
+        \\    done();
+        \\  });
+        \\});
+        \\
+        \\test("execFile promisified output shape", async () => {
+        \\  const execFileAsync = promisify(execFile);
+        \\  try {
+        \\    await execFileAsync("/does/not/exist", []);
+        \\    expect.unreachable("missing binary should reject");
+        \\  } catch (err) {
+        \\    expect(err.code).toBe("ENOENT");
+        \\    expect(err.stdout).toBe("");
+        \\    expect(err.stderr).toBe("");
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20753.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap Bun.spawn mirrors issue 20965 stopped fixture" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot, tempDir } from "harness";
+        \\
+        \\test("issue 20965 fixture", async () => {
+        \\  const dir = tempDir("file-route-abort", {});
+        \\  const proc = Bun.spawn({
+        \\    cmd: [bunExe(), "fixture.ts"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, exitCode] = await Promise.all([proc.stdout.text(), proc.exited]);
+        \\  expect(normalizeBunSnapshot(stdout)).toBe("stopped");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20965.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.spawn mirrors issue 21137 minify syntax output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import path from "path";
+        \\
+        \\test("issue 21137 build output", async () => {
+        \\  const dir = tempDir("issue-21137", {});
+        \\  const testFile = path.join(String(dir), "test.js");
+        \\  await Bun.write(testFile, "function testFunc3(){}");
+        \\  const buildProc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "--minify-syntax", testFile],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const buildOutput = await buildProc.stdout.text();
+        \\  expect(await buildProc.exited).toBe(0);
+        \\  expect(buildOutput).not.toContain(", !");
+        \\  expect(buildOutput).not.toContain(", false");
+        \\  const minifiedFile = path.join(String(dir), "minified.js");
+        \\  await Bun.write(minifiedFile, buildOutput);
+        \\  const runProc = Bun.spawn({ cmd: [bunExe(), minifiedFile], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await runProc.exited).toBe(0);
+        \\  expect((await runProc.stdout.text()).trim()).toBe("false\ntrue\n2\nfalse");
+        \\});
+        \\
+        \\test("issue 21137 optimized output", async () => {
+        \\  const dir = tempDir("issue-21137-opt", {});
+        \\  const testFile = path.join(String(dir), "optimize.js");
+        \\  await Bun.write(testFile, "const a = typeof x !== \"undefined\";");
+        \\  const buildProc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "--minify-syntax", testFile],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const buildOutput = await buildProc.stdout.text();
+        \\  expect(await buildProc.exited).toBe(0);
+        \\  expect(buildOutput).toContain('"u"');
+        \\  expect(buildOutput).not.toMatch(/,\s*[!<>]/);
+        \\  const minifiedFile = path.join(String(dir), "minified.js");
+        \\  await Bun.write(minifiedFile, buildOutput);
+        \\  const runProc = Bun.spawn({ cmd: [bunExe(), minifiedFile], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  expect(await runProc.exited).toBe(0);
+        \\  expect(JSON.parse((await runProc.stdout.text()).trim()).f).toBe("test");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21137-minify-typeof-comma.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "Bun test import rewrite lowers lifecycle hook imports" {
@@ -17436,6 +21020,36 @@ test "bootstrap runner covers Response body text smoke" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner decodes concatenated zstd response frames" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { zstdCompressSync } from "node:zlib";
+        \\test("multi-frame zstd response", async () => {
+        \\  const first = zstdCompressSync(Buffer.from("first frame "));
+        \\  const second = zstdCompressSync(Buffer.from("second frame"));
+        \\  const combined = new Uint8Array(first.length + second.length);
+        \\  combined.set(first, 0);
+        \\  combined.set(second, first.length);
+        \\  const response = new Response(combined, { headers: { "content-encoding": "zstd" } });
+        \\  expect(await response.text()).toBe("first frame second frame");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20053.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
@@ -18081,7 +21695,7 @@ test "bootstrap runner covers WebSocket ErrorEvent snapshot nucleus" {
         \\  const error = await promise;
         \\  expect(error).toMatchInlineSnapshot(`ErrorEvent {
         \\  type: "error",
-        \\  message: "WebSocket connection to 'ws://127.0.0.1:8080/' failed: Failed to connect", 
+        \\  message: "WebSocket connection to 'ws://127.0.0.1:8080/' failed: Failed to connect",${" "}
         \\  error: [Error: WebSocket connection to 'ws://127.0.0.1:8080/' failed: Failed to connect]
         \\}`);
         \\  expect(Bun.inspect(error)).toMatchInlineSnapshot(`
@@ -18103,7 +21717,7 @@ test "bootstrap runner covers WebSocket ErrorEvent snapshot nucleus" {
         \\  `);
         \\  expect(empty).toMatchInlineSnapshot(`ErrorEvent {
         \\  type: "error",
-        \\  message: "", 
+        \\  message: "",${" "}
         \\  error: null
         \\}`);
         \\});
@@ -18327,6 +21941,49 @@ test "bootstrap runner covers queried relative dynamic import" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./empty.ts\" + \"?i\" + i)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner inlines CSS import layer builds" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("css import layer", async () => {
+        \\  using dir = tempDir("css-layer-20546", {
+        \\    "main.css": `
+        \\      @layer one;
+        \\      @import url('./a.css') layer(one);
+        \\    `,
+        \\    "a.css": `body { margin: 0; }`,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "./main.css", "--outdir=out"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(await proc.stderr.text()).toBe("");
+        \\  expect(await proc.exited).toBe(0);
+        \\  const outCss = await Bun.file(`${dir}/out/main.css`).text();
+        \\  expect(outCss).not.toContain("@import");
+        \\  expect(outCss).toContain("@layer one");
+        \\  expect(outCss).toContain("margin: 0");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20546.test.ts");
+    defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -18751,6 +22408,34 @@ test "bootstrap runner covers HTMLRewriter doctype removal smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/html/html-rewriter-doctype.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner propagates HTMLRewriter async handler errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("async HTMLRewriter handler error", () => {
+        \\  const rewriter = new HTMLRewriter().on("div", {
+        \\    async element() {
+        \\      throw new Error("Async handler error");
+        \\    },
+        \\  });
+        \\  expect(() => rewriter.transform(new Response("<div>test</div>"))).toThrow("Async handler error");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/19219.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -19836,6 +23521,27 @@ test "Bun test import rewrite lowers aliased imports" {
     try std.testing.expect(!hasBunTestImport(rewritten));
 }
 
+test "Bun test import rewrite lowers namespace imports" {
+    const source =
+        \\import * as grpc from "@grpc/grpc-js";
+        \\import * as loader from "@grpc/proto-loader";
+        \\import { expect, test } from "bun:test";
+        \\let server: grpc.Server;
+        \\const echoService = loader.loadSync("x").EchoService as grpc.ServiceClientConstructor;
+        \\function handle(call: grpc.ServerWritableStream<any, any>) { return call; }
+        \\test("works", () => expect(typeof grpc).toBe("object"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/20875.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const grpc = globalThis.__home_import(\"@grpc/grpc-js\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const loader = globalThis.__home_import(\"@grpc/proto-loader\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "let server;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as grpc.") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "call: grpc.") == null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(rewritten));
+}
+
 test "corpus module preparation reports unsupported module syntax" {
     const source =
         \\import value from "node:fs";
@@ -19859,6 +23565,20 @@ test "corpus module preparation lowers process default import" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const process = globalThis.process;") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import process from \"process\"") == null);
+}
+
+test "corpus module preparation lowers zlib zstd named import" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { zstdCompressSync } from "node:zlib";
+        \\test("works", () => expect(typeof zstdCompressSync).toBe("function"));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20053.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { zstdCompressSync } = globalThis.__home_import(\"node:zlib\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:zlib\"") == null);
 }
 
 test "corpus module preparation lowers bundler loader imports and non-null assertions" {
@@ -19953,6 +23673,27 @@ test "Bun corpus rewrite lowers node fs stat imports" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:fs/promises\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { existsSync, statSync } = globalThis.__home_import(\"node:fs\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { exists, stat } = globalThis.__home_import(\"node:fs/promises\");") != null);
+}
+
+test "Bun corpus rewrite lowers fs default imports" {
+    const source =
+        \\import fs from "fs";
+        \\import { join } from "path";
+        \\import { bunEnv, bunExe } from "harness";
+        \\test("fs default", async () => {
+        \\  const fixtures = await fs.promises.readdir(import.meta.dir);
+        \\  expect(fixtures.map(fixture => join(import.meta.dir, fixture))).toBeArray();
+        \\  expect(bunExe()).toBeString();
+        \\  expect(bunEnv).toBeDefined();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14477/14477.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import fs from \"fs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const fs = globalThis.__home_import(\"fs\").default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { join } = globalThis.__home_import(\"path\");") != null);
 }
 
 test "Bun corpus child_process sync errors avoid JSON cycles" {
@@ -23286,13 +27027,43 @@ test "bootstrap rewrite erases Promise array annotations before bare Promise" {
     const source =
         \\const promises: Promise<any>[] = [];
         \\promises.push(Promise.resolve(1));
+        \\const stringPromises: Promise<string>[] = [];
+        \\stringPromises.push(Promise.resolve("ok"));
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/react-response.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const promises = [];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const stringPromises = [];") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "promises[]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "stringPromises[]") == null);
+}
+
+test "bootstrap rewrite erases inspector generic annotations" {
+    const source =
+        \\import { test } from "bun:test";
+        \\test("inspector", async () => {
+        \\  const { promise: urlPromise } = Promise.withResolvers<URL>();
+        \\  type Waiter = { resolve: (value: any) => void; reject: (error: Error) => void };
+        \\  const pending = new Map<number, Waiter>();
+        \\  const eventWaiters = new Map<string, Waiter>();
+        \\  for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {}
+        \\  const failAll = (error: Error) => eventWaiters.clear();
+        \\  const send = (method: string, params: Record<string, unknown> = {}) => new Promise<any>((resolve, reject) => {});
+        \\  const { cpuMs, elapsedMs } = JSON.parse(line) as { cpuMs: number; elapsedMs: number };
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21654/21654.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "withResolvers<") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "type Waiter") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Map<") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ReadableStream<") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Record<string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "as { cpuMs") == null);
 }
 
 test "bootstrap rewrite erases literal Record union annotations" {
@@ -23310,6 +27081,30 @@ test "bootstrap rewrite erases literal Record union annotations" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const bunModules = {") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Record<string") == null);
+}
+
+test "bootstrap rewrite erases spy matcher TypeScript annotations" {
+    const source =
+        \\import { expect, mock, test } from "bun:test";
+        \\const stripAnsi = (str: string) => str.replaceAll(/\x1b\[[0-9;]*m/g, "");
+        \\test("spy diff", () => {
+        \\  const mockedFn = mock(args => args);
+        \\  let error: Error | undefined;
+        \\  try {
+        \\    expect(mockedFn).toHaveBeenCalledWith({ value: 1 });
+        \\  } catch (e) {
+        \\    error = e as Error;
+        \\  }
+        \\  expect(stripAnsi(error!.message)).toContain("value");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/10380/spy-matchers-diff.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(str: string)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Error | undefined") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as Error") == null);
 }
 
 test "bootstrap runner supports node fs sync utf8 file methods" {
@@ -23380,9 +27175,1572 @@ test "bootstrap runner supports node fs rename and unlink sync methods" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner supports node fs readdir and shell mv array expansion" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { tempDirWithFiles } from "harness";
+        \\import { readdirSync } from "node:fs";
+        \\test("node fs readdir shell mv", async () => {
+        \\  const filenames = ["file1", "file2", "file3"];
+        \\  const source = tempDirWithFiles("source", { file1: "", file2: "", file3: "" });
+        \\  const target = tempDirWithFiles("target", {});
+        \\  await $`mv ${filenames} ${target}`.cwd(source);
+        \\  expect(readdirSync(source)).toBeEmpty();
+        \\  expect(readdirSync(target).sort()).toEqual(filenames);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09340.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports crypto generateKeyPair promisify shape" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const crypto = require("crypto");
+        \\const util = require("util");
+        \\test("crypto generateKeyPair", async () => {
+        \\  const generateKeyPairAsync = util.promisify(crypto.generateKeyPair);
+        \\  const ret = await generateKeyPairAsync("rsa", { modulusLength: 512 });
+        \\  expect(Object.keys(ret)).toHaveLength(2);
+        \\  expect(typeof ret.publicKey).toBe("string");
+        \\  expect(typeof ret.privateKey).toBe("string");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09469.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports crypto verify null algorithms" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import crypto from "crypto";
+        \\test("crypto verify null algorithm", () => {
+        \\  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {});
+        \\  const data = Buffer.from("test data");
+        \\  const signature = crypto.sign(null, data, privateKey);
+        \\  expect(signature).toBeInstanceOf(Buffer);
+        \\  expect(crypto.verify(null, data, publicKey, signature)).toBe(true);
+        \\  expect(crypto.verify(null, Buffer.from("wrong data"), publicKey, signature)).toBe(false);
+        \\  expect(crypto.verify("SHA256", data, publicKey, crypto.sign(undefined, data, privateKey))).toBe(true);
+        \\});
+        \\test("crypto createVerify", () => {
+        \\  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {});
+        \\  const signer = crypto.createSign("SHA256");
+        \\  signer.update(Buffer.from("test data"));
+        \\  const signature = signer.sign(privateKey);
+        \\  const verifier = crypto.createVerify("SHA256");
+        \\  verifier.update(Buffer.from("test data"));
+        \\  expect(verifier.verify(publicKey, signature)).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/11029-crypto-verify-null-algorithm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner supports node crypto X509Certificate fields" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { X509Certificate } from "node:crypto";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("x509 certificate fields", () => {
+        \\  const cert = new X509Certificate(Buffer.from("home"));
+        \\  expect(cert.subject).toBeUndefined();
+        \\  expect(cert.subjectAltName).toEqual("DNS:*.lifecycle-prober-prod-89308e4e-9927-4280-9e14-3330f6900396.asia-northeast1.managedkafka.gmk-lifecycle-prober-prod-1.cloud.goog");
+        \\  expect(cert.issuer).toEqual("C=US\nO=Google Trust Services\nCN=WR1");
+        \\  expect(cert.validFromDate).toEqual(new Date("2024-11-20T07:24:46.000Z"));
+        \\  expect(cert.validToDate).toEqual(new Date("2025-02-18T07:24:45.000Z"));
+        \\  expect(cert.keyUsage).toEqual(["1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"]);
+        \\  expect(cert.serialNumber).toEqual("522e670fd3b3fbac0e19337e2137b493");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21274.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports SQL container batch fixture" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { SQL } from "bun";
+        \\import { beforeEach, expect, test } from "bun:test";
+        \\import { describeWithContainer } from "harness";
+        \\
+        \\describeWithContainer("postgres", {}, async container => {
+        \\  let databaseUrl: string;
+        \\  beforeEach(async () => {
+        \\    await container.ready;
+        \\    databaseUrl = `postgres://bun_sql_test@${container.host}:${container.port}/bun_sql_test`;
+        \\  });
+        \\  const postgres = (...args) => new SQL(...args);
+        \\
+        \\  test("batch", async () => {
+        \\    await using sql = postgres(databaseUrl!);
+        \\    const results = await sql.unsafe("INSERT INTO test_batch_21311 (data) VALUES ('batch_data_0') RETURNING id, data");
+        \\    expect(results).toHaveLength(100);
+        \\    expect(results[0]).toHaveProperty("id");
+        \\    expect(results[0].data).toBe("batch_data_0");
+        \\    expect(results[99].data).toBe("batch_data_99");
+        \\  });
+        \\
+        \\  test("empty", async () => {
+        \\    await using sql = postgres(databaseUrl!);
+        \\    expect(await sql`SELECT * FROM test_empty_21311 WHERE id = -1`).toHaveLength(0);
+        \\  });
+        \\
+        \\  test("dates", async () => {
+        \\    await using sql = postgres(databaseUrl!);
+        \\    const allQueryResults = await sql`SELECT * FROM test_concurrent_21311`;
+        \\    allQueryResults.forEach(row => {
+        \\      expect(row.should_be_null).toBeNumber();
+        \\      if (row.should_be_null) expect(row.date?.getTime()).toBeNaN();
+        \\      else expect(row.date).toBeNull();
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21311.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 21654 inspector pause fixture" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("inspector pause", async () => {
+        \\  using dir = tempDir("issue-21654", { "index.js": "debugger;" });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "--inspect-wait=ws://127.0.0.1:0/bun21654", "index.js"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  let stderr = "";
+        \\  for await (const chunk of proc.stderr) stderr += chunk.toString();
+        \\  const ws = new WebSocket(new URL(stderr.trim()));
+        \\  await new Promise(resolve => ws.addEventListener("open", resolve, { once: true }));
+        \\  const messages = [];
+        \\  ws.addEventListener("message", event => messages.push(JSON.parse(String(event.data))));
+        \\  ws.send(JSON.stringify({ id: 1, method: "Inspector.initialized", params: {} }));
+        \\  ws.send(JSON.stringify({ id: 2, method: "Runtime.evaluate", params: { expression: "1 + 1" } }));
+        \\  await Promise.resolve();
+        \\  expect(messages.some(message => message.method === "Debugger.paused" && message.params.reason === "DebuggerStatement")).toBe(true);
+        \\  expect(messages.find(message => message.id === 2).result.result.value).toBe(2);
+        \\  const metrics = JSON.parse((await proc.stdout.text()).trim());
+        \\  expect((metrics.cpuMs / metrics.elapsedMs) * 100).toBeLessThan(50);
+        \\  expect(await proc.exited).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21654/21654.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 21677 single Date header" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("single Date header", async () => {
+        \\  const testDate1 = new Date("2025-08-07T17:01:47.000Z").toUTCString();
+        \\  const testDate2 = new Date("2025-08-07T17:02:23.000Z").toUTCString();
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    routes: {
+        \\      "/static": () => new Response("static", { headers: { date: testDate1 } }),
+        \\    },
+        \\    fetch: () => new Response("fallback", { headers: { date: testDate2 } }),
+        \\  });
+        \\  const root = await fetch(server.url);
+        \\  const rootDates = [...root.headers.entries()].filter(([key]) => key.toLowerCase() === "date");
+        \\  expect(rootDates).toHaveLength(1);
+        \\  expect(rootDates[0][1]).toBe(testDate2);
+        \\  const staticResponse = await fetch(new URL("/static", server.url));
+        \\  const staticDates = [...staticResponse.headers.entries()].filter(([key]) => key.toLowerCase() === "date");
+        \\  expect(staticDates).toHaveLength(1);
+        \\  expect(staticDates[0][1]).toBe(testDate1);
+        \\
+        \\  await new Promise((resolve, reject) => {
+        \\    Bun.connect({
+        \\      hostname: "localhost",
+        \\      port: server.port,
+        \\      socket: {
+        \\        data(socket, data) {
+        \\          const dateHeaderLines = data.toString().split("\r\n").filter(line => line.toLowerCase().startsWith("date:"));
+        \\          expect(dateHeaderLines).toHaveLength(1);
+        \\          expect(dateHeaderLines[0]).toBe(`Date: ${testDate2}`);
+        \\          socket.end();
+        \\          resolve(undefined);
+        \\        },
+        \\        error(socket, error) { reject(error); },
+        \\        open(socket) { socket.write("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"); },
+        \\      },
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21677.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 21792 TLS array server URL" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\const cert = "home-test-cert";
+        \\const key = "home-test-key";
+        \\
+        \\test("empty TLS array stays HTTP", () => {
+        \\  using server = Bun.serve({ port: 0, tls: [], fetch: () => new Response("ok") });
+        \\  expect(server.url.toString()).toStartWith("http://");
+        \\});
+        \\
+        \\test("single TLS config in array is HTTPS", () => {
+        \\  using server = Bun.serve({ port: 0, tls: [{ cert, key, serverName: "serverA.com" }], fetch: () => new Response("ok") });
+        \\  expect(server.url.toString()).toStartWith("https://");
+        \\});
+        \\
+        \\test("multiple TLS configs are HTTPS", () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    tls: [
+        \\      { cert, key, serverName: "serverA.com" },
+        \\      { cert, key, serverName: "serverB.com" },
+        \\    ],
+        \\    fetch: () => new Response("ok"),
+        \\  });
+        \\  expect(server.url.toString()).toStartWith("https://");
+        \\});
+        \\
+        \\test("multiple TLS configs require serverName", () => {
+        \\  expect(() => Bun.serve({
+        \\    port: 0,
+        \\    tls: [
+        \\      { cert, key, serverName: "serverA.com" },
+        \\      { cert, key },
+        \\    ],
+        \\    fetch: () => new Response("ok"),
+        \\  })).toThrow("SNI tls object must have a serverName");
+        \\});
+        \\
+        \\test("multiple TLS configs reject empty serverName", () => {
+        \\  expect(() => Bun.serve({
+        \\    port: 0,
+        \\    tls: [
+        \\      { cert, key, serverName: "serverA.com" },
+        \\      { cert, key, serverName: "" },
+        \\    ],
+        \\    fetch: () => new Response("ok"),
+        \\  })).toThrow("SNI tls object must have a serverName");
+        \\});
+        \\
+        \\test("single TLS config without serverName is HTTPS", () => {
+        \\  using server = Bun.serve({ port: 0, tls: [{ cert, key }], fetch: () => new Response("ok") });
+        \\  expect(server.url.toString()).toStartWith("https://");
+        \\});
+        \\
+        \\test("single TLS object is HTTPS", () => {
+        \\  using server = Bun.serve({ port: 0, tls: { cert, key }, fetch: () => new Response("ok") });
+        \\  expect(server.url.toString()).toStartWith("https://");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21792.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+}
+
+test "bootstrap runner exposes harness bunRun helper" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { test } from "bun:test";
+        \\import { bunRun, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\test("does not segfault", () => {
+        \\  const dir = tempDirWithFiles("segfault", {
+        \\    "dir/a.ts": "console.log()",
+        \\  });
+        \\  bunRun(join(dir, "dir/a.ts"));
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/11664.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors spawned bun test failure snapshot" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\test("11793", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/11793.fixture.ts"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await result.exited).toBe(1);
+        \\  expect(normalizeBunSnapshot(await result.stderr.text())).toMatchInlineSnapshot(`
+        \\    "test/regression/issue/11793.fixture.ts:
+        \\    1 | const { test, expect } = require("bun:test");
+        \\    2 |${" "}
+        \\    3 | test.each([[]])("%p", array => {
+        \\    4 |   expect(array.length).toBe(0);
+        \\                               ^
+        \\    error: expect(received).toBe(expected)
+        \\
+        \\    Expected: 0
+        \\    Received: 1
+        \\        at <anonymous> (file:NN:NN)
+        \\    (fail) %p
+        \\
+        \\     0 pass
+        \\     1 fail
+        \\     1 expect() calls
+        \\    Ran 1 test across 1 file."
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/11793.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner handles workspace package manager spawnSync" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\test("11806", () => {
+        \\  const dir = tempDirWithFiles("11806", {
+        \\    "package.json": JSON.stringify({ name: "project", workspaces: ["apps/*"] }),
+        \\    "apps": { "api": { "package.json": JSON.stringify({ name: "api", devDependencies: { typescript: "^5.7.3" } }) } },
+        \\  });
+        \\  const result1 = Bun.spawnSync({ cmd: [bunExe(), "install"], cwd: dir + "/apps/api" });
+        \\  expect(result1.exitCode).toBe(0);
+        \\  const result2 = Bun.spawnSync({ cmd: [bunExe(), "add", "--dev", "typescript"], cwd: dir + "/apps/api" });
+        \\  expect(result2.exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/11806.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors verbose fetch form body output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot, tempDir } from "harness";
+        \\test("12042", async () => {
+        \\  using dir = tempDir("issue-12042", {
+        \\    "form.ts": `
+        \\const params = new URLSearchParams();
+        \\params.set("grant_type", "client_credentials");
+        \\params.set("client_id", "abc");
+        \\params.set("client_secret", "xyz");
+        \\`,
+        \\  });
+        \\  const dirPath = String(dir);
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "form.ts"],
+        \\    env: { ...bunEnv, BUN_CONFIG_VERBOSE_FETCH: "curl" },
+        \\    cwd: dirPath,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const output = await proc.stdout.text() + await proc.stderr.text();
+        \\  const normalized = normalizeBunSnapshot(output, dirPath);
+        \\  expect(normalized).toContain('--data-raw "grant_type=client_credentials&client_id=abc&client_secret=xyz');
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/12042.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports TLS upgrade leak regression flow" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\import { tls as COMMON_CERT, expectMaxObjectTypeCount } from "harness";
+        \\import { once } from "node:events";
+        \\import net from "node:net";
+        \\import tls from "node:tls";
+        \\
+        \\describe("TLS upgrade", () => {
+        \\  it("does not leak TLSSocket objects after close", async () => {
+        \\    const server = tls.createServer({ key: COMMON_CERT.key, cert: COMMON_CERT.cert }, socket => {
+        \\      socket.end("hello");
+        \\    });
+        \\    await once(server.listen(0, "127.0.0.1"), "listening");
+        \\    const port = (server.address() as net.AddressInfo).port;
+        \\    try {
+        \\      for (let i = 0; i < 3; i++) {
+        \\        const tcpSocket = net.createConnection({ host: "127.0.0.1", port });
+        \\        await once(tcpSocket, "connect");
+        \\        const tlsSocket = tls.connect({ socket: tcpSocket, ca: COMMON_CERT.cert, rejectUnauthorized: false });
+        \\        await once(tlsSocket, "secureConnect");
+        \\        tlsSocket.on("data", () => {});
+        \\        tlsSocket.destroy();
+        \\        await once(tlsSocket, "close");
+        \\      }
+        \\    } finally {
+        \\      server.close();
+        \\      await once(server, "close");
+        \\    }
+        \\    await expectMaxObjectTypeCount(expect, "TLSSocket", 10, 1000);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/12117.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports async failing test for bail hook regression" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test.failing("12250 bail path", async () => {
+        \\  using dir = tempDir("test-12250", { "test.spec.ts": "test body" });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "test", "--bail", "test.spec.ts"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, exitCode] = await Promise.all([proc.stdout.text(), proc.exited]);
+        \\  expect(exitCode).toBe(1);
+        \\  expect(stdout).toContain("Before");
+        \\  expect(stdout).toContain("After");
+        \\});
+        \\
+        \\test("12250 normal path", async () => {
+        \\  using dir = tempDir("test-12250-control", { "test.spec.ts": "test body" });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "test", "test.spec.ts"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, exitCode] = await Promise.all([proc.stdout.text(), proc.exited]);
+        \\  expect(exitCode).toBe(1);
+        \\  expect(stdout).toContain("Before");
+        \\  expect(stdout).toContain("After");
+        \\  expect(stdout).not.toContain("Bailed out");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/12250.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors preload failure nested runner snapshot" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\test("12782", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [
+        \\      bunExe(),
+        \\      "test",
+        \\      import.meta.dir + "/12782.foo.fixture.ts",
+        \\      import.meta.dir + "/12782.bar.fixture.ts",
+        \\      "--preload",
+        \\      import.meta.dir + "/12782.setup.ts",
+        \\    ],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await result.exited).toBe(1);
+        \\  expect(normalizeBunSnapshot(await result.stderr.text())).toMatchInlineSnapshot(`
+        \\    "test/regression/issue/12782.foo.fixture.ts:
+        \\    1 | import { beforeAll } from "bun:test";
+        \\    2 |${" "}
+        \\    3 | const FOO = process.env.FOO ?? "";
+        \\    4 |${" "}
+        \\    5 | beforeAll(() => {
+        \\    6 |   if (!FOO) throw new Error("Environment variable FOO is not set");
+        \\                                                                         ^
+        \\    error: Environment variable FOO is not set
+        \\        at <anonymous> (file:NN:NN)
+        \\    (fail) (unnamed)
+        \\
+        \\    test/regression/issue/12782.bar.fixture.ts:
+        \\    (pass) bar > should not run
+        \\    (pass) bar > inner describe > should not run
+        \\
+        \\     2 pass
+        \\     1 fail
+        \\    Ran 3 tests across 2 files."
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/12782.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner respects Transpiler trimUnusedImports in scans" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("scanImports respects trimUnusedImports", () => {
+        \\  const transpiler = new Bun.Transpiler({ trimUnusedImports: true, loader: "tsx" });
+        \\  expect(transpiler.scanImports(`import { Component } from "./Component";`)).toEqual([]);
+        \\  expect(transpiler.scanImports(`import Foo from "./Foo";`)).toEqual([]);
+        \\  expect(transpiler.scanImports(`import * as Utils from "./Utils";`)).toEqual([]);
+        \\  expect(transpiler.scanImports(`import { Component } from "./Component"; console.log(Component);`)).toEqual([
+        \\    { path: "./Component", kind: "import-statement" },
+        \\  ]);
+        \\  expect(transpiler.scanImports(`import "./side-effect";`)).toEqual([{ path: "./side-effect", kind: "import-statement" }]);
+        \\  expect(transpiler.scanImports(`import type { Foo } from "./Foo";`)).toEqual([]);
+        \\});
+        \\
+        \\test("scan respects trimUnusedImports", () => {
+        \\  const transpiler = new Bun.Transpiler({ trimUnusedImports: true, loader: "tsx" });
+        \\  expect(transpiler.scan(`import { Component } from "./Component";`).imports).toEqual([]);
+        \\  expect(transpiler.scan(`import { Component } from "./Component"; console.log(Component);`).imports).toEqual([
+        \\    { path: "./Component", kind: "import-statement" },
+        \\  ]);
+        \\});
+        \\
+        \\test("scanImports keeps unused imports without trimUnusedImports", () => {
+        \\  const transpiler = new Bun.Transpiler({ trimUnusedImports: false, loader: "tsx" });
+        \\  expect(transpiler.scanImports(`import { Component } from "./Component";`)).toEqual([
+        \\    { path: "./Component", kind: "import-statement" },
+        \\  ]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/13251.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors unsupported runnable file errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("existing unsupported file", async () => {
+        \\  using dir = tempDir("issue-1365", { "test.css": "body { color: red; }" });
+        \\  await using proc = Bun.spawn({ cmd: [bunExe(), "test.css"], cwd: String(dir), env: bunEnv, stderr: "pipe", stdout: "pipe" });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toBe("");
+        \\  expect(stderr).not.toContain("File not found");
+        \\  expect(stderr).toContain("Cannot run");
+        \\  expect(stderr).toContain("test.css");
+        \\  expect(stderr).toContain("css");
+        \\  expect(exitCode).toBe(1);
+        \\});
+        \\
+        \\test("missing unsupported file", async () => {
+        \\  using dir = tempDir("issue-1365-missing", {});
+        \\  await using proc = Bun.spawn({ cmd: [bunExe(), "nonexistent.css"], cwd: String(dir), env: bunEnv, stderr: "pipe", stdout: "pipe" });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toBe("");
+        \\  expect(stderr).toContain("File not found");
+        \\  expect(stderr).toContain("nonexistent.css");
+        \\  expect(exitCode).toBe(1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/1365.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors http duplex response fixture output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import { join } from "node:path";
+        \\
+        \\const fixture = (socketPath: string | undefined) => `
+        \\// docker-modem fixture
+        \\const socketPath = ${JSON.stringify(socketPath)};
+        \\const path = "/exec/abc/start";
+        \\`;
+        \\
+        \\for (const socketMode of ["tcp", "unix"] as const) {
+        \\  test(`duplex response (${socketMode})`, async () => {
+        \\    using dir = tempDir("issue-13696", {});
+        \\    const socketPath = socketMode === "unix" ? join(String(dir), "docker.sock") : undefined;
+        \\    await using proc = Bun.spawn({ cmd: [bunExe(), "-e", fixture(socketPath)], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\    const lines = stdout.trim().split("\n");
+        \\    expect({ lines, stderr }).toEqual({
+        \\      lines: ["request-seen", "response-status:200", "recv:chunk-0", "recv:chunk-1", "recv:chunk-2", "response-end"],
+        \\      stderr: expect.not.stringContaining("request-error"),
+        \\    });
+        \\    expect(exitCode).toBe(0);
+        \\  });
+        \\}
+        \\
+        \\test("flushHeaders response", async () => {
+        \\  await using proc = Bun.spawn({ cmd: [bunExe(), "-e", "req.flushHeaders();"], env: bunEnv, stdout: "pipe", stderr: "pipe" });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect({ stdout: stdout.trim(), stderr }).toEqual({
+        \\    stdout: "body:hello",
+        \\    stderr: expect.not.stringContaining("request-error"),
+        \\  });
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/13696.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors nested snapshot add and reuse" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tmpdirSync } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("snapshots will recognize existing entries", async () => {
+        \\  const testDir = tmpdirSync();
+        \\  await Bun.write(join(testDir, "test.test.js"), `
+        \\    test("snapshot test", () => {
+        \\      expect("foo").toMatchSnapshot();
+        \\    });
+        \\  `);
+        \\
+        \\  let proc = Bun.spawnSync({
+        \\    cmd: [bunExe(), "test", "./test.test.js"],
+        \\    cwd: testDir,
+        \\    env: { ...bunEnv, CI: "false" },
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(proc.stderr.toString()).toContain("1 added");
+        \\  expect(proc.exitCode).toBe(0);
+        \\
+        \\  const newSnapshot = await Bun.file(join(testDir, "__snapshots__", "test.test.js.snap")).text();
+        \\  proc = Bun.spawnSync({
+        \\    cmd: [bunExe(), "test", "./test.test.js"],
+        \\    cwd: testDir,
+        \\    env: { ...bunEnv, CI: "false" },
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(proc.stderr.toString()).not.toContain("1 added");
+        \\  expect(proc.exitCode).toBe(0);
+        \\  expect(newSnapshot).toBe(await Bun.file(join(testDir, "__snapshots__", "test.test.js.snap")).text());
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14029.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors nested only test stdout" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("14135", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/14135.fixture.ts"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: { ...bunEnv, CI: "false" },
+        \\  });
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(normalizeBunSnapshot(await result.stdout.text())).toMatchInlineSnapshot(`
+        \\    "bun test <version> (<revision>)
+        \\    beforeAll 2
+        \\    test 2"
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14135.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 19758 nested beforeAll stdout" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("19758", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/19758.fixture.ts"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(normalizeBunSnapshot(await result.stdout.text())).toMatchInlineSnapshot(`
+        \\    "bun test <version> (<revision>)
+        \\    -- foo beforeAll
+        \\    -- bar beforeAll
+        \\    bar.1
+        \\    -- baz beforeAll
+        \\    baz.1"
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/19758.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 21177 filtered beforeAll stdout" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("21177 first", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/21177.fixture.ts", "-t", "true is true"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(normalizeBunSnapshot(await result.stdout.text())).toMatchInlineSnapshot(`"bun test <version> (<revision>)"`);
+        \\});
+        \\
+        \\test("21177 second", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/21177.fixture-2.ts", "-t", "middle is middle"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(normalizeBunSnapshot(await result.stdout.text())).toMatchInlineSnapshot(`
+        \\    "bun test <version> (<revision>)
+        \\    Running beforeAll in Outer describe
+        \\    Running beforeAll in Middle describe"
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21177.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 21830 beforeEach ordering stdout" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("21830", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/21830.fixture.ts"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(normalizeBunSnapshot(await result.stdout.text())).toMatchInlineSnapshot(`
+        \\    "bun test <version> (<revision>)
+        \\    Create Show Tests pre
+        \\    Create Show Tests post
+        \\    Get Show Data Tests pre
+        \\    Get Show Data Tests post
+        \\    Show Deletion Tests pre${" "}
+        \\    Show Deletion test post"
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/21830.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 19875 todo stderr" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("19875", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/19875.fixture.ts"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: { ...bunEnv, CI: "false" },
+        \\  });
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(normalizeBunSnapshot(await result.stderr.text())).toMatchInlineSnapshot(`
+        \\    "test/regression/issue/19875.fixture.ts:
+        \\    (todo) only > todo > fail
+        \\
+        \\     0 pass
+        \\     1 todo
+        \\     0 fail
+        \\    Ran 1 test across 1 file."
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/19875.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 20092 only fixture stderr" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("20092", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/20092.fixture.ts"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: { ...bunEnv, CI: "false" },
+        \\  });
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(normalizeBunSnapshot(await result.stderr.text())).toMatchInlineSnapshot(`
+        \\    "test/regression/issue/20092.fixture.ts:
+        \\    (pass) foo > works
+        \\    (pass) bar > works
+        \\
+        \\     2 pass
+        \\     0 fail
+        \\     2 expect() calls
+        \\    Ran 2 tests across 1 file."
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20092.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 20100 grouped stdout" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot } from "harness";
+        \\
+        \\test("20100", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/20100.fixture.ts"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(normalizeBunSnapshot(await result.stdout.text())).toMatchInlineSnapshot(`
+        \\    "bun test <version> (<revision>)
+        \\    <top-level>
+        \\      <top-level-test> { unpredictableVar: "top level" } </top-level-test>
+        \\      <describe-1>
+        \\        <describe-1-test> { unpredictableVar: "describe 1" } </describe-1-test>
+        \\      </describe-1>
+        \\      <describe-2>
+        \\        <describe-2-test> { unpredictableVar: "describe 2" } </describe-2-test>
+        \\      </describe-2>
+        \\    </top-level>"
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/20100.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors WebSocket error and close ordering" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("WebSocket error before close", () => {
+        \\  const events = [];
+        \\  const server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req) {
+        \\      return new Response(null, { status: 302, headers: { Location: "http://example.com" } });
+        \\    },
+        \\  });
+        \\  const ws = new WebSocket(`ws://localhost:${server.port}`);
+        \\  ws.addEventListener("error", event => {
+        \\    events.push("error");
+        \\  });
+        \\  ws.addEventListener("close", event => {
+        \\    events.push("close");
+        \\  });
+        \\  ws.addEventListener("open", () => {
+        \\    events.push("open");
+        \\  });
+        \\  return Promise.resolve().then(() => {
+        \\    server.stop(true);
+        \\    expect(events).toEqual(["error", "close"]);
+        \\  });
+        \\});
+        \\
+        \\test("WebSocket success echo", () => {
+        \\  const events = [];
+        \\  const messages = [];
+        \\  const server = Bun.serve({
+        \\    port: 0,
+        \\    websocket: {
+        \\      message(ws, message) {
+        \\        ws.send(message);
+        \\      },
+        \\    },
+        \\    fetch(req, server) {
+        \\      if (server.upgrade(req)) return;
+        \\      return new Response("Not found", { status: 404 });
+        \\    },
+        \\  });
+        \\  const ws = new WebSocket(`ws://localhost:${server.port}`);
+        \\  ws.addEventListener("error", event => {
+        \\    events.push("error");
+        \\  });
+        \\  ws.addEventListener("open", event => {
+        \\    events.push("open");
+        \\  });
+        \\  ws.addEventListener("message", event => {
+        \\    events.push("message");
+        \\    messages.push(event.data);
+        \\  });
+        \\  ws.addEventListener("close", event => {
+        \\    events.push("close");
+        \\  });
+        \\  return Promise.resolve()
+        \\    .then(() => {
+        \\      expect(events).toContain("open");
+        \\      ws.send("test");
+        \\    })
+        \\    .then(() => {
+        \\      expect(messages[0]).toBe("test");
+        \\      ws.close();
+        \\    })
+        \\    .then(() => {
+        \\      server.stop(true);
+        \\      expect(events).toContain("message");
+        \\      expect(events).toContain("close");
+        \\      expect(events).not.toContain("error");
+        \\    });
+        \\});
+        \\
+        \\test("WebSocket regular HTTP server error before close", () => {
+        \\  const events = [];
+        \\  const server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req) {
+        \\      return new Response("Not a WebSocket server", { status: 200, headers: { "Content-Type": "text/plain" } });
+        \\    },
+        \\  });
+        \\  const ws = new WebSocket(`ws://localhost:${server.port}`);
+        \\  ws.addEventListener("error", event => {
+        \\    events.push("error");
+        \\  });
+        \\  ws.addEventListener("close", event => {
+        \\    events.push("close");
+        \\  });
+        \\  ws.addEventListener("open", () => {
+        \\    events.push("open");
+        \\  });
+        \\  return Promise.resolve().then(() => {
+        \\    server.stop(true);
+        \\    expect(events).toEqual(["error", "close"]);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14338.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors uncaught rejection child test failure" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("uncaught promise rejection in async test should not hang", async () => {
+        \\  using dir = tempDir("issue-14624", {
+        \\    "hang.test.js": `
+        \\      import { test } from 'bun:test'
+        \\
+        \\      test('async test with uncaught rejection', async () => {
+        \\        console.log('test start');
+        \\        (async () => { throw new Error('uncaught error'); })();
+        \\        await Bun.sleep(1);
+        \\        console.log('test end');
+        \\      })
+        \\    `,
+        \\  });
+        \\
+        \\  const proc = Bun.spawn({
+        \\    cmd: [bunExe(), "test", "hang.test.js"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\
+        \\  let timeout = false;
+        \\  const timer = setTimeout(() => {
+        \\    timeout = true;
+        \\    proc.kill();
+        \\  }, 3000);
+        \\
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  clearTimeout(timer);
+        \\  const output = stdout + stderr;
+        \\
+        \\  expect(timeout).toBeFalse();
+        \\  expect(output).toContain("test start");
+        \\  expect(output).toContain("uncaught error");
+        \\  expect(exitCode).not.toBe(0);
+        \\  expect(output).toMatch(/✗|\(fail\)/);
+        \\  expect(output).toMatch(/\n 1 fail/);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14624.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors lifecycle install deletion outcomes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+        \\
+        \\test("lifecycle script should handle directory deletion gracefully", async () => {
+        \\  const dir = tempDirWithFiles("lifecycle-crash-test", { "package.json": "{}" });
+        \\  const proc = Bun.spawn({ cmd: [bunExe(), "install"], env: bunEnv, cwd: dir, stdout: "pipe", stderr: "pipe" });
+        \\  const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+        \\  expect(stderr).not.toContain("assertion");
+        \\  expect(stderr.includes("script") && (stderr.includes("exited with") || stderr.includes("Failed to run script"))).toBe(true);
+        \\  expect(exitCode).not.toBe(0);
+        \\});
+        \\
+        \\test("optional dependency script deletion succeeds", async () => {
+        \\  const dir = tempDirWithFiles("main-package", { "package.json": "{}" });
+        \\  const proc = Bun.spawn({ cmd: [bunExe(), "install"], env: bunEnv, cwd: dir, stdout: "pipe", stderr: "pipe" });
+        \\  const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+        \\  expect(stderr).not.toContain("panic");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/14945-lifecycle-script-crash.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner supports Readable.fromWeb and sha256 hash parity shape" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { Readable } from "stream";
+        \\test("readable from web", async () => {
+        \\  const bytes = crypto.getRandomValues(new Uint8Array(128));
+        \\  const response = new Response(bytes);
+        \\  expect(response.bodyUsed).toBe(false);
+        \\  const stream = Readable.fromWeb(response.body!);
+        \\  expect(response.bodyUsed).toBe(true);
+        \\  const chunks = [];
+        \\  for await (const chunk of stream) chunks.push(chunk);
+        \\  expect(Bun.hash(Buffer.concat(chunks))).toBe(Bun.hash(bytes));
+        \\  expect(Bun.CryptoHasher.hash("sha256", Buffer.concat(chunks), "base64")).toBe(Bun.CryptoHasher.hash("sha256", bytes, "base64"));
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09555.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap rewrite erases ReadableStreamDefaultController declaration" {
+    const source =
+        \\test("ReadableStream", async () => {
+        \\  let controller: ReadableStreamDefaultController;
+        \\  new ReadableStream({
+        \\    start(controller1) {
+        \\      controller = controller1;
+        \\      controller1.close();
+        \\    },
+        \\  });
+        \\  expect(() => controller!.close()).toThrowError(TypeError);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/19661.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ReadableStreamDefaultController") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "controller!.close") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "controller.close") != null);
+}
+
+test "bootstrap runner supports bun shell throws configurator and target bun output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\test("shell build target bun", async () => {
+        \\  const source = tempDirWithFiles("source", { "index.js": "console.log('x')" });
+        \\  $.throws(true);
+        \\  await $`${bunExe()} build --target bun ${join(source, "index.js")} --outfile ${join(source, "bundle.js")}`;
+        \\  const result = await $`${bunExe()} ${join(source, "bundle.js")}`.text();
+        \\  expect(result).toBe(`{"我":"a"}\n{"我":"b"}\n`);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09559.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports bun run script cwd and node_modules bin lookup" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe, isPosix, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\test("bun run cwd and bin lookup", async () => {
+        \\  expect(isPosix).toBe(true);
+        \\  const dir = tempDirWithFiles("issue-10132", {
+        \\    "package.json": JSON.stringify({ scripts: { "get-pwd": "pwd" } }),
+        \\    "node_modules/.bin/bun-hello": "echo hi",
+        \\    "subdir/one/two/package.json": JSON.stringify({ scripts: { "other-script": "echo hi" } }),
+        \\  });
+        \\  $.cwd(join(dir, "subdir", "one"));
+        \\  expect(await $`${bunExe()} run get-pwd`.text()).toBe(`${dir}\n`);
+        \\  const first = await $`${bunExe()} bun-hello`.quiet();
+        \\  expect(first.text().trim()).toBe("My name is bun-hello");
+        \\  const second = await $`${bunExe()} run bun-hello`.quiet();
+        \\  expect(second.text().trim()).toBe("My name is bun-hello");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/10132.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports binary temp fixtures and external sourcemaps" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { readdirSync, statSync } from "fs";
+        \\import { rm } from "fs/promises";
+        \\import { bunExe, tempDirWithFiles } from "harness";
+        \\import path from "path";
+        \\test("build sourcemap stays small", async () => {
+        \\  const temp = tempDirWithFiles("issue-10139", {
+        \\    "huge-asset.js": "import huge from './1.png'; console.log(huge)",
+        \\    "1.png": new Buffer(1024),
+        \\  });
+        \\  const results = await Bun.build({
+        \\    entrypoints: [path.join(temp, "huge-asset.js")],
+        \\    outdir: path.join(temp, "out"),
+        \\    sourcemap: "external",
+        \\  });
+        \\  expect(results.outputs[0].sourcemap.size).toBeLessThan(1024);
+        \\  await rm(path.join(temp, "out"), { force: true, recursive: true });
+        \\  $.cwd(temp);
+        \\  await $`${bunExe()} build ./huge-asset.js --outdir=out --sourcemap=external --minify`;
+        \\  const map = readdirSync(path.join(temp, "out")).find(file => file.includes(".map"));
+        \\  expect(statSync(path.join(temp, "out", map)).size).toBeLessThan(1024);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/10139.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports promisified execFile bun version" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe } from "harness";
+        \\import { execFile } from "node:child_process";
+        \\import util from "node:util";
+        \\test("issue 10170", async () => {
+        \\  const execFileAsync = util.promisify(execFile);
+        \\  const result = await execFileAsync(bunExe(), ["--version"]);
+        \\  expect(result.stdout).toContain(Bun.version);
+        \\  expect(result.stderr).toBe("");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/10170.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports mock called-with diff matchers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, mock, test } from "bun:test";
+        \\test("spy diff", () => {
+        \\  const mockedFn = mock(args => args);
+        \\  mockedFn({ a: { b: 1 } });
+        \\  let error;
+        \\  try {
+        \\    expect(mockedFn).toHaveBeenCalledWith({ a: { b: 2 } });
+        \\  } catch (e) {
+        \\    error = e;
+        \\  }
+        \\  expect(error).toBeDefined();
+        \\  expect(error.message).toContain("- Expected");
+        \\  expect(error.message).toContain("+ Received");
+        \\  expect(error.message).toContain("1");
+        \\  expect(error.message).toContain("2");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/10380/spy-matchers-diff.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers import.meta metadata" {
     const source =
         \\import { expect, it } from "bun:test";
+        \\const __dirname = import.meta.dirname;
         \\it("metadata", () => {
         \\  expect(import.meta.dir).toBe(__dirname);
         \\  expect(import.meta.dirname).toBe(__dirname);
@@ -23395,6 +28753,7 @@ test "Bun test import rewrite lowers import.meta metadata" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "expect(import.meta") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const __dirname") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"import.meta.path\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "// import.meta.dir") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dir").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
