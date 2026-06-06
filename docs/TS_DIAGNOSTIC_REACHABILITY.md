@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 567 |
-| active reachable (parity targets) | 104 |
+| catalog-only total | 566 |
+| active reachable (parity targets) | 103 |
 | blocked/effectively-dead references | 2 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,14 +25,14 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 53 |
+| 1xxx — parser / syntactic + program file-inclusion | 52 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 2xxx — checker / type engine | 11 |
 | 4xxx — declaration-emit (privacy / serialization) | 7 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 1xxx — parser / syntactic + program file-inclusion (53)
+### 1xxx — parser / syntactic + program file-inclusion (52)
 
 - TS1012 `Unexpected_token_1012`
 - TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
@@ -43,7 +43,6 @@ diverge from the reference compiler.
 - TS1261 `Already_included_file_name_0_differs_from_file_name_1_only_in_casing_1261`
 - TS1272 `A_type_referenced_in_a_decorated_signature_must_be_imported_with_import_type_or_a_namespace_import_w_1272`
 - TS1281 `Cannot_access_0_from_another_file_without_qualification_when_1_is_enabled_Use_2_instead_1281`
-- TS1320 `Type_of_await_operand_must_either_be_a_valid_promise_or_must_not_contain_a_callable_then_member_1320`
 - TS1321 `Type_of_yield_operand_in_an_async_generator_must_either_be_a_valid_promise_or_must_not_contain_a_cal_1321`
 - TS1322 `Type_of_iterated_elements_of_a_yield_Asterisk_operand_must_either_be_a_valid_promise_or_must_not_con_1322`
 - TS1339 `Module_0_does_not_refer_to_a_value_but_is_used_as_a_value_here_1339`
