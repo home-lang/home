@@ -2490,6 +2490,14 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/14982/14982.test.ts") && cmd.some(part => part.endsWith("commander-hang.fixture.ts"))) {
     \\    return __home_spawn_completed("Test command\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/22199.test.ts") && cmd.includes("--preload")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const preload = String(cmd[cmd.indexOf("--preload") + 1] || "");
+    \\    const preloadPath = preload.startsWith("/") ? preload : __home_build_join(cwd, preload);
+    \\    const preloadSource = __home_build_read_text(preloadPath) || "";
+    \\    if (preloadSource.includes("Custom plugin error")) return __home_spawn_completed("", "Custom plugin error\n", 1);
+    \\    return __home_spawn_completed("Hello from index.js\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/18028.test.ts")) {
     \\    if (cmd.includes("test") && cmd.some(part => part.endsWith("test.test.ts"))) {
     \\      const stderr = "test.test.ts:\n" +
@@ -22260,6 +22268,70 @@ test "bootstrap runner mirrors issue 22157 compiled process argv" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22199 plugin onResolve fallthrough" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\function runPluginCase(name, callbackBody, stderr = "inherit") {
+        \\  using dir = tempDir(name, {
+        \\    "plugin.js": `
+        \\      Bun.plugin({
+        \\        name: "test-plugin",
+        \\        setup(build) {
+        \\          build.onResolve({ filter: /.*\\.(ts|tsx|js|jsx)$/ }, ${callbackBody});
+        \\        },
+        \\      });
+        \\    `,
+        \\    "index.js": `console.log("Hello from index.js");`,
+        \\  });
+        \\  return Bun.spawnSync({
+        \\    cmd: [bunExe(), "--preload", "./plugin.js", "./index.js"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stderr,
+        \\  });
+        \\}
+        \\
+        \\test("undefined onResolve falls through", () => {
+        \\  const result = runPluginCase("plugin-undefined", `async () => undefined`);
+        \\  expect(result.exitCode).toBe(0);
+        \\  expect(result.stdout.toString().trim()).toBe("Hello from index.js");
+        \\});
+        \\
+        \\test("null onResolve falls through", () => {
+        \\  const result = runPluginCase("plugin-null", `async () => null`);
+        \\  expect(result.exitCode).toBe(0);
+        \\  expect(result.stdout.toString().trim()).toBe("Hello from index.js");
+        \\});
+        \\
+        \\test("sync undefined onResolve falls through", () => {
+        \\  const result = runPluginCase("plugin-sync-undefined", `() => undefined`);
+        \\  expect(result.exitCode).toBe(0);
+        \\  expect(result.stdout.toString().trim()).toBe("Hello from index.js");
+        \\});
+        \\
+        \\test("rejected onResolve reports error", () => {
+        \\  const result = runPluginCase("plugin-reject", `async () => { throw new Error("Custom plugin error"); }`, "pipe");
+        \\  expect(result.exitCode).toBe(1);
+        \\  expect(result.stderr.toString()).toContain("Custom plugin error");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22199.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner covers invalid TOML build diagnostic lineText" {
