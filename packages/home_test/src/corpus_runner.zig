@@ -9495,6 +9495,14 @@ const harness_prelude =
     \\    }
     \\  }
     \\};
+    \\__home_assert_module.doesNotThrow = function(fn, expected, message) {
+    \\  if (typeof fn !== "function") throw new TypeError("The \"fn\" argument must be of type function");
+    \\  try {
+    \\    fn();
+    \\  } catch (error) {
+    \\    throw new Error(message || "Got unwanted exception: " + (error && error.message ? error.message : String(error)));
+    \\  }
+    \\};
     \\function __home_path_invalid_arg(name, expected, actual) {
     \\  const error = new TypeError('The "' + name + '" argument must be of type ' + expected + ". Received " + (actual === null ? "null" : typeof actual));
     \\  error.code = "ERR_INVALID_ARG_TYPE";
@@ -10806,22 +10814,124 @@ const harness_prelude =
     \\globalThis.__home_modules["node:dns"] = __home_node_dns;
     \\globalThis.__home_modules["dns/promises"] = __home_dns_promises;
     \\globalThis.__home_modules["node:dns/promises"] = __home_dns_promises;
-    \\const __home_node_events = {
-    \\  once(target, name) {
-    \\    return new Promise(resolve => {
-    \\      let settled = false;
-    \\      const listener = function() {
-    \\        if (settled) return;
-    \\        settled = true;
-    \\        resolve(Array.prototype.slice.call(arguments));
-    \\      };
-    \\      if (target && typeof target.once === "function") target.once(name, listener);
-    \\      else if (target && typeof target.on === "function") target.on(name, listener);
-    \\      else resolve([]);
-    \\    });
-    \\  },
+    \\class __home_EventEmitter {
+    \\  constructor() {
+    \\    this._events = Object.create(null);
+    \\    this._maxListeners = 10;
+    \\  }
+    \\  on(type, listener) {
+    \\    const key = String(type);
+    \\    (this._events[key] || (this._events[key] = [])).push(listener);
+    \\    return this;
+    \\  }
+    \\  addListener(type, listener) {
+    \\    return this.on(type, listener);
+    \\  }
+    \\  prependListener(type, listener) {
+    \\    const key = String(type);
+    \\    (this._events[key] || (this._events[key] = [])).unshift(listener);
+    \\    return this;
+    \\  }
+    \\  once(type, listener) {
+    \\    const self = this;
+    \\    function wrapped() {
+    \\      self.off(type, wrapped);
+    \\      return listener.apply(this, arguments);
+    \\    }
+    \\    wrapped.listener = listener;
+    \\    return this.on(type, wrapped);
+    \\  }
+    \\  off(type, listener) {
+    \\    const key = String(type);
+    \\    const list = this._events[key];
+    \\    if (!list) return this;
+    \\    for (let i = 0; i < list.length; i++) {
+    \\      if (list[i] === listener || list[i].listener === listener) {
+    \\        const removed = list[i].listener || list[i];
+    \\        list.splice(i, 1);
+    \\        if (list.length === 0) delete this._events[key];
+    \\        if (key !== "removeListener") this.emit("removeListener", key, removed);
+    \\        break;
+    \\      }
+    \\    }
+    \\    return this;
+    \\  }
+    \\  removeListener(type, listener) {
+    \\    return this.off(type, listener);
+    \\  }
+    \\  removeAllListeners(type) {
+    \\    if (type === undefined) {
+    \\      for (const key of Object.keys(this._events)) this.removeAllListeners(key);
+    \\      return this;
+    \\    }
+    \\    const key = String(type);
+    \\    const list = this._events[key];
+    \\    if (!list) return this;
+    \\    const removed = list.slice();
+    \\    delete this._events[key];
+    \\    if (key !== "removeListener") {
+    \\      for (const listener of removed) this.emit("removeListener", key, listener.listener || listener);
+    \\    }
+    \\    return this;
+    \\  }
+    \\  emit(type) {
+    \\    const key = String(type);
+    \\    const list = this._events[key];
+    \\    const args = Array.prototype.slice.call(arguments, 1);
+    \\    if (!list || list.length === 0) {
+    \\      if (key === "error" && args.length > 0) throw args[0];
+    \\      return false;
+    \\    }
+    \\    for (const listener of list.slice()) listener.apply(this, args);
+    \\    return true;
+    \\  }
+    \\  listeners(type) {
+    \\    return (this._events[String(type)] || []).slice();
+    \\  }
+    \\  listenerCount(type) {
+    \\    return (this._events[String(type)] || []).length;
+    \\  }
+    \\  eventNames() {
+    \\    return Object.keys(this._events);
+    \\  }
+    \\  setMaxListeners(value) {
+    \\    this._maxListeners = Number(value);
+    \\    return this;
+    \\  }
+    \\  getMaxListeners() {
+    \\    return this._maxListeners;
+    \\  }
+    \\}
+    \\const __home_node_events = __home_EventEmitter;
+    \\__home_node_events.EventEmitter = __home_EventEmitter;
+    \\__home_node_events.default = __home_EventEmitter;
+    \\__home_node_events.once = function(target, name) {
+    \\  return new Promise((resolve, reject) => {
+    \\    function cleanup() {
+    \\      if (target && typeof target.removeListener === "function") {
+    \\        target.removeListener(name, onEvent);
+    \\        if (name !== "error") target.removeListener("error", onError);
+    \\      }
+    \\    }
+    \\    function onEvent() {
+    \\      cleanup();
+    \\      resolve(Array.prototype.slice.call(arguments));
+    \\    }
+    \\    function onError(error) {
+    \\      cleanup();
+    \\      reject(error);
+    \\    }
+    \\    if (target && typeof target.once === "function") {
+    \\      target.once(name, onEvent);
+    \\      if (name !== "error") target.once("error", onError);
+    \\    } else {
+    \\      resolve([]);
+    \\    }
+    \\  });
     \\};
-    \\__home_node_events.default = __home_node_events;
+    \\__home_node_events.getEventListeners = function(target, name) {
+    \\  return target && typeof target.listeners === "function" ? target.listeners(name) : [];
+    \\};
     \\globalThis.__home_modules["events"] = __home_node_events;
     \\globalThis.__home_modules["node:events"] = __home_node_events;
     \\function __home_AsyncLocalStorage() {
@@ -16913,6 +17023,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { once } from \"node:events\";",
             .replacement = "const { once } = globalThis.__home_import(\"node:events\");",
+        },
+        .{
+            .needle = "import { EventEmitter } from \"events\";",
+            .replacement = "const { EventEmitter } = globalThis.__home_import(\"events\");",
+        },
+        .{
+            .needle = "import { EventEmitter } from \"node:events\";",
+            .replacement = "const { EventEmitter } = globalThis.__home_import(\"node:events\");",
         },
         .{
             .needle = "import { AsyncLocalStorage } from \"node:async_hooks\";",
@@ -29321,6 +29439,85 @@ test "bootstrap runner mirrors issue 24131 interactive update" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24147 EventEmitter removeAllListeners" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { EventEmitter } from "events";
+        \\import assert from "node:assert";
+        \\import { test } from "node:test";
+        \\
+        \\test("removeAllListeners() from event handler with removeListener meta-listener", () => {
+        \\  const emitter = new EventEmitter();
+        \\
+        \\  emitter.on("test", () => {
+        \\    emitter.removeAllListeners("foo");
+        \\  });
+        \\
+        \\  emitter.on("removeListener", () => {});
+        \\
+        \\  assert.doesNotThrow(() => emitter.emit("test"));
+        \\});
+        \\
+        \\test("removeAllListeners() with actual listeners to remove", () => {
+        \\  const emitter = new EventEmitter();
+        \\  let fooCallCount = 0;
+        \\  let removeListenerCallCount = 0;
+        \\
+        \\  emitter.on("foo", () => fooCallCount++);
+        \\  emitter.on("foo", () => fooCallCount++);
+        \\
+        \\  emitter.on("test", () => {
+        \\    emitter.removeAllListeners("foo");
+        \\  });
+        \\
+        \\  emitter.on("removeListener", () => {
+        \\    removeListenerCallCount++;
+        \\  });
+        \\
+        \\  emitter.emit("test");
+        \\
+        \\  assert.strictEqual(emitter.listenerCount("foo"), 0);
+        \\  assert.strictEqual(removeListenerCallCount, 2);
+        \\  assert.strictEqual(fooCallCount, 0);
+        \\});
+        \\
+        \\test("nested removeAllListeners() calls", () => {
+        \\  const emitter = new EventEmitter();
+        \\  const events: string[] = [];
+        \\
+        \\  emitter.on("outer", () => {
+        \\    events.push("outer-start");
+        \\    emitter.removeAllListeners("inner");
+        \\    events.push("outer-end");
+        \\  });
+        \\
+        \\  emitter.on("inner", () => {
+        \\    events.push("inner");
+        \\  });
+        \\
+        \\  emitter.on("removeListener", type => {
+        \\    events.push(`removeListener:${String(type)}`);
+        \\  });
+        \\
+        \\  assert.doesNotThrow(() => emitter.emit("outer"));
+        \\  assert.deepStrictEqual(events, ["outer-start", "removeListener:inner", "outer-end"]);
+        \\  assert.strictEqual(emitter.listenerCount("inner"), 0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24147.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner supports node fs rename and unlink sync methods" {
