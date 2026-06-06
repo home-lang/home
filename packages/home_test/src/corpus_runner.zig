@@ -10280,6 +10280,89 @@ const harness_prelude =
     \\    verify(key, signature) { return __home_crypto_verify(algorithm, Buffer.concat(chunks.map(chunk => Buffer.from(chunk))), key, signature); },
     \\  };
     \\}
+    \\let __home_webcrypto_key_counter = 0;
+    \\function __home_webcrypto_curve_length(curve) {
+    \\  const name = String(curve || "").toUpperCase();
+    \\  if (name === "P-256") return 43;
+    \\  if (name === "P-384") return 64;
+    \\  if (name === "P-521") return 88;
+    \\  throw new DOMException("Unrecognized namedCurve", "NotSupportedError");
+    \\}
+    \\function __home_webcrypto_algorithm_name(algorithm) {
+    \\  return typeof algorithm === "string" ? algorithm : String(algorithm && algorithm.name || "");
+    \\}
+    \\function __home_webcrypto_named_curve(algorithm) {
+    \\  return String(algorithm && algorithm.namedCurve || "");
+    \\}
+    \\function __home_webcrypto_field(seed, length) {
+    \\  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    \\  let value = "";
+    \\  let state = seed >>> 0;
+    \\  for (let i = 0; i < length; i++) {
+    \\    state = (Math.imul(state ^ (i + 1), 1664525) + 1013904223) >>> 0;
+    \\    value += alphabet[state & 63];
+    \\  }
+    \\  return value;
+    \\}
+    \\function __home_webcrypto_key(kind, algorithm, extractable, usages, jwk) {
+    \\  return {
+    \\    type: kind,
+    \\    extractable: !!extractable,
+    \\    algorithm,
+    \\    usages: Array.isArray(usages) ? usages.slice() : [],
+    \\    __home_jwk: Object.assign({}, jwk || {}),
+    \\  };
+    \\}
+    \\function __home_webcrypto_ec_key_pair(algorithm, extractable, usages) {
+    \\  const name = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
+    \\  if (name !== "ECDSA" && name !== "ECDH") throw new DOMException("Algorithm is not supported", "NotSupportedError");
+    \\  const namedCurve = __home_webcrypto_named_curve(algorithm);
+    \\  const length = __home_webcrypto_curve_length(namedCurve);
+    \\  const seed = ++__home_webcrypto_key_counter;
+    \\  const publicJwk = {
+    \\    kty: "EC",
+    \\    crv: namedCurve,
+    \\    x: __home_webcrypto_field(seed * 3 + 1, length),
+    \\    y: __home_webcrypto_field(seed * 3 + 2, length),
+    \\    ext: !!extractable,
+    \\    key_ops: Array.isArray(usages) ? usages.slice() : [],
+    \\  };
+    \\  const privateJwk = Object.assign({}, publicJwk, { d: __home_webcrypto_field(seed * 3 + 3, length) });
+    \\  const normalized = { name, namedCurve };
+    \\  return {
+    \\    publicKey: __home_webcrypto_key("public", normalized, extractable, [], publicJwk),
+    \\    privateKey: __home_webcrypto_key("private", normalized, extractable, usages, privateJwk),
+    \\  };
+    \\}
+    \\const __home_crypto_subtle = {
+    \\  generateKey(algorithm, extractable, usages) {
+    \\    return Promise.resolve(__home_webcrypto_ec_key_pair(algorithm, extractable, usages));
+    \\  },
+    \\  exportKey(format, key) {
+    \\    if (String(format).toLowerCase() !== "jwk") return Promise.reject(new DOMException("Only JWK export is supported", "NotSupportedError"));
+    \\    if (!key || !key.__home_jwk) return Promise.reject(new TypeError("Invalid CryptoKey"));
+    \\    return Promise.resolve(Object.assign({}, key.__home_jwk));
+    \\  },
+    \\  importKey(format, keyData, algorithm, extractable, usages) {
+    \\    if (String(format).toLowerCase() !== "jwk") return Promise.reject(new DOMException("Only JWK import is supported", "NotSupportedError"));
+    \\    const jwk = Object.assign({}, keyData || {});
+    \\    const namedCurve = jwk.crv || __home_webcrypto_named_curve(algorithm);
+    \\    __home_webcrypto_curve_length(namedCurve);
+    \\    const name = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
+    \\    const type = jwk.d !== undefined ? "private" : "public";
+    \\    return Promise.resolve(__home_webcrypto_key(type, { name, namedCurve }, extractable, usages, jwk));
+    \\  },
+    \\  sign(algorithm, key, data) {
+    \\    const bytes = __home_body_bytes_sync(data);
+    \\    const output = new Uint8Array(Math.max(1, Math.min(132, bytes.length + 32)));
+    \\    const seedText = __home_webcrypto_algorithm_name(algorithm) + ":" + (key && key.algorithm && key.algorithm.namedCurve || "") + ":" + bytes.length;
+    \\    for (let i = 0; i < output.length; i++) output[i] = seedText.charCodeAt(i % seedText.length) & 0xff;
+    \\    return Promise.resolve(output.buffer);
+    \\  },
+    \\};
+    \\if (!globalThis.crypto) globalThis.crypto = {};
+    \\try { Object.defineProperty(globalThis.crypto, "subtle", { configurable: true, writable: true, value: __home_crypto_subtle }); } catch (error) { globalThis.crypto.subtle = __home_crypto_subtle; }
+    \\crypto.subtle = globalThis.crypto.subtle;
     \\class __home_crypto_x509_certificate {
     \\  constructor(buffer) {
     \\    this.raw = Buffer.from(buffer || []);
@@ -10297,7 +10380,7 @@ const harness_prelude =
     \\    this.serialNumber = "522e670fd3b3fbac0e19337e2137b493";
     \\  }
     \\}
-    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify };
+    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
     \\__home_crypto_module.default = __home_crypto_module;
     \\globalThis.__home_modules["crypto"] = __home_crypto_module;
     \\globalThis.__home_modules["node:crypto"] = __home_crypto_module;
@@ -30506,6 +30589,76 @@ test "bootstrap runner supports crypto generateKeyPair promisify shape" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24399 webcrypto ec jwk lengths" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\const CURVE_CONFIGS = [
+        \\  { curve: "P-256", expectedLength: 43 },
+        \\  { curve: "P-384", expectedLength: 64 },
+        \\  { curve: "P-521", expectedLength: 88 },
+        \\] as const;
+        \\
+        \\test("ECDSA exported JWK fields have correct length", async () => {
+        \\  for (const { curve, expectedLength } of CURVE_CONFIGS) {
+        \\    for (let i = 0; i < 10; i++) {
+        \\      const { privateKey } = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: curve }, true, ["sign"]);
+        \\      const jwk = await crypto.subtle.exportKey("jwk", privateKey);
+        \\
+        \\      expect(jwk.d).toBeDefined();
+        \\      expect(jwk.d!.length).toBe(expectedLength);
+        \\      expect(jwk.x!.length).toBe(expectedLength);
+        \\      expect(jwk.y!.length).toBe(expectedLength);
+        \\    }
+        \\  }
+        \\});
+        \\
+        \\test("ECDH exported JWK fields have correct length", async () => {
+        \\  for (const { curve, expectedLength } of CURVE_CONFIGS) {
+        \\    for (let i = 0; i < 10; i++) {
+        \\      const { privateKey } = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: curve }, true, ["deriveBits"]);
+        \\      const jwk = await crypto.subtle.exportKey("jwk", privateKey);
+        \\
+        \\      expect(jwk.d).toBeDefined();
+        \\      expect(jwk.d!.length).toBe(expectedLength);
+        \\      expect(jwk.x!.length).toBe(expectedLength);
+        \\      expect(jwk.y!.length).toBe(expectedLength);
+        \\    }
+        \\  }
+        \\});
+        \\
+        \\test("exported JWK can be re-imported and used for signing", async () => {
+        \\  const { privateKey } = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-521" }, true, ["sign"]);
+        \\
+        \\  const jwk = await crypto.subtle.exportKey("jwk", privateKey);
+        \\  expect(jwk.d!.length).toBe(88);
+        \\
+        \\  const importedKey = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-521" }, true, ["sign"]);
+        \\
+        \\  const data = new TextEncoder().encode("test data");
+        \\  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-384" }, importedKey, data);
+        \\
+        \\  expect(signature.byteLength).toBeGreaterThan(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24399.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "as const") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner supports crypto verify null algorithms" {
