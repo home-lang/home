@@ -2219,6 +2219,11 @@ const harness_prelude =
     \\      for (const callback of list.slice()) callback.apply(this, args);
     \\      return list.length > 0;
     \\    },
+    \\    pipe(destination) {
+    \\      if (destination && typeof destination.write === "function" && payload.length > 0) destination.write(payload);
+    \\      if (destination && typeof destination.end === "function") destination.end();
+    \\      return destination;
+    \\    },
     \\    destroy(error) {
     \\      if (this.destroyed) return this;
     \\      this.destroyed = true;
@@ -11712,8 +11717,17 @@ const harness_prelude =
     \\  },
     \\  spawn(file, args, options) {
     \\    const child = __home_http_event_target();
-    \\    child.stdout = __home_spawn_async_iterable_text("");
-    \\    child.stderr = __home_spawn_async_iterable_text("");
+    \\    const stdin = __home_spawn_async_iterable_text("");
+    \\    stdin.write = function() { return true; };
+    \\    stdin.end = function() { this.emit("finish"); return this; };
+    \\    const stdout = __home_spawn_async_iterable_text("");
+    \\    const stderr = __home_spawn_async_iterable_text("");
+    \\    Object.defineProperties(child, {
+    \\      stdin: { value: stdin, enumerable: true, writable: true, configurable: true },
+    \\      stdout: { value: stdout, enumerable: true, writable: true, configurable: true },
+    \\      stderr: { value: stderr, enumerable: true, writable: true, configurable: true },
+    \\      stdio: { value: [stdin, stdout, stderr], enumerable: true, writable: true, configurable: true },
+    \\    });
     \\    child.exitCode = null;
     \\    child.signalCode = null;
     \\    child.killed = false;
@@ -20471,6 +20485,67 @@ test "bootstrap runner supports child process stdout destroy broken pipe smoke" 
 
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Promise<number | null>") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Promise<void>") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { spawn } from "child_process";
+        \\
+        \\test("child process stdio properties should be enumerable for Object.assign()", () => {
+        \\  const child = spawn(process.execPath, ["-e", 'console.log("hello")']);
+        \\  expect(Object.keys(child)).toContain("stdin");
+        \\  expect(Object.keys(child)).toContain("stdout");
+        \\  expect(Object.keys(child)).toContain("stderr");
+        \\  expect(Object.keys(child)).toContain("stdio");
+        \\  for (const key of ["stdin", "stdout", "stderr", "stdio"] as const) {
+        \\    expect(Object.getOwnPropertyDescriptor(child, key)?.enumerable).toBe(true);
+        \\  }
+        \\});
+        \\
+        \\test("Object.assign should copy child process stdio properties", () => {
+        \\  const child = spawn(process.execPath, ["-e", 'console.log("hello")']);
+        \\  const merged = {};
+        \\  Object.assign(merged, child);
+        \\  expect(merged.stdout).toBeTruthy();
+        \\  expect(merged.stderr).toBeTruthy();
+        \\  expect(merged.stdin).toBeTruthy();
+        \\  expect(merged.stdio).toBeTruthy();
+        \\  expect(typeof merged.stdout.pipe).toBe("function");
+        \\  expect(typeof merged.stdout.on).toBe("function");
+        \\});
+        \\
+        \\test("tinyspawn-like library usage should work", () => {
+        \\  let childProcess;
+        \\  const promise = new Promise(resolve => {
+        \\    childProcess = spawn(process.execPath, ["-e", 'console.log("test")']);
+        \\    childProcess.on("exit", () => resolve(childProcess));
+        \\  });
+        \\  const subprocess = Object.assign(promise, childProcess);
+        \\  expect(subprocess.stdout).toBeTruthy();
+        \\  expect(subprocess.stderr).toBeTruthy();
+        \\  expect(subprocess.stdin).toBeTruthy();
+        \\  expect(subprocess instanceof Promise).toBe(true);
+        \\  expect(typeof subprocess.stdout.pipe).toBe("function");
+        \\  expect(typeof subprocess.stdout.on).toBe("function");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/246-child_process_object_assign_compatibility.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as const") == null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
