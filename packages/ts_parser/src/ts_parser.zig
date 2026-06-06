@@ -10127,6 +10127,7 @@ pub const Parser = struct {
                 try self.reportUnusedRenamesInFnTypeParam(elem);
             },
             .array_type => try self.reportUnusedRenamesInFnTypeParam(hir_mod.arrayTypeOf(self.hir, node).element),
+            .optional_type => try self.reportUnusedRenamesInFnTypeParam(hir_mod.optionalTypeOf(self.hir, node).operand),
             .rest_type => try self.reportUnusedRenamesInFnTypeParam(hir_mod.restTypeOf(self.hir, node).operand),
             .object_type => for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
                 if (self.hir.kindOf(member) != .interface_member) continue;
@@ -10332,6 +10333,10 @@ pub const Parser = struct {
                 try self.reportCodeAt(elem_start, elem_line, 1257, "A required element cannot follow an optional element.");
             }
             if (this_optional) saw_optional = true;
+            if (this_optional) {
+                const end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else elem_start;
+                e = try self.builder.addOptionalType(.{ .start = elem_start, .end = end }, e);
+            }
             if (has_rest) {
                 const end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else rest_tok.span.end;
                 e = try self.builder.addRestType(.{ .start = rest_tok.span.start, .end = end }, e);
@@ -19643,7 +19648,10 @@ test "parser: labeled tuple elements allow optional marker" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const alias = hir_mod.typeAliasOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(alias.aliased));
-    try T.expectEqual(@as(usize, 3), hir_mod.tupleTypeElements(&s.hir, alias.aliased).len);
+    const elems = hir_mod.tupleTypeElements(&s.hir, alias.aliased);
+    try T.expectEqual(@as(usize, 3), elems.len);
+    try T.expectEqual(hir_mod.NodeKind.optional_type, s.hir.kindOf(elems[1]));
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(hir_mod.optionalTypeOf(&s.hir, elems[1]).operand));
 }
 
 test "parser: labeled tuple optional type marker emits TS5086" {

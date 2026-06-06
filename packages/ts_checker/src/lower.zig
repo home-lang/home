@@ -74,6 +74,7 @@ pub const Lowerer = struct {
             .type_literal => try self.lowerLiteralType(node),
             .array_type => try self.lowerArray(node),
             .tuple_type => try self.lowerTuple(node),
+            .optional_type => try self.lower(hir_mod.optionalTypeOf(self.hir, node).operand),
             .object_type => try self.lowerObjectType(node),
             .fn_type, .constructor_type => try self.lowerFnType(node),
             .mapped_type => types.Primitive.unknown, // mapped pending
@@ -309,11 +310,19 @@ pub const Lowerer = struct {
 
         var fixed_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer fixed_types.deinit(self.gpa);
+        var fixed_optional: std.ArrayListUnmanaged(bool) = .empty;
+        defer fixed_optional.deinit(self.gpa);
         var rest_elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer rest_elem_types.deinit(self.gpa);
         var saw_unknown_rest = false;
 
-        for (elems) |e| {
+        for (elems) |raw_e| {
+            var e = raw_e;
+            var is_optional = false;
+            if (self.hir.kindOf(e) == .optional_type) {
+                is_optional = true;
+                e = hir_mod.optionalTypeOf(self.hir, e).operand;
+            }
             if (self.hir.kindOf(e) == .rest_type) {
                 const rt = hir_mod.restTypeOf(self.hir, e);
                 const opk = self.hir.kindOf(rt.operand);
@@ -329,9 +338,16 @@ pub const Lowerer = struct {
                         }
                     }
                     if (!inner_has_rest) {
-                        for (inner_elems) |ie| {
+                        for (inner_elems) |raw_ie| {
+                            var ie = raw_ie;
+                            var inner_optional = false;
+                            if (self.hir.kindOf(ie) == .optional_type) {
+                                inner_optional = true;
+                                ie = hir_mod.optionalTypeOf(self.hir, ie).operand;
+                            }
                             const t = try self.lower(ie);
                             try fixed_types.append(self.gpa, t);
+                            try fixed_optional.append(self.gpa, inner_optional);
                         }
                         continue;
                     }
@@ -353,6 +369,7 @@ pub const Lowerer = struct {
             }
             const t = try self.lower(e);
             try fixed_types.append(self.gpa, t);
+            try fixed_optional.append(self.gpa, is_optional);
         }
 
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -362,7 +379,9 @@ pub const Lowerer = struct {
         // before the first rest are positionally unambiguous.
         const fixed_prefix_len: usize = if (saw_unknown_rest) blk: {
             var n: usize = 0;
-            for (elems) |e| {
+            for (elems) |raw_e| {
+                var e = raw_e;
+                if (self.hir.kindOf(e) == .optional_type) e = hir_mod.optionalTypeOf(self.hir, e).operand;
                 if (self.hir.kindOf(e) == .rest_type) {
                     const rt = hir_mod.restTypeOf(self.hir, e);
                     const opk = self.hir.kindOf(rt.operand);
@@ -396,7 +415,7 @@ pub const Lowerer = struct {
             try members.append(self.gpa, .{
                 .name = name,
                 .type = t,
-                .is_optional = false,
+                .is_optional = fixed_optional.items[i],
                 .is_readonly = false,
                 .is_method = false,
             });
