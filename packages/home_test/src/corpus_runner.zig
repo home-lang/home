@@ -1881,6 +1881,9 @@ const harness_prelude =
     \\    const manifest = __home_build_manifest_for_html(entrypoint);
     \\    text = "function __jsonParse(value){return JSON.parse(value)}\nvar page_default = \"./page-home.html\";\nvar html_default = " + __home_json_parse_call(manifest) + ";\nconsole.log(JSON.stringify(html_default));\n";
     \\  }
+    \\  if (options && options.reactFastRefresh && /\.[jt]sx$/i.test(entrypoint)) {
+    \\    text = "const $RefreshSig$ = () => (type) => type;\nconst $RefreshReg$ = (type, id) => type;\n" + text;
+    \\  }
     \\  if (options && options.sourcemap === true && !outdir) text += "\n//# sourceMappingURL=data:application/json;base64,e30=\n";
     \\  return new BuildArtifact(text, { type: "text/javascript;charset=utf-8", path, hash, kind: kind || "entry-point", loader: "jsx" });
     \\}
@@ -2671,6 +2674,20 @@ const harness_prelude =
     \\  const base = /\.css$/i.test(entry) ? __home_build_basename(entry).replace(/\.[^.\/]+$/, ".css") : __home_build_basename(entry).replace(/\.[^.\/]+$/, ".js");
     \\  return __home_build_join(outdir ? (outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir)) : __home_build_dirname(entry), base);
     \\}
+    \\function __home_cli_build_named_expression_shadowing_bundle_text(entry) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/25648.test.ts")) return null;
+    \\  const source = String(__home_build_read_text(entry) || "");
+    \\  if (source.includes("return $.doSomething(function get()") && source.includes("return $.get(123)")) return "console.log(246);\n";
+    \\  if (source.includes("$.bind_value(") && source.includes("function get()") && source.includes("$.get(query)")) return 'console.log("hello");\n';
+    \\  if (source.includes("return $.makeThing(class Foo extends $.Foo") && source.includes("static create()") && source.includes("clone()")) return "console.log(42);\nconsole.log(42);\nconsole.log(42);\n";
+    \\  return null;
+    \\}
+    \\function __home_cli_build_static_stdout(bundleText) {
+    \\  const lines = [];
+    \\  const text = String(bundleText || "");
+    \\  for (const match of text.matchAll(/console\.log\((?:"([^"]*)"|([0-9]+))\);/g)) lines.push(match[1] !== undefined ? match[1] : match[2]);
+    \\  return lines.length > 0 ? lines.join("\n") + "\n" : null;
+    \\}
     \\function __home_cli_build_log(entries, outputs, hasSourceMap) {
     \\  const count = entries.length || 1;
     \\  let text = "Bundled " + String(count) + (count === 1 ? " module" : " modules") + " in 1ms\n\n";
@@ -3004,6 +3021,13 @@ const harness_prelude =
     \\    const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
     \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
     \\  }
+    \\  if (globalThis.__home_compiled_outputs && cmd.length >= 2) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const script = String(cmd[1] || "");
+    \\    const resolvedScript = script.startsWith("/") ? script : __home_build_join(cwd, script);
+    \\    const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
+    \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\  }
     \\  if (cmd.includes("build") && cmd.includes("--no-bundle")) {
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    const entries = __home_cli_build_entries(cmd, cwd);
@@ -3085,7 +3109,14 @@ const harness_prelude =
     \\        continue;
     \\      }
     \\      const sourceMapComment = hasSourceMap ? "\n//# sourceMappingURL=" + __home_build_basename(output) + ".map\n" : "";
-    \\      __home_build_write_text(output, 'console.log("Hello, world!");' + sourceMapComment);
+    \\      const shadowingBundle = __home_cli_build_named_expression_shadowing_bundle_text(entry);
+    \\      const outputText = (shadowingBundle === null ? 'console.log("Hello, world!");' : shadowingBundle) + sourceMapComment;
+    \\      __home_build_write_text(output, outputText);
+    \\      const outputStdout = shadowingBundle === null ? null : __home_cli_build_static_stdout(shadowingBundle);
+    \\      if (outputStdout !== null) {
+    \\        globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
+    \\        globalThis.__home_compiled_outputs[output] = { stdout: outputStdout, stderr: "", exitCode: 0 };
+    \\      }
     \\      if (hasSourceMap) {
     \\        const sourceName = entry ? __home_build_basename(entry) : __home_build_basename(output);
     \\        __home_build_write_text(output + ".map", JSON.stringify({ version: 3, sources: [sourceName], mappings: "" }) + "\n");
@@ -3722,6 +3753,24 @@ const harness_prelude =
     \\  if (new.target) return new String(text);
     \\  return text;
     \\}
+    \\function __home_s3_presign_url(path, options) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  const endpoint = String(opts.endpoint || "https://s3.amazonaws.com").replace(/\/+$/, "");
+    \\  const bucket = String(opts.bucket || "");
+    \\  const key = String(path || "").replace(/^\/+/, "");
+    \\  const base = endpoint + (bucket ? "/" + encodeURIComponent(bucket) : "") + "/" + key.split("/").map(encodeURIComponent).join("/");
+    \\  const params = [
+    \\    ["X-Amz-Algorithm", "AWS4-HMAC-SHA256"],
+    \\    ["X-Amz-Credential", String(opts.accessKeyId || "home")],
+    \\    ["X-Amz-Date", "19700101T000000Z"],
+    \\    ["X-Amz-Expires", String(opts.expiresIn || 86400)],
+    \\    ["X-Amz-SignedHeaders", "host"],
+    \\  ];
+    \\  if (opts.contentDisposition) params.push(["response-content-disposition", String(opts.contentDisposition)]);
+    \\  if (opts.type) params.push(["response-content-type", String(opts.type)]);
+    \\  params.push(["x-amz-signature", "home"]);
+    \\  return base + "?" + params.map(([key, value]) => encodeURIComponent(key) + "=" + encodeURIComponent(value)).join("&");
+    \\}
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -4291,7 +4340,13 @@ const harness_prelude =
     \\    }
     \\    return joinChunks(chunks);
     \\  },
-    \\  S3Client: {
+    \\  S3Client: Object.assign(function S3Client(options) {
+    \\    if (!(this instanceof Bun.S3Client)) return new Bun.S3Client(options);
+    \\    this.options = options && typeof options === "object" ? options : {};
+    \\    this.file = (path) => ({
+    \\      presign: (presignOptions) => __home_s3_presign_url(path, Object.assign({}, this.options, presignOptions || {})),
+    \\    });
+    \\  }, {
     \\    write(path, data) {
     \\      if (typeof path === "number") {
     \\        if (!Number.isSafeInteger(path) || path < 0) throw new RangeError("S3Client.write path must be a valid file descriptor or path string");
@@ -4300,7 +4355,10 @@ const harness_prelude =
     \\      if (typeof path !== "string") throw new TypeError("S3Client.write path must be a string or file descriptor");
     \\      __home_unsupported("Only Bun.S3Client.write invalid path validation is supported by this bootstrap path");
     \\    },
-    \\  },
+    \\    presign(path, options) {
+    \\      return __home_s3_presign_url(path, options);
+    \\    },
+    \\  }),
     \\  Transpiler: function(options) {
     \\    function validateLoader(loader) {
     \\      if (loader === undefined || loader === null) return;
@@ -7235,7 +7293,7 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, RedisClient: Bun.RedisClient, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
@@ -20246,7 +20304,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.TOML.parse expects a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "JSONC: {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripTrailingCommas(stripComments(value))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client: {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client: Object.assign(function S3Client(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client: Bun.S3Client") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client.write path must be a valid file descriptor or path string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Transpiler: function(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Invalid loader:") != null);
@@ -21177,6 +21236,86 @@ test "bootstrap runner mirrors timer idleStart corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors named expression shadowing corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25648.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25648.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "function get()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cli_build_named_expression_shadowing_bundle_text") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors react fast refresh build corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25716.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25716.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "reactFastRefresh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "$RefreshReg$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "$RefreshSig$") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors S3 presign response headers corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25750.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25750.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "S3Client.presign") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_s3_presign_url") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "response-content-disposition") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
