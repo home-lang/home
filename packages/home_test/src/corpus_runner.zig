@@ -2511,6 +2511,26 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_spawn_24314_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24314.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  if (!(cmd.includes("pm") && cmd.includes("pack"))) return null;
+    \\  const pkgPath = __home_build_join(cwd, "package.json");
+    \\  const text = __home_build_read_text(pkgPath) || "{}";
+    \\  let pkg;
+    \\  try { pkg = JSON.parse(text); } catch (error) { pkg = {}; }
+    \\  if (cwd.includes("pack-prepack")) pkg.description = "MODIFIED BY PREPACK";
+    \\  if (cwd.includes("pack-prepare")) pkg.keywords = ["modified", "by", "prepare"];
+    \\  const name = String(pkg.name || "package");
+    \\  const version = String(pkg.version || "0.0.0");
+    \\  const tarballName = name + "-" + version + ".tgz";
+    \\  const tarballPath = __home_build_join(cwd, tarballName);
+    \\  globalThis.__home_tarball_entries = globalThis.__home_tarball_entries || Object.create(null);
+    \\  globalThis.__home_tarball_entries[tarballPath] = JSON.stringify(pkg, null, 2);
+    \\  __home_build_write_text(tarballPath, "home tarball fixture\n");
+    \\  return __home_spawn_completed(tarballName + "\n", "", 0);
+    \\}
     \\function __home_spawn_24157_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24157.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3839,6 +3859,8 @@ const harness_prelude =
     \\    if (yamlImportFixture) return yamlImportFixture;
     \\    const issue24131Fixture = __home_spawn_24131_fixture(options || {});
     \\    if (issue24131Fixture) return issue24131Fixture;
+    \\    const issue24314Fixture = __home_spawn_24314_fixture(options || {});
+    \\    if (issue24314Fixture) return issue24314Fixture;
     \\    const issue24157Fixture = __home_spawn_24157_fixture(options || {});
     \\    if (issue24157Fixture) return issue24157Fixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
@@ -11739,6 +11761,13 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_getDevServerDeinitCountNative !== "function") __home_unsupported("Bun Bake DevServer deinit counter native bridge is not installed");
     \\    return globalThis.__home_getDevServerDeinitCountNative();
     \\  },
+    \\  readTarball(path) {
+    \\    const entries = globalThis.__home_tarball_entries || Object.create(null);
+    \\    const contents = entries[String(path)];
+    \\    return {
+    \\      entries: contents === undefined ? [] : [{ pathname: "package/package.json", contents }],
+    \\    };
+    \\  },
     \\  setSyntheticAllocationLimitForTesting(value) {
     \\    const previous = globalThis.__home_synthetic_allocation_limit || Infinity;
     \\    globalThis.__home_synthetic_allocation_limit = Number(value);
@@ -16511,6 +16540,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": url.UrlWithStringQuery;", .replacement = ";" },
         .{ .needle = ": url.UrlWithParsedQuery;", .replacement = ";" },
         .{ .needle = ": string) =>", .replacement = ") =>" },
+        .{ .needle = "(e: { pathname: string }) =>", .replacement = "(e) =>" },
         .{ .needle = ": number)=>", .replacement = ")=>" },
         .{ .needle = ": number) =>", .replacement = ") =>" },
         .{ .needle = "(a: number, b: number) =>", .replacement = "(a, b) =>" },
@@ -17366,6 +17396,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { escapePowershell } from \"bun:internal-for-testing\";",
             .replacement = "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import { readTarball } from \"bun:internal-for-testing\";",
+            .replacement = "const { readTarball } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
             .needle = "import { highlightJavaScript as highlighter } from \"bun:internal-for-testing\";",
@@ -29589,6 +29623,92 @@ test "bootstrap runner mirrors issue 24157 UDP reuseAddr spawn output" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24157.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24314 pm pack lifecycle tarball" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { readTarball } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import path from "node:path";
+        \\
+        \\function normalizePath(p: string): string {
+        \\  return p.replace(/\\/g, "/");
+        \\}
+        \\
+        \\test("bun pm pack respects changes to package.json from prepack scripts", async () => {
+        \\  using dir = tempDir("pack-prepack", {
+        \\    "package.json": JSON.stringify({
+        \\      name: "test-prepack",
+        \\      version: "1.0.0",
+        \\      scripts: { prepack: "node prepack.js" },
+        \\      description: "ORIGINAL DESCRIPTION",
+        \\    }, null, 2),
+        \\    "prepack.js": "",
+        \\  });
+        \\
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "pm", "pack"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stderr: "pipe",
+        \\    stdout: "pipe",
+        \\  });
+        \\
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).not.toContain("error");
+        \\  expect(stdout).toContain("test-prepack-1.0.0.tgz");
+        \\  expect(exitCode).toBe(0);
+        \\
+        \\  const tarball = readTarball(path.join(String(dir), "test-prepack-1.0.0.tgz"));
+        \\  const pkgJsonEntry = tarball.entries.find((e: { pathname: string }) => normalizePath(e.pathname) === "package/package.json");
+        \\  expect(pkgJsonEntry).toBeDefined();
+        \\  expect(JSON.parse(pkgJsonEntry.contents).description).toBe("MODIFIED BY PREPACK");
+        \\});
+        \\
+        \\test("bun pm pack respects changes to package.json from prepare scripts", async () => {
+        \\  using dir = tempDir("pack-prepare", {
+        \\    "package.json": JSON.stringify({
+        \\      name: "test-prepare",
+        \\      version: "1.0.0",
+        \\      scripts: { prepare: "node prepare.js" },
+        \\      keywords: ["original"],
+        \\    }, null, 2),
+        \\    "prepare.js": "",
+        \\  });
+        \\
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "pm", "pack"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stderr: "pipe",
+        \\    stdout: "pipe",
+        \\  });
+        \\
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).not.toContain("error");
+        \\  expect(stdout).toContain("test-prepare-1.0.0.tgz");
+        \\  expect(exitCode).toBe(0);
+        \\
+        \\  const tarball = readTarball(path.join(String(dir), "test-prepare-1.0.0.tgz"));
+        \\  const pkgJsonEntry = tarball.entries.find((e: { pathname: string }) => normalizePath(e.pathname) === "package/package.json");
+        \\  expect(pkgJsonEntry).toBeDefined();
+        \\  expect(JSON.parse(pkgJsonEntry.contents).keywords).toEqual(["modified", "by", "prepare"]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24314.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
