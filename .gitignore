@@ -87,3 +87,4 @@ pantry
 /packages/runtime/root.o
 /packages/runtime/src/root.o
 packages/runtime/test/bun-corpus/node_modules/
+/.zig-cache*
