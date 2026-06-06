@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 579 |
-| reachable (parity targets) | 118 |
+| catalog-only total | 578 |
+| reachable (parity targets) | 117 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -26,7 +26,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 4xxx — declaration-emit (privacy / serialization) | 18 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
-| 2xxx — checker / type engine | 12 |
+| 2xxx — checker / type engine | 11 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
@@ -144,7 +144,7 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 2xxx — checker / type engine (12)
+### 2xxx — checker / type engine (11)
 
 - TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
 - TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
@@ -155,7 +155,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
 - TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
 - TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
-- TS2798 `The_declaration_was_marked_as_deprecated_here_2798`
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
