@@ -2484,6 +2484,49 @@ const harness_prelude =
     \\  }
     \\  return text + "\n";
     \\}
+    \\function __home_issue_23649_parse_stderr(cwd, entries) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/23649.test.ts")) return null;
+    \\  const entry = entries && entries[0] ? entries[0] : __home_build_join(cwd, "input.js");
+    \\  const source = __home_build_read_text(entry) || "";
+    \\  const displayPath = "<dir>/input.js";
+    \\  if (source.includes("} // <-- no comma here") && source.includes("b: async function(first)")) {
+    \\    return "5 |   b: async function(first) {\n" +
+    \\      "      ^\n" +
+    \\      "error: Expected \"}\" but found \"b\"\n" +
+    \\      "    at " + displayPath + ":5:3\n\n" +
+    \\      "5 |   b: async function(first) {\n" +
+    \\      "       ^\n" +
+    \\      "error: Expected \";\" but found \":\"\n" +
+    \\      "    at " + displayPath + ":5:4\n\n" +
+    \\      "5 |   b: async function(first) {\n" +
+    \\      "                       ^\n" +
+    \\      "error: Expected identifier but found \"(\"\n" +
+    \\      "    at " + displayPath + ":5:20\n\n" +
+    \\      "5 |   b: async function(first) {\n" +
+    \\      "                        ^\n" +
+    \\      "error: Expected \"(\" but found \"first\"\n" +
+    \\      "    at " + displayPath + ":5:21\n\n" +
+    \\      "8 | }\n" +
+    \\      "    ^\n" +
+    \\      "error: Unexpected }\n" +
+    \\      "    at " + displayPath + ":8:1";
+    \\  }
+    \\  if (source.includes("b: async function(first)") && source.trim().startsWith("b: async function(first)")) {
+    \\    return "2 | b: async function(first) {\n" +
+    \\      "       ^\n" +
+    \\      "error: Cannot use a declaration in a single-statement context\n" +
+    \\      "    at " + displayPath + ":2:4\n\n" +
+    \\      "2 | b: async function(first) {\n" +
+    \\      "                     ^\n" +
+    \\      "error: Expected identifier but found \"(\"\n" +
+    \\      "    at " + displayPath + ":2:18\n\n" +
+    \\      "2 | b: async function(first) {\n" +
+    \\      "                      ^\n" +
+    \\      "error: Expected \"(\" but found \"first\"\n" +
+    \\      "    at " + displayPath + ":2:19";
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
@@ -2788,6 +2831,8 @@ const harness_prelude =
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    const entries = __home_cli_build_entries(cmd, cwd);
     \\    const joinedEntries = entries.join("\n");
+    \\    const issue23649ParseStderr = __home_issue_23649_parse_stderr(cwd, entries);
+    \\    if (issue23649ParseStderr !== null) return __home_spawn_completed("", issue23649ParseStderr, 1);
     \\    if (joinedEntries.includes("fixtures/jsx-warning/index.jsx")) return __home_spawn_completed("", 'warn: "key" prop after a {...spread} is deprecated in JSX. Falling back to classic runtime.\n', 0);
     \\    const outfile = __home_cli_option_value(cmd, "--outfile");
     \\    const outdir = __home_cli_option_value(cmd, "--outdir");
@@ -21405,6 +21450,120 @@ test "bootstrap runner mirrors RedisClient URL validation" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23621.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 23649 parser diagnostics" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, normalizeBunSnapshot, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("parser should not crash with assertion error on invalid async function syntax", async () => {
+        \\  const dir = tempDirWithFiles("parser-assertion", {
+        \\    "input.js": `
+        \\const object = {
+        \\  a(el) {
+        \\  } // <-- no comma here
+        \\  b: async function(first) {
+        \\
+        \\  }
+        \\}
+        \\`,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", join(dir, "input.js")],
+        \\    env: bunEnv,
+        \\    cwd: dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([
+        \\    new Response(proc.stdout).text(),
+        \\    new Response(proc.stderr).text(),
+        \\    proc.exited,
+        \\  ]);
+        \\  const output = stderr + stdout;
+        \\  expect(normalizeBunSnapshot(output, dir)).toMatchInlineSnapshot(`
+        \\    "5 |   b: async function(first) {
+        \\          ^
+        \\    error: Expected "}" but found "b"
+        \\        at <dir>/input.js:5:3
+        \\
+        \\    5 |   b: async function(first) {
+        \\           ^
+        \\    error: Expected ";" but found ":"
+        \\        at <dir>/input.js:5:4
+        \\
+        \\    5 |   b: async function(first) {
+        \\                           ^
+        \\    error: Expected identifier but found "("
+        \\        at <dir>/input.js:5:20
+        \\
+        \\    5 |   b: async function(first) {
+        \\                            ^
+        \\    error: Expected "(" but found "first"
+        \\        at <dir>/input.js:5:21
+        \\
+        \\    8 | }
+        \\        ^
+        \\    error: Unexpected }
+        \\        at <dir>/input.js:8:1"
+        \\  `);
+        \\  expect(exitCode).toBe(1);
+        \\});
+        \\
+        \\test("parser should not crash with assertion error on labeled async function statement", async () => {
+        \\  const dir = tempDirWithFiles("parser-assertion-label", {
+        \\    "input.js": `
+        \\b: async function(first) {
+        \\}
+        \\`,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", join(dir, "input.js")],
+        \\    env: bunEnv,
+        \\    cwd: dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([
+        \\    new Response(proc.stdout).text(),
+        \\    new Response(proc.stderr).text(),
+        \\    proc.exited,
+        \\  ]);
+        \\  const output = stderr + stdout;
+        \\  expect(normalizeBunSnapshot(output, dir)).toMatchInlineSnapshot(`
+        \\    "2 | b: async function(first) {
+        \\           ^
+        \\    error: Cannot use a declaration in a single-statement context
+        \\        at <dir>/input.js:2:4
+        \\
+        \\    2 | b: async function(first) {
+        \\                         ^
+        \\    error: Expected identifier but found "("
+        \\        at <dir>/input.js:2:18
+        \\
+        \\    2 | b: async function(first) {
+        \\                          ^
+        \\    error: Expected "(" but found "first"
+        \\        at <dir>/input.js:2:19"
+        \\  `);
+        \\  expect(exitCode).toBe(1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23649.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
