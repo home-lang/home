@@ -2998,6 +2998,31 @@ const harness_prelude =
     \\function __home_zstd_sync(value) {
     \\  return __home_compressed_buffer([0x28, 0xb5, 0x2f, 0xfd], value, [0xbe, 0xef]);
     \\}
+    \\function __home_zstd_unframe_bytes(bytes) {
+    \\  const decoded = [];
+    \\  let offset = 0;
+    \\  while (offset < bytes.length) {
+    \\    const magic = [0x28, 0xb5, 0x2f, 0xfd];
+    \\    if (offset + magic.length > bytes.length) throw __home_response_compression_error("ZstdDecompressionError");
+    \\    for (let i = 0; i < magic.length; i++) {
+    \\      if ((bytes[offset + i] & 0xff) !== magic[i]) throw __home_response_compression_error("ZstdDecompressionError");
+    \\    }
+    \\    const end = __home_find_byte_suffix(bytes, [0xbe, 0xef], offset + magic.length);
+    \\    if (end < 0) throw __home_response_compression_error("ZstdDecompressionError");
+    \\    for (let i = offset + magic.length; i < end; i++) decoded.push(bytes[i] & 0xff);
+    \\    offset = end + 2;
+    \\  }
+    \\  return decoded;
+    \\}
+    \\function __home_zstd_decompress_sync(value) {
+    \\  const decoded = __home_zstd_unframe_bytes(__home_body_bytes_sync(value));
+    \\  return typeof Buffer === "function" ? Buffer.from(decoded) : new Uint8Array(decoded);
+    \\}
+    \\function __home_zstd_compress(value, options, callback) {
+    \\  const cb = typeof options === "function" ? options : callback;
+    \\  const result = __home_zstd_sync(value);
+    \\  if (typeof cb === "function") Promise.resolve().then(() => cb(null, result));
+    \\}
     \\function __home_cookie_validate_expires(value) {
     \\  if (value === undefined || value === null) return undefined;
     \\  if (value instanceof Date) {
@@ -3231,6 +3256,12 @@ const harness_prelude =
     \\  },
     \\  zstdCompressSync(value) {
     \\    return __home_zstd_sync(value);
+    \\  },
+    \\  zstdDecompressSync(value) {
+    \\    return __home_zstd_decompress_sync(value);
+    \\  },
+    \\  zstdDecompress(value) {
+    \\    return Promise.resolve(__home_zstd_decompress_sync(value));
     \\  },
     \\  connect(options) {
     \\    return __home_bun_connect(options || {});
@@ -9823,6 +9854,7 @@ const harness_prelude =
     \\  },
     \\  deflateSync: __home_deflate_sync,
     \\  deflateRawSync: __home_deflate_raw_sync,
+    \\  zstdCompress: __home_zstd_compress,
     \\  zstdCompressSync: __home_zstd_sync,
     \\};
     \\__home_zlib_module.default = __home_zlib_module;
@@ -12787,20 +12819,7 @@ const harness_prelude =
     \\    return bytes.slice(2, end);
     \\  }
     \\  if (encoding === "zstd") {
-    \\    const decoded = [];
-    \\    let offset = 0;
-    \\    while (offset < bytes.length) {
-    \\      const magic = [0x28, 0xb5, 0x2f, 0xfd];
-    \\      if (offset + magic.length > bytes.length) throw __home_response_compression_error("ZstdDecompressionError");
-    \\      for (let i = 0; i < magic.length; i++) {
-    \\        if ((bytes[offset + i] & 0xff) !== magic[i]) throw __home_response_compression_error("ZstdDecompressionError");
-    \\      }
-    \\      const end = __home_find_byte_suffix(bytes, [0xbe, 0xef], offset + magic.length);
-    \\      if (end < 0) throw __home_response_compression_error("ZstdDecompressionError");
-    \\      for (let i = offset + magic.length; i < end; i++) decoded.push(bytes[i] & 0xff);
-    \\      offset = end + 2;
-    \\    }
-    \\    return decoded;
+    \\    return __home_zstd_unframe_bytes(bytes);
     \\  }
     \\  if (encoding === "deflate") {
     \\    if (__home_bytes_start_with(bytes, [0x78, 0x9c])) {
@@ -16632,6 +16651,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { brotliCompressSync } from \"node:zlib\";",
             .replacement = "const { brotliCompressSync } = globalThis.__home_import(\"node:zlib\");",
+        },
+        .{
+            .needle = "import zlib from \"node:zlib\";",
+            .replacement = "const zlib = globalThis.__home_import(\"node:zlib\").default;",
         },
         .{
             .needle = "import { createGzip } from \"node:zlib\";",
@@ -21443,6 +21466,40 @@ test "bootstrap runner decodes concatenated zstd response frames" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors async node zlib zstd compression" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\import zlib from "node:zlib";
+        \\describe("zstd compression compatibility", () => {
+        \\  it("round-trips callback compression through Bun decompressors", async () => {
+        \\    const input = "hello world";
+        \\    const compressed = await new Promise<Buffer>((resolve, reject) => {
+        \\      zlib.zstdCompress(input, (err, result) => {
+        \\        if (err) reject(err);
+        \\        else resolve(result);
+        \\      });
+        \\    });
+        \\    expect(Bun.zstdDecompressSync(compressed).toString()).toBe(input);
+        \\    expect((await Bun.zstdDecompress(compressed)).toString()).toBe(input);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23314/zstd-async-compress.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner accepts Bun.serve static HTML route shape" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -24665,6 +24722,20 @@ test "corpus module preparation lowers zlib zstd named import" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { zstdCompressSync } = globalThis.__home_import(\"node:zlib\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:zlib\"") == null);
+}
+
+test "corpus module preparation lowers zlib default import" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import zlib from "node:zlib";
+        \\test("works", () => expect(typeof zlib.zstdCompress).toBe("function"));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23314/zstd-async-compress.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const zlib = globalThis.__home_import(\"node:zlib\").default;") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:zlib\"") == null);
 }
 
