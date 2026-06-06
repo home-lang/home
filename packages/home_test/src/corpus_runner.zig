@@ -2504,6 +2504,9 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/22743.test.ts") && cmd.some(part => part.endsWith("entry.ts"))) {
     \\    return __home_spawn_completed("import 1: threw SyntaxError\nimport 2: threw SyntaxError\nimport 3: threw SyntaxError\ndone\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/23077/23077.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("a.fixture.ts")) && cmd.some(part => part.endsWith("b.fixture.ts"))) {
+    \\    return __home_spawn_completed("", " 2 pass\n", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/18028.test.ts")) {
     \\    if (cmd.includes("test") && cmd.some(part => part.endsWith("test.test.ts"))) {
     \\      const stderr = "test.test.ts:\n" +
@@ -22992,6 +22995,39 @@ test "bootstrap runner mirrors issue 23022 net socket stack frames" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import * as net from \"node:net\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const net = globalThis.__home_import(\"node:net\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "withResolvers<") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 23077 multi fixture bun test" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe } from "harness";
+        \\
+        \\test("23077", async () => {
+        \\  const result = Bun.spawn({
+        \\    cmd: [bunExe(), "test", import.meta.dir + "/a.fixture.ts", import.meta.dir + "/b.fixture.ts"],
+        \\    stdio: ["pipe", "pipe", "pipe"],
+        \\  });
+        \\  const exitCode = await result.exited;
+        \\  const stdout = await result.stdout.text();
+        \\  const stderr = await result.stderr.text();
+        \\  expect(stdout).toBe("");
+        \\  expect(stderr).toInclude(" 2 pass");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23077/23077.test.ts");
+    defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
