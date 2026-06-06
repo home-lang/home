@@ -14,8 +14,8 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 585 |
-| reachable (parity targets) | 124 |
+| catalog-only total | 583 |
+| reachable (parity targets) | 122 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
@@ -27,9 +27,9 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | 2xxx — checker / type engine | 14 |
 | other | 14 |
-| 7xxx — noImplicitAny / implicit-type family | 4 |
 | 5xxx — tsconfig / build-option validation | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
+| 7xxx — noImplicitAny / implicit-type family | 2 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (53)
 
@@ -162,13 +162,6 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 7xxx — noImplicitAny / implicit-type family (4)
-
-- TS7038 `Type_originates_at_this_import_A_namespace_style_import_cannot_be_called_or_constructed_and_will_cau_7038`
-- TS7040 `If_the_0_package_actually_exposes_this_module_consider_sending_a_pull_request_to_amend_https_Colon_S_7040`
-- TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
-- TS7058 `If_the_0_package_actually_exposes_this_module_try_adding_a_new_declaration_d_ts_file_containing_decl_7058`
-
 ### 5xxx — tsconfig / build-option validation (2)
 
 - TS5078 `Unknown_watch_option_0_5078`
@@ -178,6 +171,11 @@ message table that tsgo never emits (*dead* — obsolete wording, test-only fixt
 
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
+
+### 7xxx — noImplicitAny / implicit-type family (2)
+
+- TS7038 `Type_originates_at_this_import_A_namespace_style_import_cannot_be_called_or_constructed_and_will_cau_7038`
+- TS7056 `The_inferred_type_of_this_node_exceeds_the_maximum_length_the_compiler_will_serialize_An_explicit_ty_7056`
 
 ## Notes: heuristic false-positives & subsystem-gated clusters
 
