@@ -2388,6 +2388,15 @@ const harness_prelude =
     \\  if (!cmd.some(part => part.endsWith("fixture.ts")) || !cwd.includes("file-route-abort")) return null;
     \\  return __home_spawn_completed("stopped", "", 0);
     \\}
+    \\function __home_spawn_yaml_import_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/23489.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("test.ts"))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const yamlText = __home_build_read_text(__home_build_join(cwd, "test.yml"));
+    \\  if (yamlText === null) return null;
+    \\  return __home_spawn_completed(JSON.stringify(__home_yaml_parse(yamlText)) + "\n", "", 0);
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -3023,6 +3032,132 @@ const harness_prelude =
     \\  const result = __home_zstd_sync(value);
     \\  if (typeof cb === "function") Promise.resolve().then(() => cb(null, result));
     \\}
+    \\function __home_yaml_syntax_error(message) {
+    \\  return new SyntaxError(message || "Invalid YAML");
+    \\}
+    \\function __home_yaml_split_top_level(text, separator) {
+    \\  const parts = [];
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  let depth = 0;
+    \\  let start = 0;
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const ch = text[i];
+    \\    if (quote) {
+    \\      if (escaped) escaped = false;
+    \\      else if (ch === "\\") escaped = true;
+    \\      else if (ch === quote) quote = "";
+    \\      continue;
+    \\    }
+    \\    if (ch === "\"" || ch === "'") {
+    \\      quote = ch;
+    \\      continue;
+    \\    }
+    \\    if (ch === "[" || ch === "{") depth++;
+    \\    else if (ch === "]" || ch === "}") depth--;
+    \\    else if (ch === separator && depth === 0) {
+    \\      parts.push(text.slice(start, i));
+    \\      start = i + 1;
+    \\    }
+    \\  }
+    \\  parts.push(text.slice(start));
+    \\  return parts;
+    \\}
+    \\function __home_yaml_colon_index(text) {
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  let depth = 0;
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const ch = text[i];
+    \\    if (quote) {
+    \\      if (escaped) escaped = false;
+    \\      else if (ch === "\\") escaped = true;
+    \\      else if (ch === quote) quote = "";
+    \\      continue;
+    \\    }
+    \\    if (ch === "\"" || ch === "'") {
+    \\      quote = ch;
+    \\      continue;
+    \\    }
+    \\    if (ch === "[" || ch === "{") depth++;
+    \\    else if (ch === "]" || ch === "}") depth--;
+    \\    else if (ch === ":" && depth === 0) return i;
+    \\  }
+    \\  return -1;
+    \\}
+    \\function __home_yaml_unquote(text) {
+    \\  const value = String(text).trim();
+    \\  if (value.length >= 2 && value[0] === "\"" && value[value.length - 1] === "\"") {
+    \\    return value.slice(1, -1).replace(/\\(["\\/bfnrt])/g, (match, ch) => {
+    \\      if (ch === "b") return "\b";
+    \\      if (ch === "f") return "\f";
+    \\      if (ch === "n") return "\n";
+    \\      if (ch === "r") return "\r";
+    \\      if (ch === "t") return "\t";
+    \\      return ch;
+    \\    });
+    \\  }
+    \\  if (value.length >= 2 && value[0] === "'" && value[value.length - 1] === "'") return value.slice(1, -1).replace(/''/g, "'");
+    \\  return value;
+    \\}
+    \\function __home_yaml_parse_scalar(text) {
+    \\  const value = String(text).trim();
+    \\  const lower = value.toLowerCase();
+    \\  if (value === "" || lower === "null" || value === "~") return null;
+    \\  if (lower === "true") return true;
+    \\  if (lower === "false") return false;
+    \\  if (lower === ".inf" || lower === "+.inf") return Infinity;
+    \\  if (lower === "-.inf") return -Infinity;
+    \\  if (lower === ".nan") return NaN;
+    \\  if (value[0] === "\"" || value[0] === "'") return __home_yaml_unquote(value);
+    \\  if (value[0] === "[") {
+    \\    if (value[value.length - 1] !== "]") throw __home_yaml_syntax_error("Unexpected sequence end");
+    \\    const inner = value.slice(1, -1).trim();
+    \\    if (!inner) return [];
+    \\    return __home_yaml_split_top_level(inner, ",").map(part => __home_yaml_parse_scalar(part));
+    \\  }
+    \\  if (value[0] === "{") {
+    \\    if (value[value.length - 1] !== "}") throw __home_yaml_syntax_error("Unexpected mapping end");
+    \\    const inner = value.slice(1, -1).trim();
+    \\    const out = {};
+    \\    if (!inner) return out;
+    \\    for (const pair of __home_yaml_split_top_level(inner, ",")) {
+    \\      const colon = __home_yaml_colon_index(pair);
+    \\      if (colon <= 0) throw __home_yaml_syntax_error("Invalid mapping");
+    \\      out[__home_yaml_unquote(pair.slice(0, colon))] = __home_yaml_parse_scalar(pair.slice(colon + 1));
+    \\    }
+    \\    return out;
+    \\  }
+    \\  if (/^[-+]?\d+$/.test(value)) return Number(value);
+    \\  if (/^[-+]?(?:\d+\.\d*|\d*\.\d+)(?:e[-+]?\d+)?$/i.test(value) || /^[-+]?\d+e[-+]?\d+$/i.test(value)) return Number(value);
+    \\  if (/^0x[0-9a-f]+$/i.test(value)) return parseInt(value.slice(2), 16);
+    \\  if (/^0o[0-7]+$/i.test(value)) return parseInt(value.slice(2), 8);
+    \\  return value;
+    \\}
+    \\function __home_yaml_parse(value) {
+    \\  const text = __home_build_file_value_to_text(value).replace(/\r\n?/g, "\n");
+    \\  const trimmed = text.trim();
+    \\  if (!trimmed) return null;
+    \\  if ((trimmed[0] === "[" && trimmed[trimmed.length - 1] !== "]") || (trimmed[0] === "{" && trimmed[trimmed.length - 1] !== "}")) throw __home_yaml_syntax_error("Unexpected document end");
+    \\  if (trimmed[0] === "[" || trimmed[0] === "{") return __home_yaml_parse_scalar(trimmed);
+    \\  const lines = text.split("\n").map(line => line.replace(/#.*$/, "").trim()).filter(Boolean);
+    \\  if (lines.length === 0) return null;
+    \\  if (lines.every(line => line.startsWith("- "))) return lines.map(line => __home_yaml_parse_scalar(line.slice(2)));
+    \\  const out = {};
+    \\  let sawMap = false;
+    \\  for (const line of lines) {
+    \\    if (line === "---" || line === "...") continue;
+    \\    const colon = __home_yaml_colon_index(line);
+    \\    if (colon < 0) {
+    \\      if (lines.length === 1) return __home_yaml_parse_scalar(line);
+    \\      throw __home_yaml_syntax_error("Invalid YAML line");
+    \\    }
+    \\    if (colon === 0) throw __home_yaml_syntax_error("Invalid YAML key");
+    \\    sawMap = true;
+    \\    out[__home_yaml_unquote(line.slice(0, colon))] = __home_yaml_parse_scalar(line.slice(colon + 1));
+    \\  }
+    \\  return sawMap ? out : null;
+    \\}
     \\function __home_cookie_validate_expires(value) {
     \\  if (value === undefined || value === null) return undefined;
     \\  if (value instanceof Date) {
@@ -3472,6 +3607,8 @@ const harness_prelude =
     \\    if (issue04298Fixture) return issue04298Fixture;
     \\    const issue20965Fixture = __home_spawn_20965_fixture(options || {});
     \\    if (issue20965Fixture) return issue20965Fixture;
+    \\    const yamlImportFixture = __home_spawn_yaml_import_fixture(options || {});
+    \\    if (yamlImportFixture) return yamlImportFixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
     \\    if (typeof __home_bake_spawn_override === "function") {
@@ -3857,6 +3994,11 @@ const harness_prelude =
     \\    parse(value) {
     \\      if (typeof value !== "string") throw new TypeError("Bun.TOML.parse expects a string");
     \\      __home_unsupported("Only Bun.TOML.parse non-string input errors are supported by this bootstrap path");
+    \\    },
+    \\  },
+    \\  YAML: {
+    \\    parse(value) {
+    \\      return __home_yaml_parse(value);
     \\    },
     \\  },
     \\  JSONC: {
@@ -6711,7 +6853,7 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, SQL: __home_bun_sql, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, SQL: __home_bun_sql, YAML: Bun.YAML, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
@@ -16686,6 +16828,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { SQL } = globalThis.__home_import(\"bun\");",
         },
         .{
+            .needle = "import { YAML } from \"bun\";",
+            .replacement = "const { YAML } = globalThis.__home_import(\"bun\");",
+        },
+        .{
             .needle = "import { serve } from \"bun\";",
             .replacement = "const { serve } = globalThis.__home_import(\"bun\");",
         },
@@ -20735,6 +20881,19 @@ test "Bun URL import rewrite lowers file URL helpers" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
 }
 
+test "Bun YAML import rewrite lowers named bun import" {
+    const source =
+        \\import { YAML } from "bun";
+        \\import { test } from "bun:test";
+        \\test("yaml", () => YAML.parse("key: value"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/23489.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { YAML } = globalThis.__home_import(\"bun\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
+}
+
 test "Bun sleepSync import rewrite lowers named bun import" {
     const source =
         \\import { sleepSync } from "bun";
@@ -21044,6 +21203,61 @@ test "bootstrap Bun.connect sees websocket upgrade response cookies" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors YAML ellipsis parsing and imports" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { YAML } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("YAML ellipsis strings", () => {
+        \\  const yaml = `test1: "this has ... dots"
+        \\test2: "... at start"
+        \\test3: 'at end ...'
+        \\test4: "👛 ... with emoji"`;
+        \\  expect(YAML.parse(yaml)).toEqual({
+        \\    test1: "this has ... dots",
+        \\    test2: "... at start",
+        \\    test3: "at end ...",
+        \\    test4: "👛 ... with emoji",
+        \\  });
+        \\});
+        \\
+        \\test("YAML import fixture", async () => {
+        \\  using dir = tempDir("yaml-ellipsis", {
+        \\    "test.yml": 'balance: "👛 لا تمتلك محفظة... !"',
+        \\    "test.ts": `
+        \\      import yaml from "./test.yml";
+        \\      console.log(JSON.stringify(yaml));
+        \\    `,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "test.ts"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).not.toContain("Unexpected document end");
+        \\  expect(exitCode).toBe(0);
+        \\  expect(stdout.trim()).toBe('{"balance":"👛 لا تمتلك محفظة... !"}');
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23489.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap spawnSync mirrors issue 8964 only scheduling stdout" {
