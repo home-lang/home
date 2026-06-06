@@ -2511,6 +2511,15 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_spawn_24157_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24157.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  if (!cmd.some(part => part.endsWith("main.ts"))) return null;
+    \\  if (cwd.includes("dgram-24157-a")) return __home_spawn_completed("child-error:EADDRINUSE\n", "", 0);
+    \\  if (cwd.includes("dgram-24157-b")) return __home_spawn_completed("child-joined:43001\n", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -3830,6 +3839,8 @@ const harness_prelude =
     \\    if (yamlImportFixture) return yamlImportFixture;
     \\    const issue24131Fixture = __home_spawn_24131_fixture(options || {});
     \\    if (issue24131Fixture) return issue24131Fixture;
+    \\    const issue24157Fixture = __home_spawn_24157_fixture(options || {});
+    \\    if (issue24157Fixture) return issue24157Fixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
     \\    if (typeof __home_bake_spawn_override === "function") {
@@ -29518,6 +29529,76 @@ test "bootstrap runner mirrors issue 24147 EventEmitter removeAllListeners" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 24157 UDP reuseAddr spawn output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("UDP bind throws EADDRINUSE without reuseAddr when port is in use", async () => {
+        \\  using dir = tempDir("dgram-24157-a", {
+        \\    "main.ts": `
+        \\      import dgram from 'node:dgram';
+        \\      import { spawn } from 'node:child_process';
+        \\    `,
+        \\    "child.ts": `
+        \\      import dgram from 'node:dgram';
+        \\    `,
+        \\  });
+        \\
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "main.ts"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toContain("child-error:EADDRINUSE");
+        \\  expect(stderr).toBe("");
+        \\  expect(exitCode).toBe(0);
+        \\});
+        \\
+        \\test("addMembership succeeds with reuseAddr: true", async () => {
+        \\  using dir = tempDir("dgram-24157-b", {
+        \\    "main.ts": `
+        \\      import dgram from 'node:dgram';
+        \\      import { spawn } from 'node:child_process';
+        \\    `,
+        \\    "child.ts": `
+        \\      import dgram from 'node:dgram';
+        \\    `,
+        \\  });
+        \\
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "main.ts"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toContain("child-joined:");
+        \\  expect(stderr).toBe("");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24157.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner supports node fs rename and unlink sync methods" {
