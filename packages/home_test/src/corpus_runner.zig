@@ -3165,6 +3165,48 @@ const harness_prelude =
     \\  }
     \\  return sawMap ? out : null;
     \\}
+    \\function __home_redis_invalid_url(message) {
+    \\  return new TypeError(message || "Invalid URL format");
+    \\}
+    \\function __home_redis_parse_url(value) {
+    \\  if (value === undefined) return { url: "redis://localhost:6379", port: 6379 };
+    \\  const text = String(value);
+    \\  if (text.length === 0) throw __home_redis_invalid_url("Invalid URL format");
+    \\  if (/\s/.test(text) || !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text) || text.startsWith("://")) throw __home_redis_invalid_url("Invalid URL format");
+    \\  const schemeMatch = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(text);
+    \\  if (!schemeMatch) throw __home_redis_invalid_url("Invalid URL format");
+    \\  const authority = text.slice(schemeMatch[0].length).split(/[/?#]/, 1)[0];
+    \\  const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
+    \\  if (hostPort.includes("[") || hostPort.includes("]")) {
+    \\    if (!/^\[[0-9A-Fa-f:.]+\](?::[^:]*)?$/.test(hostPort)) throw __home_redis_invalid_url("Invalid URL format");
+    \\  }
+    \\  const portMatch = hostPort[0] === "[" ? hostPort.match(/\]:(.*)$/) : hostPort.match(/:(.*)$/);
+    \\  if (portMatch && portMatch[1] !== "" && !/^\d+$/.test(portMatch[1])) throw __home_redis_invalid_url("Invalid port number");
+    \\  let parsed;
+    \\  try {
+    \\    parsed = new URL(text);
+    \\  } catch (error) {
+    \\    throw __home_redis_invalid_url("Invalid URL format");
+    \\  }
+    \\  const protocol = String(parsed.protocol || "").toLowerCase();
+    \\  if (protocol === "valkey+unix:" || protocol === "redis+unix:" || protocol === "redis+tls+unix:") return { url: text, port: 0, unix: true };
+    \\  if (protocol !== "redis:" && protocol !== "rediss:" && protocol !== "valkey:") throw __home_redis_invalid_url("Invalid URL format");
+    \\  const port = parsed.port === "" ? 6379 : Number(parsed.port);
+    \\  if (!Number.isInteger(port) || port < 0 || port > 65535) throw __home_redis_invalid_url("Invalid port number");
+    \\  if (parsed.port !== "" && port === 0) throw __home_redis_invalid_url("Port 0 is not valid for TCP Redis connections");
+    \\  return { url: text, port };
+    \\}
+    \\function __home_RedisClient(url, options) {
+    \\  if (!(this instanceof __home_RedisClient)) throw new TypeError("RedisClient constructor cannot be invoked without 'new'");
+    \\  const parsed = __home_redis_parse_url(url);
+    \\  this.url = parsed.url;
+    \\  this.port = parsed.port;
+    \\  this.options = options || {};
+    \\  this.closed = false;
+    \\}
+    \\__home_RedisClient.prototype.close = function() {
+    \\  this.closed = true;
+    \\};
     \\function __home_cookie_validate_expires(value) {
     \\  if (value === undefined || value === null) return undefined;
     \\  if (value instanceof Date) {
@@ -3456,6 +3498,7 @@ const harness_prelude =
     \\  },
     \\  CryptoHasher: __home_CryptoHasher,
     \\  Cookie: __home_Cookie,
+    \\  RedisClient: __home_RedisClient,
     \\  peek: {
     \\    status(value) {
     \\      return value && typeof value.then === "function" ? "fulfilled" : "fulfilled";
@@ -6860,7 +6903,7 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, SQL: __home_bun_sql, YAML: Bun.YAML, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, RedisClient: Bun.RedisClient, SQL: __home_bun_sql, YAML: Bun.YAML, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
@@ -16839,6 +16882,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { YAML } = globalThis.__home_import(\"bun\");",
         },
         .{
+            .needle = "import { RedisClient } from \"bun\";",
+            .replacement = "const { RedisClient } = globalThis.__home_import(\"bun\");",
+        },
+        .{
             .needle = "import { serve } from \"bun\";",
             .replacement = "const { serve } = globalThis.__home_import(\"bun\");",
         },
@@ -20901,6 +20948,19 @@ test "Bun YAML import rewrite lowers named bun import" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
 }
 
+test "Bun RedisClient import rewrite lowers named bun import" {
+    const source =
+        \\import { RedisClient } from "bun";
+        \\import { test } from "bun:test";
+        \\test("redis", () => new RedisClient().close());
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/23621.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { RedisClient } = globalThis.__home_import(\"bun\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
+}
+
 test "Bun sleepSync import rewrite lowers named bun import" {
     const source =
         \\import { sleepSync } from "bun";
@@ -21309,6 +21369,42 @@ test "bootstrap runner mirrors html no-bundle build error" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23569.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors RedisClient URL validation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { RedisClient } from "bun";
+        \\import { describe, expect, test } from "bun:test";
+        \\
+        \\describe("RedisClient URL validation", () => {
+        \\  test("invalid urls throw", () => {
+        \\    expect(() => new RedisClient("not a valid url at all")).toThrow(/invalid url/i);
+        \\    expect(() => new RedisClient("redis://[invalid-ipv6")).toThrow(/invalid url/i);
+        \\    expect(() => new RedisClient("redis://localhost:abc")).toThrow(/(invalid port number|invalid url format)/i);
+        \\    expect(() => new RedisClient("redis://localhost:0")).toThrow(/port 0 is not valid/i);
+        \\  });
+        \\  test("valid urls and defaults are accepted", () => {
+        \\    expect(() => new RedisClient().close()).not.toThrow();
+        \\    expect(() => new RedisClient(undefined).close()).not.toThrow();
+        \\    expect(() => new RedisClient("redis://localhost:6379").close()).not.toThrow();
+        \\    expect(() => new RedisClient("valkey://127.0.0.1:6379").close()).not.toThrow();
+        \\    expect(() => new RedisClient("valkey+unix:///tmp/redis.sock").close()).not.toThrow();
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23621.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
