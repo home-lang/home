@@ -337,6 +337,41 @@ const install_glue =
     \\    globalThis.Bun.Glob = Glob;
     \\  })();
     \\  (function() {
+    \\    // Bun.ArrayBufferSink — incremental byte sink. Mirrors
+    \\    // src/runtime/webcore/ArrayBufferSink.zig: write() appends bytes
+    \\    // (strings as UTF-8), flush() in streaming mode returns + drains the
+    \\    // pending bytes (else returns 0), end() returns the whole buffer.
+    \\    // asUint8Array -> return Uint8Array; otherwise an ArrayBuffer.
+    \\    function sinkBytes(chunk) {
+    \\      if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+    \\      if (chunk instanceof Uint8Array) return chunk.slice();
+    \\      if (ArrayBuffer.isView(chunk)) return new Uint8Array(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+    \\      if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk.slice(0));
+    \\      return new TextEncoder().encode("" + chunk);
+    \\    }
+    \\    function ArrayBufferSink() { this._chunks = []; this._len = 0; this._asUint8Array = false; this._streaming = false; }
+    \\    ArrayBufferSink.prototype.start = function(options) {
+    \\      this._chunks = []; this._len = 0; this._asUint8Array = false; this._streaming = false;
+    \\      if (options && typeof options === "object") {
+    \\        if (options.asUint8Array) this._asUint8Array = true;
+    \\        if (options.stream) this._streaming = true;
+    \\      }
+    \\    };
+    \\    ArrayBufferSink.prototype.write = function(chunk) {
+    \\      var b = sinkBytes(chunk); this._chunks.push(b); this._len += b.length; return b.length;
+    \\    };
+    \\    ArrayBufferSink.prototype._collect = function() {
+    \\      var out = new Uint8Array(this._len), off = 0;
+    \\      for (var i = 0; i < this._chunks.length; i++) { out.set(this._chunks[i], off); off += this._chunks[i].length; }
+    \\      this._chunks = []; this._len = 0;
+    \\      return out;
+    \\    };
+    \\    ArrayBufferSink.prototype._wrap = function(u8) { return this._asUint8Array ? u8 : u8.buffer; };
+    \\    ArrayBufferSink.prototype.flush = function() { return this._streaming ? this._wrap(this._collect()) : 0; };
+    \\    ArrayBufferSink.prototype.end = function() { return this._wrap(this._collect()); };
+    \\    globalThis.Bun.ArrayBufferSink = ArrayBufferSink;
+    \\  })();
+    \\  (function() {
     \\    var B = globalThis.Bun;
     \\    B.fileURLToPath = function(u) { var s = (u && u.href) ? u.href : String(u); if (s.indexOf("file://") === 0) s = s.slice(7); return decodeURIComponent(s); };
     \\    B.pathToFileURL = function(p) { return new globalThis.URL("file://" + encodeURI(String(p))); };
@@ -454,6 +489,46 @@ test "Bun utility batch: deepEquals/escapeHTML/stringWidth" {
         "  if (Bun.deepEquals({ a: 1 }, { a: 2 })) return false;" ++
         "  if (Bun.escapeHTML('<a href=\"x\">&') !== '&lt;a href=&quot;x&quot;&gt;&amp;') return false;" ++
         "  return Bun.stringWidth('ab\\u001b[31mcd\\u001b[0m') === 4; })()"));
+}
+
+test "Bun.ArrayBufferSink write/end/flush (corpus parity + stream/asUint8Array)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/arraybuffersink.test.ts (multi-write rope + mixed
+    // string/Uint8Array array) plus the documented stream/asUint8Array modes.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var enc = new TextEncoder();" ++
+        "  function sameBytes(u8, exp) { if (u8.byteLength !== exp.length) return false; for (var i = 0; i < exp.length; i++) if (u8[i] !== exp[i]) return false; return true; }" ++
+        // rope: many string writes concatenate; end() returns an ArrayBuffer
+        "  var s1 = new Bun.ArrayBufferSink();" ++
+        "  s1.write('abc'); s1.write('😋'); s1.write(' def');" ++
+        "  var out1 = s1.end();" ++
+        "  if (!(out1 instanceof ArrayBuffer)) return false;" ++
+        "  if (!sameBytes(new Uint8Array(out1), enc.encode('abc😋 def'))) return false;" ++
+        // mixed array: Uint8Array + strings
+        "  var s2 = new Bun.ArrayBufferSink();" ++
+        "  s2.write(enc.encode('abc')); s2.write('😋'); s2.write(' x');" ++
+        "  if (!sameBytes(new Uint8Array(s2.end()), enc.encode('abc😋 x'))) return false;" ++
+        // write returns the byte count
+        "  var s3 = new Bun.ArrayBufferSink();" ++
+        "  if (s3.write('😋') !== 4) return false;" ++ // 😋 is 4 UTF-8 bytes
+        // asUint8Array -> end returns a Uint8Array
+        "  var s4 = new Bun.ArrayBufferSink(); s4.start({ asUint8Array: true });" ++
+        "  s4.write('hi'); var o4 = s4.end();" ++
+        "  if (!(o4 instanceof Uint8Array) || !sameBytes(o4, enc.encode('hi'))) return false;" ++
+        // streaming flush drains and returns pending bytes; non-stream flush -> 0
+        "  var s5 = new Bun.ArrayBufferSink(); s5.start({ stream: true, asUint8Array: true });" ++
+        "  s5.write('foo'); var f1 = s5.flush();" ++
+        "  if (!sameBytes(f1, enc.encode('foo'))) return false;" ++
+        "  s5.write('bar'); if (!sameBytes(s5.end(), enc.encode('bar'))) return false;" ++
+        "  var s6 = new Bun.ArrayBufferSink(); s6.write('x');" ++
+        "  return s6.flush() === 0; })()"));
 }
 
 test "Bun.sleepSync sleeps and validates args (corpus parity)" {
