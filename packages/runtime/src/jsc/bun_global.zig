@@ -373,8 +373,46 @@ const install_glue =
     \\  })();
     \\  (function() {
     \\    var B = globalThis.Bun;
-    \\    B.fileURLToPath = function(u) { var s = (u && u.href) ? u.href : String(u); if (s.indexOf("file://") === 0) s = s.slice(7); return decodeURIComponent(s); };
-    \\    B.pathToFileURL = function(p) { return new globalThis.URL("file://" + encodeURI(String(p))); };
+    \\    // pathToFileURL / fileURLToPath mirror Node's algorithm (Bun's natives
+    \\    // do the same via WTF::URL). Home's URL pathname setter does not apply
+    \\    // the WHATWG path percent-encode set, so we encode the path ourselves
+    \\    // and build the URL from the full string.
+    \\    var PCT_HEX = "0123456789ABCDEF";
+    \\    function pctEncodePath(p) {
+    \\      var bytes = new TextEncoder().encode(p), parts = [];
+    \\      for (var i = 0; i < bytes.length; i++) {
+    \\        var b = bytes[i];
+    \\        // C0 controls + space, all non-ASCII, and " # % < > ? \\ ` { }
+    \\        if (b <= 0x20 || b > 0x7E || b === 0x22 || b === 0x23 || b === 0x25 || b === 0x3C || b === 0x3E || b === 0x3F || b === 0x5C || b === 0x60 || b === 0x7B || b === 0x7D) {
+    \\          parts.push("%" + PCT_HEX[b >> 4] + PCT_HEX[b & 15]);
+    \\        } else parts.push(String.fromCharCode(b));
+    \\      }
+    \\      // join() builds a flat string; '+=' in a loop would build a deeply
+    \\      // nested rope that overflows the stack when later flattened.
+    \\      return parts.join("");
+    \\    }
+    \\    B.pathToFileURL = function(filepath) {
+    \\      if (typeof filepath !== "string") throw new TypeError("The \"path\" argument must be of type string. Received " + typeof filepath);
+    \\      var resolved = filepath;
+    \\      try { var P = globalThis.require("node:path"); resolved = P.resolve(filepath); } catch (e) {}
+    \\      return new globalThis.URL("file://" + pctEncodePath(resolved));
+    \\    };
+    \\    B.fileURLToPath = function(url) {
+    \\      var u;
+    \\      if (typeof url === "string") u = new globalThis.URL(url);
+    \\      else if (url && typeof url === "object" && typeof url.href === "string" && typeof url.protocol === "string") u = url;
+    \\      else throw new TypeError("The \"url\" argument must be of type string or an instance of URL.");
+    \\      if (u.protocol !== "file:") { var e = new TypeError("The URL must be of scheme file"); e.code = "ERR_INVALID_URL_SCHEME"; throw e; }
+    \\      if (u.hostname !== "" && u.hostname !== "localhost") { var eh = new TypeError("File URL host must be \"localhost\" or empty"); eh.code = "ERR_INVALID_FILE_URL_HOST"; throw eh; }
+    \\      var pathname = u.pathname;
+    \\      for (var n = 0; n < pathname.length; n++) {
+    \\        if (pathname[n] === "%") {
+    \\          var third = pathname.charCodeAt(n + 2) | 0x20;
+    \\          if (pathname[n + 1] === "2" && third === 102) { var ep = new TypeError("File URL path must not include encoded / characters"); ep.code = "ERR_INVALID_FILE_URL_PATH"; throw ep; }
+    \\        }
+    \\      }
+    \\      return decodeURIComponent(pathname);
+    \\    };
     \\    B.concatArrayBuffers = function(buffers) {
     \\      var total = 0, i; for (i = 0; i < buffers.length; i++) total += (buffers[i].byteLength != null ? buffers[i].byteLength : buffers[i].length);
     \\      var out = new Uint8Array(total), off = 0;
@@ -631,6 +669,36 @@ test "Bun global fill-out: fileURLToPath/concatArrayBuffers/allocUnsafe/argv/mai
         "  var u = new Uint8Array(ab); if (u.length !== 4 || u[0] !== 1 || u[3] !== 4) return false;" ++
         "  if (!Array.isArray(B.argv) || typeof B.main !== 'string') return false;" ++
         "  return B.revision.length === 40; })()"));
+}
+
+test "Bun.pathToFileURL/fileURLToPath mirror Node (corpus parity)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealmFull(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/fileUrl.test.js: absolute round-trip, relative paths
+    // resolve against cwd, type validation, and non-file: schemes throw.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  function threw(fn) { try { fn(); return false; } catch (e) { return true; } }" ++
+        "  if (Bun.pathToFileURL('/path/to/file.js').href !== 'file:///path/to/file.js') return false;" ++
+        "  if (Bun.fileURLToPath('file:///path/to/file.js') !== '/path/to/file.js') return false;" ++
+        "  if (Bun.fileURLToPath(new URL('file:///path/to/file.js')) !== '/path/to/file.js') return false;" ++
+        // spaces and # percent-encode in the URL, decode back on the way out
+        "  var sp = Bun.pathToFileURL('/a b/c#d');" ++
+        "  if (sp.href !== 'file:///a%20b/c%23d') return false;" ++
+        "  if (Bun.fileURLToPath(sp) !== '/a b/c#d') return false;" ++
+        // relative paths resolve against process.cwd()
+        "  var rel = Bun.pathToFileURL('foo.txt');" ++
+        "  if (rel.href !== Bun.pathToFileURL(process.cwd()).href + '/foo.txt') return false;" ++
+        // non-file: scheme + non-URL values throw
+        "  if (!threw(function() { Bun.fileURLToPath(new URL('http://example.com/x')); })) return false;" ++
+        "  var fuzz = [1, true, {}, [], null, undefined, NaN, Infinity];" ++
+        "  for (var i = 0; i < fuzz.length; i++) if (!threw((function(v) { return function() { Bun.fileURLToPath(v); }; })(fuzz[i]))) return false;" ++
+        "  return !threw(function() { Bun.pathToFileURL('/x'); }); })()"));
 }
 
 test "Bun utility batch: env/sleep/nanoseconds/inspect (full realm)" {
