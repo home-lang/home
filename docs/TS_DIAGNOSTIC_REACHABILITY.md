@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 564 |
-| active reachable (parity targets) | 101 |
+| catalog-only total | 563 |
+| active reachable (parity targets) | 100 |
 | blocked/effectively-dead references | 2 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,17 +25,16 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 50 |
+| 1xxx — parser / syntactic + program file-inclusion | 49 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 2xxx — checker / type engine | 11 |
 | 4xxx — declaration-emit (privacy / serialization) | 7 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 1xxx — parser / syntactic + program file-inclusion (50)
+### 1xxx — parser / syntactic + program file-inclusion (49)
 
 - TS1012 `Unexpected_token_1012`
-- TS1058 `The_return_type_of_an_async_function_must_either_be_a_valid_promise_or_must_not_contain_a_callable_t_1058`
 - TS1059 `A_promise_must_have_a_then_method_1059`
 - TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060`
 - TS1062 `Type_is_referenced_directly_or_indirectly_in_the_fulfillment_callback_of_its_own_then_method_1062`
