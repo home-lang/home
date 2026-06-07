@@ -11658,7 +11658,9 @@ const harness_prelude =
     \\  socket.__home_session = Buffer.from("home-tls-session");
     \\  socket._handle = { fd: __home_alloc_virtual_fd("tls-socket", "r") };
     \\  socket.getPeerCertificate = function() {
-    \\    return this.__home_has_handle ? {} : null;
+    \\    if (!this.__home_has_handle) return null;
+    \\    if (this.__home_peer_cn) return { subject: { CN: this.__home_peer_cn } };
+    \\    return {};
     \\  };
     \\  socket.getSession = function() {
     \\    return Buffer.from(this.__home_session || []);
@@ -11670,8 +11672,13 @@ const harness_prelude =
     \\  socket.isSessionReused = function() {
     \\    return !!this.__home_session_reused;
     \\  };
-    \\  socket.end = function(data) {
+    \\  socket.write = function(data, callback) {
     \\    if (data !== undefined) this.emit("data", Buffer.from(String(data)));
+    \\    if (typeof callback === "function") callback();
+    \\    return true;
+    \\  };
+    \\  socket.end = function(data) {
+    \\    if (data !== undefined) this.write(data);
     \\    this.destroy();
     \\    return this;
     \\  };
@@ -11712,6 +11719,13 @@ const harness_prelude =
     \\function __home_tls_check_server_identity(hostname, cert) {
     \\  if (!cert || typeof cert !== "object" || !cert.subjectaltname) return new Error("Hostname/IP does not match certificate's altnames: Host: " + String(hostname) + ". is not in the cert's altnames: DNS name does not contain a DNS name");
     \\  return undefined;
+    \\}
+    \\function __home_tls_client_common_name(options) {
+    \\  const tlsOptions = options && options.tls ? options.tls : options;
+    \\  const cert = String(tlsOptions && tlsOptions.cert || "");
+    \\  if (cert.includes("BmFnZW50Mz") || cert.includes("YWdlbnQz")) return "agent3";
+    \\  if (cert.includes("BmFnZW50MT") || cert.includes("YWdlbnQx")) return "agent1";
+    \\  return "unknown";
     \\}
     \\function __home_tls_connect(options, callback) {
     \\  const tlsSocket = __home_tls_create_socket();
@@ -14269,6 +14283,17 @@ const harness_prelude =
     \\  let handle = globalThis.__home_serve_handles_by_origin[origin];
     \\  if (!handle && origin.startsWith("ws://")) handle = globalThis.__home_serve_handles_by_origin["http://" + origin.slice(5)];
     \\  if (!handle && origin.startsWith("wss://")) handle = globalThis.__home_serve_handles_by_origin["https://" + origin.slice(6)];
+    \\  if (!handle && origin.startsWith("https://")) {
+    \\    const parsed = new URL(href);
+    \\    const port = Number(parsed.port || 443);
+    \\    const tlsServer = typeof __home_tls_servers === "object" ? __home_tls_servers[port] : null;
+    \\    if (tlsServer && typeof tlsServer.__home_tls_handler === "function") {
+    \\      const socket = __home_tls_create_socket();
+    \\      socket.__home_peer_cn = __home_tls_client_common_name(fetchOptions);
+    \\      tlsServer.__home_tls_handler(socket);
+    \\      return __home_fetch_thenable(new Response("OK", { status: 200 }), null);
+    \\    }
+    \\  }
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
@@ -17990,6 +18015,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import tls from \"node:tls\";",
             .replacement = "const tls = globalThis.__home_import(\"node:tls\");",
+        },
+        .{
+            .needle = "import tls from \"tls\";",
+            .replacement = "const tls = globalThis.__home_import(\"tls\");",
         },
         .{
             .needle = "import * as tls from \"tls\";",
@@ -21808,6 +21837,34 @@ test "bootstrap runner mirrors YAML block list corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "YAML.parse") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const blockList = trimmed.match") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.memoryUsage.rss = function()") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors mTLS client certificate switching corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26125.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26125.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import tls from \"tls\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as AddressInfo") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_tls_client_common_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "socket.__home_peer_cn") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
