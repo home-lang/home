@@ -1646,6 +1646,7 @@ fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anyty
     home_rt.jsc.webcore_globals.install(allocator, ctx, global);
     home_rt.jsc.fetch_global.install(allocator, ctx, global);
     home_rt.jsc.bun_global.install(allocator, ctx, global);
+    home_rt.jsc.password_global.install(allocator, ctx, global);
     home_rt.jsc.node_modules.install(allocator, ctx, global);
     home_rt.jsc.spawn_global.install(allocator, ctx, global);
 }
