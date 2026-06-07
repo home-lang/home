@@ -413,11 +413,32 @@ const install_glue =
     \\      }
     \\      return decodeURIComponent(pathname);
     \\    };
-    \\    B.concatArrayBuffers = function(buffers) {
-    \\      var total = 0, i; for (i = 0; i < buffers.length; i++) total += (buffers[i].byteLength != null ? buffers[i].byteLength : buffers[i].length);
-    \\      var out = new Uint8Array(total), off = 0;
-    \\      for (i = 0; i < buffers.length; i++) { var v = buffers[i] instanceof ArrayBuffer ? new Uint8Array(buffers[i]) : (buffers[i] instanceof Uint8Array ? buffers[i] : new Uint8Array(buffers[i].buffer || buffers[i])); out.set(v, off); off += v.length; }
-    \\      return out.buffer;
+    \\    B.concatArrayBuffers = function(buffers, maxLength, asUint8Array) {
+    \\      // Mirrors functionConcatTypedArrays: maxLength (NaN/<0 -> RangeError,
+    \\      // Infinity/undefined -> no cap, else toUInt32) caps the output, and
+    \\      // asUint8Array selects Uint8Array vs ArrayBuffer.
+    \\      if (arguments.length < 1) throw new TypeError("Expected at least one argument");
+    \\      var max = Infinity;
+    \\      if (maxLength !== undefined && typeof maxLength === "number") {
+    \\        if (isNaN(maxLength) || maxLength < 0) throw new RangeError("Maximum length must be >= 0");
+    \\        if (isFinite(maxLength)) max = maxLength >>> 0;
+    \\      }
+    \\      var au = !!asUint8Array, i;
+    \\      function chunkView(c) {
+    \\        if (c instanceof Uint8Array) return c;
+    \\        if (ArrayBuffer.isView(c)) return new Uint8Array(c.buffer, c.byteOffset, c.byteLength);
+    \\        if (c instanceof ArrayBuffer) return new Uint8Array(c);
+    \\        return new Uint8Array(0);
+    \\      }
+    \\      var views = [], total = 0;
+    \\      for (i = 0; i < buffers.length; i++) { var v = chunkView(buffers[i]); views.push(v); total += v.length; }
+    \\      var outLen = total < max ? total : max;
+    \\      var out = new Uint8Array(outLen), off = 0;
+    \\      for (i = 0; i < views.length && off < outLen; i++) {
+    \\        var vv = views[i], take = (vv.length < outLen - off) ? vv.length : outLen - off;
+    \\        out.set(take === vv.length ? vv : vv.subarray(0, take), off); off += take;
+    \\      }
+    \\      return au ? out : out.buffer;
     \\    };
     \\    B.allocUnsafe = function(n) { return new Uint8Array(n); };
     \\    B.gc = function() { return 0; };
@@ -669,6 +690,40 @@ test "Bun global fill-out: fileURLToPath/concatArrayBuffers/allocUnsafe/argv/mai
         "  var u = new Uint8Array(ab); if (u.length !== 4 || u[0] !== 1 || u[3] !== 4) return false;" ++
         "  if (!Array.isArray(B.argv) || typeof B.main !== 'string') return false;" ++
         "  return B.revision.length === 40; })()"));
+}
+
+test "Bun.concatArrayBuffers maxLength + asUint8Array (corpus parity)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/concat.test.js: ArrayBuffer/TypedArray mix, trimming
+    // to a max length, and the asUint8Array flag.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  function threw(fn) { try { fn(); return false; } catch (e) { return true; } }" ++
+        "  function bytesEq(u8, exp) { if (u8.length !== exp.length) return false; for (var i = 0; i < exp.length; i++) if (u8[i] !== exp[i]) return false; return true; }" ++
+        "  var a = Uint8Array.from([1, 2, 3]), b = Uint8Array.from([4, 5, 6]);" ++
+        // default -> full ArrayBuffer
+        "  var full = Bun.concatArrayBuffers([a, b]);" ++
+        "  if (!(full instanceof ArrayBuffer) || !bytesEq(new Uint8Array(full), [1, 2, 3, 4, 5, 6])) return false;" ++
+        // mix ArrayBuffer + TypedArray
+        "  if (!bytesEq(new Uint8Array(Bun.concatArrayBuffers([a.buffer, b])), [1, 2, 3, 4, 5, 6])) return false;" ++
+        // trim to maxLength, asUint8Array=true -> Uint8Array([1,2,3,4])
+        "  var t = Bun.concatArrayBuffers([a, b], 4, true);" ++
+        "  if (!(t instanceof Uint8Array) || !bytesEq(t, [1, 2, 3, 4])) return false;" ++
+        // trim to maxLength as ArrayBuffer
+        "  var t2 = Bun.concatArrayBuffers([a, b], 4);" ++
+        "  if (!(t2 instanceof ArrayBuffer) || !bytesEq(new Uint8Array(t2), [1, 2, 3, 4])) return false;" ++
+        // Infinity -> no cap
+        "  if (!bytesEq(Bun.concatArrayBuffers([a, b], Infinity, true), [1, 2, 3, 4, 5, 6])) return false;" ++
+        // NaN / negative -> RangeError; no args -> TypeError
+        "  if (!threw(function() { Bun.concatArrayBuffers([a], -1); })) return false;" ++
+        "  if (!threw(function() { Bun.concatArrayBuffers([a], NaN); })) return false;" ++
+        "  return threw(function() { Bun.concatArrayBuffers(); }); })()"));
 }
 
 test "Bun.pathToFileURL/fileURLToPath mirror Node (corpus parity)" {
