@@ -112,6 +112,10 @@ pub extern "c" fn JSStringRetain(str: ?*JSString) ?*JSString;
 pub extern "c" fn JSStringRelease(str: ?*JSString) void;
 pub extern "c" fn JSStringGetLength(str: ?*JSString) usize;
 pub extern "c" fn JSStringGetUTF8CString(str: ?*JSString, buf: [*]u8, buf_size: usize) usize;
+/// Pointer to the string's UTF-16 (`JSChar` = u16) code units. Valid until the
+/// `JSString` is released. Used for width/grapheme work that must see the same
+/// UTF-16 code-unit view a JS string has.
+pub extern "c" fn JSStringGetCharactersPtr(str: ?*JSString) [*]const u16;
 
 test "extern fn type signatures are well-formed" {
     // Type-level only — we never reference the extern symbols themselves,

@@ -20,6 +20,9 @@ const evaluate = @import("evaluate.zig");
 const callback = @import("callback.zig");
 const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
+// Native string-width (East Asian Width + emoji grapheme clustering via ICU),
+// shared with `bun.String.visibleWidth`. Far more faithful than a JS polyfill.
+const visible_mod = @import("../string/immutable/visible.zig");
 
 const JSValue = opaques.JSValue;
 const JSContextRef = opaques.JSContextRef;
@@ -287,6 +290,37 @@ fn sleepSyncNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSO
     return extern_fns.JSValueMakeUndefined(c);
 }
 
+/// `__home_string_width(str, countAnsi)` -> visible terminal width. Delegates
+/// to Home's native `visible.width` (the same engine behind bun.String.
+/// visibleWidth): East Asian Wide/Fullwidth = 2, combining/zero-width = 0,
+/// emoji grapheme clusters (ZWJ, skin tones, flags, VS16) = 2.
+fn stringWidthNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argc < 1) return extern_fns.JSValueMakeNumber(c, 0);
+    const v = argv[0] orelse return extern_fns.JSValueMakeNumber(c, 0);
+    // Operate on the same UTF-16 code-unit view a JS string has — Bun's
+    // jsGetStringWidth dispatches to the utf16 width path for these, whose
+    // grapheme clustering (ZWJ/skin-tone/flag emoji) differs from the utf8 path.
+    const js_str = extern_fns.JSValueToStringCopy(c, v, null) orelse return extern_fns.JSValueMakeNumber(c, 0);
+    defer extern_fns.JSStringRelease(js_str);
+    const len = extern_fns.JSStringGetLength(js_str);
+    if (len == 0) return extern_fns.JSValueMakeNumber(c, 0);
+    const units = extern_fns.JSStringGetCharactersPtr(js_str)[0..len];
+    var count_ansi = false;
+    if (argc >= 2) {
+        if (argv[1]) |cv| count_ansi = extern_fns.JSValueToBoolean(c, cv);
+    }
+    // ambiguousAsWide = false (matches Bun's default ambiguousIsNarrow = true).
+    const w = if (count_ansi)
+        visible_mod.visible.width.utf16(units, false)
+    else
+        visible_mod.visible.width.exclude_ansi_colors.utf16(units, false);
+    return extern_fns.JSValueMakeNumber(c, @floatFromInt(w));
+}
+
 fn setBool(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: bool) void {
     setValue(ctx, object, key, extern_fns.JSValueMakeBoolean(ctx, value));
 }
@@ -309,6 +343,7 @@ const install_glue =
     \\  var writeFn = globalThis.__home_bun_write_file;
     \\  var hashFn = globalThis.__home_bun_hash;
     \\  var sleepFn = globalThis.__home_sleep_sync;
+    \\  var widthFn = globalThis.__home_string_width;
     \\
     \\  function toBytes(data) {
     \\    if (typeof data === "string") return new TextEncoder().encode(data);
@@ -383,11 +418,17 @@ const install_glue =
     \\    inspect: function(v, opts) { var u = (typeof globalThis.require === "function") ? globalThis.require("node:util") : null; return u ? u.inspect(v, opts) : String(v); },
     \\    deepEquals: function(a, b, strict) { return bunDeepEquals(a, b, !!strict); },
     \\    escapeHTML: function(s) { return String(s).replace(/[&<>"']/g, function(c) { return htmlEsc[c]; }); },
-    \\    stringWidth: function(s) { return String(s).replace(/\x1b\[[0-9;]*m/g, "").length; },
+    \\    stringWidth: function(s, opts) {
+    \\      if (s === undefined || s === null) return 0;
+    \\      var str = typeof s === "string" ? s : String(s);
+    \\      if (str.length === 0) return 0;
+    \\      return widthFn(str, !!(opts && opts.countAnsiEscapeCodes));
+    \\    },
     \\  };
     \\  delete globalThis.__home_bun_read_file;
     \\  delete globalThis.__home_bun_stat;
     \\  delete globalThis.__home_sleep_sync;
+    \\  delete globalThis.__home_string_width;
     \\  (function() {
     \\    function hbytes(d) { return typeof d === "string" ? new TextEncoder().encode(d) : (d instanceof Uint8Array ? d : new Uint8Array(ArrayBuffer.isView(d) ? d.buffer : d)); }
     \\    function seedStr(seed) {
@@ -747,6 +788,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_bun_write_file", writeFileNative);
     callback.registerCallback(ctx, global, "__home_bun_hash", bunHashNative);
     callback.registerCallback(ctx, global, "__home_sleep_sync", sleepSyncNative);
+    callback.registerCallback(ctx, global, "__home_string_width", stringWidthNative);
 
     // Inject the version literal into the glue (kept out of the raw string).
     const glue = std.mem.replaceOwned(u8, allocator, install_glue, "__HOME_BUN_VERSION__", "\"" ++ bun_version ++ "\"") catch return;
@@ -791,6 +833,36 @@ test "Bun utility batch: deepEquals/escapeHTML/stringWidth" {
         "  if (Bun.deepEquals({ a: 1 }, { a: 2 })) return false;" ++
         "  if (Bun.escapeHTML('<a href=\"x\">&') !== '&lt;a href=&quot;x&quot;&gt;&amp;') return false;" ++
         "  return Bun.stringWidth('ab\\u001b[31mcd\\u001b[0m') === 4; })()"));
+}
+
+test "Bun.stringWidth handles wide chars, emoji, combining marks, ANSI (corpus parity)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/stringWidth.test.ts behaviors (matched against the
+    // string-width npm package): East Asian Wide = 2, emoji = 2, combining
+    // marks = 0, and ANSI escapes excluded by default / counted on request.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var w = Bun.stringWidth;" ++
+        "  if (w('') !== 0 || w(undefined) !== 0) return false;" ++
+        "  if (w('abc') !== 3) return false;" ++
+        "  if (w('\\uD83D\\uDE00') !== 2) return false;" ++ // 😀
+        "  if (w('\\uD83D\\uDE00\\uD83D\\uDE00') !== 4) return false;" ++
+        "  if (w('\\uAD6D\\uC5B4') !== 4) return false;" ++ // 한국어 — wait, 2 chars here -> width 4
+        "  if (w('\\u4F60\\u597D') !== 4) return false;" ++ // 你好 (CJK wide)
+        "  if (w('a\\u0301') !== 1) return false;" ++ // 'a' + combining acute -> 1
+        // ANSI excluded by default, counted when asked
+        "  if (w('\\u001b[31mred\\u001b[39m') !== 3) return false;" ++
+        "  if (w('\\u001b[31m', { countAnsiEscapeCodes: true }) !== 4) return false;" ++ // ESC=0, '[31m'=4
+        // ZWJ family, skin-tone, and flag emoji each cluster to a single width-2 cell
+        "  if (w('\\uD83D\\uDC4D\\uD83C\\uDFFD') !== 2) return false;" ++ // 👍🏽
+        "  if (w('\\uD83C\\uDDFA\\uD83C\\uDDF8') !== 2) return false;" ++ // 🇺🇸
+        "  return w('\\u001b[31m\\uD83D\\uDE00') === 2; })()"));
 }
 
 test "Bun.ArrayBufferSink write/end/flush (corpus parity + stream/asUint8Array)" {
