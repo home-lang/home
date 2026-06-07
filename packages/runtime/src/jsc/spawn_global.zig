@@ -498,10 +498,17 @@ const install_glue =
     \\
     \\  function which(cmd, opts) {
     \\    if (cmd == null) return null;
+    \\    var s = String(cmd);
+    \\    // Bun throws when the binary name's UTF-8 byte length reaches
+    \\    // MAX_PATH_BYTES (PATH_MAX): 4096 on linux, 1024 elsewhere. Only the
+    \\    // large inputs need the precise byte count (<= 4 bytes/char).
+    \\    var maxPath = (typeof process !== "undefined" && process.platform === "linux") ? 4096 : 1024;
+    \\    var byteLen = s.length < (maxPath >> 2) ? s.length : new TextEncoder().encode(s).length;
+    \\    if (byteLen >= maxPath) throw new Error("bin path is too long");
     \\    var path = (opts && opts.PATH != null)
     \\      ? String(opts.PATH)
     \\      : ((typeof process !== "undefined" && process.env && process.env.PATH) || "");
-    \\    var r = whichNative(String(cmd), path);
+    \\    var r = whichNative(s, path);
     \\    return r == null ? null : r;
     \\  }
     \\
@@ -570,6 +577,26 @@ test "Bun.spawnSync runs a real OS binary and captures stdout + exitCode" {
         std.debug.print("spawnSync diag: {s}\n", .{diag});
         return err;
     };
+}
+
+test "Bun.which resolves a real binary, returns null for misses, throws on overlong names" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/which.test.ts: a real binary resolves, a miss is
+    // null, an explicit PATH option is honoured, and a >PATH_MAX name throws
+    // "bin path is too long".
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  function threw(fn, msg) { try { fn(); return false; } catch (e) { return e.message.indexOf(msg) >= 0; } }" ++
+        "  if (typeof Bun.which('sh') !== 'string') return false;" ++
+        "  if (Bun.which('definitely_not_a_real_binary_xyz') !== null) return false;" ++
+        "  if (Bun.which('sh', { PATH: '/bin' }) !== '/bin/sh') return false;" ++
+        "  return threw(function() { Bun.which('a'.repeat(100000)); }, 'bin path is too long'); })()"));
 }
 
 test "Bun.spawnSync threads env into the child" {
