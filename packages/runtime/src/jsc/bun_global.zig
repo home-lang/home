@@ -147,12 +147,17 @@ fn bunHashNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObj
     const len = extern_fns.JSObjectGetTypedArrayByteLength(c, obj, null);
     const ptr = extern_fns.JSObjectGetTypedArrayBytesPtr(c, obj, null);
     const input: []const u8 = if (len > 0 and ptr != null) @as([*]const u8, @ptrCast(ptr.?))[0..len] else "";
+    // The seed arrives as a decimal string so u64 seeds that exceed f64's
+    // 53-bit mantissa (e.g. xxHash64's large-seed test) survive intact.
     var seed: u64 = 0;
     if (argc >= 3) {
         if (argv[2]) |sv| {
             if (!extern_fns.JSValueIsUndefined(c, sv) and !extern_fns.JSValueIsNull(c, sv)) {
-                const sf = extern_fns.JSValueToNumber(c, sv, null);
-                if (sf >= 0) seed = @intFromFloat(sf);
+                const a = std.heap.page_allocator;
+                if (argToOwnedUtf8(c, sv, a)) |s| {
+                    defer a.free(s);
+                    seed = std.fmt.parseInt(u64, s, 10) catch 0;
+                }
             }
         }
     }
@@ -164,6 +169,10 @@ fn bunHashNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObj
         4 => std.hash.cityhash.CityHash64.hashWithSeed(input, seed),
         5 => std.hash.murmur.Murmur3_32.hashWithSeed(input, @truncate(seed)),
         6 => std.hash.murmur.Murmur2_64.hashWithSeed(input, seed),
+        7 => std.hash.XxHash32.hash(@truncate(seed), input),
+        8 => std.hash.XxHash64.hash(seed, input),
+        9 => std.hash.XxHash3.hash(seed, input),
+        10 => std.hash.murmur.Murmur2_32.hashWithSeed(input, @truncate(seed)),
         else => 0,
     };
     var buf: [24]u8 = undefined;
@@ -299,8 +308,13 @@ const install_glue =
     \\  delete globalThis.__home_sleep_sync;
     \\  (function() {
     \\    function hbytes(d) { return typeof d === "string" ? new TextEncoder().encode(d) : (d instanceof Uint8Array ? d : new Uint8Array(ArrayBuffer.isView(d) ? d.buffer : d)); }
-    \\    function h64(algo, d, seed) { return BigInt(hashFn(algo, hbytes(d), seed === undefined ? 0 : Number(seed))); }
-    \\    function h32(algo, d, seed) { return Number(hashFn(algo, hbytes(d), seed === undefined ? 0 : Number(seed))); }
+    \\    function seedStr(seed) {
+    \\      if (seed === undefined || seed === null) return "0";
+    \\      var bi = (typeof seed === "bigint") ? seed : BigInt(Math.trunc(Number(seed)));
+    \\      return BigInt.asUintN(64, bi).toString();
+    \\    }
+    \\    function h64(algo, d, seed) { return BigInt(hashFn(algo, hbytes(d), seedStr(seed))); }
+    \\    function h32(algo, d, seed) { return Number(hashFn(algo, hbytes(d), seedStr(seed))); }
     \\    var bunHash = function(d, seed) { return h64(0, d, seed); };
     \\    bunHash.wyhash = function(d, seed) { return h64(0, d, seed); };
     \\    bunHash.crc32 = function(d) { return h32(1, d); };
@@ -309,6 +323,10 @@ const install_glue =
     \\    bunHash.cityHash64 = function(d, seed) { return h64(4, d, seed); };
     \\    bunHash.murmur32v3 = function(d, seed) { return h32(5, d, seed); };
     \\    bunHash.murmur64v2 = function(d, seed) { return h64(6, d, seed); };
+    \\    bunHash.xxHash32 = function(d, seed) { return h32(7, d, seed); };
+    \\    bunHash.xxHash64 = function(d, seed) { return h64(8, d, seed); };
+    \\    bunHash.xxHash3 = function(d, seed) { return h64(9, d, seed); };
+    \\    bunHash.murmur32v2 = function(d, seed) { return h32(10, d, seed); };
     \\    globalThis.Bun.hash = bunHash;
     \\  })();
     \\  (function() {
@@ -728,6 +746,34 @@ test "Bun.hash family (native std.hash): crc32 vector + types/determinism" {
         "  if (typeof h.cityHash64('x') !== 'bigint' || typeof h.murmur32v3('x') !== 'number') return false;" ++
         "  if (h.wyhash('a', 0) !== h.wyhash('a', 0)) return false;" ++
         "  return h.wyhash('a', 1) !== h.wyhash('a', 2); })()"));
+}
+
+test "Bun.hash full variant set matches Bun's exact vectors (corpus parity)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Exact expected values from js/bun/util/hash.test.js for "hello world",
+    // including xxHash32/64/3, murmur32v2, and the >u32 seed for xxHash64
+    // (which must survive as a precise u64, not an f64).
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() { var h = Bun.hash; var s = 'hello world';" ++
+        "  if (h(s) !== 0x668d5e431c3b2573n) return false;" ++
+        "  if (h.wyhash(new TextEncoder().encode(s)) !== 0x668d5e431c3b2573n) return false;" ++
+        "  if (h.adler32(s) !== 0x1a0b045d) return false;" ++
+        "  if (h.crc32(s) !== 0x0d4a1185) return false;" ++
+        "  if (h.cityHash32(s) !== 0x19a7581a) return false;" ++
+        "  if (h.cityHash64(s) !== 0xc7920bbdbecee42fn) return false;" ++
+        "  if (h.xxHash32(s) !== 0xcebb6622) return false;" ++
+        "  if (h.xxHash64(s) !== 0x45ab6734b21e6968n) return false;" ++
+        "  if (h.xxHash64('', 16269921104521594740n) !== 3224619365169652240n) return false;" ++
+        "  if (h.xxHash3(s) !== 0xd447b1ea40e6988bn) return false;" ++
+        "  if (h.murmur32v3(s) !== 0x5e928f0f) return false;" ++
+        "  if (h.murmur32v2(s) !== 0x44a81419) return false;" ++
+        "  return h.murmur64v2(s) === 0xd3ba2368a832afcen; })()"));
 }
 
 test "Bun.Glob.match (wildcards, globstar, braces, char classes)" {
