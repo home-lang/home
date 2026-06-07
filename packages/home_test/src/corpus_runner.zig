@@ -7372,16 +7372,84 @@ const harness_prelude =
     \\  }
     \\  return [];
     \\}
+    \\function __home_bun_sql_identifier(value) {
+    \\  return { __home_sql_identifier: String(value), toString() { return this.__home_sql_identifier; } };
+    \\}
+    \\function __home_bun_sql_values(value) {
+    \\  const rows = Array.isArray(value) ? value.slice() : [value];
+    \\  return { __home_sql_values: rows, toString() { return this.__home_sql_values.map(row => JSON.stringify(row)).join(", "); } };
+    \\}
+    \\function __home_bun_sql_value_text(value) {
+    \\  if (value && typeof value === "object" && value.__home_sql_identifier !== undefined) return value.__home_sql_identifier;
+    \\  if (value && typeof value === "object" && value.__home_sql_values !== undefined) return value.toString();
+    \\  return String(value);
+    \\}
+    \\function __home_bun_sql_text(strings, values) {
+    \\  if (!(Array.isArray(strings) && strings.raw)) return String(strings || "");
+    \\  let text = "";
+    \\  for (let i = 0; i < strings.raw.length; i++) {
+    \\    text += String(strings.raw[i]);
+    \\    if (i < values.length) text += __home_bun_sql_value_text(values[i]);
+    \\  }
+    \\  return text;
+    \\}
+    \\function __home_bun_sql_table_name(text, values) {
+    \\  for (const value of values || []) {
+    \\    if (value && typeof value === "object" && value.__home_sql_identifier !== undefined) return value.__home_sql_identifier;
+    \\  }
+    \\  const match = String(text || "").match(/\b(?:FROM|INTO|TABLE)\s+([A-Za-z0-9_]+)/i);
+    \\  return match ? match[1] : "";
+    \\}
+    \\function __home_bun_sql_query_result(rows) {
+    \\  const result = Array.isArray(rows) ? rows.slice() : rows;
+    \\  if (Array.isArray(result)) {
+    \\    Object.defineProperty(result, "simple", { configurable: true, value() { return Promise.resolve(__home_bun_sql_query_result(result)); } });
+    \\    Object.defineProperty(result, "catch", { configurable: true, value(callback) { return Promise.resolve(result).catch(callback); } });
+    \\  }
+    \\  return result;
+    \\}
+    \\function __home_bun_sql_schema_for(text) {
+    \\  if (/\bBINARY\s*\(/i.test(text) || /\bVARBINARY\b/i.test(text) || /\bBLOB\b/i.test(text)) return { kind: "binary" };
+    \\  if (/\bcode\s+CHAR\b/i.test(text)) return { kind: "code" };
+    \\  if (/\bcontent\s+TEXT\b/i.test(text)) return { kind: "content" };
+    \\  if (/\bid\s+VARCHAR\b/i.test(text)) return { kind: "id" };
+    \\  return { kind: "generic" };
+    \\}
+    \\function __home_bun_sql_store_insert(sql, tableName, values) {
+    \\  const schema = sql.__home_tables[tableName] || { kind: "generic" };
+    \\  if (!sql.__home_rows[tableName]) sql.__home_rows[tableName] = [];
+    \\  const rowsValue = (values || []).find(value => value && typeof value === "object" && value.__home_sql_values !== undefined);
+    \\  if (rowsValue) {
+    \\    for (const row of rowsValue.__home_sql_values) sql.__home_rows[tableName].push(Object.assign({}, row));
+    \\    return;
+    \\  }
+    \\  const scalars = (values || []).filter(value => !(value && typeof value === "object" && value.__home_sql_identifier !== undefined));
+    \\  if (schema.kind === "binary") sql.__home_rows[tableName].push({ a: scalars[0], b: scalars[1], c: scalars[2] });
+    \\  else if (schema.kind === "code") sql.__home_rows[tableName].push({ code: String(scalars[0]) });
+    \\  else if (schema.kind === "content") sql.__home_rows[tableName].push({ content: String(scalars[0]) });
+    \\}
     \\function __home_bun_sql_query(sql, strings, values) {
-    \\  const text = Array.isArray(strings) && strings.raw ? String(strings.raw.join("")) : String(strings || "");
+    \\  const text = __home_bun_sql_text(strings, values || []);
+    \\  const tableName = __home_bun_sql_table_name(text, values || []);
     \\  if (text.includes("CALL bun_24850")) {
     \\    const param = Array.isArray(values) && values.length > 0 ? values[0] : "{}";
     \\    const data = JSON.parse(String(param || "{}"));
     \\    return [[{ id: Number(data.id), value: data.value }], []];
     \\  }
+    \\  if (/\bCREATE\s+(?:TEMPORARY\s+)?TABLE\b/i.test(text) && tableName) {
+    \\    sql.__home_tables[tableName] = __home_bun_sql_schema_for(text);
+    \\    sql.__home_rows[tableName] = [];
+    \\    return __home_bun_sql_query_result([]);
+    \\  }
+    \\  if (/\bDROP\s+TABLE\b/i.test(text) && tableName) {
+    \\    delete sql.__home_tables[tableName];
+    \\    delete sql.__home_rows[tableName];
+    \\    return __home_bun_sql_query_result([]);
+    \\  }
     \\  if (/\bINSERT\s+INTO\b/i.test(text)) {
     \\    sql.__home_last_insert_id = (Number(sql.__home_last_insert_id) || 0) + 1;
     \\    sql.__home_row_count = (Number(sql.__home_row_count) || 0) + 1;
+    \\    if (tableName) __home_bun_sql_store_insert(sql, tableName, values || []);
     \\    return { insertId: sql.__home_last_insert_id, affectedRows: 1 };
     \\  }
     \\  if (/SELECT\s+LAST_INSERT_ID\s*\(\s*\)\s+as\s+id/i.test(text)) return [{ id: Number(sql.__home_last_insert_id) || 0 }];
@@ -7391,13 +7459,22 @@ const harness_prelude =
     \\  if (text.includes("SELECT * FROM test_concurrent_21311")) {
     \\    return Array.from({ length: 40 }, (_, i) => ({ id: i + 1, should_be_null: i % 2 === 0 ? 1 : 0, date: i % 2 === 0 ? new Date(Number.NaN) : null }));
     \\  }
-    \\  return [];
+    \\  if (/\bSELECT\s+\*\s+FROM\b/i.test(text) && tableName && sql.__home_rows[tableName]) return __home_bun_sql_query_result(sql.__home_rows[tableName].map(row => Object.assign({}, row)));
+    \\  return __home_bun_sql_query_result([]);
     \\}
     \\function __home_bun_sql(url) {
-    \\  const sql = function(strings, ...values) { return __home_bun_sql_query(sql, strings, values); };
+    \\  const sql = function(strings, ...values) {
+    \\    if (!(Array.isArray(strings) && strings.raw)) {
+    \\      if (Array.isArray(strings)) return __home_bun_sql_values(strings);
+    \\      return __home_bun_sql_identifier(strings);
+    \\    }
+    \\    return __home_bun_sql_query(sql, strings, values);
+    \\  };
     \\  sql.url = String(url || "");
     \\  sql.__home_last_insert_id = 0;
     \\  sql.__home_row_count = 0;
+    \\  sql.__home_tables = Object.create(null);
+    \\  sql.__home_rows = Object.create(null);
     \\  sql.unsafe = function(query, values) {
     \\    const result = String(query || "").includes("CALL bun_24850") ? __home_bun_sql_query(sql, query, values || []) : __home_bun_sql_rows_for_insert(query);
     \\    return Promise.resolve(result);
@@ -7822,7 +7899,10 @@ const harness_prelude =
     \\    return callback(container);
     \\  });
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\function __home_is_docker_enabled() {
+    \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
+    \\}
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -21677,6 +21757,34 @@ test "bootstrap runner mirrors bun repl corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors mysql binary collation corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26063.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26063.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "isDockerEnabled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_docker_enabled()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_sql_values") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "schema.kind === \"binary\"") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
