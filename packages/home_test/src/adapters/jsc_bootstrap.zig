@@ -246,6 +246,12 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_readdirSyncNative",
+            readdirSyncNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_transpilerCreateNative",
             transpilerCreateNative,
         );
@@ -348,11 +354,36 @@ pub const Runtime = struct {
             return runner.FileRun.failOwned(allocator, spec.path, null);
         }
 
-        const counters = self.readCounters(allocator) catch |err| {
+        var counters = self.readCounters(allocator) catch |err| {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
+        var drain_rounds: usize = 0;
+        while (counters.pending != 0 and drain_rounds < 8) : (drain_rounds += 1) {
+            const drain_evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
+                allocator,
+                self.engine.currentContext(),
+                "void 0;",
+                "home:corpus-microtask-drain",
+                1,
+            );
+            defer drain_evaluation.deinit(allocator);
+
+            if (drain_evaluation.exception != null) {
+                if (unsupportedExceptionReason(drain_evaluation.exception_message)) |reason| {
+                    return runner.FileRun.unsupportedOwned(allocator, spec.path, reason);
+                }
+                return runner.FileRun.failOwned(allocator, spec.path, drain_evaluation.exception_message);
+            }
+            counters = self.readCounters(allocator) catch |err| {
+                return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+            };
+        }
         if (counters.pending != 0) {
-            return runner.FileRun.unsupportedBorrowed(spec.path, "pending async test promise requires event-loop support");
+            const message = readString(self, allocator, "__home_bun_tests.firstFailure || 'pending async test promise requires event-loop support'") catch |err| {
+                return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+            };
+            defer allocator.free(message);
+            return runner.FileRun.unsupportedOwned(allocator, spec.path, message);
         }
         if (counters.unsupported != 0) {
             const message = readString(self, allocator, "__home_bun_tests.firstFailure || 'unsupported async test path'") catch |err| {
@@ -435,6 +466,7 @@ const TranspilerHandle = struct {
     minify_identifiers: bool = false,
     experimental_decorators: bool = false,
     emit_decorator_metadata: bool = false,
+    trim_unused_imports: bool = false,
     define_pairs: std.ArrayList([]const u8) = .empty,
 
     fn deinit(this: *TranspilerHandle, allocator: std.mem.Allocator) void {
@@ -532,6 +564,7 @@ fn transpilerCreateNative(
     const minify_identifiers = argument_count >= 5 and arguments[4] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[4]);
     const experimental_decorators = argument_count >= 6 and arguments[5] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[5]);
     const emit_decorator_metadata = argument_count >= 7 and arguments[6] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[6]);
+    const trim_unused_imports = argument_count >= 9 and arguments[8] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[8]);
 
     var define_pairs: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -558,6 +591,7 @@ fn transpilerCreateNative(
         .minify_identifiers = minify_identifiers,
         .experimental_decorators = experimental_decorators,
         .emit_decorator_metadata = emit_decorator_metadata,
+        .trim_unused_imports = trim_unused_imports,
         .define_pairs = define_pairs,
     };
 
@@ -698,7 +732,7 @@ fn transpilerScanNative(
     }
 
     const imports_only = argument_count >= 4 and arguments[3] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[3]);
-    return makeTranspilerScanValue(actual_ctx, allocator, source, loader, imports_only, exception) catch |err| {
+    return makeTranspilerScanValue(actual_ctx, allocator, source, loader, imports_only, base_handle.trim_unused_imports, exception) catch |err| {
         setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.scan() failed: {s}", .{@errorName(err)});
         return null;
     };
@@ -955,13 +989,14 @@ fn makeTranspilerScanValue(
     source_text: []const u8,
     loader: TranspilerLoader,
     imports_only: bool,
+    trim_unused_imports: bool,
     exception: extern_fns.ExceptionRef,
 ) !*JSValue {
     var imports: std.ArrayList(TranspilerImport) = .empty;
     defer imports.deinit(allocator);
 
     if (loader.isJSLike()) {
-        try scanTranspilerImports(allocator, source_text, imports_only, &imports);
+        try scanTranspilerImports(allocator, source_text, imports_only, trim_unused_imports, &imports);
     }
 
     const imports_value = try makeTranspilerImportArray(ctx, allocator, imports.items, exception);
@@ -1003,12 +1038,13 @@ fn scanTranspilerImports(
     allocator: std.mem.Allocator,
     source_text: []const u8,
     include_require: bool,
+    trim_unused_imports: bool,
     imports: *std.ArrayList(TranspilerImport),
 ) !void {
     var index: usize = 0;
     while (index < source_text.len) : (index += 1) {
         if (isIdentifierKeywordAt(source_text, index, "import")) {
-            if (scanImportKeyword(allocator, source_text, index, imports)) |next_index| {
+            if (scanImportKeyword(allocator, source_text, index, trim_unused_imports, imports)) |next_index| {
                 index = next_index;
             }
             continue;
@@ -1025,28 +1061,65 @@ fn scanImportKeyword(
     allocator: std.mem.Allocator,
     source_text: []const u8,
     import_index: usize,
+    trim_unused_imports: bool,
     imports: *std.ArrayList(TranspilerImport),
 ) ?usize {
     var index = skipWhitespace(source_text, import_index + "import".len);
     if (index < source_text.len and source_text[index] == '(') {
         return scanCallImport(allocator, source_text, index, "dynamic-import", imports);
     }
+    if (isIdentifierKeywordAt(source_text, index, "type")) {
+        while (index + "from".len <= source_text.len) : (index += 1) {
+            const char = source_text[index];
+            if (char == ';' or char == '\n' or char == '\r') return index;
+            if (!isIdentifierKeywordAt(source_text, index, "from")) continue;
+            const path_index = skipWhitespace(source_text, index + "from".len);
+            if (scanQuotedImportPath(source_text, path_index)) |quoted| return quoted.next_index;
+        }
+        return null;
+    }
     if (scanQuotedImportPath(source_text, index)) |quoted| {
         imports.append(allocator, .{ .kind = "import-statement", .path = quoted.path }) catch return null;
         return quoted.next_index;
     }
 
+    const specifier_start = index;
     while (index + "from".len <= source_text.len) : (index += 1) {
         const char = source_text[index];
         if (char == ';' or char == '\n' or char == '\r') return index;
         if (!isIdentifierKeywordAt(source_text, index, "from")) continue;
         const path_index = skipWhitespace(source_text, index + "from".len);
         if (scanQuotedImportPath(source_text, path_index)) |quoted| {
+            if (trim_unused_imports and !importSpecifiersAreUsed(source_text, specifier_start, index, quoted.next_index)) return quoted.next_index;
             imports.append(allocator, .{ .kind = "import-statement", .path = quoted.path }) catch return null;
             return quoted.next_index;
         }
     }
     return null;
+}
+
+fn importSpecifiersAreUsed(source_text: []const u8, start: usize, end: usize, search_start: usize) bool {
+    var index = start;
+    while (index < end) {
+        while (index < end and !isIdentifierStart(source_text[index])) index += 1;
+        if (index >= end) break;
+
+        const ident_start = index;
+        index += 1;
+        while (index < end and isIdentifierContinue(source_text[index])) index += 1;
+        const ident = source_text[ident_start..index];
+        if (std.mem.eql(u8, ident, "as") or std.mem.eql(u8, ident, "type")) continue;
+        if (identifierAppearsAfter(source_text, search_start, ident)) return true;
+    }
+    return false;
+}
+
+fn identifierAppearsAfter(source_text: []const u8, start: usize, ident: []const u8) bool {
+    var index = start;
+    while (index < source_text.len) : (index += 1) {
+        if (isIdentifierKeywordAt(source_text, index, ident)) return true;
+    }
+    return false;
 }
 
 fn scanCallImport(
@@ -1110,6 +1183,10 @@ fn isIdentifierKeywordAt(source_text: []const u8, index: usize, keyword: []const
     const end = index + keyword.len;
     if (end < source_text.len and isIdentifierContinue(source_text[end])) return false;
     return true;
+}
+
+fn isIdentifierStart(char: u8) bool {
+    return std.ascii.isAlphabetic(char) or char == '_' or char == '$';
 }
 
 fn isIdentifierContinue(char: u8) bool {
@@ -2570,6 +2647,84 @@ fn createDirPathNative(
         return null;
     };
     return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn readdirSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.readdirSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var fallback_path: ?[]u8 = null;
+    defer if (fallback_path) |owned| allocator.free(owned);
+
+    var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => blk: {
+            if (path.len == 0 or path[0] == '/' or std.mem.startsWith(u8, path, "packages/runtime/test/bun-corpus/")) {
+                setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() failed: {s}", .{@errorName(err)});
+                return null;
+            }
+            const owned = std.fmt.allocPrint(allocator, "packages/runtime/test/bun-corpus/{s}", .{path}) catch |alloc_err| {
+                setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() failed: {s}", .{@errorName(alloc_err)});
+                return null;
+            };
+            fallback_path = owned;
+            break :blk Io.Dir.cwd().openDir(io, owned, .{ .iterate = true }) catch |fallback_err| {
+                setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() failed: {s}", .{@errorName(fallback_err)});
+                return null;
+            };
+        },
+        else => {
+            setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() failed: {s}", .{@errorName(err)});
+            return null;
+        },
+    };
+    defer dir.close(io);
+
+    var values: std.ArrayList(?*JSValue) = .empty;
+    defer values.deinit(allocator);
+
+    var iter = dir.iterate();
+    while (iter.next(io) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() failed: {s}", .{@errorName(err)});
+        return null;
+    }) |entry| {
+        const name_value = makeStringValue(actual_ctx, entry.name) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() result failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        values.append(allocator, name_value) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() result failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
+
+    return makeJSArray(actual_ctx, values.items, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() result failed: {s}", .{@errorName(err)});
+        return null;
+    };
 }
 
 fn spawnSyncNative(
