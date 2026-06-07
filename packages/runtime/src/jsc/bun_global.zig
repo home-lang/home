@@ -372,6 +372,80 @@ const install_glue =
     \\    globalThis.Bun.ArrayBufferSink = ArrayBufferSink;
     \\  })();
     \\  (function() {
+    \\    // Bun.randomUUIDv5 (deterministic, SHA-1 of namespace+name) and
+    \\    // Bun.randomUUIDv7 (48-bit unix-ms timestamp + monotonic random).
+    \\    var HEX = "0123456789abcdef";
+    \\    function bytesToUuidHex(b) {
+    \\      var h = [];
+    \\      for (var i = 0; i < 16; i++) { h.push(HEX[b[i] >> 4]); h.push(HEX[b[i] & 15]); }
+    \\      var s = h.join("");
+    \\      return s.slice(0, 8) + "-" + s.slice(8, 12) + "-" + s.slice(12, 16) + "-" + s.slice(16, 20) + "-" + s.slice(20, 32);
+    \\    }
+    \\    function base64FromBytes(b) { var s = ""; for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); }
+    \\    function encodeUuid(b, encoding) {
+    \\      encoding = encoding || "hex";
+    \\      if (encoding === "hex") return bytesToUuidHex(b);
+    \\      if (encoding === "buffer") return (typeof Buffer !== "undefined") ? Buffer.from(b) : b.slice();
+    \\      if (encoding === "base64") return base64FromBytes(b);
+    \\      if (encoding === "base64url") return base64FromBytes(b).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    \\      return bytesToUuidHex(b);
+    \\    }
+    \\    function randomBytesN(n) {
+    \\      try { var c = globalThis.require("node:crypto"); var r = c.randomBytes(n); return (r instanceof Uint8Array) ? r : new Uint8Array(r); } catch (e) {}
+    \\      if (globalThis.crypto && globalThis.crypto.getRandomValues) return globalThis.crypto.getRandomValues(new Uint8Array(n));
+    \\      var b = new Uint8Array(n); for (var i = 0; i < n; i++) b[i] = (Math.random() * 256) | 0; return b;
+    \\    }
+    \\    var NS = {
+    \\      dns: "6ba7b810-9dad-11d1-80b4-00c04fd430c8", url: "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+    \\      oid: "6ba7b812-9dad-11d1-80b4-00c04fd430c8", x500: "6ba7b814-9dad-11d1-80b4-00c04fd430c8",
+    \\    };
+    \\    function namespaceToBytes(ns) {
+    \\      var s = NS[ns] || ns;
+    \\      s = String(s).replace(/-/g, "");
+    \\      if (s.length !== 32) throw new TypeError("Invalid namespace UUID");
+    \\      var b = new Uint8Array(16);
+    \\      for (var i = 0; i < 16; i++) b[i] = parseInt(s.substr(i * 2, 2), 16);
+    \\      return b;
+    \\    }
+    \\    globalThis.Bun.randomUUIDv5 = function(name, namespace, encoding) {
+    \\      var nsBytes = namespaceToBytes(namespace);
+    \\      var nameBytes = (typeof name === "string") ? new TextEncoder().encode(name)
+    \\        : (name instanceof Uint8Array ? name : new Uint8Array(name.buffer || name));
+    \\      var input = new Uint8Array(16 + nameBytes.length);
+    \\      input.set(nsBytes, 0); input.set(nameBytes, 16);
+    \\      var hash = globalThis.require("node:crypto").createHash("sha1").update(input).digest();
+    \\      var hb = (hash instanceof Uint8Array) ? hash : new Uint8Array(hash);
+    \\      var b = new Uint8Array(16);
+    \\      for (var i = 0; i < 16; i++) b[i] = hb[i];
+    \\      b[6] = (b[6] & 0x0f) | 0x50; // version 5
+    \\      b[8] = (b[8] & 0x3f) | 0x80; // variant
+    \\      return encodeUuid(b, encoding);
+    \\    };
+    \\    var v7LastTs = -1n, v7LastRand = 0n;
+    \\    var MASK74 = (1n << 74n) - 1n, MASK48 = (1n << 48n) - 1n, MASK62 = (1n << 62n) - 1n;
+    \\    globalThis.Bun.randomUUIDv7 = function(encoding, timestamp) {
+    \\      var ts;
+    \\      if (timestamp === undefined || timestamp === null) ts = Date.now();
+    \\      else if (timestamp instanceof Date) ts = timestamp.getTime();
+    \\      else ts = Number(timestamp);
+    \\      var tsBig = BigInt(Math.floor(ts)) & MASK48;
+    \\      if (tsBig === v7LastTs) { v7LastRand = (v7LastRand + 1n) & MASK74; }
+    \\      else {
+    \\        var rb = randomBytesN(10), r = 0n;
+    \\        for (var i = 0; i < 10; i++) r = (r << 8n) | BigInt(rb[i]);
+    \\        v7LastRand = r & MASK74; v7LastTs = tsBig;
+    \\      }
+    \\      var rand = v7LastRand, randA = (rand >> 62n) & 0xFFFn, randB = rand & MASK62;
+    \\      var b = new Uint8Array(16);
+    \\      for (var i = 0; i < 6; i++) b[i] = Number((tsBig >> BigInt((5 - i) * 8)) & 0xFFn);
+    \\      b[6] = 0x70 | Number(randA >> 8n); // version 7
+    \\      b[7] = Number(randA & 0xFFn);
+    \\      b[8] = 0x80 | Number((randB >> 56n) & 0x3Fn); // variant + top random bits
+    \\      for (var i = 0; i < 7; i++) b[9 + i] = Number((randB >> BigInt((6 - i) * 8)) & 0xFFn);
+    \\      return encodeUuid(b, encoding);
+    \\    };
+    \\  })();
+    \\  (function() {
     \\    var B = globalThis.Bun;
     \\    // pathToFileURL / fileURLToPath mirror Node's algorithm (Bun's natives
     \\    // do the same via WTF::URL). Home's URL pathname setter does not apply
@@ -690,6 +764,57 @@ test "Bun global fill-out: fileURLToPath/concatArrayBuffers/allocUnsafe/argv/mai
         "  var u = new Uint8Array(ab); if (u.length !== 4 || u[0] !== 1 || u[3] !== 4) return false;" ++
         "  if (!Array.isArray(B.argv) || typeof B.main !== 'string') return false;" ++
         "  return B.revision.length === 40; })()"));
+}
+
+test "Bun.randomUUIDv5 is deterministic + matches the canonical uuid vector" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealmFull(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/randomUUIDv5.test.ts: version-5 layout, determinism,
+    // 'dns' alias == its literal UUID, and the canonical uuid.v5 vector for
+    // "www.example.com" under the DNS namespace.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var dns = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';" ++
+        "  var u = Bun.randomUUIDv5('www.example.com', dns);" ++
+        "  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u)) return false;" ++
+        "  if (u[14] !== '5') return false;" ++ // version
+        "  if (u !== Bun.randomUUIDv5('www.example.com', dns)) return false;" ++ // deterministic
+        "  if (Bun.randomUUIDv5('www.example.com', 'dns') !== u) return false;" ++ // alias
+        "  return u === '2ed6657d-e927-568b-95e1-2665a8aea6a2'; })()")); // canonical vector
+}
+
+test "Bun.randomUUIDv7 layout, timestamp, encodings, monotonic (corpus parity)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealmFull(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/randomUUIDv7.test.ts: hex layout + version 7, a known
+    // custom-timestamp prefix, base64/buffer encodings, and monotonicity within
+    // the same timestamp.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var u = Bun.randomUUIDv7();" ++
+        "  if (typeof u !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u)) return false;" ++
+        "  if (u[14] !== '7') return false;" ++ // version nibble
+        "  var ct = 1625097600000;" ++
+        "  if (!Bun.randomUUIDv7('hex', ct).startsWith('017a5f5d-')) return false;" ++
+        "  if (!Bun.randomUUIDv7('hex', new Date(ct)).startsWith('017a5f5d-')) return false;" ++
+        "  if (!/^[0-9a-zA-Z+/=]+$/.test(Bun.randomUUIDv7('base64'))) return false;" ++
+        "  var buf = Bun.randomUUIDv7('buffer');" ++
+        "  if (!(buf instanceof Uint8Array) || buf.byteLength !== 16) return false;" ++
+        // monotonic within the same timestamp
+        "  var arr = []; for (var i = 0; i < 100; i++) arr.push(Bun.randomUUIDv7('hex', ct));" ++
+        "  var sorted = arr.slice().sort();" ++
+        "  for (var j = 0; j < 100; j++) if (arr[j] !== sorted[j]) return false;" ++
+        "  return true; })()"));
 }
 
 test "Bun.concatArrayBuffers maxLength + asUint8Array (corpus parity)" {
