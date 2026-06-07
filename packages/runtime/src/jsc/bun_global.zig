@@ -131,6 +131,87 @@ fn makeJsString(ctx: *JSContextRef, s: []const u8) ?*JSValue {
     return extern_fns.JSValueMakeString(ctx, js);
 }
 
+// RapidHash — ported from Bun's `bun.deprecated.RapidHash` (src/hash/rapidhash.rs),
+// inlined here rather than importing deprecated.zig (which is not build-wired and
+// carries an unrelated Zig-0.17 syntax error). `Bun.hash.rapidhash` calls this
+// with the default seed 0.
+fn rhRead64(p: []const u8) u64 {
+    return std.mem.readInt(u64, p[0..8], .little);
+}
+fn rhRead32(p: []const u8) u64 {
+    return std.mem.readInt(u32, p[0..4], .little);
+}
+fn rhMum(a: *u64, b: *u64) void {
+    const r = @as(u128, a.*) * @as(u128, b.*);
+    a.* = @truncate(r);
+    b.* = @truncate(r >> 64);
+}
+fn rhMix(a: u64, b: u64) u64 {
+    var ca = a;
+    var cb = b;
+    rhMum(&ca, &cb);
+    return ca ^ cb;
+}
+fn rapidHash(seed: u64, input: []const u8) u64 {
+    const sc = [3]u64{ 0x2d358dccaa6c78a5, 0x8bb84b93962eacc9, 0x4b33a62ed433d4a3 };
+    const len = input.len;
+    const len64: u64 = @intCast(len);
+    var a: u64 = 0;
+    var b: u64 = 0;
+    var k = input;
+    var is = [3]u64{ seed, 0, 0 };
+    is[0] ^= rhMix(seed ^ sc[0], sc[1]) ^ len64;
+    if (len <= 16) {
+        if (len >= 4) {
+            const d: usize = (len & 24) >> @as(u6, @intCast(len >> 3));
+            const e = len - 4;
+            a = (rhRead32(k) << 32) | rhRead32(k[e..]);
+            b = (rhRead32(k[d..]) << 32) | rhRead32(k[e - d ..]);
+        } else if (len > 0) {
+            a = (@as(u64, k[0]) << 56) | (@as(u64, k[len >> 1]) << 32) | @as(u64, k[len - 1]);
+        }
+    } else {
+        var remain = len;
+        if (len > 48) {
+            is[1] = is[0];
+            is[2] = is[0];
+            while (remain >= 96) {
+                var i: usize = 0;
+                while (i < 6) : (i += 1) {
+                    const m1 = rhRead64(k[8 * i * 2 ..]);
+                    const m2 = rhRead64(k[8 * (i * 2 + 1) ..]);
+                    is[i % 3] = rhMix(m1 ^ sc[i % 3], m2 ^ is[i % 3]);
+                }
+                k = k[96..];
+                remain -= 96;
+            }
+            if (remain >= 48) {
+                var i: usize = 0;
+                while (i < 3) : (i += 1) {
+                    const m1 = rhRead64(k[8 * i * 2 ..]);
+                    const m2 = rhRead64(k[8 * (i * 2 + 1) ..]);
+                    is[i] = rhMix(m1 ^ sc[i], m2 ^ is[i]);
+                }
+                k = k[48..];
+                remain -= 48;
+            }
+            is[0] ^= is[1] ^ is[2];
+        }
+        if (remain > 16) {
+            is[0] = rhMix(rhRead64(k) ^ sc[2], rhRead64(k[8..]) ^ is[0] ^ sc[1]);
+            if (remain > 32) {
+                is[0] = rhMix(rhRead64(k[16..]) ^ sc[2], rhRead64(k[24..]) ^ is[0]);
+            }
+        }
+        a = rhRead64(input[len - 16 ..]);
+        b = rhRead64(input[len - 8 ..]);
+    }
+    a ^= sc[1];
+    b ^= is[0];
+    rhMum(&a, &b);
+    return rhMix(a ^ sc[0] ^ len64, b ^ sc[1]);
+}
+
 /// `__home_bun_hash(algo, bytesUint8Array, seed)` -> decimal string of the hash.
 /// algo: 0 wyhash / 1 crc32 / 2 adler32 / 3 cityHash32 / 4 cityHash64 /
 /// 5 murmur32v3 / 6 murmur64v2. The JS wrapper turns it into a Number/BigInt.
@@ -173,6 +254,7 @@ fn bunHashNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObj
         8 => std.hash.XxHash64.hash(seed, input),
         9 => std.hash.XxHash3.hash(seed, input),
         10 => std.hash.murmur.Murmur2_32.hashWithSeed(input, @truncate(seed)),
+        11 => rapidHash(seed, input),
         else => 0,
     };
     var buf: [24]u8 = undefined;
@@ -327,6 +409,7 @@ const install_glue =
     \\    bunHash.xxHash64 = function(d, seed) { return h64(8, d, seed); };
     \\    bunHash.xxHash3 = function(d, seed) { return h64(9, d, seed); };
     \\    bunHash.murmur32v2 = function(d, seed) { return h32(10, d, seed); };
+    \\    bunHash.rapidhash = function(d, seed) { return h64(11, d, seed); };
     \\    globalThis.Bun.hash = bunHash;
     \\  })();
     \\  (function() {
@@ -773,6 +856,7 @@ test "Bun.hash full variant set matches Bun's exact vectors (corpus parity)" {
         "  if (h.xxHash3(s) !== 0xd447b1ea40e6988bn) return false;" ++
         "  if (h.murmur32v3(s) !== 0x5e928f0f) return false;" ++
         "  if (h.murmur32v2(s) !== 0x44a81419) return false;" ++
+        "  if (h.rapidhash(s) !== 0x58a89bdcee89c08cn) return false;" ++
         "  return h.murmur64v2(s) === 0xd3ba2368a832afcen; })()"));
 }
 
