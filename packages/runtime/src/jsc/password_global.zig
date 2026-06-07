@@ -169,7 +169,9 @@ const install_glue =
     \\    if (p instanceof Uint8Array) return p;
     \\    if (ArrayBuffer.isView(p)) return new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
     \\    if (p instanceof ArrayBuffer) return new Uint8Array(p);
-    \\    return enc.encode(String(p));
+    \\    // `"" + p` (not String(p)) so a Symbol or a throwing toString() raises a
+    \\    // TypeError, matching Bun's StringOrBuffer coercion semantics.
+    \\    return enc.encode("" + p);
     \\  }
     \\  function algoId(name) {
     \\    switch (name) {
@@ -214,6 +216,16 @@ const install_glue =
     \\    }
     \\    throw new TypeError("algorithm must be a string or object");
     \\  }
+    \\  function validateExplicitAlgorithm(algorithm) {
+    \\    if (algorithm === undefined || algorithm === null) return;
+    \\    if (typeof algorithm === "string") { algoId(algorithm); return; }
+    \\    if (typeof algorithm === "object" && typeof algorithm.algorithm === "string") { algoId(algorithm.algorithm); return; }
+    \\    throw new TypeError("algorithm must be a string");
+    \\  }
+    \\  // All argument validation runs synchronously (it throws on the calling
+    \\  // stack, even for the async hash/verify) — only the KDF result is wrapped
+    \\  // in a Promise. This matches Bun, whose arg-parsing tests assert the call
+    \\  // itself throws rather than returning a rejected Promise.
     \\  function doHash(password, algorithm) {
     \\    var bytes = toBytes(password);
     \\    if (bytes.length === 0) throw new Error("password must not be empty");
@@ -222,7 +234,8 @@ const install_glue =
     \\    if (out === null || out === undefined) throw new Error("password hashing failed");
     \\    return out;
     \\  }
-    \\  function doVerify(password, hash) {
+    \\  function doVerify(password, hash, algorithm) {
+    \\    validateExplicitAlgorithm(algorithm);
     \\    var hb = toBytes(hash);
     \\    if (hb.length === 0) return false;
     \\    var pb = toBytes(password);
@@ -232,10 +245,10 @@ const install_glue =
     \\    return r === 1;
     \\  }
     \\  var password = {
-    \\    hash: function(p, algorithm) { try { return Promise.resolve(doHash(p, algorithm)); } catch (e) { return Promise.reject(e); } },
-    \\    hashSync: function(p, algorithm) { return doHash(p, algorithm); },
-    \\    verify: function(p, h, algorithm) { try { return Promise.resolve(doVerify(p, h)); } catch (e) { return Promise.reject(e); } },
-    \\    verifySync: function(p, h, algorithm) { return doVerify(p, h); },
+    \\    hash: function(p, algorithm) { if (arguments.length < 1) throw new TypeError("password is required"); return Promise.resolve(doHash(p, algorithm)); },
+    \\    hashSync: function(p, algorithm) { if (arguments.length < 1) throw new TypeError("password is required"); return doHash(p, algorithm); },
+    \\    verify: function(p, h, algorithm) { if (arguments.length < 2) throw new TypeError("verify requires at least 2 arguments"); return Promise.resolve(doVerify(p, h, algorithm)); },
+    \\    verifySync: function(p, h, algorithm) { if (arguments.length < 2) throw new TypeError("verify requires at least 2 arguments"); return doVerify(p, h, algorithm); },
     \\  };
     \\  if (typeof globalThis.Bun === "object" && globalThis.Bun) globalThis.Bun.password = password;
     \\  delete globalThis.__home_password_hash;
@@ -317,6 +330,57 @@ test "Bun.password empty password throws; empty hash verifies false" {
         "  var badAlgo = false;" ++
         "  try { Bun.password.hashSync('x', 'sha256'); } catch (e) { badAlgo = true; }" ++
         "  return badAlgo; })()"));
+}
+
+test "Bun.password matches Bun corpus arg-parsing: sync throws, coercion, arity" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // These mirror js/bun/util/password.test.ts: the *async* hash/verify must
+    // throw synchronously on bad arguments (not return a rejected Promise), a
+    // Symbol/throwing-toString password must throw, and arity is enforced.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  function threw(fn) { try { fn(); return false; } catch (e) { return true; } }" ++
+        // async hash throws synchronously for empty / bad algo / bad-arg
+        "  if (!threw(function() { Bun.password.hash(''); })) return false;" ++
+        "  if (!threw(function() { Bun.password.hash(); })) return false;" ++
+        "  if (!threw(function() { Bun.password.hash('x', 123); })) return false;" ++
+        "  if (!threw(function() { Bun.password.hash('x', { algorithm: 'poop' }); })) return false;" ++
+        "  if (!threw(function() { Bun.password.hash('x', { algorithm: 'bcrypt', cost: Infinity }); })) return false;" ++
+        "  if (!threw(function() { Bun.password.hash('x', { algorithm: 'argon2id', memoryCost: -1 }); })) return false;" ++
+        // Symbol and throwing-toString coercion must raise, not stringify
+        "  if (!threw(function() { Bun.password.hashSync(Symbol()); })) return false;" ++
+        "  if (!threw(function() { Bun.password.hashSync({ toString() { throw new Error('x'); } }); })) return false;" ++
+        // empty typed arrays -> 'must not be empty'
+        "  if (!threw(function() { Bun.password.hashSync(new Uint8Array(0)); })) return false;" ++
+        "  if (!threw(function() { Bun.password.hashSync(new ArrayBuffer(0)); })) return false;" ++
+        // verify arity + explicit-algorithm validation + empty -> false
+        "  if (!threw(function() { Bun.password.verify(); })) return false;" ++
+        "  if (!threw(function() { Bun.password.verify(''); })) return false;" ++
+        "  if (!threw(function() { Bun.password.verifySync('x', '$', 'scrpyt'); })) return false;" ++
+        "  if (Bun.password.verifySync('', '$') !== false) return false;" ++
+        "  return Bun.password.verifySync('$', '') === false; })()"));
+}
+
+test "Bun.password verifies a hash produced by upstream Bun (cross-version bcrypt SHA-512 prehash)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Exact hash + secret from Bun's own corpus (generated by Bun 1.2.4); a
+    // 500-byte password exercises the >72-byte SHA-512 pre-hash path. If our
+    // pre-hash diverged from Bun's, this would not verify.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "Bun.password.verifySync('hello'.repeat(100), " ++
+        "'$2b$10$PsJ3/W82mzNJoP0rSblfvet2ab9jZg2aH7tIxr1B8uFLJwuWk/jTi')"));
 }
 
 test "Bun.password.hash/verify async resolve through Promises" {
