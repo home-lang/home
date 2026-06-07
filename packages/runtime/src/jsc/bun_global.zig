@@ -524,6 +524,74 @@ const install_glue =
     \\    };
     \\    var v7LastTs = -1n, v7LastRand = 0n;
     \\    var MASK74 = (1n << 74n) - 1n, MASK48 = (1n << 48n) - 1n, MASK62 = (1n << 62n) - 1n;
+    \\    // Bun.stripANSI — faithful port of src/jsc/bindings/{stripANSI.cpp,
+    \\    // ANSIHelpers.h}: a small CSI/OSC/C1/ST state machine. Returns the same
+    \\    // string object when there is no ANSI to strip.
+    \\    function isEscChar(c) {
+    \\      return c === 0x1b || c === 0x90 || c === 0x98 || c === 0x9b || c === 0x9c || c === 0x9d || c === 0x9e || c === 0x9f;
+    \\    }
+    \\    function findEscape(s, from, end) {
+    \\      for (var i = from; i < end; i++) if (isEscChar(s.charCodeAt(i))) return i;
+    \\      return -1;
+    \\    }
+    \\    // States: 0 start, 1 gotEsc, 2 ignoreNext, 3 inCsi, 4 inOsc, 5 inOscGotEsc, 6 needSt, 7 needStGotEsc.
+    \\    function consumeANSI(s, start, end) {
+    \\      var state = 0, it = start;
+    \\      while (it < end) {
+    \\        var c = s.charCodeAt(it);
+    \\        if (state === 0) {
+    \\          if (c === 0x1b) state = 1;
+    \\          else if (c === 0x9b) state = 3;
+    \\          else if (c === 0x9d) state = 4;
+    \\          else if (c === 0x90 || c === 0x98 || c === 0x9e || c === 0x9f) state = 6;
+    \\          else return it;
+    \\        } else if (state === 1) {
+    \\          if (c === 0x5b) state = 3;
+    \\          else if (c === 0x20 || c === 0x23 || c === 0x25 || c === 0x28 || c === 0x29 || c === 0x2a || c === 0x2b || c === 0x2e || c === 0x2f) state = 2;
+    \\          else if (c === 0x5d) state = 4;
+    \\          else if (c === 0x50 || c === 0x58 || c === 0x5e || c === 0x5f) state = 6;
+    \\          else state = 0;
+    \\        } else if (state === 2) {
+    \\          state = 0;
+    \\        } else if (state === 3) {
+    \\          var term = -1;
+    \\          for (var j = it; j < end; j++) { var cc = s.charCodeAt(j); if (cc >= 0x40 && cc <= 0x7e) { term = j; break; } }
+    \\          if (term === -1) return end;
+    \\          it = term; state = 0;
+    \\        } else if (state === 4) {
+    \\          var term2 = -1, tc = 0;
+    \\          for (var j2 = it; j2 < end; j2++) { var c2 = s.charCodeAt(j2); if (c2 === 0x07 || c2 === 0x9c || c2 === 0x1b) { term2 = j2; tc = c2; break; } }
+    \\          if (term2 === -1) return end;
+    \\          it = term2; state = (tc === 0x1b) ? 5 : 0;
+    \\        } else if (state === 5) {
+    \\          state = (c === 0x5c) ? 0 : 4;
+    \\        } else if (state === 6) {
+    \\          var term3 = -1, tc3 = 0;
+    \\          for (var j3 = it; j3 < end; j3++) { var c3 = s.charCodeAt(j3); if (c3 === 0x1b || c3 === 0x9c) { term3 = j3; tc3 = c3; break; } }
+    \\          if (term3 === -1) return end;
+    \\          it = term3; state = (tc3 === 0x1b) ? 7 : 0;
+    \\        } else if (state === 7) {
+    \\          state = (c === 0x5c) ? 0 : 6;
+    \\        }
+    \\        it++;
+    \\      }
+    \\      return end;
+    \\    }
+    \\    globalThis.Bun.stripANSI = function(input) {
+    \\      if (typeof input !== "string") input = String(input);
+    \\      var end = input.length;
+    \\      if (findEscape(input, 0, end) === -1) return input; // identity, no copy
+    \\      var parts = [], start = 0;
+    \\      while (start < end) {
+    \\        var escPos = findEscape(input, start, end);
+    \\        if (escPos === -1) { parts.push(input.slice(start)); break; }
+    \\        if (escPos > start) parts.push(input.slice(start, escPos));
+    \\        var newPos = consumeANSI(input, escPos, end);
+    \\        if (newPos === escPos) { parts.push(input[escPos]); start = escPos + 1; }
+    \\        else start = newPos;
+    \\      }
+    \\      return parts.join("");
+    \\    };
     \\    globalThis.Bun.randomUUIDv7 = function(encoding, timestamp) {
     \\      var ts;
     \\      if (timestamp === undefined || timestamp === null) ts = Date.now();
@@ -894,6 +962,38 @@ test "Bun global fill-out: fileURLToPath/concatArrayBuffers/allocUnsafe/argv/mai
         "  var u = new Uint8Array(ab); if (u.length !== 4 || u[0] !== 1 || u[3] !== 4) return false;" ++
         "  if (!Array.isArray(B.argv) || typeof B.main !== 'string') return false;" ++
         "  return B.revision.length === 40; })()"));
+}
+
+test "Bun.stripANSI strips CSI/OSC/C1 sequences (corpus parity)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Cases drawn from js/bun/util/stripANSI.test.ts, including OSC with BEL/ST
+    // terminators, single-char escapes, partial sequences, C1 CSI (0x9b), and
+    // identity for plain strings.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var S = Bun.stripANSI;" ++
+        "  function eq(a, b) { return a === b; }" ++
+        "  if (!eq(S('\\u001b[31mred\\u001b[39m'), 'red')) return false;" ++
+        "  if (!eq(S('\\u001b[1;31mbold red\\u001b[0m'), 'bold red')) return false;" ++
+        "  if (!eq(S('\\u001b]0;window title\\u0007text'), 'text')) return false;" ++ // OSC + BEL
+        "  if (!eq(S('\\u001b]0;window title\\u001b\\\\text'), 'text')) return false;" ++ // OSC + ST
+        "  if (!eq(S('\\u001b(Btext'), 'text')) return false;" ++ // two-byte escape
+        "  if (!eq(S('\\u001bDtext'), 'text')) return false;" ++ // one-byte escape
+        "  if (!eq(S('text\\u001b'), 'text')) return false;" ++ // dangling ESC
+        "  if (!eq(S('\\u009b31mtext\\u009b39m'), 'text')) return false;" ++ // C1 CSI (0x9b)
+        "  if (!eq(S('\\u001b]8;;https://example.com\\u0007link\\u001b]8;;\\u0007'), 'link')) return false;" ++ // hyperlink
+        "  if (!eq(S('\\u001b[38;2;255;0;0mrgb red\\u001b[0m'), 'rgb red')) return false;" ++ // truecolor
+        "  if (!eq(S('\\u001b[31m\\u4f60\\u597d\\u001b[39m'), '\\u4f60\\u597d')) return false;" ++ // unicode payload
+        // identity: same string object when there is nothing to strip
+        "  var plain = 'hello world';" ++
+        "  if (S(plain) !== plain) return false;" ++
+        "  return eq(S(''), ''); })()"));
 }
 
 test "Bun.randomUUIDv5 is deterministic + matches the canonical uuid vector" {
