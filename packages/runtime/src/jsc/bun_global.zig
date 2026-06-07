@@ -171,6 +171,31 @@ fn bunHashNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObj
     return makeJsString(c, s);
 }
 
+/// `__home_sleep_sync(ms)` -> undefined. Blocks the current thread for `ms`
+/// milliseconds via nanosleep (the JS wrapper has already validated/truncated
+/// the argument). Mirrors Bun's `sleepSync` (std.Thread.sleep) — but this Zig
+/// 0.17-dev lacks std.Thread.sleep, so use std.c.nanosleep directly.
+fn sleepSyncNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argc >= 1) {
+        if (argv[0]) |v| {
+            const ms = extern_fns.JSValueToNumber(c, v, null);
+            if (ms > 0) {
+                const ns: u64 = @intFromFloat(@min(ms, 9_000_000_000.0) * @as(f64, std.time.ns_per_ms));
+                var req: std.c.timespec = .{
+                    .sec = @intCast(ns / std.time.ns_per_s),
+                    .nsec = @intCast(ns % std.time.ns_per_s),
+                };
+                _ = std.c.nanosleep(&req, null);
+            }
+        }
+    }
+    return extern_fns.JSValueMakeUndefined(c);
+}
+
 fn setBool(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: bool) void {
     setValue(ctx, object, key, extern_fns.JSValueMakeBoolean(ctx, value));
 }
@@ -192,6 +217,7 @@ const install_glue =
     \\  var statFn = globalThis.__home_bun_stat;
     \\  var writeFn = globalThis.__home_bun_write_file;
     \\  var hashFn = globalThis.__home_bun_hash;
+    \\  var sleepFn = globalThis.__home_sleep_sync;
     \\
     \\  function toBytes(data) {
     \\    if (typeof data === "string") return new TextEncoder().encode(data);
@@ -243,6 +269,25 @@ const install_glue =
     \\    },
     \\    get env() { return (typeof globalThis.process !== "undefined" && globalThis.process.env) || {}; },
     \\    sleep: function(ms) { return new Promise(function(res) { setTimeout(res, ms instanceof Date ? Math.max(0, ms.getTime() - Date.now()) : ms); }); },
+    \\    sleepSync: function(ms) {
+    \\      if (arguments.length < 1) throw new TypeError("sleepSync requires at least 1 argument");
+    \\      if (typeof ms !== "number") throw new TypeError("sleepSync() expects milliseconds to be a number");
+    \\      var n = ms < 0 ? -1 : (ms | 0);
+    \\      if (n < 0) throw new RangeError("argument to sleepSync must not be negative, got " + ms);
+    \\      sleepFn(n);
+    \\    },
+    \\    indexOfLine: function(buffer, offset) {
+    \\      var bytes;
+    \\      if (buffer instanceof Uint8Array) bytes = buffer;
+    \\      else if (ArrayBuffer.isView(buffer)) bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    \\      else if (buffer instanceof ArrayBuffer) bytes = new Uint8Array(buffer);
+    \\      else return -1;
+    \\      var off = Number(offset);
+    \\      if (!isFinite(off) || off < 0) off = 0;
+    \\      off = Math.floor(off);
+    \\      for (var i = off; i < bytes.length; i++) { if (bytes[i] === 10) return i; }
+    \\      return -1;
+    \\    },
     \\    nanoseconds: function() { return Math.trunc((typeof performance !== "undefined" ? performance.now() : 0) * 1e6); },
     \\    inspect: function(v, opts) { var u = (typeof globalThis.require === "function") ? globalThis.require("node:util") : null; return u ? u.inspect(v, opts) : String(v); },
     \\    deepEquals: function(a, b, strict) { return bunDeepEquals(a, b, !!strict); },
@@ -251,6 +296,7 @@ const install_glue =
     \\  };
     \\  delete globalThis.__home_bun_read_file;
     \\  delete globalThis.__home_bun_stat;
+    \\  delete globalThis.__home_sleep_sync;
     \\  (function() {
     \\    function hbytes(d) { return typeof d === "string" ? new TextEncoder().encode(d) : (d instanceof Uint8Array ? d : new Uint8Array(ArrayBuffer.isView(d) ? d.buffer : d)); }
     \\    function h64(algo, d, seed) { return BigInt(hashFn(algo, hbytes(d), seed === undefined ? 0 : Number(seed))); }
@@ -363,6 +409,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_bun_stat", statNative);
     callback.registerCallback(ctx, global, "__home_bun_write_file", writeFileNative);
     callback.registerCallback(ctx, global, "__home_bun_hash", bunHashNative);
+    callback.registerCallback(ctx, global, "__home_sleep_sync", sleepSyncNative);
 
     // Inject the version literal into the glue (kept out of the raw string).
     const glue = std.mem.replaceOwned(u8, allocator, install_glue, "__HOME_BUN_VERSION__", "\"" ++ bun_version ++ "\"") catch return;
@@ -407,6 +454,54 @@ test "Bun utility batch: deepEquals/escapeHTML/stringWidth" {
         "  if (Bun.deepEquals({ a: 1 }, { a: 2 })) return false;" ++
         "  if (Bun.escapeHTML('<a href=\"x\">&') !== '&lt;a href=&quot;x&quot;&gt;&amp;') return false;" ++
         "  return Bun.stringWidth('ab\\u001b[31mcd\\u001b[0m') === 4; })()"));
+}
+
+test "Bun.sleepSync sleeps and validates args (corpus parity)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/sleepSync.test.ts: a real sleep elapses, and missing
+    // / non-number / negative arguments throw; extra args are ignored so that
+    // `[1,2,3].map(Bun.sleepSync)` works.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  function threw(fn) { try { fn(); return false; } catch (e) { return true; } }" ++
+        "  var t0 = (typeof performance !== 'undefined') ? performance.now() : 0;" ++
+        "  Bun.sleepSync(8);" ++
+        "  var dt = ((typeof performance !== 'undefined') ? performance.now() : 1000) - t0;" ++
+        "  if (dt < 1) return false;" ++
+        "  if (!threw(function() { Bun.sleepSync(); })) return false;" ++
+        "  var invalid = [true, false, 'hi', {}, [], undefined, null];" ++
+        "  for (var i = 0; i < invalid.length; i++) if (!threw((function(v) { return function() { Bun.sleepSync(v); }; })(invalid[i]))) return false;" ++
+        "  if (!threw(function() { Bun.sleepSync(-10); })) return false;" ++
+        "  [1, 2, 3].map(Bun.sleepSync);" ++ // must not throw
+        "  return true; })()"));
+}
+
+test "Bun.indexOfLine finds newline byte offsets (corpus parity)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // Mirrors js/bun/util/index-of-line.test.ts: non-number offsets coerce, an
+    // empty buffer is -1, and a newline is located at its byte index.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (Bun.indexOfLine(new Uint8ClampedArray(), {}) !== -1) return false;" ++
+        "  if (Bun.indexOfLine(new Uint8Array(), null) !== -1) return false;" ++
+        "  if (Bun.indexOfLine(new Uint8Array(), NaN) !== -1) return false;" ++
+        "  var buf = new Uint8Array([104,101,108,108,111,10,119,111,114,108,100]);" ++ // "hello\nworld"
+        "  if (Bun.indexOfLine(buf, {}) !== 5) return false;" ++ // {} -> NaN -> 0
+        "  if (Bun.indexOfLine(buf, '2') !== 5) return false;" ++ // "2" -> 2
+        "  if (Bun.indexOfLine(buf, 6) !== -1) return false;" ++ // past the newline
+        "  return Bun.indexOfLine('not a buffer', 0) === -1; })()"));
 }
 
 test "Bun.hash family (native std.hash): crc32 vector + types/determinism" {
