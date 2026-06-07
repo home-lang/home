@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 562 |
-| active reachable (parity targets) | 99 |
+| catalog-only total | 561 |
+| active reachable (parity targets) | 98 |
 | blocked/effectively-dead references | 2 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,14 +25,14 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 48 |
+| 1xxx — parser / syntactic + program file-inclusion | 47 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 2xxx — checker / type engine | 11 |
 | 4xxx — declaration-emit (privacy / serialization) | 7 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 1xxx — parser / syntactic + program file-inclusion (48)
+### 1xxx — parser / syntactic + program file-inclusion (47)
 
 - TS1012 `Unexpected_token_1012`
 - TS1059 `A_promise_must_have_a_then_method_1059`
@@ -42,7 +42,6 @@ diverge from the reference compiler.
 - TS1272 `A_type_referenced_in_a_decorated_signature_must_be_imported_with_import_type_or_a_namespace_import_w_1272`
 - TS1281 `Cannot_access_0_from_another_file_without_qualification_when_1_is_enabled_Use_2_instead_1281`
 - TS1339 `Module_0_does_not_refer_to_a_value_but_is_used_as_a_value_here_1339`
-- TS1340 `Module_0_does_not_refer_to_a_type_but_is_used_as_a_type_here_Did_you_mean_typeof_import_0_1340`
 - TS1394 `Imported_via_0_from_file_1_with_packageId_2_1394`
 - TS1395 `Imported_via_0_from_file_1_to_import_importHelpers_as_specified_in_compilerOptions_1395`
 - TS1396 `Imported_via_0_from_file_1_with_packageId_2_to_import_importHelpers_as_specified_in_compilerOptions_1396`
