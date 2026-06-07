@@ -7376,6 +7376,13 @@ const harness_prelude =
     \\    const data = JSON.parse(String(param || "{}"));
     \\    return [[{ id: Number(data.id), value: data.value }], []];
     \\  }
+    \\  if (/\bINSERT\s+INTO\b/i.test(text)) {
+    \\    sql.__home_last_insert_id = (Number(sql.__home_last_insert_id) || 0) + 1;
+    \\    sql.__home_row_count = (Number(sql.__home_row_count) || 0) + 1;
+    \\    return { insertId: sql.__home_last_insert_id, affectedRows: 1 };
+    \\  }
+    \\  if (/SELECT\s+LAST_INSERT_ID\s*\(\s*\)\s+as\s+id/i.test(text)) return [{ id: Number(sql.__home_last_insert_id) || 0 }];
+    \\  if (/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+as\s+count/i.test(text)) return [{ count: Number(sql.__home_row_count) || 0 }];
     \\  if (text.includes("SELECT 1 AS x")) return [{ x: 1 }];
     \\  if (text.includes("SELECT * FROM test_empty_21311")) return [];
     \\  if (text.includes("SELECT * FROM test_concurrent_21311")) {
@@ -7386,9 +7393,18 @@ const harness_prelude =
     \\function __home_bun_sql(url) {
     \\  const sql = function(strings, ...values) { return __home_bun_sql_query(sql, strings, values); };
     \\  sql.url = String(url || "");
+    \\  sql.__home_last_insert_id = 0;
+    \\  sql.__home_row_count = 0;
     \\  sql.unsafe = function(query, values) {
     \\    const result = String(query || "").includes("CALL bun_24850") ? __home_bun_sql_query(sql, query, values || []) : __home_bun_sql_rows_for_insert(query);
     \\    return Promise.resolve(result);
+    \\  };
+    \\  sql.begin = function(callback) {
+    \\    if (typeof callback !== "function") return Promise.resolve(undefined);
+    \\    return Promise.resolve(callback(sql)).then(result => {
+    \\      if (Array.isArray(result)) return Promise.all(result.map(item => Promise.resolve(item)));
+    \\      return result;
+    \\    });
     \\  };
     \\  sql.close = function() { return Promise.resolve(undefined); };
     \\  sql[Symbol.dispose] = function() {};
@@ -17205,6 +17221,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": \"pipe\"", .replacement = ": \"pipe\"" },
         .{ .needle = ": \"ignore\"", .replacement = ": \"ignore\"" },
         .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = ": number[] =", .replacement = " =" },
         .{ .needle = ": string | null =", .replacement = " =" },
         .{ .needle = "let databaseUrl: string;", .replacement = "let databaseUrl;" },
         .{ .needle = "let sql: SQL;", .replacement = "let sql;" },
@@ -21603,6 +21620,33 @@ test "bootstrap runner mirrors Bun.write file mode corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors SQL transaction returned query corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26030.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26030.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const contractIds: number[]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sql.begin = function(callback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "LAST_INSERT_ID") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
