@@ -80,10 +80,48 @@ const install_glue =
     \\(function() {
     \\  var nowFn = globalThis.__home_perf_now;
     \\  var timeOrigin = globalThis.__home_perf_time_origin();
+    \\  var perfEntries = [];
     \\  globalThis.performance = {
     \\    now: function() { return nowFn(); },
     \\    timeOrigin: timeOrigin,
+    \\    mark: function(name, options) {
+    \\      var startTime = (options && typeof options.startTime === "number") ? options.startTime : nowFn();
+    \\      var e = { name: String(name), entryType: "mark", startTime: startTime, duration: 0, detail: (options && options.detail) || null };
+    \\      perfEntries.push(e); return e;
+    \\    },
+    \\    measure: function(name, startOrOptions, endMark) {
+    \\      var start = 0, end = nowFn();
+    \\      function markTime(m) { for (var i = perfEntries.length - 1; i >= 0; i--) if (perfEntries[i].name === m && perfEntries[i].entryType === "mark") return perfEntries[i].startTime; return 0; }
+    \\      if (startOrOptions && typeof startOrOptions === "object") {
+    \\        if (startOrOptions.start !== undefined) start = typeof startOrOptions.start === "number" ? startOrOptions.start : markTime(startOrOptions.start);
+    \\        if (startOrOptions.end !== undefined) end = typeof startOrOptions.end === "number" ? startOrOptions.end : markTime(startOrOptions.end);
+    \\        if (startOrOptions.duration !== undefined && startOrOptions.start !== undefined) end = start + startOrOptions.duration;
+    \\      } else if (startOrOptions !== undefined) {
+    \\        start = typeof startOrOptions === "number" ? startOrOptions : markTime(startOrOptions);
+    \\        if (endMark !== undefined) end = typeof endMark === "number" ? endMark : markTime(endMark);
+    \\      }
+    \\      var e = { name: String(name), entryType: "measure", startTime: start, duration: end - start, detail: null };
+    \\      perfEntries.push(e); return e;
+    \\    },
+    \\    getEntries: function() { return perfEntries.slice(); },
+    \\    getEntriesByName: function(name, type) { return perfEntries.filter(function(e) { return e.name === name && (!type || e.entryType === type); }); },
+    \\    getEntriesByType: function(type) { return perfEntries.filter(function(e) { return e.entryType === type; }); },
+    \\    clearMarks: function(name) { perfEntries = perfEntries.filter(function(e) { return e.entryType !== "mark" || (name !== undefined && e.name !== name); }); },
+    \\    clearMeasures: function(name) { perfEntries = perfEntries.filter(function(e) { return e.entryType !== "measure" || (name !== undefined && e.name !== name); }); },
+    \\    eventCounts: new Map(),
+    \\    toJSON: function() { return { timeOrigin: timeOrigin }; },
     \\  };
+    \\  // setImmediate/clearImmediate (Node) over the timer loop.
+    \\  if (typeof globalThis.setImmediate !== "function" && typeof globalThis.setTimeout === "function") {
+    \\    globalThis.setImmediate = function(fn) { var extra = Array.prototype.slice.call(arguments, 1); return globalThis.setTimeout(function() { fn.apply(undefined, extra); }, 0); };
+    \\    globalThis.clearImmediate = function(id) { return globalThis.clearTimeout ? globalThis.clearTimeout(id) : undefined; };
+    \\  }
+    \\  // reportError — dispatch to the error handler / log to stderr.
+    \\  if (typeof globalThis.reportError !== "function") {
+    \\    globalThis.reportError = function(err) {
+    \\      if (typeof globalThis.console !== "undefined" && globalThis.console.error) globalThis.console.error(err);
+    \\    };
+    \\  }
     \\  globalThis.global = globalThis;
     \\  globalThis.self = globalThis;
     \\  globalThis.structuredClone = function(value) {
