@@ -19,6 +19,7 @@ const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
 
 const c = std.c;
+const timers = @import("timers_global.zig");
 const JSValue = opaques.JSValue;
 const JSContextRef = opaques.JSContextRef;
 const JSObject = opaques.JSObject;
@@ -35,7 +36,70 @@ const POLLIN: c_short = 0x0001;
 
 const MAX_FDS = 256;
 
-const FdKind = enum { listener, connection, udp };
+const FdKind = enum { listener, connection, udp, http, ws };
+
+/// Register an HTTP listener fd (from Bun.serve) into the unified poll loop so
+/// HTTP + WebSocket + raw TCP/UDP are all multiplexed by one event loop.
+pub fn addHttpListener(fd: c_int) void {
+    addEntry(fd, .http);
+}
+
+/// Read a full HTTP/1.1 request (headers + Content-Length body) from `fd`.
+fn readHttpRequest(allocator: std.mem.Allocator, fd: c_int) ?[]u8 {
+    const cap: usize = 1 << 20;
+    const buf = allocator.alloc(u8, cap) catch return null;
+    defer allocator.free(buf);
+    var total: usize = 0;
+    while (total < cap) {
+        const n = c.recv(fd, buf.ptr + total, cap - total, 0);
+        if (n <= 0) break;
+        total += @intCast(n);
+        if (httpRequestComplete(buf[0..total])) break;
+    }
+    if (total == 0) return null;
+    return allocator.dupe(u8, buf[0..total]) catch null;
+}
+
+fn httpRequestComplete(data: []const u8) bool {
+    const sep = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return false;
+    const header_end = sep + 4;
+    var content_len: usize = 0;
+    var line_it = std.mem.splitSequence(u8, data[0..sep], "\r\n");
+    while (line_it.next()) |line| {
+        if (line.len > 15 and std.ascii.eqlIgnoreCase(line[0..15], "content-length:")) {
+            content_len = std.fmt.parseInt(usize, std.mem.trim(u8, line[15..], " \t"), 10) catch 0;
+        }
+    }
+    return data.len >= header_end + content_len;
+}
+
+fn globalIsTrue(ctx: *JSContextRef, name: [:0]const u8) bool {
+    const global = extern_fns.JSContextGetGlobalObject(ctx) orelse return false;
+    const js = extern_fns.JSStringCreateWithUTF8CString(name.ptr) orelse return false;
+    defer extern_fns.JSStringRelease(js);
+    const v = extern_fns.JSObjectGetProperty(ctx, global, js, null) orelse return false;
+    return extern_fns.JSValueToBoolean(ctx, v);
+}
+
+fn writeAll(fd: c_int, bytes: []const u8) void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const n = c.send(fd, bytes.ptr + off, bytes.len - off, 0);
+        if (n <= 0) break;
+        off += @intCast(n);
+    }
+}
+
+fn writeGlobalBytes(ctx: *JSContextRef, global: *JSObject, name: [:0]const u8, fd: c_int) void {
+    const js = extern_fns.JSStringCreateWithUTF8CString(name.ptr) orelse return;
+    defer extern_fns.JSStringRelease(js);
+    const v = extern_fns.JSObjectGetProperty(ctx, global, js, null) orelse return;
+    if (extern_fns.JSValueGetTypedArrayType(ctx, v, null) == .kJSTypedArrayTypeNone) return;
+    const obj = extern_fns.JSValueToObject(ctx, v, null) orelse return;
+    const len = extern_fns.JSObjectGetTypedArrayByteLength(ctx, obj, null);
+    const ptr = extern_fns.JSObjectGetTypedArrayBytesPtr(ctx, obj, null);
+    if (len > 0 and ptr != null) writeAll(fd, @as([*]const u8, @ptrCast(ptr.?))[0..len]);
+}
 const Entry = struct { fd: c_int = -1, kind: FdKind = .connection, used: bool = false };
 
 var g_entries: [MAX_FDS]Entry = @splat(.{});
@@ -287,7 +351,40 @@ pub fn runLoop(allocator: std.mem.Allocator, ctx: *JSContextRef) void {
             if (fds[i].revents & POLLIN == 0) continue;
             const fd = fds[i].fd;
             const kind = entryKind(fd) orelse continue;
-            if (kind == .udp) {
+            if (kind == .http) {
+                const client = c.accept(fd, null, null);
+                if (client < 0) continue;
+                const req = readHttpRequest(allocator, client) orelse {
+                    _ = c.close(client);
+                    continue;
+                };
+                defer allocator.free(req);
+                setGlobalBytes(ctx, global, "__home_req", req);
+                setGlobalNumber(ctx, global, "__home_serve_fd", @floatFromInt(client));
+                dispatch(allocator, ctx, "globalThis.__home_serve_dispatch();");
+                timers.drain(ctx);
+                dispatch(allocator, ctx, "globalThis.__home_serve_finish();");
+                writeGlobalBytes(ctx, global, "__home_resp", client);
+                if (globalIsTrue(ctx, "__home_upgraded")) {
+                    addEntry(client, .ws);
+                    const src = std.fmt.bufPrint(&dispatch_buf, "globalThis.__home_ws_event('open',{d});", .{client}) catch continue;
+                    dispatch(allocator, ctx, src);
+                } else {
+                    _ = c.close(client);
+                }
+            } else if (kind == .ws) {
+                const rn = c.recv(fd, &recv_buf, recv_buf.len, 0);
+                if (rn <= 0) {
+                    removeEntry(fd);
+                    _ = c.close(fd);
+                    const src = std.fmt.bufPrint(&dispatch_buf, "globalThis.__home_ws_event('close',{d});", .{fd}) catch continue;
+                    dispatch(allocator, ctx, src);
+                } else {
+                    setGlobalBytes(ctx, global, "__home_sock_data", recv_buf[0..@intCast(rn)]);
+                    const src = std.fmt.bufPrint(&dispatch_buf, "globalThis.__home_ws_data({d});", .{fd}) catch continue;
+                    dispatch(allocator, ctx, src);
+                }
+            } else if (kind == .udp) {
                 var from: c.sockaddr.in = undefined;
                 var fromlen: c.socklen_t = @sizeOf(c.sockaddr.in);
                 const rn = recvfrom(fd, &recv_buf, recv_buf.len, 0, @ptrCast(&from), &fromlen);

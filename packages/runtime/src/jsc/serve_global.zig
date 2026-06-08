@@ -92,6 +92,9 @@ fn listenNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObje
     }
     g_listen_fd = fd;
     g_has_server = true;
+    // Register into the unified socket poll loop so HTTP + WebSocket + raw
+    // TCP/UDP share one event loop (serve's own runLoop is now a no-op).
+    @import("socket_global.zig").addHttpListener(fd);
     return extern_fns.JSValueMakeNumber(cx, @floatFromInt(fd));
 }
 
@@ -186,6 +189,10 @@ fn writeAll(fd: c_int, bytes: []const u8) void {
 /// after the script + timer drain when a server was registered. Blocks the
 /// process (the server runs until killed), matching Bun's `bun run server.ts`.
 pub fn runLoop(allocator: std.mem.Allocator, ctx: *JSContextRef) void {
+    // No-op: HTTP serving now runs inside socket_global's unified poll loop
+    // (serve registers its listener via socket_global.addHttpListener). The
+    // legacy blocking accept loop below is retained dormant for reference.
+    if (true) return;
     if (comptime !build_options.enable_jsc) return;
     if (!g_has_server) return;
     const fd = g_listen_fd;
@@ -293,6 +300,7 @@ const install_glue =
     \\
     \\  globalThis.__home_serve_dispatch = function() {
     \\    var srv = globalThis.__home_active_server;
+    \\    globalThis.__home_upgraded = false;
     \\    try {
     \\      var req = parseRequest(globalThis.__home_req, srv);
     \\      var res = srv.fetch.call(undefined, req, srv);
@@ -302,6 +310,7 @@ const install_glue =
     \\    }
     \\  };
     \\  globalThis.__home_serve_finish = function() {
+    \\    if (globalThis.__home_upgraded) { globalThis.__home_resp = globalThis.__home_ws_handshake; globalThis.__home_resp_promise = null; return; }
     \\    var resp;
     \\    try {
     \\      var peeked = Bun.peek(globalThis.__home_resp_promise);
@@ -329,16 +338,106 @@ const install_glue =
     \\    var displayHost = (hostname === "0.0.0.0" || hostname === "::") ? "localhost" : hostname;
     \\    var server = {
     \\      port: actualPort, hostname: hostname, development: !!options.development,
-    \\      fetch: fetch, _fd: fd, pendingRequests: 0, pendingWebSockets: 0,
+    \\      fetch: fetch, _fd: fd, _ws: options.websocket || null, pendingRequests: 0, pendingWebSockets: 0,
     \\      url: new URL("http://" + displayHost + ":" + actualPort + "/"),
     \\      stop: function() {},
-    \\      reload: function(opts) { if (opts && typeof opts.fetch === "function") this.fetch = opts.fetch; },
+    \\      reload: function(opts) { if (opts && typeof opts.fetch === "function") this.fetch = opts.fetch; if (opts && opts.websocket) this._ws = opts.websocket; },
     \\      ref: function() {}, unref: function() {},
     \\      requestIP: function() { return null; },
+    \\      // server.upgrade(req, options?) — perform the WebSocket handshake.
+    \\      upgrade: function(req, upOpts) {
+    \\        var ws = this._ws;
+    \\        if (!ws) return false;
+    \\        var key = req.headers && req.headers.get ? req.headers.get("sec-websocket-key") : null;
+    \\        if (!key) return false;
+    \\        var accept = Bun.SHA1.hash(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", "base64");
+    \\        var resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n";
+    \\        globalThis.__home_ws_handshake = new TextEncoder().encode(resp);
+    \\        globalThis.__home_upgraded = true;
+    \\        var fdNow = globalThis.__home_serve_fd | 0;
+    \\        globalThis.__home_ws_conns = globalThis.__home_ws_conns || {};
+    \\        globalThis.__home_ws_conns[fdNow] = { handlers: ws, data: (upOpts && upOpts.data) || undefined, buf: new Uint8Array(0), ws: null };
+    \\        return true;
+    \\      },
     \\      [Symbol.dispose]: function() {},
     \\    };
     \\    globalThis.__home_active_server = server;
     \\    return server;
+    \\  };
+    \\
+    \\  // ── WebSocket framing + event dispatch (driven by socket_global's loop) ──
+    \\  var wsWriteFn = null;
+    \\  function wsWrite(fd, bytes) { if (!wsWriteFn) wsWriteFn = globalThis.__home_tcp_write; return wsWriteFn(fd, bytes); }
+    \\  function buildFrame(opcode, payload) {
+    \\    var len = payload.length, header;
+    \\    if (len < 126) header = [0x80 | opcode, len];
+    \\    else if (len < 65536) header = [0x80 | opcode, 126, (len >> 8) & 0xff, len & 0xff];
+    \\    else header = [0x80 | opcode, 127, 0, 0, 0, 0, (len >>> 24) & 0xff, (len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff];
+    \\    var frame = new Uint8Array(header.length + len);
+    \\    frame.set(header, 0); frame.set(payload, header.length);
+    \\    return frame;
+    \\  }
+    \\  function wsToPayload(data) {
+    \\    if (typeof data === "string") return [0x1, new TextEncoder().encode(data)];
+    \\    if (data instanceof Uint8Array) return [0x2, data];
+    \\    if (ArrayBuffer.isView(data)) return [0x2, new Uint8Array(data.buffer, data.byteOffset, data.byteLength)];
+    \\    if (data instanceof ArrayBuffer) return [0x2, new Uint8Array(data)];
+    \\    return [0x1, new TextEncoder().encode(String(data))];
+    \\  }
+    \\  function makeWs(fd, conn) {
+    \\    return {
+    \\      _fd: fd, readyState: 1, data: conn.data, binaryType: "nodebuffer",
+    \\      send: function(data) { var pp = wsToPayload(data); return wsWrite(fd, buildFrame(pp[0], pp[1])); },
+    \\      sendText: function(s) { return wsWrite(fd, buildFrame(0x1, new TextEncoder().encode(String(s)))); },
+    \\      sendBinary: function(b) { var pp = wsToPayload(b); return wsWrite(fd, buildFrame(0x2, pp[1])); },
+    \\      ping: function(d) { return wsWrite(fd, buildFrame(0x9, d ? wsToPayload(d)[1] : new Uint8Array(0))); },
+    \\      pong: function(d) { return wsWrite(fd, buildFrame(0xA, d ? wsToPayload(d)[1] : new Uint8Array(0))); },
+    \\      close: function(code, reason) {
+    \\        var rb = reason ? new TextEncoder().encode(String(reason)) : new Uint8Array(0);
+    \\        var cc = code || 1000; var pl = new Uint8Array(2 + rb.length); pl[0] = (cc >> 8) & 0xff; pl[1] = cc & 0xff; pl.set(rb, 2);
+    \\        wsWrite(fd, buildFrame(0x8, pl)); this.readyState = 3; globalThis.__home_tcp_close(fd);
+    \\      },
+    \\      subscribe: function() {}, unsubscribe: function() {}, publish: function() {}, isSubscribed: function() { return false; },
+    \\      cork: function(cb) { return cb(this); },
+    \\    };
+    \\  }
+    \\  globalThis.__home_ws_event = function(type, fd) {
+    \\    var conn = globalThis.__home_ws_conns && globalThis.__home_ws_conns[fd];
+    \\    if (!conn) return;
+    \\    if (type === "open") {
+    \\      conn.ws = makeWs(fd, conn);
+    \\      if (typeof conn.handlers.open === "function") { try { conn.handlers.open(conn.ws); } catch (e) {} }
+    \\    } else if (type === "close") {
+    \\      if (conn.ws) conn.ws.readyState = 3;
+    \\      if (typeof conn.handlers.close === "function") { try { conn.handlers.close(conn.ws, 1006, ""); } catch (e) {} }
+    \\      delete globalThis.__home_ws_conns[fd];
+    \\    }
+    \\  };
+    \\  globalThis.__home_ws_data = function(fd) {
+    \\    var conn = globalThis.__home_ws_conns && globalThis.__home_ws_conns[fd];
+    \\    if (!conn) return;
+    \\    var incoming = globalThis.__home_sock_data;
+    \\    var buf = new Uint8Array(conn.buf.length + incoming.length);
+    \\    buf.set(conn.buf, 0); buf.set(incoming, conn.buf.length);
+    \\    var off = 0;
+    \\    while (buf.length - off >= 2) {
+    \\      var b0 = buf[off], b1 = buf[off + 1];
+    \\      var opcode = b0 & 0x0f, masked = (b1 & 0x80) !== 0, len = b1 & 0x7f, p = off + 2;
+    \\      if (len === 126) { if (buf.length - off < 4) break; len = (buf[p] << 8) | buf[p + 1]; p += 2; }
+    \\      else if (len === 127) { if (buf.length - off < 10) break; len = 0; for (var i = 0; i < 8; i++) len = len * 256 + buf[p + i]; p += 8; }
+    \\      var maskKey = null;
+    \\      if (masked) { if (buf.length - p < 4) break; maskKey = buf.subarray(p, p + 4); p += 4; }
+    \\      if (buf.length - p < len) break;
+    \\      var payload = buf.slice(p, p + len);
+    \\      if (maskKey) for (var k = 0; k < len; k++) payload[k] = payload[k] ^ maskKey[k % 4];
+    \\      off = p + len;
+    \\      if (opcode === 0x1) { if (conn.handlers.message) try { conn.handlers.message(conn.ws, new TextDecoder().decode(payload)); } catch (e) {} }
+    \\      else if (opcode === 0x2) { if (conn.handlers.message) try { conn.handlers.message(conn.ws, Buffer.from(payload)); } catch (e) {} }
+    \\      else if (opcode === 0x8) { if (conn.ws) conn.ws.close(1000); }
+    \\      else if (opcode === 0x9) { wsWrite(fd, buildFrame(0xA, payload)); if (conn.handlers.ping) try { conn.handlers.ping(conn.ws, Buffer.from(payload)); } catch (e) {} }
+    \\      else if (opcode === 0xA) { if (conn.handlers.pong) try { conn.handlers.pong(conn.ws, Buffer.from(payload)); } catch (e) {} }
+    \\    }
+    \\    conn.buf = buf.slice(off);
     \\  };
     \\})();
 ;
