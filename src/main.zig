@@ -1652,6 +1652,7 @@ fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anyty
     home_rt.jsc.spawn_global.install(allocator, ctx, global);
     home_rt.jsc.dollar_global.install(allocator, ctx, global);
     home_rt.jsc.semver_global.install(allocator, ctx, global);
+    home_rt.jsc.cookie_global.install(allocator, ctx, global);
     home_rt.jsc.serve_global.install(allocator, ctx, global);
 }
 

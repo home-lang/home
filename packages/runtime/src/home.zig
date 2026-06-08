@@ -2785,6 +2785,8 @@ pub const jsc = struct {
     pub const serve_global = @import("jsc/serve_global.zig");
     // Native Bun.semver (satisfies/order via Home's semver engine) for the realm.
     pub const semver_global = @import("jsc/semver_global.zig");
+    // Native Bun.Cookie + Bun.CookieMap (RFC 6265) for the realm.
+    pub const cookie_global = @import("jsc/cookie_global.zig");
     // Phase 12.2 M6 (2026-05-19) — final scaffold milestone:
     // JSON + Promise + Iterator + Global helpers. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands. After M6
@@ -6612,6 +6614,7 @@ test {
     _ = @import("jsc/dollar_global.zig");
     _ = @import("jsc/serve_global.zig");
     _ = @import("jsc/semver_global.zig");
+    _ = @import("jsc/cookie_global.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
