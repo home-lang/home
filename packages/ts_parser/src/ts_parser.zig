@@ -24695,6 +24695,32 @@ test "parser: union/intersection index-key types do not trigger TS1268" {
     try T.expect(saw_1268);
 }
 
+test "parser: template-literal index-key with head/tail text does not trigger TS1268" {
+    // `{ [x: `foo-${string}`]: T }`, `{ [x: `data${string}`]: T }`, and
+    // `{ [x: `s${string}` ]: T }` are all valid template-literal index keys.
+    // Mirrors indexSignatures1.ts. Regression for over-emitting TS1268 on
+    // template literal types that carry a non-empty head (text before the
+    // first `${...}`).
+    const cases = [_][]const u8{
+        "type T = {\n  [x: `foo-${string}`]: string;\n}",
+        "type T = {\n  [x: `data${string}`]: string;\n}",
+        "type T = {\n  [x: `${string}-bar`]: string;\n}",
+        "type T = {\n  [x: `foo-${string}-bar`]: string;\n}",
+        // Multiple substitutions in one template literal type.
+        "type T = {\n  [x: `${string}xxx${string}`]: string;\n}",
+        // Intersection of multi-substitution template literal types.
+        "type T = {\n  [x: `${string}xxx${string}` & `${string}yyy${string}`]: string;\n}",
+    };
+    for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        for (s.parser.diagnostics.items) |d| {
+            try T.expect(d.code != 1268);
+        }
+    }
+}
+
 test "parser: index signature parameter initializer reports TS1020" {
     // tsc anchors TS1020 at the parameter name and recovers by consuming
     // the initializer. Mirrors `indexSignatureWithInitializer1.ts(2,4)`.
