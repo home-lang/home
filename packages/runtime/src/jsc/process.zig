@@ -402,8 +402,8 @@ const install_glue =
     \\      var args = Array.prototype.slice.call(arguments, 1);
     \\      Promise.resolve().then(function() { cb.apply(null, args); });
     \\    },
-    \\    stdout: { write: function(s) { return outWriteFn(String(s)); }, isTTY: false },
-    \\    stderr: { write: function(s) { return errWriteFn(String(s)); }, isTTY: false },
+    \\    stdout: { write: function(s) { return outWriteFn(String(s)); }, isTTY: false, fd: 1 },
+    \\    stderr: { write: function(s) { return errWriteFn(String(s)); }, isTTY: false, fd: 2 },
     \\  };
     \\  // process is an EventEmitter (process.on('exit'|'uncaughtException'|...)).
     \\  // Self-contained so it works in realms without node:events installed.
@@ -426,6 +426,18 @@ const install_glue =
     \\    p.eventNames = function() { return Object.keys(events); };
     \\    p.setMaxListeners = function() { return p; };
     \\    p.getMaxListeners = function() { return 10; };
+    \\    // emitWarning: fire a 'warning' event with an Error-like payload, falling
+    \\    // back to stderr when nothing is listening (Node's default behavior).
+    \\    p.emitWarning = function(warning, options) {
+    \\      var type = "Warning", code, detail;
+    \\      if (typeof options === "string") { type = options; }
+    \\      else if (options && typeof options === "object") { type = options.type || "Warning"; code = options.code; detail = options.detail; }
+    \\      var w = (warning instanceof Error) ? warning : new Error(String(warning));
+    \\      if (!(warning instanceof Error)) w.name = type;
+    \\      if (code !== undefined) w.code = code;
+    \\      if (detail !== undefined) w.detail = detail;
+    \\      if (!p.emit("warning", w)) { try { p.stderr.write((w.name || "Warning") + ": " + w.message + "\n"); } catch (e) { void e; } }
+    \\    };
     \\  })();
     \\  delete globalThis.__home_process_argv;
     \\  delete globalThis.__home_process_env;
@@ -528,6 +540,30 @@ test "process exposes execPath, exitCode, uptime, and hrtime(+bigint)" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "typeof globalThis.__home_process_mono_ns === 'undefined' && typeof globalThis.__home_process_cpu_usage === 'undefined'"));
+}
+
+test "process.emitWarning fires a warning event with code/detail" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{"home"};
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof process.emitWarning !== 'function') return false;" ++
+        "  if (process.stdout.fd !== 1 || process.stderr.fd !== 2) return false;" ++
+        "  var got = null; process.on('warning', function(w) { got = w; });" ++
+        "  process.emitWarning('be careful', { code: 'W001', detail: 'more' });" ++
+        "  if (!got || !(got instanceof Error) || got.message !== 'be careful') return false;" ++
+        "  if (got.name !== 'Warning' || got.code !== 'W001' || got.detail !== 'more') return false;" ++
+        "  var e2 = new Error('boom'); process.emitWarning(e2);" ++ // Error passes through
+        "  return got === e2 && got.message === 'boom';" ++
+        "})()"));
 }
 
 test "process is an EventEmitter (on/once/off/emit/listeners)" {
