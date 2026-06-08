@@ -89,6 +89,7 @@ const native_vendor_roots = [_][]const u8{
     "vendor/lsquic/",
     "vendor/picohttpparser/",
     "vendor/tinycc/",
+    "vendor/zstd/",
 };
 
 const native_skip_paths = [_][]const u8{
