@@ -143,9 +143,9 @@ const install_glue =
     \\      this.bodyUsed = false;
     \\    }
     \\    clone() { var r = new Response(null, { status: this.status, statusText: this.statusText, headers: this.headers }); r._bodyBytes = this._bodyBytes; r.url = this.url; return r; }
-    \\    static json(data, init) { var r = new Response(JSON.stringify(data), init); r.headers.set("content-type", "application/json"); return r; }
-    \\    static error() { var r = new Response(null, { status: 0 }); r.type = "error"; return r; }
-    \\    static redirect(url, status) { return new Response(null, { status: status || 302, headers: { location: String(url) } }); }
+    \\    static json(data, init) { var r = new this(JSON.stringify(data), init); r.headers.set("content-type", "application/json"); return r; }
+    \\    static error() { var r = new this(null, { status: 0 }); r.type = "error"; return r; }
+    \\    static redirect(url, status) { return new this(null, { status: status || 302, headers: { location: String(url) } }); }
     \\  }
     \\  defineBody(Response.prototype);
     \\

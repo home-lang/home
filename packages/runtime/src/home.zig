@@ -2781,6 +2781,8 @@ pub const jsc = struct {
     pub const peek_global = @import("jsc/peek_global.zig");
     // Native Bun.$ (Bun Shell subset over Bun.spawnSync) for the realm.
     pub const dollar_global = @import("jsc/dollar_global.zig");
+    // Native Bun.serve (HTTP/1.1 server; post-script accept loop) for the realm.
+    pub const serve_global = @import("jsc/serve_global.zig");
     // Phase 12.2 M6 (2026-05-19) — final scaffold milestone:
     // JSON + Promise + Iterator + Global helpers. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands. After M6
@@ -6606,6 +6608,7 @@ test {
     _ = @import("jsc/password_global.zig");
     _ = @import("jsc/peek_global.zig");
     _ = @import("jsc/dollar_global.zig");
+    _ = @import("jsc/serve_global.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
