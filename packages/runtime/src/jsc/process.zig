@@ -171,6 +171,15 @@ fn staticInfoNative(
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe: []const u8 = if (std.process.executablePath(std.Options.debug_io, &exe_buf)) |n| exe_buf[0..n] else |_| "";
     setProp(c, object, "execPath", jsStringValue(c, exe));
+    // glibc runtime version — non-empty only on a glibc Linux build, mirroring
+    // process.report.getReport().header.glibcVersionRuntime (absent => musl).
+    const glibc_ver: []const u8 = if (comptime (builtin.os.tag == .linux and builtin.abi == .gnu)) blk: {
+        const c_ext = struct {
+            extern fn gnu_get_libc_version() callconv(.c) [*:0]const u8;
+        };
+        break :blk std.mem.span(c_ext.gnu_get_libc_version());
+    } else "";
+    setProp(c, object, "glibc", jsStringValue(c, glibc_ver));
     return @ptrCast(object);
 }
 
@@ -335,6 +344,23 @@ const install_glue =
     \\    uptime: function() { return Number(nowNs() - startNs) / 1e9; },
     \\    hrtime: hrtime,
     \\    cpuUsage: function(prev) { var u = cpuFn(); if (prev) return { user: u.user - prev.user, system: u.system - prev.system }; return u; },
+    \\    report: {
+    \\      getReport: function() {
+    \\        return {
+    \\          header: {
+    \\            platform: info.platform,
+    \\            arch: info.arch,
+    \\            nodejsVersion: info.version,
+    \\            glibcVersionRuntime: info.glibc ? info.glibc : undefined,
+    \\            glibcVersionCompiler: info.glibc ? info.glibc : undefined,
+    \\          },
+    \\          javascriptHeap: {},
+    \\          resourceUsage: {},
+    \\          libuv: [],
+    \\          sharedObjects: [],
+    \\        };
+    \\      },
+    \\    },
     \\    nextTick: function(cb) {
     \\      var args = Array.prototype.slice.call(arguments, 1);
     \\      Promise.resolve().then(function() { cb.apply(null, args); });
@@ -441,6 +467,30 @@ test "process exposes execPath, exitCode, uptime, and hrtime(+bigint)" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "typeof globalThis.__home_process_mono_ns === 'undefined' && typeof globalThis.__home_process_cpu_usage === 'undefined'"));
+}
+
+test "process.report.getReport returns a header echoing platform/arch" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{"home"};
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof process.report !== 'object' || typeof process.report.getReport !== 'function') return false;" ++
+        "  var r = process.report.getReport();" ++
+        "  if (!r || typeof r.header !== 'object') return false;" ++
+        "  if (r.header.platform !== process.platform || r.header.arch !== process.arch) return false;" ++
+        // glibcVersionRuntime is a truthy string on glibc, undefined elsewhere (e.g. macOS)
+        "  var g = r.header.glibcVersionRuntime;" ++
+        "  if (g !== undefined && typeof g !== 'string') return false;" ++
+        "  return Array.isArray(r.libuv) && Array.isArray(r.sharedObjects);" ++
+        "})()"));
 }
 
 test "process.cwd returns a non-empty absolute path" {
