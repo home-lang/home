@@ -6083,7 +6083,7 @@ pub fn printAst(
         printer.module_info = opts.module_info;
     }
     var bin_stack_buf: [1024]u8 = undefined;
-    var bin_stack_heap = std.heap.BufferFirstAllocator.init(&bin_stack_buf, bun.default_allocator);
+    var bin_stack_heap = bun.BufferFirstAllocator.init(&bin_stack_buf, bun.default_allocator);
     printer.binary_expression_stack = std.array_list.Managed(PrinterType.BinaryExpressionVisitor).init(bin_stack_heap.allocator());
     defer printer.binary_expression_stack.clearAndFree();
 

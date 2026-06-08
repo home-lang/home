@@ -617,6 +617,46 @@ pub fn LazyBool(
 /// inline buffer is exhausted. Upstream Bun (and pre-0.17 Zig) exposed this via
 /// `bun.stackFallback(size, allocator)`; that API was dropped from the Zig
 /// stdlib, so vendored `@import("bun")` callers route through `bun.stackFallback`.
+/// Runtime-buffer stack-fallback allocator: try the caller-provided buffer first,
+/// then fall back. The fork's `std.heap` dropped this; vendored callers that
+/// reference `std.heap.BufferFirstAllocator` route to `bun.BufferFirstAllocator`.
+/// Copied from bun.zig's `StackFallbackAllocator` (bun.zig isn't importable here —
+/// it pulls unported `@Type`/generated-binding deps). Field/accessor names match
+/// the call sites (`.fixed_buffer_allocator`, `.allocator()`/`.get()`).
+pub const BufferFirstAllocator = struct {
+    fixed_buffer_allocator: std.heap.FixedBufferAllocator,
+    fallback: std.mem.Allocator,
+
+    pub fn init(buf: []u8, fallback: std.mem.Allocator) BufferFirstAllocator {
+        return .{ .fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf), .fallback = fallback };
+    }
+    pub fn allocator(self: *BufferFirstAllocator) std.mem.Allocator {
+        return self.get();
+    }
+    pub fn get(self: *BufferFirstAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = bfaAlloc, .resize = bfaResize, .remap = bfaRemap, .free = bfaFree } };
+    }
+    fn bfaAlloc(ctx: *anyopaque, n: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *BufferFirstAllocator = @ptrCast(@alignCast(ctx));
+        return std.heap.FixedBufferAllocator.alloc(&self.fixed_buffer_allocator, n, a, ra) orelse self.fallback.rawAlloc(n, a, ra);
+    }
+    fn bfaResize(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *BufferFirstAllocator = @ptrCast(@alignCast(ctx));
+        if (self.fixed_buffer_allocator.ownsPtr(buf.ptr)) return std.heap.FixedBufferAllocator.resize(&self.fixed_buffer_allocator, buf, a, new_len, ra);
+        return self.fallback.rawResize(buf, a, new_len, ra);
+    }
+    fn bfaRemap(ctx: *anyopaque, mem: []u8, a: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *BufferFirstAllocator = @ptrCast(@alignCast(ctx));
+        if (self.fixed_buffer_allocator.ownsPtr(mem.ptr)) return std.heap.FixedBufferAllocator.remap(&self.fixed_buffer_allocator, mem, a, new_len, ra);
+        return self.fallback.rawRemap(mem, a, new_len, ra);
+    }
+    fn bfaFree(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, ra: usize) void {
+        const self: *BufferFirstAllocator = @ptrCast(@alignCast(ctx));
+        if (self.fixed_buffer_allocator.ownsPtr(buf.ptr)) return std.heap.FixedBufferAllocator.free(&self.fixed_buffer_allocator, buf, a, ra);
+        return self.fallback.rawFree(buf, a, ra);
+    }
+};
+
 pub fn StackFallbackAllocator(comptime size: usize) type {
     return struct {
         const Self = @This();

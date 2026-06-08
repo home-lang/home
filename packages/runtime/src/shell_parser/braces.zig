@@ -245,7 +245,7 @@ pub const Parser = struct {
 
     pub fn parse(self: *Parser) !AST.Group {
         var group_alloc_buf: [@sizeOf(AST.Atom)]u8 = undefined;
-        var group_alloc_ = std.heap.BufferFirstAllocator.init(&group_alloc_buf, self.alloc);
+        var group_alloc_ = bun.BufferFirstAllocator.init(&group_alloc_buf, self.alloc);
         const group_alloc = group_alloc_.allocator();
         var nodes = std.array_list.Managed(AST.Atom).init(group_alloc);
         while (!self.match(.eof)) {
@@ -276,7 +276,7 @@ pub const Parser = struct {
         while (!self.match_any(&.{ .close, .eof })) {
             if (self.match(.eof)) break;
             var group_alloc_buf: [@sizeOf(AST.Atom)]u8 = undefined;
-            var group_alloc_ = std.heap.BufferFirstAllocator.init(&group_alloc_buf, self.alloc);
+            var group_alloc_ = bun.BufferFirstAllocator.init(&group_alloc_buf, self.alloc);
             const group_alloc = group_alloc_.allocator();
             var group = std.array_list.Managed(AST.Atom).init(group_alloc);
             var close = false;

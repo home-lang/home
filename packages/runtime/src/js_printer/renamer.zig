@@ -457,7 +457,7 @@ pub const NumberRenamer = struct {
     arena: bun.ArenaAllocator,
     root: NumberScope = .{},
     name_stack_buffer: [512]u8 = undefined,
-    name_stack_fallback: std.heap.BufferFirstAllocator = undefined,
+    name_stack_fallback: bun.BufferFirstAllocator = undefined,
     name_temp_allocator: std.mem.Allocator = undefined,
 
     pub fn deinit(self: *NumberRenamer) void {
@@ -525,7 +525,7 @@ pub const NumberRenamer = struct {
             .number_scope_pool = undefined,
             .arena = bun.ArenaAllocator.init(temp_allocator),
         };
-        renamer.name_stack_fallback = std.heap.BufferFirstAllocator.init(&renamer.name_stack_buffer, renamer.arena.allocator());
+        renamer.name_stack_fallback = bun.BufferFirstAllocator.init(&renamer.name_stack_buffer, renamer.arena.allocator());
         renamer.name_temp_allocator = renamer.name_stack_fallback.allocator();
         renamer.number_scope_pool = .init(renamer.arena.allocator());
         renamer.root.name_counts = root_names;

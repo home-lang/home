@@ -687,7 +687,7 @@ pub fn GlobWalker_(
                         defer this.closeDisallowingCwd(fd);
                         const stackbuf_size = 256;
                         var stackbuf: [stackbuf_size]u8 = undefined;
-                        var stfb = std.heap.BufferFirstAllocator.init(&stackbuf, this.walker.arena.allocator());
+                        var stfb = bun.BufferFirstAllocator.init(&stackbuf, this.walker.arena.allocator());
                         const pathz = try stfb.allocator().dupeZ(u8, this.walker.patternComponents.items[idx].patternSlice(this.walker.pattern));
                         const stat_result: bun.Stat = switch (Accessor.statat(fd, pathz)) {
                             .err => |e_| {
@@ -939,7 +939,7 @@ pub fn GlobWalker_(
 
                                     const stackbuf_size = 256;
                                     var stackbuf: [stackbuf_size]u8 = undefined;
-                                    var stfb = std.heap.BufferFirstAllocator.init(&stackbuf, this.walker.arena.allocator());
+                                    var stfb = bun.BufferFirstAllocator.init(&stackbuf, this.walker.arena.allocator());
                                     const name_z = bun.handleOom(stfb.allocator().dupeZ(u8, entry_name));
                                     const stat_result = Accessor.lstatat(dir.fd, name_z);
                                     const real_kind = switch (stat_result) {
