@@ -1647,6 +1647,7 @@ fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anyty
     home_rt.jsc.fetch_global.install(allocator, ctx, global);
     home_rt.jsc.bun_global.install(allocator, ctx, global);
     home_rt.jsc.password_global.install(allocator, ctx, global);
+    home_rt.jsc.peek_global.install(allocator, ctx, global);
     home_rt.jsc.node_modules.install(allocator, ctx, global);
     home_rt.jsc.spawn_global.install(allocator, ctx, global);
 }
