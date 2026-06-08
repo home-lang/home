@@ -428,11 +428,67 @@ const install_glue =
     \\    return sock;
     \\  }
     \\  var dgramModule = { createSocket: createDgram, Socket: createDgram };
-    \\  // Extend the realm's require() to serve node:dgram (socket_global loads
-    \\  // after node_modules, so wrap the existing require).
+    \\  // node:net — Server/Socket (EventEmitter) backed by Bun.listen/connect.
+    \\  function netEmitter() { var EE = globalThis.require("node:events").EventEmitter || globalThis.require("node:events"); return new EE(); }
+    \\  function wrapNetSocket(bunSock) {
+    \\    var s = netEmitter();
+    \\    s._bun = bunSock; s._encoding = null;
+    \\    s.write = function(data, enc, cb) { if (typeof enc === "function") cb = enc; var n = bunSock.write(data); if (typeof cb === "function") Promise.resolve().then(cb); return n >= 0; };
+    \\    s.end = function(data, enc, cb) { if (typeof data === "function") cb = data; else if (data !== undefined && data !== null) bunSock.write(data); bunSock.end(); s.emit("end"); if (typeof cb === "function") cb(); };
+    \\    s.destroy = function() { bunSock.end(); s.emit("close"); };
+    \\    s.setEncoding = function(e) { s._encoding = e; return s; };
+    \\    s.setKeepAlive = function() { return s; }; s.setNoDelay = function() { return s; }; s.setTimeout = function() { return s; };
+    \\    s.pause = function() { return s; }; s.resume = function() { return s; }; s.ref = function() { return s; }; s.unref = function() { return s; };
+    \\    s.address = function() { return { address: bunSock.remoteAddress, port: 0, family: "IPv4" }; };
+    \\    Object.defineProperty(s, "remoteAddress", { get: function() { return bunSock.remoteAddress; }, configurable: true });
+    \\    return s;
+    \\  }
+    \\  function netDeliver(s, data) { s.emit("data", s._encoding ? data.toString(s._encoding) : data); }
+    \\  function netCreateServer(opts, connListener) {
+    \\    if (typeof opts === "function") { connListener = opts; opts = {}; }
+    \\    var server = netEmitter();
+    \\    if (typeof connListener === "function") server.on("connection", connListener);
+    \\    server._bun = null; server._port = 0;
+    \\    server.listen = function(port, host, cb) {
+    \\      if (port && typeof port === "object") { cb = host; host = port.host || port.hostname; port = port.port; }
+    \\      if (typeof host === "function") { cb = host; host = undefined; }
+    \\      server._bun = B.listen({ hostname: host || "0.0.0.0", port: port | 0, socket: {
+    \\        open: function(bs) { var ns = wrapNetSocket(bs); bs._netSock = ns; server.emit("connection", ns); ns.emit("connect"); },
+    \\        data: function(bs, data) { if (bs._netSock) netDeliver(bs._netSock, data); },
+    \\        close: function(bs) { if (bs._netSock) bs._netSock.emit("close"); },
+    \\      } });
+    \\      server._port = server._bun.port;
+    \\      Promise.resolve().then(function() { server.emit("listening"); if (typeof cb === "function") cb(); });
+    \\      return server;
+    \\    };
+    \\    server.address = function() { return { port: server._port, address: "0.0.0.0", family: "IPv4" }; };
+    \\    server.close = function(cb) { if (server._bun) server._bun.stop(); Promise.resolve().then(function() { server.emit("close"); if (typeof cb === "function") cb(); }); return server; };
+    \\    server.ref = function() { return server; }; server.unref = function() { return server; };
+    \\    return server;
+    \\  }
+    \\  function netConnect(port, host, cb) {
+    \\    if (port && typeof port === "object") { cb = host; host = port.host || port.hostname; port = port.port; }
+    \\    if (typeof host === "function") { cb = host; host = undefined; }
+    \\    var s = netEmitter(); var pending = []; s._encoding = null; s._ready = false; s._bun = null;
+    \\    s.write = function(data, enc, c2) { if (typeof enc === "function") c2 = enc; if (s._ready) s._bun.write(data); else pending.push(data); if (typeof c2 === "function") Promise.resolve().then(c2); return true; };
+    \\    s.end = function(data) { if (data !== undefined && data !== null) s.write(data); if (s._ready) s._bun.end(); s.emit("end"); };
+    \\    s.destroy = function() { if (s._ready) s._bun.end(); };
+    \\    s.setEncoding = function(e) { s._encoding = e; return s; };
+    \\    s.setKeepAlive = function() { return s; }; s.setNoDelay = function() { return s; }; s.setTimeout = function() { return s; };
+    \\    s.pause = function() { return s; }; s.resume = function() { return s; }; s.ref = function() { return s; }; s.unref = function() { return s; };
+    \\    B.connect({ hostname: host || "127.0.0.1", port: port | 0, socket: {
+    \\      open: function(bs) { s._bun = bs; s._ready = true; for (var i = 0; i < pending.length; i++) bs.write(pending[i]); pending = []; },
+    \\      data: function(bs, data) { netDeliver(s, data); },
+    \\      close: function(bs) { s.emit("close"); },
+    \\    } }).then(function() { s.emit("connect"); if (typeof cb === "function") cb(); }, function(err) { s.emit("error", err); });
+    \\    return s;
+    \\  }
+    \\  var netModule = { createServer: netCreateServer, connect: netConnect, createConnection: netConnect, Socket: wrapNetSocket, Server: netCreateServer, isIP: function(s) { return /^\d+\.\d+\.\d+\.\d+$/.test(String(s)) ? 4 : 0; }, isIPv4: function(s) { return /^\d+\.\d+\.\d+\.\d+$/.test(String(s)); }, isIPv6: function() { return false; } };
+    \\  // Extend the realm's require() to serve node:dgram + the real node:net
+    \\  // (socket_global loads after node_modules, so wrap the existing require).
     \\  if (typeof globalThis.require === "function") {
     \\    var prevRequire = globalThis.require;
-    \\    var wrapped = function(spec) { var n = String(spec); n = n.indexOf("node:") === 0 ? n.slice(5) : n; if (n === "dgram") return dgramModule; return prevRequire(spec); };
+    \\    var wrapped = function(spec) { var n = String(spec); n = n.indexOf("node:") === 0 ? n.slice(5) : n; if (n === "dgram") return dgramModule; if (n === "net") return netModule; return prevRequire(spec); };
     \\    wrapped.resolve = prevRequire.resolve || function(s) { return String(s); };
     \\    globalThis.require = wrapped;
     \\  }
