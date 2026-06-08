@@ -1581,12 +1581,17 @@ fn runJsLikeFile(allocator: std.mem.Allocator, file_path: []const u8, extra_args
     // Native (CommonJS + TypeScript): plain .js/.cjs run as-is; .ts/.cts/.tsx
     // are type-stripped via the transpiler bridge. ESM (.mjs / import-export)
     // still delegates — it needs the bundler link stage / JSC module loader.
+    // Best-effort native run: CommonJS + TypeScript run through Home's own JSC
+    // realm; ESM (and anything the transpiler can't lower yet) returns false so
+    // we transparently fall back to bun delegation below — so the flag is always
+    // safe to set. ESM native execution awaits the VirtualMachine/link stage.
     if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_RUN") and
         (std.mem.endsWith(u8, file_path, ".js") or std.mem.endsWith(u8, file_path, ".cjs") or
             std.mem.endsWith(u8, file_path, ".ts") or std.mem.endsWith(u8, file_path, ".cts") or
             std.mem.endsWith(u8, file_path, ".tsx")))
     {
-        return runFileNative(allocator, file_path, extra_args);
+        if (try runFileNative(allocator, file_path, extra_args)) return;
+        // else: unsupported (ESM) — fall through to bun delegation.
     }
 
     // TODO(phase-12-2): Replace this delegation with the native Home runtime
@@ -1669,15 +1674,23 @@ fn envFlagSet(name: [*:0]const u8) bool {
     return value[0] != 0;
 }
 
-/// Execute a JS file through Home's OWN native JSC runtime (not bun delegation).
-/// Opt-in via `HOME_NATIVE_RUN=1` for plain `.js`/`.cjs` files; this is the
-/// Phase-2 `home run` milestone, gated so it cannot regress the bun-corpus
-/// spawn tests (which rely on the bun-delegation path).
-fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
+/// Execute a JS/TS file through Home's OWN native JSC runtime (not bun
+/// delegation). Returns `true` if it ran natively, `false` if the entry isn't
+/// supported yet (ESM / un-lowerable) so the caller can delegate to bun. A
+/// genuine runtime error in the script still exits non-zero.
+fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !bool {
     if (comptime !build_options.enable_jsc) {
-        std.debug.print("{s}error:{s} native run requires a JSC-enabled build\n", .{ Color.Red.code(), Color.Reset.code() });
-        std.process.exit(1);
+        return false;
     } else {
+        // Capability pre-check: if the entry can't be transpiled to CommonJS
+        // (e.g. it's ESM), bail to the caller so it delegates to bun rather
+        // than failing. (.json never reaches here.)
+        {
+            const probe = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch return false;
+            defer allocator.free(probe);
+            const out = home_rt.jsc.transpiler_bridge.transpileToCjs(allocator, probe, file_path) catch return false;
+            allocator.free(out);
+        }
         // Resolve the entry to an absolute path so the CommonJS loader treats
         // it as a path (not a bare specifier) and binds the module's require()
         // to its own directory (so the entry's relative require()s resolve).
@@ -1739,6 +1752,7 @@ fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args
         // (blocks until the process is killed); no-op otherwise.
         home_rt.jsc.serve_global.runLoop(allocator, ctx);
         home_rt.jsc.socket_global.runLoop(allocator, ctx);
+        return true;
     }
 }
 
