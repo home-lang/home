@@ -1574,6 +1574,18 @@ fn looksLikePackageScriptName(name: []const u8) bool {
 }
 
 fn runJsLikeFile(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    // Full-VM native run (HOME_NATIVE_VM=1): boot Home's VirtualMachine and run
+    // the file through JSC's native module loader (handles ESM). Uses
+    // home_rt.jsc.VirtualMachine directly (no bun.js.zig CLI cone). Experimental,
+    // isolated behind its own flag while validated against the standalone binary.
+    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+        runFileViaVM(allocator, file_path) catch |err| {
+            std.debug.print("{s}error:{s} native VM run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+            std.process.exit(1);
+        };
+        return;
+    }
+
     // Opt-in native path (Phase 2): `HOME_NATIVE_RUN=1 home run file.js` runs
     // through Home's OWN JSC runtime for plain `.js`/`.cjs` (script-mode; ESM
     // `.mjs` and TS still delegate). Gated so the default path is unchanged and
@@ -1672,6 +1684,62 @@ fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anyty
 fn envFlagSet(name: [*:0]const u8) bool {
     const value = std.c.getenv(name) orelse return false;
     return value[0] != 0;
+}
+
+/// Run a file through Home's full VirtualMachine, which uses JSC's native
+/// module loader (so ESM `import`/`export` work). Boots the VM, loads the entry
+/// as a module (loadEntryPoint drives the event loop until the top-level
+/// promise settles), reports a rejected entry, then drains remaining async work.
+///
+/// STATUS (2026-06-08): this path COMPILES (the full VM cone resolves via
+/// home_rt.jsc.VirtualMachine — no bun.js.zig CLI cone needed) and the VM
+/// executes modules, but VirtualMachine.init currently crashes inside
+/// JSC::VM::tryCreate at MarkedSpace.cpp sizeClasses() (a WebKit heap-init
+/// assertion) — the ZigGlobalObject/VM::tryCreate path needs a JSC engine init
+/// the C-API JSGlobalContextCreate path (used by `home eval`) does implicitly.
+/// Resolving that WebKit-ABI/heap-init mismatch is the remaining Phase-12.2 work.
+/// Gated behind HOME_NATIVE_VM=1 so it never affects the default path or tests.
+fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    if (comptime !build_options.enable_jsc) return error.JscDisabled;
+
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path: []const u8 = if (std.fs.path.isAbsolute(file_path))
+        file_path
+    else blk: {
+        const p = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.CwdUnavailable;
+        const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
+        break :blk std.fs.path.join(allocator, &.{ cwd, file_path }) catch file_path;
+    };
+
+    home_rt.jsc.initialize(false);
+
+    const log = try allocator.create(home_rt.logger.Log);
+    log.* = home_rt.logger.Log.init(allocator);
+    var args = std.mem.zeroes(home_rt.schema.api.TransformOptions);
+    const dir = std.fs.path.dirname(abs_path) orelse "/";
+    args.absolute_working_dir = allocator.dupeZ(u8, dir) catch null;
+    const vm = try home_rt.jsc.VirtualMachine.init(.{
+        .allocator = allocator,
+        .args = args,
+        .log = log,
+        .is_main_thread = true,
+    });
+    vm.eventLoop().ensureWaker();
+    try vm.transpiler.configureDefines();
+
+    const promise = vm.loadEntryPoint(abs_path) catch |err| {
+        std.debug.print("{s}error:{s} loading '{s}': {s}\n", .{ Color.Red.code(), Color.Reset.code(), abs_path, @errorName(err) });
+        std.process.exit(1);
+    };
+    if (promise.status() == .rejected) {
+        _ = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
+        std.process.exit(1);
+    }
+
+    // Drain remaining async work (timers, pending microtasks) before exiting.
+    while (vm.isEventLoopAlive()) {
+        vm.tick();
+    }
 }
 
 /// Execute a JS/TS file through Home's OWN native JSC runtime (not bun
