@@ -825,6 +825,46 @@ const install_glue =
     \\    B.readableStreamToBytes = function(stream) { return drainStream(stream).then(concatChunkBytes); };
     \\    B.readableStreamToArrayBuffer = function(stream) { return drainStream(stream).then(function(chunks) { var b = concatChunkBytes(chunks); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); }); };
     \\    B.readableStreamToBlob = function(stream) { return drainStream(stream).then(function(chunks) { var Blob = globalThis.Blob; if (typeof Blob !== "function") throw new TypeError("Blob is not defined in this realm"); return new Blob(chunks); }); };
+    \\    // readableStreamToFormData(stream, contentTypeOrBoundary) — parse a
+    \\    // multipart/form-data body into a FormData.
+    \\    function parseMultipart(bytes, boundary) {
+    \\      var fd = new globalThis.FormData();
+    \\      var dec = new TextDecoder("latin1");
+    \\      var marker = "--" + boundary;
+    \\      var text = dec.decode(bytes);
+    \\      var parts = text.split(marker);
+    \\      for (var i = 0; i < parts.length; i++) {
+    \\        var part = parts[i];
+    \\        if (part === "" || part === "--" || part === "--\r\n" || part === "\r\n") continue;
+    \\        if (part.slice(0, 2) === "\r\n") part = part.slice(2);
+    \\        if (part.slice(-2) === "\r\n") part = part.slice(0, -2);
+    \\        var hb = part.indexOf("\r\n\r\n");
+    \\        if (hb < 0) continue;
+    \\        var headerStr = part.slice(0, hb);
+    \\        var body = part.slice(hb + 4);
+    \\        var nameMatch = /name="([^"]*)"/i.exec(headerStr);
+    \\        if (!nameMatch) continue;
+    \\        var name = nameMatch[1];
+    \\        var fileMatch = /filename="([^"]*)"/i.exec(headerStr);
+    \\        if (fileMatch) {
+    \\          var ctMatch = /content-type:\s*([^\r\n]+)/i.exec(headerStr);
+    \\          var b2 = new Uint8Array(body.length); for (var k = 0; k < body.length; k++) b2[k] = body.charCodeAt(k) & 0xff;
+    \\          var blob = new globalThis.Blob([b2], { type: ctMatch ? ctMatch[1].trim() : "application/octet-stream" });
+    \\          blob.name = fileMatch[1];
+    \\          fd.append(name, blob, fileMatch[1]);
+    \\        } else {
+    \\          var bb = new Uint8Array(body.length); for (var m = 0; m < body.length; m++) bb[m] = body.charCodeAt(m) & 0xff;
+    \\          fd.append(name, new TextDecoder("utf-8").decode(bb));
+    \\        }
+    \\      }
+    \\      return fd;
+    \\    }
+    \\    B.readableStreamToFormData = function(stream, contentTypeOrBoundary) {
+    \\      var boundary = String(contentTypeOrBoundary || "");
+    \\      var bm = /boundary=([^;]+)/i.exec(boundary);
+    \\      if (bm) boundary = bm[1].trim();
+    \\      return drainStream(stream).then(concatChunkBytes).then(function(bytes) { return parseMultipart(bytes, boundary); });
+    \\    };
     \\  })();
     \\  delete globalThis.__home_bun_write_file;
     \\})();
