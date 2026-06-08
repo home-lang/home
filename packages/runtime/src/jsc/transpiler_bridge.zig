@@ -1,114 +1,106 @@
-// Standalone TS/JS -> CommonJS transpile, the basis for loading `.ts`/`.tsx`/
-// `.mts`/`.cts` (and ESM-syntax) files through the realm's CommonJS require().
+// TS/JS/ESM -> CommonJS transpile for the realm's CommonJS require(): the basis
+// for loading `.ts`/`.tsx`/`.mts`/`.cts`/`.mjs` (and ESM-syntax) files.
 //
-// This drives Home's own parser + js_printer.printCommonJS directly (no bundler
-// Transpiler / resolver / Fs), mirroring the recipe in
-// `src/bundler/transpiler.zig` (parse via `Parser`, print via `printCommonJS`
-// with a `Symbol.Map` built from `ast.symbols`). Type annotations are stripped
-// and `import`/`export` are lowered to CommonJS by the CJS printer.
-//
-// LIMITATION: `opts.macro_context` defaults to `undefined`, so sources that use
-// Bun macro imports are out of scope here (no_macros path); normal TS/JS/ESM is
-// fine. A JSC-callable wrapper + loader wiring lands on top of this.
+// Unlike a bare parse+printCommonJS (which drops require() calls and crashes on
+// ESM exports because it lacks runtime-import + import-record resolution), this
+// drives Home's full bundler `Transpiler` in transform-only mode — the same
+// engine behind `Bun.Transpiler`. The transpiler is created once and reused
+// (its AST node stores are reset between files); it is single-threaded, matching
+// the realm. Mirrors the recipe in `src/runtime/api/JSTranspiler.zig`.
 
 const std = @import("std");
 const bun = @import("bun");
-const js_parser = bun.js_parser;
-const js_printer = bun.js_printer;
-const js_ast = bun.ast;
+const Transpiler = bun.transpiler.Transpiler;
+const JSPrinter = bun.js_printer;
 const logger = bun.logger;
+const api = bun.schema.api;
 const options = @import("../bundler/options.zig");
-const Define = @import("../bundler/defines.zig").Define;
+const Loader = options.Loader;
+const MacroMap = @import("../resolver/package_json.zig").MacroMap;
 
-pub const TranspileError = error{ ParseFailed, PrintFailed, UnsupportedEsm, UnsupportedImports };
+pub const TranspileError = error{ InitFailed, ParseFailed, PrintFailed, UnsupportedEsm };
 
 /// Pick the parser loader from a file path's extension.
-pub fn loaderForPath(path: []const u8) options.Loader {
+pub fn loaderForPath(path: []const u8) Loader {
     if (std.mem.endsWith(u8, path, ".tsx")) return .tsx;
     if (std.mem.endsWith(u8, path, ".jsx")) return .jsx;
     if (std.mem.endsWith(u8, path, ".ts") or std.mem.endsWith(u8, path, ".mts") or std.mem.endsWith(u8, path, ".cts")) return .ts;
     return .js;
 }
 
+// Cached transform-only transpiler + its log, created lazily on first use.
+var g_log: logger.Log = undefined;
+var g_transpiler: ?Transpiler = null;
+
+fn getTranspiler() !*Transpiler {
+    if (g_transpiler == null) {
+        g_log = logger.Log.init(bun.default_allocator);
+        var opts = std.mem.zeroes(api.TransformOptions);
+        opts.disable_hmr = true;
+        opts.target = api.Target.browser;
+        var t = Transpiler.init(bun.default_allocator, &g_log, opts, null) catch
+            return TranspileError.InitFailed;
+        t.options.no_macros = true;
+        t.configureLinkerWithAutoJSX(false);
+        t.options.env.behavior = .disable;
+        t.configureDefines() catch return TranspileError.InitFailed;
+        g_transpiler = t;
+    }
+    return &g_transpiler.?;
+}
+
 /// Transpile `source_code` (named `path`, used for diagnostics + loader choice)
 /// to CommonJS JavaScript. Caller owns the returned slice.
 pub fn transpileToCjs(allocator: std.mem.Allocator, source_code: []const u8, path: []const u8) ![]u8 {
-    // The parser allocates AST nodes out of thread-local stores; create() is
-    // idempotent and reset() recycles them when we're done.
-    js_ast.Expr.Data.Store.create();
-    js_ast.Stmt.Data.Store.create();
-    defer {
-        js_ast.Expr.Data.Store.reset();
-        js_ast.Stmt.Data.Store.reset();
-    }
+    const transpiler = try getTranspiler();
+    transpiler.resetStore();
 
-    // All parse/print scratch lives in an arena freed on return; only the final
-    // CJS text is duped into the caller's allocator.
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    var log = logger.Log.init(a);
-
     const source = logger.Source.initPathString(path, source_code);
     const loader = loaderForPath(path);
 
-    var opts = js_parser.Parser.Options.init(.{}, loader);
-    opts.transform_only = true;
-    opts.features.top_level_await = true;
-    opts.features.no_macros = true;
-
-    const defines = try Define.init(a, null, null, false, false);
-
-    var parser = js_parser.Parser.init(opts, &log, &source, defines, a) catch
-        return TranspileError.ParseFailed;
-    const result = parser.parse() catch return TranspileError.ParseFailed;
-    const ast = switch (result) {
-        .ast => |parsed| parsed,
-        else => return TranspileError.ParseFailed,
+    const parse_options = Transpiler.ParseOptions{
+        .allocator = a,
+        .macro_remappings = MacroMap{},
+        .dirname_fd = .invalid,
+        .file_descriptor = null,
+        .loader = loader,
+        .jsx = transpiler.options.jsx,
+        .path = source.path,
+        .virtual_source = &source,
     };
 
-    // This standalone parse+print path faithfully strips TS types from a
-    // self-contained module, but it is NOT a full transpiler: the CJS printer
-    // needs the bundler's runtime-import + import-record resolution to lower
-    // ESM `export`/`import` (it would crash) and even to emit plain `require()`
-    // calls (it silently drops them). So bail cleanly on both rather than
-    // produce wrong output. Lowering those needs the bundler Transpiler — the
-    // next step. (Tracked in memory: project_jsc_test_target_build.)
-    switch (ast.exports_kind) {
+    const parse_result = transpiler.parse(parse_options, null) orelse
+        return TranspileError.ParseFailed;
+    if (parse_result.empty) return allocator.dupe(u8, "");
+
+    // ESM export/import lowering to CJS needs the bundler's link stage to
+    // populate the runtime-import refs (__export/__toCommonJS); transform-only
+    // leaves them null and the CJS printer would crash. CJS (require/exports)
+    // prints correctly here. Bail on ESM until ESM runs via JSC's loader.
+    switch (parse_result.ast.exports_kind) {
         .esm, .esm_with_dynamic_fallback => return TranspileError.UnsupportedEsm,
         else => {},
     }
-    if (ast.import_records.len > 0) return TranspileError.UnsupportedImports;
 
-    const symbols = js_ast.Symbol.NestedList.fromBorrowedSliceDangerous(&.{ast.symbols});
+    var buffer_writer = JSPrinter.BufferWriter.init(a);
+    buffer_writer.buffer.list.ensureTotalCapacity(a, 512) catch {};
+    buffer_writer.reset();
+    var printer = JSPrinter.BufferPrinter.init(buffer_writer);
 
-    const buffer_writer = js_printer.BufferWriter.init(a);
-    var printer = js_printer.BufferPrinter.init(buffer_writer);
-
-    _ = js_printer.printCommonJS(
-        *js_printer.BufferPrinter,
-        &printer,
-        ast,
-        js_ast.Symbol.Map.initList(symbols),
-        &source,
-        false,
-        .{
-            .allocator = a,
-            .bundling = false,
-            .runtime_imports = ast.runtime_imports,
-            .require_ref = ast.require_ref,
-            .transform_only = true,
-            .hmr_ref = ast.wrapper_ref,
-            .mangled_props = null,
-        },
-        false,
-    ) catch return TranspileError.PrintFailed;
+    // .esm_ascii (not .cjs): for a CommonJS AST this prints the JS verbatim
+    // (type-stripped), preserving require()/module.exports. The .cjs format
+    // assumes a bundler require_ref and would drop bare require() calls.
+    _ = transpiler.print(parse_result, @TypeOf(&printer), &printer, .esm_ascii) catch
+        return TranspileError.PrintFailed;
 
     return allocator.dupe(u8, printer.ctx.getWritten());
 }
 
-test "transpileToCjs strips TS types from a CommonJS module" {
+test "transpileToCjs strips TS types from a self-contained module" {
     const src =
         "const x: number = 41;\n" ++
         "function add(a: number, b: number): number { return a + b; }\n" ++
@@ -117,33 +109,29 @@ test "transpileToCjs strips TS types from a CommonJS module" {
     const out = try transpileToCjs(std.testing.allocator, src, "/virtual/mod.ts");
     defer std.testing.allocator.free(out);
 
-    // Types gone, runtime code preserved.
     try std.testing.expect(std.mem.indexOf(u8, out, ": number") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "interface") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "41") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "module.exports") != null);
 }
 
-test "transpileToCjs strips types preserving plain CommonJS exports" {
+test "transpileToCjs preserves require() calls (full transpiler)" {
     const src =
-        "const greeting: string = 'hi';\n" ++
-        "type Unused = { a: number };\n" ++
-        "exports.greet = (name: string): string => greeting + ' ' + name;\n";
-    const out = try transpileToCjs(std.testing.allocator, src, "/virtual/greet.ts");
+        "const path = require('node:path');\n" ++
+        "const base: string = path.basename('/a/b.ts');\n" ++
+        "module.exports = base;\n";
+    const out = try transpileToCjs(std.testing.allocator, src, "/virtual/usespath.ts");
     defer std.testing.allocator.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, ": string") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "type Unused") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "exports.greet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "require") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "node:path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "module.exports") != null);
 }
 
-test "transpileToCjs bails cleanly on ESM and on import/require (need bundler)" {
-    const esm =
-        "export const z = 5;\n" ++
-        "export default function () { return z; }\n";
-    try std.testing.expectError(TranspileError.UnsupportedEsm, transpileToCjs(std.testing.allocator, esm, "/virtual/esm.ts"));
-
-    // require() creates an import record the standalone printer can't emit yet.
-    const cjs_req = "const p = require('node:path'); module.exports = p;\n";
-    try std.testing.expectError(TranspileError.UnsupportedImports, transpileToCjs(std.testing.allocator, cjs_req, "/virtual/req.ts"));
+test "transpileToCjs bails on ESM (needs bundler link stage)" {
+    const src =
+        "export const joined = 1;\n" ++
+        "export default 7;\n";
+    try std.testing.expectError(TranspileError.UnsupportedEsm, transpileToCjs(std.testing.allocator, src, "/virtual/esm.ts"));
 }
