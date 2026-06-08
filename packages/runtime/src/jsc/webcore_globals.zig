@@ -241,7 +241,30 @@ const install_glue =
     \\      this._bodyStream = streamBody;
     \\    }
     \\  };
+    \\  // FormData — WHATWG multipart form data (values are strings or Blob/File).
+    \\  class FormData {
+    \\    constructor() { this._entries = []; }
+    \\    append(name, value, filename) { this._entries.push([String(name), this._coerce(value, filename)]); }
+    \\    set(name, value, filename) { name = String(name); var v = this._coerce(value, filename); var replaced = false; var out = []; for (var i = 0; i < this._entries.length; i++) { if (this._entries[i][0] === name) { if (!replaced) { out.push([name, v]); replaced = true; } } else out.push(this._entries[i]); } if (!replaced) out.push([name, v]); this._entries = out; }
+    \\    _coerce(value, filename) {
+    \\      if (value && typeof Blob === "function" && value instanceof Blob) {
+    \\        if (filename !== undefined) { var nb = new Blob([], { type: value.type || "" }); nb._bytes = value._bytes; nb.name = String(filename); return nb; }
+    \\        return value;
+    \\      }
+    \\      return String(value);
+    \\    }
+    \\    get(name) { name = String(name); for (var i = 0; i < this._entries.length; i++) if (this._entries[i][0] === name) return this._entries[i][1]; return null; }
+    \\    getAll(name) { name = String(name); var out = []; for (var i = 0; i < this._entries.length; i++) if (this._entries[i][0] === name) out.push(this._entries[i][1]); return out; }
+    \\    has(name) { name = String(name); for (var i = 0; i < this._entries.length; i++) if (this._entries[i][0] === name) return true; return false; }
+    \\    delete(name) { name = String(name); this._entries = this._entries.filter(function(e) { return e[0] !== name; }); }
+    \\    forEach(cb, thisArg) { for (var i = 0; i < this._entries.length; i++) cb.call(thisArg, this._entries[i][1], this._entries[i][0], this); }
+    \\    keys() { return this._entries.map(function(e) { return e[0]; })[Symbol.iterator](); }
+    \\    values() { return this._entries.map(function(e) { return e[1]; })[Symbol.iterator](); }
+    \\    entries() { return this._entries.map(function(e) { return [e[0], e[1]]; })[Symbol.iterator](); }
+    \\    [Symbol.iterator]() { return this.entries(); }
+    \\  }
     \\  globalThis.Blob = Blob;
+    \\  globalThis.FormData = FormData;
     \\  globalThis.Request = Request;
     \\  globalThis.Response = Response;
     \\})();
