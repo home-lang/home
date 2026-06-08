@@ -1466,8 +1466,14 @@ pub const Engine = struct {
             self.typeContainsTypeParameter(target);
 
         const compare_len = @min(sp.len, tp.len);
-        for (sp[0..compare_len], 0..) |s_param, i| {
-            const t_param = tp[i];
+        for (sp[0..compare_len], 0..) |s_param_raw, i| {
+            // A malformed signature can carry an out-of-range parameter
+            // TypeId (e.g. a partially-lowered nested generic construct
+            // signature); recover to `unknown` rather than indexing the
+            // type pool out of bounds, matching `substituteTpDeep`'s
+            // `validOrUnknown` idiom above.
+            const s_param = self.validOrUnknown(s_param_raw);
+            const t_param = self.validOrUnknown(tp[i]);
             const sf = self.pool().flagsOf(s_param);
             const tf = self.pool().flagsOf(t_param);
             // Contextually instantiate a generic source callback
