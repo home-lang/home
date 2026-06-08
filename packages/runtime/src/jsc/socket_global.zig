@@ -589,6 +589,81 @@ const install_glue =
     \\    wrapped.resolve = prevRequire.resolve || function(s) { return String(s); };
     \\    globalThis.require = wrapped;
     \\  }
+    \\  // WebSocket client global — ws:// over Bun.connect with masked frames.
+    \\  function wsClientFrame(opcode, payload) {
+    \\    var mask = [(Math.random() * 256) | 0, (Math.random() * 256) | 0, (Math.random() * 256) | 0, (Math.random() * 256) | 0];
+    \\    var len = payload.length, header;
+    \\    if (len < 126) header = [0x80 | opcode, 0x80 | len];
+    \\    else if (len < 65536) header = [0x80 | opcode, 0x80 | 126, (len >> 8) & 0xff, len & 0xff];
+    \\    else header = [0x80 | opcode, 0x80 | 127, 0, 0, 0, 0, (len >>> 24) & 0xff, (len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff];
+    \\    var frame = new Uint8Array(header.length + 4 + len);
+    \\    frame.set(header, 0); frame.set(mask, header.length);
+    \\    for (var i = 0; i < len; i++) frame[header.length + 4 + i] = payload[i] ^ mask[i % 4];
+    \\    return frame;
+    \\  }
+    \\  function WebSocket(url, protocols) {
+    \\    var self = this;
+    \\    this.url = String(url); this.readyState = 0; this.binaryType = "blob"; this.protocol = "";
+    \\    this.bufferedAmount = 0; this.extensions = "";
+    \\    var listeners = { open: [], message: [], close: [], error: [] };
+    \\    this.addEventListener = function(t, fn) { if (listeners[t]) listeners[t].push(fn); };
+    \\    this.removeEventListener = function(t, fn) { if (listeners[t]) listeners[t] = listeners[t].filter(function(f) { return f !== fn; }); };
+    \\    function fire(t, ev) {
+    \\      ev = ev || {}; ev.type = t; ev.target = self;
+    \\      var on = self["on" + t]; if (typeof on === "function") { try { on.call(self, ev); } catch (e) {} }
+    \\      listeners[t].forEach(function(fn) { try { fn.call(self, ev); } catch (e) {} });
+    \\    }
+    \\    var u = new globalThis.URL(this.url);
+    \\    var port = u.port ? (u.port | 0) : (u.protocol === "wss:" ? 443 : 80);
+    \\    var host = u.hostname, path = (u.pathname || "/") + (u.search || "");
+    \\    var keyBytes = new Uint8Array(16); for (var ki = 0; ki < 16; ki++) keyBytes[ki] = (Math.random() * 256) | 0;
+    \\    var key = btoa(String.fromCharCode.apply(null, keyBytes));
+    \\    var handshakeDone = false, sock = null;
+    \\    function onbytes(data) {
+    \\      self._buf = self._buf || new Uint8Array(0);
+    \\      var buf = new Uint8Array(self._buf.length + data.length); buf.set(self._buf, 0); buf.set(data, self._buf.length);
+    \\      var off = 0;
+    \\      while (buf.length - off >= 2) {
+    \\        var opcode = buf[off] & 0x0f, len = buf[off + 1] & 0x7f, p = off + 2;
+    \\        if (len === 126) { if (buf.length - off < 4) break; len = (buf[p] << 8) | buf[p + 1]; p += 2; }
+    \\        else if (len === 127) { if (buf.length - off < 10) break; len = 0; for (var i = 0; i < 8; i++) len = len * 256 + buf[p + i]; p += 8; }
+    \\        if (buf.length - p < len) break;
+    \\        var payload = buf.slice(p, p + len); off = p + len;
+    \\        if (opcode === 0x1) fire("message", { data: new TextDecoder().decode(payload) });
+    \\        else if (opcode === 0x2) { var d = self.binaryType === "arraybuffer" ? payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) : (typeof globalThis.Blob === "function" ? new globalThis.Blob([payload]) : Buffer.from(payload)); fire("message", { data: d }); }
+    \\        else if (opcode === 0x8) { self.readyState = 3; if (sock) sock.end(); fire("close", { code: 1000, wasClean: true }); }
+    \\        else if (opcode === 0x9) { if (sock) sock.write(wsClientFrame(0xA, payload)); }
+    \\      }
+    \\      self._buf = buf.slice(off);
+    \\    }
+    \\    B.connect({ hostname: host, port: port, socket: {
+    \\      open: function(s) { sock = s; self._sock = s; s.write("GET " + path + " HTTP/1.1\r\nHost: " + host + ":" + port + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n"); },
+    \\      data: function(s, data) {
+    \\        if (!handshakeDone) {
+    \\          var str = data.toString("latin1"); var idx = str.indexOf("\r\n\r\n"); if (idx < 0) return;
+    \\          if (str.indexOf(" 101 ") < 0) { self.readyState = 3; fire("error", {}); fire("close", { code: 1006 }); s.end(); return; }
+    \\          handshakeDone = true; self.readyState = 1; fire("open", {});
+    \\          if (data.length > idx + 4) onbytes(data.slice(idx + 4));
+    \\        } else onbytes(data);
+    \\      },
+    \\      close: function() { if (self.readyState !== 3) { self.readyState = 3; fire("close", { code: 1006 }); } },
+    \\    } }).catch(function(e) { self.readyState = 3; fire("error", e); fire("close", { code: 1006 }); });
+    \\    this.send = function(data) {
+    \\      if (self.readyState !== 1 || !sock) return;
+    \\      var pp = (typeof data === "string") ? [0x1, new TextEncoder().encode(data)] : [0x2, (data instanceof Uint8Array ? data : (ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data)))];
+    \\      sock.write(wsClientFrame(pp[0], pp[1]));
+    \\    };
+    \\    this.close = function(code, reason) {
+    \\      if (self.readyState === 3) return;
+    \\      self.readyState = 2;
+    \\      var rb = reason ? new TextEncoder().encode(String(reason)) : new Uint8Array(0);
+    \\      var cc = code || 1000; var pl = new Uint8Array(2 + rb.length); pl[0] = (cc >> 8) & 0xff; pl[1] = cc & 0xff; pl.set(rb, 2);
+    \\      if (sock) { sock.write(wsClientFrame(0x8, pl)); sock.end(); }
+    \\      self.readyState = 3;
+    \\    };
+    \\  }
+    \\  WebSocket.CONNECTING = 0; WebSocket.OPEN = 1; WebSocket.CLOSING = 2; WebSocket.CLOSED = 3;
+    \\  globalThis.WebSocket = WebSocket;
     \\  B.udpSocket = function(options) {
     \\    options = options || {};
     \\    var host = options.hostname || "0.0.0.0";
