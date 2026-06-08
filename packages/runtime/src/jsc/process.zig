@@ -168,7 +168,32 @@ fn staticInfoNative(
     setProp(c, object, "version", jsStringValue(c, "v" ++ node_version));
     setProp(c, object, "node", jsStringValue(c, node_version));
     setProp(c, object, "pid", extern_fns.JSValueMakeNumber(c, @floatFromInt(std.c.getpid())));
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe: []const u8 = if (std.process.executablePath(std.Options.debug_io, &exe_buf)) |n| exe_buf[0..n] else |_| "";
+    setProp(c, object, "execPath", jsStringValue(c, exe));
     return @ptrCast(object);
+}
+
+/// `__home_process_mono_ns()` -> monotonic clock in nanoseconds (used to build
+/// process.hrtime / hrtime.bigint / uptime in JS).
+fn monoNsNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+    const c = ctx orelse return null;
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    const ns: f64 = @as(f64, @floatFromInt(ts.sec)) * 1.0e9 + @as(f64, @floatFromInt(ts.nsec));
+    return extern_fns.JSValueMakeNumber(c, ns);
 }
 
 fn cwdNative(
@@ -259,7 +284,16 @@ const install_glue =
     \\  var exitFn = globalThis.__home_process_exit;
     \\  var outWriteFn = globalThis.__home_process_stdout_write;
     \\  var errWriteFn = globalThis.__home_process_stderr_write;
+    \\  var monoFn = globalThis.__home_process_mono_ns;
     \\  var info = infoFn();
+    \\  var startNs = BigInt(Math.round(monoFn()));
+    \\  function nowNs() { return BigInt(Math.round(monoFn())); }
+    \\  function hrtime(prev) {
+    \\    var ns = nowNs();
+    \\    if (prev) { ns = ns - (BigInt(prev[0]) * 1000000000n + BigInt(prev[1])); }
+    \\    return [Number(ns / 1000000000n), Number(ns % 1000000000n)];
+    \\  }
+    \\  hrtime.bigint = function() { return nowNs(); };
     \\  globalThis.process = {
     \\    argv: argvFn(),
     \\    env: envFn(),
@@ -268,8 +302,12 @@ const install_glue =
     \\    version: info.version,
     \\    versions: { node: info.node },
     \\    pid: info.pid,
+    \\    execPath: info.execPath,
+    \\    exitCode: undefined,
     \\    cwd: function() { return cwdFn(); },
     \\    exit: function(code) { return exitFn(code); },
+    \\    uptime: function() { return Number(nowNs() - startNs) / 1e9; },
+    \\    hrtime: hrtime,
     \\    nextTick: function(cb) {
     \\      var args = Array.prototype.slice.call(arguments, 1);
     \\      Promise.resolve().then(function() { cb.apply(null, args); });
@@ -284,6 +322,7 @@ const install_glue =
     \\  delete globalThis.__home_process_exit;
     \\  delete globalThis.__home_process_stdout_write;
     \\  delete globalThis.__home_process_stderr_write;
+    \\  delete globalThis.__home_process_mono_ns;
     \\})();
 ;
 
@@ -301,6 +340,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_process_exit", exitNative);
     callback.registerCallback(ctx, global, "__home_process_stdout_write", stdoutWriteNative);
     callback.registerCallback(ctx, global, "__home_process_stderr_write", stderrWriteNative);
+    callback.registerCallback(ctx, global, "__home_process_mono_ns", monoNsNative);
 
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:process-install", 1) catch return;
     result.deinit(allocator);
@@ -339,6 +379,35 @@ test "process install exposes the core surface" {
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "typeof globalThis.__home_process_argv === 'undefined' && " ++
         "typeof globalThis.__home_process_static_info === 'undefined'"));
+}
+
+test "process exposes execPath, exitCode, uptime, and hrtime(+bigint)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{"home"};
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof process.execPath !== 'string' || process.execPath.length === 0) return false;" ++
+        "  if (!('exitCode' in process) || process.exitCode !== undefined) return false;" ++
+        "  process.exitCode = 3; if (process.exitCode !== 3) return false;" ++
+        "  if (typeof process.uptime !== 'function' || !(process.uptime() >= 0)) return false;" ++
+        "  var t = process.hrtime();" ++
+        "  if (!Array.isArray(t) || t.length !== 2 || t[1] < 0 || t[1] >= 1e9) return false;" ++
+        "  var d = process.hrtime(t);" ++ // diff from a near-now mark is tiny
+        "  if (d[0] < 0 || (d[0] === 0 && d[1] < 0)) return false;" ++
+        "  if (typeof process.hrtime.bigint !== 'function' || typeof process.hrtime.bigint() !== 'bigint') return false;" ++
+        "  return process.hrtime.bigint() >= 0n;" ++
+        "})()"));
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "typeof globalThis.__home_process_mono_ns === 'undefined'"));
 }
 
 test "process.cwd returns a non-empty absolute path" {
