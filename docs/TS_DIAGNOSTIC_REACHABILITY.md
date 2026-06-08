@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 561 |
-| active reachable (parity targets) | 98 |
+| catalog-only total | 560 |
+| active reachable (parity targets) | 97 |
 | blocked/effectively-dead references | 2 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -29,7 +29,7 @@ diverge from the reference compiler.
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 2xxx — checker / type engine | 11 |
-| 4xxx — declaration-emit (privacy / serialization) | 7 |
+| 4xxx — declaration-emit (privacy / serialization) | 6 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (47)
@@ -133,13 +133,12 @@ diverge from the reference compiler.
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
-### 4xxx — declaration-emit (privacy / serialization) (7)
+### 4xxx — declaration-emit (privacy / serialization) (6)
 
 - TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
 - TS4097 `Public_static_method_0_of_exported_class_has_or_is_using_private_name_1_4097`
 - TS4100 `Public_method_0_of_exported_class_has_or_is_using_private_name_1_4100`
 - TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
-- TS4109 `Type_arguments_for_0_circularly_reference_themselves_4109`
 - TS4110 `Tuple_type_arguments_circularly_reference_themselves_4110`
 - TS4118 `The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118`
 
