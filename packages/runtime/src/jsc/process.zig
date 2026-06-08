@@ -205,6 +205,32 @@ fn monoNsNative(
     return extern_fns.JSValueMakeNumber(c, ns);
 }
 
+/// `__home_process_kill(pid, sig)` -> kill(2) result (0 on success). Signal 0
+/// only checks for the process's existence/permission.
+fn killNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) return extern_fns.JSValueMakeNumber(c, -1);
+    const pid: i32 = @intFromFloat(extern_fns.JSValueToNumber(c, arguments[0].?, null));
+    const sig: c_int = @intFromFloat(extern_fns.JSValueToNumber(c, arguments[1].?, null));
+    // Raw libc kill: signal 0 (existence probe) is not a member of std.c's typed
+    // SIG enum, so @enumFromInt would trip a safety panic — pass a plain c_int.
+    const c_kill = struct {
+        extern "c" fn kill(pid: std.c.pid_t, sig: c_int) c_int;
+    };
+    const rc = c_kill.kill(@intCast(pid), sig);
+    return extern_fns.JSValueMakeNumber(c, @floatFromInt(rc));
+}
+
 /// `__home_process_cpu_usage()` -> { user, system } CPU time in microseconds
 /// for this process (getrusage RUSAGE_SELF), the basis for process.cpuUsage().
 fn cpuUsageNative(
@@ -320,6 +346,9 @@ const install_glue =
     \\  var errWriteFn = globalThis.__home_process_stderr_write;
     \\  var monoFn = globalThis.__home_process_mono_ns;
     \\  var cpuFn = globalThis.__home_process_cpu_usage;
+    \\  var killFn = globalThis.__home_process_kill;
+    \\  // Signals whose numbers are identical across Linux and macOS/BSD.
+    \\  var SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGFPE: 8, SIGKILL: 9, SIGSEGV: 11, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15 };
     \\  var info = infoFn();
     \\  var startNs = BigInt(Math.round(monoFn()));
     \\  function nowNs() { return BigInt(Math.round(monoFn())); }
@@ -344,6 +373,14 @@ const install_glue =
     \\    uptime: function() { return Number(nowNs() - startNs) / 1e9; },
     \\    hrtime: hrtime,
     \\    cpuUsage: function(prev) { var u = cpuFn(); if (prev) return { user: u.user - prev.user, system: u.system - prev.system }; return u; },
+    \\    kill: function(pid, sig) {
+    \\      if (sig === undefined) sig = "SIGTERM";
+    \\      var n = (typeof sig === "number") ? sig : SIGNALS[sig];
+    \\      if (n === undefined) throw new Error("Unknown signal: " + sig);
+    \\      var rc = killFn(pid | 0, n);
+    \\      if (rc !== 0) { var e = new Error("kill " + pid + " failed"); e.code = "ESRCH"; e.errno = -3; e.syscall = "kill"; throw e; }
+    \\      return true;
+    \\    },
     \\    report: {
     \\      getReport: function() {
     \\        return {
@@ -377,6 +414,7 @@ const install_glue =
     \\  delete globalThis.__home_process_stderr_write;
     \\  delete globalThis.__home_process_mono_ns;
     \\  delete globalThis.__home_process_cpu_usage;
+    \\  delete globalThis.__home_process_kill;
     \\})();
 ;
 
@@ -396,6 +434,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_process_stderr_write", stderrWriteNative);
     callback.registerCallback(ctx, global, "__home_process_mono_ns", monoNsNative);
     callback.registerCallback(ctx, global, "__home_process_cpu_usage", cpuUsageNative);
+    callback.registerCallback(ctx, global, "__home_process_kill", killNative);
 
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:process-install", 1) catch return;
     result.deinit(allocator);
@@ -467,6 +506,32 @@ test "process exposes execPath, exitCode, uptime, and hrtime(+bigint)" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "typeof globalThis.__home_process_mono_ns === 'undefined' && typeof globalThis.__home_process_cpu_usage === 'undefined'"));
+}
+
+test "process.kill sends signals; signal 0 probes existence" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{"home"};
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    // Note: we never send a real (terminating) signal to ourselves. Signal 0 is
+    // a no-op existence probe; named/numeric signals are exercised against a pid
+    // that cannot exist so they fail with ESRCH instead of killing the test.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof process.kill !== 'function') return false;" ++
+        "  if (process.kill(process.pid, 0) !== true) return false;" ++ // self exists, no-op
+        "  var NOPID = 0x7ffffffe;" ++ // far above any real pid
+        "  var e1 = false; try { process.kill(NOPID, 0); } catch (e) { e1 = (e.code === 'ESRCH'); } if (!e1) return false;" ++
+        "  var e2 = false; try { process.kill(NOPID, 'SIGTERM'); } catch (e) { e2 = (e.code === 'ESRCH'); } if (!e2) return false;" ++ // name maps, then ESRCH
+        "  var unknown = false; try { process.kill(process.pid, 'NOPE'); } catch (e) { unknown = (e.code !== 'ESRCH'); }" ++ // rejected before syscall
+        "  return unknown;" ++
+        "})()"));
 }
 
 test "process.report.getReport returns a header echoing platform/arch" {
