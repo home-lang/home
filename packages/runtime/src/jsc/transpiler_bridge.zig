@@ -77,13 +77,14 @@ pub fn transpileToCjs(allocator: std.mem.Allocator, source_code: []const u8, pat
         return TranspileError.ParseFailed;
     if (parse_result.empty) return allocator.dupe(u8, "");
 
-    // ESM export/import lowering to CJS needs the bundler's link stage to
-    // populate the runtime-import refs (__export/__toCommonJS); transform-only
-    // leaves them null and the CJS printer would crash. CJS (require/exports)
-    // prints correctly here. Bail on ESM until ESM runs via JSC's loader.
-    switch (parse_result.ast.exports_kind) {
-        .esm, .esm_with_dynamic_fallback => return TranspileError.UnsupportedEsm,
-        else => {},
+    // Bail only on ACTUAL ESM syntax — a real `export` keyword (TS-only syntax
+    // excluded) or an `import` statement (kind .stmt; require() is .require).
+    // `exports_kind` defaults to .esm for ambiguous no-marker files, so it would
+    // wrongly reject plain scripts like `const x = 1; console.log(x)`. Lowering
+    // real ESM->CJS needs the bundler link stage; until then it's delegated.
+    if (parse_result.ast.export_keyword.len > 0) return TranspileError.UnsupportedEsm;
+    for (parse_result.ast.import_records.slice()) |rec| {
+        if (rec.kind == .stmt) return TranspileError.UnsupportedEsm;
     }
 
     var buffer_writer = JSPrinter.BufferWriter.init(a);

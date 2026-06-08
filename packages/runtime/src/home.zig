@@ -2813,6 +2813,8 @@ pub const jsc = struct {
     pub const bun_global = @import("jsc/bun_global.zig");
     // CommonJS require() + node:* built-ins (path/fs/os) for the realm.
     pub const node_modules = @import("jsc/node_modules.zig");
+    // TS/JS -> CommonJS transpile (type-stripping) for native run/require.
+    pub const transpiler_bridge = @import("jsc/transpiler_bridge.zig");
     // Native Bun.spawnSync (real OS subprocess) for the realm.
     pub const spawn_global = @import("jsc/spawn_global.zig");
     // Native Bun.password (argon2/bcrypt via std.crypto.pwhash) for the realm.

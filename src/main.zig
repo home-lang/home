@@ -1578,8 +1578,13 @@ fn runJsLikeFile(allocator: std.mem.Allocator, file_path: []const u8, extra_args
     // through Home's OWN JSC runtime for plain `.js`/`.cjs` (script-mode; ESM
     // `.mjs` and TS still delegate). Gated so the default path is unchanged and
     // the bun-corpus spawn tests (which use `home run`) keep passing.
+    // Native (CommonJS + TypeScript): plain .js/.cjs run as-is; .ts/.cts/.tsx
+    // are type-stripped via the transpiler bridge. ESM (.mjs / import-export)
+    // still delegates — it needs the bundler link stage / JSC module loader.
     if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_RUN") and
-        (std.mem.endsWith(u8, file_path, ".js") or std.mem.endsWith(u8, file_path, ".cjs")))
+        (std.mem.endsWith(u8, file_path, ".js") or std.mem.endsWith(u8, file_path, ".cjs") or
+            std.mem.endsWith(u8, file_path, ".ts") or std.mem.endsWith(u8, file_path, ".cts") or
+            std.mem.endsWith(u8, file_path, ".tsx")))
     {
         return runFileNative(allocator, file_path, extra_args);
     }
@@ -1673,17 +1678,30 @@ fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args
         std.debug.print("{s}error:{s} native run requires a JSC-enabled build\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
     } else {
-        const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
-            std.debug.print("{s}error:{s} cannot read '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
-            std.process.exit(1);
+        // Resolve the entry to an absolute path so the CommonJS loader treats
+        // it as a path (not a bare specifier) and binds the module's require()
+        // to its own directory (so the entry's relative require()s resolve).
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var abs_owned = false;
+        const abs_path: []const u8 = if (std.fs.path.isAbsolute(file_path))
+            file_path
+        else blk: {
+            const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse {
+                std.debug.print("{s}error:{s} cannot resolve cwd\n", .{ Color.Red.code(), Color.Reset.code() });
+                std.process.exit(1);
+            };
+            const cwd = std.mem.span(@as([*:0]u8, @ptrCast(cwd_ptr)));
+            const joined = std.fs.path.join(allocator, &.{ cwd, file_path }) catch break :blk file_path;
+            abs_owned = true;
+            break :blk joined;
         };
-        defer allocator.free(source);
+        defer if (abs_owned) allocator.free(abs_path);
 
         // process.argv = [exe, file, ...extra_args]
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         defer argv.deinit(allocator);
         argv.append(allocator, "home") catch {};
-        argv.append(allocator, file_path) catch {};
+        argv.append(allocator, abs_path) catch {};
         for (extra_args) |a| argv.append(allocator, a) catch {};
 
         var engine = home_rt.jsc.engine.Engine.init(allocator) catch |err| {
@@ -1695,7 +1713,21 @@ fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args
         const global = engine.currentGlobalObject();
         installRealmGlobals(allocator, ctx, global, argv.items);
 
-        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, source, file_path, 1);
+        // Run the entry through the CommonJS loader (transpiles TS, binds a
+        // dir-scoped require, caches). Quote the path for a JS string literal,
+        // escaping backslash then double-quote.
+        const esc_bs: ?[]u8 = std.mem.replaceOwned(u8, allocator, abs_path, "\\", "\\\\") catch null;
+        defer if (esc_bs) |e| allocator.free(e);
+        const base_q = esc_bs orelse abs_path;
+        const esc_q: ?[]u8 = std.mem.replaceOwned(u8, allocator, base_q, "\"", "\\\"") catch null;
+        defer if (esc_q) |e| allocator.free(e);
+        const quoted = esc_q orelse base_q;
+        const bootstrap = std.fmt.allocPrint(allocator, "require(\"{s}\");", .{quoted}) catch {
+            std.process.exit(1);
+        };
+        defer allocator.free(bootstrap);
+
+        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, bootstrap, abs_path, 1);
         defer evaluation.deinit(allocator);
         if (evaluation.exception != null) {
             const message = evaluation.exception_message orelse "uncaught exception";
