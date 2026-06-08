@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 556 |
-| active reachable (parity targets) | 93 |
+| catalog-only total | 555 |
+| active reachable (parity targets) | 92 |
 | blocked/effectively-dead references | 2 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,19 +25,18 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 43 |
+| 1xxx — parser / syntactic + program file-inclusion | 42 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 2xxx — checker / type engine | 11 |
 | 4xxx — declaration-emit (privacy / serialization) | 6 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 1xxx — parser / syntactic + program file-inclusion (43)
+### 1xxx — parser / syntactic + program file-inclusion (42)
 
 - TS1012 `Unexpected_token_1012`
 - TS1059 `A_promise_must_have_a_then_method_1059`
 - TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060`
-- TS1149 `File_name_0_differs_from_already_included_file_name_1_only_in_casing_1149`
 - TS1261 `Already_included_file_name_0_differs_from_file_name_1_only_in_casing_1261`
 - TS1272 `A_type_referenced_in_a_decorated_signature_must_be_imported_with_import_type_or_a_namespace_import_w_1272`
 - TS1281 `Cannot_access_0_from_another_file_without_qualification_when_1_is_enabled_Use_2_instead_1281`
