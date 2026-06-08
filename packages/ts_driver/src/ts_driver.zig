@@ -1321,6 +1321,15 @@ fn jsxFragmentFactoryCompilerOptionPresent(source: []const u8, options: CompileO
 fn jsxFragmentFactoryScopeRequired(source: []const u8, options: CompileOptions) bool {
     const fragment_factory = compilerOptionDirectiveValue(source, "jsxFragmentFactory") orelse options.emit.jsx_fragment_factory;
     if (std.mem.eql(u8, fragment_factory, "null")) return false;
+    // A `@jsx:` source directive (conformance fixtures) selects the runtime
+    // directly and wins over the resolved emit runtime. Only the CLASSIC
+    // runtime (`react`) lowers `<>` to `<factory>.Fragment`, so only it needs
+    // the fragment factory in scope (TS2879). The automatic runtimes
+    // (`react-jsx`/`react-jsxdev`) auto-import the fragment from the JSX
+    // runtime, and `preserve`/`react-native` emit no factory call.
+    if (compilerOptionDirectiveValue(source, "jsx")) |mode| {
+        return std.mem.eql(u8, mode, "react");
+    }
     return options.emit.jsx_runtime == .classic or jsxFragmentFactoryCompilerOptionPresent(source, options);
 }
 
@@ -4017,6 +4026,42 @@ test "driver: classic JSX fragment missing factory scope reports TS2879" {
         {
             found = true;
         }
+    }
+    try T.expect(found);
+}
+
+test "driver: automatic-runtime JSX fragment does not require factory scope (no TS2879)" {
+    // `@jsx: react-jsx` auto-imports the fragment from the JSX runtime, so a
+    // bare `<></>` must NOT trigger TS2879 (the fragment factory in-scope
+    // requirement is classic-only). Mirrors conformance
+    // `intraExpressionInferencesJsx`.
+    inline for (.{ "react-jsx", "react-jsxdev" }) |mode| {
+        var c = try compileSource(T.allocator,
+            "// @jsx: " ++ mode ++ "\nlet v = <></>;",
+            .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true },
+        );
+        defer {
+            c.deinit();
+            T.allocator.destroy(c);
+        }
+        for (c.diagnostics.items) |d| {
+            try T.expect(d.code != 2879);
+        }
+    }
+}
+
+test "driver: classic JSX fragment via @jsx directive still reports TS2879" {
+    var c = try compileSource(T.allocator,
+        "// @jsx: react\nlet v = <></>;",
+        .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2879) found = true;
     }
     try T.expect(found);
 }
