@@ -425,6 +425,15 @@ const install_glue =
     \\      return widthFn(str, !!(opts && opts.countAnsiEscapeCodes));
     \\    },
     \\  };
+    \\  // Bun.fetch is the global fetch (resolved lazily — fetch installs after Bun).
+    \\  Object.defineProperty(globalThis.Bun, "fetch", { get: function() { return globalThis.fetch; }, configurable: true, enumerable: true });
+    \\  // Bun.enableANSIColors mirrors Bun: on unless NO_COLOR / FORCE_COLOR=0.
+    \\  Object.defineProperty(globalThis.Bun, "enableANSIColors", { get: function() {
+    \\    var env = (typeof process !== "undefined" && process.env) || {};
+    \\    if (env.NO_COLOR) return false;
+    \\    if (env.FORCE_COLOR === "0") return false;
+    \\    return true;
+    \\  }, configurable: true, enumerable: true });
     \\  delete globalThis.__home_bun_read_file;
     \\  delete globalThis.__home_bun_stat;
     \\  delete globalThis.__home_sleep_sync;
