@@ -405,6 +405,28 @@ const install_glue =
     \\    stdout: { write: function(s) { return outWriteFn(String(s)); }, isTTY: false },
     \\    stderr: { write: function(s) { return errWriteFn(String(s)); }, isTTY: false },
     \\  };
+    \\  // process is an EventEmitter (process.on('exit'|'uncaughtException'|...)).
+    \\  // Self-contained so it works in realms without node:events installed.
+    \\  (function() {
+    \\    var p = globalThis.process;
+    \\    var events = Object.create(null);
+    \\    function listFor(t) { return events[t] || (events[t] = []); }
+    \\    p.on = function(t, fn) { listFor(t).push({ fn: fn, once: false }); return p; };
+    \\    p.addListener = p.on;
+    \\    p.prependListener = function(t, fn) { listFor(t).unshift({ fn: fn, once: false }); return p; };
+    \\    p.once = function(t, fn) { listFor(t).push({ fn: fn, once: true }); return p; };
+    \\    p.prependOnceListener = function(t, fn) { listFor(t).unshift({ fn: fn, once: true }); return p; };
+    \\    p.off = function(t, fn) { var l = events[t]; if (l) events[t] = l.filter(function(e) { return e.fn !== fn; }); return p; };
+    \\    p.removeListener = p.off;
+    \\    p.removeAllListeners = function(t) { if (t === undefined) events = Object.create(null); else delete events[t]; return p; };
+    \\    p.emit = function(t) { var l = events[t]; if (!l || !l.length) return false; var args = Array.prototype.slice.call(arguments, 1); var snap = l.slice(); for (var i = 0; i < snap.length; i++) { var e = snap[i]; if (e.once) p.off(t, e.fn); try { e.fn.apply(p, args); } catch (err) { void err; } } return true; };
+    \\    p.listeners = function(t) { return (events[t] || []).map(function(e) { return e.fn; }); };
+    \\    p.rawListeners = p.listeners;
+    \\    p.listenerCount = function(t) { return (events[t] || []).length; };
+    \\    p.eventNames = function() { return Object.keys(events); };
+    \\    p.setMaxListeners = function() { return p; };
+    \\    p.getMaxListeners = function() { return 10; };
+    \\  })();
     \\  delete globalThis.__home_process_argv;
     \\  delete globalThis.__home_process_env;
     \\  delete globalThis.__home_process_static_info;
@@ -506,6 +528,34 @@ test "process exposes execPath, exitCode, uptime, and hrtime(+bigint)" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "typeof globalThis.__home_process_mono_ns === 'undefined' && typeof globalThis.__home_process_cpu_usage === 'undefined'"));
+}
+
+test "process is an EventEmitter (on/once/off/emit/listeners)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{"home"};
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof process.on !== 'function' || typeof process.emit !== 'function') return false;" ++
+        "  var sum = 0; function add(n) { sum += n; }" ++
+        "  process.on('tick', add);" ++
+        "  if (process.emit('tick', 2) !== true || process.emit('tick', 3) !== true || sum !== 5) return false;" ++
+        "  if (process.listenerCount('tick') !== 1) return false;" ++
+        "  process.off('tick', add); if (process.emit('tick', 1) !== false || sum !== 5) return false;" ++
+        "  var once = 0; process.once('go', function() { once++; });" ++
+        "  process.emit('go'); process.emit('go'); if (once !== 1) return false;" ++
+        "  if (process.emit('nobody') !== false) return false;" ++ // no listeners
+        "  process.on('multi', function(){}); process.on('multi', function(){});" ++
+        "  if (process.listeners('multi').length !== 2) return false;" ++
+        "  process.removeAllListeners('multi'); return process.listenerCount('multi') === 0;" ++
+        "})()"));
 }
 
 test "process.kill sends signals; signal 0 probes existence" {
