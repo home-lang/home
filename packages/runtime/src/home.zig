@@ -2787,6 +2787,8 @@ pub const jsc = struct {
     pub const semver_global = @import("jsc/semver_global.zig");
     // Native Bun.Cookie + Bun.CookieMap (RFC 6265) for the realm.
     pub const cookie_global = @import("jsc/cookie_global.zig");
+    // Native Bun.TOML.parse (Home's TOML parser -> JSON bridge) for the realm.
+    pub const toml_global = @import("jsc/toml_global.zig");
     // Phase 12.2 M6 (2026-05-19) — final scaffold milestone:
     // JSON + Promise + Iterator + Global helpers. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands. After M6
@@ -6615,6 +6617,7 @@ test {
     _ = @import("jsc/serve_global.zig");
     _ = @import("jsc/semver_global.zig");
     _ = @import("jsc/cookie_global.zig");
+    _ = @import("jsc/toml_global.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
