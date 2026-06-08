@@ -734,6 +734,49 @@ const install_glue =
     \\      return au ? out : out.buffer;
     \\    };
     \\    B.allocUnsafe = function(n) { return new Uint8Array(n); };
+    \\    // Bun.resolveSync / Bun.resolve — Node-style module resolution over the
+    \\    // realm's node:fs/node:path (builtins pass through; relative/absolute
+    \\    // probe extensions + index; bare specifiers walk node_modules).
+    \\    var BUILTINS = ["assert","async_hooks","buffer","child_process","cluster","console","constants","crypto","dgram","diagnostics_channel","dns","events","fs","http","http2","https","module","net","os","path","perf_hooks","process","punycode","querystring","readline","repl","stream","string_decoder","timers","tls","tty","url","util","v8","vm","worker_threads","zlib"];
+    \\    function bunResolveSync(specifier, parent) {
+    \\      specifier = String(specifier);
+    \\      if (specifier.indexOf("node:") === 0) return specifier;
+    \\      if (BUILTINS.indexOf(specifier) >= 0) return "node:" + specifier;
+    \\      var path = globalThis.require("node:path");
+    \\      var fs = globalThis.require("node:fs");
+    \\      var cwd = (typeof process !== "undefined" && process.cwd) ? process.cwd() : "/";
+    \\      var baseDir = parent ? (String(parent).indexOf("/") >= 0 ? path.dirname(String(parent)) : cwd) : cwd;
+    \\      function isFile(p) { try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch (e) { return false; } }
+    \\      function isDir(p) { try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch (e) { return false; } }
+    \\      var EXTS = [".js", ".mjs", ".cjs", ".json", ".ts", ".tsx", ".jsx", ".node"];
+    \\      function tryFile(p) {
+    \\        if (isFile(p)) return p;
+    \\        for (var i = 0; i < EXTS.length; i++) if (isFile(p + EXTS[i])) return p + EXTS[i];
+    \\        if (isDir(p)) {
+    \\          var pkg = path.join(p, "package.json");
+    \\          if (isFile(pkg)) { try { var main = JSON.parse(fs.readFileSync(pkg, "utf8")).main; if (main) { var m = tryFile(path.resolve(p, main)); if (m) return m; } } catch (e) {} }
+    \\          for (var j = 0; j < EXTS.length; j++) { var idx = path.join(p, "index" + EXTS[j]); if (isFile(idx)) return idx; }
+    \\        }
+    \\        return null;
+    \\      }
+    \\      var notFound = function() { var e = new Error("Cannot find module '" + specifier + "' from '" + baseDir + "'"); e.code = "ERR_MODULE_NOT_FOUND"; return e; };
+    \\      if (specifier[0] === "/" || specifier[0] === ".") {
+    \\        var r = tryFile(path.resolve(baseDir, specifier));
+    \\        if (r) return r;
+    \\        throw notFound();
+    \\      }
+    \\      var dir = baseDir;
+    \\      while (true) {
+    \\        var cand = tryFile(path.join(dir, "node_modules", specifier));
+    \\        if (cand) return cand;
+    \\        var up = path.dirname(dir);
+    \\        if (up === dir) break;
+    \\        dir = up;
+    \\      }
+    \\      throw notFound();
+    \\    }
+    \\    B.resolveSync = function(specifier, parent) { return bunResolveSync(specifier, parent); };
+    \\    B.resolve = function(specifier, parent) { try { return Promise.resolve(bunResolveSync(specifier, parent)); } catch (e) { return Promise.reject(e); } };
     \\    B.gc = function() { return 0; };
     \\    B.isMainThread = true;
     \\    B.revision = "0000000000000000000000000000000000000000";
