@@ -1275,6 +1275,15 @@ const install_glue =
     \\  globalThis.EventTarget = EventTarget;
     \\  globalThis.AbortSignal = AbortSignal;
     \\  globalThis.AbortController = AbortController;
+    \\  // globalThis is itself an EventTarget (Bun dispatches 'error',
+    \\  // 'unhandledrejection', etc. here). Back it with a hidden EventTarget and
+    \\  // delegate the three methods, binding `this` so the event target is global.
+    \\  if (typeof globalThis.addEventListener !== "function") {
+    \\    var __globalET = new EventTarget();
+    \\    globalThis.addEventListener = function(type, listener, opts) { return EventTarget.prototype.addEventListener.call(__globalET, type, listener, opts); };
+    \\    globalThis.removeEventListener = function(type, listener) { return EventTarget.prototype.removeEventListener.call(__globalET, type, listener); };
+    \\    globalThis.dispatchEvent = function(event) { return EventTarget.prototype.dispatchEvent.call(__globalET, event); };
+    \\  }
     \\})();
 ;
 
@@ -1310,6 +1319,34 @@ test "web globals install exposes the expected surface" {
         "typeof queueMicrotask === 'function' && typeof btoa === 'function' && typeof atob === 'function' && " ++
         "typeof TextEncoder === 'function' && typeof TextDecoder === 'function' && " ++
         "typeof globalThis.__home_text_encode === 'undefined'"));
+}
+
+test "globalThis is an EventTarget (add/remove/dispatchEvent)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof addEventListener !== 'function' || typeof dispatchEvent !== 'function') return false;" ++
+        "  var hits = 0; var saw = null;" ++
+        "  function on(e) { hits++; saw = e; }" ++
+        "  addEventListener('ping', on);" ++
+        "  var ev = new Event('ping');" ++
+        "  if (dispatchEvent(ev) !== true) return false;" ++
+        "  if (hits !== 1 || saw !== ev) return false;" ++
+        "  removeEventListener('ping', on);" ++
+        "  dispatchEvent(new Event('ping'));" ++
+        "  if (hits !== 1) return false;" ++ // listener removed
+        "  var n = 0; addEventListener('once', function() { n++; }, { once: true });" ++
+        "  dispatchEvent(new Event('once')); dispatchEvent(new Event('once'));" ++
+        "  return n === 1;" ++
+        "})()"));
 }
 
 test "Event subclasses (Message/Close/Error/Progress) carry their init fields" {
