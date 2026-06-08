@@ -1691,13 +1691,17 @@ fn envFlagSet(name: [*:0]const u8) bool {
 /// as a module (loadEntryPoint drives the event loop until the top-level
 /// promise settles), reports a rejected entry, then drains remaining async work.
 ///
-/// STATUS (2026-06-08): this path COMPILES (the full VM cone resolves via
-/// home_rt.jsc.VirtualMachine — no bun.js.zig CLI cone needed) and the VM
-/// executes modules, but VirtualMachine.init currently crashes inside
-/// JSC::VM::tryCreate at MarkedSpace.cpp sizeClasses() (a WebKit heap-init
-/// assertion) — the ZigGlobalObject/VM::tryCreate path needs a JSC engine init
-/// the C-API JSGlobalContextCreate path (used by `home eval`) does implicitly.
-/// Resolving that WebKit-ABI/heap-init mismatch is the remaining Phase-12.2 work.
+/// STATUS (2026-06-08): COMPILES via home_rt.jsc.VirtualMachine directly (no
+/// bun.js.zig CLI cone). The VM now BOOTS and EXECUTES modules through JSC's
+/// native loader (process.exit reaches the exit path). Earlier blockers cleared:
+/// the MarkedSpace sizeClasses() crash went away once we stopped calling
+/// JSCInitialize here (JSC is already initialized at process start; calling it
+/// again double-inits and trips the heap assert). REMAINING: the VM's output
+/// streams + clean-exit sequence aren't wired like Run.boot's (console.log
+/// output doesn't reach our stdout, and onExit/globalExit teardown is skipped),
+/// plus the transpiler/resolver needs Run.boot's full config for correct module
+/// fetch. So this runs the module but doesn't yet surface its output cleanly —
+/// the next focused step is porting Run.boot's VM config + exit sequence.
 /// Gated behind HOME_NATIVE_VM=1 so it never affects the default path or tests.
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
@@ -1710,8 +1714,6 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
         const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
         break :blk std.fs.path.join(allocator, &.{ cwd, file_path }) catch file_path;
     };
-
-    home_rt.jsc.initialize(false);
 
     const log = try allocator.create(home_rt.logger.Log);
     log.* = home_rt.logger.Log.init(allocator);
@@ -1740,6 +1742,9 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     while (vm.isEventLoopAlive()) {
         vm.tick();
     }
+    // Flush Bun's buffered stdout/stderr (console.log writes are buffered;
+    // Run.boot flushes via onExit, which we don't run here).
+    home_rt.Output.flush();
 }
 
 /// Execute a JS/TS file through Home's OWN native JSC runtime (not bun
