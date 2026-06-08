@@ -256,6 +256,23 @@ pub const Resolver = struct {
     /// the sibling `@types/<pkg>` package (mirroring tsc's
     /// declaration-only alternate pass).
     alternate_mode: bool = false,
+    /// Set when an `exports`/`imports` map entry is resolved under a
+    /// project with `outDir`/`declarationDir` but no way to establish the
+    /// project root (no `rootDir`, no config file) — tsc's TS2209/TS2210.
+    /// tsc reports this and leaves the specifier UNRESOLVED (the import's
+    /// would-be TS2307 is suppressed in favour of this). Cleared at the
+    /// start of each `resolve`; the bridge/checker reads it after a failed
+    /// resolution. Arena-allocated.
+    ambiguous_root: ?AmbiguousRoot = null,
+
+    /// A TS2209 (exports) / TS2210 (imports) project-root-ambiguous record:
+    /// the map `entry` (`.`, `./sub`, `#imp`) and the `package.json` `file`
+    /// it was declared in.
+    pub const AmbiguousRoot = struct {
+        entry: []const u8,
+        file: []const u8,
+        is_imports: bool,
+    };
 
     pub fn init(gpa: std.mem.Allocator, fs: FileSystem, config: Config) Resolver {
         return .{
@@ -330,6 +347,9 @@ pub const Resolver = struct {
         containing_file: []const u8,
     ) ResolveError!Resolution {
         if (specifier.len == 0) return error.InvalidSpecifier;
+        // Fresh per-resolution: any TS2209/TS2210 ambiguity is recorded
+        // during this call and read by the caller immediately after.
+        self.ambiguous_root = null;
         // Once-per-program resolution-kind banner (tsc emits this before
         // the first module resolution). TS6087 when explicit, TS6088 when
         // defaulted.
@@ -352,7 +372,11 @@ pub const Resolver = struct {
         if (result) |r| {
             self.cache.put(self.gpa, key, r) catch {};
         } else |e| {
-            if (e == error.NotFound) self.cache.put(self.gpa, key, null) catch {};
+            // Don't memoize a TS2209/TS2210-ambiguous failure: the
+            // ambiguity is reported per importing file, so each resolve
+            // must re-run and re-stash `ambiguous_root` (a cached null
+            // would suppress it for the 2nd+ importer).
+            if (e == error.NotFound and self.ambiguous_root == null) self.cache.put(self.gpa, key, null) catch {};
         }
         return result;
     }
@@ -1667,6 +1691,26 @@ pub const Resolver = struct {
                         .matched_null => return .blocked, // hard rejection
                         .matched => |m| {
                             const joined = try self.joinPath(pkg_dir, m);
+                            // TS2209 — under `outDir`/`declarationDir`, tsc
+                            // tries to map the exports target back to its
+                            // source input *before* loading it directly, but
+                            // can't establish the project root with no
+                            // `rootDir` and no config file. It reports the
+                            // ambiguity and leaves the specifier unresolved.
+                            // Mirrors tsgo's `tryLoadInputFileForPath`
+                            // (called at higher priority than the output).
+                            if ((self.config.out_dir.len != 0 or self.config.declaration_dir.len != 0) and
+                                self.config.config_file_path.len == 0 and
+                                self.config.root_dir.len == 0 and
+                                std.mem.indexOf(u8, joined, "/node_modules/") == null)
+                            {
+                                self.ambiguous_root = .{
+                                    .entry = try self.ar().dupe(u8, key),
+                                    .file = try self.ar().dupe(u8, pkg_json),
+                                    .is_imports = false,
+                                };
+                                return .blocked;
+                            }
                             if (try self.tryFileWithExtensions(joined)) |r| {
                                 try self.tracePackagePeerDependencies(pkg_dir, obj);
                                 return .{ .resolved = r };
@@ -3559,6 +3603,53 @@ test "Resolver: package exports — root '.' resolves via conditional chain" {
     const res = try r.resolve("dep", "/a.ts");
     try T.expectEqualStrings("/node_modules/dep/dist/index.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+test "Resolver: TS2209 ambiguous project root for self-name exports under outDir" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{ "name": "package", "type": "module", "exports": "./index.js" }
+    );
+    try vfs.addFile("/index.js", "export {};");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .out_dir = "out" });
+    defer r.deinit();
+    // With outDir set but no rootDir and no config file, the self-name
+    // exports entry can't be reverse-mapped to a source root → unresolved
+    // with the ambiguity recorded (tsc's TS2209).
+    try T.expectError(error.NotFound, r.resolve("package", "/index.js"));
+    try T.expect(r.ambiguous_root != null);
+    try T.expectEqualStrings(".", r.ambiguous_root.?.entry);
+    try T.expectEqualStrings("/package.json", r.ambiguous_root.?.file);
+    try T.expect(!r.ambiguous_root.?.is_imports);
+}
+
+test "Resolver: no TS2209 when rootDir disambiguates" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{ "name": "package", "type": "module", "exports": "./index.js" }
+    );
+    try vfs.addFile("/index.js", "export {};");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .out_dir = "out", .root_dir = "." });
+    defer r.deinit();
+    // rootDir present → no ambiguity; the export resolves normally.
+    _ = r.resolve("package", "/index.js") catch {};
+    try T.expect(r.ambiguous_root == null);
+}
+
+test "Resolver: no TS2209 without outDir/declarationDir" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{ "name": "package", "type": "module", "exports": "./index.js" }
+    );
+    try vfs.addFile("/index.js", "export {};");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    // No outDir → the export resolves directly, no ambiguity.
+    _ = r.resolve("package", "/index.js") catch {};
+    try T.expect(r.ambiguous_root == null);
 }
 
 test "Resolver: conditional exports trace matching fallback path" {

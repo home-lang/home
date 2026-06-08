@@ -1425,7 +1425,17 @@ const CheckerResolverAdapter = struct {
     pub const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
+        .ambiguousProjectRoot = ambiguousProjectRootImpl,
     };
+
+    /// TS2209/TS2210 — read the project-root-ambiguous record the resolver
+    /// stashed during the most recent (failed) resolve, so the production
+    /// CLI reports it too (not just the conformance harness).
+    fn ambiguousProjectRootImpl(self_ptr: *anyopaque) ?ts_driver.ExternalResolver.AmbiguousProjectRoot {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const amb = self.resolver.ambiguous_root orelse return null;
+        return .{ .entry = amb.entry, .file = amb.file, .is_imports = amb.is_imports };
+    }
 
     fn resolveImpl(
         self_ptr: *anyopaque,

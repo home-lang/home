@@ -1948,6 +1948,7 @@ pub fn compileSource(
             .chain = try dupeCheckerChain(gpa, d.chain),
             .related = try dupeCheckerRelated(gpa, &c.hir, d.related),
             .category = if (is_suggestion) .suggestion else .error_,
+            .is_global = d.is_global,
         });
         // Suggestions are not errors — they must not flip `has_errors`
         // (which gates emit fallback / exit codes).

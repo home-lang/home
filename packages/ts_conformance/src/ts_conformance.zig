@@ -46,7 +46,14 @@ const CheckerResolverAdapter = struct {
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
         .inferredExportUnsafeReference = inferredExportUnsafeReferenceImpl,
+        .ambiguousProjectRoot = ambiguousProjectRootImpl,
     };
+
+    fn ambiguousProjectRootImpl(self_ptr: *anyopaque) ?ts_checker.ExternalResolver.AmbiguousProjectRoot {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const amb = self.resolver.ambiguous_root orelse return null;
+        return .{ .entry = amb.entry, .file = amb.file, .is_imports = amb.is_imports };
+    }
 
     fn resolveImpl(
         self_ptr: *anyopaque,

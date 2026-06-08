@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 555 |
-| active reachable (parity targets) | 92 |
+| catalog-only total | 554 |
+| active reachable (parity targets) | 91 |
 | blocked/effectively-dead references | 2 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -28,8 +28,8 @@ diverge from the reference compiler.
 | 1xxx — parser / syntactic + program file-inclusion | 42 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
-| 2xxx — checker / type engine | 11 |
-| 4xxx — declaration-emit (privacy / serialization) | 6 |
+| 2xxx — checker / type engine | 9 |
+| 4xxx — declaration-emit (privacy / serialization) | 7 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (42)
@@ -114,10 +114,8 @@ diverge from the reference compiler.
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 2xxx — checker / type engine (11)
+### 2xxx — checker / type engine (9)
 
-- TS2209 `The_project_root_is_ambiguous_but_is_required_to_resolve_export_map_entry_0_in_file_1_Supply_the_roo_2209`
-- TS2210 `The_project_root_is_ambiguous_but_is_required_to_resolve_import_map_entry_0_in_file_1_Supply_the_roo_2210`
 - TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
 - TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
 - TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
@@ -128,12 +126,13 @@ diverge from the reference compiler.
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
-### 4xxx — declaration-emit (privacy / serialization) (6)
+### 4xxx — declaration-emit (privacy / serialization) (7)
 
 - TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
 - TS4097 `Public_static_method_0_of_exported_class_has_or_is_using_private_name_1_4097`
 - TS4100 `Public_method_0_of_exported_class_has_or_is_using_private_name_1_4100`
 - TS4102 `Method_0_of_exported_interface_has_or_is_using_private_name_1_4102`
+- TS4109 `Type_arguments_for_0_circularly_reference_themselves_4109`
 - TS4110 `Tuple_type_arguments_circularly_reference_themselves_4110`
 - TS4118 `The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118`
 
