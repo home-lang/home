@@ -1650,6 +1650,7 @@ fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anyty
     home_rt.jsc.peek_global.install(allocator, ctx, global);
     home_rt.jsc.node_modules.install(allocator, ctx, global);
     home_rt.jsc.spawn_global.install(allocator, ctx, global);
+    home_rt.jsc.dollar_global.install(allocator, ctx, global);
 }
 
 /// True when env var `name` is set to a non-empty value.
