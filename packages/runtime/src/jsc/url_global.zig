@@ -201,6 +201,8 @@ const install_glue =
     \\    toString() { return this.href; }
     \\    toJSON() { return this.href; }
     \\  }
+    \\  // URL.canParse(url, base) -> would `new URL(url, base)` succeed?
+    \\  URL.canParse = function(url, base) { try { new URL(String(url), base); return true; } catch (e) { return false; } };
     \\
     \\  globalThis.URLSearchParams = URLSearchParams;
     \\  globalThis.URL = URL;
@@ -255,6 +257,26 @@ test "URL throws TypeError on an invalid (schemeless) url" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "(function() { try { new URL('not a url'); return false; } catch (e) { return e instanceof TypeError; } })()"));
+}
+
+test "URL.canParse reports parseability without throwing" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof URL.canParse !== 'function') return false;" ++
+        "  if (URL.canParse('https://example.com/p') !== true) return false;" ++
+        "  if (URL.canParse('not a url') !== false) return false;" ++
+        "  if (URL.canParse('/rel') !== false) return false;" ++ // relative w/o base
+        "  return URL.canParse('/rel', 'https://example.com') === true;" ++ // relative w/ base
+        "})()"));
 }
 
 test "URL resolves common relative forms against a base" {

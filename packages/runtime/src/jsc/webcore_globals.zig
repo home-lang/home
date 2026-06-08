@@ -32,21 +32,23 @@ const install_glue =
     \\  class Headers {
     \\    constructor(init) {
     \\      this._map = new Map(); // lowercased name -> combined value
+    \\      this._cookies = [];    // set-cookie kept separate: it must not be comma-combined
     \\      if (init === undefined || init === null) return;
     \\      if (init instanceof Headers) { var self = this; init.forEach(function(v, k) { self.append(k, v); }); }
     \\      else if (Array.isArray(init)) { for (var i = 0; i < init.length; i++) this.append(init[i][0], init[i][1]); }
     \\      else if (typeof init === "object") { for (var k in init) if (hasOwn(init, k)) this.append(k, init[k]); }
     \\    }
-    \\    append(name, value) { name = String(name).toLowerCase(); value = String(value); var ex = this._map.get(name); this._map.set(name, ex === undefined ? value : ex + ", " + value); }
-    \\    set(name, value) { this._map.set(String(name).toLowerCase(), String(value)); }
-    \\    get(name) { var v = this._map.get(String(name).toLowerCase()); return v === undefined ? null : v; }
-    \\    has(name) { return this._map.has(String(name).toLowerCase()); }
-    \\    delete(name) { this._map.delete(String(name).toLowerCase()); }
-    \\    _sortedKeys() { return Array.from(this._map.keys()).sort(); }
-    \\    forEach(cb, thisArg) { var ks = this._sortedKeys(); for (var i = 0; i < ks.length; i++) cb.call(thisArg, this._map.get(ks[i]), ks[i], this); }
-    \\    keys() { return this._sortedKeys()[Symbol.iterator](); }
-    \\    values() { var self = this; return this._sortedKeys().map(function(k) { return self._map.get(k); })[Symbol.iterator](); }
-    \\    entries() { var self = this; return this._sortedKeys().map(function(k) { return [k, self._map.get(k)]; })[Symbol.iterator](); }
+    \\    append(name, value) { name = String(name).toLowerCase(); value = String(value); if (name === "set-cookie") { this._cookies.push(value); return; } var ex = this._map.get(name); this._map.set(name, ex === undefined ? value : ex + ", " + value); }
+    \\    set(name, value) { name = String(name).toLowerCase(); value = String(value); if (name === "set-cookie") { this._cookies = [value]; return; } this._map.set(name, value); }
+    \\    get(name) { name = String(name).toLowerCase(); if (name === "set-cookie") return this._cookies.length ? this._cookies.join(", ") : null; var v = this._map.get(name); return v === undefined ? null : v; }
+    \\    has(name) { name = String(name).toLowerCase(); if (name === "set-cookie") return this._cookies.length > 0; return this._map.has(name); }
+    \\    delete(name) { name = String(name).toLowerCase(); if (name === "set-cookie") { this._cookies = []; return; } this._map.delete(name); }
+    \\    getSetCookie() { return this._cookies.slice(); }
+    \\    _allEntries() { var self = this; var out = Array.from(this._map.keys()).map(function(k) { return [k, self._map.get(k)]; }); for (var i = 0; i < this._cookies.length; i++) out.push(["set-cookie", this._cookies[i]]); out.sort(function(a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); }); return out; }
+    \\    forEach(cb, thisArg) { var es = this._allEntries(); for (var i = 0; i < es.length; i++) cb.call(thisArg, es[i][1], es[i][0], this); }
+    \\    keys() { return this._allEntries().map(function(e) { return e[0]; })[Symbol.iterator](); }
+    \\    values() { return this._allEntries().map(function(e) { return e[1]; })[Symbol.iterator](); }
+    \\    entries() { return this._allEntries()[Symbol.iterator](); }
     \\    [Symbol.iterator]() { return this.entries(); }
     \\  }
     \\
@@ -327,6 +329,32 @@ test "Headers is case-insensitive, combines appends, sorts iteration" {
         "  h.delete('content-type'); if (h.has('content-type')) return false;" ++
         "  var seen = []; h.forEach(function(v, k) { seen.push(k); });" ++
         "  return seen.join(',') === 'x-a';" ++
+        "})()"));
+}
+
+test "Headers.getSetCookie keeps each Set-Cookie distinct (not comma-combined)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var h = new Headers();" ++
+        "  h.append('Set-Cookie', 'a=1; Path=/');" ++
+        "  h.append('set-cookie', 'b=2; Expires=Wed, 09 Jun 2027 10:18:14 GMT');" ++ // value with commas
+        "  var sc = h.getSetCookie();" ++
+        "  if (!Array.isArray(sc) || sc.length !== 2) return false;" ++
+        "  if (sc[0] !== 'a=1; Path=/' || sc[1].indexOf('b=2') !== 0) return false;" ++
+        "  if (!h.has('set-cookie')) return false;" ++
+        // get() comma-joins (lossy, per spec); other headers unaffected
+        "  h.append('X-A', '1'); h.append('x-a', '2');" ++
+        "  if (h.get('x-a') !== '1, 2') return false;" ++
+        "  var keys = []; h.forEach(function(v, k) { keys.push(k); });" ++
+        "  if (keys.filter(function(k){return k==='set-cookie';}).length !== 2) return false;" ++
+        "  h.delete('set-cookie'); return h.getSetCookie().length === 0 && !h.has('set-cookie');" ++
         "})()"));
 }
 
