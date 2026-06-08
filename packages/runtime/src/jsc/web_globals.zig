@@ -1227,8 +1227,7 @@ const install_glue =
     \\  });
     \\  function messagePortDeliver(port, data) {
     \\    if (port._closed) return;
-    \\    var ev = new Event("message");
-    \\    ev.data = data;
+    \\    var ev = new MessageEvent("message", { data: data });
     \\    if (typeof port._onmessage === "function") {
     \\      try { port._onmessage.call(port, ev); } catch (e) { void e; }
     \\    }
@@ -1791,9 +1790,9 @@ test "MessageChannel port1.postMessage delivers to port2.onmessage on a microtas
     install(std.testing.allocator, ctx, engine.currentGlobalObject());
 
     _ = try evaluate.evaluateUtf8(std.testing.allocator, ctx,
-        "globalThis.__mc = '';(function(){var mc = new MessageChannel();var got = [];mc.port2.onmessage = function(e){ got.push('2:' + e.data); };mc.port1.onmessage = function(e){ got.push('1:' + e.data); };mc.port1.postMessage('ping');mc.port2.postMessage('pong');queueMicrotask(function(){ queueMicrotask(function(){ globalThis.__mc = got.join(','); }); });})();",
+        "globalThis.__mc = '';globalThis.__mcEv = false;(function(){var mc = new MessageChannel();var got = [];mc.port2.onmessage = function(e){ globalThis.__mcEv = (e instanceof MessageEvent); got.push('2:' + e.data); };mc.port1.onmessage = function(e){ got.push('1:' + e.data); };mc.port1.postMessage('ping');mc.port2.postMessage('pong');queueMicrotask(function(){ queueMicrotask(function(){ globalThis.__mc = got.join(','); }); });})();",
         "home:mc-setup", 1, null);
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__mc === '2:ping,1:pong'"));
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "globalThis.__mc === '2:ping,1:pong' && globalThis.__mcEv === true"));
 }
 
 test "MessagePort addEventListener('message') receives postMessage from the paired port" {
