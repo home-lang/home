@@ -79,6 +79,18 @@ const install_glue =
     \\    slice(start, end, contentType) { var nb = new Blob([], { type: contentType || "" }); nb._bytes = this._bytes.slice(start, end); return nb; }
     \\  }
     \\
+    \\  // File — WHATWG File, a named Blob with a modification timestamp.
+    \\  class File extends Blob {
+    \\    constructor(fileBits, fileName, options) {
+    \\      super(fileBits, options);
+    \\      if (fileName === undefined) throw new TypeError("File constructor requires a fileName argument");
+    \\      this.name = String(fileName);
+    \\      var lm = options && options.lastModified;
+    \\      this.lastModified = (typeof lm === "number") ? lm : Date.now();
+    \\      this.webkitRelativePath = "";
+    \\    }
+    \\  }
+    \\
     \\  // Encode a body init into { bytes, type } (type is the default content-type, or null).
     \\  function encodeBody(body) {
     \\    if (body === null || body === undefined) return { bytes: null, type: null };
@@ -248,8 +260,13 @@ const install_glue =
     \\    set(name, value, filename) { name = String(name); var v = this._coerce(value, filename); var replaced = false; var out = []; for (var i = 0; i < this._entries.length; i++) { if (this._entries[i][0] === name) { if (!replaced) { out.push([name, v]); replaced = true; } } else out.push(this._entries[i]); } if (!replaced) out.push([name, v]); this._entries = out; }
     \\    _coerce(value, filename) {
     \\      if (value && typeof Blob === "function" && value instanceof Blob) {
-    \\        if (filename !== undefined) { var nb = new Blob([], { type: value.type || "" }); nb._bytes = value._bytes; nb.name = String(filename); return nb; }
-    \\        return value;
+    \\        var isFile = typeof File === "function" && value instanceof File;
+    \\        // A Blob given a filename (or a bare Blob) is stored as a File, per
+    \\        // the WHATWG FormData "create an entry" steps; a Blob with no name
+    \\        // defaults to the filename "blob".
+    \\        if (filename !== undefined) { var f = new File([], String(filename), { type: value.type || "" }); f._bytes = value._bytes; if (isFile) f.lastModified = value.lastModified; return f; }
+    \\        if (isFile) return value;
+    \\        var fb = new File([], "blob", { type: value.type || "" }); fb._bytes = value._bytes; return fb;
     \\      }
     \\      return String(value);
     \\    }
@@ -264,6 +281,7 @@ const install_glue =
     \\    [Symbol.iterator]() { return this.entries(); }
     \\  }
     \\  globalThis.Blob = Blob;
+    \\  globalThis.File = File;
     \\  globalThis.FormData = FormData;
     \\  globalThis.Request = Request;
     \\  globalThis.Response = Response;
@@ -309,6 +327,33 @@ test "Headers is case-insensitive, combines appends, sorts iteration" {
         "  h.delete('content-type'); if (h.has('content-type')) return false;" ++
         "  var seen = []; h.forEach(function(v, k) { seen.push(k); });" ++
         "  return seen.join(',') === 'x-a';" ++
+        "})()"));
+}
+
+test "File is a named Blob; FormData coerces blobs to files" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installPrereqs(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var f = new File(['hé', 'llo'], 'greeting.txt', { type: 'text/plain', lastModified: 123 });" ++
+        "  if (!(f instanceof Blob) || !(f instanceof File)) return false;" ++
+        "  if (f.name !== 'greeting.txt' || f.size !== 6 || f.type !== 'text/plain') return false;" ++
+        "  if (f.lastModified !== 123 || f.webkitRelativePath !== '') return false;" ++
+        "  if (typeof new File([], 'x').lastModified !== 'number') return false;" ++ // defaults to now
+        "  var threw = false; try { new File(['a']); } catch (e) { threw = true; } if (!threw) return false;" ++
+        // FormData: a Blob with a filename becomes a File; a bare Blob defaults to "blob".
+        "  var fd = new FormData();" ++
+        "  fd.append('doc', new Blob(['x'], { type: 'text/plain' }), 'a.txt');" ++
+        "  fd.append('raw', new Blob(['y']));" ++
+        "  fd.append('keep', f);" ++
+        "  var d = fd.get('doc'); if (!(d instanceof File) || d.name !== 'a.txt') return false;" ++
+        "  var r = fd.get('raw'); if (!(r instanceof File) || r.name !== 'blob') return false;" ++
+        "  return fd.get('keep').name === 'greeting.txt';" ++
         "})()"));
 }
 

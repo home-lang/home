@@ -15,6 +15,7 @@
 // comptime-gated on `enable_jsc`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const evaluate = @import("evaluate.zig");
 const callback = @import("callback.zig");
@@ -269,6 +270,18 @@ fn bunHashNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObj
 /// milliseconds via nanosleep (the JS wrapper has already validated/truncated
 /// the argument). Mirrors Bun's `sleepSync` (std.Thread.sleep) — but this Zig
 /// 0.17-dev lacks std.Thread.sleep, so use std.c.nanosleep directly.
+/// `__home_hw_concurrency()` -> host CPU core count (navigator.hardwareConcurrency).
+fn hwConcurrencyNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = argc;
+    _ = argv;
+    _ = exception;
+    const c = ctx orelse return null;
+    const n = std.Thread.getCpuCount() catch 1;
+    return extern_fns.JSValueMakeNumber(c, @floatFromInt(@max(n, 1)));
+}
+
 fn sleepSyncNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
     _ = function;
     _ = this_object;
@@ -866,6 +879,18 @@ const install_glue =
     \\      return drainStream(stream).then(concatChunkBytes).then(function(bytes) { return parseMultipart(bytes, boundary); });
     \\    };
     \\  })();
+    \\  // navigator — a Navigator-tagged object with the Bun user agent, the host
+    \\  // CPU count, and the OS platform string (mirrors ZigGlobalObject's lazily
+    \\  // constructed m_navigatorObject).
+    \\  if (typeof globalThis.navigator !== "object" || !globalThis.navigator) {
+    \\    var __nav = {};
+    \\    Object.defineProperty(__nav, Symbol.toStringTag, { value: "Navigator", enumerable: false, configurable: true });
+    \\    __nav.userAgent = "Bun/" + __HOME_BUN_VERSION__;
+    \\    __nav.platform = "__HOME_PLATFORM__";
+    \\    __nav.hardwareConcurrency = (typeof globalThis.__home_hw_concurrency === "function") ? globalThis.__home_hw_concurrency() : 1;
+    \\    globalThis.navigator = __nav;
+    \\  }
+    \\  delete globalThis.__home_hw_concurrency;
     \\  delete globalThis.__home_bun_write_file;
     \\})();
 ;
@@ -881,11 +906,20 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_bun_hash", bunHashNative);
     callback.registerCallback(ctx, global, "__home_sleep_sync", sleepSyncNative);
     callback.registerCallback(ctx, global, "__home_string_width", stringWidthNative);
+    callback.registerCallback(ctx, global, "__home_hw_concurrency", hwConcurrencyNative);
 
-    // Inject the version literal into the glue (kept out of the raw string).
+    // Inject the version + platform literals into the glue (kept out of the raw
+    // string). navigator.platform mirrors WebKit's values per OS.
     const glue = std.mem.replaceOwned(u8, allocator, install_glue, "__HOME_BUN_VERSION__", "\"" ++ bun_version ++ "\"") catch return;
     defer allocator.free(glue);
-    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, glue, "home:bun-install", 1) catch return;
+    const platform_str = switch (builtin.target.os.tag) {
+        .macos => "MacIntel",
+        .windows => "Win32",
+        else => "Linux x86_64",
+    };
+    const glue2 = std.mem.replaceOwned(u8, allocator, glue, "__HOME_PLATFORM__", platform_str) catch return;
+    defer allocator.free(glue2);
+    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, glue2, "home:bun-install", 1) catch return;
     result.deinit(allocator);
 }
 
@@ -1129,6 +1163,25 @@ test "Bun global fill-out: fileURLToPath/concatArrayBuffers/allocUnsafe/argv/mai
         "  var u = new Uint8Array(ab); if (u.length !== 4 || u[0] !== 1 || u[3] !== 4) return false;" ++
         "  if (!Array.isArray(B.argv) || typeof B.main !== 'string') return false;" ++
         "  return B.revision.length === 40; })()"));
+}
+
+test "navigator exposes userAgent/hardwareConcurrency/platform" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    installRealm(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var n = globalThis.navigator;" ++
+        "  if (typeof n !== 'object' || !n) return false;" ++
+        "  if (n.userAgent !== 'Bun/' + Bun.version) return false;" ++
+        "  if (typeof n.hardwareConcurrency !== 'number' || n.hardwareConcurrency < 1) return false;" ++
+        "  if (typeof n.platform !== 'string' || n.platform.length === 0) return false;" ++
+        "  return Object.prototype.toString.call(n) === '[object Navigator]';" ++
+        "})()"));
 }
 
 test "Bun.stripANSI strips CSI/OSC/C1 sequences (corpus parity)" {
