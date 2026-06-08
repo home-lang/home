@@ -164,6 +164,76 @@ const install_glue =
     \\    }
     \\    return clone(value);
     \\  };
+    \\  // BroadcastChannel — in-realm pub/sub keyed by name (single-context).
+    \\  if (typeof globalThis.BroadcastChannel !== "function") {
+    \\    var bcRegistry = {};
+    \\    function BroadcastChannel(name) {
+    \\      this.name = String(name); this._closed = false; this.onmessage = null; this.onmessageerror = null;
+    \\      this._listeners = [];
+    \\      bcRegistry[this.name] = bcRegistry[this.name] || [];
+    \\      bcRegistry[this.name].push(this);
+    \\    }
+    \\    BroadcastChannel.prototype.postMessage = function(message) {
+    \\      if (this._closed) throw new Error("BroadcastChannel is closed");
+    \\      var self = this; var peers = bcRegistry[this.name] || [];
+    \\      var cloned = (typeof globalThis.structuredClone === "function") ? globalThis.structuredClone(message) : message;
+    \\      peers.forEach(function(p) {
+    \\        if (p === self || p._closed) return;
+    \\        Promise.resolve().then(function() {
+    \\          var ev = { data: cloned, type: "message", target: p, origin: "" };
+    \\          if (typeof p.onmessage === "function") { try { p.onmessage(ev); } catch (e) {} }
+    \\          p._listeners.forEach(function(l) { try { l(ev); } catch (e) {} });
+    \\        });
+    \\      });
+    \\    };
+    \\    BroadcastChannel.prototype.addEventListener = function(t, fn) { if (t === "message") this._listeners.push(fn); };
+    \\    BroadcastChannel.prototype.removeEventListener = function(t, fn) { if (t === "message") this._listeners = this._listeners.filter(function(l) { return l !== fn; }); };
+    \\    BroadcastChannel.prototype.close = function() { this._closed = true; var arr = bcRegistry[this.name]; if (arr) bcRegistry[this.name] = arr.filter(function(p) { return p !== this; }, this); };
+    \\    globalThis.BroadcastChannel = BroadcastChannel;
+    \\  }
+    \\  // URLPattern — pathname/host/etc. matching with :named groups and * wildcards.
+    \\  if (typeof globalThis.URLPattern !== "function") {
+    \\    function compilePart(pattern) {
+    \\      if (pattern === undefined || pattern === null || pattern === "*") return { re: /^.*$/, groups: [] };
+    \\      var groups = [], re = "", i = 0, src = String(pattern);
+    \\      while (i < src.length) {
+    \\        var ch = src[i];
+    \\        if (ch === ":") { i++; var nm = ""; while (i < src.length && /[a-zA-Z0-9_]/.test(src[i])) nm += src[i++]; groups.push(nm); re += "([^/]+)"; }
+    \\        else if (ch === "*") { groups.push(String(groups.length)); re += "(.*)"; i++; }
+    \\        else { re += ch.replace(/[.+?^${}()|[\]\\]/g, "\\$&"); i++; }
+    \\      }
+    \\      return { re: new RegExp("^" + re + "$"), groups: groups };
+    \\    }
+    \\    function URLPattern(input, baseURL) {
+    \\      var parts = {};
+    \\      if (typeof input === "string") {
+    \\        try { var u = new globalThis.URL(input, baseURL || "https://example.com"); parts = { protocol: u.protocol.slice(0, -1), hostname: u.hostname, pathname: u.pathname, search: "*", hash: "*" }; }
+    \\        catch (e) { parts = { pathname: input }; }
+    \\      } else if (input && typeof input === "object") { parts = input; }
+    \\      this._parts = parts; this._compiled = {};
+    \\      var keys = ["protocol", "username", "password", "hostname", "port", "pathname", "search", "hash"];
+    \\      for (var k = 0; k < keys.length; k++) this._compiled[keys[k]] = compilePart(parts[keys[k]]);
+    \\    }
+    \\    function partsOf(input, baseURL) {
+    \\      if (typeof input === "string") { var u = new globalThis.URL(input, baseURL || "https://example.com"); return { protocol: u.protocol.slice(0, -1), username: u.username, password: u.password, hostname: u.hostname, port: u.port, pathname: u.pathname, search: u.search.slice(1), hash: u.hash.slice(1) }; }
+    \\      return input || {};
+    \\    }
+    \\    URLPattern.prototype.exec = function(input, baseURL) {
+    \\      var values; try { values = partsOf(input, baseURL); } catch (e) { return null; }
+    \\      var result = { inputs: [input] };
+    \\      for (var k in this._compiled) {
+    \\        var cv = values[k] !== undefined && values[k] !== null ? String(values[k]) : "";
+    \\        var m = this._compiled[k].re.exec(cv);
+    \\        if (!m) return null;
+    \\        var grp = {};
+    \\        for (var g = 0; g < this._compiled[k].groups.length; g++) grp[this._compiled[k].groups[g]] = m[g + 1];
+    \\        result[k] = { input: cv, groups: grp };
+    \\      }
+    \\      return result;
+    \\    };
+    \\    URLPattern.prototype.test = function(input, baseURL) { return this.exec(input, baseURL) !== null; };
+    \\    globalThis.URLPattern = URLPattern;
+    \\  }
     \\  delete globalThis.__home_perf_now;
     \\  delete globalThis.__home_perf_time_origin;
     \\})();
@@ -255,4 +325,60 @@ test "structuredClone throws DataCloneError for functions" {
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
         "(function() { try { structuredClone(function(){}); return false; } " ++
         "catch (e) { return e.name === 'DataCloneError'; } })()"));
+}
+
+test "BroadcastChannel delivers a structured-cloned message to peers, not self" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // postMessage is async (microtask); drain it with await before asserting.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof BroadcastChannel !== 'function') return false;" ++
+        "  var a = new BroadcastChannel('room'); var b = new BroadcastChannel('room');" ++
+        "  var got = null, gotSelf = false;" ++
+        "  b.onmessage = function(ev) { got = ev.data; };" ++
+        "  a.onmessage = function() { gotSelf = true; };" ++
+        "  var payload = { n: 1, arr: [1, 2] };" ++
+        "  a.postMessage(payload);" ++
+        "  var done = false;" ++
+        "  Promise.resolve().then(function(){}).then(function() {" ++
+        "    done = got && got.n === 1 && got.arr[1] === 2 && got !== payload && !gotSelf;" ++
+        "    globalThis.__bc_result = done; a.close(); b.close();" ++
+        "  });" ++
+        "  return true;" ++ // installation/shape ok; delivery checked below
+        "})()"));
+
+    // Drain the microtask queue and read the delivery result.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(async function() { await 0; await 0; await 0; return globalThis.__bc_result === true; })()"));
+}
+
+test "URLPattern matches named groups, wildcards, and rejects non-matches" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  if (typeof URLPattern !== 'function') return false;" ++
+        "  var p = new URLPattern({ pathname: '/books/:id' });" ++
+        "  var m = p.exec({ pathname: '/books/42' });" ++
+        "  if (!m || m.pathname.groups.id !== '42') return false;" ++
+        "  if (p.test({ pathname: '/movies/42' })) return false;" ++
+        "  var w = new URLPattern({ pathname: '/files/*' });" ++
+        "  if (!w.test({ pathname: '/files/a/b/c' })) return false;" ++
+        "  return p.test({ pathname: '/books/99' });" ++
+        "})()"));
 }
