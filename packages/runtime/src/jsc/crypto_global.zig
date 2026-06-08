@@ -116,6 +116,20 @@ const install_glue =
     \\  if (typeof globalThis.crypto !== "object" || globalThis.crypto === null) globalThis.crypto = {};
     \\  globalThis.crypto.getRandomValues = function(view) { return getRandomValuesFn(view); };
     \\  globalThis.crypto.randomUUID = function() { return randomUUIDFn(); };
+    \\  // crypto.timingSafeEqual(a, b) — constant-time byte comparison (Bun
+    \\  // exposes node:crypto's helper on the global crypto too). Throws when the
+    \\  // two views differ in byte length, like Node.
+    \\  globalThis.crypto.timingSafeEqual = function(a, b) {
+    \\    function u8(v) {
+    \\      if (v instanceof ArrayBuffer) return new Uint8Array(v);
+    \\      if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    \\      throw new TypeError("timingSafeEqual expects an ArrayBuffer or ArrayBufferView");
+    \\    }
+    \\    var ua = u8(a), ub = u8(b);
+    \\    if (ua.length !== ub.length) throw new RangeError("Input buffers must have the same byte length");
+    \\    var diff = 0; for (var i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
+    \\    return diff === 0;
+    \\  };
     \\  delete globalThis.__home_crypto_get_random_values;
     \\  delete globalThis.__home_crypto_random_uuid;
     \\})();
@@ -186,4 +200,25 @@ test "crypto.randomUUID matches the v4 shape and is unique" {
         "(function() { var re = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/; " ++
         "var u1 = crypto.randomUUID(); var u2 = crypto.randomUUID(); " ++
         "return re.test(u1) && re.test(u2) && u1 !== u2; })()"));
+}
+
+test "crypto.timingSafeEqual compares bytes and enforces equal length" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var a = new Uint8Array([1, 2, 3]);" ++
+        "  if (crypto.timingSafeEqual(a, new Uint8Array([1, 2, 3])) !== true) return false;" ++
+        "  if (crypto.timingSafeEqual(a, new Uint8Array([1, 2, 4])) !== false) return false;" ++
+        "  if (crypto.timingSafeEqual(a.buffer, new Uint8Array([1, 2, 3]).buffer) !== true) return false;" ++
+        "  var threw = false; try { crypto.timingSafeEqual(a, new Uint8Array([1, 2])); } catch (e) { threw = e instanceof RangeError; }" ++
+        "  return threw;" ++
+        "})()"));
 }

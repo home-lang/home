@@ -196,6 +196,31 @@ fn monoNsNative(
     return extern_fns.JSValueMakeNumber(c, ns);
 }
 
+/// `__home_process_cpu_usage()` -> { user, system } CPU time in microseconds
+/// for this process (getrusage RUSAGE_SELF), the basis for process.cpuUsage().
+fn cpuUsageNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+    const c = ctx orelse return null;
+    const ru = std.posix.getrusage(std.posix.rusage.SELF);
+    const user_us: f64 = @as(f64, @floatFromInt(ru.utime.sec)) * 1.0e6 + @as(f64, @floatFromInt(ru.utime.usec));
+    const sys_us: f64 = @as(f64, @floatFromInt(ru.stime.sec)) * 1.0e6 + @as(f64, @floatFromInt(ru.stime.usec));
+    const object = extern_fns.JSObjectMake(c, null, null) orelse return extern_fns.JSValueMakeUndefined(c);
+    setProp(c, object, "user", extern_fns.JSValueMakeNumber(c, user_us));
+    setProp(c, object, "system", extern_fns.JSValueMakeNumber(c, sys_us));
+    return @ptrCast(object);
+}
+
 fn cwdNative(
     ctx: ?*JSContextRef,
     function: ?*JSObject,
@@ -285,6 +310,7 @@ const install_glue =
     \\  var outWriteFn = globalThis.__home_process_stdout_write;
     \\  var errWriteFn = globalThis.__home_process_stderr_write;
     \\  var monoFn = globalThis.__home_process_mono_ns;
+    \\  var cpuFn = globalThis.__home_process_cpu_usage;
     \\  var info = infoFn();
     \\  var startNs = BigInt(Math.round(monoFn()));
     \\  function nowNs() { return BigInt(Math.round(monoFn())); }
@@ -308,6 +334,7 @@ const install_glue =
     \\    exit: function(code) { return exitFn(code); },
     \\    uptime: function() { return Number(nowNs() - startNs) / 1e9; },
     \\    hrtime: hrtime,
+    \\    cpuUsage: function(prev) { var u = cpuFn(); if (prev) return { user: u.user - prev.user, system: u.system - prev.system }; return u; },
     \\    nextTick: function(cb) {
     \\      var args = Array.prototype.slice.call(arguments, 1);
     \\      Promise.resolve().then(function() { cb.apply(null, args); });
@@ -323,6 +350,7 @@ const install_glue =
     \\  delete globalThis.__home_process_stdout_write;
     \\  delete globalThis.__home_process_stderr_write;
     \\  delete globalThis.__home_process_mono_ns;
+    \\  delete globalThis.__home_process_cpu_usage;
     \\})();
 ;
 
@@ -341,6 +369,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_process_stdout_write", stdoutWriteNative);
     callback.registerCallback(ctx, global, "__home_process_stderr_write", stderrWriteNative);
     callback.registerCallback(ctx, global, "__home_process_mono_ns", monoNsNative);
+    callback.registerCallback(ctx, global, "__home_process_cpu_usage", cpuUsageNative);
 
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:process-install", 1) catch return;
     result.deinit(allocator);
@@ -403,11 +432,15 @@ test "process exposes execPath, exitCode, uptime, and hrtime(+bigint)" {
         "  var d = process.hrtime(t);" ++ // diff from a near-now mark is tiny
         "  if (d[0] < 0 || (d[0] === 0 && d[1] < 0)) return false;" ++
         "  if (typeof process.hrtime.bigint !== 'function' || typeof process.hrtime.bigint() !== 'bigint') return false;" ++
-        "  return process.hrtime.bigint() >= 0n;" ++
+        "  if (process.hrtime.bigint() < 0n) return false;" ++
+        "  var cu = process.cpuUsage();" ++
+        "  if (typeof cu !== 'object' || typeof cu.user !== 'number' || typeof cu.system !== 'number' || cu.user < 0) return false;" ++
+        "  var cd = process.cpuUsage(cu);" ++ // diff from a near-now mark is non-negative
+        "  return cd.user >= 0 && cd.system >= 0;" ++
         "})()"));
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof globalThis.__home_process_mono_ns === 'undefined'"));
+        "typeof globalThis.__home_process_mono_ns === 'undefined' && typeof globalThis.__home_process_cpu_usage === 'undefined'"));
 }
 
 test "process.cwd returns a non-empty absolute path" {
