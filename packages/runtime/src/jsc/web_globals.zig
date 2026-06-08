@@ -954,6 +954,47 @@ const install_glue =
     \\  CustomEvent.prototype = Object.create(Event.prototype);
     \\  CustomEvent.prototype.constructor = CustomEvent;
     \\
+    \\  // Event subclasses dispatched by MessagePort/BroadcastChannel/WebSocket.
+    \\  function MessageEvent(type, init) {
+    \\    Event.call(this, type, init); init = init || {};
+    \\    this.data = init.data !== undefined ? init.data : null;
+    \\    this.origin = init.origin !== undefined ? String(init.origin) : "";
+    \\    this.lastEventId = init.lastEventId !== undefined ? String(init.lastEventId) : "";
+    \\    this.source = init.source !== undefined ? init.source : null;
+    \\    this.ports = init.ports !== undefined ? init.ports : [];
+    \\  }
+    \\  MessageEvent.prototype = Object.create(Event.prototype);
+    \\  MessageEvent.prototype.constructor = MessageEvent;
+    \\
+    \\  function CloseEvent(type, init) {
+    \\    Event.call(this, type, init); init = init || {};
+    \\    this.wasClean = !!init.wasClean;
+    \\    this.code = init.code !== undefined ? (init.code | 0) : 0;
+    \\    this.reason = init.reason !== undefined ? String(init.reason) : "";
+    \\  }
+    \\  CloseEvent.prototype = Object.create(Event.prototype);
+    \\  CloseEvent.prototype.constructor = CloseEvent;
+    \\
+    \\  function ErrorEvent(type, init) {
+    \\    Event.call(this, type, init); init = init || {};
+    \\    this.message = init.message !== undefined ? String(init.message) : "";
+    \\    this.filename = init.filename !== undefined ? String(init.filename) : "";
+    \\    this.lineno = init.lineno !== undefined ? (init.lineno | 0) : 0;
+    \\    this.colno = init.colno !== undefined ? (init.colno | 0) : 0;
+    \\    this.error = init.error !== undefined ? init.error : null;
+    \\  }
+    \\  ErrorEvent.prototype = Object.create(Event.prototype);
+    \\  ErrorEvent.prototype.constructor = ErrorEvent;
+    \\
+    \\  function ProgressEvent(type, init) {
+    \\    Event.call(this, type, init); init = init || {};
+    \\    this.lengthComputable = !!init.lengthComputable;
+    \\    this.loaded = init.loaded !== undefined ? Number(init.loaded) : 0;
+    \\    this.total = init.total !== undefined ? Number(init.total) : 0;
+    \\  }
+    \\  ProgressEvent.prototype = Object.create(Event.prototype);
+    \\  ProgressEvent.prototype.constructor = ProgressEvent;
+    \\
     \\  function EventTarget() {
     \\    this._listeners = Object.create(null);
     \\  }
@@ -1228,6 +1269,10 @@ const install_glue =
     \\  globalThis.MessagePort = MessagePort;
     \\  globalThis.MessageChannel = MessageChannel;
     \\  globalThis.CustomEvent = CustomEvent;
+    \\  globalThis.MessageEvent = MessageEvent;
+    \\  globalThis.CloseEvent = CloseEvent;
+    \\  globalThis.ErrorEvent = ErrorEvent;
+    \\  globalThis.ProgressEvent = ProgressEvent;
     \\  globalThis.EventTarget = EventTarget;
     \\  globalThis.AbortSignal = AbortSignal;
     \\  globalThis.AbortController = AbortController;
@@ -1266,6 +1311,30 @@ test "web globals install exposes the expected surface" {
         "typeof queueMicrotask === 'function' && typeof btoa === 'function' && typeof atob === 'function' && " ++
         "typeof TextEncoder === 'function' && typeof TextDecoder === 'function' && " ++
         "typeof globalThis.__home_text_encode === 'undefined'"));
+}
+
+test "Event subclasses (Message/Close/Error/Progress) carry their init fields" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var me = new MessageEvent('message', { data: { x: 1 }, origin: 'o', lastEventId: '7' });" ++
+        "  if (!(me instanceof Event) || me.type !== 'message' || me.data.x !== 1 || me.origin !== 'o' || me.lastEventId !== '7') return false;" ++
+        "  var ce = new CloseEvent('close', { wasClean: true, code: 1000, reason: 'bye' });" ++
+        "  if (!(ce instanceof Event) || ce.wasClean !== true || ce.code !== 1000 || ce.reason !== 'bye') return false;" ++
+        "  var ee = new ErrorEvent('error', { message: 'boom', filename: 'a.js', lineno: 3, colno: 4 });" ++
+        "  if (!(ee instanceof Event) || ee.message !== 'boom' || ee.filename !== 'a.js' || ee.lineno !== 3 || ee.colno !== 4) return false;" ++
+        "  var pe = new ProgressEvent('progress', { lengthComputable: true, loaded: 5, total: 10 });" ++
+        "  if (!(pe instanceof Event) || pe.lengthComputable !== true || pe.loaded !== 5 || pe.total !== 10) return false;" ++
+        "  return new MessageEvent('m').data === null && new CloseEvent('c').code === 0;" ++
+        "})()"));
 }
 
 test "TextEncoder/TextDecoder round-trip UTF-8 including multibyte" {
