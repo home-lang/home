@@ -9480,8 +9480,19 @@ pub const Parser = struct {
                     const id = self.interner.intern("symbol") catch return error.OutOfMemory;
                     return try self.builder.addTypeRef(.{ .start = unique_tok.span.start, .end = symbol_tok.span.end }, id, &.{}, &.{});
                 }
+                // `unique` must be followed by `symbol`. tsc reports
+                // "'symbol' expected" and recovers by parsing the (wrong)
+                // operand type so the remainder of the file still parses —
+                // without this, the unconsumed operand strands the rest of
+                // the source. Mirrors uniqueSymbolsErrors.ts(2,41). The
+                // recovered type is `unknown` (an error type), so no TS1335
+                // is attached to `unique <non-symbol>` (matching tsc, which
+                // emits only the parse error there).
+                const next = self.peek();
+                try self.reportCodeAt(next.span.start, next.line, 1005, "'symbol' expected.");
+                const operand = try self.parseTypeOperator();
                 const id = self.interner.intern("unknown") catch return error.OutOfMemory;
-                return try self.builder.addTypeRef(tokenSpan(unique_tok), id, &.{}, &.{});
+                return try self.builder.addTypeRef(.{ .start = unique_tok.span.start, .end = self.hir.spanOf(operand).end }, id, &.{}, &.{});
             },
             else => return try self.parseArrayType(),
         }
@@ -24008,6 +24019,30 @@ test "parser: unique symbol type annotation" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: `unique <non-symbol>` reports TS1005 and recovers" {
+    // `unique` must be followed by `symbol`. tsc emits "'symbol' expected"
+    // and recovers by consuming the wrong operand, so the next statement
+    // still parses. Mirrors uniqueSymbolsErrors.ts(2,41).
+    var s = try newTestSetup(
+        \\declare const a: unique number;
+        \\let b = 1;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    // Both statements parsed (recovery did not strand the rest of the file).
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    var saw_1005 = false;
+    var saw_spurious = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'symbol' expected.")) saw_1005 = true
+        // A `';' expected` here would mean the operand was left unconsumed.
+        else if (d.code == 1005 and std.mem.eql(u8, d.message, "';' expected.")) saw_spurious = true;
+    }
+    try T.expect(saw_1005);
+    try T.expect(!saw_spurious);
 }
 
 test "parser: unique symbol computed type members parse without TS1169" {
