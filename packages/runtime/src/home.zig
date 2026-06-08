@@ -2783,6 +2783,8 @@ pub const jsc = struct {
     pub const dollar_global = @import("jsc/dollar_global.zig");
     // Native Bun.serve (HTTP/1.1 server; post-script accept loop) for the realm.
     pub const serve_global = @import("jsc/serve_global.zig");
+    // Native Bun.listen / Bun.connect (TCP sockets; post-script poll loop).
+    pub const socket_global = @import("jsc/socket_global.zig");
     // Native Bun.semver (satisfies/order via Home's semver engine) for the realm.
     pub const semver_global = @import("jsc/semver_global.zig");
     // Native Bun.Cookie + Bun.CookieMap (RFC 6265) for the realm.
@@ -6615,6 +6617,7 @@ test {
     _ = @import("jsc/peek_global.zig");
     _ = @import("jsc/dollar_global.zig");
     _ = @import("jsc/serve_global.zig");
+    _ = @import("jsc/socket_global.zig");
     _ = @import("jsc/semver_global.zig");
     _ = @import("jsc/cookie_global.zig");
     _ = @import("jsc/toml_global.zig");

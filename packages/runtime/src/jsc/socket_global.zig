@@ -1,0 +1,363 @@
+// Native `Bun.listen` / `Bun.connect` — TCP sockets for the eval/run realm.
+//
+// Like Bun.serve, sockets bind/connect immediately (non-blocking from the
+// script) and the process then stays alive via a post-script `poll()` event
+// loop (`runLoop`, called by main.zig). The loop multiplexes the listen
+// socket(s) and all live connections, dispatching open/data/close to the JS
+// `socket` handlers; the JS socket object's `.write()`/`.end()` call back into
+// native send/close.
+//
+// SCOPE (v1): plain TCP (no TLS), IPv4, the open/data/close/error/drain handler
+// shape, and `socket.write`/`.end`/`.data`. Unix sockets, TLS, and backpressure
+// pause/resume are out of scope. comptime-gated on `enable_jsc`.
+
+const std = @import("std");
+const build_options = @import("build_options");
+const evaluate = @import("evaluate.zig");
+const callback = @import("callback.zig");
+const extern_fns = @import("extern_fns.zig");
+const opaques = @import("opaques.zig");
+
+const c = std.c;
+const JSValue = opaques.JSValue;
+const JSContextRef = opaques.JSContextRef;
+const JSObject = opaques.JSObject;
+const JSGlobalObject = opaques.JSGlobalObject;
+
+extern "c" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) c_int;
+extern "c" fn connect(fd: c_int, addr: *const anyopaque, len: c.socklen_t) c_int;
+
+const pollfd = extern struct { fd: c_int, events: c_short, revents: c_short };
+extern "c" fn poll(fds: [*]pollfd, nfds: c_uint, timeout: c_int) c_int;
+const POLLIN: c_short = 0x0001;
+
+const MAX_FDS = 256;
+
+const FdKind = enum { listener, connection };
+const Entry = struct { fd: c_int = -1, kind: FdKind = .connection, used: bool = false };
+
+var g_entries: [MAX_FDS]Entry = @splat(.{});
+var g_active: bool = false;
+
+fn addEntry(fd: c_int, kind: FdKind) void {
+    for (&g_entries) |*e| {
+        if (!e.used) {
+            e.* = .{ .fd = fd, .kind = kind, .used = true };
+            g_active = true;
+            return;
+        }
+    }
+}
+
+fn removeEntry(fd: c_int) void {
+    for (&g_entries) |*e| {
+        if (e.used and e.fd == fd) {
+            e.used = false;
+            e.fd = -1;
+            return;
+        }
+    }
+}
+
+fn parseHostV4(host: []const u8) u32 {
+    if (host.len == 0 or std.mem.eql(u8, host, "0.0.0.0")) return 0;
+    var h = host;
+    if (std.mem.eql(u8, host, "localhost")) h = "127.0.0.1";
+    var parts: [4]u8 = .{ 0, 0, 0, 0 };
+    var it = std.mem.splitScalar(u8, h, '.');
+    var i: usize = 0;
+    while (it.next()) |p| : (i += 1) {
+        if (i >= 4) return 0;
+        parts[i] = std.fmt.parseInt(u8, p, 10) catch return 0;
+    }
+    if (i != 4) return 0;
+    return @bitCast(parts);
+}
+
+fn readHostArg(ctx: *JSContextRef, v: ?*JSValue, buf: []u8, default: []const u8) []const u8 {
+    if (v) |hv| {
+        const js = extern_fns.JSValueToStringCopy(ctx, hv, null);
+        if (js) |s| {
+            defer extern_fns.JSStringRelease(s);
+            const n = extern_fns.JSStringGetUTF8CString(s, buf.ptr, buf.len);
+            if (n > 1) return buf[0 .. n - 1];
+        }
+    }
+    return default;
+}
+
+/// `__home_tcp_listen(host, port)` -> fd or -1.
+fn listenNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const cx = ctx orelse return null;
+    if (argc < 2) return extern_fns.JSValueMakeNumber(cx, -1);
+    var host_buf: [256]u8 = undefined;
+    const host = readHostArg(cx, argv[0], &host_buf, "0.0.0.0");
+    const port: u16 = @intFromFloat(@max(0, @min(65535, extern_fns.JSValueToNumber(cx, argv[1].?, null))));
+
+    const fd = socket(c.AF.INET, c.SOCK.STREAM, 0);
+    if (fd < 0) return extern_fns.JSValueMakeNumber(cx, -1);
+    const one: c_int = 1;
+    _ = c.setsockopt(fd, c.SOL.SOCKET, c.SO.REUSEADDR, &one, @sizeOf(c_int));
+    var addr = c.sockaddr.in{ .port = std.mem.nativeToBig(u16, port), .addr = parseHostV4(host) };
+    if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.sockaddr.in)) != 0 or c.listen(fd, 128) != 0) {
+        _ = c.close(fd);
+        return extern_fns.JSValueMakeNumber(cx, -1);
+    }
+    addEntry(fd, .listener);
+    return extern_fns.JSValueMakeNumber(cx, @floatFromInt(fd));
+}
+
+/// `__home_tcp_connect(host, port)` -> fd or -1 (blocking connect).
+fn connectNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const cx = ctx orelse return null;
+    if (argc < 2) return extern_fns.JSValueMakeNumber(cx, -1);
+    var host_buf: [256]u8 = undefined;
+    const host = readHostArg(cx, argv[0], &host_buf, "127.0.0.1");
+    const port: u16 = @intFromFloat(@max(0, @min(65535, extern_fns.JSValueToNumber(cx, argv[1].?, null))));
+
+    const fd = socket(c.AF.INET, c.SOCK.STREAM, 0);
+    if (fd < 0) return extern_fns.JSValueMakeNumber(cx, -1);
+    var addr = c.sockaddr.in{ .port = std.mem.nativeToBig(u16, port), .addr = parseHostV4(host) };
+    if (connect(fd, @ptrCast(&addr), @sizeOf(c.sockaddr.in)) != 0) {
+        _ = c.close(fd);
+        return extern_fns.JSValueMakeNumber(cx, -1);
+    }
+    addEntry(fd, .connection);
+    return extern_fns.JSValueMakeNumber(cx, @floatFromInt(fd));
+}
+
+/// `__home_tcp_write(fd, bytes)` -> bytes written, or -1.
+fn writeNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const cx = ctx orelse return null;
+    if (argc < 2) return extern_fns.JSValueMakeNumber(cx, -1);
+    const fd: c_int = @intFromFloat(extern_fns.JSValueToNumber(cx, argv[0].?, null));
+    const data_v = argv[1] orelse return extern_fns.JSValueMakeNumber(cx, -1);
+    if (extern_fns.JSValueGetTypedArrayType(cx, data_v, null) == .kJSTypedArrayTypeNone) return extern_fns.JSValueMakeNumber(cx, -1);
+    const obj = extern_fns.JSValueToObject(cx, data_v, null) orelse return extern_fns.JSValueMakeNumber(cx, -1);
+    const len = extern_fns.JSObjectGetTypedArrayByteLength(cx, obj, null);
+    const ptr = extern_fns.JSObjectGetTypedArrayBytesPtr(cx, obj, null);
+    if (len == 0 or ptr == null) return extern_fns.JSValueMakeNumber(cx, 0);
+    const n = c.send(fd, @as([*]const u8, @ptrCast(ptr.?)), len, 0);
+    return extern_fns.JSValueMakeNumber(cx, @floatFromInt(n));
+}
+
+/// `__home_tcp_close(fd)`.
+fn closeNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const cx = ctx orelse return null;
+    if (argc >= 1) {
+        const fd: c_int = @intFromFloat(extern_fns.JSValueToNumber(cx, argv[0].?, null));
+        removeEntry(fd);
+        _ = c.close(fd);
+    }
+    return extern_fns.JSValueMakeUndefined(cx);
+}
+
+pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
+    if (comptime !build_options.enable_jsc) return;
+    callback.registerCallback(ctx, global, "__home_tcp_listen", listenNative);
+    callback.registerCallback(ctx, global, "__home_tcp_connect", connectNative);
+    callback.registerCallback(ctx, global, "__home_tcp_write", writeNative);
+    callback.registerCallback(ctx, global, "__home_tcp_close", closeNative);
+    const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:bun-socket-install", 1) catch return;
+    result.deinit(allocator);
+}
+
+pub fn hasSockets() bool {
+    return g_active;
+}
+
+fn setGlobalBytes(ctx: *JSContextRef, global: *JSObject, name: [:0]const u8, bytes: []const u8) void {
+    const array = extern_fns.JSObjectMakeTypedArray(ctx, .kJSTypedArrayTypeUint8Array, bytes.len, null) orelse return;
+    if (bytes.len > 0) {
+        if (extern_fns.JSObjectGetTypedArrayBytesPtr(ctx, array, null)) |ptr| {
+            @memcpy(@as([*]u8, @ptrCast(ptr))[0..bytes.len], bytes);
+        }
+    }
+    const js = extern_fns.JSStringCreateWithUTF8CString(name.ptr) orelse return;
+    defer extern_fns.JSStringRelease(js);
+    extern_fns.JSObjectSetProperty(ctx, global, js, @ptrCast(array), 0, null);
+}
+
+fn dispatch(allocator: std.mem.Allocator, ctx: *JSContextRef, src: []const u8) void {
+    const r = evaluate.evaluateUtf8Detailed(allocator, ctx, src, "home:socket-dispatch", 1) catch return;
+    r.deinit(allocator);
+}
+
+/// The post-script poll loop. Runs while any listener/connection is live.
+pub fn runLoop(allocator: std.mem.Allocator, ctx: *JSContextRef) void {
+    if (comptime !build_options.enable_jsc) return;
+    if (!g_active) return;
+    const global = extern_fns.JSContextGetGlobalObject(ctx) orelse return;
+    var fds: [MAX_FDS]pollfd = undefined;
+    var recv_buf: [64 * 1024]u8 = undefined;
+    var dispatch_buf: [128]u8 = undefined;
+
+    while (true) {
+        var n: usize = 0;
+        for (&g_entries) |*e| {
+            if (e.used) {
+                fds[n] = .{ .fd = e.fd, .events = POLLIN, .revents = 0 };
+                n += 1;
+            }
+        }
+        if (n == 0) break;
+        const pr = poll(&fds, @intCast(n), -1);
+        if (pr < 0) {
+            if (std.posix.errno(@as(isize, pr)) == .INTR) continue;
+            break;
+        }
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (fds[i].revents & POLLIN == 0) continue;
+            const fd = fds[i].fd;
+            const kind = entryKind(fd) orelse continue;
+            if (kind == .listener) {
+                const client = c.accept(fd, null, null);
+                if (client < 0) continue;
+                addEntry(client, .connection);
+                const src = std.fmt.bufPrint(&dispatch_buf, "globalThis.__home_socket_event('open',{d},{d});", .{ client, fd }) catch continue;
+                dispatch(allocator, ctx, src);
+            } else {
+                const rn = c.recv(fd, &recv_buf, recv_buf.len, 0);
+                if (rn <= 0) {
+                    removeEntry(fd);
+                    _ = c.close(fd);
+                    const src = std.fmt.bufPrint(&dispatch_buf, "globalThis.__home_socket_event('close',{d},0);", .{fd}) catch continue;
+                    dispatch(allocator, ctx, src);
+                } else {
+                    setGlobalBytes(ctx, global, "__home_sock_data", recv_buf[0..@intCast(rn)]);
+                    const src = std.fmt.bufPrint(&dispatch_buf, "globalThis.__home_socket_event('data',{d},0);", .{fd}) catch continue;
+                    dispatch(allocator, ctx, src);
+                }
+            }
+        }
+    }
+}
+
+fn entryKind(fd: c_int) ?FdKind {
+    for (&g_entries) |*e| {
+        if (e.used and e.fd == fd) return e.kind;
+    }
+    return null;
+}
+
+const install_glue =
+    \\(function() {
+    \\  var B = globalThis.Bun;
+    \\  if (!B) return;
+    \\  var listenFn = globalThis.__home_tcp_listen;
+    \\  var connectFn = globalThis.__home_tcp_connect;
+    \\  var writeFn = globalThis.__home_tcp_write;
+    \\  var closeFn = globalThis.__home_tcp_close;
+    \\  // fd -> { handlers, isServer, serverFd, socketObj }
+    \\  var registry = {};
+    \\  // serverFd -> handlers
+    \\  var servers = {};
+    \\
+    \\  function toBytes(d) {
+    \\    if (typeof d === "string") return new TextEncoder().encode(d);
+    \\    if (d instanceof Uint8Array) return d;
+    \\    if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+    \\    if (d instanceof ArrayBuffer) return new Uint8Array(d);
+    \\    return new TextEncoder().encode(String(d));
+    \\  }
+    \\  function makeSocket(fd) {
+    \\    return {
+    \\      _fd: fd, data: undefined, readyState: "open",
+    \\      write: function(d) { var b = toBytes(d); var n = writeFn(fd, b); return n < 0 ? 0 : n; },
+    \\      end: function(d) { if (d !== undefined) this.write(d); this.readyState = "closed"; closeFn(fd); },
+    \\      flush: function() {}, ref: function() {}, unref: function() {}, shutdown: function() {},
+    \\      timeout: function() {},
+    \\      get remoteAddress() { return "127.0.0.1"; },
+    \\    };
+    \\  }
+    \\
+    \\  globalThis.__home_socket_event = function(type, fd, serverFd) {
+    \\    if (type === "open") {
+    \\      var handlers = servers[serverFd];
+    \\      if (!handlers) return;
+    \\      var sock = makeSocket(fd);
+    \\      registry[fd] = { handlers: handlers, socketObj: sock };
+    \\      if (typeof handlers.open === "function") { try { handlers.open(sock); } catch (e) { if (handlers.error) handlers.error(sock, e); } }
+    \\    } else if (type === "data") {
+    \\      var entry = registry[fd];
+    \\      if (!entry) return;
+    \\      var bytes = globalThis.__home_sock_data;
+    \\      if (typeof entry.handlers.data === "function") { try { entry.handlers.data(entry.socketObj, Buffer.from(bytes)); } catch (e) { if (entry.handlers.error) entry.handlers.error(entry.socketObj, e); } }
+    \\    } else if (type === "close") {
+    \\      var entry2 = registry[fd];
+    \\      if (!entry2) return;
+    \\      entry2.socketObj.readyState = "closed";
+    \\      if (typeof entry2.handlers.close === "function") { try { entry2.handlers.close(entry2.socketObj); } catch (e) {} }
+    \\      delete registry[fd];
+    \\    }
+    \\  };
+    \\
+    \\  B.listen = function(options) {
+    \\    options = options || {};
+    \\    var hostname = options.hostname || "0.0.0.0";
+    \\    var port = options.port | 0;
+    \\    var handlers = options.socket || {};
+    \\    var fd = listenFn(hostname, port);
+    \\    if (fd < 0) { var e = new Error("Failed to listen on " + hostname + ":" + port); e.code = "EADDRINUSE"; throw e; }
+    \\    servers[fd] = handlers;
+    \\    return {
+    \\      port: port, hostname: hostname, unix: undefined, _fd: fd,
+    \\      stop: function() { closeFn(fd); delete servers[fd]; },
+    \\      ref: function() {}, unref: function() {}, reload: function(o) { if (o && o.socket) servers[fd] = o.socket; },
+    \\      data: options.data,
+    \\    };
+    \\  };
+    \\
+    \\  B.connect = function(options) {
+    \\    options = options || {};
+    \\    var hostname = options.hostname || "127.0.0.1";
+    \\    var port = options.port | 0;
+    \\    var handlers = options.socket || {};
+    \\    var fd = connectFn(hostname, port);
+    \\    if (fd < 0) return Promise.reject(Object.assign(new Error("Failed to connect to " + hostname + ":" + port), { code: "ECONNREFUSED" }));
+    \\    var sock = makeSocket(fd);
+    \\    sock.data = options.data;
+    \\    registry[fd] = { handlers: handlers, socketObj: sock };
+    \\    if (typeof handlers.open === "function") { try { handlers.open(sock); } catch (e) {} }
+    \\    return Promise.resolve(sock);
+    \\  };
+    \\})();
+;
+
+fn evalBool(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const u8) !bool {
+    const value = (try evaluate.evaluateUtf8(allocator, ctx, source, "home:socket-probe", 1, null)) orelse
+        return error.JSEvaluateReturnedNull;
+    return extern_fns.JSValueToBoolean(ctx, value);
+}
+
+test "Bun.listen / Bun.connect expose the socket API surface (non-blocking)" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    const ctx = engine.currentContext();
+    @import("bun_global.zig").install(std.testing.allocator, ctx, engine.currentGlobalObject());
+    install(std.testing.allocator, ctx, engine.currentGlobalObject());
+
+    // The handles bind/connect and expose the documented surface without
+    // entering the (blocking) poll loop, which main.zig drives post-script.
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
+        "(function() {" ++
+        "  var server = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data: function() {} } });" ++
+        "  if (typeof server.stop !== 'function' || typeof server.port !== 'number') return false;" ++
+        "  server.stop();" ++
+        "  return typeof Bun.connect === 'function'; })()"));
+}

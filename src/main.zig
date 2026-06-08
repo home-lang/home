@@ -1655,6 +1655,7 @@ fn installRealmGlobals(allocator: std.mem.Allocator, ctx: anytype, global: anyty
     home_rt.jsc.cookie_global.install(allocator, ctx, global);
     home_rt.jsc.toml_global.install(allocator, ctx, global);
     home_rt.jsc.serve_global.install(allocator, ctx, global);
+    home_rt.jsc.socket_global.install(allocator, ctx, global);
 }
 
 /// True when env var `name` is set to a non-empty value.
@@ -1705,6 +1706,7 @@ fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args
         // If the script called Bun.serve(), stay alive and serve requests
         // (blocks until the process is killed); no-op otherwise.
         home_rt.jsc.serve_global.runLoop(allocator, ctx);
+        home_rt.jsc.socket_global.runLoop(allocator, ctx);
     }
 }
 
@@ -1754,6 +1756,7 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
         home_rt.jsc.timers_global.drain(ctx);
         // If the eval'd code called Bun.serve(), stay alive serving requests.
         home_rt.jsc.serve_global.runLoop(allocator, ctx);
+        home_rt.jsc.socket_global.runLoop(allocator, ctx);
     }
 }
 
