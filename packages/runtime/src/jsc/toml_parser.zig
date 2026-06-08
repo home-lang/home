@@ -1066,6 +1066,44 @@ const Parser = struct {
     }
 
     fn parseNumberOrDateTime(self: *Parser) ParseError!Value {
+        // Radix-prefixed integers (0x / 0o / 0b). These must be handled before
+        // the generic token scan below: that scan only treats decimal digits as
+        // part of a number, so it would stop at the `x`/`o`/`b` and mis-parse
+        // `0xDEADBEEF` as the integer `0` followed by junk. TOML forbids signs
+        // and floats on these forms, so this is a self-contained fast path.
+        if (self.pos + 1 < self.input.len and self.input[self.pos] == '0') {
+            const base: ?u8 = switch (self.input[self.pos + 1]) {
+                'x', 'X' => 16,
+                'o', 'O' => 8,
+                'b', 'B' => 2,
+                else => null,
+            };
+            if (base) |radix| {
+                self.pos += 2;
+                const digits_start = self.pos;
+                while (self.pos < self.input.len) {
+                    const c = self.input[self.pos];
+                    const ok = c == '_' or switch (radix) {
+                        16 => std.ascii.isHex(c),
+                        8 => c >= '0' and c <= '7',
+                        2 => c == '0' or c == '1',
+                        else => unreachable,
+                    };
+                    if (!ok) break;
+                    self.pos += 1;
+                }
+
+                var clean = std.array_list.Managed(u8).init(self.allocator);
+                defer clean.deinit();
+                for (self.input[digits_start..self.pos]) |c| {
+                    if (c != '_') try clean.append(c);
+                }
+                if (clean.items.len == 0) return ParseError.InvalidNumber;
+                const val = std.fmt.parseInt(i64, clean.items, radix) catch return ParseError.InvalidNumber;
+                return .{ .integer = val };
+            }
+        }
+
         const start = self.pos;
 
         // Collect the token
@@ -1131,24 +1169,6 @@ const Parser = struct {
         }
 
         const clean_token = clean.items;
-
-        // Check for hex, octal, binary
-        if (clean_token.len > 2) {
-            if (clean_token[0] == '0') {
-                if (clean_token[1] == 'x' or clean_token[1] == 'X') {
-                    const val = std.fmt.parseInt(i64, clean_token[2..], 16) catch return ParseError.InvalidNumber;
-                    return .{ .integer = val };
-                }
-                if (clean_token[1] == 'o' or clean_token[1] == 'O') {
-                    const val = std.fmt.parseInt(i64, clean_token[2..], 8) catch return ParseError.InvalidNumber;
-                    return .{ .integer = val };
-                }
-                if (clean_token[1] == 'b' or clean_token[1] == 'B') {
-                    const val = std.fmt.parseInt(i64, clean_token[2..], 2) catch return ParseError.InvalidNumber;
-                    return .{ .integer = val };
-                }
-            }
-        }
 
         // Float or integer
         if (has_dot or has_exp) {

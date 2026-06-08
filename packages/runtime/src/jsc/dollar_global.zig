@@ -134,6 +134,9 @@ const install_glue =
     \\  $.escape = function(s) { return String(s); };
     \\  $.ShellPromise = ShellPromise;
     \\  B.$ = $;
+    \\  // The eval/run realm also exposes `$` bare for ergonomic shell use,
+    \\  // matching this module's documented `await $`cmd`` examples.
+    \\  globalThis.$ = $;
     \\})();
 ;
 

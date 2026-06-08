@@ -114,6 +114,8 @@ fn evalBool(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const u8
 fn installRealm(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     @import("web_globals.zig").install(allocator, ctx, global);
     @import("bun_global.zig").install(allocator, ctx, global);
+    // node_modules supplies `globalThis.Buffer`; Bun.semver accepts Buffer args.
+    @import("node_modules.zig").install(allocator, ctx, global);
     install(allocator, ctx, global);
 }
 

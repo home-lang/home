@@ -904,6 +904,9 @@ fn installRealm(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlo
 // process/timers/misc/node_modules), mirroring installRealmGlobals order.
 fn installRealmFull(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlobalObject) void {
     @import("web_globals.zig").install(allocator, ctx, global);
+    // url_global supplies `globalThis.URL`, which Bun.fileURLToPath /
+    // Bun.pathToFileURL construct at call time.
+    @import("url_global.zig").install(allocator, ctx, global);
     @import("process.zig").install(allocator, ctx, global, &[_][]const u8{"home"});
     @import("timers_global.zig").install(allocator, ctx, global);
     @import("misc_globals.zig").install(allocator, ctx, global);
