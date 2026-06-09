@@ -142,3 +142,176 @@ tests that assert TS1278/TS1279 under `@experimentalDecorators`
 TS1279"). Those tests would need to change to expect TS1240/1241/1238. Since
 that's a deliberate-behavior decision in actively-edited code, it's yours to
 make — the fix + the test updates should land together.
+
+---
+
+## 5. Near-passing worklist (134 fixtures within 1–2 diagnostic lines)
+
+From an exact-mode 0–1500 window (DUMP). Each is 1–2 `+`/`-` mismatches from
+passing. `+TS` = we over-emit (suppress); `-TS` = we under-emit (add). Bucketed
+by frequency so the highest-leverage single root cause comes first:
+
+```
+count  code
+  27 +TS2322
+  27 -TS2322
+  12 +TS2339
+   9 -TS2454
+   8 -TS2345
+   7 -TS18013
+   5 +TS2345
+   5 +TS2307
+   5 +TS1278
+   5 -TS2318
+   4 +TS2304
+   4 -TS2807
+   4 -TS2558
+   4 -TS2430
+   4 -TS2339
+   3 -TS1117
+   2 +TS2741
+   2 +TS2693
+   2 +TS2367
+   2 +TS2364
+   2 -TS7006
+   2 -TS2806
+```
+
+Full fixture list (sorted by mismatch count, then name):
+
+```
+1	assignmentCompatWithNumericIndexer3	 -TS2322
+1	bundlerConditionsExcludesNode	 +TS7016
+1	bundlerImportESM	 +TS1293
+1	callSignatureAssignabilityInInheritance	 -TS2430
+1	callSignaturesWithParameterInitializers2	 -TS1005
+1	classAbstractInstantiations2	 -TS2391
+1	classExtendsItselfIndirectly	 -TS2449
+1	classExtendsShadowedConstructorFunction	 -TS2507
+1	classImplementsMergedClassInterface	 -TS2720
+1	classWithoutExplicitConstructor	 -TS2322
+1	classWithStaticFieldInParameterBindingPattern.3	 +TS2373
+1	conditionalExportsResolutionFallback	 +TS2307
+1	constructSignatureAssignabilityInInheritance	 -TS2430
+1	declarationFileForHtmlFileWithinDeclarationFile	 +TS2305
+1	decoratorOnClassProperty11	 +TS1271
+1	derivedClassFunctionOverridesBaseClassAccessor	 -TS2416
+1	derivedClassWithoutExplicitConstructor	 -TS2322
+1	genericCallWithNonSymmetricSubtypes	 -TS2454
+1	genericCallWithObjectTypeArgs	 -TS2345
+1	genericCallWithOverloadedConstructorTypedArguments	 -TS2769
+1	genericSetterInClassTypeJsDoc	 +TS2304
+1	genericTypeReferenceWithoutTypeArgument2	 +TS2339
+1	importTypeAmbientMissing	 +TS2693
+1	importTypeGenericTypes	 +TS2304
+1	infiniteExpansionThroughInstantiation	 -TS2322
+1	intersectionAsWeakTypeSource	 -TS2739
+1	mappedTypeInferenceErrors	 -TS2322
+1	mergedClassInterface	 +TS2339
+1	mixinAbstractClasses.2	 +TS2510
+1	mixinAccessors3	 -TS2611
+1	mixinWithBaseDependingOnSelfNoCrash1	 -TS2345
+1	numericIndexerConstrainsPropertyDeclarations	 -TS2322
+1	numericIndexerConstrainsPropertyDeclarations2	 -TS2322
+1	privateNameInInExpressionUnused	 -TS6133
+1	privateNameInObjectLiteral-3	 -TS18028
+1	privateNameNestedMethodAccess	 -TS2339
+1	privateNameSetterNoGetter	 -TS2806
+1	privateNamesUnique-1	 -TS2322
+1	privateNamesUnique-5	 -TS2322
+1	privateStaticNotAccessibleInClodule2	 -TS2341
+1	privateWriteOnlyAccessorRead	 -TS2806
+1	protectedStaticNotAccessibleInClodule	 -TS2445
+1	stringLiteralsWithTypeAssertions01	 +TS2352
+1	subtypingWithCallSignaturesWithSpecializedSignatures	 -TS2430
+1	subtypingWithConstructSignaturesWithSpecializedSignatures	 -TS2430
+1	typeReferenceRelatedFiles	 +TS2688
+1	typesVersions.ambientModules	 +TS2307
+1	typesVersionsDeclarationEmit.ambient	 +TS2307
+1	typesVersionsDeclarationEmit.multiFileBackReferenceToSelf	 -TS2305
+1	unionTypeFromArrayLiteral	 +TS2322
+1	untypedModuleImport_allowJs	 -TS2339
+2	assignFromBooleanInterface2	 +TS2322 +TS2322
+2	assignFromNumberInterface2	 +TS2322 +TS2322
+2	assignFromStringInterface2	 -TS2740 +TS2322
+2	assignmentCompatWithCallSignatures2	 -TS2322 -TS2322
+2	assignmentCompatWithConstructSignatures2	 -TS2322 -TS2322
+2	assignmentCompatWithEnumIndexer	 -TS2741 +TS2741
+2	assignmentCompatWithGenericCallSignatures4	 -TS2322 +TS2322
+2	bestCommonTypeOfTuple	 +TS2322 +TS2322
+2	bundlerCommonJS	 +TS2307 +TS2307
+2	callGenericFunctionWithIncorrectNumberOfTypeArguments	 -TS2558 -TS2558
+2	callSignaturesThatDifferOnlyByReturnType2	 -TS2320 +TS2320
+2	classAbstractInheritance2	 -TS2650 +TS2650
+2	classBodyWithStatements	 -TS1068 -TS1128
+2	classExtendingClassLikeType	 -TS2508 -TS2510
+2	classExtendingPrimitive2	 -TS1109 +TS2304
+2	classWithEmptyBody	 +TS2322 +TS2322
+2	commonTypeIntersection	 -TS2322 +TS2322
+2	constructorParameterShadowsOuterScopes	 -TS2301 -TS2301
+2	constructorWithAssignableReturnExpression	 -TS2409 -TS2322
+2	contextualTypeWithUnionTypeCallSignatures	 -TS7006 -TS7006
+2	decoratorOnClass8	 -TS1238 +TS1278
+2	decoratorOnClassMethod10	 -TS1241 +TS1278
+2	decoratorOnClassMethod8	 -TS1241 +TS1278
+2	decoratorOnClassProperty6	 -TS1240 +TS1278
+2	decoratorOnClassProperty7	 -TS1240 +TS1278
+2	decoratorOnUsing	 -TS1134 +TS1005
+2	derivedGenericClassWithAny	 -TS2322 -TS2322
+2	discriminatedUnionTypes1	 -TS2367 +TS2367
+2	duplicateNumericIndexers	 -TS2374 -TS2374
+2	duplicatePropertyNames	 -TS1117 -TS1117
+2	enumLiteralTypes3	 -TS2322 -TS2322
+2	functionLiterals	 +TS2322 +TS2322
+2	genericCallWithFunctionTypedArguments3	 -TS2454 +TS2345
+2	genericCallWithFunctionTypedArguments4	 -TS2454 +TS2345
+2	genericCallWithObjectTypeArgsAndConstraints	 -TS2454 -TS2454
+2	genericCallWithObjectTypeArgsAndConstraints3	 -TS2345 -TS2345
+2	genericClassExpressionInFunction	 +TS2749 +TS2339
+2	genericClassWithObjectTypeArgsAndConstraints	 -TS2454 -TS2454
+2	importTypeAmbient	 +TS2693 +TS2503
+2	importTypeLocalMissing	 -TS2694 +TS2694
+2	instantiateNonGenericTypeWithTypeArguments	 -TS2558 -TS2558
+2	intersectionNarrowing	 -TS2367 +TS2367
+2	libReferenceNoLib	 -TS2318 -TS2318
+2	libReferenceNoLibBundle	 -TS2318 -TS2318
+2	mappedTypeAsClauses	 -TS2345 +TS2345
+2	methodSignaturesWithOverloads2	 +TS2322 +TS2322
+2	missingDecoratorType	 -TS2318 +TS2318
+2	narrowingGenericTypeFromInstanceof01	 -TS2345 +TS2345
+2	nonPrimitiveAndTypeVariables	 -TS2322 +TS5082
+2	nonPrimitiveConstraintOfIndexAccessType	 -TS2322 +TS2322
+2	numericStringNamedPropertyEquivalence	 -TS2717 -TS1117
+2	objectSpreadSetonlyAccessor	 +TS2322 +TS2322
+2	privateNameEmitHelpers	 -TS2807 -TS2807
+2	privateNameFieldParenthesisLeftAssignment	 +TS2364 +TS2364
+2	privateNameMethodClassExpression	 -TS18013 -TS18013
+2	privateNamesInNestedClasses-2	 -TS18014 +TS18014
+2	privateNamesInterfaceExtendingClass	 -TS18013 +TS2339
+2	privateNameStaticEmitHelpers	 -TS2807 -TS2807
+2	privateNameStaticFieldDerivedClasses	 -TS18013 +TS2339
+2	privateNameStaticMethodAsync	 -TS1029 +TS7055
+2	privateNameStaticMethodClassExpression	 -TS18013 -TS18013
+2	privateNamesUnique-2	 -TS18013 +TS2339
+2	privateNamesUnique-4	 -TS2741 +TS2741
+2	privateNamesUseBeforeDef	 -TS2729 -TS2729
+2	protectedClassPropertyAccessibleWithinSubclass3	 -TS2340 +TS2855
+2	recursiveIntersectionTypes	 +TS2339 +TS2339
+2	recursiveTypeReferences2	 -TS2322 +TS2322
+2	resolutionModeTripleSlash4	 -TS2552 +TS2304
+2	spreadUnion3	 -TS2322 -TS2322
+2	staticIndexSignature7	 -TS2411 +TS2411
+2	stringLiteralTypesAndParenthesizedExpressions01	 +TS2322 +TS2322
+2	subtypingWithCallSignaturesA	 -TS2345 +TS2322
+2	templateLiteralTypes7	 +TS2322 +TS2322
+2	thisTypeInClasses	 -TS2352 -TS2352
+2	typeOfThisInStaticMembers	 +TS2339 +TS2339
+2	typeOfThisInStaticMembers8	 -TS2339 +TS2339
+2	typeParameterDirectlyConstrainedToItself	 -TS2313 -TS2313
+2	typeParametersAvailableInNestedScope	 -TS2454 -TS2454
+2	unionThisTypeInFunctions	 -TS2684 +TS2684
+2	unionTypeInference	 -TS2345 +TS2345
+2	unionTypeReadonly	 -TS2339 +TS2339
+2	validEnumAssignments	 -TS2322 +TS2322
+2	wideningTuples4	 -TS2322 +TS2322
+```
