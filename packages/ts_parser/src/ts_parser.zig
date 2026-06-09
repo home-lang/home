@@ -16020,6 +16020,12 @@ pub const Parser = struct {
             // it via TS2539. Keep the parser permissive so we don't
             // double-emit TS2364. Mirrors `nullAssignedToUndefined.ts`.
             .identifier, .member_access, .element_access, .array_literal, .object_literal, .literal_undefined => true,
+            // `(x as T) = v`, `(x satisfies T) = v`, `(<T>x) = v`, `(x!) = v`:
+            // tsc treats the assertion/non-null wrapper (and the stripped
+            // parentheses) as transparent for the assignment-target check and
+            // validates the wrapped expression. Mirrors
+            // `privateNameFieldParenthesisLeftAssignment.ts`.
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => self.isValidAssignmentTarget(hir_mod.asExpressionOf(self.hir, node).expr),
             else => false,
         };
     }
