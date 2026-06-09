@@ -49,6 +49,28 @@ pub fn workerEmitTestDone(file_idx: u32, formatted_line: []const u8) void {
     _ = formatted_line;
 }
 
+/// Parked: `bun test --parallel` worker entry. The serial runner never reaches
+/// this (only `--test-worker` does), but `TestCommand.exec` references it, so a
+/// stub keeps it compiling until the `parallel/` subtree lands.
+pub fn runAsWorker(reporter: anytype, vm: anytype, ctx: anytype) !void {
+    _ = reporter;
+    _ = vm;
+    _ = ctx;
+    return error.ParallelTestWorkerNotImplemented;
+}
+
+/// Parked: `bun test --parallel` coordinator. Only reached when
+/// `--parallel N` (N>0); the serial path never calls it. Stub keeps
+/// `TestCommand.exec` compiling. Returns whether it ran in parallel.
+pub fn runAsCoordinator(reporter: anytype, vm: anytype, test_files: anytype, ctx: anytype, coverage_options: anytype) !bool {
+    _ = reporter;
+    _ = vm;
+    _ = test_files;
+    _ = ctx;
+    _ = coverage_options;
+    return error.ParallelTestCoordinatorNotImplemented;
+}
+
 test "ParallelRunner docs facade compiles standalone" {
     // No runtime surface yet — the test exists so the file participates in
     // `zig test` and the banner comments above stay live as compile-checked

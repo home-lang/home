@@ -1821,6 +1821,40 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     vm.global.vm().holdAPILock(&VmRunState.instance, callback);
 }
 
+/// Run `home test` natively through Home's `TestCommand.exec` — the bun:test
+/// runner (sets up the Jest runner + VM, scans for test files, runs + reports).
+/// `args` are the raw `home test` args; non-flag entries become test
+/// files/filters (positionals[1..]). Flag parsing is not wired yet, so test
+/// flags are currently ignored. globalExit inside exec makes this noreturn on
+/// success. Gated behind HOME_NATIVE_VM=1.
+fn runTestsViaVM(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    if (comptime !build_options.enable_jsc) return error.JscDisabled;
+
+    const log = try allocator.create(home_rt.logger.Log);
+    log.* = home_rt.logger.Log.init(allocator);
+
+    // Build the process-global Command.Context (TestCommand.exec reads ctx.args,
+    // ctx.positionals, ctx.test_options). Defaults are sane; set the cwd so test
+    // discovery resolves relative to it.
+    const ctx = home_rt.cli.Command.initDefaultContext(allocator, log);
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.c.getcwd(&cwd_buf, cwd_buf.len)) |p| {
+        const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
+        ctx.args.absolute_working_dir = allocator.dupeZ(u8, cwd) catch null;
+    }
+
+    // positionals[0] is the command name; [1..] are file/dir paths or filters.
+    var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
+    try positionals.append(allocator, "test");
+    for (args) |a| {
+        if (a.len > 0 and a[0] == '-') continue; // skip flags (not parsed yet)
+        try positionals.append(allocator, a);
+    }
+    ctx.positionals = try positionals.toOwnedSlice(allocator);
+
+    try home_rt.cli.TestCommand.exec(ctx);
+}
+
 /// Execute a JS/TS file through Home's OWN native JSC runtime (not bun
 /// delegation). Returns `true` if it ran natively, `false` if the entry isn't
 /// supported yet (ESM / un-lowerable) so the caller can delegate to bun. A
@@ -3615,7 +3649,19 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
                 break;
             }
         }
-        if (!force_native) return execBunCommand(allocator, "test", args);
+        if (!force_native) {
+            // Native bun:test runner (HOME_NATIVE_VM=1): run through Home's own
+            // TestCommand.exec (sets up the Jest runner + VM) instead of
+            // delegating to system bun. Experimental, gated.
+            if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+                runTestsViaVM(allocator, args) catch |err| {
+                    std.debug.print("{s}error:{s} native test run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+                    std.process.exit(1);
+                };
+                return;
+            }
+            return execBunCommand(allocator, "test", args);
+        }
     }
 
     // Parse arguments

@@ -148,7 +148,7 @@ pub fn filter(
         for (importers) |*list| list.deinit(allocator);
         allocator.free(importers);
     }
-    for (importers) |*list| list.* = .{};
+    for (importers) |*list| list.* = .empty;
 
     var graph_files: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {

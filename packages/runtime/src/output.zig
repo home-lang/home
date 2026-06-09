@@ -86,7 +86,7 @@ pub fn printElapsed(elapsed_ms: f64) void {
 }
 
 pub fn isGithubAction() bool {
-    return std.process.hasEnvVarConstant("GITHUB_ACTIONS");
+    return std.c.getenv("GITHUB_ACTIONS") != null;
 }
 
 const RESET: []const u8 = "\x1b[0m";

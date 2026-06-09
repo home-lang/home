@@ -163,7 +163,7 @@ pub const JunitReporter = struct {
 
     pub fn init() *JunitReporter {
         return JunitReporter.new(
-            .{ .contents = .{}, .total_metrics = .{}, .suite_stack = .{} },
+            .{ .contents = .empty, .total_metrics = .{}, .suite_stack = .empty },
         );
     }
 
@@ -1148,7 +1148,15 @@ pub const CommandLineReporter = struct {
         } else 0;
 
         var console = Output.errorWriter();
-        const base_fraction = opts.fractions;
+        // opts.fractions is options_types.CodeCoverageOptions.Fraction; the
+        // coverage reporter wants the structurally-identical
+        // bun.SourceMap.coverage.Fraction. Convert (Home split the type in two).
+        const base_fraction = bun.SourceMap.coverage.Fraction{
+            .functions = opts.fractions.functions,
+            .lines = opts.fractions.lines,
+            .stmts = opts.fractions.stmts,
+            .failing = opts.fractions.failing,
+        };
         var failing = false;
 
         if (comptime reporters.text) {

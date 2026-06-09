@@ -157,6 +157,9 @@ pub var argv: [][:0]const u8 = &[_][:0]const u8{};
 /// Bindgen namespace (upstream `bun.gen`). Hand-written stand-in until the
 /// bindgen codegen lands; provides `gen.node_os` (node_os.zig references it).
 pub const gen = @import("runtime/node/GeneratedBindings.zig");
+/// Synchronous process spawn (upstream `bun.spawn.sync.spawn`). Minimal stand-in
+/// used by `ChangedFilesFilter` (`bun test --changed`); see spawn_sync.zig.
+pub const spawnSync = @import("spawn_sync.zig").spawn;
 /// Faithful to upstream `bun.zig:1422`; std.mem.sliceTo has matching semantics.
 pub const sliceTo = std.mem.sliceTo;
 /// Faithful to upstream `bun.zig:3492`.
@@ -2169,6 +2172,7 @@ pub const cli = struct {
     pub const which_npm_client = @import("cli/which_npm_client.zig");
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
     pub const RunCommand = @import("runtime/cli/run_command.zig").RunCommand;
+    pub const TestCommand = @import("runtime/cli/test_command.zig").TestCommand;
     pub const Arguments = struct {
         pub const auto_params = [_]struct {
             takes_value: enum { none, optional, required },
@@ -4734,6 +4738,7 @@ pub const sys = struct {
     const Sys = @This();
     pub const socketpair = @import("sys/sys.zig").socketpair;
     pub const socketpairForShell = @import("sys/sys.zig").socketpairForShell;
+    pub const moveFileZ = @import("sys/sys.zig").moveFileZ;
     pub const isExecutableFilePath = @import("sys/sys.zig").isExecutableFilePath;
     pub const unlinkatWithFlags = @import("sys/sys.zig").unlinkatWithFlags;
     pub const rmdirat = @import("sys/sys.zig").rmdirat;

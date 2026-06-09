@@ -264,7 +264,9 @@ pub const Snapshots = struct {
             };
             errdefer file.file.close(std.Options.debug_io);
 
-            const file_text = try file.file.readToEndAlloc(arena, std.math.maxInt(usize));
+            // Forked std Io.File has no readToEndAlloc; read the contents by
+            // path (the fd above stays open for the rewrite below).
+            const file_text = try std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, test_filename, arena, std.Io.Limit.unlimited);
 
             const source = &bun.logger.Source.initPathString(test_filename, file_text);
 
@@ -453,9 +455,15 @@ pub const Snapshots = struct {
                 } else ils.value;
 
                 if (needs_pre_comma) try result_text.appendSlice(", ");
-                const result_text_writer = result_text.writer();
                 try result_text.appendSlice("`");
-                try bun.js_printer.writePreQuotedString(re_indented, @TypeOf(result_text_writer), result_text_writer, '`', false, false, .utf8);
+                {
+                    // Forked std removed ArrayList.writer(); render the quoted
+                    // string through a std.Io.Writer.Allocating, then append it.
+                    var aw: std.Io.Writer.Allocating = .init(result_text.allocator);
+                    defer aw.deinit();
+                    try bun.js_printer.writePreQuotedString(re_indented, *std.Io.Writer, &aw.writer, '`', false, false, .utf8);
+                    try result_text.appendSlice(aw.writer.buffered());
+                }
                 try result_text.appendSlice("`");
 
                 if (ils.is_added) Jest.runner.?.snapshots.added += 1;
@@ -469,21 +477,14 @@ pub const Snapshots = struct {
                 continue;
             }
 
-            // 4. write out result_text to the file
-            file.file.seekTo(0) catch |e| {
-                try log.addErrorFmt(source, .{ .start = 0 }, arena, "Failed to update inline snapshot: Seek file error: {s}", .{@errorName(e)});
-                continue;
-            };
-
-            file.file.writeAll(result_text.items) catch |e| {
+            // 4. write out result_text to the file. The forked std Io.File has
+            // no seekTo/writeAll/setEndPos; Io.Dir.writeFile overwrites the whole
+            // file (truncating), which is exactly the seek-0 + write + truncate
+            // sequence here.
+            std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = test_filename, .data = result_text.items }) catch |e| {
                 try log.addErrorFmt(source, .{ .start = 0 }, arena, "Failed to update inline snapshot: Write file error: {s}", .{@errorName(e)});
                 continue;
             };
-            if (result_text.items.len < file_text.len) {
-                file.file.setEndPos(result_text.items.len) catch {
-                    @panic("Failed to update inline snapshot: File was left in an invalid state");
-                };
-            }
         }
         return success;
     }
