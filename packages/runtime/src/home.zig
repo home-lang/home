@@ -1526,20 +1526,27 @@ const TestJSCExterns = struct {
 };
 
 comptime {
-    @export(&TestJSCExterns.bunStringTransferToJS, .{ .name = "BunString__transferToJS", .linkage = .weak });
-    @export(&TestJSCExterns.determineSpecificType, .{ .name = "Bun__ErrorCode__determineSpecificType", .linkage = .weak });
-    @export(&TestJSCExterns.globalObjectBunVM, .{ .name = "JSC__JSGlobalObject__bunVM", .linkage = .weak });
-    @export(&TestJSCExterns.globalObjectVM, .{ .name = "JSC__JSGlobalObject__vm", .linkage = .weak });
-    @export(&TestJSCExterns.jsValueType, .{ .name = "JSC__JSValue__jsType", .linkage = .weak });
-    @export(&TestJSCExterns.jsValueToBoolean, .{ .name = "JSC__JSValue__toBoolean", .linkage = .weak });
-    @export(&TestJSCExterns.vmThrowError, .{ .name = "JSC__VM__throwError", .linkage = .weak });
-    @export(&TestJSCExterns.wasmStreamingAddBytes, .{ .name = "JSC__Wasm__StreamingCompiler__addBytes", .linkage = .weak });
-    @export(&TestJSCExterns.globalObjectHasException, .{ .name = "JSGlobalObject__hasException", .linkage = .weak });
-    @export(&TestJSCExterns.globalObjectThrowOutOfMemory, .{ .name = "JSGlobalObject__throwOutOfMemoryError", .linkage = .weak });
-    @export(&TestJSCExterns.topExceptionScopeConstruct, .{ .name = "TopExceptionScope__construct", .linkage = .weak });
-    @export(&TestJSCExterns.topExceptionScopePureException, .{ .name = "TopExceptionScope__pureException", .linkage = .weak });
-    @export(&TestJSCExterns.topExceptionScopeAssertNoException, .{ .name = "TopExceptionScope__assertNoException", .linkage = .weak });
-    @export(&TestJSCExterns.topExceptionScopeDestruct, .{ .name = "TopExceptionScope__destruct", .linkage = .weak });
+    // These are fallback stubs for the pure-Zig `home_rt` test target that links
+    // WITHOUT the real Bun/JSC objects. When `enable_jsc` is on, the real C++
+    // bindings provide these symbols — and because the linker localizes them,
+    // the weak Zig stubs (e.g. globalObjectVM returning 0x1000) would otherwise
+    // win for in-module callers and corrupt the VM. Skip them entirely then.
+    if (!enable_jsc_link) {
+        @export(&TestJSCExterns.bunStringTransferToJS, .{ .name = "BunString__transferToJS", .linkage = .weak });
+        @export(&TestJSCExterns.determineSpecificType, .{ .name = "Bun__ErrorCode__determineSpecificType", .linkage = .weak });
+        @export(&TestJSCExterns.globalObjectBunVM, .{ .name = "JSC__JSGlobalObject__bunVM", .linkage = .weak });
+        @export(&TestJSCExterns.globalObjectVM, .{ .name = "JSC__JSGlobalObject__vm", .linkage = .weak });
+        @export(&TestJSCExterns.jsValueType, .{ .name = "JSC__JSValue__jsType", .linkage = .weak });
+        @export(&TestJSCExterns.jsValueToBoolean, .{ .name = "JSC__JSValue__toBoolean", .linkage = .weak });
+        @export(&TestJSCExterns.vmThrowError, .{ .name = "JSC__VM__throwError", .linkage = .weak });
+        @export(&TestJSCExterns.wasmStreamingAddBytes, .{ .name = "JSC__Wasm__StreamingCompiler__addBytes", .linkage = .weak });
+        @export(&TestJSCExterns.globalObjectHasException, .{ .name = "JSGlobalObject__hasException", .linkage = .weak });
+        @export(&TestJSCExterns.globalObjectThrowOutOfMemory, .{ .name = "JSGlobalObject__throwOutOfMemoryError", .linkage = .weak });
+        @export(&TestJSCExterns.topExceptionScopeConstruct, .{ .name = "TopExceptionScope__construct", .linkage = .weak });
+        @export(&TestJSCExterns.topExceptionScopePureException, .{ .name = "TopExceptionScope__pureException", .linkage = .weak });
+        @export(&TestJSCExterns.topExceptionScopeAssertNoException, .{ .name = "TopExceptionScope__assertNoException", .linkage = .weak });
+        @export(&TestJSCExterns.topExceptionScopeDestruct, .{ .name = "TopExceptionScope__destruct", .linkage = .weak });
+    }
 }
 
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
@@ -2183,8 +2190,21 @@ pub const jsc = struct {
     pub const MAX_SAFE_INTEGER = 9007199254740991;
     pub const MIN_SAFE_INTEGER = -9007199254740991;
 
+    // Binding for JSCInitialize in ZigGlobalObject.cpp. Faithful to
+    // `jsc/jsc.zig:initialize`: this configures WTF + JSC::Options + the heap
+    // size-class tables. It MUST run once before any `Zig__GlobalObject__create`
+    // (VirtualMachine.init), otherwise JSC::VM::tryCreate crashes inside
+    // MarkedSpace::sizeClasses(). JSCInitialize itself is `std::call_once`-guarded.
     pub fn initialize(eval_mode: bool) void {
-        _ = eval_mode;
+        // Forked std has no `std.os.environ` slice; build one from `std.c.environ`
+        // (a null-terminated array of `?[*:0]u8`, bit-identical to `[*:0]u8`).
+        const env = std.mem.span(std.c.environ);
+        JSCInitialize(@ptrCast(env.ptr), env.len, onJSCInvalidEnvVar, eval_mode, false);
+    }
+    extern "c" fn JSCInitialize(env: [*]const [*:0]u8, count: usize, cb: *const fn ([*]const u8, len: usize) callconv(.c) void, eval_mode: bool, one_shot_startup: bool) void;
+    fn onJSCInvalidEnvVar(name: [*]const u8, name_len: usize) callconv(.c) void {
+        Output.errGeneric("invalid JSC environment variable: {s}", .{name[0..name_len]});
+        Global.exit(1);
     }
 
     // Minimal `WTF` namespace mirroring upstream `src/jsc/WTF.zig`. Only the

@@ -20,6 +20,8 @@ pub const ElapsedFormatter = @import("bun_core/output.zig").ElapsedFormatter;
 const CSI = "\x1b[";
 var error_writer_buffer: [4096]u8 = undefined;
 var error_file_writer: ?std.Io.File.Writer = null;
+var stdout_writer_buffer: [4096]u8 = undefined;
+var stdout_file_writer: ?std.Io.File.Writer = null;
 
 fn debugIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
@@ -179,10 +181,10 @@ pub fn debugWarn(comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn flush() void {
-    // The upstream `Output.flush()` reaches into an internal buffered
-    // writer. `std.debug.print` is already line-buffered to stderr, so
-    // flush is a no-op until Home routes through its own buffered
-    // writer in a later sub-phase.
+    // Flush both the stdout and stderr buffered writers. `console.log` (via the
+    // VM's ConsoleObject) writes through the stdout writer; without this flush
+    // its buffered output is lost when the process exits.
+    if (stdout_file_writer) |*w| w.interface.flush() catch {};
     if (error_file_writer) |*w| w.interface.flush() catch {};
 }
 
@@ -322,11 +324,14 @@ pub fn disableBuffering() void {
 }
 
 pub fn writer() *std.Io.Writer {
-    return errorWriter();
+    if (stdout_file_writer == null) {
+        stdout_file_writer = std.Io.File.Writer.initStreaming(.stdout(), debugIo(), &stdout_writer_buffer);
+    }
+    return &stdout_file_writer.?.interface;
 }
 
 pub fn writerBuffered() *std.Io.Writer {
-    return errorWriter();
+    return writer();
 }
 
 pub fn rawWriter() *std.Io.Writer {

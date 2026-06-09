@@ -323,6 +323,24 @@ pub const Command = struct {
 
     pub const init = createContextData;
 
+    /// Initialize the process-global `Command.Context` with default options,
+    /// WITHOUT parsing argv. The native VM runner (`home run` HOME_NATIVE_VM)
+    /// boots `VirtualMachine` directly rather than through `Command.start`, so
+    /// the global context that engine code reads via `Command.get()` (e.g.
+    /// `ConsoleObject` for `runtime_options.console_depth`) would otherwise be
+    /// `undefined`. Mirrors the field init in `createContextData` minus the
+    /// `Arguments.parse` step.
+    pub fn initDefaultContext(allocator: std.mem.Allocator, log: *logger.Log) Context {
+        context_data = .{
+            .args = std.mem.zeroes(api.TransformOptions),
+            .log = log,
+            .start_time = start_time,
+            .allocator = allocator,
+        };
+        global_cli_ctx = &context_data;
+        return global_cli_ctx;
+    }
+
     /// `ContextData.create` body — kept here because it calls `Arguments.parse`
     /// and reaches into Windows watcher hooks. Aliased onto `ContextData` in
     /// `options_types/Context.zig`.

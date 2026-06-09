@@ -40,8 +40,10 @@ counts: Counter = .{},
 pub fn format(_: @This(), comptime _: []const u8, _: anytype, _: anytype) !void {}
 
 pub fn init(out: *ConsoleObject, error_writer: anytype, writer: anytype) void {
-    _ = error_writer;
-    _ = writer;
+    // Store the caller's real stdout/stderr writers (faithful to upstream, where
+    // console output goes to Output.writer()/errorWriter()). The previous stub
+    // wired both to `std.Io.Writer.Discarding`, silently dropping every
+    // console.log/console.error.
     out.* = .{
         .stderr_buffer = undefined,
         .stdout_buffer = undefined,
@@ -49,15 +51,9 @@ pub fn init(out: *ConsoleObject, error_writer: anytype, writer: anytype) void {
         .error_writer_backing = undefined,
         .writer_backing = undefined,
 
-        .error_writer = undefined,
-        .writer = undefined,
+        .error_writer = error_writer,
+        .writer = writer,
     };
-
-    out.error_writer_backing = std.Io.Writer.Discarding.init(&out.stderr_buffer);
-    out.writer_backing = std.Io.Writer.Discarding.init(&out.stdout_buffer);
-
-    out.error_writer = &out.error_writer_backing.writer;
-    out.writer = &out.writer_backing.writer;
 }
 
 pub const MessageLevel = enum(u32) {

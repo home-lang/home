@@ -865,16 +865,26 @@ pub const PosixToWinNormalizer = struct {
         return this.resolveCWD(maybe_posix_path);
     }
 
+    // On POSIX an absolute posix path is already the platform path — return it
+    // unchanged (faithful to upstream, whose normalizer body is gated entirely
+    // behind `if (isWindows)` and otherwise returns `maybe_posix_path`). The
+    // previous unconditional posix→`\` conversion corrupted every resolve
+    // source dir on macOS, tripping `assert(isAbsolute(source_dir))`.
     pub fn resolveCWD(this: *@This(), maybe_posix_path: []const u8) []const u8 {
+        if (comptime !Environment.isWindows) return maybe_posix_path;
         return posixToWinBuf(u8, maybe_posix_path, &this.buf);
     }
 
     pub fn resolveCWDWithExternalBuf(_: *@This(), maybe_posix_path: []const u8, buf: *PathBuffer) []const u8 {
+        if (comptime !Environment.isWindows) return maybe_posix_path;
         return posixToWinBuf(u8, maybe_posix_path, buf);
     }
 
     pub fn resolveCWDWithExternalBufZ(this: *@This(), maybe_posix_path: []const u8, buf: *PathBuffer) [:0]const u8 {
         const out = this.resolveCWDWithExternalBuf(maybe_posix_path, buf);
+        // `out` may alias `maybe_posix_path` (POSIX no-op); copy into `buf` so the
+        // null terminator lands on the returned buffer rather than past the input.
+        if (@intFromPtr(out.ptr) != @intFromPtr(buf)) @memcpy(buf[0..out.len], out);
         buf[out.len] = 0;
         return buf[0..out.len :0];
     }
@@ -1027,6 +1037,21 @@ test "absolute detection covers posix and windows" {
     try std.testing.expect(Platform.windows.isAbsolute("C:\\tmp"));
     try std.testing.expect(Platform.windows.isAbsolute("\\\\server\\share\\tmp"));
     try std.testing.expect(!Platform.windows.isAbsolute("C:tmp"));
+}
+
+test "PosixToWinNormalizer leaves absolute posix paths untouched" {
+    if (Environment.isWindows) return error.SkipZigTest;
+    var norm: PosixToWinNormalizer = .{};
+    // resolveCWD must NOT convert '/' to '\\' on POSIX — the result has to stay
+    // an absolute posix path so the resolver's isAbsolute(source_dir) assert holds.
+    const out = norm.resolveCWD("/private/tmp/vmtest");
+    try std.testing.expectEqualStrings("/private/tmp/vmtest", out);
+    try std.testing.expect(std.fs.path.isAbsolute(out));
+
+    var buf: PathBuffer = undefined;
+    const outz = norm.resolveCWDWithExternalBufZ("/a/b/c", &buf);
+    try std.testing.expectEqualStrings("/a/b/c", outz);
+    try std.testing.expect(outz[outz.len] == 0);
 }
 
 test "joinAbsStringBuf respects absolute child" {

@@ -1686,77 +1686,139 @@ fn envFlagSet(name: [*:0]const u8) bool {
     return value[0] != 0;
 }
 
+/// Holds the booted VM + entry path across the JSC API-lock callback boundary.
+/// Faithful port of `Run.start` (bun.js.zig): the entrypoint load AND the whole
+/// event-loop drain MUST run inside `holdAPILock` — JSC operations are undefined
+/// behavior outside the API lock, which was the root cause of the earlier
+/// non-deterministic rc=0/133 flips and lost stdout in the native VM path.
+const VmRunState = struct {
+    vm: *home_rt.jsc.VirtualMachine,
+    entry_path: []const u8,
+
+    var instance: VmRunState = undefined;
+
+    /// Runs under the API lock (invoked via OpaqueWrap from holdAPILock). Mirrors
+    /// the non-watch, non-eval branch of `Run.start` (bun.js.zig:310-560): load the
+    /// entry point as a module, report a rejected top-level promise, then drain the
+    /// event loop until no async work remains, and tear down. globalExit is noreturn.
+    fn start(this: *VmRunState) void {
+        const vm = this.vm;
+
+        if (vm.loadEntryPoint(this.entry_path)) |promise| {
+            if (promise.status() == .rejected) {
+                _ = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
+                promise.setHandled();
+                vm.exit_handler.exit_code = 1;
+                home_rt.Output.flush();
+                vm.onExit();
+                vm.globalExit();
+            }
+            _ = promise.result(vm.global.vm());
+        } else |err| {
+            std.debug.print("{s}error:{s} loading '{s}': {s}\n", .{ Color.Red.code(), Color.Reset.code(), this.entry_path, @errorName(err) });
+            vm.exit_handler.exit_code = 1;
+            home_rt.Output.flush();
+            vm.onExit();
+            vm.globalExit();
+        }
+
+        // Drain async work (timers, pending microtasks, TLA) to completion.
+        while (vm.isEventLoopAlive()) {
+            vm.tick();
+            vm.eventLoop().autoTickActive();
+        }
+        vm.onBeforeExit();
+
+        vm.global.handleRejectedPromises();
+        // Flush buffered stdout/stderr (console.log) before the noreturn exit.
+        home_rt.Output.flush();
+        vm.onExit();
+        vm.globalExit();
+    }
+};
+
 /// Run a file through Home's full VirtualMachine, which uses JSC's native
-/// module loader (so ESM `import`/`export` work). Boots the VM, loads the entry
-/// as a module (loadEntryPoint drives the event loop until the top-level
-/// promise settles), reports a rejected entry, then drains remaining async work.
+/// module loader (so ESM `import`/`export` work). Faithful port of `Run.boot`
+/// (bun.js.zig:158-303): create the AST node stores, build a Mimalloc arena for
+/// the VM allocator, init the VM, configure the transpiler/resolver, load env +
+/// the source-code printer, mark the main-thread VM, then hand control to JSC via
+/// `holdAPILock` so the entrypoint load + event loop run under the API lock.
 ///
-/// STATUS (2026-06-08): COMPILES via home_rt.jsc.VirtualMachine directly (no
-/// bun.js.zig CLI cone) — the major barrier, done. VirtualMachine.init runs, the
-/// JSC native module loader engages, and modules execute. BUT this minimal setup
-/// exhibits UNDEFINED BEHAVIOR: the run result changes with unrelated code edits
-/// (rc flips 0<->133, output is buffered/lost) — the classic uninitialized-state
-/// symptom. Proper args (disable_hmr/target) + real teardown (onExit/globalExit)
-/// reduce but don't eliminate it. Fixing vm.arena (VM.init leaves it undefined)
-/// removed one definite UB source and made the no-probe run deterministic, but
-/// MORE uninitialized state remains: any code touching vm/promise after
-/// loadEntryPoint (even promise.status() in an extra branch) still crashes —
-/// so vm.arena was necessary but NOT sufficient. CONCLUSION: a partial VM init
-/// is not viable; only a COMPLETE, faithful port of Run.boot's setup sequence
-/// (bun.js.zig:158-470 — every vm.* field, b.options/resolver config, the run
-/// loop, onExit/globalExit) will make it stable. Remaining Phase-12.2 work.
-/// Gated behind HOME_NATIVE_VM=1 (experimental) so it never affects default/tests.
+/// The earlier minimal init was undefined behavior: it skipped the AST stores,
+/// `loadExtraEnvAndSourceCodePrinter`, the main-thread-VM flag, and — critically —
+/// ran loadEntryPoint OUTSIDE the API lock. Doing all of Run.boot's setup makes it
+/// deterministic. Gated behind HOME_NATIVE_VM=1 while validated end-to-end.
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const p = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.CwdUnavailable;
+    const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
     const abs_path: []const u8 = if (std.fs.path.isAbsolute(file_path))
         file_path
-    else blk: {
-        const p = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return error.CwdUnavailable;
-        const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
-        break :blk std.fs.path.join(allocator, &.{ cwd, file_path }) catch file_path;
-    };
+    else
+        std.fs.path.join(allocator, &.{ cwd, file_path }) catch file_path;
+
+    // Faithful to Run.boot: JSC (WTF + Options + heap size-class tables) must be
+    // initialized exactly once before any VM is created. Skipping this makes
+    // JSC::VM::tryCreate crash in MarkedSpace::sizeClasses().
+    home_rt.jsc.initialize(false);
+
+    // Faithful to Run.boot: the AST node stores must exist before the module
+    // loader transpiles anything (the parser allocates Expr/Stmt data from them).
+    home_rt.ast.Expr.Data.Store.create();
+    home_rt.ast.Stmt.Data.Store.create();
+
+    // The VM owns its memory through a Mimalloc arena (Run.boot: `Arena.init()`).
+    // This frame never returns before globalExit, so a local arena stays valid.
+    var arena = home_rt.MimallocArena.init();
 
     const log = try allocator.create(home_rt.logger.Log);
     log.* = home_rt.logger.Log.init(allocator);
     var args = std.mem.zeroes(home_rt.schema.api.TransformOptions);
     args.disable_hmr = true;
     args.target = home_rt.schema.api.Target.bun;
-    const dir = std.fs.path.dirname(abs_path) orelse "/";
-    args.absolute_working_dir = allocator.dupeZ(u8, dir) catch null;
+    args.absolute_working_dir = allocator.dupeZ(u8, cwd) catch null;
+
+    // Engine code (e.g. ConsoleObject) reads the process-global Command.Context
+    // via `Command.get()`. We boot the VM directly (not through Command.start),
+    // so initialize that context with defaults first or those reads dereference
+    // undefined memory.
+    _ = home_rt.cli.Command.initDefaultContext(allocator, log);
+
     const vm = try home_rt.jsc.VirtualMachine.init(.{
-        .allocator = allocator,
+        .allocator = arena.allocator(),
         .args = args,
         .log = log,
         .is_main_thread = true,
     });
-    // VirtualMachine.init leaves vm.arena = undefined (Run.boot fills it). Using
-    // it (vm.allocator, teardown) without setting it is the UB we hit. This frame
-    // never returns before globalExit, so a local arena stays valid throughout.
-    var arena = home_rt.MimallocArena.init();
+
+    var b = &vm.transpiler;
     vm.arena = &arena;
-    vm.allocator = vm.arena.allocator();
-    vm.eventLoop().ensureWaker();
-    try vm.transpiler.configureDefines();
+    vm.allocator = arena.allocator();
 
-    const promise = vm.loadEntryPoint(abs_path) catch |err| {
-        std.debug.print("{s}error:{s} loading '{s}': {s}\n", .{ Color.Red.code(), Color.Reset.code(), abs_path, @errorName(err) });
-        std.process.exit(1);
-    };
-    if (promise.status() == .rejected) {
-        _ = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
-        std.process.exit(1);
+    // Resolver/transpiler config mirrored from Run.boot (defaults for the install
+    // knobs since there's no CLI context here).
+    b.resolver.env_loader = b.env;
+    b.options.env.behavior = .load_all_without_inlining;
+
+    b.configureDefines() catch return error.ConfigureDefinesFailed;
+
+    home_rt.http.AsyncHTTP.loadEnv(vm.allocator, vm.log, b.env);
+    vm.loadExtraEnvAndSourceCodePrinter();
+    vm.is_main_thread = true;
+    home_rt.jsc.VirtualMachine.is_main_thread_vm = true;
+
+    if (vm.transpiler.env.get("TZ")) |tz| {
+        if (tz.len > 0) _ = vm.global.setTimeZone(&home_rt.jsc.ZigString.init(tz));
     }
 
-    // Drain remaining async work (timers, pending microtasks) before exiting.
-    while (vm.isEventLoopAlive()) {
-        vm.tick();
-    }
-    // Proper teardown (flushes the VM's stdout/stderr streams + exits with the
-    // VM's exit code). onExit sets is_shutting_down; globalExit is noreturn.
-    vm.onExit();
-    vm.globalExit();
+    vm.main_is_html_entrypoint = false;
+
+    // Hand control to JSC under the API lock; start() loads + runs the entry.
+    VmRunState.instance = .{ .vm = vm, .entry_path = abs_path };
+    const callback = home_rt.jsc.OpaqueWrap(VmRunState, VmRunState.start);
+    vm.global.vm().holdAPILock(&VmRunState.instance, callback);
 }
 
 /// Execute a JS/TS file through Home's OWN native JSC runtime (not bun

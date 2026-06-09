@@ -37,9 +37,7 @@ pub inline fn isNull(this: NullableAllocator) bool {
 }
 
 pub inline fn isWTFAllocator(this: NullableAllocator) bool {
-    _ = this;
-    // home_rt.String.isWTFAllocator stub — Phase 12.2 wire-up.
-    return false;
+    return home_rt.String.isWTFAllocator(this.get() orelse return false);
 }
 
 pub inline fn get(this: NullableAllocator) ?std.mem.Allocator {
@@ -48,8 +46,15 @@ pub inline fn get(this: NullableAllocator) ?std.mem.Allocator {
 
 pub fn free(this: *const NullableAllocator, bytes: []const u8) void {
     if (this.get()) |allocator| {
-        // JSC-bridge: WTFAllocator fast-path omitted — re-lands in Phase 12.2
-        // when `home_rt.String.isWTFAllocator` becomes a real check.
+        if (home_rt.String.isWTFAllocator(allocator)) {
+            // The WTF StringImpl allocator only ref-counts; the bytes belong to
+            // the JSC string and must NOT be touched. Call rawFree directly to
+            // avoid `std.mem.Allocator.free`, which memsets the buffer to
+            // undefined first — a write into shared/read-only WTF memory crashes.
+            allocator.rawFree(@constCast(bytes), .@"1", 0);
+            return;
+        }
+
         allocator.free(bytes);
     }
 }
