@@ -537,7 +537,12 @@ pub const JSError = error{ JSError, OutOfMemory, JSTerminated };
 pub const JSTerminated = error{JSTerminated};
 pub const JSOOM = OOM || JSError;
 pub const handleOom = Global.handleOom;
-pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
+// Must be libc malloc/free-backed: ArrayBuffer/TypedArray bytes allocated here
+// are freed pointer-only by `MarkedArrayBuffer_deallocator` → `mi_free`
+// (=`std.c.free` in Home's mimalloc shim). `std.heap.smp_allocator` is
+// page-based and can't be freed by `std.c.free` (SIGABRT in GC sweep). Upstream
+// Bun's default_allocator is mimalloc, which likewise frees by pointer.
+pub const default_allocator: std.mem.Allocator = std.heap.c_allocator;
 pub const StackOverflow = error{StackOverflow};
 // Faithful to upstream `bun.zig:16`: `pub const DefaultAllocator = allocators.Default;`.
 // The default allocator *type* used by `bun.ptr.shared` / `bun.ptr.OwnedIn`.
