@@ -4166,7 +4166,13 @@ pub const allocators = struct {
 
             allocator: std.mem.Allocator,
             backing_buf: [count]ValueType = undefined,
-            overflow: std.ArrayList(ValueType) = .empty,
+            // Overflow holds POINTERS to individually heap-allocated values, not
+            // the values inline: `append` hands out `*ValueType` that callers
+            // (e.g. the FileSystem dir-entry hashmap, which keys on slices INTO
+            // these values) keep long-term, so the storage must be pointer-stable.
+            // A plain `ArrayList(ValueType)` reallocates on growth and dangles
+            // every prior pointer (faithful to Bun's block-based OverflowList).
+            overflow: std.ArrayList(*ValueType) = .empty,
             used: u32 = 0,
 
             pub var instance: *Self = undefined;
@@ -4182,6 +4188,7 @@ pub const allocators = struct {
             }
 
             pub fn deinit(self: *Self) void {
+                for (self.overflow.items) |value_ptr| self.allocator.destroy(value_ptr);
                 self.overflow.deinit(self.allocator);
                 self.allocator.destroy(self);
                 loaded = false;
@@ -4203,9 +4210,13 @@ pub const allocators = struct {
                     return &self.backing_buf[index];
                 }
 
-                try self.overflow.append(self.allocator, value);
+                // Heap-allocate the value so its pointer stays valid even as the
+                // overflow pointer-array reallocates on growth.
+                const value_ptr = try self.allocator.create(ValueType);
+                value_ptr.* = value;
+                try self.overflow.append(self.allocator, value_ptr);
                 self.used += 1;
-                return &self.overflow.items[self.overflow.items.len - 1];
+                return value_ptr;
             }
 
             pub const Pair = struct { index: IndexType, value: *ValueType };
