@@ -1909,7 +1909,17 @@ pub const Engine = struct {
                     for (source_members_for_index) |sm| {
                         const name_bytes = sint.getOptional(sm.name) orelse continue;
                         if (!isNumericName(name_bytes)) continue;
-                        if (!try self.isAssignableTo(sm.type, target_num_idx)) return false;
+                        // A numeric-named optional property contributes its
+                        // implicit `| undefined` to the number-index check
+                        // under strictNullChecks: `{ 1?: string }` is NOT
+                        // assignable to `{ [key: number]: string }` because
+                        // `obj[1]` may be `undefined`. (The string-index
+                        // loop above intentionally keeps the bare declared
+                        // type — tsc exempts optional properties' implicit
+                        // undefined for string/dictionary indexers.) Mirrors
+                        // `optionalPropertyAssignableToStringIndexSignature.ts`.
+                        const sm_eff = try self.effectiveOptionalMemberType(sm);
+                        if (!try self.isAssignableTo(sm_eff, target_num_idx)) return false;
                     }
                 }
             }
