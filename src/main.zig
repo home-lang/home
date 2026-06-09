@@ -3718,6 +3718,11 @@ pub fn main(init: std.process.Init) !void {
     defer args_arena.deinit();
     const args = try init.minimal.args.toSlice(args_arena.allocator());
 
+    // Populate the runtime's process argv (empty by default). The native VM's
+    // node:process reads `bun.argv[0]` (createArgv0) and would panic on an empty
+    // slice; the eval/CJS realm paths pass argv explicitly and are unaffected.
+    if (home_rt.argv.len == 0 and args.len > 0) home_rt.argv = @constCast(args);
+
     // Check if called as 'homecheck' - automatically run test mode
     const program_name = std.fs.path.basename(args[0]);
     if (std.mem.eql(u8, program_name, "homecheck")) {
