@@ -1697,10 +1697,14 @@ fn envFlagSet(name: [*:0]const u8) bool {
 /// exhibits UNDEFINED BEHAVIOR: the run result changes with unrelated code edits
 /// (rc flips 0<->133, output is buffered/lost) — the classic uninitialized-state
 /// symptom. Proper args (disable_hmr/target) + real teardown (onExit/globalExit)
-/// reduce but don't eliminate it. CONCLUSION: a partial VM init is not viable;
-/// only a COMPLETE, faithful port of Run.boot's setup sequence (bun.js.zig:
-/// 158-470 — every vm.* field, b.options/resolver config, the run loop, and
-/// onExit/globalExit) will make it stable. That is the remaining Phase-12.2 work.
+/// reduce but don't eliminate it. Fixing vm.arena (VM.init leaves it undefined)
+/// removed one definite UB source and made the no-probe run deterministic, but
+/// MORE uninitialized state remains: any code touching vm/promise after
+/// loadEntryPoint (even promise.status() in an extra branch) still crashes —
+/// so vm.arena was necessary but NOT sufficient. CONCLUSION: a partial VM init
+/// is not viable; only a COMPLETE, faithful port of Run.boot's setup sequence
+/// (bun.js.zig:158-470 — every vm.* field, b.options/resolver config, the run
+/// loop, onExit/globalExit) will make it stable. Remaining Phase-12.2 work.
 /// Gated behind HOME_NATIVE_VM=1 (experimental) so it never affects default/tests.
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
@@ -1727,6 +1731,12 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
         .log = log,
         .is_main_thread = true,
     });
+    // VirtualMachine.init leaves vm.arena = undefined (Run.boot fills it). Using
+    // it (vm.allocator, teardown) without setting it is the UB we hit. This frame
+    // never returns before globalExit, so a local arena stays valid throughout.
+    var arena = home_rt.MimallocArena.init();
+    vm.arena = &arena;
+    vm.allocator = vm.arena.allocator();
     vm.eventLoop().ensureWaker();
     try vm.transpiler.configureDefines();
 
