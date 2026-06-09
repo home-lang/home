@@ -112,3 +112,33 @@ after the `literalOf` fix landed). Non-crashing assertion mismatches:
 - `EnumAndModuleWithSameNameAndCommonRoot passes clean`
 - `ModuleAndEnumWithSameNameAndCommonRoot passes clean`
 - `redeclaredProperty diagnoses TS2729 on this.b access`
+
+---
+
+## 4. Decorator parity: TS1278/TS1279 vs legacy TS1238/1240/1241 (contested)
+
+**Evidence of a parity gap.** Under `// @experimentalDecorators: true`, the
+conformance baselines emit the *legacy* "unable to resolve signature of X
+decorator" codes, NOT the TC39 standard-decorator runtime-arity codes:
+
+| fixture (`@experimentalDecorators`) | tsc emits | home emits |
+| --- | --- | --- |
+| decoratorOnClass8 | TS1238 (3,1) | **+TS1278** (3,1) |
+| decoratorOnClassMethod8/10 | TS1241 (4,6) | **+TS1278** (4,6) |
+| decoratorOnClassProperty6 | TS1240 (4,6) | **+TS1278** (4,6) |
+| decoratorOnClassProperty7 | TS1240 (4,5) | **+TS1278** (4,5) |
+
+i.e. home runs the standard-decorator runtime-arity check (TS1278/TS1279) even
+under `experimentalDecorators`, where tsc instead reports the signature as
+unresolvable (TS1238/1240/1241 by kind, at the identical anchor).
+
+**Why this is left for you.** A one-line gate in `checkDecoratorRuntimeArity`
+(emit `signature_unresolved_code` under `sourceUsesLegacyDecorators()`,
+keeping the existing `dec_pos`) flips all 5 fixtures cleanly — verified
+locally (+5 on the 0–1500 window). BUT it contradicts 5 *deliberate* unit
+tests that assert TS1278/TS1279 under `@experimentalDecorators`
+("property/class/method decorator exact runtime arity emits TS1278",
+"...TS1278 anchors at @...", "rest property decorator runtime arity emits
+TS1279"). Those tests would need to change to expect TS1240/1241/1238. Since
+that's a deliberate-behavior decision in actively-edited code, it's yours to
+make — the fix + the test updates should land together.
