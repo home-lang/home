@@ -194,25 +194,25 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
 fn cpusImplFreeBSD(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     var ncpu: c_uint = 0;
     var ncpu_len: usize = @sizeOf(c_uint);
-    try std.posix.sysctlbynameZ("hw.ncpu", &ncpu, &ncpu_len, null, 0);
+    try bun.c.sysctlbynameZ("hw.ncpu", &ncpu, &ncpu_len, null, 0);
     if (ncpu == 0) return error.no_processor_info;
 
     var model_buf: [512]u8 = undefined;
     var model_len: usize = model_buf.len;
-    const model = if (std.posix.sysctlbynameZ("hw.model", &model_buf, &model_len, null, 0)) |_|
+    const model = if (bun.c.sysctlbynameZ("hw.model", &model_buf, &model_len, null, 0)) |_|
         jsc.ZigString.init(std.mem.sliceTo(&model_buf, 0)).withEncoding().toJS(globalThis)
     else |_|
         jsc.ZigString.static("unknown").withEncoding().toJS(globalThis);
 
     var speed_mhz: c_uint = 0;
     var speed_len: usize = @sizeOf(c_uint);
-    _ = std.posix.sysctlbynameZ("hw.clockrate", &speed_mhz, &speed_len, null, 0) catch {};
+    _ = bun.c.sysctlbynameZ("hw.clockrate", &speed_mhz, &speed_len, null, 0) catch {};
 
     const cpu_states = 5; // user, nice, sys, intr, idle
     const times_buf = try bun.default_allocator.alloc(c_long, @as(usize, ncpu) * cpu_states);
     defer bun.default_allocator.free(times_buf);
     var times_len: usize = times_buf.len * @sizeOf(c_long);
-    try std.posix.sysctlbynameZ("kern.cp_times", times_buf.ptr, &times_len, null, 0);
+    try bun.c.sysctlbynameZ("kern.cp_times", times_buf.ptr, &times_len, null, 0);
 
     const ticks: i64 = bun_sysconf__SC_CLK_TCK();
     const mult: u64 = if (ticks > 0) 1000 / @as(u64, @intCast(ticks)) else 1;
@@ -480,7 +480,7 @@ pub fn loadavg(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
             var avg: c.struct_loadavg = undefined;
             var size: usize = @sizeOf(@TypeOf(avg));
 
-            std.posix.sysctlbynameZ(
+            bun.c.sysctlbynameZ(
                 "vm.loadavg",
                 &avg,
                 &size,
@@ -570,9 +570,9 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
         pub fn isLinkLayer(iface: *c.ifaddrs) bool {
             if (iface.ifa_addr == null) return false;
             return if (comptime Environment.isLinux)
-                return iface.ifa_addr.*.sa_family == std.posix.AF.PACKET
+                return iface.ifa_addr.*.family == std.posix.AF.PACKET
             else if (comptime Environment.isMac or Environment.isFreeBSD)
-                return iface.ifa_addr.?.*.sa_family == std.posix.AF.LINK
+                return iface.ifa_addr.?.*.family == std.posix.AF.LINK
             else
                 @compileError("unreachable");
         }
@@ -944,7 +944,7 @@ pub fn totalmem() u64 {
             var memory_: [32]c_ulonglong = undefined;
             var size: usize = memory_.len;
 
-            std.posix.sysctlbynameZ(
+            bun.c.sysctlbynameZ(
                 "hw.memsize",
                 &memory_,
                 &size,
@@ -964,7 +964,7 @@ pub fn totalmem() u64 {
         .freebsd => {
             var physmem: u64 = 0;
             var size: usize = @sizeOf(u64);
-            std.posix.sysctlbynameZ("hw.physmem", &physmem, &size, null, 0) catch return 0;
+            bun.c.sysctlbynameZ("hw.physmem", &physmem, &size, null, 0) catch return 0;
             return physmem;
         },
         .windows => {
@@ -994,7 +994,7 @@ pub fn uptime(global: *jsc.JSGlobalObject) bun.JSError!f64 {
             var boot_time: std.posix.timeval = undefined;
             var size: usize = @sizeOf(@TypeOf(boot_time));
 
-            std.posix.sysctlbynameZ(
+            bun.c.sysctlbynameZ(
                 "kern.boottime",
                 &boot_time,
                 &size,
@@ -1004,7 +1004,7 @@ pub fn uptime(global: *jsc.JSGlobalObject) bun.JSError!f64 {
                 else => return 0,
             };
 
-            return @floatFromInt(std.time.timestamp() - boot_time.sec);
+            return @floatFromInt(@as(i64, @intCast(bun.c.time(null))) - boot_time.sec);
         },
         .linux => {
             var info: c.struct_sysinfo = undefined;

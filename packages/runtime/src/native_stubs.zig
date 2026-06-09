@@ -231,7 +231,6 @@ comptime {
         "JS2Zig___src_runtime_node_node_http_binding_zig__getBunServerAllClosedPromise",
         "JS2Zig___src_runtime_node_node_http_binding_zig__getMaxHTTPHeaderSize",
         "JS2Zig___src_runtime_node_node_http_binding_zig__setMaxHTTPHeaderSize",
-        "JS2Zig___src_runtime_node_node_os_zig__createNodeOsBinding_workaround",
         "JS2Zig___src_runtime_node_node_zlib_binding_zig__crc__",
         "JS2Zig___src_runtime_node_util_parse_args_zig__parseArgs",
         "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_disabledOnThisPlatform",

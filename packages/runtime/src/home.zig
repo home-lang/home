@@ -154,6 +154,9 @@ pub const validators = @import("runtime/node/util/validators.zig");
 pub const windows = @import("sys/windows/windows.zig");
 pub const mach_port = if (Environment.isMac) std.c.mach_port_t else u32;
 pub var argv: [][:0]const u8 = &[_][:0]const u8{};
+/// Bindgen namespace (upstream `bun.gen`). Hand-written stand-in until the
+/// bindgen codegen lands; provides `gen.node_os` (node_os.zig references it).
+pub const gen = @import("runtime/node/GeneratedBindings.zig");
 /// Faithful to upstream `bun.zig:1422`; std.mem.sliceTo has matching semantics.
 pub const sliceTo = std.mem.sliceTo;
 /// Faithful to upstream `bun.zig:3492`.
@@ -4646,6 +4649,80 @@ pub const c = struct {
         _ = file_path;
         out.* = std.mem.zeroes(StatFS);
         return 0;
+    }
+
+    // ---- node:os C interop (macOS/POSIX) -------------------------------
+    // Mirrors the system-header types Bun's `bun.c` provides via translate-c.
+    // Used by `runtime/node/node_os.zig` (cpus/userInfo/loadavg/networkInterfaces).
+
+    // mach host/processor info (cpus on macOS)
+    pub const natural_t = c_uint;
+    pub const integer_t = c_int;
+    pub const processor_info_array_t = [*]integer_t;
+    pub const PROCESSOR_CPU_LOAD_INFO: c_int = 2;
+    pub const processor_cpu_load_info = extern struct {
+        cpu_ticks: [4]c_uint, // [CPU_STATE_MAX] = user/system/idle/nice
+    };
+    pub const PROCESSOR_CPU_LOAD_INFO_COUNT: natural_t = @sizeOf(processor_cpu_load_info) / @sizeOf(natural_t);
+    pub extern "c" fn host_processor_info(host: std.c.mach_port_t, flavor: c_int, out_processor_count: *natural_t, out_processor_info: *processor_info_array_t, out_processor_infoCnt: *std.c.mach_msg_type_number_t) c_int;
+
+    // pwd.h (userInfo / homedir)
+    pub const passwd = extern struct {
+        pw_name: ?[*:0]u8,
+        pw_passwd: ?[*:0]u8,
+        pw_uid: u32,
+        pw_gid: u32,
+        pw_change: c_long,
+        pw_class: ?[*:0]u8,
+        pw_gecos: ?[*:0]u8,
+        pw_dir: ?[*:0]u8,
+        pw_shell: ?[*:0]u8,
+        pw_expire: c_long,
+    };
+    pub extern "c" fn getpwuid_r(uid: u32, pwd: *passwd, buffer: [*]u8, bufsize: usize, result: *?*passwd) c_int;
+    pub extern "c" fn geteuid() u32;
+    pub extern "c" fn getgid() u32;
+
+    // sys/resource.h vm.loadavg (loadavg on macOS)
+    pub const struct_loadavg = extern struct {
+        ldavg: [3]u32, // fixpt_t
+        fscale: c_long,
+    };
+    pub extern "c" fn getloadavg(loadavg: [*]f64, nelem: c_int) c_int;
+
+    // ifaddrs.h + net/if_dl.h (networkInterfaces)
+    pub const ifaddrs = extern struct {
+        ifa_next: ?*ifaddrs,
+        ifa_name: [*:0]u8,
+        ifa_flags: c_uint,
+        ifa_addr: ?*std.posix.sockaddr,
+        ifa_netmask: ?*std.posix.sockaddr,
+        ifa_dstaddr: ?*std.posix.sockaddr,
+        ifa_data: ?*anyopaque,
+    };
+    pub extern "c" fn getifaddrs(ifap: *?*ifaddrs) c_int;
+    pub extern "c" fn freeifaddrs(ifa: ?*ifaddrs) void;
+    pub const sockaddr_dl = extern struct {
+        sdl_len: u8,
+        sdl_family: u8,
+        sdl_index: u16,
+        sdl_type: u8,
+        sdl_nlen: u8,
+        sdl_alen: u8,
+        sdl_slen: u8,
+        sdl_data: [12]u8,
+    };
+    pub const IFF_UP: c_uint = 0x1;
+    pub const IFF_LOOPBACK: c_uint = 0x8;
+    pub const IFF_RUNNING: c_uint = 0x40;
+
+    // The forked std lacks `std.time.timestamp()`; libc `time(2)` over the same.
+    pub extern "c" fn time(tloc: ?*c_long) c_long;
+
+    // The forked std lacks `std.posix.sysctlbynameZ`; provide it over the libc
+    // `sysctlbyname` (which `std.c` exposes and node_os already uses for cpus).
+    pub fn sysctlbynameZ(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: ?*usize, newp: ?*const anyopaque, newlen: usize) error{SystemResources}!void {
+        if (std.c.sysctlbyname(name, oldp, oldlenp, @constCast(newp), newlen) != 0) return error.SystemResources;
     }
 };
 

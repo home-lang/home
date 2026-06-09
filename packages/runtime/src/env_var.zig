@@ -104,6 +104,12 @@ pub const SHELL = struct {
     }
 };
 
+pub const USER = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("USER");
+    }
+};
+
 pub const HOME = struct {
     pub fn get() ?[]const u8 {
         return rawGet("HOME");

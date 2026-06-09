@@ -24,6 +24,7 @@ const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 const host_fn = @import("./host_fn.zig");
 
+const node_os = @import("../runtime/node/node_os.zig");
 const node_fs_binding = @import("../runtime/node/node_fs_binding.zig");
 const node_assert_binding = @import("../runtime/node/node_assert_binding.zig");
 const node_net_binding = @import("../runtime/node/node_net_binding.zig");
@@ -41,8 +42,19 @@ fn lazy(comptime f: fn (*JSGlobalObject) callconv(.auto) JSValue) fn (*JSGlobalO
     }.call;
 }
 
+/// Wrap a `fn(*GlobalObject) JSError!JSValue` lazy binding, surfacing a thrown
+/// exception as `.zero` (faithful to toJSHostFnResult).
+fn lazyErr(comptime f: fn (*JSGlobalObject) callconv(.auto) bun.JSError!JSValue) fn (*JSGlobalObject) callconv(jsc.conv) JSValue {
+    return struct {
+        fn call(global: *JSGlobalObject) callconv(jsc.conv) JSValue {
+            return host_fn.toJSHostFnResult(global, f(global));
+        }
+    }.call;
+}
+
 comptime {
     // ---- Lazy bindings (`..._workaround`) -------------------------------
+    @export(&lazyErr(node_os.createNodeOsBinding), .{ .name = "JS2Zig___src_runtime_node_node_os_zig__createNodeOsBinding_workaround" });
     @export(&lazy(node_fs_binding.createBinding), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createBinding_workaround" });
     @export(&lazy(node_assert_binding.generate), .{ .name = "JS2Zig___src_runtime_node_node_assert_binding_zig__generate_workaround" });
     @export(&lazy(node_net_binding.getDefaultAutoSelectFamily), .{ .name = "JS2Zig___src_runtime_node_node_net_binding_zig__getDefaultAutoSelectFamily_workaround" });

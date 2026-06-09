@@ -36,6 +36,12 @@ pub const Address = struct {
         flowinfo: u32,
         addr: [16]u8,
         scope_id: u32,
+        // Mirror of the `in` field's nested `sa` (sockaddr_in6) so callers
+        // (e.g. node:os networkInterfaces) can read `in6.sa.addr`/`.scope_id`.
+        sa: extern struct {
+            addr: [16]u8,
+            scope_id: u32,
+        },
 
         pub fn getPort(this: @This()) u16 {
             return std.mem.bigToNative(u16, this.port);
@@ -70,6 +76,7 @@ pub const Address = struct {
                 .flowinfo = flowinfo,
                 .addr = bytes,
                 .scope_id = scope_id,
+                .sa = .{ .addr = bytes, .scope_id = scope_id },
             },
         };
     }
