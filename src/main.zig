@@ -1692,14 +1692,16 @@ fn envFlagSet(name: [*:0]const u8) bool {
 /// promise settles), reports a rejected entry, then drains remaining async work.
 ///
 /// STATUS (2026-06-08): COMPILES via home_rt.jsc.VirtualMachine directly (no
-/// bun.js.zig CLI cone) — the major barrier. VirtualMachine.init runs and the
-/// native module loader engages, BUT the minimal setup here is unstable: VM.init
-/// does not cleanly return / behaves non-deterministically (rc varies 0 vs 133),
-/// VM.init also takes over stdout/stderr so output is buffered+lost, and exit
-/// teardown crashes. A correct, stable run needs Run.boot's FULL setup sequence
-/// (bun.js.zig:158-470: b.options/resolver/preload/main config + the run loop +
-/// onExit/globalExit). That port is the remaining Phase-12.2 work. Gated behind
-/// HOME_NATIVE_VM=1 (experimental) so it never affects the default path or tests.
+/// bun.js.zig CLI cone) — the major barrier, done. VirtualMachine.init runs, the
+/// JSC native module loader engages, and modules execute. BUT this minimal setup
+/// exhibits UNDEFINED BEHAVIOR: the run result changes with unrelated code edits
+/// (rc flips 0<->133, output is buffered/lost) — the classic uninitialized-state
+/// symptom. Proper args (disable_hmr/target) + real teardown (onExit/globalExit)
+/// reduce but don't eliminate it. CONCLUSION: a partial VM init is not viable;
+/// only a COMPLETE, faithful port of Run.boot's setup sequence (bun.js.zig:
+/// 158-470 — every vm.* field, b.options/resolver config, the run loop, and
+/// onExit/globalExit) will make it stable. That is the remaining Phase-12.2 work.
+/// Gated behind HOME_NATIVE_VM=1 (experimental) so it never affects default/tests.
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
@@ -1715,6 +1717,8 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     const log = try allocator.create(home_rt.logger.Log);
     log.* = home_rt.logger.Log.init(allocator);
     var args = std.mem.zeroes(home_rt.schema.api.TransformOptions);
+    args.disable_hmr = true;
+    args.target = home_rt.schema.api.Target.bun;
     const dir = std.fs.path.dirname(abs_path) orelse "/";
     args.absolute_working_dir = allocator.dupeZ(u8, dir) catch null;
     const vm = try home_rt.jsc.VirtualMachine.init(.{
@@ -1739,8 +1743,10 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     while (vm.isEventLoopAlive()) {
         vm.tick();
     }
-    home_rt.Output.flush();
-    std.process.exit(@intCast(@max(0, vm.exit_handler.exit_code)));
+    // Proper teardown (flushes the VM's stdout/stderr streams + exits with the
+    // VM's exit code). onExit sets is_shutting_down; globalExit is noreturn.
+    vm.onExit();
+    vm.globalExit();
 }
 
 /// Execute a JS/TS file through Home's OWN native JSC runtime (not bun
