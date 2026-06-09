@@ -82,7 +82,16 @@ pub fn start(this: *PipeReader, process: *Subprocess, event_loop: *jsc.EventLoop
                     // will drop the last ref and deinit() closes the handle.
                     return .success;
                 }
-                const poll = this.reader.handle.poll;
+                // Home's io.BufferedReader is currently a stub whose start() is a
+                // no-op, so the handle stays `.closed` rather than a registered
+                // `.poll`. Guard the poll-flag setup instead of unconditionally
+                // accessing `.poll` (which panics on the active `.closed` field).
+                // Once the real posix_event_loop FilePoll is wired this becomes
+                // the normal `.poll` path.
+                const poll = switch (this.reader.handle) {
+                    .poll => |p| p,
+                    else => return .success,
+                };
                 poll.flags.insert(.socket);
                 this.reader.flags.socket = true;
                 this.reader.flags.nonblocking = true;
