@@ -171,10 +171,14 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
                     continue;
                 }
 
-                // We don't call .toOwnedSlice() because it is expensive to
-                // reallocate the array AND when inside an Arena, it's
-                // hideously expensive
-                const owned = columns_for_non_ascii.toOwnedSlice() catch unreachable;
+                // Dupe the per-line columns and KEEP columns_for_non_ascii's
+                // capacity for the next line. (Upstream reuses a stack-fallback
+                // buffer; calling toOwnedSlice() here — as a prior port did —
+                // resets the list to capacity 0, so the next line's first
+                // appendAssumeCapacity at items.len==0 panics on any file whose
+                // 2nd+ line has non-ASCII content.)
+                const owned = allocator.dupe(i32, columns_for_non_ascii.items) catch unreachable;
+                columns_for_non_ascii.clearRetainingCapacity();
 
                 list.append(allocator, .{
                     .byte_offset_to_start_of_line = line_byte_offset,
