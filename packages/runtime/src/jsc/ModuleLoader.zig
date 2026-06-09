@@ -1150,7 +1150,7 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
                 if (!is_allowed_to_use_internal_testing_apis)
                     return null;
             }
-            return jsSyntheticModule(.javascript, specifier);
+            return jsSyntheticModule(.@"bun:internal-for-testing", specifier);
         },
         .@"bun:wrap" => .{
             .allocator = null,
@@ -1158,7 +1158,11 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
             .specifier = specifier,
             .source_url = specifier,
         },
-        inline else => jsSyntheticModule(.javascript, specifier),
+        // Every other hardcoded module is an InternalModuleRegistry entry: pass
+        // its per-module tag (the HardcodedModule tag name matches a Tag name) so
+        // the C++ loader masks off InternalModuleRegistryFlag and calls
+        // internalModuleRegistry().requireId(...) with the embedded JS source.
+        inline else => |tag| jsSyntheticModule(@field(ResolvedSourceTag, @tagName(tag)), specifier),
     };
 }
 
