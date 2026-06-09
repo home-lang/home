@@ -4796,6 +4796,17 @@ pub const Parser = struct {
                 self.peek().kind == .comma)
             {
                 try self.reportCodeAt(extends_tok.span.end, extends_tok.line, 1097, "'extends' list cannot be empty.");
+            } else if (self.peek().kind == .kw_void) {
+                // `class C extends void {}` — `void` is a unary operator and
+                // cannot start the left-hand-side expression a heritage clause
+                // requires. tsc reports TS1109 at the keyword and recovers by
+                // treating the following `{` as the class body (rather than
+                // resolving `void` as a value, which would mis-emit TS2304).
+                // Mirrors classExtendingPrimitive2.
+                const tok = self.advance();
+                try self.reportCodeAt(tok.span.start, tok.line, 1109, "Expression expected.");
+                // Leave `extends` unset (no base) so the checker doesn't try to
+                // resolve a synthetic name and mis-emit TS2304.
             } else {
                 extends = try self.parseLeftHandSideExpression();
             }
