@@ -728,7 +728,13 @@ pub const Engine = struct {
                 if (self.interner.enumLiteralInfo(source)) |info| {
                     if (self.numericEnumNominalName(target)) |target_enum| {
                         const src_enum = si.getOptional(info.enum_name) orelse "";
-                        if (std.mem.eql(u8, target_enum, src_enum)) return true;
+                        // The whole-enum nominal brand is scope-qualified
+                        // (`__enum:<scopeId>:E1`) while the enum-member
+                        // literal records the bare enum name (`E1`).
+                        // Compare the bare names (after the last `:`) so a
+                        // member literal still matches its own enum's
+                        // nominal. Mirrors `bestCommonTypeOfTuple.ts`.
+                        if (std.mem.eql(u8, bareEnumName(target_enum), bareEnumName(src_enum))) return true;
                     }
                 }
             }
@@ -1009,6 +1015,14 @@ pub const Engine = struct {
     /// numeric enum nominal intersection's `__enum:NAME` brand member,
     /// or null when `t` is not such a nominal. Used to match an
     /// enum-member literal against its own enum's nominal type.
+    /// The bare enum name, stripping any `<scopeId>:` qualifier prefix
+    /// that the nominal brand carries but the member-literal record does
+    /// not (`26:E1` -> `E1`, `E1` -> `E1`).
+    fn bareEnumName(name: []const u8) []const u8 {
+        if (std.mem.lastIndexOfScalar(u8, name, ':')) |idx| return name[idx + 1 ..];
+        return name;
+    }
+
     fn numericEnumNominalName(self: *Engine, t: TypeId) ?[]const u8 {
         const si = self.string_interner orelse return null;
         if (t >= self.pool().typeCount()) return null;
