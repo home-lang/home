@@ -51,15 +51,30 @@ extern fn dump_zone_malloc_stats() void;
 //         return object;
 //     }
 pub fn create(globalThis: *JSGlobalObject) JSValue {
-    _ = globalThis;
-    return .zero;
+    const jsc = home_rt.jsc;
+    const object = JSValue.createEmptyObject(globalThis, 3);
+    const fields = comptime .{
+        .gcAggressionLevel = gcAggressionLevel,
+        .arrayBufferToString = arrayBufferToString,
+        .mimallocDump = dump_mimalloc,
+    };
+    inline for (comptime std.meta.fieldNames(@TypeOf(fields))) |name| {
+        object.put(
+            globalThis,
+            comptime jsc.ZigString.static(name),
+            jsc.JSFunction.create(globalThis, name, @field(fields, name), 1, .{}),
+        );
+    }
+    return object;
 }
 
 // Upstream body, parked. Reads/writes `globalThis.bunVM().aggressive_garbage_collection`.
+// Returns js_undefined (not .zero) so the host-fn contract assert doesn't trip
+// if called before the real body lands.
 pub fn gcAggressionLevel(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
     _ = globalThis;
     _ = callframe;
-    return .zero;
+    return .js_undefined;
 }
 
 // Upstream body, parked. Walks `jsc.ArrayBuffer.fromTypedArray` →
@@ -67,7 +82,7 @@ pub fn gcAggressionLevel(globalThis: *JSGlobalObject, callframe: *CallFrame) JSE
 pub fn arrayBufferToString(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
     _ = globalThis;
     _ = callframe;
-    return .zero;
+    return .js_undefined;
 }
 
 // Upstream body, parked. Calls `globalThis.bunVM().arena.dumpStats()` plus
@@ -78,11 +93,8 @@ fn dump_mimalloc(globalObject: *JSGlobalObject, callframe: *CallFrame) JSError!J
     return .js_undefined;
 }
 
-test "UnsafeObject: create returns the JSValue.zero stub" {
-    var dummy: u8 = 0;
-    const g: *JSGlobalObject = @ptrCast(&dummy);
-    try std.testing.expectEqual(JSValue.zero, create(g));
-}
+// `create` now builds a real JSC object (needs a live global), so it's covered
+// via the native VM (Bun.unsafe) rather than a pure-Zig unit test.
 
 test "UnsafeObject: JSValue tag is ABI-compatible with i64" {
     try std.testing.expectEqual(@as(usize, @sizeOf(i64)), @sizeOf(JSValue));
