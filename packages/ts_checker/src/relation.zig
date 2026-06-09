@@ -1448,6 +1448,20 @@ pub const Engine = struct {
         const sp: []const TypeId = if (source_rest_tuple_expanded) sp_expanded.items else sp_raw;
         const tp: []const TypeId = if (target_rest_tuple_expanded) tp_expanded.items else tp_raw;
         var source_required: usize = sp.len;
+        // A trailing rest parameter (`...args: T[]`) accepts zero
+        // arguments, so it never contributes to the source's minimum
+        // arity. Drop it before counting trailing optional/undefined-y
+        // params — otherwise a variadic source like `(...args: any[]) =>
+        // R` (the synthetic call signature of the global `Function`
+        // type) would spuriously require one argument and fail against a
+        // zero-parameter target like `() => void`. The tuple-rest path
+        // already expands its params positionally, so only the
+        // unexpanded array-rest case needs this adjustment.
+        if (!source_rest_tuple_expanded and source_required > 0 and
+            self.rest_signatures != null and self.rest_signatures.?.contains(source))
+        {
+            source_required -= 1;
+        }
         while (source_required > 0) {
             if (!self.typeIncludesUndefined(sp[source_required - 1]) and
                 sp[source_required - 1] != Primitive.void_t) break;
@@ -2529,6 +2543,42 @@ test "Engine: signature is assignable to Function callable object" {
     });
 
     try T.expect(try e.isAssignableTo(source, function_t));
+}
+
+test "Engine: Function callable object is assignable to a zero-parameter signature target" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const any_array = try ti.internArrayType(&sint, Primitive.any);
+    const function_call = try ti.internSignature(&.{any_array}, Primitive.any, false);
+    const function_proto_call = try ti.internSignature(&.{ Primitive.any, any_array }, Primitive.any, false);
+    var rest: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest.deinit(T.allocator);
+    try rest.put(T.allocator, function_call, {});
+    try rest.put(T.allocator, function_proto_call, {});
+    e.setRestSignatures(&rest);
+    const call_id = try sint.intern("__call");
+    const proto_call_id = try sint.intern("call");
+    const function_t = try ti.internObjectType(&.{
+        .{ .name = call_id, .type = function_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = proto_call_id, .type = function_proto_call, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    const target = try ti.internSignature(&.{}, Primitive.void_t, false);
+    try T.expect(try e.isAssignableTo(function_t, target));
+    // A genuine required parameter ahead of the rest still constrains
+    // arity: `(a: number, ...rest: any[]) => any` is NOT assignable to
+    // `() => void` because the target supplies no `a`.
+    const with_required = try ti.internSignature(&.{ Primitive.number_t, any_array }, Primitive.any, false);
+    try rest.put(T.allocator, with_required, {});
+    const with_required_obj = try ti.internObjectType(&.{
+        .{ .name = call_id, .type = with_required, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    try T.expect(!try e.isAssignableTo(with_required_obj, target));
 }
 
 test "Engine: structural object — weak optional target requires common source property" {
