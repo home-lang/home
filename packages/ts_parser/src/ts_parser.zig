@@ -17183,6 +17183,14 @@ pub const Parser = struct {
                         if (method_is_async) self.async_function_depth -= 1;
                     }
                     body = try self.parseBlockStatement();
+                } else {
+                    // An object-literal method shorthand (`foo(...)`) must have
+                    // a body. When the body is missing, tsc reports `'{' expected`
+                    // at the token where the body should begin (e.g. the `,` in
+                    // `{ foo(x = 1), }`). Mirrors
+                    // callSignaturesWithParameterInitializers2.
+                    const tok = self.peek();
+                    try self.reportCodeAt(tok.span.start, tok.line, 1005, "'{' expected.");
                 }
                 value = try self.builder.addFnDeclGeneric(
                     .{ .start = prop_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
