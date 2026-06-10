@@ -39,6 +39,9 @@ const node_cluster_binding = @import("../runtime/node/node_cluster_binding.zig")
 const socket = @import("../runtime/socket/socket.zig");
 const udp_socket = @import("../runtime/socket/udp_socket.zig");
 const h2_frame_parser = @import("../runtime/api/bun/h2_frame_parser.zig");
+const Listener = @import("../runtime/socket/Listener.zig");
+const ffi = @import("../runtime/ffi/ffi.zig");
+const fetch = @import("../runtime/webcore/fetch.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 
@@ -118,5 +121,8 @@ comptime {
     @export(&host_fn.toJSHostFn(udp_socket.UDPSocket.jsConnect), .{ .name = "JS2Zig___src_runtime_socket_udp_socket_zig__UDPSocket_jsConnect" });
     @export(&host_fn.toJSHostFn(udp_socket.UDPSocket.jsDisconnect), .{ .name = "JS2Zig___src_runtime_socket_udp_socket_zig__UDPSocket_jsDisconnect" });
     @export(&host_fn.toJSHostFn(h2_frame_parser.jsAssertSettings), .{ .name = "JS2Zig___src_runtime_api_bun_h__frame_parser_zig__jsAssertSettings" });
+    @export(&host_fn.toJSHostFn(Listener.jsAddServerName), .{ .name = "JS2Zig___src_runtime_socket_Listener_zig__jsAddServerName" });
+    @export(&host_fn.toJSHostFn(ffi.Bun__FFI__cc), .{ .name = "JS2Zig___src_runtime_ffi_ffi_zig__Bun__FFI__cc" });
+    @export(&host_fn.toJSHostFn(fetch.nodeHttpClient), .{ .name = "JS2Zig___src_runtime_webcore_fetch_zig__nodeHttpClient" });
     @export(&host_fn.toJSHostFn(node_fs_binding.createMemfdForTesting), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createMemfdForTesting" });
 }
