@@ -36,6 +36,7 @@ const node_parse_args = @import("../runtime/node/util/parse_args.zig");
 const Timer = @import("../runtime/timer/Timer.zig");
 const dns = @import("../runtime/dns_jsc/dns.zig");
 const node_cluster_binding = @import("../runtime/node/node_cluster_binding.zig");
+const socket = @import("../runtime/socket/socket.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 
@@ -106,5 +107,11 @@ comptime {
     @export(&host_fn.toJSHostFn(node_cluster_binding.onInternalMessagePrimary), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__onInternalMessagePrimary" });
     @export(&host_fn.toJSHostFn(node_cluster_binding.setRef), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__setRef" });
     @export(&host_fn.toJSHostFn(node_cluster_binding.channelIgnoreOneDisconnectEventListener), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__channelIgnoreOneDisconnectEventListener" });
+    // Bun socket helpers (were noop).
+    @export(&host_fn.toJSHostFn(socket.jsCreateSocketPair), .{ .name = "JS2Zig___src_runtime_socket_socket_zig__jsCreateSocketPair" });
+    @export(&host_fn.toJSHostFn(socket.jsGetBufferedAmount), .{ .name = "JS2Zig___src_runtime_socket_socket_zig__jsGetBufferedAmount" });
+    @export(&host_fn.toJSHostFn(socket.jsIsNamedPipeSocket), .{ .name = "JS2Zig___src_runtime_socket_socket_zig__jsIsNamedPipeSocket" });
+    @export(&host_fn.toJSHostFn(socket.jsUpgradeDuplexToTLS), .{ .name = "JS2Zig___src_runtime_socket_socket_zig__jsUpgradeDuplexToTLS" });
+    // jsSetSocketOptions left stubbed: needs `bun.sys.setsockopt` (unported).
     @export(&host_fn.toJSHostFn(node_fs_binding.createMemfdForTesting), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createMemfdForTesting" });
 }
