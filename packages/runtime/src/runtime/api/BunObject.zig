@@ -1073,6 +1073,20 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
                         return .zero;
                     }
                     const obj = server.toJS(globalObject);
+                    // The native HTTP server is still a lifetime-only stub
+                    // (`ServerJSStub`): its `toJS` returns the empty JSValue
+                    // sentinel (`.zero`). Handing `.zero` back to JS makes the
+                    // bound `const s = Bun.serve(...)` a malformed value, and
+                    // any operation on it (`typeof s`, `s.port`) is undefined
+                    // behavior that infinitely recurses the interpreter and
+                    // segfaults. Until the real uWS-backed server is ported,
+                    // throw a clear, catchable error instead of returning an
+                    // invalid value (a fake non-serving object would instead
+                    // hang every test that awaits a response).
+                    if (obj == .zero and !globalObject.hasException()) {
+                        config.deinit();
+                        return globalObject.throw("Bun.serve() is not yet implemented in the native Home runtime", .{});
+                    }
                     if (route_list_object != .zero) {
                         ServerType.js.routeListSetCached(obj, globalObject, route_list_object);
                     }
