@@ -1959,7 +1959,20 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
         const ctx = engine.currentContext();
         const global = engine.currentGlobalObject();
         installRealmGlobals(allocator, ctx, global, &[_][]const u8{"home"});
-        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, code, "home:eval", 1);
+
+        // `bun -e` treats inline source as TypeScript by default — strip types
+        // through the real Bun parser so `home -e "const x: number = 1"` runs.
+        // Fall back to the raw source on a parse error (preserves prior plain-JS
+        // behavior for anything the transform can't handle).
+        var eval_code: []const u8 = code;
+        var stripped_owned: ?[]u8 = null;
+        defer if (stripped_owned) |s| allocator.free(s);
+        if (home_rt.transpileTypeScriptForEval(allocator, code, .ts)) |stripped| {
+            stripped_owned = stripped;
+            eval_code = stripped;
+        } else |_| {}
+
+        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(allocator, ctx, eval_code, "home:eval", 1);
         defer evaluation.deinit(allocator);
 
         if (evaluation.exception != null) {

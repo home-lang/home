@@ -993,6 +993,76 @@ pub const ImportRecord = @import("options_types/import_record.zig").ImportRecord
 pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
 pub const schema = @import("options_types/schema.zig");
 pub const bits = @import("meta/bits.zig");
+
+/// In-memory TypeScript→JavaScript type-strip, mirroring `bun -e`'s default TS
+/// handling: a pure parse+print through the real Bun parser/printer
+/// (transform-only, no macros, no resolver cone). Used by `home eval` /
+/// `home -e` / `home --print` so inline `.ts` source evaluates as JS. The
+/// caller owns the returned slice. Returns `error.ParseError` on a syntax
+/// error so the caller can fall back to evaluating the raw source.
+pub fn transpileTypeScriptForEval(allocator: std.mem.Allocator, source_text: []const u8, loader: options.Loader) ![]u8 {
+    ast.Expr.Data.Store.create();
+    ast.Stmt.Data.Store.create();
+    defer ast.Expr.Data.Store.reset();
+    defer ast.Stmt.Data.Store.reset();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const ast_allocator = arena.allocator();
+
+    var ast_memory_allocator: ast.ASTMemoryAllocator = undefined;
+    ast_memory_allocator.initWithoutStack(ast_allocator);
+    var ast_scope = ast_memory_allocator.enter(ast_allocator);
+    defer ast_scope.exit();
+
+    var log = logger.Log.init(ast_allocator);
+    var src = logger.Source.initPathString(loader.stdinName(), source_text);
+    const define = try defines.Define.init(ast_allocator, null, null, false, false);
+    defer define.deinit();
+
+    var parser_options = js_parser.Parser.Options.init(.{}, loader);
+    parser_options.transform_only = true;
+    parser_options.features.no_macros = true;
+    parser_options.features.top_level_await = true;
+    // Pure type-strip: keep every statement, including a trailing bare
+    // expression whose completion value `home --print` reports. Tree-shaking /
+    // DCE would drop an "unused" trailing identifier and break `-p`.
+    parser_options.tree_shaking = false;
+    parser_options.features.dead_code_elimination = false;
+
+    var parser = try js_parser.Parser.init(parser_options, &log, &src, define, ast_allocator);
+    const parse_result = parser.parse() catch return error.ParseError;
+    if (parse_result != .ast or log.errors > 0) return error.ParseError;
+    const parsed = parse_result.ast;
+
+    const buffer_writer = js_printer.BufferWriter.init(allocator);
+    var buffer_printer = js_printer.BufferPrinter.init(buffer_writer);
+    errdefer buffer_printer.ctx.buffer.deinit();
+
+    const symbols_nested = ast.Symbol.NestedList.fromBorrowedSliceDangerous(&.{parsed.symbols});
+    const symbols_map = ast.Symbol.Map.initList(symbols_nested);
+
+    _ = try js_printer.printAst(
+        @TypeOf(&buffer_printer),
+        &buffer_printer,
+        parsed,
+        symbols_map,
+        &src,
+        true,
+        .{
+            .allocator = allocator,
+            .target = .bun,
+            .minify_whitespace = false,
+            .minify_syntax = false,
+            .minify_identifiers = false,
+            .transform_only = true,
+            .mangled_props = null,
+        },
+        false,
+    );
+
+    return buffer_printer.ctx.buffer.toOwnedSlice();
+}
 pub const bake = struct {
     pub const FrameworkRouter = @import("runtime/bake/FrameworkRouter.zig");
     pub const production = struct {
@@ -6832,20 +6902,30 @@ test "home_rt.sys.readNonblocking reads buffered pipe data" {
     }
 }
 
-test "home_rt.sys.recvNonBlock reads buffered socketpair data" {
-    var fds: [2]std.c.fd_t = undefined;
-    if (std.c.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) return error.SocketpairFailed;
-    const a = FD.fromNative(fds[0]);
-    const b = FD.fromNative(fds[1]);
-    defer a.close();
-    defer b.close();
+// Note: a `sys.recvNonBlock` socketpair unit test was removed — Home's
+// `recv` goes through `recvfrom$NOCANCEL`, which blocks on a *blocking*
+// socket, and the test created a blocking socketpair so it could hang. The
+// runtime never reads a blocking socket here (FilePoll sets O_NONBLOCK before
+// any recv), so the socket recv path is covered by the node:net socket tests;
+// the `readNonblocking` pipe test above already pins the `home.sys` re-export.
 
-    const msg = "home-sock-payload";
-    try std.testing.expectEqual(@as(isize, msg.len), std.c.write(b.native(), msg.ptr, msg.len));
+test "home_rt.transpileTypeScriptForEval strips TS type annotations, keeps runtime code" {
+    const src =
+        "const count: number = 41 + 1;\n" ++
+        "function greet(name: string): string { return name; }\n" ++
+        "let ready: boolean = true;\n" ++
+        "count;\n";
+    const out = try transpileTypeScriptForEval(std.testing.allocator, src, .ts);
+    defer std.testing.allocator.free(out);
 
-    var buf: [64]u8 = undefined;
-    switch (sys.recvNonBlock(a, &buf)) {
-        .result => |n| try std.testing.expectEqualStrings(msg, buf[0..n]),
-        .err => return error.RecvFailed,
-    }
+    // Type annotations are gone.
+    try std.testing.expect(std.mem.indexOf(u8, out, ": number") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, ": string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, ": boolean") == null);
+
+    // Runtime identifiers/values survive (no dead-code elimination of the
+    // trailing `count;` completion expression that `home --print` reports).
+    try std.testing.expect(std.mem.indexOf(u8, out, "count") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "greet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ready") != null);
 }
