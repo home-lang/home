@@ -30,6 +30,7 @@ const node_assert_binding = @import("../runtime/node/node_assert_binding.zig");
 const node_net_binding = @import("../runtime/node/node_net_binding.zig");
 const node_zlib_binding = @import("../runtime/node/node_zlib_binding.zig");
 const node_util_binding = @import("../runtime/node/node_util_binding.zig");
+const node_crypto_binding = @import("../runtime/node/node_crypto_binding.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 
@@ -66,6 +67,10 @@ comptime {
     @export(&lazy(node_zlib_binding.NativeZlib), .{ .name = "JS2Zig___src_runtime_node_node_zlib_binding_zig__NativeZlib_workaround" });
     @export(&lazy(node_zlib_binding.NativeBrotli), .{ .name = "JS2Zig___src_runtime_node_node_zlib_binding_zig__NativeBrotli_workaround" });
     @export(&lazy(node_zlib_binding.NativeZstd), .{ .name = "JS2Zig___src_runtime_node_node_zlib_binding_zig__NativeZstd_workaround" });
+    // node:crypto binding — the embedded crypto.ts reads pbkdf2/pbkdf2Sync/
+    // randomBytes/randomInt/randomFill/scrypt/timingSafeEqual/getHashes/etc.
+    // from here. Was noop in native_stubs.zig, leaving them all `undefined`.
+    @export(&lazy(node_crypto_binding.createNodeCryptoBindingZig), .{ .name = "JS2Zig___src_runtime_node_node_crypto_binding_zig__createNodeCryptoBindingZig_workaround" });
 
     // ---- Host functions (no suffix) -------------------------------------
     @export(&host_fn.toJSHostFn(node_util_binding.normalizeEncoding), .{ .name = "JS2Zig___src_runtime_node_node_util_binding_zig__normalizeEncoding" });

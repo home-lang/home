@@ -2003,6 +2003,27 @@ pub fn StringArrayHashMap(comptime Type: type) type {
     return ArrayHashMap([]const u8, Type, StringArrayHashMapContext, true);
 }
 
+/// Faithful to upstream bun.zig: ASCII-case-insensitive string keys. Used by
+/// e.g. `crypto.getHashes()` to dedupe digest aliases regardless of case.
+pub const CaseInsensitiveASCIIStringContext = struct {
+    pub fn hash(_: @This(), s: []const u8) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        for (s) |ch| {
+            const lower = std.ascii.toLower(ch);
+            hasher.update((&lower)[0..1]);
+        }
+        return @truncate(hasher.final());
+    }
+
+    pub fn eql(_: @This(), a: []const u8, b: []const u8, _: usize) bool {
+        return strings.eqlCaseInsensitiveASCIIICheckLength(a, b);
+    }
+};
+
+pub fn CaseInsensitiveASCIIStringArrayHashMap(comptime Type: type) type {
+    return ArrayHashMap([]const u8, Type, CaseInsensitiveASCIIStringContext, true);
+}
+
 pub fn StringArrayHashMapUnmanaged(comptime Type: type) type {
     return std.ArrayHashMapUnmanaged([]const u8, Type, StringArrayHashMapContext, true);
 }

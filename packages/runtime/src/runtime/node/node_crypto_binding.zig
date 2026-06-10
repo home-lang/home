@@ -257,7 +257,13 @@ const random = struct {
             return global.ERR(.OUT_OF_RANGE, "The value of \"max\" is out of range. It must be <= {d}. Received {d}", .{ max_range, max - min }).throw();
         }
 
-        const res = std.crypto.random.intRangeLessThan(i64, min, max);
+        // Zig 0.17 removed the global `std.crypto.random`; seed a CSPRNG from
+        // the OS entropy source (same `bun.csprng` the rest of this binding
+        // uses) for a cryptographically-sound uniform draw in [min, max).
+        var csprng_seed: [std.Random.DefaultCsprng.secret_seed_length]u8 = undefined;
+        bun.csprng(&csprng_seed);
+        var csprng = std.Random.DefaultCsprng.init(csprng_seed);
+        const res = csprng.random().intRangeLessThan(i64, min, max);
 
         if (!callback.isUndefined()) {
             try callback.callNextTick(global, [2]JSValue{ .js_undefined, JSValue.jsNumber(res) });

@@ -226,7 +226,6 @@ comptime {
         "JS2Zig___src_runtime_node_node_cluster_binding_zig__sendHelperChild",
         "JS2Zig___src_runtime_node_node_cluster_binding_zig__sendHelperPrimary",
         "JS2Zig___src_runtime_node_node_cluster_binding_zig__setRef",
-        "JS2Zig___src_runtime_node_node_crypto_binding_zig__createNodeCryptoBindingZig_workaround",
         "JS2Zig___src_runtime_node_node_http_binding_zig__getBunServerAllClosedPromise",
         "JS2Zig___src_runtime_node_node_http_binding_zig__getMaxHTTPHeaderSize",
         "JS2Zig___src_runtime_node_node_http_binding_zig__setMaxHTTPHeaderSize",

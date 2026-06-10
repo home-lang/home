@@ -535,6 +535,11 @@ pub const FormatDouble = struct {
     number: f64,
 
     pub fn dtoa(buf: *[124]u8, number: f64) []const u8 {
+        // JS `Number.prototype.toString` representation of the non-finite
+        // values — Zig's `{d}` prints "nan"/"inf"/"-inf", but JS (and Node's
+        // error messages) use "NaN"/"Infinity"/"-Infinity".
+        if (std.math.isNan(number)) return "NaN";
+        if (std.math.isInf(number)) return if (number < 0) "-Infinity" else "Infinity";
         return std.fmt.bufPrint(buf[0..], "{d}", .{number}) catch unreachable;
     }
 
@@ -587,6 +592,13 @@ test "fmtIdentifier folds invalid separators into gaps" {
 test "FormatDouble dtoa writes a finite value" {
     var buf: [124]u8 = undefined;
     try std.testing.expectEqualStrings("1.5", FormatDouble.dtoa(&buf, 1.5));
+}
+
+test "FormatDouble dtoa uses JS spelling for non-finite values" {
+    var buf: [124]u8 = undefined;
+    try std.testing.expectEqualStrings("Infinity", FormatDouble.dtoa(&buf, std.math.inf(f64)));
+    try std.testing.expectEqualStrings("-Infinity", FormatDouble.dtoa(&buf, -std.math.inf(f64)));
+    try std.testing.expectEqualStrings("NaN", FormatDouble.dtoa(&buf, std.math.nan(f64)));
 }
 
 test "outOfRange formats an integer received value with min and max" {
