@@ -565,7 +565,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             gop.key_ptr.* = try gpa.dupe(u8, formatted);
         }
         try formatted_entries.append(gpa, .{
-            .file = diag_file,
+            .file = if (d.is_global) "" else diag_file,
             .diag_line = diag_line,
             .diag_col = diag_col,
             .code = code,
@@ -582,6 +582,12 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     const Ordering = struct {
         case_path: []const u8,
         fn lessThan(ctx: @This(), a: FormattedEntry, b: FormattedEntry) bool {
+            // Path-less global diagnostics (e.g. TS5107 option
+            // deprecations) render first in upstream baselines, before
+            // any file-scoped diagnostic.
+            const a_is_global = a.file.len == 0;
+            const b_is_global = b.file.len == 0;
+            if (a_is_global != b_is_global) return a_is_global;
             const a_is_entry = std.mem.eql(u8, a.file, ctx.case_path);
             const b_is_entry = std.mem.eql(u8, b.file, ctx.case_path);
             if (a_is_entry != b_is_entry) return a_is_entry;
