@@ -3628,6 +3628,17 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    // Experimental: route bun-corpus files through the FULL native VM
+    // (TestCommand.exec → real globals + module loader) instead of the
+    // shim-based corpus runner, so corpus tests get Home's real Buffer/fs/etc.
+    // Gated while validated against the corpus baseline.
+    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and envFlagSet("HOME_CORPUS_FULL_VM")) {
+        runTestsViaVM(allocator, args) catch |err| {
+            std.debug.print("{s}error:{s} native test run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+            std.process.exit(1);
+        };
+        return;
+    }
     const bun_corpus_subset_arg = argBunCorpusSubset(args);
     if (argTargetsBunCorpus(args)) |target| {
         switch (target) {
