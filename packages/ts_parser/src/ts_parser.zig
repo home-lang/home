@@ -5123,7 +5123,7 @@ pub const Parser = struct {
                 }
                 continue;
             }
-            if (self.peek().kind == .kw_var and
+            if ((self.peek().kind == .kw_var or self.peek().kind == .kw_function) and
                 !self.peekAt(1).flags.preceded_by_newline and
                 self.peekAt(1).kind != .open_paren and
                 self.peekAt(1).kind != .less_than and
