@@ -18,19 +18,6 @@ const mixed_decoder = brk: {
     break :brk decoder;
 };
 
-const mixed_no_pad_decoder = brk: {
-    var decoder = zig_base64.standard_no_pad.decoderWithIgnore("\xff \t\r\n" ++ [_]u8{
-        std.ascii.control_code.vt,
-        std.ascii.control_code.ff,
-    });
-
-    for (zig_base64.url_safe_alphabet_chars[62..], 62..) |c, i| {
-        decoder.decoder.char_to_index[c] = @as(u8, @intCast(i));
-    }
-
-    break :brk decoder;
-};
-
 pub const DecodeStatus = enum {
     success,
     invalid_base64_character,
@@ -52,17 +39,20 @@ pub const ByteList = struct {
 };
 
 pub fn decode(destination: []u8, source: []const u8) DecodeResult {
+    // The `mixed_decoder` (padded, pad_char='=', url-safe alphabet folded in,
+    // whitespace ignored) is the WHATWG-forgiving decoder; it already handles
+    // unpadded input (no length%4 guard) and correctly STOPS at the first '='.
+    // The previous Home version fell back, on any `mixed_decoder` error, to a
+    // `mixed_no_pad_decoder` whose ignore set contains `\xff` (== the
+    // `invalid_char` sentinel 0xff), so every invalid byte — including a
+    // misplaced '=' — was silently skipped rather than terminating the decode.
+    // That made `Buffer.from("=bad".repeat(1e4),"base64")` decode "bad"×10000
+    // (22500 bytes) instead of Node/Bun's 0. Return the partial count on error
+    // instead (matches upstream's mixed_decoder fallback shape).
     var wrote: usize = 0;
     mixed_decoder.decode(destination, source, &wrote) catch {
-        mixed_no_pad_decoder.decode(destination, source, &wrote) catch {
-            return .{
-                .count = wrote,
-                .status = .invalid_base64_character,
-            };
-        };
-        return .{ .count = wrote, .status = .success };
+        return .{ .count = wrote, .status = .invalid_base64_character };
     };
-
     return .{ .count = wrote, .status = .success };
 }
 
@@ -615,6 +605,16 @@ test "base64: forgiving decode accepts url-safe alphabet without padding" {
     const result = decode(&decoded, "SGVsbG8td29ybGRf");
     try std.testing.expect(result.isSuccessful());
     try std.testing.expectEqualSlices(u8, "Hello-world_", decoded[0..result.count]);
+}
+
+test "base64: a misplaced '=' terminates the decode (no skip-invalid)" {
+    // Regression: `Buffer.from("=bad".repeat(N),"base64")` must decode to 0
+    // bytes (Node/Bun stop at the first misplaced '='), not skip the '=' and
+    // decode "bad"×N. A leading pad char means no valid data precedes it.
+    var decoded: [64]u8 = undefined;
+    const result = decode(&decoded, "=bad=bad=bad");
+    try std.testing.expectEqual(@as(usize, 0), result.count);
+    try std.testing.expect(!result.isSuccessful());
 }
 
 test "base64: url-safe encode omits padding" {
