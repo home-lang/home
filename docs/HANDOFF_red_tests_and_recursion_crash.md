@@ -8,7 +8,17 @@ windows) — this note is the cleanup list.
 
 ---
 
-## 1. Full-corpus survey crash — `checkExpression` stack overflow
+## 1. Full-corpus survey crash — `checkExpression` stack overflow — **FIXED**
+
+> **Resolved 2026-06-10** (`c0fa25f6`). The guard existed but its 1000 ceiling
+> sat *above* the empirical native-stack overflow point (~290 frames), so it
+> never fired. Lowered `max_expression_depth` to 200; past the limit the
+> expression degrades to `any`. The full exact-mode survey now completes
+> end-to-end for the first time: **total=5907 passed=4497 pass_rate=0.76,
+> 0 crashes** (confirming the earlier ~75% sampled estimate). The
+> smp_allocator note below did not bite. A separate, much deeper *parser*
+> stack overflow (~2000-deep nested parens/braces) still exists but no corpus
+> fixture reaches it. Original analysis kept below for reference.
 
 **Symptom.** `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1 zig build
 test -Dfilter=ts_conformance` aborts with `signal ABRT` (no panic message)
