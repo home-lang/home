@@ -37,6 +37,8 @@ const Timer = @import("../runtime/timer/Timer.zig");
 const dns = @import("../runtime/dns_jsc/dns.zig");
 const node_cluster_binding = @import("../runtime/node/node_cluster_binding.zig");
 const socket = @import("../runtime/socket/socket.zig");
+const udp_socket = @import("../runtime/socket/udp_socket.zig");
+const h2_frame_parser = @import("../runtime/api/bun/h2_frame_parser.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 
@@ -112,6 +114,9 @@ comptime {
     @export(&host_fn.toJSHostFn(socket.jsGetBufferedAmount), .{ .name = "JS2Zig___src_runtime_socket_socket_zig__jsGetBufferedAmount" });
     @export(&host_fn.toJSHostFn(socket.jsIsNamedPipeSocket), .{ .name = "JS2Zig___src_runtime_socket_socket_zig__jsIsNamedPipeSocket" });
     @export(&host_fn.toJSHostFn(socket.jsUpgradeDuplexToTLS), .{ .name = "JS2Zig___src_runtime_socket_socket_zig__jsUpgradeDuplexToTLS" });
-    // jsSetSocketOptions left stubbed: needs `bun.sys.setsockopt` (unported).
+    @export(&host_fn.toJSHostFn(socket.jsSetSocketOptions), .{ .name = "JS2Zig___src_runtime_socket_socket_zig__jsSetSocketOptions" });
+    @export(&host_fn.toJSHostFn(udp_socket.UDPSocket.jsConnect), .{ .name = "JS2Zig___src_runtime_socket_udp_socket_zig__UDPSocket_jsConnect" });
+    @export(&host_fn.toJSHostFn(udp_socket.UDPSocket.jsDisconnect), .{ .name = "JS2Zig___src_runtime_socket_udp_socket_zig__UDPSocket_jsDisconnect" });
+    @export(&host_fn.toJSHostFn(h2_frame_parser.jsAssertSettings), .{ .name = "JS2Zig___src_runtime_api_bun_h__frame_parser_zig__jsAssertSettings" });
     @export(&host_fn.toJSHostFn(node_fs_binding.createMemfdForTesting), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createMemfdForTesting" });
 }

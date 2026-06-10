@@ -4595,6 +4595,7 @@ pub const sys = struct {
     const Sys = @This();
     pub const socketpair = @import("sys/sys.zig").socketpair;
     pub const socketpairForShell = @import("sys/sys.zig").socketpairForShell;
+    pub const setsockopt = @import("sys/sys.zig").setsockopt;
     pub const moveFileZ = @import("sys/sys.zig").moveFileZ;
     pub const isExecutableFilePath = @import("sys/sys.zig").isExecutableFilePath;
     pub const unlinkatWithFlags = @import("sys/sys.zig").unlinkatWithFlags;
