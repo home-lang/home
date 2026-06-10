@@ -6934,6 +6934,13 @@ pub const Parser = struct {
             break :blk tok;
         } else try self.expect(.identifier, "enum name");
         const enum_body_open = try self.expect(.open_brace, "'{' to open enum body");
+        // Enum member initializers are not a generator context even
+        // when the enum sits inside a generator body — `yield` there
+        // is TS1163 (awaitAndYield: `enum E { baz = yield 1 }` inside
+        // `async function* test`).
+        const saved_generator_depth = self.generator_depth;
+        self.generator_depth = 0;
+        defer self.generator_depth = saved_generator_depth;
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
