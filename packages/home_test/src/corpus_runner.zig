@@ -19615,6 +19615,28 @@ fn isJsIdentifierContinue(byte: u8) bool {
         byte == '$';
 }
 
+fn isJsIdentifierStart(byte: u8) bool {
+    return (byte >= 'a' and byte <= 'z') or
+        (byte >= 'A' and byte <= 'Z') or
+        byte == '_' or
+        byte == '$';
+}
+
+/// Modules whose corpus shim puts the public API on `module.default` (so a
+/// default import must bind `.default`), unlike the majority which bind the
+/// namespace object directly. Matches the per-file hardcoded `.default` patches.
+fn moduleDefaultExportIsApi(name: []const u8) bool {
+    const defaulted = [_][]const u8{
+        "fs",            "node:fs",
+        "fs/promises",   "node:fs/promises",
+        "zlib",          "node:zlib",
+    };
+    for (defaulted) |m| {
+        if (std.mem.eql(u8, name, m)) return true;
+    }
+    return false;
+}
+
 fn skipJsWhitespace(source: []const u8, start: usize) usize {
     var i = start;
     while (i < source.len and isJsWhitespace(source[i])) i += 1;
@@ -19803,6 +19825,67 @@ fn tryAppendBunTestImportRewrite(
             try out.appendSlice(allocator, "\");\n");
         }
         return i;
+    }
+
+    // Side-effect-only import: `import "module";` — resolve it for its effects.
+    if (i < source.len and (source[i] == '"' or source[i] == '\'')) {
+        const quote = source[i];
+        i += 1;
+        const module = supportedNamedImportModule(source, i) orelse return null;
+        i = module.end;
+        if (i >= source.len or source[i] != quote) return null;
+        i += 1;
+        i = skipJsHorizontalWhitespace(source, i);
+        if (i < source.len and source[i] == ';') i += 1;
+        if (!type_only) {
+            try out.appendSlice(allocator, "globalThis.__home_import(\"");
+            try out.appendSlice(allocator, module.name);
+            try out.appendSlice(allocator, "\");\n");
+        }
+        return i;
+    }
+
+    // Pure default import: `import Name from "module";` →
+    // `const Name = __home_import("module");`. The corpus binds a CJS module's
+    // default to its namespace object (so `path`/`net`/`assert`/`url` work as
+    // `import X from`), which is the majority convention the pinning tests
+    // encode. A few modules (fs/zlib) need `.default` and keep their bespoke
+    // per-file hardcoded patches — those run before this and aren't matched
+    // here once converted; but since this general pass runs first, only modules
+    // whose namespace already carries the full API resolve correctly here.
+    // Bail on the mixed form (`import Name, { ... }`) so the existing
+    // combined-binding replacements keep handling it.
+    if (i < source.len and isJsIdentifierStart(source[i])) {
+        const ident_end = readJsIdentifier(source, i) orelse return null;
+        const ident = source[i..ident_end];
+        var j = skipJsWhitespace(source, ident_end);
+        if (j < source.len and source[j] == ',') return null;
+        j = consumeJsKeyword(source, j, "from") orelse return null;
+        if (j >= source.len or !isJsWhitespace(source[j])) return null;
+        j = skipJsWhitespace(source, j);
+        if (j >= source.len or (source[j] != '"' and source[j] != '\'')) return null;
+        const quote = source[j];
+        j += 1;
+        const module = supportedNamedImportModule(source, j) orelse return null;
+        j = module.end;
+        if (j >= source.len or source[j] != quote) return null;
+        j += 1;
+        j = skipJsHorizontalWhitespace(source, j);
+        if (j < source.len and source[j] == ';') j += 1;
+        if (!type_only) {
+            try out.appendSlice(allocator, "const ");
+            try out.appendSlice(allocator, ident);
+            try out.appendSlice(allocator, " = globalThis.__home_import(\"");
+            try out.appendSlice(allocator, module.name);
+            // `fs`/`zlib` expose their API on the module's `default` export
+            // rather than the namespace; everything else binds the namespace.
+            if (moduleDefaultExportIsApi(module.name)) {
+                try out.appendSlice(allocator, "\").default;\n");
+            } else {
+                try out.appendSlice(allocator, "\");\n");
+            }
+        }
+        return j;
     }
 
     if (i >= source.len or source[i] != '{') return null;
@@ -27885,8 +27968,12 @@ test "Bun test import rewrite lowers namespace imports" {
 }
 
 test "corpus module preparation reports unsupported module syntax" {
+    // A default import of a non-whitelisted module stays a residual `import`
+    // statement (the rewriter only lowers modules the realm can provide), so it
+    // is still reported as unsupported. (Default imports of whitelisted modules
+    // like `node:fs` are now lowered — see the default-import tests above.)
     const source =
-        \\import value from "node:fs";
+        \\import value from "some-unprovided-package";
         \\test("works", () => {});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/import.test.js");
