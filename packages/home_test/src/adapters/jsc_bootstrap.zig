@@ -316,10 +316,31 @@ pub const Runtime = struct {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
 
+        // Strip TypeScript types from the prepared corpus source using the real
+        // Bun parser/printer (transform-only, no macros, no resolver cone) so
+        // `.ts`/`.tsx` test files with type annotations evaluate as JS. The
+        // prepared source is already import-rewritten to `__home_import(...)`
+        // calls + an IIFE wrapper, so this is a pure type-strip reprint. On any
+        // parse error we fall back to the raw source (prior behavior), so this
+        // can only add passes, never regress the text-rewrite path.
+        const loader = corpusLoaderFromPath(spec.path);
+        var eval_source: []const u8 = spec.source;
+        var stripped_owned: ?[]u8 = null;
+        defer if (stripped_owned) |s| allocator.free(s);
+        if (loader.isJSLike()) {
+            const handle = TranspilerHandle{ .loader = loader, .platform = .bun };
+            if (transpileSourceWithBunParser(allocator, &handle, spec.source, loader)) |stripped| {
+                stripped_owned = stripped;
+                eval_source = stripped;
+            } else |_| {
+                // keep eval_source = spec.source (raw fallback)
+            }
+        }
+
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
             allocator,
             self.engine.currentContext(),
-            spec.source,
+            eval_source,
             spec.path,
             1,
         );
@@ -505,6 +526,17 @@ const TranspilerPlatform = enum {
     node,
     neutral,
 };
+
+/// Pick the transform loader for a corpus test file from its extension.
+/// `.tsx`/`.jsx` keep JSX handling; `.mts`/`.cts`/`.ts` strip TS types; plain
+/// JS extensions pass through the parser as JS (still a faithful reprint).
+fn corpusLoaderFromPath(path: []const u8) TranspilerLoader {
+    const endsWith = std.mem.endsWith;
+    if (endsWith(u8, path, ".tsx")) return .tsx;
+    if (endsWith(u8, path, ".jsx")) return .jsx;
+    if (endsWith(u8, path, ".ts") or endsWith(u8, path, ".mts") or endsWith(u8, path, ".cts")) return .ts;
+    return .js;
+}
 
 const TranspilerImport = struct {
     kind: []const u8,

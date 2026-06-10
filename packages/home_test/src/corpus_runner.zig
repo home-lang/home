@@ -21008,6 +21008,43 @@ test "bootstrap runner supports unicode import regression shell output" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner strips TypeScript type annotations via the real parser" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    // Before runFile routed the prepared source through the real Bun
+    // parser/printer (transform-only), a `.ts` test whose body had a
+    // function-declaration type annotation — param + return type, including a
+    // generic like `ReadableStream<Uint8Array>` — reached JSC raw and died with
+    // `SyntaxError: Unexpected token ':'`. The text-based bootstrap rewriter
+    // only patched a hardcoded per-file table, so general type syntax slipped
+    // through. This pins the general strip end-to-end.
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\function describeKind(value: ReadableStream<Uint8Array>): string {
+        \\  return typeof value;
+        \\}
+        \\const doubled = (items: number[]): number[] => items.map((n: number): number => n * 2);
+        \\let label: string = "ready";
+        \\test("type annotations are stripped", () => {
+        \\  expect(typeof describeKind).toBe("function");
+        \\  expect(doubled([1, 2, 3])).toEqual([2, 4, 6]);
+        \\  expect(label).toBe("ready");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/spawn/strip-types.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors commander fixture spawn output" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
