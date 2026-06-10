@@ -30,8 +30,14 @@ while IFS= read -r f; do
     # nonzero exit, no parsed (fail) line — abort/crash before tests ran
     status=crash; crash=$((crash+1))
   fi
-  # capture a one-line crash signature
-  sig=$(echo "$log" | grep -oE 'panic: .*|error: .*|TODOError: [^@]*|reached unreachable|Segmentation|index out of bounds|invalid free|switch on corrupt' | head -1 | tr '\t' ' ' | cut -c1-120)
+  # capture a one-line crash signature. For panics/segfaults, prefer the first
+  # in-tree (home) stack frame — far more actionable than "Segmentation".
+  if [[ "$status" == "crash" ]]; then
+    sig=$(echo "$log" | grep -oE '[a-zA-Z0-9_./-]+\.zig:[0-9]+:[0-9]+: 0x[0-9a-f]+ in [^ ]+ \(home\)' | head -1 | sed -E 's/: 0x[0-9a-f]+ in / /; s#packages/runtime/src/##' | cut -c1-110)
+    [[ -z "$sig" ]] && sig=$(echo "$log" | grep -oE 'panic: .*|reached unreachable|Segmentation' | head -1 | cut -c1-110)
+  else
+    sig=$(echo "$log" | grep -oE 'panic: .*|error: .*|TODOError: [^@]*' | head -1 | tr '\t' ' ' | cut -c1-110)
+  fi
   printf '%s\t%s\t%s\n' "$status" "$rel" "$sig" >> "$OUT"
 done < <(find "$CORPUS/$SUB" -name "*.test.*" | sort)
 echo "SUB=$SUB pass=$pass fail=$fail crash=$crash hang=$hang total=$((pass+fail+crash+hang))"

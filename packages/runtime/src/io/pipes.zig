@@ -34,12 +34,41 @@ pub const PollOrFd = union(enum) {
         };
     }
 
+    // Faithful to upstream bun/src/io/pipes.zig. The previous version set
+    // `.closed` and ran the callback but never unregistered the FilePoll nor
+    // closed the fd — so after a subprocess pipe reader closed, its poll stayed
+    // registered in the event loop and later fired `onPoll` on freed memory
+    // (use-after-free → "switch on corrupt value" / segfault in the spawnSync
+    // isolated-loop tick). The Windows libuv-loop close arg is dropped because
+    // Home's `Async.Closer.close` ignores the loop parameter.
     pub fn closeImpl(this: *PollOrFd, ctx: ?*anyopaque, comptime onCloseFn: anytype, close_fd: bool) void {
-        _ = close_fd;
         const fd = this.getFd();
-        this.* = .{ .closed = {} };
-        if (fd != bun.invalid_fd and comptime @TypeOf(onCloseFn) != void) {
-            onCloseFn(@ptrCast(@alignCast(ctx.?)));
+        var close_async = true;
+        if (this.* == .poll) {
+            // Workaround a kqueue bug on macOS for non-blocking writable FIFOs:
+            // closing the fd asynchronously after unregistering can wedge the
+            // poll, so close it synchronously in that case.
+            if (comptime Environment.isMac) {
+                if (this.poll.flags.contains(.poll_writable) and this.poll.flags.contains(.nonblocking)) {
+                    close_async = false;
+                }
+            }
+            this.poll.deinitForceUnregister();
+            this.* = .{ .closed = {} };
+        }
+
+        if (fd != bun.invalid_fd) {
+            this.* = .{ .closed = {} };
+
+            if (close_async and close_fd) {
+                Async.Closer.close(fd, {});
+            } else {
+                if (close_fd) _ = fd.closeAllowingBadFileDescriptor(null);
+            }
+            if (comptime @TypeOf(onCloseFn) != void)
+                onCloseFn(@ptrCast(@alignCast(ctx.?)));
+        } else {
+            this.* = .{ .closed = {} };
         }
     }
 
@@ -77,6 +106,7 @@ pub const ReadState = enum {
 
 const bun = @import("bun");
 const Async = bun.Async;
+const Environment = bun.Environment;
 
 test "FileType: pipe/nonblocking_pipe/socket are pollable, file is not" {
     const std = @import("std");
