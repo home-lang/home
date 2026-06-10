@@ -1655,7 +1655,7 @@ pub const internal = struct {
         }
 
         var poll = bun.Async.FilePoll.init(loop, .fromNative(@bitCast(machport)), .{}, InternalDNSRequest, req);
-        const rc = poll.register(loop, .machport, true);
+        const rc = poll.register(loop.loop(), .machport, true);
 
         if (rc == .err) {
             poll.deinit();

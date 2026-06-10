@@ -301,8 +301,8 @@ pub const LifecycleScriptSubprocess = struct {
 
             // Reuse the memory
             if (stdout.items.len == 0 and stdout.capacity > 0 and this.stderr.buffer().capacity == 0) {
-                this.stderr.buffer().* = stdout;
-                stdout = std.array_list.Managed(u8).init(bun.default_allocator);
+                this.stderr.buffer().* = stdout.*;
+                stdout.* = std.array_list.Managed(u8).init(bun.default_allocator);
             }
 
             var stderr = this.stderr.finalBuffer();

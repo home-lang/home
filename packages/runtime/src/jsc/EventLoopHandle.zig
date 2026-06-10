@@ -68,6 +68,39 @@ pub const EventLoopHandle = union(EventLoopKind) {
 
     pub fn exit(_: EventLoopHandle) void {}
 
+    // Faithful to upstream EventLoopHandle.{ref,unref,filePolls,putFilePoll}:
+    // the FilePoll/KeepAlive machinery refs the loop and stores polls per-VM.
+    pub fn ref(this: EventLoopHandle) void {
+        this.loop().ref();
+    }
+
+    pub fn unref(this: EventLoopHandle) void {
+        this.loop().unref();
+    }
+
+    pub fn filePolls(this: EventLoopHandle) *home_rt.Async.FilePoll.Store {
+        return switch (this) {
+            .js => this.js.virtual_machine.rareData().filePolls(this.js.virtual_machine),
+            .mini => this.mini.filePolls(),
+        };
+    }
+
+    pub fn putFilePoll(this: *EventLoopHandle, poll: *home_rt.Async.FilePoll) void {
+        switch (this.*) {
+            .js => this.js.virtual_machine.rareData().filePolls(this.js.virtual_machine).put(poll, this.js.virtual_machine, poll.flags.contains(.was_ever_registered)),
+            .mini => this.mini.filePolls().put(poll, &this.mini, poll.flags.contains(.was_ever_registered)),
+        }
+    }
+
+    // Faithful to upstream EventLoopHandle.pipeReadBuffer: the BufferedReader's
+    // streaming read path borrows a per-VM 256KB scratch buffer.
+    pub fn pipeReadBuffer(this: EventLoopHandle) []u8 {
+        return switch (this) {
+            .js => this.js.pipeReadBuffer(),
+            .mini => this.mini.pipeReadBuffer(),
+        };
+    }
+
     pub fn topLevelDir(this: EventLoopHandle) [:0]const u8 {
         _ = this;
         return home_rt.fs.FileSystem.instance.top_level_dir;

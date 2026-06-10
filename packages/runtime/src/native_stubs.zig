@@ -79,7 +79,6 @@ comptime {
         "Bun__WebSocket__parseSSLConfig",
         "Bun__ensureSignalHandler",
         "Bun__eventLoop__incrementRefConcurrently",
-        "Bun__internal_dispatch_ready_poll",
         "Bun__onPosixSignal",
         "Bun__onRejectEntryPointResult",
         "Bun__onResolveEntryPointResult",

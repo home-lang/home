@@ -2767,6 +2767,7 @@ pub const jsc = struct {
     pub const GarbageCollectionController = @import("jsc/event_loop.zig").GarbageCollectionController;
     pub const PosixSignalTask = @import("jsc/event_loop.zig").PosixSignalTask;
     pub const MiniEventLoop = event_loop_handle.MiniEventLoop;
+    pub const AbstractVM = @import("event_loop/MiniEventLoop.zig").AbstractVM;
     // Faithful to upstream `jsc.AnyEventLoop` (`jsc.zig:133`):
     // the `union(EventLoopKind)` over js/mini event loops.
     pub const AnyEventLoop = @import("event_loop/AnyEventLoop.zig").AnyEventLoop;
@@ -2952,8 +2953,8 @@ pub const io = struct {
     // binary-heap used by the install/PM lifecycle-script scheduler.
     pub const heap = @import("io/heap.zig");
     pub const Loop = if (Environment.isWindows) @import("io/windows_event_loop.zig").Loop else @import("io/posix_event_loop.zig").Loop;
-    pub const KeepAlive = @import("io/stub_event_loop.zig").KeepAlive;
-    pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
+    pub const KeepAlive = @import("io/posix_event_loop.zig").KeepAlive;
+    pub const FilePoll = @import("io/posix_event_loop.zig").FilePoll;
     pub const Closer = struct {
         pub fn close(fd: anytype, loop: anytype) void {
             _ = loop;
@@ -2974,180 +2975,12 @@ pub const io = struct {
     pub const ReadState = @import("io/pipes.zig").ReadState;
     // Fifth-wave port batch (2026-05-18):
     pub const MaxBuf = @import("io/MaxBuf.zig");
-    pub const BufferedReader = struct {
-        _buffer: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(default_allocator),
-        maxbuf: ?*MaxBuf = null,
-        source: ?Source = null,
-        handle: Handle = .closed,
-        flags: Flags = .{},
-        parent: ?*anyopaque = null,
-
-        pub const Source = union(enum) {
-            pipe: *anyopaque,
-
-            pub fn isClosed(this: Source) bool {
-                _ = this;
-                return true;
-            }
-        };
-
-        pub const Handle = union(enum) {
-            closed,
-            // Qualify to the nested Poll (the top-level `io.Poll` alias would
-            // otherwise make the unqualified `Poll` an ambiguous container ref).
-            poll: BufferedReader.Poll,
-
-            pub fn getPoll(this: *Handle) ?*BufferedReader.Poll {
-                return switch (this.*) {
-                    .poll => |*poll| poll,
-                    .closed => null,
-                };
-            }
-        };
-
-        pub const Poll = struct {
-            flags: PollFlags = .{},
-
-            pub fn isRegistered(this: @This()) bool {
-                _ = this;
-                return false;
-            }
-        };
-
-        pub const PollFlags = struct {
-            pub fn insert(this: anytype, flag: anytype) void {
-                _ = this;
-                _ = flag;
-            }
-        };
-
-        pub const Flags = struct {
-            socket: bool = false,
-            nonblocking: bool = false,
-            pollable: bool = false,
-            close_handle: bool = true,
-            memfd: bool = false,
-            received_eof: bool = false,
-            closed_without_reporting: bool = false,
-        };
-
-        pub fn takeBuffer(this: *BufferedReader) std.array_list.Managed(u8) {
-            const out = this._buffer;
-            this._buffer = std.array_list.Managed(u8).init(default_allocator);
-            return out;
-        }
-
-        pub fn finalBuffer(this: *BufferedReader) std.array_list.Managed(u8) {
-            return this.takeBuffer();
-        }
-
-        pub fn init(comptime Parent: type) BufferedReader {
-            _ = Parent;
-            return .{};
-        }
-
-        pub fn memoryCost(this: *const BufferedReader) usize {
-            return this._buffer.capacity;
-        }
-
-        pub fn hasPendingActivity(this: *const BufferedReader) bool {
-            _ = this;
-            return false;
-        }
-
-        pub fn setParent(this: *BufferedReader, parent: *anyopaque) void {
-            this.parent = parent;
-        }
-
-        pub fn read(this: *BufferedReader) void {
-            _ = this;
-        }
-
-        pub fn startWithCurrentPipe(this: *BufferedReader) @import("home").sys.Maybe(void) {
-            _ = this;
-            return .success;
-        }
-
-        pub fn start(this: *BufferedReader, fd: FD, is_pollable: bool) @import("home").sys.Maybe(void) {
-            _ = this;
-            _ = fd;
-            _ = is_pollable;
-            return .success;
-        }
-
-        pub fn startFileOffset(this: *BufferedReader, fd: FD, is_pollable: bool, offset: u64) @import("home").sys.Maybe(void) {
-            _ = this;
-            _ = fd;
-            _ = is_pollable;
-            _ = offset;
-            return .success;
-        }
-
-        pub fn from(this: *BufferedReader, buffered_reader: anytype, parent_: *anyopaque) void {
-            _ = buffered_reader;
-            this.parent = parent_;
-        }
-
-        pub fn startMemfd(this: *BufferedReader, fd: FD) void {
-            _ = this;
-            _ = fd;
-        }
-
-        pub fn updateRef(this: *BufferedReader, add: bool) void {
-            _ = this;
-            _ = add;
-        }
-
-        pub fn isDone(this: *const BufferedReader) bool {
-            _ = this;
-            return true;
-        }
-
-        pub fn watch(this: *BufferedReader) void {
-            _ = this;
-        }
-
-        pub fn close(this: *BufferedReader) void {
-            _ = this;
-        }
-
-        pub fn closeImpl(this: *BufferedReader, report: bool) void {
-            _ = this;
-            _ = report;
-        }
-
-        pub fn getFd(this: *BufferedReader) FD {
-            _ = this;
-            return FD.invalid;
-        }
-
-        pub fn hasPendingRead(this: *const BufferedReader) bool {
-            _ = this;
-            return false;
-        }
-
-        pub fn buffer(this: *BufferedReader) *std.array_list.Managed(u8) {
-            return &this._buffer;
-        }
-
-        pub fn unpause(this: *BufferedReader) void {
-            _ = this;
-        }
-
-        pub fn pause(this: *BufferedReader) void {
-            _ = this;
-        }
-
-        pub fn disableKeepingProcessAlive(this: *BufferedReader, ctx: anytype) void {
-            _ = this;
-            _ = ctx;
-        }
-
-        pub fn deinit(this: *BufferedReader) void {
-            this._buffer.deinit();
-            this.* = .{};
-        }
-    };
+    // Faithful to upstream `bun.io.BufferedReader` (`io/PipeReader.zig`): the
+    // real Posix/Windows buffered pipe reader. Was a no-op stub during the
+    // initial JSC bring-up; now wired so subprocess stdout/stderr poll the
+    // event loop for real.
+    pub const BufferedReader = @import("io/PipeReader.zig").BufferedReader;
+    pub const WindowsBufferedReader = @import("io/PipeReader.zig").WindowsBufferedReader;
     pub const StreamBuffer = struct {
         list: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(default_allocator),
         cursor: usize = 0,
@@ -4926,9 +4759,13 @@ pub const sys = struct {
         return .{ .err = unexpected(.mmap) };
     }
 
-    pub fn recvNonBlock(_: FD, _: []u8) Maybe(usize) {
-        return .{ .err = unexpected(.recv) };
-    }
+    // Faithful to upstream: the real socket/pipe non-blocking readers live in
+    // `sys/sys.zig` (`recv`→`recvfrom$NOCANCEL`, `readNonblocking`→`read` on
+    // Darwin). Re-export them so the BufferedReader's `readSocket`/`readPipe`
+    // paths use the real syscalls rather than a bring-up stub.
+    pub const recv = @import("sys/sys.zig").recv;
+    pub const recvNonBlock = @import("sys/sys.zig").recvNonBlock;
+    pub const readNonblocking = @import("sys/sys.zig").readNonblocking;
 
     pub fn setFileOffset(_: FD, _: usize) Maybe(void) {
         return .success;
@@ -6971,4 +6808,44 @@ test "home_rt.perf.hw_timer.is_supported tracks aarch64/x64" {
 
 test "home_rt.safety.thread_id.invalid is the max thread id" {
     try std.testing.expectEqual(std.math.maxInt(std.Thread.Id), safety.thread_id.invalid);
+}
+
+// The BufferedReader event-loop path reads subprocess stdout/stderr through
+// `sys.readNonblocking` (pipes) and `sys.recvNonBlock` (sockets). These were
+// stubs during JSC bring-up; the tests below pin the real syscall wrappers
+// that the FilePoll wiring now depends on.
+test "home_rt.sys.readNonblocking reads buffered pipe data" {
+    var fds: [2]std.c.fd_t = undefined;
+    if (std.c.pipe(&fds) != 0) return error.PipeFailed;
+    const reader = FD.fromNative(fds[0]);
+    const writer = FD.fromNative(fds[1]);
+    defer reader.close();
+    defer writer.close();
+
+    const msg = "home-pipe-payload";
+    try std.testing.expectEqual(@as(isize, msg.len), std.c.write(writer.native(), msg.ptr, msg.len));
+
+    var buf: [64]u8 = undefined;
+    switch (sys.readNonblocking(reader, &buf)) {
+        .result => |n| try std.testing.expectEqualStrings(msg, buf[0..n]),
+        .err => return error.ReadFailed,
+    }
+}
+
+test "home_rt.sys.recvNonBlock reads buffered socketpair data" {
+    var fds: [2]std.c.fd_t = undefined;
+    if (std.c.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) return error.SocketpairFailed;
+    const a = FD.fromNative(fds[0]);
+    const b = FD.fromNative(fds[1]);
+    defer a.close();
+    defer b.close();
+
+    const msg = "home-sock-payload";
+    try std.testing.expectEqual(@as(isize, msg.len), std.c.write(b.native(), msg.ptr, msg.len));
+
+    var buf: [64]u8 = undefined;
+    switch (sys.recvNonBlock(a, &buf)) {
+        .result => |n| try std.testing.expectEqualStrings(msg, buf[0..n]),
+        .err => return error.RecvFailed,
+    }
 }

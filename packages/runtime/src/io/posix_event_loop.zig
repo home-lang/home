@@ -155,10 +155,13 @@ pub const FilePoll = struct {
     const Process = bun.spawn.Process;
     const Subprocess = jsc.Subprocess;
     const StaticPipeWriter = Subprocess.StaticPipeWriter.Poll;
-    const ShellStaticPipeWriter = bun.shell.ShellSubprocess.StaticPipeWriter.Poll;
-    const SecurityScanStaticPipeWriter = bun.install.SecurityScanSubprocess.StaticPipeWriter.Poll;
+    // Faithful to upstream: the shell subprocess registers its own static pipe
+    // writer poll. `bun.shell.ShellSubprocess` is a stub for the ProcessExitHandler
+    // union; the real type that owns FilePolls is `bun.shell.subproc.ShellSubprocess`.
+    const ShellStaticPipeWriter = bun.shell.subproc.ShellSubprocess.StaticPipeWriter.Poll;
+    // const SecurityScanStaticPipeWriter = bun.install.SecurityScanSubprocess.StaticPipeWriter.Poll; // install not for corpus
     const FileSink = jsc.WebCore.FileSink.Poll;
-    const TerminalPoll = bun.api.Terminal.Poll;
+    // const TerminalPoll = bun.api.Terminal.Poll; // terminal not for corpus
     const DNSResolver = bun.api.dns.Resolver;
     const GetAddrInfoRequest = bun.api.dns.GetAddrInfoRequest;
     const Request = bun.api.dns.internal.Request;
@@ -180,9 +183,7 @@ pub const FilePoll = struct {
 
         StaticPipeWriter,
         ShellStaticPipeWriter,
-        SecurityScanStaticPipeWriter,
-
-        // ShellBufferedWriter,
+        // SecurityScanStaticPipeWriter,
 
         BufferedReader,
 
@@ -192,7 +193,7 @@ pub const FilePoll = struct {
         // LifecycleScriptSubprocessOutputReader,
         Process,
         ShellBufferedWriter, // i do not know why, but this has to be here otherwise compiler will complain about dependency loop
-        TerminalPoll,
+        // TerminalPoll,
         ParentDeathWatchdog,
     });
 
@@ -384,10 +385,7 @@ pub const FilePoll = struct {
                 var handler: *StaticPipeWriter = ptr.as(StaticPipeWriter);
                 handler.onPoll(size_or_offset, poll.flags.contains(.hup));
             },
-            @field(Owner.Tag, @typeName(SecurityScanStaticPipeWriter)) => {
-                var handler: *SecurityScanStaticPipeWriter = ptr.as(SecurityScanStaticPipeWriter);
-                handler.onPoll(size_or_offset, poll.flags.contains(.hup));
-            },
+            // SecurityScanStaticPipeWriter case: install not for corpus
             @field(Owner.Tag, @typeName(FileSink)) => {
                 var handler: *FileSink = ptr.as(FileSink);
                 handler.onPoll(size_or_offset, poll.flags.contains(.hup));
@@ -431,11 +429,7 @@ pub const FilePoll = struct {
                 Request.MacAsyncDNS.onMachportChange(loader);
             },
 
-            @field(Owner.Tag, @typeName(TerminalPoll)) => {
-                log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) Terminal", .{poll.fd});
-                var handler: *TerminalPoll = ptr.as(TerminalPoll);
-                handler.onPoll(size_or_offset, poll.flags.contains(.hup));
-            },
+            // TerminalPoll case: terminal not for corpus
             @field(Owner.Tag, @typeName(ParentDeathWatchdog)) => {
                 if (comptime !Environment.isMac) unreachable;
                 log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) ParentDeathWatchdog", .{poll.fd});
@@ -934,7 +928,7 @@ pub const FilePoll = struct {
                         // we set 0 here so that if we get an error on
                         // registration, it becomes errno
                         0,
-                        KEVENT_FLAG_ERROR_EVENTS,
+                        @bitCast(@as(c_uint, KEVENT_FLAG_ERROR_EVENTS)),
                         &timeout,
                     );
 
@@ -1170,7 +1164,7 @@ pub const FilePoll = struct {
                 // The same array may be used for the changelist and eventlist.
                 &changelist,
                 nchanges,
-                KEVENT_FLAG_ERROR_EVENTS,
+                @bitCast(@as(c_uint, KEVENT_FLAG_ERROR_EVENTS)),
                 &timeout,
             );
 
