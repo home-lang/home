@@ -31,6 +31,8 @@ const node_net_binding = @import("../runtime/node/node_net_binding.zig");
 const node_zlib_binding = @import("../runtime/node/node_zlib_binding.zig");
 const node_util_binding = @import("../runtime/node/node_util_binding.zig");
 const node_crypto_binding = @import("../runtime/node/node_crypto_binding.zig");
+const node_http_binding = @import("../runtime/node/node_http_binding.zig");
+const node_parse_args = @import("../runtime/node/util/parse_args.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 
@@ -83,5 +85,10 @@ comptime {
     @export(&host_fn.toJSHostFn(node_net_binding.doConnect), .{ .name = "JS2Zig___src_runtime_node_node_net_binding_zig__doConnect" });
     @export(&host_fn.toJSHostFn(node_types.jsAssertEncodingValid), .{ .name = "JS2Zig___src_runtime_node_types_zig__jsAssertEncodingValid" });
     @export(&host_fn.toJSHostFn(Stat.createStatsForIno), .{ .name = "JS2Zig___src_runtime_node_Stat_zig__createStatsForIno" });
+    // node:util.parseArgs + node:http maxHeaderSize get/set (were noop, so
+    // util.parseArgs threw "not a function" and http.maxHeaderSize was undefined).
+    @export(&host_fn.toJSHostFn(node_parse_args.parseArgs), .{ .name = "JS2Zig___src_runtime_node_util_parse_args_zig__parseArgs" });
+    @export(&host_fn.toJSHostFn(node_http_binding.getMaxHTTPHeaderSize), .{ .name = "JS2Zig___src_runtime_node_node_http_binding_zig__getMaxHTTPHeaderSize" });
+    @export(&host_fn.toJSHostFn(node_http_binding.setMaxHTTPHeaderSize), .{ .name = "JS2Zig___src_runtime_node_node_http_binding_zig__setMaxHTTPHeaderSize" });
     @export(&host_fn.toJSHostFn(node_fs_binding.createMemfdForTesting), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createMemfdForTesting" });
 }
