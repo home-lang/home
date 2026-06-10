@@ -27,11 +27,11 @@
 const std = @import("std");
 const home_rt = @import("home");
 
-// JSC stubs — re-attach when home_rt.jsc grows the matching surface.
-const JSGlobalObject = @import("home").jsc.JSGlobalObject;
-const CallFrame = @import("home").jsc.CallFrame;
-const ArgumentsSlice = opaque {};
-pub const JSValue = @import("home").jsc.JSValue;
+const jsc = @import("home").jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const CallFrame = jsc.CallFrame;
+const Arena = std.heap.ArenaAllocator;
+pub const JSValue = jsc.JSValue;
 pub const JSError = @import("home").JSError;
 
 const Glob = @This();
@@ -95,30 +95,58 @@ pub fn finalize(this: *Glob) callconv(.c) void {
 // surface compile-checked under the stub.
 
 pub fn constructor(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!*Glob {
-    _ = globalThis;
-    _ = callframe;
-    return error.JSError;
+    const arguments_ = callframe.arguments_old(1);
+    var arguments = CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
+    defer arguments.deinit();
+    const pat_arg: JSValue = arguments.nextEat() orelse {
+        return globalThis.throw("Glob.constructor: expected 1 arguments, got 0", .{});
+    };
+
+    if (!pat_arg.isString()) {
+        return globalThis.throw("Glob.constructor: first argument is not a string", .{});
+    }
+
+    const pat_str: []const u8 = (try pat_arg.toSliceClone(globalThis)).slice();
+
+    return home_rt.new(Glob, .{ .pattern = pat_str });
 }
 
+// __scan / __scanSync need the GlobWalker option-parsing + async-task
+// substrate (`makeGlobWalker`, `WalkTask.create`, `globWalkResultToJS`).
+// Until that lands they throw a catchable JS error rather than returning a
+// bare `error.JSError`, which would trip JSC's exception-presence assert.
 pub fn @"__scan"(this: *Glob, globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
     _ = this;
-    _ = globalThis;
     _ = callframe;
-    return error.JSError;
+    return globalThis.throw("Glob.scan: not yet implemented in the native runtime", .{});
 }
 
 pub fn @"__scanSync"(this: *Glob, globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
     _ = this;
-    _ = globalThis;
     _ = callframe;
-    return error.JSError;
+    return globalThis.throw("Glob.scanSync: not yet implemented in the native runtime", .{});
 }
 
 pub fn match(this: *Glob, globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    _ = this;
-    _ = globalThis;
-    _ = callframe;
-    return error.JSError;
+    const alloc = home_rt.default_allocator;
+    var arena = Arena.init(alloc);
+    defer arena.deinit();
+
+    const arguments_ = callframe.arguments_old(1);
+    var arguments = CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
+    defer arguments.deinit();
+    const str_arg = arguments.nextEat() orelse {
+        return globalThis.throw("Glob.matchString: expected 1 arguments, got 0", .{});
+    };
+
+    if (!str_arg.isString()) {
+        return globalThis.throw("Glob.matchString: first argument is not a string", .{});
+    }
+
+    var str = try str_arg.toSlice(globalThis, arena.allocator());
+    defer str.deinit();
+
+    return JSValue.jsBoolean(home_rt.glob.match(this.pattern, str.slice()).matches());
 }
 
 test "glob: pending-activity atomic round-trips through incr/decr" {
