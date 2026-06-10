@@ -433,19 +433,47 @@ pub fn OutOfRangeFormatter(comptime T: type) type {
         value: T,
         options: OutOfRangeOptions,
 
+        // Faithful to Bun's `NewOutOfRangeFormatter` (src/bun_core/fmt.zig).
+        // The previous version printed `Received {d}` unconditionally, which
+        // fails to compile for `bun.String`/`[]const u8`/`f64` values and
+        // produced the wrong message text for the min-only / max-only / msg
+        // cases that the node error corpus checks verbatim.
         pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            if (self.options.msg.len > 0) {
-                try writer.print("{s}: ", .{self.options.msg});
-            }
-            if (self.options.min != std.math.maxInt(i64) or self.options.max != std.math.maxInt(i64)) {
-                try writer.print("The value of \"{s}\" is out of range. It must be >= {d} and <= {d}. Received {d}", .{
-                    self.options.field_name,
-                    self.options.min,
-                    self.options.max,
-                    self.value,
-                });
+            const min = self.options.min;
+            const max = self.options.max;
+            const msg = self.options.msg;
+
+            if (self.options.field_name.len > 0) {
+                try writer.writeAll("The value of \"");
+                try writer.writeAll(self.options.field_name);
+                try writer.writeAll("\" is out of range. It must be ");
             } else {
-                try writer.print("The value of \"{s}\" is out of range. Received {d}", .{ self.options.field_name, self.value });
+                try writer.writeAll("The value is out of range. It must be ");
+            }
+
+            if (min != std.math.maxInt(i64) and max != std.math.maxInt(i64)) {
+                try writer.print(">= {d} and <= {d}.", .{ min, max });
+            } else if (min != std.math.maxInt(i64)) {
+                try writer.print(">= {d}.", .{min});
+            } else if (max != std.math.maxInt(i64)) {
+                try writer.print("<= {d}.", .{max});
+            } else if (msg.len > 0) {
+                try writer.writeAll(msg);
+                try writer.writeByte('.');
+            } else {
+                try writer.writeAll("within the range of values for type ");
+                try writer.writeAll(comptime @typeName(T));
+                try writer.writeAll(".");
+            }
+
+            if (comptime T == f64 or T == f32) {
+                try writer.print(" Received {f}", .{double(self.value)});
+            } else if (comptime T == []const u8) {
+                try writer.print(" Received {s}", .{self.value});
+            } else if (comptime std.meta.hasFn(T, "format")) {
+                try writer.print(" Received {f}", .{self.value});
+            } else {
+                try writer.print(" Received {}", .{self.value});
             }
         }
     };
@@ -559,4 +587,44 @@ test "fmtIdentifier folds invalid separators into gaps" {
 test "FormatDouble dtoa writes a finite value" {
     var buf: [124]u8 = undefined;
     try std.testing.expectEqualStrings("1.5", FormatDouble.dtoa(&buf, 1.5));
+}
+
+test "outOfRange formats an integer received value with min and max" {
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writer.print("{f}", .{outOfRange(@as(i64, 99), .{ .field_name = "mode", .min = 1, .max = 7 })});
+    try std.testing.expectEqualStrings(
+        "The value of \"mode\" is out of range. It must be >= 1 and <= 7. Received 99",
+        writer.buffered(),
+    );
+}
+
+test "outOfRange formats a []const u8 received value (bigint-as-string path)" {
+    var buf: [160]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writer.print("{f}", .{outOfRange(@as([]const u8, "99999999999999999999"), .{ .field_name = "position", .min = -1, .max = 100 })});
+    try std.testing.expectEqualStrings(
+        "The value of \"position\" is out of range. It must be >= -1 and <= 100. Received 99999999999999999999",
+        writer.buffered(),
+    );
+}
+
+test "outOfRange formats a float received value" {
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writer.print("{f}", .{outOfRange(@as(f64, 1.5), .{ .field_name = "length", .min = 0 })});
+    try std.testing.expectEqualStrings(
+        "The value of \"length\" is out of range. It must be >= 0. Received 1.5",
+        writer.buffered(),
+    );
+}
+
+test "outOfRange uses the msg branch when no min or max is set" {
+    var buf: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writer.print("{f}", .{outOfRange(@as(f64, 2.5), .{ .field_name = "length", .msg = "an integer" })});
+    try std.testing.expectEqualStrings(
+        "The value of \"length\" is out of range. It must be an integer. Received 2.5",
+        writer.buffered(),
+    );
 }

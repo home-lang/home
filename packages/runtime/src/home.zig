@@ -2381,99 +2381,16 @@ pub const jsc = struct {
     pub const GetterSetter = @import("jsc/GetterSetter.zig").GetterSetter;
     pub const StaticExport = @import("jsc/static_export.zig");
     pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
-    pub fn ErrorBuilder(comptime code: Error, comptime fmt_str: [:0]const u8, Args: type) type {
-        return struct {
-            globalThis: *JSGlobalObject,
-            args: Args,
-
-            pub inline fn throw(this: @This()) JSError {
-                return code.throw(this.globalThis, fmt_str, this.args);
-            }
-
-            pub inline fn toJS(this: @This()) JSValue {
-                return code.fmt(this.globalThis, fmt_str, this.args);
-            }
-
-            pub inline fn reject(this: @This()) JSValue {
-                return this.toJS();
-            }
-        };
-    }
-    pub const Error = enum(u16) {
-        MISSING_ARGS = 0,
-        INVALID_ARG_TYPE = 1,
-        INVALID_ARG_VALUE = 2,
-        INCOMPATIBLE_OPTION_PAIR = 3,
-        CRYPTO_INVALID_SCRYPT_PARAMS = 4,
-        OUT_OF_RANGE = 5,
-        WEBASSEMBLY_RESPONSE = 6,
-        UNHANDLED_REJECTION = 7,
-        // Values from the generated ErrorCode enum (faithful to upstream).
-        CRYPTO_TIMING_SAFE_EQUAL_LENGTH = 48,
-        ENCODING_INVALID_ENCODED_DATA = 56,
-        HTTP_HEADERS_SENT = 70,
-        HTTP_CONTENT_LENGTH_MISMATCH = 71,
-        INVALID_CHAR = 122,
-        SOCKET_BAD_PORT = 218,
-        INVALID_STATE = 136,
-        INVALID_URL = 142,
-        INVALID_THIS = 143,
-        ILLEGAL_CONSTRUCTOR = 150,
-        BODY_ALREADY_USED = 151,
-        FORMDATA_PARSE_ERROR = 152,
-        ENCODING_NOT_SUPPORTED = 153,
-        ZSTD = 154,
-        ZLIB_INITIALIZATION_FAILED = 261,
-        PARSE_ARGS_INVALID_OPTION_VALUE = 262,
-        PARSE_ARGS_UNKNOWN_OPTION = 263,
-        PARSE_ARGS_UNEXPECTED_POSITIONAL = 264,
-        BORINGSSL = 155,
-        HTTP2_INVALID_SETTING_VALUE_RangeError = 156,
-        HTTP2_PING_CANCEL = 157,
-        HTTP2_ORIGIN_LENGTH = 158,
-        HTTP2_INVALID_PSEUDOHEADER = 159,
-        INVALID_HTTP_TOKEN = 160,
-        REDIS_INVALID_STATE = 161,
-        REDIS_CONNECTION_CLOSED = 162,
-        HTTP2_INVALID_SETTING_VALUE = 163,
-        SOCKET_CLOSED_BEFORE_CONNECTION = 265,
-        HTTP2_INVALID_HEADER_VALUE = 164,
-        STREAM_NULL_VALUES = 266,
-        STREAM_ALREADY_FINISHED = 227,
-        STREAM_WRITE_AFTER_END = 237,
-        INVALID_IP_ADDRESS = 165,
-        DNS_SET_SERVERS_FAILED = 166,
-        REDIS_INVALID_RESPONSE = 167,
-        IPC_CHANNEL_CLOSED = 181,
-        REDIS_INVALID_INTEGER = 172,
-        REDIS_INVALID_SIMPLE_STRING = 173,
-        REDIS_INVALID_ERROR_STRING = 174,
-        REDIS_AUTHENTICATION_FAILED = 175,
-        REDIS_INVALID_COMMAND = 176,
-        REDIS_INVALID_ARGUMENT = 177,
-        REDIS_INVALID_RESPONSE_TYPE = 178,
-        REDIS_CONNECTION_TIMEOUT = 179,
-        REDIS_IDLE_TIMEOUT = 180,
-        HTTP2_TOO_MANY_CUSTOM_SETTINGS = 168,
-        HTTP2_HEADER_SINGLE_VALUE = 169,
-        REDIS_INVALID_BULK_STRING = 170,
-        REDIS_INVALID_ARRAY = 171,
-        UNKNOWN_ENCODING = 255,
-        STRING_TOO_LONG = 256,
-        _,
-
-        pub fn fmt(this: Error, globalThis: *JSGlobalObject, comptime fmt_: [:0]const u8, args: anytype) JSValue {
-            _ = this;
-            _ = globalThis;
-            _ = fmt_;
-            _ = args;
-            return .zero;
-        }
-
-        pub fn throw(this: Error, globalThis: *JSGlobalObject, comptime fmt_: [:0]const u8, args: anytype) JSError {
-            return globalThis.throwValue(this.fmt(globalThis, fmt_, args));
-        }
-    };
+    /// Faithful node-error machinery. `Error`, `ErrorBuilder`, and the
+    /// `Bun__createErrorWithCode`-backed `fmt`/`throw`/`reject` come straight
+    /// from the generated table (mirrors Bun's src/jsc/ErrorCode.rs) so the
+    /// enum stays index-aligned with the C++ `errors[]` array. The previous
+    /// hand-written duplicate used the wrong numeric values and a `.zero`
+    /// `fmt` stub, which threw an empty JSValue and segfaulted JSC in
+    /// `JSCell::type()` on every `globalThis.ERR(...).throw()`.
+    const generated_error_code = @import(".generated/ErrorCode.zig");
+    pub const ErrorBuilder = generated_error_code.ErrorBuilder;
+    pub const Error = generated_error_code.Error;
     pub const CommonAbortReason = @import("jsc/CommonAbortReason.zig").CommonAbortReason;
     // Fourth-wave port batch (2026-05-17, 8-agent parallel dispatch):
     pub const Exception = @import("jsc/Exception.zig").Exception;

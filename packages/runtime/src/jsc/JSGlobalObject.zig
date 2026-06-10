@@ -846,7 +846,7 @@ pub const JSGlobalObject = opaque {
     ///
     /// The set of errors accepted by `ERR()` is defined in `ErrorCode.ts`.
     pub fn ERR(global: *JSGlobalObject, comptime code: jsc.Error, comptime fmt: [:0]const u8, args: anytype) jsc.ErrorBuilder(code, fmt, @TypeOf(args)) {
-        return .{ .globalThis = global, .args = args };
+        return .{ .global = global, .args = args };
     }
 
     extern fn JSC__JSGlobalObject__bunVM(*JSGlobalObject) *VM;
