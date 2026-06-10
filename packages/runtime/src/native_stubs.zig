@@ -216,7 +216,6 @@ comptime {
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
         "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",
         "JS2Zig___src_runtime_node_node_http_binding_zig__getBunServerAllClosedPromise",
-        "JS2Zig___src_runtime_node_node_zlib_binding_zig__crc__",
         "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_disabledOnThisPlatform",
         "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellLex",
         "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellParse",

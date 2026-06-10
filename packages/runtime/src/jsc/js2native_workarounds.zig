@@ -130,5 +130,6 @@ comptime {
     @export(&host_fn.toJSHostFn(Listener.jsAddServerName), .{ .name = "JS2Zig___src_runtime_socket_Listener_zig__jsAddServerName" });
     @export(&host_fn.toJSHostFn(ffi.Bun__FFI__cc), .{ .name = "JS2Zig___src_runtime_ffi_ffi_zig__Bun__FFI__cc" });
     @export(&host_fn.toJSHostFn(fetch.nodeHttpClient), .{ .name = "JS2Zig___src_runtime_webcore_fetch_zig__nodeHttpClient" });
+    @export(&host_fn.toJSHostFn(node_zlib_binding.crc32), .{ .name = "JS2Zig___src_runtime_node_node_zlib_binding_zig__crc__" });
     @export(&host_fn.toJSHostFn(node_fs_binding.createMemfdForTesting), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createMemfdForTesting" });
 }
