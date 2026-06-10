@@ -35,6 +35,7 @@ const node_http_binding = @import("../runtime/node/node_http_binding.zig");
 const node_parse_args = @import("../runtime/node/util/parse_args.zig");
 const Timer = @import("../runtime/timer/Timer.zig");
 const dns = @import("../runtime/dns_jsc/dns.zig");
+const node_cluster_binding = @import("../runtime/node/node_cluster_binding.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 
@@ -98,5 +99,12 @@ comptime {
     // node:dns Resolver constructor + default result-order (were noop).
     @export(&host_fn.toJSHostFn(dns.Resolver.newResolver), .{ .name = "JS2Zig___src_runtime_dns_jsc_dns_zig__Resolver_newResolver" });
     @export(&host_fn.toJSHostFn(dns.Resolver.getRuntimeDefaultResultOrderOption), .{ .name = "JS2Zig___src_runtime_dns_jsc_dns_zig__Resolver_getRuntimeDefaultResultOrderOption" });
+    // node:cluster IPC helpers (were noop).
+    @export(&host_fn.toJSHostFn(node_cluster_binding.sendHelperChild), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__sendHelperChild" });
+    @export(&host_fn.toJSHostFn(node_cluster_binding.onInternalMessageChild), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__onInternalMessageChild" });
+    @export(&host_fn.toJSHostFn(node_cluster_binding.sendHelperPrimary), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__sendHelperPrimary" });
+    @export(&host_fn.toJSHostFn(node_cluster_binding.onInternalMessagePrimary), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__onInternalMessagePrimary" });
+    @export(&host_fn.toJSHostFn(node_cluster_binding.setRef), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__setRef" });
+    @export(&host_fn.toJSHostFn(node_cluster_binding.channelIgnoreOneDisconnectEventListener), .{ .name = "JS2Zig___src_runtime_node_node_cluster_binding_zig__channelIgnoreOneDisconnectEventListener" });
     @export(&host_fn.toJSHostFn(node_fs_binding.createMemfdForTesting), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createMemfdForTesting" });
 }

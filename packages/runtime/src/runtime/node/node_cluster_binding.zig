@@ -152,7 +152,8 @@ pub const InternalMsgHolder = struct {
     pub fn flush(this: *InternalMsgHolder, globalThis: *jsc.JSGlobalObject) bun.JSError!void {
         bun.assert(this.isReady());
         var messages = this.messages;
-        this.messages = .{};
+        // Zig 0.17 `std.ArrayListUnmanaged` empty sentinel is `.empty`, not `.{}`.
+        this.messages = .empty;
         for (messages.items) |*strong| {
             if (strong.get()) |message| {
                 try this.dispatchUnsafe(message, globalThis);
