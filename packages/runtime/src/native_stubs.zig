@@ -217,8 +217,6 @@ comptime {
         "JS2Zig___src_runtime_bake_FrameworkRouter_zig__JSFrameworkRouter_getBindings_workaround",
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
         "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",
-        "JS2Zig___src_runtime_dns_jsc_dns_zig__Resolver_getRuntimeDefaultResultOrderOption",
-        "JS2Zig___src_runtime_dns_jsc_dns_zig__Resolver_newResolver",
         "JS2Zig___src_runtime_ffi_ffi_zig__Bun__FFI__cc",
         "JS2Zig___src_runtime_node_node_cluster_binding_zig__channelIgnoreOneDisconnectEventListener",
         "JS2Zig___src_runtime_node_node_cluster_binding_zig__onInternalMessageChild",

@@ -34,6 +34,7 @@ const node_crypto_binding = @import("../runtime/node/node_crypto_binding.zig");
 const node_http_binding = @import("../runtime/node/node_http_binding.zig");
 const node_parse_args = @import("../runtime/node/util/parse_args.zig");
 const Timer = @import("../runtime/timer/Timer.zig");
+const dns = @import("../runtime/dns_jsc/dns.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 
@@ -94,5 +95,8 @@ comptime {
     // Self-contained pure-function bindings (were noop).
     @export(&host_fn.toJSHostFn(bun.String.jsGetStringWidth), .{ .name = "JS2Zig___src_string_string_zig__String_jsGetStringWidth" });
     @export(&host_fn.toJSHostFn(Timer.internal_bindings.timerClockMs), .{ .name = "JS2Zig___src_runtime_timer_Timer_zig__internal_bindings_timerClockMs" });
+    // node:dns Resolver constructor + default result-order (were noop).
+    @export(&host_fn.toJSHostFn(dns.Resolver.newResolver), .{ .name = "JS2Zig___src_runtime_dns_jsc_dns_zig__Resolver_newResolver" });
+    @export(&host_fn.toJSHostFn(dns.Resolver.getRuntimeDefaultResultOrderOption), .{ .name = "JS2Zig___src_runtime_dns_jsc_dns_zig__Resolver_getRuntimeDefaultResultOrderOption" });
     @export(&host_fn.toJSHostFn(node_fs_binding.createMemfdForTesting), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createMemfdForTesting" });
 }
