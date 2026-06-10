@@ -1813,6 +1813,29 @@ pub const Parser = struct {
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 dec_expr,
             );
+            // tsc parses the post-decorator position as a declaration,
+            // so a `using` head there is always a using-declaration; a
+            // same-line literal where the binding name should be is
+            // TS1134 at the literal (decoratorOnUsing), not the TS1005
+            // the expression fallback would produce. A well-formed
+            // `using x` after a decorator parses as a *decorated*
+            // using-declaration, where tsc suppresses both TS1206 and
+            // TS1155 (the decorators are silently dropped at emit).
+            if (self.peek().kind == .kw_using) {
+                const after = self.peekAt(1);
+                if (!after.flags.preceded_by_newline and
+                    (after.kind == .number_literal or
+                        after.kind == .string_literal or
+                        after.kind == .bigint_literal))
+                {
+                    _ = self.advance(); // `using`
+                    try self.reportCodeAt(after.span.start, after.line, 1134, "Variable declaration expected.");
+                    _ = self.advance(); // the offending literal
+                } else if (after.kind == .identifier and !after.flags.preceded_by_newline) {
+                    const ud = try self.parseUsingDecl(false, true);
+                    try self.pending_statements.append(self.gpa, ud);
+                }
+            }
             return dec;
         }
         const t = self.peek();
@@ -1983,7 +2006,7 @@ pub const Parser = struct {
                 if (self.peekAt(1).kind == .identifier and
                     !self.peekAt(1).flags.preceded_by_newline)
                 {
-                    break :blk try self.parseUsingDecl(false);
+                    break :blk try self.parseUsingDecl(false, false);
                 }
                 // `using {a} = ...;` — tsc parses this as a
                 // binding-pattern using-decl and reports TS1492
@@ -1998,7 +2021,7 @@ pub const Parser = struct {
                     !self.peekAt(1).flags.preceded_by_newline and
                     self.usingBindingPatternLookahead(1))
                 {
-                    break :blk try self.parseUsingDecl(false);
+                    break :blk try self.parseUsingDecl(false, false);
                 }
                 break :blk try self.parseExpressionStatement();
             },
@@ -2015,7 +2038,7 @@ pub const Parser = struct {
                     self.peekAt(2).kind == .identifier and
                     !self.peekAt(2).flags.preceded_by_newline)
                 {
-                    break :blk try self.parseUsingDecl(true);
+                    break :blk try self.parseUsingDecl(true, false);
                 }
                 // `await using {a} = ...;` — same binding-pattern
                 // recovery as the bare-`using` arm above, gated on
@@ -2029,7 +2052,7 @@ pub const Parser = struct {
                     !self.peekAt(2).flags.preceded_by_newline and
                     self.usingBindingPatternLookahead(2))
                 {
-                    break :blk try self.parseUsingDecl(true);
+                    break :blk try self.parseUsingDecl(true, false);
                 }
                 break :blk try self.parseExpressionStatement();
             },
@@ -8683,7 +8706,7 @@ pub const Parser = struct {
         return try self.parseBindingPattern();
     }
 
-    fn parseUsingDecl(self: *Parser, await_using: bool) ParseError!NodeId {
+    fn parseUsingDecl(self: *Parser, await_using: bool, decorated: bool) ParseError!NodeId {
         const start = self.advance(); // `using` or `await`
         if (await_using) {
             _ = self.advance(); // `using` token following `await`
@@ -8821,10 +8844,13 @@ pub const Parser = struct {
         var init_node: NodeId = hir_mod.none_node_id;
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
-        } else if (!in_ambient) {
+        } else if (!in_ambient and !decorated) {
             // Ambient `using` / `await using` declarations don't carry
             // initializers — TS suppresses TS1155 in that case because
-            // the more specific TS1545/TS1546 already fires.
+            // the more specific TS1545/TS1546 already fires. Decorated
+            // using-declarations also suppress it (decoratorOnUsing:
+            // tsc drops the decorators and reports nothing on
+            // `@dec using x`).
             try self.reportCodeAt(name_span_start, name_span_line, 1155, must_init_msg);
         }
         while (self.match(.comma)) {
@@ -8834,7 +8860,7 @@ pub const Parser = struct {
             }
             if (self.match(.equal)) {
                 _ = try self.parseAssignmentExpression();
-            } else if (!in_ambient) {
+            } else if (!in_ambient and !decorated) {
                 try self.reportCodeAt(extra_name_tok.span.start, extra_name_tok.line, 1155, must_init_msg);
             }
         }
