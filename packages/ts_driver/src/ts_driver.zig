@@ -810,7 +810,8 @@ fn physicalReferenceTypesDirectiveExists(
             if (root.len == 0) continue;
             if (try physicalReferenceTypesRootExists(gpa, io, root, name)) return true;
         }
-        return false;
+        // Fall through — see the virtual variant: typeRoots misses
+        // still resolve via @types and the secondary package lookup.
     }
     const package_name = referenceTypePackageName(name);
     const subpath = referenceTypeSubpath(name, package_name);
@@ -818,7 +819,10 @@ fn physicalReferenceTypesDirectiveExists(
     defer gpa.free(types_pkg);
     const candidate = try std.fmt.allocPrint(gpa, "node_modules/@types/{s}{s}", .{ types_pkg, subpath });
     defer gpa.free(candidate);
-    return try physicalReferenceTypesPackageExists(gpa, io, candidate);
+    if (try physicalReferenceTypesPackageExists(gpa, io, candidate)) return true;
+    const secondary = try std.fmt.allocPrint(gpa, "node_modules/{s}{s}", .{ package_name, subpath });
+    defer gpa.free(secondary);
+    return try physicalReferenceTypesPackageExists(gpa, io, secondary);
 }
 
 fn physicalReferenceTypesRootExists(
@@ -864,13 +868,25 @@ fn virtualReferenceTypesDirectiveExists(
             if (root.len == 0) continue;
             if (try virtualReferenceTypesRootExists(gpa, source, root, name)) return true;
         }
-        return false;
+        // A typeRoots miss is not final: tsc still resolves the
+        // reference through node_modules/@types and the secondary
+        // node_modules/<name> lookup (library-reference-scoped-packages
+        // resolves '@beep/boop' from node_modules/@types/beep__boop
+        // despite `@typeRoots: types`).
     }
+    const package_name = referenceTypePackageName(name);
+    const subpath = referenceTypeSubpath(name, package_name);
     const types_pkg = try atTypesPackageName(gpa, name);
     defer gpa.free(types_pkg);
     const needle = try std.fmt.allocPrint(gpa, "node_modules/@types/{s}/", .{types_pkg});
     defer gpa.free(needle);
-    return virtualSourceHasTypePackage(source, needle, referenceTypeSubpath(name, referenceTypePackageName(name)));
+    if (virtualSourceHasTypePackage(source, needle, subpath)) return true;
+    // Secondary lookup: a plain `node_modules/<name>/` package carrying
+    // its own .d.ts (index.d.ts or a package.json-designated file)
+    // satisfies `/// <reference types=...>` — library-reference-3/7/11/12.
+    const secondary = try std.fmt.allocPrint(gpa, "node_modules/{s}/", .{package_name});
+    defer gpa.free(secondary);
+    return virtualSourceHasTypePackage(source, secondary, subpath);
 }
 
 fn virtualReferenceTypesRootExists(
