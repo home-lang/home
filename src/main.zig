@@ -3817,6 +3817,42 @@ pub fn main(init: std.process.Init) !void {
 
     const command = args[1];
 
+    // Faithful to `bun --eval <code>` / `bun -e <code>`: a top-level flag (not a
+    // subcommand) that evaluates an inline source string. Many bun-corpus tests
+    // re-spawn the runtime as `bunExe() --eval "..."`, so this must be accepted
+    // at the top level the same way `home eval <code>` is. The result is not
+    // auto-printed (matching bun); `--print`/`-p` opts into printing.
+    if (std.mem.eql(u8, command, "--eval") or std.mem.eql(u8, command, "-e")) {
+        var code: ?[]const u8 = null;
+        var print_result = false;
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--print") or std.mem.eql(u8, args[i], "-p")) {
+                print_result = true;
+            } else if (code == null) {
+                code = args[i];
+            }
+        }
+        if (code == null) {
+            std.debug.print("{s}error:{s} '--eval' requires a code argument\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.debug.print("usage: home --eval <code> [--print|-p]\n", .{});
+            std.process.exit(1);
+        }
+        try evalCommand(allocator, code.?, print_result);
+        return;
+    }
+
+    // `bun --print <code>` / `bun -p <code>`: evaluate and auto-print the result.
+    if (std.mem.eql(u8, command, "--print") or std.mem.eql(u8, command, "-p")) {
+        if (args.len < 3) {
+            std.debug.print("{s}error:{s} '--print' requires a code argument\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.debug.print("usage: home --print <code>\n", .{});
+            std.process.exit(1);
+        }
+        try evalCommand(allocator, args[2], true);
+        return;
+    }
+
     if (std.mem.eql(u8, command, "help")) {
         printUsage();
         return;
