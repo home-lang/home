@@ -61,7 +61,15 @@ pub const Flags = packed struct(u8) {
     /// by the caller). Owned terminals are closed when the subprocess exits
     /// so the exit callback fires; borrowed terminals are left open for reuse.
     owns_terminal: bool = false,
-    _: u1 = 0,
+    /// True while the JS wrapper is gcProtect'd as a keep-alive. Home's
+    /// `Bun__StrongRef`-backed `this_value` Strong does NOT reliably root an
+    /// async Subprocess wrapper against JSC's IncrementalSweeper (proven: a
+    /// `this_value=.strong`, pending subprocess gets swept mid-run), so the
+    /// wrapper is collected while the child is still running → finalize fires
+    /// with pending activity and asserts. As a robust secondary keep-alive we
+    /// also `JSValue.protect()` (gcProtect, a separate root set) while pending
+    /// and unprotect once not pending.
+    protected: bool = false,
 };
 
 pub const SignalCode = bun.SignalCode;
@@ -185,6 +193,21 @@ pub fn updateHasPendingActivity(this: *Subprocess) void {
         this.this_value.upgrade(this.globalThis);
     } else {
         this.this_value.downgrade();
+    }
+
+    // Secondary keep-alive via gcProtect (see Flags.protected). The Strong
+    // `this_value` alone is not enough in Home's JSC integration; gcProtect is a
+    // separate root set that reliably keeps the wrapper marked while pending.
+    if (has_pending != this.flags.protected) {
+        if (this.this_value.tryGet()) |wrapper| {
+            if (has_pending) {
+                wrapper.protect();
+                this.flags.protected = true;
+            } else {
+                wrapper.unprotect();
+                this.flags.protected = false;
+            }
+        }
     }
 }
 
