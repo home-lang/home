@@ -42,6 +42,8 @@ const h2_frame_parser = @import("../runtime/api/bun/h2_frame_parser.zig");
 const Listener = @import("../runtime/socket/Listener.zig");
 const ffi = @import("../runtime/ffi/ffi.zig");
 const fetch = @import("../runtime/webcore/fetch.zig");
+const sql_postgres = @import("../sql_jsc/postgres.zig");
+const sql_mysql = @import("../sql_jsc/mysql.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 
@@ -82,6 +84,10 @@ comptime {
     // randomBytes/randomInt/randomFill/scrypt/timingSafeEqual/getHashes/etc.
     // from here. Was noop in native_stubs.zig, leaving them all `undefined`.
     @export(&lazy(node_crypto_binding.createNodeCryptoBindingZig), .{ .name = "JS2Zig___src_runtime_node_node_crypto_binding_zig__createNodeCryptoBindingZig_workaround" });
+    // Bun.sql drivers (Postgres/MySQL) + http2 frame-parser class constructor.
+    @export(&lazy(sql_postgres.createBinding), .{ .name = "JS2Zig___src_sql_jsc_postgres_zig__createBinding_workaround" });
+    @export(&lazy(sql_mysql.createBinding), .{ .name = "JS2Zig___src_sql_jsc_mysql_zig__createBinding_workaround" });
+    @export(&lazy(h2_frame_parser.H2FrameParserConstructor), .{ .name = "JS2Zig___src_runtime_api_bun_h__frame_parser_zig__H_FrameParserConstructor_workaround" });
 
     // ---- Host functions (no suffix) -------------------------------------
     @export(&host_fn.toJSHostFn(node_util_binding.normalizeEncoding), .{ .name = "JS2Zig___src_runtime_node_node_util_binding_zig__normalizeEncoding" });
