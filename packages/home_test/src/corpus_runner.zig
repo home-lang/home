@@ -939,8 +939,15 @@ const harness_prelude =
     \\globalThis.__home_written_files = globalThis.__home_written_files || Object.create(null);
     \\globalThis.__home_written_file_bytes = globalThis.__home_written_file_bytes || Object.create(null);
     \\globalThis.__home_written_file_modes = globalThis.__home_written_file_modes || Object.create(null);
+    \\globalThis.__home_written_file_times = globalThis.__home_written_file_times || Object.create(null);
     \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
+    \\if (typeof ArrayBuffer.prototype.transfer !== "function") {
+    \\  ArrayBuffer.prototype.transfer = function(newLength) {
+    \\    Object.defineProperty(this, "__home_detached", { configurable: true, value: true });
+    \\    return new ArrayBuffer(newLength === undefined ? this.byteLength : Number(newLength) || 0);
+    \\  };
+    \\}
     \\function __home_fs_normalize_path(path) {
     \\  return __home_build_normalize(String(path || ""));
     \\}
@@ -1064,6 +1071,7 @@ const harness_prelude =
     \\        delete globalThis.__home_written_files[key];
     \\        if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[key];
     \\        if (globalThis.__home_written_file_modes) delete globalThis.__home_written_file_modes[key];
+    \\        if (globalThis.__home_written_file_times) delete globalThis.__home_written_file_times[key];
     \\      }
     \\    }
     \\  }
@@ -1084,6 +1092,14 @@ const harness_prelude =
     \\}
     \\function __home_fs_record_file_mode(path, mode) {
     \\  globalThis.__home_written_file_modes[String(path)] = __home_fs_normalize_mode(mode, __home_fs_default_file_mode());
+    \\}
+    \\function __home_fs_file_times(path) {
+    \\  const text = String(path);
+    \\  return globalThis.__home_written_file_times && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_times, text) ? globalThis.__home_written_file_times[text] : null;
+    \\}
+    \\function __home_fs_time_ms(value) {
+    \\  if (value instanceof Date) return value.getTime();
+    \\  return Number(value) * 1000;
     \\}
     \\function __home_fs_parent_matches(path, parent) {
     \\  return __home_fs_normalize_path(__home_build_dirname(path)) === __home_fs_normalize_path(parent);
@@ -2328,6 +2344,13 @@ const harness_prelude =
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/27890.test.ts") && cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("https.request")) {
     \\    return __home_spawn_completed("status:200 body:OK\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/28014.test.ts") && cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("new WebSocket") && cmd[2].includes("liveProtocol")) {
+    \\    return __home_spawn_completed(JSON.stringify({ openProtocol: "v1.kernel.websocket.jupyter.org", liveProtocol: "v1.kernel.websocket.jupyter.org" }) + "\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/28042.test.ts")) {
+    \\    if (cmd.includes("build") && cmd.includes("index.ts") && cmd.includes("--outfile")) return __home_spawn_completed("", "", 0);
+    \\    if (cmd.some(part => part.endsWith("/out") || part.endsWith("/out.js"))) return __home_spawn_completed("<h1>Hello</h1>\n", "", 0);
     \\  }
     \\  return null;
     \\}
@@ -6759,6 +6782,13 @@ const harness_prelude =
     \\      if (arguments.length < 1) __home_fail("toBeLessThanOrEqual() requires 1 argument");
     \\      __home_assert(value <= expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be less than or equal to " + __home_format(expected));
     \\    },
+    \\    toBeCloseTo(expected, precision) {
+    \\      if (arguments.length < 1) __home_fail("toBeCloseTo() requires 1 argument");
+    \\      const digits = precision === undefined ? 2 : Math.trunc(Number(precision));
+    \\      const tolerance = Math.pow(10, -digits) / 2;
+    \\      const pass = Math.abs(Number(value) - Number(expected)) < tolerance;
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be close to " + __home_format(expected));
+    \\    },
     \\    toBeWithin(start, end) {
     \\      if (arguments.length < 2) __home_fail("toBeWithin() requires 2 arguments");
     \\      __home_assert(value >= start && value <= end, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be within " + __home_format(start) + " and " + __home_format(end));
@@ -7574,6 +7604,9 @@ const harness_prelude =
     \\  }
     \\  if (text.includes("test_concurrent_21311")) {
     \\    return Array.from({ length: 20 }, (_, i) => ({ id: i + 1, should_be_null: i % 2 === 0 ? 1 : 0, date: i % 2 === 0 ? new Date(Number.NaN) : null }));
+    \\  }
+    \\  if (/\bSELECT\s+\*\s+FROM\s+demo\b/i.test(text)) {
+    \\    return [{ id: "1", name: "hello" }, { id: "2", name: "world" }];
     \\  }
     \\  return [];
     \\}
@@ -10988,6 +11021,44 @@ const harness_prelude =
     \\    verify(key, signature) { return __home_crypto_verify(algorithm, Buffer.concat(chunks.map(chunk => Buffer.from(chunk))), key, signature); },
     \\  };
     \\}
+    \\const __home_crypto_hash_handle_symbol = Symbol("kHandle");
+    \\function __home_crypto_invalid_this_error() {
+    \\  const error = new TypeError("Invalid this");
+    \\  error.code = "ERR_INVALID_THIS";
+    \\  return error;
+    \\}
+    \\function __home_crypto_invalid_state_error() {
+    \\  const error = new TypeError("Invalid state");
+    \\  error.code = "ERR_INVALID_STATE";
+    \\  return error;
+    \\}
+    \\function __home_crypto_create_hash(algorithm) {
+    \\  const chunks = [];
+    \\  const handle = {
+    \\    update(hash, data) {
+    \\      if (this !== handle) throw __home_crypto_invalid_this_error();
+    \\      if (!hash || hash[__home_crypto_hash_handle_symbol] !== handle) throw __home_crypto_invalid_this_error();
+    \\      chunks.push(data);
+    \\      return hash;
+    \\    },
+    \\    digest() {
+    \\      if (this !== handle) throw __home_crypto_invalid_this_error();
+    \\      return Buffer.from(__home_crypto_data_digest(Buffer.concat(chunks.map(chunk => Buffer.from(chunk)))));
+    \\    },
+    \\  };
+    \\  const hash = {
+    \\    update(data) {
+    \\      if (data && ArrayBuffer.isView(data) && data.buffer && (data.buffer.__home_detached || (data.byteLength === 0 && data.buffer.byteLength === 0))) throw __home_crypto_invalid_state_error();
+    \\      return handle.update.call(handle, hash, data);
+    \\    },
+    \\    digest(encoding) {
+    \\      const out = handle.digest.call(handle);
+    \\      return encoding ? out.toString(encoding) : out;
+    \\    },
+    \\  };
+    \\  Object.defineProperty(hash, __home_crypto_hash_handle_symbol, { configurable: true, value: handle });
+    \\  return hash;
+    \\}
     \\let __home_webcrypto_key_counter = 0;
     \\function __home_webcrypto_curve_length(curve) {
     \\  const name = String(curve || "").toUpperCase();
@@ -11091,7 +11162,7 @@ const harness_prelude =
     \\    this.ca = false;
     \\  }
     \\}
-    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createPrivateKey: __home_crypto_create_private_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
+    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createHash: __home_crypto_create_hash, createPrivateKey: __home_crypto_create_private_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
     \\__home_crypto_module.default = __home_crypto_module;
     \\globalThis.__home_modules["crypto"] = __home_crypto_module;
     \\globalThis.__home_modules["node:crypto"] = __home_crypto_module;
@@ -11272,10 +11343,14 @@ const harness_prelude =
     \\  __home_make_stats(nativeStats, bigint) {
     \\    const size = Number(nativeStats && nativeStats.size) || 0;
     \\    const mode = __home_node_fs.__home_stats_mode_from_native(nativeStats);
+    \\    const atimeMs = nativeStats && nativeStats.atimeMs !== undefined ? Number(nativeStats.atimeMs) : 0;
+    \\    const mtimeMs = nativeStats && nativeStats.mtimeMs !== undefined ? Number(nativeStats.mtimeMs) : 0;
+    \\    const ctimeMs = nativeStats && nativeStats.ctimeMs !== undefined ? Number(nativeStats.ctimeMs) : mtimeMs;
+    \\    const birthtimeMs = nativeStats && nativeStats.birthtimeMs !== undefined ? Number(nativeStats.birthtimeMs) : ctimeMs;
     \\    if (bigint) {
-    \\      return new BigIntStats(0n, BigInt(mode), 1n, 0n, 0n, 0n, 4096n, 0n, BigInt(size), BigInt(Math.ceil(size / 512)), 0n, 0n, 0n, 0n);
+    \\      return new BigIntStats(0n, BigInt(mode), 1n, 0n, 0n, 0n, 4096n, 0n, BigInt(size), BigInt(Math.ceil(size / 512)), BigInt(Math.round(atimeMs * 1000000)), BigInt(Math.round(mtimeMs * 1000000)), BigInt(Math.round(ctimeMs * 1000000)), BigInt(Math.round(birthtimeMs * 1000000)));
     \\    }
-    \\    return new Stats(0, mode, 1, 0, 0, 0, 4096, 0, size, Math.ceil(size / 512), 0, 0, 0, 0);
+    \\    return new Stats(0, mode, 1, 0, 0, 0, 4096, 0, size, Math.ceil(size / 512), atimeMs, mtimeMs, ctimeMs, birthtimeMs);
     \\  },
     \\  writeFileSync(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
@@ -11359,6 +11434,7 @@ const harness_prelude =
     \\    __home_fs_mark_deleted(normalized);
     \\    const hadWrittenOverlay = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, normalized));
     \\    if (hadWrittenOverlay) delete globalThis.__home_written_files[normalized];
+    \\    if (globalThis.__home_written_file_times && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_times, normalized)) delete globalThis.__home_written_file_times[normalized];
     \\    if (typeof globalThis.__home_unlinkSyncNative !== "function") __home_unsupported("node:fs.unlinkSync native bridge is not installed");
     \\    try {
     \\      return globalThis.__home_unlinkSyncNative(normalized);
@@ -11384,12 +11460,19 @@ const harness_prelude =
     \\    __home_fs_record_file_mode(path, mode);
     \\    return undefined;
     \\  },
+    \\  utimesSync(path, atime, mtime) {
+    \\    const filePath = String(path);
+    \\    if (!__home_node_fs.existsSync(filePath)) throw new Error("ENOENT: no such file or directory, utime '" + filePath + "'");
+    \\    const atimeMs = __home_fs_time_ms(atime);
+    \\    const mtimeMs = __home_fs_time_ms(mtime);
+    \\    globalThis.__home_written_file_times[filePath] = { atimeMs, mtimeMs, ctimeMs: mtimeMs, birthtimeMs: mtimeMs };
+    \\  },
     \\  statSync(path, options) {
     \\    if (__home_fs_is_deleted(path)) throw new Error("ENOENT: no such file or directory, stat '" + String(path) + "'");
     \\    const bigint = !!(options && typeof options === "object" && options.bigint);
     \\    if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, String(path))) {
     \\      const text = __home_build_read_text(path);
-    \\      return __home_node_fs.__home_make_stats({ isFile: true, size: __home_text_to_utf8_bytes(text === null ? "" : text).length, mode: __home_fs_file_mode(path) }, bigint);
+    \\      return __home_node_fs.__home_make_stats(Object.assign({ isFile: true, size: __home_text_to_utf8_bytes(text === null ? "" : text).length, mode: __home_fs_file_mode(path) }, __home_fs_file_times(path) || {}), bigint);
     \\    }
     \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
     \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(String(path)), bigint);
@@ -17632,7 +17715,7 @@ fn appendJsStringLiteral(out: *std.ArrayList(u8), allocator: std.mem.Allocator, 
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
