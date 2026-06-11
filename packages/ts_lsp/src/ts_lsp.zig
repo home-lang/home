@@ -2547,6 +2547,47 @@ pub const Service = struct {
             });
         }
 
+        // ---- Mark array literal as const (TS9017 -> TS90070) --------------
+        // When --isolatedDeclarations reports that only const arrays can be
+        // inferred, offer the upstream code-fix message by adding `as const`
+        // directly to the diagnosed array literal.
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.isolated_declarations_only_const_arrays) continue;
+            var array_node: hir_mod.NodeId = hir_mod.none_node_id;
+            var node_i: hir_mod.NodeId = 1;
+            while (node_i < c.hir.nodeCount()) : (node_i += 1) {
+                if (c.hir.kindOf(node_i) != .array_literal) continue;
+                const span = c.hir.spanOf(node_i);
+                if (span.start != d.pos) continue;
+                array_node = node_i;
+                break;
+            }
+            if (array_node == hir_mod.none_node_id) continue;
+            const span = c.hir.spanOf(array_node);
+            const pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+            const ln: u32 = if (pos.line > 0) pos.line - 1 else 0;
+            const co: u32 = if (pos.col > 0) pos.col - 1 else 0;
+            const new_text = try gpa.dupe(u8, " as const");
+            errdefer gpa.free(new_text);
+            const title = try gpa.dupe(u8, "Mark array literal as const");
+            errdefer gpa.free(title);
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = ln,
+                .start_col = co,
+                .end_line = ln,
+                .end_col = co,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+                .code = ts_checker.check.TsCodes.codefix_mark_array_literal_as_const,
+            });
+        }
+
         // ---- Prefix unused identifier with underscore (TS6133) -----------
         // For each "'x' is declared but its value is never read." (TS6133)
         // diagnostic in this file, surface a quick-fix that renames the
@@ -8223,6 +8264,45 @@ test "Service: codeActions emits add-all-missing-imports aggregate" {
     const a = found.?;
     try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_add_all_missing_imports), a.code);
     try T.expectEqual(@as(usize, 2), a.edits.len);
+}
+
+test "Service: codeActions marks isolatedDeclarations array literal as const" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "export default [1, 2];");
+    try program.compileAll(.{ .strict_flags = .{ .isolated_declarations = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Mark array literal as const")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_mark_array_literal_as_const), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings(" as const", a.edits[0].new_text);
+    try T.expectEqual(a.edits[0].start_line, a.edits[0].end_line);
+    try T.expectEqual(a.edits[0].start_col, a.edits[0].end_col);
 }
 
 test "Service: formatDocument returns a TextEdit list (no-op stub)" {

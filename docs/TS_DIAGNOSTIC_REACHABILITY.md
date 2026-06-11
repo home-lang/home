@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 476 |
-| active reachable (parity targets) | 12 |
+| catalog-only total | 475 |
+| active reachable (parity targets) | 11 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 460 |
 
@@ -25,9 +25,9 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 9xxxx — editor code-fix / refactor (language service) | 12 |
+| 9xxxx — editor code-fix / refactor (language service) | 11 |
 
-### 9xxxx — editor code-fix / refactor (language service) (12)
+### 9xxxx — editor code-fix / refactor (language service) (11)
 
 - TS90014 `Change_0_to_1_90014`
 - TS90055 `Remove_type_from_import_declaration_from_0_90055`
@@ -38,7 +38,6 @@ diverge from the reference compiler.
 - TS90066 `Extract_binding_expressions_to_variable_90066`
 - TS90068 `Add_satisfies_and_an_inline_type_assertion_with_0_90068`
 - TS90069 `Extract_to_variable_and_replace_with_0_as_typeof_0_90069`
-- TS90070 `Mark_array_literal_as_const_90070`
 - TS90071 `Annotate_types_of_properties_expando_function_in_a_namespace_90071`
 - TS95174 `Use_0_95174`
 
