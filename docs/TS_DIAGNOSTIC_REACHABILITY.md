@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 536 |
-| active reachable (parity targets) | 71 |
+| catalog-only total | 535 |
+| active reachable (parity targets) | 70 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -27,7 +27,7 @@ diverge from the reference compiler.
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 37 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| other | 14 |
+| other | 13 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 | 2xxx — checker / type engine | 1 |
 
@@ -91,7 +91,7 @@ diverge from the reference compiler.
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### other (14)
+### other (13)
 
 - TS8001 `You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001`
 - TS8031 `You_cannot_rename_a_module_via_a_global_import_8031`
@@ -105,7 +105,6 @@ diverge from the reference compiler.
 - TS9034 `Add_a_return_type_to_the_method_9034`
 - TS9035 `Add_satisfies_and_a_type_assertion_to_this_expression_satisfies_T_as_T_to_make_the_type_explicit_9035`
 - TS9036 `Move_the_expression_in_default_export_to_a_variable_and_add_a_type_annotation_to_it_9036`
-- TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
 ### 6xxx — CLI / build / watch / resolution-trace messages (2)
