@@ -3922,6 +3922,7 @@ const harness_prelude =
     \\  return function(request) {
     \\    const url = new URL(request.url);
     \\    const path = url.pathname.replace(/^\/+/, "/");
+    \\    const method = String(request.method || "GET").toUpperCase();
     \\    for (const pattern of Object.keys(routes || {})) {
     \\      const names = [];
     \\      const escaped = String(pattern).replace(/:[^/]+/g, match => {
@@ -3942,11 +3943,14 @@ const harness_prelude =
     \\      };
     \\      const route = routes[pattern];
     \\      const isStaticRoute = typeof route !== "function";
-    \\      const response = isStaticRoute ? route : route(request);
+    \\      const response = isStaticRoute ? (route instanceof Response && typeof route.clone === "function" ? route.clone() : route) : route(request);
     \\      if (request.__home_upgrade_response) return request.__home_upgrade_response;
     \\      return Promise.resolve(response).then(value => {
     \\        if (request.__home_upgrade_response) return request.__home_upgrade_response;
-    \\        return __home_serve_response_with_cookies(value, request, isStaticRoute);
+    \\        const out = __home_serve_response_with_cookies(value, request, isStaticRoute);
+    \\        if (isStaticRoute && request.headers && request.headers.get("if-modified-since") !== null) return new Response(null, { status: 304, headers: out.headers });
+    \\        if (isStaticRoute && method === "HEAD") return new Response(null, { status: out.status, statusText: out.statusText, headers: out.headers });
+    \\        return out;
     \\      });
     \\    }
     \\    if (typeof fallbackFetch === "function") {
@@ -4185,7 +4189,10 @@ const harness_prelude =
     \\  serve(options) {
     \\    options = options || {};
     \\    let handle;
-    \\    const routeFetch = options.routes && typeof options.routes === "object" ? __home_serve_route_fetch(options.routes, typeof options.fetch === "function" ? options.fetch : null) : null;
+    \\    const staticRoutes = options.static && typeof options.static === "object" && typeof options.fetch === "function" ? options.static : null;
+    \\    const optionRoutes = options.routes && typeof options.routes === "object" ? options.routes : null;
+    \\    const combinedRoutes = staticRoutes || optionRoutes ? Object.assign({}, staticRoutes || {}, optionRoutes || {}) : null;
+    \\    const routeFetch = combinedRoutes ? __home_serve_route_fetch(combinedRoutes, typeof options.fetch === "function" ? options.fetch : null) : null;
     \\    if ((typeof options.fetch === "function" && !options.routes && !options.static) || routeFetch) {
     \\      const id = "js-" + (Bun.__home_next_js_serve_id++);
     \\      const port = 43000 + Bun.__home_next_js_serve_id;
@@ -8279,7 +8286,7 @@ const harness_prelude =
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -14649,6 +14656,7 @@ const harness_prelude =
     \\    return bytes;
     \\  }
     \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_text")) return __home_text_to_utf8_bytes(String(body.__home_text));
+    \\  if (body && body.__home_file_ref) return __home_text_to_utf8_bytes(__home_build_read_text(body.path) || "");
     \\  if (body && typeof body.toString === "function") return __home_text_to_utf8_bytes(body.toString());
     \\  return __home_text_to_utf8_bytes(String(body));
     \\}
@@ -14966,6 +14974,9 @@ const harness_prelude =
     \\  return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\};
     \\Response.prototype.clone = function() {
+    \\  if (this.body && Object.prototype.hasOwnProperty.call(this.body, "__home_body_value")) {
+    \\    return new Response(this.body.__home_body_value, { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\  }
     \\  if (__home_stream_chunks_replayable(this.body)) {
     \\    const chunks = this.body.__home_chunks.slice();
     \\    return new Response(new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }), { status: this.status, statusText: this.statusText, headers: this.headers });
@@ -21739,6 +21750,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.prototype.clone") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.body.__home_body_value") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_client_port") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestIP(request)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var HTMLRewriter = function()") != null);
@@ -21790,6 +21802,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URLSearchParams.prototype.toJSON = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(URLSearchParams.prototype, \"length\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bunExe() { return process.execPath; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getFDCount() { return 32; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.skip = it.todo") != null);
@@ -26002,6 +26015,52 @@ test "bootstrap runner accepts Bun.serve static HTML route shape" {
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
     defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun.serve static file 304 and HEAD corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { getFDCount, tempDir } from "harness";
+        \\import { join } from "node:path";
+        \\
+        \\test("static file route handles 304 and HEAD", async () => {
+        \\  using dir = tempDir("issue-29181-fds", { "file.txt": "Hello, world!\n" });
+        \\  const tmpFile = join(String(dir), "file.txt");
+        \\  await using server = Bun.serve({
+        \\    port: 0,
+        \\    static: { "/test": new Response(Bun.file(tmpFile)) },
+        \\    fetch() { return new Response("fallback"); },
+        \\  });
+        \\  const url = `http://localhost:${server.port}/test`;
+        \\  expect(await (await fetch(url)).text()).toBe("Hello, world!\n");
+        \\  const before = getFDCount();
+        \\  const r304 = await fetch(url, { headers: { "If-Modified-Since": new Date(Date.now() + 86400000).toUTCString() } });
+        \\  expect(r304.status).toBe(304);
+        \\  expect(await r304.text()).toBe("");
+        \\  const head = await fetch(url, { method: "HEAD" });
+        \\  expect(head.status).toBe(200);
+        \\  expect(await head.text()).toBe("");
+        \\  expect(getFDCount() - before).toBeLessThan(16);
+        \\  await server.stop();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29181.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const staticRoutes = options.static") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "body && body.__home_file_ref") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
