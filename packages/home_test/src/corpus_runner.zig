@@ -1741,7 +1741,22 @@ const harness_prelude =
     \\function __home_build_asset_data_uri(path) {
     \\  const lower = String(path || "").toLowerCase();
     \\  const mime = lower.endsWith(".svg") ? "image/svg+xml" : (lower.endsWith(".jpg") || lower.endsWith(".jpeg") ? "image/jpeg" : "image/png");
-    \\  return "data:" + mime + ";base64,AAAA";
+    \\  const source = __home_build_read_text(path) || "";
+    \\  const bytes = __home_text_to_utf8_bytes(source);
+    \\  let binary = "";
+    \\  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i] & 0xff);
+    \\  return "data:" + mime + ";base64," + btoa(binary);
+    \\}
+    \\function __home_build_is_file_loader_asset(path) {
+    \\  return /\.(?:svg|png|jpe?g|gif|webp|ico)$/i.test(String(path || ""));
+    \\}
+    \\function __home_build_regex_escape(text) {
+    \\  return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    \\}
+    \\function __home_build_default_import_name(source, specifier) {
+    \\  const pattern = new RegExp("\\bimport\\s+([A-Za-z_$][\\w$]*)\\s+from\\s+['\"]" + __home_build_regex_escape(specifier) + "['\"]");
+    \\  const match = String(source || "").match(pattern);
+    \\  return match ? match[1] : null;
     \\}
     \\function __home_build_inline_css_file(path, seen) {
     \\  const normalized = __home_build_normalize(path);
@@ -1780,6 +1795,11 @@ const harness_prelude =
     \\    if (!specifier.startsWith(".")) continue;
     \\    const resolved = __home_build_normalize(__home_build_join(__home_build_dirname(normalized), specifier));
     \\    if (/\.css$/i.test(resolved)) continue;
+    \\    if (__home_build_is_file_loader_asset(resolved)) {
+    \\      const name = __home_build_default_import_name(source, specifier);
+    \\      if (name) out += "const " + name + " = " + JSON.stringify(__home_build_asset_data_uri(resolved)) + ";\n";
+    \\      continue;
+    \\    }
     \\    out += __home_build_inline_js_file(resolved, seen);
     \\  }
     \\  out += __home_build_transpile_memory_text(source) + "\n";
@@ -1805,6 +1825,9 @@ const harness_prelude =
     \\  const base = __home_build_dirname(htmlPath);
     \\  const cssSeen = Object.create(null);
     \\  const jsSeen = Object.create(null);
+    \\  html = html.replace(/(<link\b(?![^>]*rel=["']stylesheet["'])[^>]*href=["'])\.\/([^"']+)(["'][^>]*>)/gi, function(_all, prefix, leaf, suffix) {
+    \\    return prefix + __home_build_asset_data_uri(__home_build_join(base, leaf)) + suffix;
+    \\  });
     \\  html = html.replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*>/gi, function(_tag, href) {
     \\    if (/^[a-z]+:\/\//i.test(String(href))) return _tag;
     \\    return "<style>" + __home_build_escape_inline_style(__home_build_inline_css_file(__home_build_join(base, href), cssSeen)) + "</style>";
@@ -3312,8 +3335,11 @@ const harness_prelude =
     \\    const browserTarget = cmd.includes("--target=browser") || (cmd.includes("--target") && cmd[cmd.indexOf("--target") + 1] === "browser");
     \\    const htmlEntry = cmd.find(part => /\.html?$/i.test(part));
     \\    if (browserTarget && htmlEntry && outdir) {
-    \\      const html = __home_build_browser_html(htmlEntry, { outdir });
-    \\      __home_build_write_text(__home_build_join(outdir, __home_build_basename(htmlEntry)), html.__home_text || "");
+    \\      const cwd = String(options && options.cwd || process.cwd());
+    \\      const resolvedOutdir = outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir);
+    \\      const resolvedEntry = htmlEntry.startsWith("/") ? htmlEntry : __home_build_join(cwd, htmlEntry);
+    \\      const html = __home_build_browser_html(resolvedEntry, { outdir: resolvedOutdir });
+    \\      __home_build_write_text(__home_build_join(resolvedOutdir, __home_build_basename(resolvedEntry)), html.__home_text || "");
     \\      return __home_spawn_completed("", "", 0);
     \\    }
     \\    if (outfile) {
@@ -4524,6 +4550,14 @@ const harness_prelude =
     \\      }
     \\      const cwd = root && typeof root === "object" && root.cwd !== undefined ? root.cwd : root;
     \\      return __home_fs_glob_sync(this.pattern, { cwd: cwd || process.cwd() });
+    \\    };
+    \\    this.scan = function(root) {
+    \\      const entries = this.scanSync(root);
+    \\      return {
+    \\        async *[Symbol.asyncIterator]() {
+    \\          for (const entry of entries) yield entry;
+    \\        },
+    \\      };
     \\    };
     \\  },
     \\  $(strings) {
@@ -7676,6 +7710,9 @@ const harness_prelude =
     \\  }
     \\  if (/\bSELECT\s+\*\s+FROM\s+demo\b/i.test(text)) {
     \\    return [{ id: "1", name: "hello" }, { id: "2", name: "world" }];
+    \\  }
+    \\  if (/SELECT\s+id\s+FROM\s+products\s*;\s*SHOW\s+META/i.test(text)) {
+    \\    return [[{ id: "1" }, { id: "2" }], [{ Variable_name: "total", Value: "1" }, { Variable_name: "time", Value: "0.001" }]];
     \\  }
     \\  return [];
     \\}
@@ -11827,6 +11864,26 @@ const harness_prelude =
     \\  while (end > start && (value.charCodeAt(end - 1) === 32 || value.charCodeAt(end - 1) === 9)) end--;
     \\  return value.slice(start, end);
     \\}
+    \\function __home_net_clear_idle_timeout(socket) {
+    \\  if (socket && socket.__home_timeout_handle) clearTimeout(socket.__home_timeout_handle);
+    \\  if (socket) socket.__home_timeout_handle = null;
+    \\}
+    \\function __home_net_refresh_idle_timeout(socket) {
+    \\  if (!socket || !socket.__home_timeout_ms || socket.destroyed) return;
+    \\  __home_net_clear_idle_timeout(socket);
+    \\  socket.__home_timeout_handle = setTimeout(() => {
+    \\    socket.__home_timeout_handle = null;
+    \\    if (!socket.destroyed) socket.emit("timeout");
+    \\  }, socket.__home_timeout_ms);
+    \\}
+    \\function __home_net_set_idle_timeout(socket, timeout, callback) {
+    \\  const ms = Math.max(0, Number(timeout) || 0);
+    \\  if (typeof callback === "function") socket.once("timeout", callback);
+    \\  socket.__home_timeout_ms = ms;
+    \\  __home_net_clear_idle_timeout(socket);
+    \\  if (ms > 0) __home_net_refresh_idle_timeout(socket);
+    \\  return socket;
+    \\}
     \\function __home_http_raw_header_name(name) {
     \\  const key = String(name || "").toLowerCase();
     \\  if (key === "date") return "Date";
@@ -11850,6 +11907,7 @@ const harness_prelude =
     \\function __home_net_connect(portOrOptions, host) {
     \\  const port = typeof portOrOptions === "object" && portOrOptions !== null ? Number(portOrOptions.port) : Number(portOrOptions);
     \\  const hostname = typeof portOrOptions === "object" && portOrOptions !== null ? String(portOrOptions.host || portOrOptions.hostname || "127.0.0.1") : String(host || "127.0.0.1");
+    \\  const timeoutMs = typeof portOrOptions === "object" && portOrOptions !== null && portOrOptions.timeout !== undefined ? Number(portOrOptions.timeout) : 0;
     \\  const connectCallback = typeof host === "function" ? host : (typeof arguments[2] === "function" ? arguments[2] : null);
     \\  const inMemoryServer = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
     \\  if (inMemoryServer && inMemoryServer.__home_net_handler) {
@@ -11865,6 +11923,10 @@ const harness_prelude =
     \\    peer.__home_port = port;
     \\    client.__home_hostname = hostname;
     \\    peer.__home_hostname = hostname;
+    \\    client.__home_timeout_ms = timeoutMs > 0 ? timeoutMs : 0;
+    \\    client.__home_timeout_handle = null;
+    \\    client.setTimeout = function(timeout, callback) { return __home_net_set_idle_timeout(this, timeout, callback); };
+    \\    peer.setTimeout = function(timeout, callback) { return __home_net_set_idle_timeout(this, timeout, callback); };
     \\    client.write = function(chunk, callback) {
     \\      const payload = Buffer.from(__home_net_bytes(chunk));
     \\      Promise.resolve().then(() => {
@@ -11876,6 +11938,7 @@ const harness_prelude =
     \\    peer.write = function(chunk, callback) {
     \\      const payload = Buffer.from(__home_net_bytes(chunk));
     \\      Promise.resolve().then(() => {
+    \\        __home_net_refresh_idle_timeout(client);
     \\        client.emit("data", payload);
     \\        if (typeof callback === "function") callback();
     \\      });
@@ -11884,21 +11947,24 @@ const harness_prelude =
     \\    client.end = function(chunk) {
     \\      if (chunk !== undefined) this.write(chunk);
     \\      this.destroyed = true;
+    \\      __home_net_clear_idle_timeout(this);
     \\      Promise.resolve().then(() => peer.emit("end"));
     \\      return this;
     \\    };
     \\    peer.end = function(chunk) {
     \\      if (chunk !== undefined) this.write(chunk);
     \\      this.destroyed = true;
+    \\      __home_net_clear_idle_timeout(this);
     \\      Promise.resolve().then(() => client.emit("end"));
     \\      return this;
     \\    };
-    \\    client.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
-    \\    peer.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\    client.destroy = function(error) { this.destroyed = true; __home_net_clear_idle_timeout(this); if (error) this.emit("error", error); this.emit("close"); return this; };
+    \\    peer.destroy = function(error) { this.destroyed = true; __home_net_clear_idle_timeout(this); if (error) this.emit("error", error); this.emit("close"); return this; };
     \\    Promise.resolve().then(() => {
     \\      inMemoryServer.__home_net_handler(peer);
     \\      client.emit("connect");
     \\      if (typeof connectCallback === "function") connectCallback();
+    \\      __home_net_refresh_idle_timeout(client);
     \\    });
     \\    return client;
     \\  }
@@ -24631,6 +24697,82 @@ test "bootstrap runner mirrors issue 29242 string literal re-export output" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29268 MySQL multi-statement result sets" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29268.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29268.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "SELECT\\s+id\\s+FROM\\s+products") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29283 net socket idle timeouts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29283.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29283.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_net_refresh_idle_timeout(client)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29298 standalone HTML file-loader inlining" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29298.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29298.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.scan = function(root)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "data:\" + mime + \";base64,\" + btoa(binary)") != null);
+
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
 
