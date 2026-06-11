@@ -4291,6 +4291,7 @@ const harness_prelude =
     \\        return Promise.resolve(undefined);
     \\      },
     \\      unlink() {
+    \\        __home_fs_mark_deleted(filePath);
     \\        if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, filePath)) delete globalThis.__home_written_files[filePath];
     \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) delete globalThis.__home_written_file_bytes[filePath];
     \\        if (globalThis.__home_written_file_modes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, filePath)) delete globalThis.__home_written_file_modes[filePath];
@@ -4324,8 +4325,14 @@ const harness_prelude =
     \\      },
     \\      stat() {
     \\        const nativeText = __home_build_read_text(filePath);
-    \\        if (nativeText === null) return Promise.resolve(undefined);
-    \\        return Promise.resolve({ size: __home_text_to_utf8_bytes(nativeText).length });
+    \\        if (nativeText !== null) {
+    \\          return Promise.resolve(__home_node_fs.__home_make_stats({ isFile: true, size: __home_text_to_utf8_bytes(nativeText).length, mode: __home_fs_file_mode(filePath) }, false));
+    \\        }
+    \\        try {
+    \\          return Promise.resolve(__home_node_fs.statSync(filePath));
+    \\        } catch (error) {
+    \\          return Promise.resolve(undefined);
+    \\        }
     \\      },
     \\      slice(start, end, contentType) {
     \\        const nativeText = __home_build_read_text(filePath);
@@ -34748,6 +34755,51 @@ test "bootstrap runner mirrors shell cwd dot normalization" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun.file UTF-8 stat and delete" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { existsSync, statSync } from "fs";
+        \\import { tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("Bun.file UTF-8 stat and delete", async () => {
+        \\  const content = "content with umlauts: äöü";
+        \\  const dir = tempDirWithFiles("utf8-file-stat", {
+        \\    "über café résumé.txt": content,
+        \\    "日本語ファイル.txt": "Japanese content",
+        \\    "delete_üñíçödé.txt": "delete me",
+        \\  });
+        \\  for (const [name, value] of [["über café résumé.txt", content], ["日本語ファイル.txt", "Japanese content"]]) {
+        \\    const filepath = join(dir, name);
+        \\    expect(existsSync(filepath)).toBe(true);
+        \\    expect(statSync(filepath).isFile()).toBe(true);
+        \\    const bunStat = await Bun.file(filepath).stat();
+        \\    expect(bunStat.isFile()).toBe(true);
+        \\    expect(bunStat.size).toBe(Buffer.byteLength(value));
+        \\    expect(await Bun.file(filepath).text()).toBe(value);
+        \\  }
+        \\  const deletePath = join(dir, "delete_üñíçödé.txt");
+        \\  await Bun.file(deletePath).delete();
+        \\  expect(existsSync(deletePath)).toBe(false);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26647.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors uncaught rejection child test failure" {
