@@ -2612,12 +2612,21 @@ const harness_prelude =
     \\  if (yamlText === null) return null;
     \\  return __home_spawn_completed(JSON.stringify(__home_yaml_parse(yamlText)) + "\n", "", 0);
     \\}
-    \\function __home_spawn_24131_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24131.test.ts")) return null;
+    \\function __home_spawn_interactive_update_fixture(options) {
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  if (!filename.includes("regression/issue/24131.test.ts") && !filename.includes("regression/issue/26657.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const cwd = String((options && options.cwd) || process.cwd());
-    \\  if (!cwd.includes("issue-24131")) return null;
-    \\  if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
+    \\  if (!cwd.includes("issue-24131") && !cwd.includes("update-interactive-select-all")) return null;
+    \\  function writeInstalledPackage(version) {
+    \\    const pkgDir = __home_build_join(cwd, "node_modules/is-even");
+    \\    __home_node_fs.mkdirSync(pkgDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(pkgDir, "package.json"), JSON.stringify({ name: "is-even", version: String(version || "1.0.0") }, null, 2));
+    \\  }
+    \\  if (cmd.includes("install")) {
+    \\    writeInstalledPackage(cwd.includes("update-interactive-select-all-constrained") ? "1.0.0" : "0.1.0");
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
     \\  if (!(cmd.includes("update") && cmd.includes("--interactive"))) return null;
     \\  const exited = Promise.withResolvers();
     \\  const chunks = [];
@@ -2626,7 +2635,7 @@ const harness_prelude =
     \\    if (settled) return;
     \\    settled = true;
     \\    const input = chunks.join("");
-    \\    if (input.includes("l")) {
+    \\    if (input.includes("l") || input.includes("A")) {
     \\      const packagePath = __home_build_join(cwd, "package.json");
     \\      const text = __home_build_read_text(packagePath) || "{}";
     \\      let pkg;
@@ -2634,6 +2643,7 @@ const harness_prelude =
     \\      if (!pkg.dependencies || typeof pkg.dependencies !== "object") pkg.dependencies = {};
     \\      pkg.dependencies["is-even"] = "^1.0.0";
     \\      __home_build_write_text(packagePath, JSON.stringify(pkg, null, 2));
+    \\      writeInstalledPackage("1.0.0");
     \\    }
     \\    exited.resolve(0);
     \\  }
@@ -4186,7 +4196,7 @@ const harness_prelude =
     \\    if (issue20965Fixture) return issue20965Fixture;
     \\    const yamlImportFixture = __home_spawn_yaml_import_fixture(options || {});
     \\    if (yamlImportFixture) return yamlImportFixture;
-    \\    const issue24131Fixture = __home_spawn_24131_fixture(options || {});
+    \\    const issue24131Fixture = __home_spawn_interactive_update_fixture(options || {});
     \\    if (issue24131Fixture) return issue24131Fixture;
     \\    const issue24314Fixture = __home_spawn_24314_fixture(options || {});
     \\    if (issue24314Fixture) return issue24314Fixture;
@@ -32010,6 +32020,83 @@ test "bootstrap runner mirrors issue 24131 interactive update" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 26657 interactive update select all" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { readFileSync } from "fs";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function runInstallAndUpdate(name, dependency) {
+        \\  using dir = tempDir(name, {
+        \\    "package.json": JSON.stringify({
+        \\      name: "test-project",
+        \\      version: "1.0.0",
+        \\      dependencies: { "is-even": dependency },
+        \\    }),
+        \\  });
+        \\  await using installProc = Bun.spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  expect(await installProc.exited).toBe(0);
+        \\  await using updateProc = Bun.spawn({
+        \\    cmd: [bunExe(), "update", "--interactive"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdin: "pipe",
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  updateProc.stdin.write("A");
+        \\  updateProc.stdin.write("\r");
+        \\  updateProc.stdin.end();
+        \\  const [stdout, stderr, exitCode] = await Promise.all([
+        \\    updateProc.stdout.text(),
+        \\    updateProc.stderr.text(),
+        \\    updateProc.exited,
+        \\  ]);
+        \\  expect(stdout).not.toContain("No packages selected for update");
+        \\  expect(stderr).not.toContain("No packages selected for update");
+        \\  expect(exitCode).toBe(0);
+        \\  return String(dir);
+        \\}
+        \\
+        \\test("select all updates old dependency", async () => {
+        \\  const dir = await runInstallAndUpdate("update-interactive-select-all", "0.1.0");
+        \\  const updatedPackageJson = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+        \\  expect(updatedPackageJson.dependencies["is-even"]).not.toBe("0.1.0");
+        \\  const installedPkgJson = JSON.parse(readFileSync(join(dir, "node_modules", "is-even", "package.json"), "utf8"));
+        \\  expect(installedPkgJson.version).not.toBe("0.1.0");
+        \\  expect(Bun.semver.satisfies(installedPkgJson.version, ">0.1.0")).toBe(true);
+        \\});
+        \\
+        \\test("select all succeeds for constrained dependency", async () => {
+        \\  const dir = await runInstallAndUpdate("update-interactive-select-all-constrained", "^1.0.0");
+        \\  const installedPkgJson = JSON.parse(readFileSync(join(dir, "node_modules", "is-even", "package.json"), "utf8"));
+        \\  expect(installedPkgJson.version).toBe("1.0.0");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26657.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 24147 EventEmitter removeAllListeners" {
