@@ -22164,8 +22164,17 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 }
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
-    const rewritten = try rewriteBunTestImport(allocator, source, relative_path);
     const allow_no_tests = corpusAllowsNoTests(relative_path);
+    if (corpusUnsupportedPathReason(relative_path)) |reason| {
+        return .{
+            .path = relative_path,
+            .source = try allocator.dupe(u8, source),
+            .unsupported_reason = reason,
+            .allow_no_tests = allow_no_tests,
+        };
+    }
+
+    const rewritten = try rewriteBunTestImport(allocator, source, relative_path);
     if (hasBunTestImport(rewritten)) {
         return .{
             .path = relative_path,
@@ -22195,6 +22204,13 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
         .source = rewritten,
         .allow_no_tests = allow_no_tests,
     };
+}
+
+fn corpusUnsupportedPathReason(relative_path: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, relative_path, "cli/create/create-jsx.test.ts")) {
+        return "unsupported bun create CLI suite";
+    }
+    return null;
 }
 
 fn corpusAllowsNoTests(relative_path: []const u8) bool {
@@ -31417,6 +31433,21 @@ test "corpus module preparation reports unsupported Bake harness module" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("unsupported bake harness module", prepared.unsupported_reason.?);
+}
+
+test "corpus module preparation reports unsupported bun create CLI suite" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe } from "harness";
+        \\test("create", async () => {
+        \\  const process = Bun.spawn([bunExe(), "create", "./index.jsx"], { stdout: "pipe" });
+        \\  expect(process).toBeDefined();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/create/create-jsx.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("unsupported bun create CLI suite", prepared.unsupported_reason.?);
 }
 
 test "Bun corpus rewrite lowers node fs sync imports before Bake harness boundary" {
