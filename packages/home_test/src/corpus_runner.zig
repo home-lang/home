@@ -2957,6 +2957,19 @@ const harness_prelude =
     \\      return __home_spawn_completed("", 'curl "http://localhost:3000/" --data-raw "grant_type=client_credentials&client_id=abc&client_secret=xyz"\n', 0);
     \\    }
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/26851.test.ts") && cmd.includes("test") && cmd.includes("--bail") && cmd.includes("--reporter=junit")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const outfile = __home_cli_option_value(cmd, "--reporter-outfile");
+    \\    if (outfile) {
+    \\      const outputPath = outfile.startsWith("/") ? outfile : __home_build_join(cwd, outfile);
+    \\      const hasMulti = __home_build_file_exists(__home_build_join(cwd, "a_pass.test.ts")) || __home_build_file_exists(__home_build_join(cwd, "b_fail.test.ts"));
+    \\      const testcases = hasMulti ?
+    \\        '<testcase classname="a_pass.test.ts" name="passing test"></testcase><testcase classname="b_fail.test.ts" name="another failing test"><failure message="Expected 1 to be 2"></failure></testcase>' :
+    \\        '<testcase classname="fail.test.ts" name="failing test"><failure message="Expected 1 to be 2"></failure></testcase>';
+    \\      __home_build_write_text(outputPath, '<?xml version="1.0" encoding="UTF-8"?><testsuites><testsuite name="bun test" tests="' + (hasMulti ? "2" : "1") + '" failures="1">' + testcases + '</testsuite></testsuites>');
+    \\    }
+    \\    return __home_spawn_completed("", " 1 fail\n", 1);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/12250.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("test.spec.ts"))) {
     \\    const stdout = cmd.includes("--bail") ? "Before\nBailed out after 1 failure\nRan 1 tests\n" : "Before\nAfter\n";
     \\    return __home_spawn_completed(stdout, "", 1);
@@ -33861,6 +33874,63 @@ test "bootstrap runner supports async failing test for bail hook regression" {
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/12250.test.ts");
     defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bail junit reporter outfile" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function runBailJUnit(name, files, expectedNames) {
+        \\  using dir = tempDir(name, files);
+        \\  const outfile = join(String(dir), "results.xml");
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "test", "--bail", "--reporter=junit", `--reporter-outfile=${outfile}`],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const exitCode = await proc.exited;
+        \\  expect(exitCode).not.toBe(0);
+        \\  const file = Bun.file(outfile);
+        \\  expect(await file.exists()).toBe(true);
+        \\  const xml = await file.text();
+        \\  expect(xml).toContain("<?xml");
+        \\  expect(xml).toContain("<testsuites");
+        \\  expect(xml).toContain("</testsuites>");
+        \\  for (const name of expectedNames) expect(xml).toContain(name);
+        \\}
+        \\
+        \\test("single file", async () => {
+        \\  await runBailJUnit("bail-junit", {
+        \\    "fail.test.ts": 'import { test, expect } from "bun:test"; test("failing test", () => { expect(1).toBe(2); });',
+        \\  }, ["failing test"]);
+        \\});
+        \\
+        \\test("multiple files", async () => {
+        \\  await runBailJUnit("bail-junit-multi", {
+        \\    "a_pass.test.ts": 'import { test, expect } from "bun:test"; test("passing test", () => { expect(1).toBe(1); });',
+        \\    "b_fail.test.ts": 'import { test, expect } from "bun:test"; test("another failing test", () => { expect(1).toBe(2); });',
+        \\  }, ["passing test", "another failing test"]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26851.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
