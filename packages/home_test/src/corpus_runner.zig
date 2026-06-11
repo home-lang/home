@@ -938,6 +938,7 @@ const harness_prelude =
     \\}
     \\globalThis.__home_written_files = globalThis.__home_written_files || Object.create(null);
     \\globalThis.__home_written_file_bytes = globalThis.__home_written_file_bytes || Object.create(null);
+    \\globalThis.__home_written_file_sparse = globalThis.__home_written_file_sparse || Object.create(null);
     \\globalThis.__home_written_file_modes = globalThis.__home_written_file_modes || Object.create(null);
     \\globalThis.__home_written_file_times = globalThis.__home_written_file_times || Object.create(null);
     \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
@@ -1070,6 +1071,7 @@ const harness_prelude =
     \\      if (normalized === text || normalized.startsWith(prefix)) {
     \\        delete globalThis.__home_written_files[key];
     \\        if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[key];
+    \\        if (globalThis.__home_written_file_sparse) delete globalThis.__home_written_file_sparse[key];
     \\        if (globalThis.__home_written_file_modes) delete globalThis.__home_written_file_modes[key];
     \\        if (globalThis.__home_written_file_times) delete globalThis.__home_written_file_times[key];
     \\      }
@@ -1209,6 +1211,7 @@ const harness_prelude =
     \\  const text = String(path);
     \\  if (__home_fs_is_deleted(text)) return false;
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, text)) return true;
+    \\  if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, text)) return true;
     \\  if (typeof globalThis.__home_statPathNative === "function") {
     \\    try {
     \\      const stats = globalThis.__home_statPathNative(text);
@@ -1234,6 +1237,7 @@ const harness_prelude =
     \\  if (value === null || value === undefined) return "";
     \\  if (typeof value === "string") return value;
     \\  if (value && Array.isArray(value.__home_blob_bytes)) return __home_utf8_bytes_to_text(value.__home_blob_bytes);
+    \\  if (value && Array.isArray(value.__home_blob_sparse_parts)) __home_unsupported("Sparse Blob text materialization is not supported");
     \\  const view = __home_array_buffer_view(value);
     \\  if (view) return __home_utf8_bytes_to_text(Array.from(view));
     \\  return String(value);
@@ -1242,6 +1246,7 @@ const harness_prelude =
     \\  if (value === null || value === undefined) return 0;
     \\  if (typeof value === "string") return __home_text_to_utf8_bytes(value).length;
     \\  if (value && Array.isArray(value.__home_blob_bytes)) return value.__home_blob_bytes.length;
+    \\  if (value && Array.isArray(value.__home_blob_sparse_parts)) return value.size || 0;
     \\  const view = __home_array_buffer_view(value);
     \\  if (view) return view.byteLength;
     \\  return __home_text_to_utf8_bytes(String(value)).length;
@@ -1546,6 +1551,7 @@ const harness_prelude =
     \\  __home_fs_clear_deleted_ancestors(path);
     \\  __home_fs_mark_parent_dirs(path);
     \\  globalThis.__home_written_files[String(path)] = String(text || "");
+    \\  if (globalThis.__home_written_file_sparse) delete globalThis.__home_written_file_sparse[String(path)];
     \\  if (globalThis.__home_written_file_modes && !Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, String(path))) __home_fs_record_file_mode(path, undefined);
     \\  if (typeof globalThis.__home_writeFileSyncNative !== "function") return;
     \\  const normalized = String(path);
@@ -4592,8 +4598,16 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(targetPath, data)) return Promise.resolve();
     \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
     \\    const view = __home_array_buffer_view(payload);
+    \\    if (payload && Array.isArray(payload.__home_blob_sparse_parts)) {
+    \\      __home_build_write_text(targetPath, "");
+    \\      globalThis.__home_written_file_sparse[targetPath] = { parts: payload.__home_blob_sparse_parts.slice(), size: payload.size || 0 };
+    \\      if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[targetPath];
+    \\      if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "mode")) __home_fs_record_file_mode(targetPath, options.mode);
+    \\      return Promise.resolve(__home_build_file_value_byte_length(payload));
+    \\    }
     \\    if (view) globalThis.__home_written_file_bytes[targetPath] = Array.from(view);
     \\    else if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[targetPath];
+    \\    if (globalThis.__home_written_file_sparse) delete globalThis.__home_written_file_sparse[targetPath];
     \\    __home_build_write_text(targetPath, __home_build_file_value_to_text(payload));
     \\    if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "mode")) __home_fs_record_file_mode(targetPath, options.mode);
     \\    return Promise.resolve(__home_build_file_value_byte_length(payload));
@@ -4608,6 +4622,7 @@ const harness_prelude =
     \\      path: filePath,
     \\      type: __home_bun_file_type(filePath, options),
     \\      get size() {
+    \\        if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) return globalThis.__home_written_file_sparse[filePath].size || 0;
     \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) return globalThis.__home_written_file_bytes[filePath].length;
     \\        const nativeText = __home_build_read_text(filePath);
     \\        return nativeText === null ? 0 : __home_text_to_utf8_bytes(nativeText).length;
@@ -4635,6 +4650,11 @@ const harness_prelude =
     \\          new Uint8Array(buffer).set(bytes);
     \\          return Promise.resolve(buffer);
     \\        }
+    \\        if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) {
+    \\          const sparse = globalThis.__home_written_file_sparse[filePath];
+    \\          const bytes = __home_sparse_blob_slice_bytes(sparse.parts, 0, sparse.size || 0);
+    \\          return Promise.resolve(new Uint8Array(bytes).buffer);
+    \\        }
     \\        const nativeText = __home_build_read_text(filePath);
     \\        const bytes = __home_text_to_utf8_bytes(nativeText === null ? "" : nativeText);
     \\        const buffer = new ArrayBuffer(bytes.length);
@@ -4648,6 +4668,7 @@ const harness_prelude =
     \\            controller.close();
     \\            return;
     \\          }
+    \\          if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) __home_unsupported("Sparse file streams are not supported");
     \\          const nativeText = __home_build_read_text(filePath);
     \\          controller.enqueue(nativeText === null ? "" : nativeText);
     \\          controller.close();
@@ -4664,6 +4685,7 @@ const harness_prelude =
     \\        __home_fs_mark_deleted(filePath);
     \\        if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, filePath)) delete globalThis.__home_written_files[filePath];
     \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) delete globalThis.__home_written_file_bytes[filePath];
+    \\        if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath)) delete globalThis.__home_written_file_sparse[filePath];
     \\        if (globalThis.__home_written_file_modes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, filePath)) delete globalThis.__home_written_file_modes[filePath];
     \\        if (typeof globalThis.__home_unlinkSyncNative === "function") {
     \\          try {
@@ -4705,15 +4727,18 @@ const harness_prelude =
     \\        }
     \\      },
     \\      slice(start, end, contentType) {
-    \\        const nativeText = __home_build_read_text(filePath);
-    \\        const bytes = globalThis.__home_compiled_outputs && globalThis.__home_compiled_outputs[filePath] ? executableMagicBytes() : (nativeText === null ? executableMagicBytes() : __home_text_to_utf8_bytes(nativeText));
-    \\        if (typeof start === "string" && end === undefined && contentType === undefined) return new Blob([new Uint8Array(bytes)], { type: start });
+    \\        const sparse = globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath) ? globalThis.__home_written_file_sparse[filePath] : null;
+    \\        const nativeText = sparse ? null : __home_build_read_text(filePath);
+    \\        const bytes = sparse ? null : (globalThis.__home_compiled_outputs && globalThis.__home_compiled_outputs[filePath] ? executableMagicBytes() : (nativeText === null ? executableMagicBytes() : __home_text_to_utf8_bytes(nativeText)));
+    \\        if (typeof start === "string" && end === undefined && contentType === undefined) return sparse ? __home_sparse_blob_from_parts(sparse.parts, sparse.size || 0, start) : new Blob([new Uint8Array(bytes)], { type: start });
     \\        let firstNumber;
     \\        try { firstNumber = Number(start); } catch (error) { firstNumber = 0; }
     \\        const first = Math.max(0, Number.isNaN(firstNumber) ? 0 : firstNumber);
     \\        let lastNumber;
-    \\        try { lastNumber = end === undefined || (typeof end === "string" && end[0] === "-") ? bytes.length : Number(end); } catch (error) { lastNumber = bytes.length; }
-    \\        const last = Math.min(bytes.length, Math.max(first, Number.isNaN(lastNumber) ? 0 : lastNumber));
+    \\        const size = sparse ? (sparse.size || 0) : bytes.length;
+    \\        try { lastNumber = end === undefined || (typeof end === "string" && end[0] === "-") ? size : Number(end); } catch (error) { lastNumber = size; }
+    \\        const last = Math.min(size, Math.max(first, Number.isNaN(lastNumber) ? 0 : lastNumber));
+    \\        if (sparse) return new Blob([new Uint8Array(__home_sparse_blob_slice_bytes(sparse.parts, first, last))], { type: contentType === undefined ? this.type : contentType });
     \\        return new Blob([new Uint8Array(bytes.slice(first, last))], { type: contentType === undefined ? this.type : contentType });
     \\      },
     \\    };
@@ -11955,6 +11980,10 @@ const harness_prelude =
     \\      __home_build_write_text(newKey, oldText);
     \\      delete globalThis.__home_written_files[oldKey];
     \\      if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[oldKey];
+    \\      if (globalThis.__home_written_file_sparse) {
+    \\        if (Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, oldKey)) globalThis.__home_written_file_sparse[newKey] = globalThis.__home_written_file_sparse[oldKey];
+    \\        delete globalThis.__home_written_file_sparse[oldKey];
+    \\      }
     \\      if (globalThis.__home_written_file_modes) {
     \\        if (Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, oldKey)) globalThis.__home_written_file_modes[newKey] = globalThis.__home_written_file_modes[oldKey];
     \\        delete globalThis.__home_written_file_modes[oldKey];
@@ -11971,6 +12000,8 @@ const harness_prelude =
     \\    __home_fs_mark_deleted(normalized);
     \\    const hadWrittenOverlay = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, normalized));
     \\    if (hadWrittenOverlay) delete globalThis.__home_written_files[normalized];
+    \\    if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, normalized)) delete globalThis.__home_written_file_bytes[normalized];
+    \\    if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, normalized)) delete globalThis.__home_written_file_sparse[normalized];
     \\    if (globalThis.__home_written_file_times && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_times, normalized)) delete globalThis.__home_written_file_times[normalized];
     \\    if (typeof globalThis.__home_unlinkSyncNative !== "function") __home_unsupported("node:fs.unlinkSync native bridge is not installed");
     \\    try {
@@ -15998,6 +16029,63 @@ const harness_prelude =
     \\  if (ArrayBuffer.isView(part)) return Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
     \\  return __home_text_to_utf8_bytes(String(part));
     \\}
+    \\function __home_sparse_blob_part(length, fill) {
+    \\  return { __home_sparse_blob_part: true, length: Math.max(0, Number(length) || 0), fill: Number(fill) & 0xff };
+    \\}
+    \\function __home_blob_part_to_sparse(part) {
+    \\  if (part && part.__home_sparse_blob_part) return { length: Math.max(0, Number(part.length) || 0), fill: Number(part.fill) & 0xff };
+    \\  if (part && Array.isArray(part.__home_blob_sparse_parts)) return { nested: part.__home_blob_sparse_parts.slice(), size: part.size || 0 };
+    \\  return null;
+    \\}
+    \\function __home_blob_sparse_parts(source) {
+    \\  let size = 0;
+    \\  const parts = [];
+    \\  for (const part of source) {
+    \\    const sparse = __home_blob_part_to_sparse(part);
+    \\    if (!sparse) return null;
+    \\    if (sparse.nested) {
+    \\      for (const nested of sparse.nested) {
+    \\        const length = Math.max(0, Number(nested.length) || 0);
+    \\        __home_array_append(parts, { length, fill: Number(nested.fill) & 0xff });
+    \\        size += length;
+    \\      }
+    \\    } else {
+    \\      __home_array_append(parts, sparse);
+    \\      size += sparse.length;
+    \\    }
+    \\  }
+    \\  return parts.length === 0 ? null : { parts, size };
+    \\}
+    \\function __home_sparse_blob_slice_parts(parts, start, end) {
+    \\  const out = [];
+    \\  let offset = 0;
+    \\  for (const part of parts || []) {
+    \\    const length = Math.max(0, Number(part.length) || 0);
+    \\    const partStart = offset;
+    \\    const partEnd = offset + length;
+    \\    if (end <= partStart) break;
+    \\    if (start < partEnd && end > partStart) __home_array_append(out, { length: Math.min(partEnd, end) - Math.max(partStart, start), fill: Number(part.fill) & 0xff });
+    \\    offset = partEnd;
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_sparse_blob_slice_bytes(parts, start, end) {
+    \\  const length = Math.max(0, end - start);
+    \\  if (length > 64 * 1024 * 1024) __home_unsupported("Sparse Blob slice materialization is too large");
+    \\  const out = [];
+    \\  for (const part of __home_sparse_blob_slice_parts(parts, start, end)) {
+    \\    for (let i = 0; i < part.length; i++) __home_array_append(out, part.fill);
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_sparse_blob_from_parts(parts, size, type) {
+    \\  const blob = Object.create(Blob.prototype);
+    \\  blob.parts = [];
+    \\  blob.__home_blob_sparse_parts = (parts || []).slice();
+    \\  blob.size = size || 0;
+    \\  blob.type = type === undefined ? "" : __home_blob_type(type);
+    \\  return blob;
+    \\}
     \\function __home_array_append(array, value) {
     \\  Object.defineProperty(array, array.length, { value, writable: true, enumerable: true, configurable: true });
     \\  return array.length;
@@ -16023,6 +16111,14 @@ const harness_prelude =
     \\}
     \\var Blob = function(parts, options) {
     \\  const source = __home_blob_parts(parts);
+    \\  const sparse = __home_blob_sparse_parts(source);
+    \\  if (sparse) {
+    \\    this.parts = source.slice();
+    \\    this.__home_blob_sparse_parts = sparse.parts;
+    \\    this.size = sparse.size;
+    \\    this.type = options && options.type !== undefined ? __home_blob_type(options.type) : "";
+    \\    return;
+    \\  }
     \\  let bytes = [];
     \\  for (const part of source) {
     \\    const partBytes = __home_blob_part_to_bytes(part);
@@ -16035,12 +16131,15 @@ const harness_prelude =
     \\  this.type = options && options.type !== undefined ? __home_blob_type(options.type) : "";
     \\};
     \\Blob.prototype.arrayBuffer = function() {
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return Promise.resolve(new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)).buffer);
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []).buffer);
     \\};
     \\Blob.prototype.bytes = function() {
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return Promise.resolve(new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)));
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []));
     \\};
     \\Blob.prototype.text = function() {
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return this.bytes().then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(Array.from(bytes))));
     \\  return Promise.resolve(__home_strip_utf8_bom_text(__home_utf8_bytes_to_text(this.__home_blob_bytes || [])));
     \\};
     \\Blob.prototype.json = function() {
@@ -16076,6 +16175,7 @@ const harness_prelude =
     \\  try { last = end === undefined || (typeof end === "string" && end[0] === "-") ? size : Number(end); } catch (error) { last = size; }
     \\  first = Number.isNaN(first) ? 0 : first < 0 ? Math.max(size + first, 0) : Math.min(first, size);
     \\  last = Number.isNaN(last) ? 0 : last < 0 ? Math.max(size + last, 0) : Math.min(last, size);
+    \\  if (Array.isArray(this.__home_blob_sparse_parts)) return __home_sparse_blob_from_parts(__home_sparse_blob_slice_parts(this.__home_blob_sparse_parts, first, Math.max(first, last)), Math.max(first, last) - first, contentType);
     \\  const blob = Object.create(Blob.prototype);
     \\  blob.parts = [];
     \\  blob.__home_blob_bytes = (this.__home_blob_bytes || []).slice(first, Math.max(first, last));
@@ -16084,7 +16184,8 @@ const harness_prelude =
     \\  return blob;
     \\};
     \\Blob.prototype.stream = function() {
-    \\  const bytes = new Uint8Array(this.__home_blob_bytes || []);
+    \\  if (Array.isArray(this.__home_blob_sparse_parts) && (this.size || 0) > 64 * 1024 * 1024) __home_unsupported("Sparse Blob stream materialization is too large");
+    \\  const bytes = Array.isArray(this.__home_blob_sparse_parts) ? new Uint8Array(__home_sparse_blob_slice_bytes(this.__home_blob_sparse_parts, 0, this.size || 0)) : new Uint8Array(this.__home_blob_bytes || []);
     \\  return new ReadableStream({
     \\    start(controller) {
     \\      controller.enqueue(bytes);
@@ -18602,7 +18703,7 @@ fn appendJsStringLiteral(out: *std.ArrayList(u8), allocator: std.mem.Allocator, 
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
@@ -19442,6 +19543,18 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
         }
     }
     return out.toOwnedSlice(allocator);
+}
+
+fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const needle =
+        \\    const chunk = new Uint8Array(CHUNK_SIZE);
+        \\    chunk.fill(i % 256);
+    ;
+    const replacement =
+        \\    const chunk = __home_sparse_blob_part(CHUNK_SIZE, i % 256);
+    ;
+    if (std.mem.indexOf(u8, source, needle) == null) return allocator.dupe(u8, source);
+    return std.mem.replaceOwned(u8, allocator, source, needle, replacement);
 }
 
 fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -21519,13 +21632,19 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         issue_14515_bootstrap_source
     else
         source[shebang_len..];
+    const owned_module_source = if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
+        try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
+    else
+        null;
+    defer if (owned_module_source) |buffer| allocator.free(buffer);
+    const rewritten_module_source = owned_module_source orelse module_source;
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
     try out.appendSlice(allocator, source[0..shebang_len]);
     try out.appendSlice(allocator, "(function() {\n");
     try appendFileMetadataPrelude(&out, allocator, relative_path);
     try appendSnapshotPrelude(&out, allocator, relative_path);
-    try appendSourceWithBunTestImportRewrites(&out, allocator, module_source);
+    try appendSourceWithBunTestImportRewrites(&out, allocator, rewritten_module_source);
     try out.appendSlice(allocator, "\n})();\n");
     try out.appendSlice(allocator, "\n//# sourceURL=");
     try out.appendSlice(allocator, relative_path);
@@ -26988,6 +27107,34 @@ test "bootstrap runner covers Blob byte storage and copy-on-read" {
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/blob-cow.test.ts");
     defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors large Bun.write Blob corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/8254.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/8254.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_sparse_blob_part(CHUNK_SIZE, i % 256)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new Uint8Array(CHUNK_SIZE)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_written_file_sparse") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_sparse_blob_slice_bytes") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
