@@ -146,6 +146,11 @@ pub const File = struct {
     /// by `resolveImports` (for imported files); root files are
     /// classified by the CLI layer at `--explainFiles` time.
     include_reason: ?IncludeReason = null,
+    /// Package-ID deduplication redirect target. When two physical
+    /// node_modules files have the same package identity, tsgo keeps the
+    /// first source file as canonical and records later paths as redirect
+    /// files for explainFiles (TS1429).
+    redirect_target: ?FileId = null,
 };
 
 pub const ProgramError = error{
@@ -163,6 +168,7 @@ pub const Program = struct {
     gpa: std.mem.Allocator,
     files: std.ArrayListUnmanaged(*File),
     by_path: std.StringHashMapUnmanaged(FileId),
+    by_package_id: std.StringHashMapUnmanaged(FileId),
     resolver: *ts_resolver.Resolver,
     /// Stored sources keyed by path (we own the dupes).
     sources: std.StringHashMapUnmanaged([]const u8),
@@ -172,6 +178,7 @@ pub const Program = struct {
             .gpa = gpa,
             .files = .empty,
             .by_path = .empty,
+            .by_package_id = .empty,
             .resolver = resolver,
             .sources = .empty,
         };
@@ -197,6 +204,10 @@ pub const Program = struct {
         var it = self.by_path.iterator();
         while (it.next()) |e| self.gpa.free(e.key_ptr.*);
         self.by_path.deinit(self.gpa);
+
+        var pit = self.by_package_id.iterator();
+        while (pit.next()) |e| self.gpa.free(e.key_ptr.*);
+        self.by_package_id.deinit(self.gpa);
 
         var sit = self.sources.iterator();
         while (sit.next()) |e| {
@@ -229,6 +240,7 @@ pub const Program = struct {
             .is_declaration = isDeclarationPath(path),
             .is_tsx = std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"),
             .include_reason = null,
+            .redirect_target = null,
         };
 
         try self.files.append(self.gpa, file);
@@ -238,6 +250,36 @@ pub const Program = struct {
 
         const skey = try self.gpa.dupe(u8, path);
         try self.sources.put(self.gpa, skey, owned_source);
+
+        return id;
+    }
+
+    fn addRedirectFile(self: *Program, path: []const u8, target_id: FileId) ProgramError!FileId {
+        if (self.by_path.get(path)) |id| return id;
+
+        const target = self.files.items[target_id];
+        const owned_path = try self.gpa.dupe(u8, path);
+        errdefer self.gpa.free(owned_path);
+
+        const id: FileId = @intCast(self.files.items.len);
+        const file = try self.gpa.create(File);
+        errdefer self.gpa.destroy(file);
+        file.* = .{
+            .id = id,
+            .path = owned_path,
+            .source = target.source,
+            .compilation = null,
+            .imports = .empty,
+            .is_declaration = target.is_declaration,
+            .is_tsx = target.is_tsx,
+            .include_reason = null,
+            .redirect_target = target_id,
+        };
+
+        try self.files.append(self.gpa, file);
+
+        const key = try self.gpa.dupe(u8, path);
+        try self.by_path.put(self.gpa, key, id);
 
         return id;
     }
@@ -305,6 +347,7 @@ pub const Program = struct {
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             if (f.compilation != null) continue;
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
@@ -366,6 +409,7 @@ pub const Program = struct {
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             if (f.compilation != null) {
                 // Already compiled — replay its diagnostics anyway so
                 // a streaming consumer that joined late doesn't miss
@@ -399,6 +443,7 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged([]const u8) = .empty;
         errdefer freeStringSlice(self.gpa, out.items);
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             try appendTopLevelNamespaceRootsFromSource(self.gpa, f.source, &out);
             try appendAmbientGlobalNamespaceRootsFromSource(self.gpa, f.source, &out);
         }
@@ -411,9 +456,11 @@ pub const Program = struct {
         var namespace_roots: std.ArrayListUnmanaged([]const u8) = .empty;
         defer namespace_roots.deinit(self.gpa);
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             try collectTopLevelNamespaceRootSlices(self.gpa, f.source, &namespace_roots);
         }
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             if (!isJsLikePath(f.path)) continue;
             var roots: std.ArrayListUnmanaged([]const u8) = .empty;
             defer roots.deinit(self.gpa);
@@ -430,6 +477,7 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation) = .empty;
         errdefer out.deinit(self.gpa);
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             try self.collectRelativeModuleInterfaceAugmentationsFromSource(f.path, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
@@ -439,6 +487,7 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClass) = .empty;
         errdefer out.deinit(self.gpa);
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             try collectProgramExportedClassesFromSource(self.gpa, f.path, f.source, &out);
         }
         var namespace_augmentations: std.ArrayListUnmanaged(ProgramNamespaceStaticAugmentation) = .empty;
@@ -450,6 +499,7 @@ pub const Program = struct {
             namespace_augmentations.deinit(self.gpa);
         }
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             try collectRelativeModuleNamespaceStaticAugmentationsFromSource(self.gpa, f.path, f.source, &namespace_augmentations);
         }
         for (out.items) |*class| {
@@ -943,6 +993,7 @@ pub const Program = struct {
         const target_path = try resolveProgramRelativeModulePath(self.gpa, from_path, spec);
         defer self.gpa.free(target_path);
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             if (!programModulePathMatches(f.path, target_path)) continue;
             const pos = findTopLevelInterfaceDeclarationPos(f.source, interface_name) orelse return null;
             return .{ .path = f.path, .pos = pos };
@@ -1510,9 +1561,7 @@ pub const Program = struct {
                         else => continue,
                     };
                     if (self.by_path.get(res.path) != null) continue;
-                    const src = self.resolver.fs.readFile(self.gpa, res.path) catch continue;
-                    defer self.gpa.free(src);
-                    _ = self.add(res.path, src) catch |err| switch (err) {
+                    _ = self.addResolvedIncludeFileFromResolution(res) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         else => continue,
                     };
@@ -1547,12 +1596,10 @@ pub const Program = struct {
                                 else => continue,
                             };
                             if (self.by_path.get(res.path) != null) continue;
-                            const rsrc = self.resolver.fs.readFile(self.gpa, res.path) catch continue;
-                            defer self.gpa.free(rsrc);
-                            const new_id = self.add(res.path, rsrc) catch |err| switch (err) {
+                            const new_id = self.addResolvedIncludeFileFromResolution(res) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
-                            };
+                            } orelse continue;
                             try self.recordReferenceIncludeReason(new_id, .type_reference, f.id, ref.name, res.package_id orelse "", ref.pos);
                             new_in_round += 1;
                         },
@@ -1614,7 +1661,7 @@ pub const Program = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return 0,
         };
-        const target_id = try self.addResolvedIncludeFile(res.path);
+        const target_id = try self.addResolvedIncludeFileFromResolution(res);
         if (target_id == null) return 0;
         try self.recordReferenceIncludeReasonWithProjectOutput(target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", res.project_reference_output orelse "", 0);
         return 1;
@@ -1654,7 +1701,7 @@ pub const Program = struct {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => continue,
                 };
-                const target_id = try self.addResolvedIncludeFile(res.path);
+                const target_id = try self.addResolvedIncludeFileFromResolution(res);
                 if (target_id == null) continue;
                 try self.recordReferenceIncludeReason(target_id.?, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
                 added += 1;
@@ -1719,7 +1766,7 @@ pub const Program = struct {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => continue,
             };
-            const target_id = try self.addResolvedIncludeFile(res.path);
+            const target_id = try self.addResolvedIncludeFileFromResolution(res);
             if (target_id == null) continue;
             try self.recordReferenceIncludeReason(target_id.?, .implicit_type_reference, 0, type_name, res.package_id orelse "", 0);
             added += 1;
@@ -1837,6 +1884,33 @@ pub const Program = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return null,
         };
+    }
+
+    fn addResolvedIncludeFileFromResolution(self: *Program, res: ts_resolver.Resolution) ProgramError!?FileId {
+        if (self.by_path.get(res.path) != null) return null;
+        if (res.package_id) |package_id| {
+            if (package_id.len != 0) {
+                if (self.by_package_id.get(package_id)) |canonical_id| {
+                    const canonical = self.files.items[canonical_id];
+                    if (!std.mem.eql(u8, canonical.path, res.path)) {
+                        return try self.addRedirectFile(res.path, canonical_id);
+                    }
+                    return null;
+                }
+            }
+        }
+
+        const added_id = try self.addResolvedIncludeFile(res.path);
+        if (added_id) |id| {
+            if (res.package_id) |package_id| {
+                if (package_id.len != 0) {
+                    const key = try self.gpa.dupe(u8, package_id);
+                    errdefer self.gpa.free(key);
+                    try self.by_package_id.put(self.gpa, key, id);
+                }
+            }
+        }
+        return added_id;
     }
 
     const DefaultLibName = struct {
@@ -1979,6 +2053,7 @@ pub const Program = struct {
     fn appendMissingImportedHelperDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         if (!options.emit.import_helpers) return;
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             try self.appendMissingImportedHelperDiagnosticsForFile(f, options);
         }
     }
@@ -2018,6 +2093,7 @@ pub const Program = struct {
 
     fn findTslibDeclaration(self: *Program) ?*File {
         for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
             const base = std.fs.path.basename(f.path);
             if (std.mem.eql(u8, base, "tslib.d.ts")) return f;
         }
@@ -2735,6 +2811,52 @@ test "Program: node_modules import records package-id include reason (TS1394)" {
     try T.expectEqualStrings("\"dep\"", dep.include_reason.?.specifier_text);
     try T.expectEqualStrings("dep/index.d.ts@1.2.3", dep.include_reason.?.package_id);
     try T.expectEqual(@as(?u32, 1399), dep.include_reason.?.relatedDiagnosticCode());
+}
+
+test "Program: duplicate package-id import records redirect file (TS1429 reason)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/app/a.ts", "import 'pkg';\n");
+    try vfs.addFile("/app/nested/consumer.ts", "import 'pkg';\n");
+    try vfs.addFile("/app/node_modules/pkg/package.json",
+        \\{
+        \\  "name": "pkg",
+        \\  "version": "1.0.0",
+        \\  "types": "index.d.ts"
+        \\}
+    );
+    try vfs.addFile("/app/node_modules/pkg/index.d.ts", "export const value: number;\n");
+    try vfs.addFile("/app/nested/node_modules/pkg/package.json",
+        \\{
+        \\  "name": "pkg",
+        \\  "version": "1.0.0",
+        \\  "types": "index.d.ts"
+        \\}
+    );
+    try vfs.addFile("/app/nested/node_modules/pkg/index.d.ts", "export const value: number;\n");
+
+    var r = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer r.deinit();
+    var p = Program.init(T.allocator, &r);
+    defer p.deinit();
+    _ = try p.add("/app/a.ts", "import 'pkg';\n");
+    const nested_id = try p.add("/app/nested/consumer.ts", "import 'pkg';\n");
+
+    const added = try p.loadImportClosure(.{});
+    try T.expectEqual(@as(usize, 2), added);
+
+    const canonical_id = p.lookupPath("/app/node_modules/pkg/index.d.ts") orelse return error.TestUnexpectedResult;
+    const redirect_id = p.lookupPath("/app/nested/node_modules/pkg/index.d.ts") orelse return error.TestUnexpectedResult;
+    const canonical = p.fileById(canonical_id);
+    const redirect = p.fileById(redirect_id);
+    try T.expect(canonical.redirect_target == null);
+    try T.expectEqual(canonical_id, redirect.redirect_target.?);
+    try T.expect(redirect.compilation == null);
+    try T.expect(redirect.include_reason != null);
+    try T.expectEqual(IncludeKind.import, redirect.include_reason.?.kind);
+    try T.expectEqual(nested_id, redirect.include_reason.?.importer);
+    try T.expectEqualStrings("\"pkg\"", redirect.include_reason.?.specifier_text);
+    try T.expectEqualStrings("pkg/index.d.ts@1.0.0", redirect.include_reason.?.package_id);
 }
 
 test "Program: project-reference output import records redirected output (TS1428 reason)" {

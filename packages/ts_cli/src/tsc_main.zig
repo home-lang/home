@@ -1448,6 +1448,7 @@ fn printNodeFormatExplain(
     f: *const ts_program.File,
     module: ?tsconfig_mod.Module,
 ) void {
+    if (f.redirect_target != null) return;
     const reason = explainNodeFormatReason(gpa, fs, f.path, f.source, module) catch return;
     if (reason) |r| {
         defer gpa.free(r.message);
@@ -1535,6 +1536,9 @@ fn printExplainFiles(
     // TS1428 — output declaration file redirected to a project-reference source.
     const code_file_is_output_of_project_reference_source: u32 = 1428;
     _ = code_file_is_output_of_project_reference_source;
+    // TS1429 — package-ID deduplication redirect to a canonical source file.
+    const code_file_redirects_to_file: u32 = 1429;
+    _ = code_file_redirects_to_file;
     // TS1458–TS1461 explain how Node16/NodeNext implied module format was
     // derived from the nearest package.json, mirroring tsgo's
     // explainRedirectAndImpliedFormat helper.
@@ -1572,6 +1576,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1592,6 +1597,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1612,6 +1618,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1625,6 +1632,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1645,6 +1653,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1658,6 +1667,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1677,6 +1687,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1696,6 +1707,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1708,6 +1720,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1727,6 +1740,7 @@ fn printExplainFiles(
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
+                        printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1738,6 +1752,7 @@ fn printExplainFiles(
             // fabricating a puller.
             std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
             printProjectReferenceOutputExplain(f);
+            printRedirectExplain(program, f);
             printNodeFormatExplain(gpa, fs, f, module);
             continue;
         }
@@ -1778,6 +1793,12 @@ fn printProjectReferenceOutputExplain(file: *const ts_program.File) void {
     const ir = file.include_reason orelse return;
     if (ir.project_reference_output.len == 0) return;
     std.debug.print("  File is output of project reference source '{s}'\n", .{file.path});
+}
+
+fn printRedirectExplain(program: *const ts_program.Program, file: *const ts_program.File) void {
+    const target_id = file.redirect_target orelse return;
+    const target = program.fileById(target_id);
+    std.debug.print("  File redirects to file '{s}'\n", .{target.path});
 }
 
 const CompositeProjectFileListSummary = struct {
