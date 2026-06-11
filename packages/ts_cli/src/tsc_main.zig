@@ -1109,22 +1109,23 @@ fn printDryCleanOutputs(outputs: []const []u8) void {
     }
 }
 
-fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
+fn alreadyIncludedFileNameDiffersOnlyInCasingMessage(
     gpa: std.mem.Allocator,
     file_name: []const u8,
     existing_file_name: []const u8,
 ) ![]u8 {
-    const code_already_included_differs_only_in_casing: u32 = 1261;
     return std.fmt.allocPrint(
         gpa,
-        "error TS{d}: Already included file name '{s}' differs from file name '{s}' only in casing.",
-        .{ code_already_included_differs_only_in_casing, file_name, existing_file_name },
+        "Already included file name '{s}' differs from file name '{s}' only in casing.",
+        .{ file_name, existing_file_name },
     );
 }
 
 const CaseOnlyInputFileMismatch = struct {
     file_name: []const u8,
     existing_file_name: []const u8,
+    file_index: usize,
+    existing_file_index: usize,
 };
 
 fn findCaseOnlyInputFileMismatch(input_files: []const []const u8) ?CaseOnlyInputFileMismatch {
@@ -1134,15 +1135,105 @@ fn findCaseOnlyInputFileMismatch(input_files: []const []const u8) ?CaseOnlyInput
             const previous = input_files[j];
             if (std.mem.eql(u8, previous, path)) break;
             if (!std.ascii.eqlIgnoreCase(previous, path)) continue;
-            return .{ .file_name = path, .existing_file_name = previous };
+            return .{
+                .file_name = path,
+                .existing_file_name = previous,
+                .file_index = i,
+                .existing_file_index = j,
+            };
         }
     }
     return null;
 }
 
-fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []const []const u8) bool {
+const CaseOnlyInputRootContext = struct {
+    kind: enum { none, files, include } = .none,
+    config_path: []const u8 = "",
+    config_source: []const u8 = "",
+    specs: []const []const u8 = &.{},
+};
+
+fn findTsConfigSpecLineCol(config_source: []const u8, property: []const u8, spec: []const u8) struct { line: u32, col: u32 } {
+    if (config_source.len == 0) return .{ .line = 1, .col = 1 };
+    var start: usize = 0;
+    var property_buf: [64]u8 = undefined;
+    const property_needle = std.fmt.bufPrint(&property_buf, "\"{s}\"", .{property}) catch "";
+    if (property_needle.len > 0) {
+        if (std.mem.indexOf(u8, config_source, property_needle)) |pos| start = pos + property_needle.len;
+    }
+    var spec_buf: [512]u8 = undefined;
+    const spec_needle = std.fmt.bufPrint(&spec_buf, "\"{s}\"", .{spec}) catch "";
+    const pos = if (spec_needle.len > 0)
+        std.mem.indexOf(u8, config_source[start..], spec_needle)
+    else
+        null;
+    const absolute_pos = if (pos) |p| start + p else start;
+    return ts_diagnostics.positionToLineCol(config_source, @intCast(@min(absolute_pos, std.math.maxInt(u32))));
+}
+
+fn caseOnlyInputRelatedInfo(
+    ctx: CaseOnlyInputRootContext,
+    mismatch: CaseOnlyInputFileMismatch,
+    out: *[2]ts_diagnostics.Related,
+) []const ts_diagnostics.Related {
+    const code_include_pattern_specified_here: u32 = 1408;
+    const code_files_list_specified_here: u32 = 1410;
+    const code = switch (ctx.kind) {
+        .files => code_files_list_specified_here,
+        .include => code_include_pattern_specified_here,
+        .none => return &.{},
+    };
+    const message = (ts_diagnostics.codes.lookup(code) orelse unreachable).message;
+    const property = switch (ctx.kind) {
+        .files => "files",
+        .include => "include",
+        .none => unreachable,
+    };
+
+    var len: usize = 0;
+    const indices = [_]usize{ mismatch.existing_file_index, mismatch.file_index };
+    for (indices) |index| {
+        const spec = if (index < ctx.specs.len) ctx.specs[index] else if (ctx.specs.len > 0) ctx.specs[0] else "";
+        const lc = findTsConfigSpecLineCol(ctx.config_source, property, spec);
+        out[len] = .{
+            .file = ctx.config_path,
+            .line = lc.line,
+            .col = lc.col,
+            .code = code,
+            .code_prefix = .TS,
+            .message = message,
+        };
+        len += 1;
+    }
+    return out[0..len];
+}
+
+fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
+    gpa: std.mem.Allocator,
+    mismatch: CaseOnlyInputFileMismatch,
+    related: []const ts_diagnostics.Related,
+) ![]u8 {
+    const message = try alreadyIncludedFileNameDiffersOnlyInCasingMessage(gpa, mismatch.file_name, mismatch.existing_file_name);
+    defer gpa.free(message);
+    const diag: ts_diagnostics.Diagnostic = .{
+        .file = "",
+        .line = 0,
+        .col = 0,
+        .code = 1261,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = message,
+        .span_len = 0,
+        .related = related,
+    };
+    return ts_diagnostics.formatDefault(gpa, diag);
+}
+
+fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []const []const u8, root_context: CaseOnlyInputRootContext) bool {
     const mismatch = findCaseOnlyInputFileMismatch(input_files) orelse return false;
-    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch.file_name, mismatch.existing_file_name) catch return true;
+    var related_buf: [2]ts_diagnostics.Related = undefined;
+    const related = caseOnlyInputRelatedInfo(root_context, mismatch, &related_buf);
+    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch, related) catch return true;
     defer gpa.free(msg);
     std.debug.print("{s}\n", .{msg});
     return true;
@@ -2009,7 +2100,30 @@ pub fn main(init: std.process.Init) !void {
         if (loaded_cfg) |c| break :blk (c.compiler_options.force_consistent_casing_in_file_names orelse true);
         break :blk true;
     };
-    if (force_consistent_casing and reportCaseOnlyInputFileDiagnostics(gpa, input_files.items)) std.process.exit(1);
+    const case_only_root_context: CaseOnlyInputRootContext = blk: {
+        if (opts.files.len == 0) {
+            if (loaded_cfg) |c| {
+                if (c.files) |files| {
+                    break :blk .{
+                        .kind = .files,
+                        .config_path = c.file_path,
+                        .config_source = cfg_src,
+                        .specs = files,
+                    };
+                }
+                if (c.include) |include| {
+                    break :blk .{
+                        .kind = .include,
+                        .config_path = c.file_path,
+                        .config_source = cfg_src,
+                        .specs = include,
+                    };
+                }
+            }
+        }
+        break :blk .{};
+    };
+    if (force_consistent_casing and reportCaseOnlyInputFileDiagnostics(gpa, input_files.items, case_only_root_context)) std.process.exit(1);
 
     const allow_js: bool = blk: {
         if (loaded_cfg) |c| break :blk (c.compiler_options.allow_js orelse false);
@@ -3230,17 +3344,6 @@ test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
 }
 
 test "tsc_main: TS1261 reports input files that differ only by casing" {
-    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
-        std.testing.allocator,
-        "/repo/src/Foo.ts",
-        "/repo/src/foo.ts",
-    );
-    defer std.testing.allocator.free(msg);
-    try std.testing.expectEqualStrings(
-        "error TS1261: Already included file name '/repo/src/Foo.ts' differs from file name '/repo/src/foo.ts' only in casing.",
-        msg,
-    );
-
     const exact = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/foo.ts" };
     try std.testing.expect(findCaseOnlyInputFileMismatch(&exact) == null);
 
@@ -3248,6 +3351,60 @@ test "tsc_main: TS1261 reports input files that differ only by casing" {
     const found = findCaseOnlyInputFileMismatch(&mismatch) orelse return error.TestExpectedSome;
     try std.testing.expectEqualStrings("/repo/src/Foo.ts", found.file_name);
     try std.testing.expectEqualStrings("/repo/src/foo.ts", found.existing_file_name);
+    try std.testing.expectEqual(@as(usize, 1), found.file_index);
+    try std.testing.expectEqual(@as(usize, 0), found.existing_file_index);
+
+    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, found, &.{});
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS1261: Already included file name '/repo/src/Foo.ts' differs from file name '/repo/src/foo.ts' only in casing.",
+        msg,
+    );
+}
+
+test "tsc_main: TS1261 carries config-root related information for files and include" {
+    const mismatch = CaseOnlyInputFileMismatch{
+        .file_name = "src/Foo.ts",
+        .existing_file_name = "src/foo.ts",
+        .file_index = 1,
+        .existing_file_index = 0,
+    };
+
+    const config_source =
+        \\{
+        \\  "files": ["src/foo.ts", "src/Foo.ts"],
+        \\  "include": ["src/**/*"]
+        \\}
+    ;
+
+    const files = [_][]const u8{ "src/foo.ts", "src/Foo.ts" };
+    var files_related_buf: [2]ts_diagnostics.Related = undefined;
+    const files_related = caseOnlyInputRelatedInfo(.{
+        .kind = .files,
+        .config_path = "/repo/tsconfig.json",
+        .config_source = config_source,
+        .specs = &files,
+    }, mismatch, &files_related_buf);
+    try std.testing.expectEqual(@as(usize, 2), files_related.len);
+    try std.testing.expectEqual(@as(u32, 1410), files_related[0].code);
+    try std.testing.expectEqualStrings("File is matched by 'files' list specified here.", files_related[0].message);
+
+    const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_related);
+    defer std.testing.allocator.free(files_msg);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,13): File is matched by 'files' list specified here.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,27): File is matched by 'files' list specified here.") != null);
+
+    const include = [_][]const u8{"src/**/*"};
+    var include_related_buf: [2]ts_diagnostics.Related = undefined;
+    const include_related = caseOnlyInputRelatedInfo(.{
+        .kind = .include,
+        .config_path = "/repo/tsconfig.json",
+        .config_source = config_source,
+        .specs = &include,
+    }, mismatch, &include_related_buf);
+    try std.testing.expectEqual(@as(usize, 2), include_related.len);
+    try std.testing.expectEqual(@as(u32, 1408), include_related[0].code);
+    try std.testing.expectEqualStrings("File is matched by include pattern specified here.", include_related[0].message);
 }
 
 test "tsc_main: TS6307 diagnostic message and anchor match composite file list validation" {

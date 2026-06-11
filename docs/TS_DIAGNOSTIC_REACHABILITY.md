@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 523 |
-| active reachable (parity targets) | 58 |
+| catalog-only total | 521 |
+| active reachable (parity targets) | 56 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,12 +25,12 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 34 |
+| 1xxx — parser / syntactic + program file-inclusion | 32 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 5 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 1xxx — parser / syntactic + program file-inclusion (34)
+### 1xxx — parser / syntactic + program file-inclusion (32)
 
 - TS1012 `Unexpected_token_1012`
 - TS1394 `Imported_via_0_from_file_1_with_packageId_2_1394`
@@ -43,8 +43,6 @@ diverge from the reference compiler.
 - TS1404 `File_is_included_via_type_library_reference_here_1404`
 - TS1405 `Library_referenced_via_0_from_file_1_1405`
 - TS1406 `File_is_included_via_library_reference_here_1406`
-- TS1408 `File_is_matched_by_include_pattern_specified_here_1408`
-- TS1410 `File_is_matched_by_files_list_specified_here_1410`
 - TS1417 `Entry_point_of_type_library_0_specified_in_compilerOptions_1417`
 - TS1418 `Entry_point_of_type_library_0_specified_in_compilerOptions_with_packageId_1_1418`
 - TS1419 `File_is_entry_point_of_type_library_specified_here_1419`
