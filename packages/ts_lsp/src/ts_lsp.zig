@@ -2758,6 +2758,70 @@ pub const Service = struct {
             });
         }
 
+        // ---- Add satisfies + inline type assertion (TS9013 -> TS90068) ----
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.isolated_declarations_expression_type_inferred) continue;
+            var node: hir_mod.NodeId = hir_mod.none_node_id;
+            var node_i: hir_mod.NodeId = 1;
+            var best_len: u32 = 0;
+            while (node_i < c.hir.nodeCount()) : (node_i += 1) {
+                const kind = c.hir.kindOf(node_i);
+                if (!kind.isExpression()) continue;
+                const span = c.hir.spanOf(node_i);
+                if (span.start != d.pos or span.end <= span.start) continue;
+                const len = span.end - span.start;
+                if (len > best_len) {
+                    node = node_i;
+                    best_len = len;
+                }
+            }
+            if (node == hir_mod.none_node_id) continue;
+            const node_kind = c.hir.kindOf(node);
+            if (!node_kind.isExpression()) continue;
+            if (node_kind == .as_expr or node_kind == .satisfies_expr or node_kind == .type_assertion) continue;
+            const t = c.hir.typeOf(node);
+            if (t == ts_checker.Primitive.none) continue;
+            if (t == ts_checker.Primitive.any) continue;
+            if (t == ts_checker.Primitive.unknown) continue;
+            const repr = renderType(gpa, &c.type_interner, &c.interner, t) catch continue;
+            defer gpa.free(repr);
+            const span = c.hir.spanOf(node);
+            if (span.start >= span.end or span.end > f.source.len) continue;
+            const expr_src = f.source[span.start..span.end];
+            const needs_parens = switch (node_kind) {
+                .identifier, .call_expr, .object_literal, .array_literal => false,
+                else => true,
+            };
+            const new_text = if (needs_parens)
+                try std.fmt.allocPrint(gpa, "({s}) satisfies {s} as {s}", .{ expr_src, repr, repr })
+            else
+                try std.fmt.allocPrint(gpa, "{s} satisfies {s} as {s}", .{ expr_src, repr, repr });
+            errdefer gpa.free(new_text);
+            const title = try std.fmt.allocPrint(
+                gpa,
+                "Add satisfies and an inline type assertion with '{s}'",
+                .{repr},
+            );
+            errdefer gpa.free(title);
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                .start_col = if (start_pos.col > 0) start_pos.col - 1 else 0,
+                .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                .end_col = if (end_pos.col > 0) end_pos.col - 1 else 0,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+                .code = 90068,
+            });
+        }
+
         // ---- Prefix unused identifier with underscore (TS6133) -----------
         // For each "'x' is declared but its value is never read." (TS6133)
         // diagnostic in this file, surface a quick-fix that renames the
@@ -8758,6 +8822,47 @@ test "Service: codeActions marks isolatedDeclarations array literal as const" {
     try T.expectEqualStrings(" as const", a.edits[0].new_text);
     try T.expectEqual(a.edits[0].start_line, a.edits[0].end_line);
     try T.expectEqual(a.edits[0].start_col, a.edits[0].end_col);
+}
+
+test "Service: codeActions adds satisfies inline assertion for inferred isolatedDeclarations expression" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "export default { foo: 1 + 1, bar: 1 };");
+    try program.compileAll(.{ .strict_flags = .{ .isolated_declarations = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Add satisfies and an inline type assertion with 'number'")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, 90068), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings("(1 + 1) satisfies number as number", a.edits[0].new_text);
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_line);
+    try T.expectEqual(@as(u32, 22), a.edits[0].start_col);
+    try T.expectEqual(@as(u32, 0), a.edits[0].end_line);
+    try T.expectEqual(@as(u32, 27), a.edits[0].end_col);
 }
 
 test "Service: formatDocument returns a TextEdit list (no-op stub)" {
