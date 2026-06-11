@@ -2758,6 +2758,105 @@ pub const Service = struct {
             });
         }
 
+        // ---- Extract base class expression to typed variable (TS9021 -> TS90064)
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.isolated_declarations_extends_clause_expression) continue;
+            var class_stmt: hir_mod.NodeId = hir_mod.none_node_id;
+            var class_node: hir_mod.NodeId = hir_mod.none_node_id;
+            var extends_node: hir_mod.NodeId = hir_mod.none_node_id;
+            for (stmts) |s| {
+                var candidate = s;
+                if (c.hir.kindOf(s) == .export_decl) {
+                    const ex = hir_mod.exportOf(&c.hir, s);
+                    if (ex.decl == hir_mod.none_node_id) continue;
+                    candidate = ex.decl;
+                }
+                if (c.hir.kindOf(candidate) != .class_decl) continue;
+                const cls = hir_mod.classOf(&c.hir, candidate);
+                if (cls.extends == hir_mod.none_node_id) continue;
+                const ext_span = c.hir.spanOf(cls.extends);
+                if (ext_span.start != d.pos) continue;
+                class_stmt = s;
+                class_node = candidate;
+                extends_node = cls.extends;
+                break;
+            }
+            if (class_stmt == hir_mod.none_node_id or class_node == hir_mod.none_node_id or extends_node == hir_mod.none_node_id) continue;
+            const t = c.hir.typeOf(extends_node);
+            if (t == ts_checker.Primitive.none) continue;
+            if (t == ts_checker.Primitive.any) continue;
+            if (t == ts_checker.Primitive.unknown) continue;
+            const repr = blk: {
+                if (c.hir.kindOf(extends_node) == .call_expr) {
+                    const call = hir_mod.callOf(&c.hir, extends_node);
+                    const args = c.hir.childSlice(call.args_start, call.args_len);
+                    if (args.len == 1) {
+                        const arg_kind = c.hir.kindOf(args[0]);
+                        if (arg_kind == .identifier or arg_kind == .member_access) {
+                            const arg_span = c.hir.spanOf(args[0]);
+                            if (arg_span.start < arg_span.end and arg_span.end <= f.source.len) {
+                                break :blk try std.fmt.allocPrint(gpa, "typeof {s}", .{f.source[arg_span.start..arg_span.end]});
+                            }
+                        }
+                    }
+                }
+                break :blk renderType(gpa, &c.type_interner, &c.interner, t) catch continue;
+            };
+            defer gpa.free(repr);
+            const cls = hir_mod.classOf(&c.hir, class_node);
+            const base_name = blk: {
+                if (cls.name != hir_mod.none_node_id) {
+                    const name_span = c.hir.spanOf(cls.name);
+                    if (name_span.start < name_span.end and name_span.end <= f.source.len) {
+                        break :blk try std.fmt.allocPrint(gpa, "{s}Base", .{f.source[name_span.start..name_span.end]});
+                    }
+                }
+                break :blk try gpa.dupe(u8, "AnonymousBase");
+            };
+            defer gpa.free(base_name);
+            const stmt_span = c.hir.spanOf(class_stmt);
+            const ext_span = c.hir.spanOf(extends_node);
+            if (stmt_span.start >= stmt_span.end or stmt_span.end > f.source.len) continue;
+            if (ext_span.start >= ext_span.end or ext_span.end > f.source.len) continue;
+            const ext_src = f.source[ext_span.start..ext_span.end];
+            const insert_text = try std.fmt.allocPrint(
+                gpa,
+                "const {s}: {s} = {s};\n",
+                .{ base_name, repr, ext_src },
+            );
+            errdefer gpa.free(insert_text);
+            const replace_text = try gpa.dupe(u8, base_name);
+            errdefer gpa.free(replace_text);
+            const title = try gpa.dupe(u8, "Extract base class to variable");
+            errdefer gpa.free(title);
+            const stmt_start = ts_diagnostics.positionToLineCol(f.source, stmt_span.start);
+            const ext_start = ts_diagnostics.positionToLineCol(f.source, ext_span.start);
+            const ext_end = ts_diagnostics.positionToLineCol(f.source, ext_span.end);
+            var edits = try gpa.alloc(TextEdit, 2);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = if (stmt_start.line > 0) stmt_start.line - 1 else 0,
+                .start_col = if (stmt_start.col > 0) stmt_start.col - 1 else 0,
+                .end_line = if (stmt_start.line > 0) stmt_start.line - 1 else 0,
+                .end_col = if (stmt_start.col > 0) stmt_start.col - 1 else 0,
+                .new_text = insert_text,
+            };
+            edits[1] = .{
+                .file = f.path,
+                .start_line = if (ext_start.line > 0) ext_start.line - 1 else 0,
+                .start_col = if (ext_start.col > 0) ext_start.col - 1 else 0,
+                .end_line = if (ext_end.line > 0) ext_end.line - 1 else 0,
+                .end_col = if (ext_end.col > 0) ext_end.col - 1 else 0,
+                .new_text = replace_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+                .code = 90064,
+            });
+        }
+
         // ---- Add satisfies + inline type assertion (TS9013 -> TS90068) ----
         for (c.diagnostics.items) |d| {
             if (d.code != ts_checker.check.TsCodes.isolated_declarations_expression_type_inferred) continue;
@@ -8875,6 +8974,53 @@ test "Service: codeActions marks isolatedDeclarations array literal as const" {
     try T.expectEqualStrings(" as const", a.edits[0].new_text);
     try T.expectEqual(a.edits[0].start_line, a.edits[0].end_line);
     try T.expectEqual(a.edits[0].start_col, a.edits[0].end_col);
+}
+
+test "Service: codeActions extracts isolatedDeclarations class base expression to variable" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        "declare function id<T>(value: T): T;\nclass Base {}\nexport class Mix extends id(Base) {}",
+    );
+    try program.compileAll(.{ .strict_flags = .{ .isolated_declarations = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Extract base class to variable")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, 90064), a.code);
+    try T.expectEqual(@as(usize, 2), a.edits.len);
+    try T.expectEqualStrings("const MixBase: typeof Base = id(Base);\n", a.edits[0].new_text);
+    try T.expectEqualStrings("MixBase", a.edits[1].new_text);
+    try T.expectEqual(@as(u32, 2), a.edits[0].start_line);
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_col);
+    try T.expectEqual(@as(u32, 2), a.edits[1].start_line);
+    try T.expectEqual(@as(u32, 25), a.edits[1].start_col);
+    try T.expectEqual(@as(u32, 2), a.edits[1].end_line);
+    try T.expectEqual(@as(u32, 33), a.edits[1].end_col);
 }
 
 test "Service: codeActions adds satisfies inline assertion for inferred isolatedDeclarations expression" {
