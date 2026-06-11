@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| non-emitted total | 469 |
-| active reachable (parity targets) | 3 |
+| non-emitted total | 468 |
+| active reachable (parity targets) | 2 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave non-emitted) | 462 |
 
@@ -25,17 +25,16 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 2 |
 | 1xxx — parser / syntactic + program file-inclusion | 1 |
-
-### 2xxx — checker / type engine (2)
-
-- TS2338 (declared) `super_property_access_is_permitted_only_in_a_constructor_member_function_or_member_accessor_of_a_der_2338`
-- TS2819 (declared) `Namespace_name_cannot_be_0_2819`
+| 2xxx — checker / type engine | 1 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (1)
 
 - TS1327 (tested-only) `String_literal_with_double_quotes_expected_1327`
+
+### 2xxx — checker / type engine (1)
+
+- TS2338 (declared) `super_property_access_is_permitted_only_in_a_constructor_member_function_or_member_accessor_of_a_der_2338`
 
 ## Blocked/effectively-dead references
 

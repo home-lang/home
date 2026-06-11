@@ -7089,6 +7089,11 @@ pub const Parser = struct {
             }
             break :name_blk try self.expectIdentifierLike();
         };
+        if (name_tok.kind == .kw_namespace or name_tok.kind == .kw_module) {
+            const name_text = self.source[name_tok.span.start..name_tok.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Namespace name cannot be '{s}'.", .{name_text});
+            try self.reportCodeAt(name_tok.span.start, name_tok.line, 2819, msg);
+        }
         // TS1035: A quoted-name namespace/module declaration is only
         // legal in an ambient context (after `declare` or inside a
         // `.d.ts` file). Bare `module "Foo" {}` in a `.ts` file is an
@@ -20870,6 +20875,15 @@ test "parser: namespace without name reports TS1437" {
     _ = try s.parser.parseSourceFile();
     const d = findFirstDiagnosticOfCode(&s.parser, 1437) orelse return error.TestExpectedEqual;
     try T.expectEqualStrings("Namespace must be given a name.", d.message);
+}
+
+test "parser: namespace reserved names report TS2819" {
+    var s = try newTestSetup("namespace namespace { }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 2819) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("Namespace name cannot be 'namespace'.", d.message);
 }
 
 test "parser: malformed import attribute key reports TS1478" {
