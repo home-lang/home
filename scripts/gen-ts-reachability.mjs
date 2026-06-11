@@ -96,6 +96,14 @@ const dead = [];
 
 const effectivelyDeadByCode = new Map([
   [
+    "TS1059",
+    "Referenced only from the low-level promised-type helper. Modern awaited-type callers probe that helper without an error node, then emit wrapper diagnostics such as TS1058 or TS1320 instead.",
+  ],
+  [
+    "TS1060",
+    "Referenced only from the low-level promised-type helper. Modern awaited-type callers probe that helper without an error node, then emit wrapper diagnostics such as TS1058 or TS1320 instead.",
+  ],
+  [
     "TS5078",
     "Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.",
   ],

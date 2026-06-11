@@ -16,27 +16,25 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 545 |
-| active reachable (parity targets) | 82 |
-| blocked/effectively-dead references | 2 |
+| catalog-only total | 544 |
+| active reachable (parity targets) | 79 |
+| blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 39 |
+| 1xxx — parser / syntactic + program file-inclusion | 37 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
-| 2xxx — checker / type engine | 9 |
+| 2xxx — checker / type engine | 8 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 | 4xxx — declaration-emit (privacy / serialization) | 1 |
 
-### 1xxx — parser / syntactic + program file-inclusion (39)
+### 1xxx — parser / syntactic + program file-inclusion (37)
 
 - TS1012 `Unexpected_token_1012`
-- TS1059 `A_promise_must_have_a_then_method_1059`
-- TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060`
 - TS1261 `Already_included_file_name_0_differs_from_file_name_1_only_in_casing_1261`
 - TS1394 `Imported_via_0_from_file_1_with_packageId_2_1394`
 - TS1395 `Imported_via_0_from_file_1_to_import_importHelpers_as_specified_in_compilerOptions_1395`
@@ -111,13 +109,12 @@ diverge from the reference compiler.
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 2xxx — checker / type engine (9)
+### 2xxx — checker / type engine (8)
 
 - TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
 - TS2527 `The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527`
 - TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
 - TS2590 `Expression_produces_a_union_type_that_is_too_complex_to_represent_2590`
-- TS2615 `Type_of_property_0_circularly_references_itself_in_mapped_type_1_2615`
 - TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
 - TS2742 `The_inferred_type_of_0_cannot_be_named_without_a_reference_to_1_This_is_likely_not_portable_A_type_a_2742`
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
@@ -138,6 +135,8 @@ These codes have production-looking tsgo references, but the reachable
 consumer path is currently dead or subsystem-gated. They stay
 `catalog-only` until the reference compiler grows a live emission path.
 
+- TS1059 `A_promise_must_have_a_then_method_1059` — Referenced only from the low-level promised-type helper. Modern awaited-type callers probe that helper without an error node, then emit wrapper diagnostics such as TS1058 or TS1320 instead.
+- TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060` — Referenced only from the low-level promised-type helper. Modern awaited-type callers probe that helper without an error node, then emit wrapper diagnostics such as TS1058 or TS1320 instead.
 - TS5078 `Unknown_watch_option_0_5078` — Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079` — Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.
 
