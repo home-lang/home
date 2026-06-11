@@ -15386,6 +15386,33 @@ const harness_prelude =
     \\    }
     \\  });
     \\}
+    \\function __home_fetch_tls_client_hello() {
+    \\  return Buffer.from([
+    \\    0x16, 0x03, 0x01, 0x00, 0x3e, 0x01, 0x00, 0x00, 0x3a, 0x03, 0x03,
+    \\    0x48, 0x4f, 0x4d, 0x45, 0x2d, 0x54, 0x4c, 0x53, 0x2d, 0x43, 0x4c,
+    \\    0x49, 0x45, 0x4e, 0x54, 0x2d, 0x48, 0x45, 0x4c, 0x4c, 0x4f, 0x2d,
+    \\    0x52, 0x41, 0x4e, 0x44, 0x4f, 0x4d, 0x30, 0x30, 0x30, 0x31, 0x00,
+    \\    0x00, 0x02, 0x13, 0x01, 0x01, 0x00, 0x00, 0x0f, 0x00, 0x10, 0x00,
+    \\    0x0b, 0x00, 0x09, 0x08, 0x68, 0x74, 0x74, 0x70, 0x2f, 0x31, 0x2e,
+    \\    0x31,
+    \\  ]);
+    \\}
+    \\function __home_fetch_via_net_tls(href) {
+    \\  let parsed = null;
+    \\  try { parsed = new URL(href); } catch (error) { return __home_fetch_thenable(null, error); }
+    \\  if (!parsed || parsed.protocol !== "https:") return null;
+    \\  const port = Number(parsed.port || 443);
+    \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  if (!server || typeof server.__home_net_handler !== "function") return null;
+    \\  return new Promise((resolve, reject) => {
+    \\    const socket = __home_net_connect({ port, host: parsed.hostname || "127.0.0.1" });
+    \\    socket.on("connect", () => {
+    \\      socket.write(__home_fetch_tls_client_hello(), () => reject(new Error("closed unexpectedly")));
+    \\    });
+    \\    socket.on("error", error => reject(error));
+    \\    socket.on("close", () => reject(new Error("closed unexpectedly")));
+    \\  });
+    \\}
     \\function fetch(input, init) {
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
     \\  const fetchOptions = init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
@@ -15403,6 +15430,8 @@ const harness_prelude =
     \\  }
     \\  const proxyResponse = __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod);
     \\  if (proxyResponse) return proxyResponse;
+    \\  const netTlsResponse = __home_fetch_via_net_tls(href);
+    \\  if (netTlsResponse) return netTlsResponse;
     \\  let origin = href;
     \\  const scheme = href.indexOf("://");
     \\  if (scheme !== -1) {
@@ -25214,6 +25243,33 @@ test "bootstrap runner mirrors issue 29684 websocket deflate offers" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29780 fetch TLS client hello extensions" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29780.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29780.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const net = globalThis.__home_import(\"node:net\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_tls_client_hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_via_net_tls") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
