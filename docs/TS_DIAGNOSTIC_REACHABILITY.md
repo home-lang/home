@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 538 |
-| active reachable (parity targets) | 73 |
+| catalog-only total | 537 |
+| active reachable (parity targets) | 72 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -28,7 +28,7 @@ diverge from the reference compiler.
 | 1xxx — parser / syntactic + program file-inclusion | 37 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
-| 2xxx — checker / type engine | 3 |
+| 2xxx — checker / type engine | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (37)
@@ -108,10 +108,9 @@ diverge from the reference compiler.
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 2xxx — checker / type engine (3)
+### 2xxx — checker / type engine (2)
 
 - TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
-- TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
 ### 6xxx — CLI / build / watch / resolution-trace messages (2)
