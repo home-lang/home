@@ -5450,6 +5450,7 @@ const harness_prelude =
     \\if (!process.execPath) process.execPath = "home";
     \\if (!process.platform) process.platform = globalThis.__home_process_platform || "unknown";
     \\if (!process.arch) process.arch = globalThis.__home_process_arch || "unknown";
+    \\Object.defineProperty(process, "ppid", { configurable: true, enumerable: true, get() { return 1; } });
     \\function __home_process_stream(fd, name) {
     \\  return {
     \\    fd,
@@ -6382,22 +6383,29 @@ const harness_prelude =
     \\test.concurrent = test;
     \\const xit = it.skip;
     \\const xtest = test.skip;
-    \\function __home_each(rows) {
-    \\  return function(name, fn) {
-    \\    for (const row of rows) {
-    \\      const args = Array.isArray(row) ? row : [row];
-    \\      test(name, () => {
-    \\        const callArgs = args.slice();
-    \\        if (typeof fn === "function" && fn.length > callArgs.length) callArgs.push(__home_done_callback);
-    \\        return fn.apply(null, callArgs);
-    \\      });
-    \\    }
+    \\function __home_each_for(runner) {
+    \\  return function(rows) {
+    \\    return function(name, fn) {
+    \\      for (const row of rows) {
+    \\        const args = Array.isArray(row) ? row : [row];
+    \\        runner(name, () => {
+    \\          const callArgs = args.slice();
+    \\          if (typeof fn === "function" && fn.length > callArgs.length) callArgs.push(__home_done_callback);
+    \\          return fn.apply(null, callArgs);
+    \\        });
+    \\      }
+    \\    };
     \\  };
     \\}
-    \\it.each = __home_each;
-    \\it.concurrent.each = __home_each;
+    \\const __home_each = __home_each_for(test);
+    \\it.each = __home_each_for(it);
+    \\it.todo.each = __home_each_for(it.todo);
+    \\it.skip.each = __home_each_for(it.skip);
+    \\it.concurrent.each = __home_each_for(it.concurrent);
     \\test.each = __home_each;
-    \\test.concurrent.each = __home_each;
+    \\test.todo.each = __home_each_for(test.todo);
+    \\test.skip.each = __home_each_for(test.skip);
+    \\test.concurrent.each = __home_each_for(test.concurrent);
     \\test.ignore = function(nameOrFn, maybeFn) {
     \\  __home_bun_tests.todo++;
     \\};
@@ -21593,6 +21601,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.execPath = \"home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(process, \"ppid\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.nextTick = function(callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.cwd = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.chdir = function(path)") != null);
@@ -21645,7 +21654,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() module name must be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() requires a factory callback") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot set both retry and repeats") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.each = __home_each") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_each_for(runner)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.each = __home_each_for(it)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip.each = __home_each_for(test.skip)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.concurrent.each") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.each = function(rows)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
@@ -22944,6 +22955,40 @@ test "bootstrap runner mirrors YAML block list corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "YAML.parse") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const blockList = trimmed.match") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.memoryUsage.rss = function()") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner exposes process ppid as live accessor" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("process.ppid is a live accessor", () => {
+        \\  const before = Object.getOwnPropertyDescriptor(process, "ppid");
+        \\  expect(before).toBeDefined();
+        \\  expect(typeof before!.get).toBe("function");
+        \\  const firstRead = process.ppid;
+        \\  expect(firstRead).toBeGreaterThan(0);
+        \\  const after = Object.getOwnPropertyDescriptor(process, "ppid");
+        \\  expect(after).toBeDefined();
+        \\  expect(typeof after!.get).toBe("function");
+        \\  expect(process.ppid).toBe(firstRead);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29169.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(process, \"ppid\"") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -26490,6 +26535,8 @@ test "bootstrap runner covers conditional skip helpers" {
         \\test.if(null)("test #12", () => expect.unreachable());
         \\test.if(true)("test #13", () => expect().pass());
         \\test.if(1)("test #14", () => expect().pass());
+        \\test.skipIf(true).each([["a"], ["b"]])("test #19 %s", () => expect.unreachable());
+        \\test.skipIf(false).each([["c"], ["d"]])("test #20 %s", () => expect().pass());
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/skip-test-fixture.js");
     defer prepared.deinit(std.testing.allocator);
@@ -26501,8 +26548,8 @@ test "bootstrap runner covers conditional skip helpers" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 12), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
 }
 
