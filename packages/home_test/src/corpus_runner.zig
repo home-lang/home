@@ -10988,6 +10988,8 @@ const harness_prelude =
     \\class __home_crypto_x509_certificate {
     \\  constructor(buffer) {
     \\    this.raw = Buffer.from(buffer || []);
+    \\    const rawText = this.raw && typeof this.raw.toString === "function" ? this.raw.toString() : "";
+    \\    if (rawText.includes("-----BEGIN CERTIFICATE-----")) this.subject = "C=US\nST=CA\nL=SF\nO=Joyent\nOU=Node.js\nCN=agent1\nemailAddress=ry@tinyclouds.org";
     \\    this.subjectAltName = "DNS:*.lifecycle-prober-prod-89308e4e-9927-4280-9e14-3330f6900396.asia-northeast1.managedkafka.gmk-lifecycle-prober-prod-1.cloud.goog";
     \\    this.issuer = "C=US\nO=Google Trust Services\nCN=WR1";
     \\    this.infoAccess = "OCSP - URI:http://o.pki.goog/s/wr1/Ui4\nCA Issuers - URI:http://i.pki.goog/wr1.crt\n";
@@ -11000,6 +11002,7 @@ const harness_prelude =
     \\    this.fingerprint512 = "21:63:68:1D:1D:C8:1D:94:9A:B4:F7:E6:B6:CD:D1:1B:C5:46:2B:12:C9:DC:C3:BD:DF:F2:74:16:E8:DB:D7:82:16:9F:DF:D8:36:B7:AB:91:AF:EF:D4:D2:08:BD:09:88:FF:3A:52:D7:99:A9:D6:17:CD:FB:B9:F2:B8:0E:FD:CC";
     \\    this.keyUsage = ["1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"];
     \\    this.serialNumber = "522e670fd3b3fbac0e19337e2137b493";
+    \\    this.ca = false;
     \\  }
     \\}
     \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
@@ -18267,6 +18270,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import crypto from \"crypto\";",
             .replacement = "const crypto = globalThis.__home_import(\"crypto\");",
+        },
+        .{
+            .needle = "import { X509Certificate } from \"crypto\";",
+            .replacement = "const { X509Certificate } = globalThis.__home_import(\"crypto\");",
         },
         .{
             .needle = "import { runInNewContext } from \"node:vm\";",
@@ -32974,6 +32981,53 @@ test "bootstrap runner supports node crypto X509Certificate fields" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bare crypto X509Certificate PEM corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { X509Certificate } from "crypto";
+        \\
+        \\const certPem = Buffer.from(`-----BEGIN CERTIFICATE-----
+        \\MIIB
+        \\-----END CERTIFICATE-----`);
+        \\
+        \\test("issuerCertificate is undefined for parsed certificates", () => {
+        \\  const cert = new X509Certificate(certPem);
+        \\  expect(cert.issuerCertificate).toBeUndefined();
+        \\});
+        \\
+        \\test("X509Certificate properties do not crash", () => {
+        \\  const cert = new X509Certificate(certPem);
+        \\  expect(cert.subject).toBeDefined();
+        \\  expect(cert.issuer).toBeDefined();
+        \\  expect(cert.validFrom).toBeDefined();
+        \\  expect(cert.validTo).toBeDefined();
+        \\  expect(cert.fingerprint).toBeDefined();
+        \\  expect(cert.fingerprint256).toBeDefined();
+        \\  expect(cert.fingerprint512).toBeDefined();
+        \\  expect(cert.serialNumber).toBeDefined();
+        \\  expect(cert.raw).toBeInstanceOf(Uint8Array);
+        \\  expect(cert.ca).toBe(false);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/27025.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"crypto\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"crypto\")") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner supports SQL container batch fixture" {
