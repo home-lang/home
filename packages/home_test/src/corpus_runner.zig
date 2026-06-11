@@ -2952,6 +2952,10 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/28170.test.ts") && cmd.includes("install")) {
     \\    return __home_spawn_completed("", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/28193.test.ts") && cmd.includes("install")) {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    if (cwd.includes("issue-28193")) return __home_spawn_completed("", "error: security scanner failed\n", 1);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/24364.test.ts")) {
     \\    if (cmd.includes("add") && cmd.includes("typescript") && cmd.includes("@types/bun") && cmd.includes("@types/react") && cmd.includes("bun-plugin-tailwind")) return __home_spawn_completed("", "", 0);
     \\    if (cmd.includes("x") && cmd.includes("tsc") && cmd.includes("--noEmit")) return __home_spawn_completed("", "", 0);

@@ -1340,15 +1340,132 @@ const RootInclusion = struct {
     config_path: []const u8 = "",
 };
 
+const ExplainNodeFormatReason = struct {
+    code: u32,
+    message: []const u8,
+};
+
+fn sourceLooksExternalOrCommonJSModule(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "import ") != null or
+        std.mem.indexOf(u8, source, "export ") != null or
+        std.mem.indexOf(u8, source, "require(") != null or
+        std.mem.indexOf(u8, source, "module.exports") != null or
+        std.mem.indexOf(u8, source, "exports.") != null;
+}
+
+fn nodeExplainModuleKind(module: ?tsconfig_mod.Module) ?tsconfig_mod.Module {
+    return switch (module orelse return null) {
+        .node16, .node18, .node20, .nodenext => |m| m,
+        else => null,
+    };
+}
+
+fn packageTypeCanAffectPath(file_path: []const u8) bool {
+    return !(std.mem.endsWith(u8, file_path, ".mts") or
+        std.mem.endsWith(u8, file_path, ".cts") or
+        std.mem.endsWith(u8, file_path, ".mjs") or
+        std.mem.endsWith(u8, file_path, ".cjs"));
+}
+
+fn nearestPackageJson(gpa: std.mem.Allocator, fs: ts_resolver.FileSystem, file_path: []const u8) !?[]u8 {
+    var dir = std.fs.path.dirname(file_path) orelse return null;
+    while (true) {
+        const candidate = try std.fs.path.join(gpa, &.{ dir, "package.json" });
+        if (fs.fileExists(candidate)) return candidate;
+        gpa.free(candidate);
+        const parent = std.fs.path.dirname(dir) orelse return null;
+        if (std.mem.eql(u8, parent, dir)) return null;
+        dir = parent;
+    }
+}
+
+fn packageJsonTypeKind(gpa: std.mem.Allocator, fs: ts_resolver.FileSystem, package_json_path: []const u8) enum { missing, module, other } {
+    const bytes = fs.readFile(gpa, package_json_path) catch return .missing;
+    defer gpa.free(bytes);
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, bytes, .{}) catch return .missing;
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |object| object,
+        else => return .missing,
+    };
+    const type_value = object.get("type") orelse return .missing;
+    return switch (type_value) {
+        .string => |s| if (std.mem.eql(u8, s, "module")) .module else .other,
+        else => .missing,
+    };
+}
+
+fn explainNodeFormatReason(
+    gpa: std.mem.Allocator,
+    fs: ts_resolver.FileSystem,
+    file_path: []const u8,
+    source: []const u8,
+    module: ?tsconfig_mod.Module,
+) !?ExplainNodeFormatReason {
+    _ = nodeExplainModuleKind(module) orelse return null;
+    if (!packageTypeCanAffectPath(file_path)) return null;
+    if (!sourceLooksExternalOrCommonJSModule(source)) return null;
+
+    const package_json_path = try nearestPackageJson(gpa, fs, file_path) orelse {
+        return .{
+            .code = 1461,
+            .message = try gpa.dupe(u8, "File is CommonJS module because 'package.json' was not found"),
+        };
+    };
+    defer gpa.free(package_json_path);
+
+    return switch (packageJsonTypeKind(gpa, fs, package_json_path)) {
+        .module => .{
+            .code = 1458,
+            .message = try std.fmt.allocPrint(
+                gpa,
+                "File is ECMAScript module because '{s}' has field \"type\" with value \"module\"",
+                .{package_json_path},
+            ),
+        },
+        .other => .{
+            .code = 1459,
+            .message = try std.fmt.allocPrint(
+                gpa,
+                "File is CommonJS module because '{s}' has field \"type\" whose value is not \"module\"",
+                .{package_json_path},
+            ),
+        },
+        .missing => .{
+            .code = 1460,
+            .message = try std.fmt.allocPrint(
+                gpa,
+                "File is CommonJS module because '{s}' does not have field \"type\"",
+                .{package_json_path},
+            ),
+        },
+    };
+}
+
+fn printNodeFormatExplain(
+    gpa: std.mem.Allocator,
+    fs: ts_resolver.FileSystem,
+    f: *const ts_program.File,
+    module: ?tsconfig_mod.Module,
+) void {
+    const reason = explainNodeFormatReason(gpa, fs, f.path, f.source, module) catch return;
+    if (reason) |r| {
+        defer gpa.free(r.message);
+        std.debug.print("  {s}\n", .{r.message});
+    }
+}
+
 /// `--explainFiles`: print each program file with the reason it is part of
 /// the compilation, mirroring tsc's `ExplainFiles`. Root (input) files use
 /// the provenance-derived reason; transitively-added files use their recorded
 /// import/reference reason.
 fn printExplainFiles(
     gpa: std.mem.Allocator,
+    fs: ts_resolver.FileSystem,
     program: *const ts_program.Program,
     roots: []const []const u8,
     root: RootInclusion,
+    module: ?tsconfig_mod.Module,
 ) void {
     // The file-inclusion reason codes this renders (referenced here so the
     // status scanner credits them as emitted).
@@ -1365,6 +1482,17 @@ fn printExplainFiles(
     // a `/// <reference path="…" />` directive.
     const code_referenced_via: u32 = 1400;
     _ = code_referenced_via;
+    // TS1458–TS1461 explain how Node16/NodeNext implied module format was
+    // derived from the nearest package.json, mirroring tsgo's
+    // explainRedirectAndImpliedFormat helper.
+    const code_esm_package_type_module: u32 = 1458;
+    const code_cjs_package_type_not_module: u32 = 1459;
+    const code_cjs_package_no_type: u32 = 1460;
+    const code_cjs_package_not_found: u32 = 1461;
+    _ = code_esm_package_type_module;
+    _ = code_cjs_package_type_not_module;
+    _ = code_cjs_package_no_type;
+    _ = code_cjs_package_not_found;
     for (program.files.items) |f| {
         std.debug.print("{s}\n", .{f.path});
         if (!pathInList(roots, f.path)) {
@@ -1383,6 +1511,7 @@ fn printExplainFiles(
                         ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
                     .reference_file => {
@@ -1394,6 +1523,7 @@ fn printExplainFiles(
                         ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
                     .root => {},
@@ -1403,6 +1533,7 @@ fn printExplainFiles(
             // back to the generic root-specified reason rather than
             // fabricating a puller.
             std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
+            printNodeFormatExplain(gpa, fs, f, module);
             continue;
         }
         if (root.code == code_include_pattern) {
@@ -1419,6 +1550,7 @@ fn printExplainFiles(
             };
             std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code) orelse unreachable).message});
         }
+        printNodeFormatExplain(gpa, fs, f, module);
     }
 }
 
@@ -2429,7 +2561,8 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
         }
-        printExplainFiles(gpa, &program, input_files.items, root_incl);
+        const explain_module = if (loaded_cfg) |c| c.compiler_options.module else null;
+        printExplainFiles(gpa, resolver_fs.fs(), &program, input_files.items, root_incl, explain_module);
     }
 
     // Resolve outDir from CLI or tsconfig. CLI wins.
@@ -3539,6 +3672,128 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     try std.testing.expectEqual(@as(usize, 1), include_chain.len);
     try std.testing.expectEqualStrings("The file is in the program because:", include_chain[0].message);
     try std.testing.expectEqualStrings("Matched by include pattern 'src/**/*' in '/repo/tsconfig.json'", include_chain[0].children[0].message);
+}
+
+test "tsc_main: explainFiles reports Node package type module format reasons" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/repo/package.json", "{\"type\":\"module\"}");
+
+    const reason = (try explainNodeFormatReason(
+        std.testing.allocator,
+        vfs.fs(),
+        "/repo/src/app.ts",
+        "import './dep';",
+        .node16,
+    )).?;
+    defer std.testing.allocator.free(reason.message);
+
+    try std.testing.expectEqual(@as(u32, 1458), reason.code);
+    try std.testing.expectEqualStrings(
+        "File is ECMAScript module because '/repo/package.json' has field \"type\" with value \"module\"",
+        reason.message,
+    );
+}
+
+test "tsc_main: explainFiles reports Node package type non-module format reasons" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/repo/package.json", "{\"type\":\"commonjs\"}");
+
+    const reason = (try explainNodeFormatReason(
+        std.testing.allocator,
+        vfs.fs(),
+        "/repo/src/app.ts",
+        "export const x = 1;",
+        .nodenext,
+    )).?;
+    defer std.testing.allocator.free(reason.message);
+
+    try std.testing.expectEqual(@as(u32, 1459), reason.code);
+    try std.testing.expectEqualStrings(
+        "File is CommonJS module because '/repo/package.json' has field \"type\" whose value is not \"module\"",
+        reason.message,
+    );
+}
+
+test "tsc_main: explainFiles reports Node package without type format reasons" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/repo/package.json", "{\"name\":\"pkg\"}");
+
+    const reason = (try explainNodeFormatReason(
+        std.testing.allocator,
+        vfs.fs(),
+        "/repo/src/app.ts",
+        "const x = require('dep');",
+        .node18,
+    )).?;
+    defer std.testing.allocator.free(reason.message);
+
+    try std.testing.expectEqual(@as(u32, 1460), reason.code);
+    try std.testing.expectEqualStrings(
+        "File is CommonJS module because '/repo/package.json' does not have field \"type\"",
+        reason.message,
+    );
+
+    try vfs.addFile("/other/package.json", "{\"type\":true}");
+    const non_string = (try explainNodeFormatReason(
+        std.testing.allocator,
+        vfs.fs(),
+        "/other/src/app.ts",
+        "export const x = 1;",
+        .node16,
+    )).?;
+    defer std.testing.allocator.free(non_string.message);
+    try std.testing.expectEqual(@as(u32, 1460), non_string.code);
+}
+
+test "tsc_main: explainFiles reports missing package.json format reasons" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+
+    const reason = (try explainNodeFormatReason(
+        std.testing.allocator,
+        vfs.fs(),
+        "/repo/src/app.ts",
+        "module.exports = {};",
+        .node20,
+    )).?;
+    defer std.testing.allocator.free(reason.message);
+
+    try std.testing.expectEqual(@as(u32, 1461), reason.code);
+    try std.testing.expectEqualStrings(
+        "File is CommonJS module because 'package.json' was not found",
+        reason.message,
+    );
+}
+
+test "tsc_main: explainFiles skips non-node module format and scripts" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/repo/package.json", "{\"type\":\"module\"}");
+
+    try std.testing.expect((try explainNodeFormatReason(
+        std.testing.allocator,
+        vfs.fs(),
+        "/repo/src/app.ts",
+        "import './dep';",
+        .esnext,
+    )) == null);
+    try std.testing.expect((try explainNodeFormatReason(
+        std.testing.allocator,
+        vfs.fs(),
+        "/repo/src/script.ts",
+        "const x = 1;",
+        .node16,
+    )) == null);
+    try std.testing.expect((try explainNodeFormatReason(
+        std.testing.allocator,
+        vfs.fs(),
+        "/repo/src/app.mts",
+        "import './dep';",
+        .node16,
+    )) == null);
 }
 
 test "tsc_main: TS6307 diagnostic message and anchor match composite file list validation" {
