@@ -3358,6 +3358,44 @@ test "Program: declaration emit reports nonlocal module interface augmentation (
     try T.expect(saw_6233_related);
 }
 
+test "Program: isolated declaration emit reports imports required by augmentations (TS9026)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/child1.ts",
+        \\import { ParentThing } from "./parent";
+        \\declare module "./parent" {
+        \\  interface ParentThing { add(): string; }
+        \\}
+        \\export function child1(prototype: ParentThing): void {
+        \\  prototype.add = () => "ok";
+        \\}
+    );
+    _ = try p.add("/parent.ts",
+        \\import { child1 } from "./child1";
+        \\export interface ParentThing {}
+        \\child1({});
+    );
+    try p.compileAll(.{ .strict_flags = .{ .declaration = true, .isolated_declarations = true } });
+
+    const parent = p.fileById(1).compilation orelse return error.TestFailed;
+    var saw_9026 = false;
+    for (parent.diagnostics.items) |d| {
+        if (d.code != 9026) continue;
+        saw_9026 = true;
+        try T.expectEqualStrings(
+            "Declaration emit for this file requires preserving this import for augmentations. This is not supported with --isolatedDeclarations.",
+            d.message,
+        );
+        const pos = d.pos;
+        try T.expectEqualStrings("import", parent.source[pos .. pos + "import".len]);
+    }
+    try T.expect(saw_9026);
+}
+
 test "Program: reaches detects transitive imports" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

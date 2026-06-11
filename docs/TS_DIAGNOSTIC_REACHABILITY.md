@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 487 |
-| active reachable (parity targets) | 22 |
+| catalog-only total | 486 |
+| active reachable (parity targets) | 21 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -26,7 +26,7 @@ diverge from the reference compiler.
 | Range | Count |
 | --- | ---: |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| other | 5 |
+| other | 4 |
 
 ### 9xxxx — editor code-fix / refactor (language service) (17)
 
@@ -48,13 +48,12 @@ diverge from the reference compiler.
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### other (5)
+### other (4)
 
 - TS8001 `You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001`
 - TS8031 `You_cannot_rename_a_module_via_a_global_import_8031`
 - TS8035 `You_cannot_rename_elements_that_are_defined_in_a_node_modules_folder_8035`
 - TS8036 `You_cannot_rename_elements_that_are_defined_in_another_node_modules_folder_8036`
-- TS9026 `Declaration_emit_for_this_file_requires_preserving_this_import_for_augmentations_This_is_not_support_9026`
 
 ## Blocked/effectively-dead references
 
