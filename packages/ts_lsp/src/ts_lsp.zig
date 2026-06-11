@@ -2552,6 +2552,53 @@ pub const Service = struct {
                     break;
                 }
                 if (!matched) continue;
+                var emitted_namespace_qualifier = false;
+                for (stmts) |existing_stmt| {
+                    if (c.hir.kindOf(existing_stmt) != .import_decl) continue;
+                    const existing_imp = hir_mod.importOf(&c.hir, existing_stmt);
+                    if (existing_imp.is_type_only or existing_imp.namespace_binding == hir_mod.none_node_id) continue;
+                    if (c.hir.kindOf(existing_imp.namespace_binding) != .identifier) continue;
+                    const existing_module = c.interner.get(existing_imp.module);
+                    var same_module = std.mem.eql(u8, existing_module, other.path);
+                    if (!same_module) {
+                        const resolved_existing = self.program.resolver.resolve(existing_module, file_path) catch null;
+                        if (resolved_existing) |resolved| {
+                            same_module = std.mem.eql(u8, resolved.path, other.path);
+                        }
+                    }
+                    if (!same_module) continue;
+                    const namespace_id = hir_mod.identifierOf(&c.hir, existing_imp.namespace_binding);
+                    const namespace_name = c.interner.get(namespace_id.name);
+                    const insert_pos = ts_diagnostics.positionToLineCol(f.source, d.pos);
+                    const ln: u32 = if (insert_pos.line > 0) insert_pos.line - 1 else 0;
+                    const co: u32 = if (insert_pos.col > 0) insert_pos.col - 1 else 0;
+                    const new_text = try std.fmt.allocPrint(gpa, "{s}.", .{namespace_name});
+                    errdefer gpa.free(new_text);
+                    const title = try std.fmt.allocPrint(
+                        gpa,
+                        "Change '{s}' to '{s}.{s}'",
+                        .{ ident, namespace_name, ident },
+                    );
+                    errdefer gpa.free(title);
+                    var edits = try gpa.alloc(TextEdit, 1);
+                    edits[0] = .{
+                        .file = f.path,
+                        .start_line = ln,
+                        .start_col = co,
+                        .end_line = ln,
+                        .end_col = co,
+                        .new_text = new_text,
+                    };
+                    try actions.append(gpa, .{
+                        .title = title,
+                        .kind = .quick_fix,
+                        .edits = edits,
+                        .code = 90014,
+                    });
+                    emitted_namespace_qualifier = true;
+                    break;
+                }
+                if (emitted_namespace_qualifier) continue;
                 var emitted_update_import = false;
                 for (stmts) |existing_stmt| {
                     if (c.hir.kindOf(existing_stmt) != .import_decl) continue;
@@ -8545,6 +8592,49 @@ test "Service: codeActions updates existing import for unresolved identifier" {
     try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_update_import_from), a.code);
     try T.expectEqual(@as(usize, 1), a.edits.len);
     try T.expectEqualStrings(", bar", a.edits[0].new_text);
+}
+
+test "Service: codeActions qualifies unresolved identifier with namespace import" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export function foo() { }");
+    _ = try program.add("/main.ts", "import * as lib from \"/lib.ts\";\nfoo();");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Change 'foo' to 'lib.foo'")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, 90014), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings("/main.ts", a.edits[0].file);
+    try T.expectEqualStrings("lib.", a.edits[0].new_text);
+    try T.expectEqual(@as(u32, 1), a.edits[0].start_line);
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_col);
+    try T.expectEqual(@as(u32, 1), a.edits[0].end_line);
+    try T.expectEqual(@as(u32, 0), a.edits[0].end_col);
 }
 
 test "Service: codeActions removes declaration-level type import for value use" {
