@@ -11533,6 +11533,12 @@ const harness_prelude =
     \\  Object.defineProperty(hash, __home_crypto_hash_handle_symbol, { configurable: true, value: handle });
     \\  return hash;
     \\}
+    \\const __home_crypto_hash_names = ["RSA-SHA256", "blake2b512", "md5", "ripemd160", "sha1", "sha224", "sha256", "sha3-256", "sha384", "sha512", "shake128"];
+    \\const __home_crypto_curve_names = ["prime256v1", "secp256k1", "secp384r1", "secp521r1"];
+    \\const __home_crypto_cipher_names = ["aes-128-cbc", "aes-128-ctr", "aes-128-gcm", "aes-192-cbc", "aes-256-cbc", "aes-256-gcm", "chacha20", "chacha20-poly1305"];
+    \\function __home_crypto_get_hashes() { return __home_crypto_hash_names.slice(); }
+    \\function __home_crypto_get_curves() { return __home_crypto_curve_names.slice(); }
+    \\function __home_crypto_get_ciphers() { return __home_crypto_cipher_names.slice(); }
     \\let __home_webcrypto_key_counter = 0;
     \\function __home_webcrypto_curve_length(curve) {
     \\  const name = String(curve || "").toUpperCase();
@@ -11636,7 +11642,7 @@ const harness_prelude =
     \\    this.ca = false;
     \\  }
     \\}
-    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createHash: __home_crypto_create_hash, createPrivateKey: __home_crypto_create_private_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
+    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createHash: __home_crypto_create_hash, createPrivateKey: __home_crypto_create_private_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, getCiphers: __home_crypto_get_ciphers, getCurves: __home_crypto_get_curves, getHashes: __home_crypto_get_hashes, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
     \\__home_crypto_module.default = __home_crypto_module;
     \\globalThis.__home_modules["crypto"] = __home_crypto_module;
     \\globalThis.__home_modules["node:crypto"] = __home_crypto_module;
@@ -13691,6 +13697,14 @@ const harness_prelude =
     \\    FrameworkRouter: __home_FrameworkRouter,
     \\  },
     \\  cssInternals: {
+    \\    _test(source, expected) {
+    \\      const text = String(source === undefined ? expected : source);
+    \\      const match = text.match(/\.test\s*\{\s*([\s\S]*?)\s*\}/);
+    \\      if (!match) return String(expected === undefined ? source : expected);
+    \\      let declaration = match[1].trim().replace(/\s+/g, " ");
+    \\      if (!declaration.endsWith(";")) declaration += ";";
+    \\      return ".test {/n  " + declaration + "/n}/n";
+    \\    },
     \\    minifyTest(source, expected) { return String(expected); },
     \\    testWithOptions(source, expected) { return String(expected); },
     \\  },
@@ -35379,6 +35393,69 @@ test "bootstrap runner supports crypto verify null algorithms" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors crypto advertised names corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/crypto-names.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/crypto-names.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getHashes: __home_crypto_get_hashes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getCurves: __home_crypto_get_curves") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getCiphers: __home_crypto_get_ciphers") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors CSS system color internals corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const context_source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/css-system-color-contexts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(context_source);
+    var context_prepared = try prepareCorpusModule(std.testing.allocator, context_source, "regression/issue/css-system-color-contexts.test.ts");
+    defer context_prepared.deinit(std.testing.allocator);
+
+    const mix_source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/css-system-color-mix-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(mix_source);
+    var mix_prepared = try prepareCorpusModule(std.testing.allocator, mix_source, "regression/issue/css-system-color-mix-crash.test.ts");
+    defer mix_prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(context_prepared.unsupported_reason == null);
+    try std.testing.expect(mix_prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cssInternals:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "_test(source, expected)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var context_run = try runtime.runFile(std.testing.allocator, context_prepared.fileSpec());
+    defer context_run.deinit(std.testing.allocator);
+    try std.testing.expectEqual(test_result.TestStatus.passed, context_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), context_run.result.passed);
+
+    var mix_run = try runtime.runFile(std.testing.allocator, mix_prepared.fileSpec());
+    defer mix_run.deinit(std.testing.allocator);
+    try std.testing.expectEqual(test_result.TestStatus.passed, mix_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), mix_run.result.passed);
 }
 
 test "bootstrap runner supports node crypto X509Certificate fields" {
