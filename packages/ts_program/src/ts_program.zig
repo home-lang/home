@@ -40,6 +40,8 @@ pub const IncludeKind = enum {
     reference_file,
     type_reference,
     lib_reference,
+    imported_helper,
+    jsx_runtime_import,
     compiler_type_reference,
     implicit_type_reference,
     compiler_lib_reference,
@@ -79,7 +81,7 @@ pub const IncludeReason = struct {
             .compiler_type_reference => code_file_is_entry_point_of_type_library_specified_here,
             .compiler_lib_reference => code_file_is_library_specified_here,
             .default_lib_reference => code_file_is_default_library_for_target_specified_here,
-            .root, .implicit_type_reference => null,
+            .root, .imported_helper, .jsx_runtime_import, .implicit_type_reference => null,
         };
     }
 
@@ -92,7 +94,7 @@ pub const IncludeReason = struct {
             .compiler_type_reference => "File is entry point of type library specified here.",
             .compiler_lib_reference => "File is library specified here.",
             .default_lib_reference => "File is default library for target specified here.",
-            .root, .implicit_type_reference => null,
+            .root, .imported_helper, .jsx_runtime_import, .implicit_type_reference => null,
         };
     }
 
@@ -1478,6 +1480,7 @@ pub const Program = struct {
         const hir_mod = @import("hir");
         var added: usize = 0;
         added += try self.loadCompilerOptionIncludes(options);
+        added += try self.loadCompilerInjectedImports(options);
         while (true) {
             try self.compileAll(options);
             var new_in_round: usize = 0;
@@ -1568,6 +1571,69 @@ pub const Program = struct {
             if (new_in_round == 0) break;
         }
         return added;
+    }
+
+    fn loadCompilerInjectedImports(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
+        var added: usize = 0;
+        const n = self.files.items.len;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const f = self.files.items[i];
+            if (f.is_declaration) continue;
+            if (options.emit.import_helpers) {
+                const specifier = try quotedSpecifier(self.gpa, "tslib");
+                defer self.gpa.free(specifier);
+                added += try self.loadCompilerInjectedImport(f, "tslib", specifier, .imported_helper);
+            }
+            if (compilerOptionsUsesAutomaticJsxRuntime(options) and sourceHasJsxSyntax(f.source)) {
+                const runtime = try compilerOptionsJsxRuntimeModule(self.gpa, options);
+                defer self.gpa.free(runtime);
+                const specifier = try quotedSpecifier(self.gpa, runtime);
+                defer self.gpa.free(specifier);
+                added += try self.loadCompilerInjectedImport(f, runtime, specifier, .jsx_runtime_import);
+            }
+        }
+        return added;
+    }
+
+    fn loadCompilerInjectedImport(
+        self: *Program,
+        importer: *File,
+        module_name: []const u8,
+        specifier_text: []const u8,
+        kind: IncludeKind,
+    ) ProgramError!usize {
+        const res = self.resolver.resolve(module_name, importer.path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return 0,
+        };
+        const target_id = try self.addResolvedIncludeFile(res.path);
+        if (target_id == null) return 0;
+        try self.recordReferenceIncludeReason(target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", 0);
+        return 1;
+    }
+
+    fn compilerOptionsUsesAutomaticJsxRuntime(options: ts_driver.CompileOptions) bool {
+        return options.emit.jsx_runtime == .automatic or options.emit.jsx_runtime == .automatic_dev;
+    }
+
+    fn compilerOptionsJsxRuntimeModule(gpa: std.mem.Allocator, options: ts_driver.CompileOptions) ProgramError![]u8 {
+        const import_source = if (options.pub_tsconfig) |cfg|
+            cfg.compiler_options.jsx_import_source orelse "react"
+        else
+            "react";
+        const suffix: []const u8 = if (options.emit.jsx_runtime == .automatic_dev) "jsx-dev-runtime" else "jsx-runtime";
+        return std.fmt.allocPrint(gpa, "{s}/{s}", .{ import_source, suffix }) catch return error.OutOfMemory;
+    }
+
+    fn sourceHasJsxSyntax(source: []const u8) bool {
+        return std.mem.indexOf(u8, source, "<>") != null or
+            std.mem.indexOf(u8, source, "</") != null or
+            std.mem.indexOf(u8, source, "/>") != null;
+    }
+
+    fn quotedSpecifier(gpa: std.mem.Allocator, specifier: []const u8) ProgramError![]u8 {
+        return std.fmt.allocPrint(gpa, "\"{s}\"", .{specifier}) catch return error.OutOfMemory;
     }
 
     fn loadCompilerOptionIncludes(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
@@ -2648,6 +2714,76 @@ test "Program: node_modules import records package-id include reason (TS1394)" {
     try T.expectEqualStrings("\"dep\"", dep.include_reason.?.specifier_text);
     try T.expectEqualStrings("dep/index.d.ts@1.2.3", dep.include_reason.?.package_id);
     try T.expectEqual(@as(?u32, 1399), dep.include_reason.?.relatedDiagnosticCode());
+}
+
+test "Program: loadImportClosure follows importHelpers tslib import (TS1395/TS1396 reason)" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"importHelpers":true}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export async function f() { return 1; }\n");
+    try vfs.addFile("/proj/node_modules/tslib/package.json",
+        \\{"name":"tslib","version":"2.6.2","types":"tslib.d.ts"}
+    );
+    try vfs.addFile("/proj/node_modules/tslib/tslib.d.ts", "export declare function __awaiter(): void;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const main_id = try p.add("/proj/main.ts", "export async function f() { return 1; }\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 1), added);
+
+    const tslib_id = p.lookupPath("/proj/node_modules/tslib/tslib.d.ts") orelse return error.TestUnexpectedResult;
+    const tslib = p.fileById(tslib_id);
+    try T.expect(tslib.include_reason != null);
+    try T.expectEqual(IncludeKind.imported_helper, tslib.include_reason.?.kind);
+    try T.expectEqual(main_id, tslib.include_reason.?.importer);
+    try T.expectEqualStrings("\"tslib\"", tslib.include_reason.?.specifier_text);
+    try T.expectEqualStrings("tslib/tslib.d.ts@2.6.2", tslib.include_reason.?.package_id);
+    try T.expectEqual(@as(?u32, null), tslib.include_reason.?.relatedDiagnosticCode());
+}
+
+test "Program: loadImportClosure follows automatic JSX runtime import (TS1397/TS1398 reason)" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"jsx":"react-jsx"}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.tsx", "export const el = <div />;\n");
+    try vfs.addFile("/proj/node_modules/react/package.json",
+        \\{"name":"react","version":"18.2.0"}
+    );
+    try vfs.addFile("/proj/node_modules/react/jsx-runtime.d.ts", "export declare function jsx(): unknown;\nexport declare function jsxs(): unknown;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const main_id = try p.add("/proj/main.tsx", "export const el = <div />;\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 1), added);
+
+    const runtime_id = p.lookupPath("/proj/node_modules/react/jsx-runtime.d.ts") orelse return error.TestUnexpectedResult;
+    const runtime = p.fileById(runtime_id);
+    try T.expect(runtime.include_reason != null);
+    try T.expectEqual(IncludeKind.jsx_runtime_import, runtime.include_reason.?.kind);
+    try T.expectEqual(main_id, runtime.include_reason.?.importer);
+    try T.expectEqualStrings("\"react/jsx-runtime\"", runtime.include_reason.?.specifier_text);
+    try T.expectEqualStrings("react/jsx-runtime.d.ts@18.2.0", runtime.include_reason.?.package_id);
+    try T.expectEqual(@as(?u32, null), runtime.include_reason.?.relatedDiagnosticCode());
 }
 
 test "Program: loadImportClosure follows compilerOptions.types (TS1417/TS1418 reason)" {

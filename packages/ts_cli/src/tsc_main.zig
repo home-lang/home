@@ -1480,6 +1480,16 @@ fn printExplainFiles(
     const code_imported_via_package: u32 = 1394;
     _ = code_imported_via;
     _ = code_imported_via_package;
+    // TS1395/TS1396 — compiler-injected `tslib` import for importHelpers.
+    const code_imported_helper_via: u32 = 1395;
+    const code_imported_helper_via_package: u32 = 1396;
+    _ = code_imported_helper_via;
+    _ = code_imported_helper_via_package;
+    // TS1397/TS1398 — automatic JSX runtime imports.
+    const code_imported_jsx_runtime_via: u32 = 1397;
+    const code_imported_jsx_runtime_via_package: u32 = 1398;
+    _ = code_imported_jsx_runtime_via;
+    _ = code_imported_jsx_runtime_via_package;
     // TS1400 `Referenced via '{0}' from file '{1}'` — a file pulled in by
     // a `/// <reference path="…" />` directive.
     const code_referenced_via: u32 = 1400;
@@ -1554,6 +1564,44 @@ fn printExplainFiles(
                             std.fmt.allocPrint(
                                 gpa,
                                 "  Imported via {s} from file '{s}'",
+                                .{ ir.specifier_text, importer_path },
+                            ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
+                        continue;
+                    },
+                    .imported_helper => {
+                        const importer_path = program.files.items[ir.importer].path;
+                        const msg = if (ir.package_id.len != 0)
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Imported via {s} from file '{s}' with packageId '{s}' to import 'importHelpers' as specified in compilerOptions",
+                                .{ ir.specifier_text, importer_path, ir.package_id },
+                            ) catch return
+                        else
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Imported via {s} from file '{s}' to import 'importHelpers' as specified in compilerOptions",
+                                .{ ir.specifier_text, importer_path },
+                            ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
+                        continue;
+                    },
+                    .jsx_runtime_import => {
+                        const importer_path = program.files.items[ir.importer].path;
+                        const msg = if (ir.package_id.len != 0)
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Imported via {s} from file '{s}' with packageId '{s}' to import 'jsx' and 'jsxs' factory functions",
+                                .{ ir.specifier_text, importer_path, ir.package_id },
+                            ) catch return
+                        else
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Imported via {s} from file '{s}' to import 'jsx' and 'jsxs' factory functions",
                                 .{ ir.specifier_text, importer_path },
                             ) catch return;
                         defer gpa.free(msg);

@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 493 |
-| active reachable (parity targets) | 28 |
+| catalog-only total | 489 |
+| active reachable (parity targets) | 24 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -26,8 +26,8 @@ diverge from the reference compiler.
 | Range | Count |
 | --- | ---: |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| 1xxx — parser / syntactic + program file-inclusion | 6 |
 | other | 5 |
+| 1xxx — parser / syntactic + program file-inclusion | 2 |
 
 ### 9xxxx — editor code-fix / refactor (language service) (17)
 
@@ -49,15 +49,6 @@ diverge from the reference compiler.
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### 1xxx — parser / syntactic + program file-inclusion (6)
-
-- TS1395 `Imported_via_0_from_file_1_to_import_importHelpers_as_specified_in_compilerOptions_1395`
-- TS1396 `Imported_via_0_from_file_1_with_packageId_2_to_import_importHelpers_as_specified_in_compilerOptions_1396`
-- TS1397 `Imported_via_0_from_file_1_to_import_jsx_and_jsxs_factory_functions_1397`
-- TS1398 `Imported_via_0_from_file_1_with_packageId_2_to_import_jsx_and_jsxs_factory_functions_1398`
-- TS1428 `File_is_output_of_project_reference_source_0_1428`
-- TS1429 `File_redirects_to_file_0_1429`
-
 ### other (5)
 
 - TS8001 `You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001`
@@ -65,6 +56,11 @@ diverge from the reference compiler.
 - TS8035 `You_cannot_rename_elements_that_are_defined_in_a_node_modules_folder_8035`
 - TS8036 `You_cannot_rename_elements_that_are_defined_in_another_node_modules_folder_8036`
 - TS9026 `Declaration_emit_for_this_file_requires_preserving_this_import_for_augmentations_This_is_not_support_9026`
+
+### 1xxx — parser / syntactic + program file-inclusion (2)
+
+- TS1428 `File_is_output_of_project_reference_source_0_1428`
+- TS1429 `File_redirects_to_file_0_1429`
 
 ## Blocked/effectively-dead references
 
