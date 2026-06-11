@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 544 |
-| active reachable (parity targets) | 79 |
+| catalog-only total | 543 |
+| active reachable (parity targets) | 78 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -30,7 +30,6 @@ diverge from the reference compiler.
 | other | 14 |
 | 2xxx — checker / type engine | 8 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
-| 4xxx — declaration-emit (privacy / serialization) | 1 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (37)
 
@@ -124,10 +123,6 @@ diverge from the reference compiler.
 
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
-
-### 4xxx — declaration-emit (privacy / serialization) (1)
-
-- TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
 
 ## Blocked/effectively-dead references
 
