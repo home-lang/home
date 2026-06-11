@@ -169,12 +169,50 @@ pub fn normalizeSlashesOnly(buf: []u8, input: []const u8, sep: u8) []u8 {
     return buf[0..len];
 }
 
+/// Faithful port of Bun's `string_paths.cloneNormalizingSeparators`
+/// (src/paths/string_paths.zig). Collapses duplicate slashes AND emits a single
+/// trailing separator — the latter is relied on by `ZigString.Slice
+/// .cloneWithTrailingSlash` (FileSystemRouter's `path_to_use`). The previous
+/// stub only swapped `\\`→`/` and produced NO trailing slash, so
+/// `Routes.init`'s `route_dirname_len = relative_dir.len + (dir-has-no-trailing-
+/// sep)` came out as 1 instead of 0 and stripped the leading `/` from every
+/// route name → `router.zig` `bun.assert(name[0] == '/')` panic.
 pub fn cloneNormalizingSeparators(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    const out = try allocator.dupe(u8, input);
-    for (out) |*c| {
-        if (c.* == '\\') c.* = '/';
+    const sep = std.fs.path.sep;
+    // remove duplicate slashes in the file path
+    const base = withoutTrailingSlash(input);
+    if (base.len == 0) {
+        // Nothing to normalize (input was empty or all separators). Mirror the
+        // upstream `assert(base.len > 0)` precondition without panicking.
+        return allocator.dupe(u8, input);
     }
-    return out;
+    var tokenized = std.mem.tokenizeScalar(u8, base, sep);
+    var buf = try allocator.alloc(u8, base.len + 2);
+    if (base[0] == sep) {
+        buf[0] = sep;
+    }
+    var remain = buf[@as(usize, @intFromBool(base[0] == sep))..];
+
+    while (tokenized.next()) |token| {
+        if (token.len == 0) continue;
+        @memcpy(remain[0..token.len], token);
+        remain[token.len] = sep;
+        remain = remain[token.len + 1 ..];
+    }
+    if ((remain.ptr - 1) != buf.ptr and (remain.ptr - 1)[0] != sep) {
+        remain[0] = sep;
+        remain = remain[1..];
+    }
+
+    // Upstream returns `buf[0..len]` — a sub-slice of the `base.len + 2`
+    // allocation, then writes a trailing NUL it never includes. Upstream
+    // callers free via an arena, so the size mismatch is harmless there. Home's
+    // allocators (the test GeneralPurposeAllocator and the production mimalloc
+    // arena) are size-strict: freeing a sub-slice corrupts the heap (mimalloc
+    // segfault on the next alloc) or trips the GPA's free-size assert. Shrink to
+    // the exact length so the returned slice is independently freeable.
+    const len = @intFromPtr(remain.ptr) - @intFromPtr(buf.ptr);
+    return try allocator.realloc(buf, len);
 }
 
 pub const escapeHTMLForLatin1Input = @import("string/immutable.zig").escapeHTMLForLatin1Input;
@@ -902,6 +940,40 @@ pub fn toUTF8FromLatin1(
 test "indexOfChar finds the first occurrence" {
     try std.testing.expectEqual(@as(?usize, 3), indexOfChar("foo:bar", ':'));
     try std.testing.expectEqual(@as(?usize, null), indexOfChar("foobar", ':'));
+}
+
+test "cloneNormalizingSeparators appends a trailing separator" {
+    const a = std.testing.allocator;
+    // Absolute path: leading sep preserved, single trailing sep appended.
+    {
+        const out = try cloneNormalizingSeparators(a, "/foo/bar");
+        defer a.free(out);
+        try std.testing.expectEqualStrings("/foo/bar/", out);
+    }
+    // Already-trailing-slash input: stays single (no double slash).
+    {
+        const out = try cloneNormalizingSeparators(a, "/foo/bar/");
+        defer a.free(out);
+        try std.testing.expectEqualStrings("/foo/bar/", out);
+    }
+    // Relative path (no leading sep) still gains a trailing sep.
+    {
+        const out = try cloneNormalizingSeparators(a, "foo/bar");
+        defer a.free(out);
+        try std.testing.expectEqualStrings("foo/bar/", out);
+    }
+    // Duplicate interior slashes collapse to one.
+    {
+        const out = try cloneNormalizingSeparators(a, "/foo//bar///baz");
+        defer a.free(out);
+        try std.testing.expectEqualStrings("/foo/bar/baz/", out);
+    }
+    // Single-segment path.
+    {
+        const out = try cloneNormalizingSeparators(a, "/tmp");
+        defer a.free(out);
+        try std.testing.expectEqualStrings("/tmp/", out);
+    }
 }
 
 test "toUTF8FromLatin1: returns null for pure ASCII input" {
