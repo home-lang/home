@@ -152,6 +152,14 @@ fn readHostArg(ctx: *JSContextRef, v: ?*JSValue, buf: []u8, default: []const u8)
     return default;
 }
 
+fn setSocketReuse(fd: c_int) void {
+    const one: c_int = 1;
+    _ = c.setsockopt(fd, c.SOL.SOCKET, c.SO.REUSEADDR, &one, @sizeOf(c_int));
+    if (@hasDecl(c.SO, "REUSEPORT")) {
+        _ = c.setsockopt(fd, c.SOL.SOCKET, c.SO.REUSEPORT, &one, @sizeOf(c_int));
+    }
+}
+
 /// `__home_tcp_listen(host, port)` -> fd or -1.
 fn listenNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
     _ = function;
@@ -165,8 +173,7 @@ fn listenNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObje
 
     const fd = socket(c.AF.INET, c.SOCK.STREAM, 0);
     if (fd < 0) return extern_fns.JSValueMakeNumber(cx, -1);
-    const one: c_int = 1;
-    _ = c.setsockopt(fd, c.SOL.SOCKET, c.SO.REUSEADDR, &one, @sizeOf(c_int));
+    setSocketReuse(fd);
     var addr = c.sockaddr.in{ .port = std.mem.nativeToBig(u16, port), .addr = parseHostV4(host) };
     if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.sockaddr.in)) != 0 or c.listen(fd, 128) != 0) {
         _ = c.close(fd);
@@ -210,8 +217,7 @@ fn udpBindNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObj
     const port: u16 = @intFromFloat(@max(0, @min(65535, extern_fns.JSValueToNumber(cx, argv[1].?, null))));
     const fd = socket(c.AF.INET, c.SOCK.DGRAM, 0);
     if (fd < 0) return extern_fns.JSValueMakeNumber(cx, -1);
-    const one: c_int = 1;
-    _ = c.setsockopt(fd, c.SOL.SOCKET, c.SO.REUSEADDR, &one, @sizeOf(c_int));
+    setSocketReuse(fd);
     var addr = c.sockaddr.in{ .port = std.mem.nativeToBig(u16, port), .addr = parseHostV4(host) };
     if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.sockaddr.in)) != 0) {
         _ = c.close(fd);
@@ -219,6 +225,20 @@ fn udpBindNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObj
     }
     addEntry(fd, .udp);
     return extern_fns.JSValueMakeNumber(cx, @floatFromInt(fd));
+}
+
+/// `__home_udp_port(fd)` -> bound local UDP port or 0.
+fn udpPortNative(ctx: ?*JSContextRef, function: ?*JSObject, this_object: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: extern_fns.ExceptionRef) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const cx = ctx orelse return null;
+    if (argc < 1) return extern_fns.JSValueMakeNumber(cx, 0);
+    const fd: c_int = @intFromFloat(extern_fns.JSValueToNumber(cx, argv[0].?, null));
+    var addr: c.sockaddr.in = undefined;
+    var len: c.socklen_t = @sizeOf(c.sockaddr.in);
+    if (c.getsockname(fd, @ptrCast(&addr), &len) != 0) return extern_fns.JSValueMakeNumber(cx, 0);
+    return extern_fns.JSValueMakeNumber(cx, @floatFromInt(std.mem.bigToNative(u16, addr.port)));
 }
 
 /// `__home_udp_send(fd, bytes, host, port)` -> bytes sent, or -1.
@@ -282,6 +302,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_tcp_write", writeNative);
     callback.registerCallback(ctx, global, "__home_tcp_close", closeNative);
     callback.registerCallback(ctx, global, "__home_udp_bind", udpBindNative);
+    callback.registerCallback(ctx, global, "__home_udp_port", udpPortNative);
     callback.registerCallback(ctx, global, "__home_udp_send", udpSendNative);
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:bun-socket-install", 1) catch return;
     result.deinit(allocator);
@@ -436,6 +457,7 @@ const install_glue =
     \\  var writeFn = globalThis.__home_tcp_write;
     \\  var closeFn = globalThis.__home_tcp_close;
     \\  var udpBindFn = globalThis.__home_udp_bind;
+    \\  var udpPortFn = globalThis.__home_udp_port;
     \\  var udpSendFn = globalThis.__home_udp_send;
     \\  // fd -> { handlers, isServer, serverFd, socketObj }
     \\  var registry = {};
@@ -496,14 +518,23 @@ const install_glue =
     \\    var cb = (typeof typeArg === "function") ? typeArg : cbArg;
     \\    var EventEmitter = globalThis.require("node:events").EventEmitter || globalThis.require("node:events");
     \\    var sock = new EventEmitter();
-    \\    sock.type = type; var fd = -1; var boundPort = 0;
+    \\    sock.type = type; var fd = -1; var boundPort = 0; var boundAddress = "0.0.0.0";
+    \\    function finishBind(nextFd, addressForSocket) {
+    \\      if (nextFd < 0) return false;
+    \\      fd = nextFd; sock._fd = fd; udpReg[fd] = { kind: "dgram", target: sock };
+    \\      boundPort = udpPortFn(fd) | 0;
+    \\      boundAddress = addressForSocket || "0.0.0.0";
+    \\      return true;
+    \\    }
+    \\    function ensureBound() {
+    \\      if (fd >= 0) return true;
+    \\      return finishBind(udpBindFn("0.0.0.0", 0), "0.0.0.0");
+    \\    }
     \\    sock.bind = function(port, address, bindCb) {
     \\      if (typeof port === "function") { bindCb = port; port = 0; }
     \\      if (typeof address === "function") { bindCb = address; address = undefined; }
     \\      if (port && typeof port === "object") { address = port.address; port = port.port; }
-    \\      fd = udpBindFn(address || "0.0.0.0", port | 0);
-    \\      if (fd < 0) { var self0 = sock; Promise.resolve().then(function() { self0.emit("error", Object.assign(new Error("bind failed"), { code: "EADDRINUSE" })); }); return sock; }
-    \\      boundPort = port | 0; sock._fd = fd; udpReg[fd] = { kind: "dgram", target: sock };
+    \\      if (!finishBind(udpBindFn(address || "0.0.0.0", port | 0), address || "0.0.0.0")) { var self0 = sock; Promise.resolve().then(function() { self0.emit("error", Object.assign(new Error("bind failed"), { code: "EADDRINUSE" })); }); return sock; }
     \\      Promise.resolve().then(function() { sock.emit("listening"); if (bindCb) bindCb(); });
     \\      return sock;
     \\    };
@@ -512,12 +543,13 @@ const install_glue =
     \\      if (typeof offset !== "number") { sendCb = port; address = length; port = offset; offset = 0; length = undefined; }
     \\      if (typeof port === "function") { sendCb = port; port = undefined; }
     \\      if (typeof address === "function") { sendCb = address; address = undefined; }
+    \\      if (!ensureBound()) { if (typeof sendCb === "function") Promise.resolve().then(function() { sendCb(new Error("bind failed"), 0); }); return; }
     \\      var bytes = udpToBytes(msg);
     \\      var n = udpSendFn(fd, bytes, address || "127.0.0.1", port | 0);
     \\      if (typeof sendCb === "function") Promise.resolve().then(function() { sendCb(n < 0 ? new Error("send failed") : null, n < 0 ? 0 : n); });
     \\    };
-    \\    sock.address = function() { return { address: "0.0.0.0", port: boundPort, family: "IPv4" }; };
-    \\    sock.close = function(closeCb) { if (fd >= 0) { closeFn(fd); delete udpReg[fd]; } var self1 = sock; Promise.resolve().then(function() { self1.emit("close"); if (closeCb) closeCb(); }); return sock; };
+    \\    sock.address = function() { return { address: boundAddress, port: boundPort, family: "IPv4" }; };
+    \\    sock.close = function(closeCb) { if (fd >= 0) { closeFn(fd); delete udpReg[fd]; fd = -1; boundPort = 0; } var self1 = sock; Promise.resolve().then(function() { self1.emit("close"); if (closeCb) closeCb(); }); return sock; };
     \\    sock.ref = function() { return sock; }; sock.unref = function() { return sock; };
     \\    sock.setBroadcast = function() {}; sock.setTTL = function() {}; sock.setMulticastTTL = function() {};
     \\    sock.addMembership = function() {}; sock.dropMembership = function() {};
@@ -731,8 +763,7 @@ test "Bun.listen / Bun.connect expose the socket API surface (non-blocking)" {
 
     // The handles bind/connect and expose the documented surface without
     // entering the (blocking) poll loop, which main.zig drives post-script.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var server = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data: function() {} } });" ++
         "  if (typeof server.stop !== 'function' || typeof server.port !== 'number') return false;" ++
         "  server.stop();" ++
