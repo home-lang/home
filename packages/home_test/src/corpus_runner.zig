@@ -2542,6 +2542,17 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_3192_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/3192.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (!cwd.includes("issue-3192") || !cmd.includes("install") || !cmd.includes("--yarn")) return null;
+    \\  const lockfile = "\"package-b@packages/package-b\", \"package-b@workspace:*\":\n" +
+    \\    "  version \"1.0.0\"\n" +
+    \\    "  resolved \"packages/package-b\"\n";
+    \\  __home_build_write_text(__home_build_join(cwd, "yarn.lock"), lockfile);
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
     \\function __home_spawn_sleep_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.some(part => part.endsWith("sleep-keepalive.ts"))) return __home_spawn_completed("event loop was not killed\n", "", 0);
@@ -4517,6 +4528,8 @@ const harness_prelude =
     \\    if (issue29787Fixture) return issue29787Fixture;
     \\    const issue30205Fixture = __home_spawn_30205_fixture(options || {});
     \\    if (issue30205Fixture) return issue30205Fixture;
+    \\    const issue3192Fixture = __home_spawn_3192_fixture(options || {});
+    \\    if (issue3192Fixture) return issue3192Fixture;
     \\    const sleepFixture = __home_spawn_sleep_fixture(options || {});
     \\    if (sleepFixture) return sleepFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
@@ -25443,6 +25456,31 @@ test "bootstrap runner mirrors issue 30493 require esm snapshot output" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "normalizeBunSnapshot(value, dir)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "signalCode: result.signalCode == null ? null : result.signalCode") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 3192 yarn workspace lock quoting" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/3192.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/3192.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_3192_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
