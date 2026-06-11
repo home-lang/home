@@ -61,6 +61,9 @@ pub const IncludeReason = struct {
     /// directives when the resolver found one. Owned by the program when
     /// non-empty.
     package_id: []const u8 = "",
+    /// Emitted declaration output path that redirected to this source file
+    /// through project-reference resolution. Owned by the program when non-empty.
+    project_reference_output: []const u8 = "",
     /// Byte offset of the import/reference specifier in the importer.
     /// Used for related-information anchors.
     specifier_pos: u32 = 0,
@@ -184,6 +187,7 @@ pub const Program = struct {
             if (f.include_reason) |ir| {
                 if (ir.specifier_text.len != 0) self.gpa.free(ir.specifier_text);
                 if (ir.package_id.len != 0) self.gpa.free(ir.package_id);
+                if (ir.project_reference_output.len != 0) self.gpa.free(ir.project_reference_output);
             }
             self.gpa.free(f.path);
             self.gpa.destroy(f);
@@ -1450,6 +1454,8 @@ pub const Program = struct {
                     if (target.include_reason == null) {
                         const package_id = if (res.package_id) |id| try self.gpa.dupe(u8, id) else "";
                         errdefer if (package_id.len != 0) self.gpa.free(package_id);
+                        const project_reference_output = if (res.project_reference_output) |output| try self.gpa.dupe(u8, output) else "";
+                        errdefer if (project_reference_output.len != 0) self.gpa.free(project_reference_output);
                         const quoted = try std.fmt.allocPrint(self.gpa, "\"{s}\"", .{module_name});
                         errdefer self.gpa.free(quoted);
                         target.include_reason = .{
@@ -1457,6 +1463,7 @@ pub const Program = struct {
                             .importer = f.id,
                             .specifier_text = quoted,
                             .package_id = package_id,
+                            .project_reference_output = project_reference_output,
                             .specifier_pos = findIncludeSpecifierPosition(f.source, quoted),
                         };
                     }
@@ -1609,7 +1616,7 @@ pub const Program = struct {
         };
         const target_id = try self.addResolvedIncludeFile(res.path);
         if (target_id == null) return 0;
-        try self.recordReferenceIncludeReason(target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", 0);
+        try self.recordReferenceIncludeReasonWithProjectOutput(target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", res.project_reference_output orelse "", 0);
         return 1;
     }
 
@@ -1876,6 +1883,19 @@ pub const Program = struct {
         package_id: []const u8,
         pos: u32,
     ) ProgramError!void {
+        try self.recordReferenceIncludeReasonWithProjectOutput(target_id, kind, importer, text, package_id, "", pos);
+    }
+
+    fn recordReferenceIncludeReasonWithProjectOutput(
+        self: *Program,
+        target_id: FileId,
+        kind: IncludeKind,
+        importer: FileId,
+        text: []const u8,
+        package_id: []const u8,
+        project_reference_output: []const u8,
+        pos: u32,
+    ) ProgramError!void {
         const target = self.files.items[target_id];
         if (target.include_reason != null) return;
         target.include_reason = .{
@@ -1883,6 +1903,7 @@ pub const Program = struct {
             .importer = importer,
             .specifier_text = try self.gpa.dupe(u8, text),
             .package_id = if (package_id.len == 0) "" else try self.gpa.dupe(u8, package_id),
+            .project_reference_output = if (project_reference_output.len == 0) "" else try self.gpa.dupe(u8, project_reference_output),
             .specifier_pos = pos,
         };
     }
@@ -2714,6 +2735,49 @@ test "Program: node_modules import records package-id include reason (TS1394)" {
     try T.expectEqualStrings("\"dep\"", dep.include_reason.?.specifier_text);
     try T.expectEqualStrings("dep/index.d.ts@1.2.3", dep.include_reason.?.package_id);
     try T.expectEqual(@as(?u32, 1399), dep.include_reason.?.relatedDiagnosticCode());
+}
+
+test "Program: project-reference output import records redirected output (TS1428 reason)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{
+        \\  "name": "@this/package",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": {
+        \\      "types": "./types/index.d.ts",
+        \\      "default": "./dist/index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/index.ts", "export const value = 1;\n");
+    try vfs.addFile("/src/thing.ts", "import '@this/package';\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .nodenext,
+        .declaration_dir = "./types",
+        .out_dir = "./dist",
+        .config_file_path = "/tsconfig.json",
+        .project_reference_output_diagnostics = true,
+    });
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const importer_id = try p.add("/src/thing.ts", "import '@this/package';\n");
+
+    const added = try p.loadImportClosure(.{});
+    try T.expectEqual(@as(usize, 1), added);
+
+    const source_id = p.lookupPath("/index.ts") orelse return error.TestUnexpectedResult;
+    const source = p.fileById(source_id);
+    try T.expect(source.include_reason != null);
+    try T.expectEqual(IncludeKind.import, source.include_reason.?.kind);
+    try T.expectEqual(importer_id, source.include_reason.?.importer);
+    try T.expectEqualStrings("\"@this/package\"", source.include_reason.?.specifier_text);
+    try T.expectEqualStrings("", source.include_reason.?.package_id);
+    try T.expectEqualStrings("/types/index.d.ts", source.include_reason.?.project_reference_output);
 }
 
 test "Program: loadImportClosure follows importHelpers tslib import (TS1395/TS1396 reason)" {

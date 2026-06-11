@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 489 |
-| active reachable (parity targets) | 24 |
+| catalog-only total | 488 |
+| active reachable (parity targets) | 23 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -27,7 +27,7 @@ diverge from the reference compiler.
 | --- | ---: |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 5 |
-| 1xxx — parser / syntactic + program file-inclusion | 2 |
+| 1xxx — parser / syntactic + program file-inclusion | 1 |
 
 ### 9xxxx — editor code-fix / refactor (language service) (17)
 
@@ -57,9 +57,8 @@ diverge from the reference compiler.
 - TS8036 `You_cannot_rename_elements_that_are_defined_in_another_node_modules_folder_8036`
 - TS9026 `Declaration_emit_for_this_file_requires_preserving_this_import_for_augmentations_This_is_not_support_9026`
 
-### 1xxx — parser / syntactic + program file-inclusion (2)
+### 1xxx — parser / syntactic + program file-inclusion (1)
 
-- TS1428 `File_is_output_of_project_reference_source_0_1428`
 - TS1429 `File_redirects_to_file_0_1429`
 
 ## Blocked/effectively-dead references

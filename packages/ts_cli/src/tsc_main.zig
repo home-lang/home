@@ -1532,6 +1532,9 @@ fn printExplainFiles(
     _ = code_default_library;
     _ = code_default_library_for_target;
     _ = code_file_is_default_library_for_target_here;
+    // TS1428 — output declaration file redirected to a project-reference source.
+    const code_file_is_output_of_project_reference_source: u32 = 1428;
+    _ = code_file_is_output_of_project_reference_source;
     // TS1458–TS1461 explain how Node16/NodeNext implied module format was
     // derived from the nearest package.json, mirroring tsgo's
     // explainRedirectAndImpliedFormat helper.
@@ -1544,7 +1547,7 @@ fn printExplainFiles(
     _ = code_cjs_package_no_type;
     _ = code_cjs_package_not_found;
     for (program.files.items) |f| {
-        std.debug.print("{s}\n", .{f.path});
+        std.debug.print("{s}\n", .{explainFileDisplayPath(f)});
         if (!pathInList(roots, f.path)) {
             // A non-root file is here because something pulled it in —
             // an import (TS1393) or a `/// <reference path>` directive
@@ -1568,6 +1571,7 @@ fn printExplainFiles(
                             ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1587,6 +1591,7 @@ fn printExplainFiles(
                             ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1606,6 +1611,7 @@ fn printExplainFiles(
                             ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1618,6 +1624,7 @@ fn printExplainFiles(
                         ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1637,6 +1644,7 @@ fn printExplainFiles(
                             ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1649,6 +1657,7 @@ fn printExplainFiles(
                         ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1667,6 +1676,7 @@ fn printExplainFiles(
                             ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1685,6 +1695,7 @@ fn printExplainFiles(
                             ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1696,6 +1707,7 @@ fn printExplainFiles(
                         ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1714,6 +1726,7 @@ fn printExplainFiles(
                             ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
+                        printProjectReferenceOutputExplain(f);
                         printNodeFormatExplain(gpa, fs, f, module);
                         continue;
                     },
@@ -1724,6 +1737,7 @@ fn printExplainFiles(
             // back to the generic root-specified reason rather than
             // fabricating a puller.
             std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
+            printProjectReferenceOutputExplain(f);
             printNodeFormatExplain(gpa, fs, f, module);
             continue;
         }
@@ -1751,6 +1765,19 @@ fn pathInList(haystack: []const []const u8, needle: []const u8) bool {
         if (std.mem.eql(u8, p, needle)) return true;
     }
     return false;
+}
+
+fn explainFileDisplayPath(file: *const ts_program.File) []const u8 {
+    if (file.include_reason) |ir| {
+        if (ir.project_reference_output.len != 0) return ir.project_reference_output;
+    }
+    return file.path;
+}
+
+fn printProjectReferenceOutputExplain(file: *const ts_program.File) void {
+    const ir = file.include_reason orelse return;
+    if (ir.project_reference_output.len == 0) return;
+    std.debug.print("  File is output of project reference source '{s}'\n", .{file.path});
 }
 
 const CompositeProjectFileListSummary = struct {
