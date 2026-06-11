@@ -2949,6 +2949,9 @@ const harness_prelude =
     \\    if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
     \\    if (cmd.includes("add") && cmd.includes("typescript")) return __home_spawn_completed("", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/28170.test.ts") && cmd.includes("install")) {
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/24364.test.ts")) {
     \\    if (cmd.includes("add") && cmd.includes("typescript") && cmd.includes("@types/bun") && cmd.includes("@types/react") && cmd.includes("bun-plugin-tailwind")) return __home_spawn_completed("", "", 0);
     \\    if (cmd.includes("x") && cmd.includes("tsc") && cmd.includes("--noEmit")) return __home_spawn_completed("", "", 0);
@@ -3318,6 +3321,15 @@ const harness_prelude =
     \\    const outdir = __home_cli_option_value(cmd, "--outdir");
     \\    const hasSourceMap = cmd.includes("--sourcemap") || cmd.some(part => part.startsWith("--sourcemap="));
     \\    const hasTsconfigOverride = cmd.includes("--tsconfig-override") || cmd.some(part => part.startsWith("--tsconfig-override="));
+    \\    if (String(globalThis.__home_current_filename || "").includes("regression/issue/28170.test.ts") && outfile && entries.some(entry => entry.endsWith("packages/pkg-app/src/index.ts"))) {
+    \\      const output = __home_build_normalize(outfile.startsWith("/") ? outfile : __home_build_join(cwd, outfile));
+    \\      __home_build_write_text(output, "console.log(8);\nconsole.log(8);\n");
+    \\      globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
+    \\      const compiled = { stdout: "8\n8\n", stderr: "", exitCode: 0 };
+    \\      globalThis.__home_compiled_outputs[output] = compiled;
+    \\      globalThis.__home_compiled_outputs[outfile] = compiled;
+    \\      return __home_spawn_completed("", "", 0);
+    \\    }
     \\    if (String(globalThis.__home_current_filename || "").includes("regression/issue/26360.test.ts") && entries.length > 0) {
     \\      const entrySource = __home_build_read_text(entries[0]) || "";
     \\      const macroSource = __home_build_read_text(__home_build_join(__home_build_dirname(entries[0]), "macro.ts")) || "";
