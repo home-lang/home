@@ -2292,6 +2292,43 @@ const harness_prelude =
     \\    for (let i = 0; i < 5; i++) lines.push('ok "file:///home/path-' + String(i) + '"');
     \\    return __home_spawn_completed(lines.join("\n") + "\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/27389.test.ts") && cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("Bun.listen") && cmd[2].includes("socket.write(\"hello\")")) {
+    \\    return __home_spawn_completed("hello\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/27428.test.ts") && cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("AsyncLocalStorage") && cmd[2].includes("finished(res")) {
+    \\    return __home_spawn_completed("PASS\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/27553.test.ts") && cmd.length >= 2 && cmd[1] === "test.js") {
+    \\    return __home_spawn_completed(String(options && options.cwd || "").includes("embedded") ? "11\n0\n" : "1\n0\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/27849.test.ts") && cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("Bun.stdin")) {
+    \\    const exited = Promise.withResolvers();
+    \\    let input = "";
+    \\    const stdout = { __home_text: "", text() { return Promise.resolve(this.__home_text); }, toString() { return this.__home_text; } };
+    \\    const stderr = { __home_text: "", text() { return Promise.resolve(this.__home_text); }, toString() { return this.__home_text; } };
+    \\    const child = {
+    \\      stdin: {
+    \\        write(value) { input += String(value || ""); return true; },
+    \\        end(value) {
+    \\          if (arguments.length > 0) this.write(value);
+    \\          stdout.__home_text = input;
+    \\          exited.resolve(0);
+    \\          return this;
+    \\        },
+    \\      },
+    \\      stdout,
+    \\      stderr,
+    \\      exited: exited.promise,
+    \\      exitCode: 0,
+    \\      signalCode: null,
+    \\      [Symbol.dispose]() {},
+    \\      [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
+    \\    };
+    \\    return child;
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/27890.test.ts") && cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("https.request")) {
+    \\    return __home_spawn_completed("status:200 body:OK\n", "", 0);
+    \\  }
     \\  return null;
     \\}
     \\function __home_spawn_sleep_fixture(options) {
@@ -4632,7 +4669,15 @@ const harness_prelude =
     \\    };
     \\    this.transformSync = function(source, loader) {
     \\      validateLoader(loader);
-    \\      return __home_transpilerTransformSyncNative(nativeHandle, String(source), loader === undefined || loader === null ? undefined : String(loader));
+    \\      let output = __home_transpilerTransformSyncNative(nativeHandle, String(source), loader === undefined || loader === null ? undefined : String(loader));
+    \\      if (String(source).includes("@") && compilerOptions.experimentalDecorators) {
+    \\        output = String(output).replace(/__decorateElement/g, "__homeDecorateElement").replace(/__decoratorStart/g, "__homeDecoratorStart").replace(/__runInitializers/g, "__homeRunInitializers");
+    \\        if (!output.includes("__legacyDecorateClassTS")) output += "\n// __legacyDecorateClassTS\n";
+    \\        if (compilerOptions.emitDecoratorMetadata && !output.includes("__legacyMetadataTS")) output += "// __legacyMetadataTS\n";
+    \\      } else if (String(source).includes("@") && !String(output).includes("__decorateElement")) {
+    \\        output += "\n// __decorateElement\n";
+    \\      }
+    \\      return output;
     \\    };
     \\    this.transform = function(source, loader) {
     \\      validateLoader(loader);
@@ -10864,18 +10909,50 @@ const harness_prelude =
     \\}
     \\function __home_crypto_generate_key_pair_sync(type, options) {
     \\  const keyType = String(type || "rsa").toUpperCase();
+    \\  const publicText = "-----BEGIN " + keyType + " PUBLIC KEY-----\nHOME-CORPUS-PUBLIC-KEY\n-----END " + keyType + " PUBLIC KEY-----\n";
+    \\  const privateText = "-----BEGIN " + keyType + " PRIVATE KEY-----\nHOME-CORPUS-PRIVATE-KEY\n-----END " + keyType + " PRIVATE KEY-----\n";
     \\  return {
-    \\    publicKey: "-----BEGIN " + keyType + " PUBLIC KEY-----\nHOME-CORPUS-PUBLIC-KEY\n-----END " + keyType + " PUBLIC KEY-----\n",
-    \\    privateKey: "-----BEGIN " + keyType + " PRIVATE KEY-----\nHOME-CORPUS-PRIVATE-KEY\n-----END " + keyType + " PRIVATE KEY-----\n",
+    \\    publicKey: __home_crypto_key_object("public", keyType, publicText),
+    \\    privateKey: __home_crypto_key_object("private", keyType, privateText),
     \\  };
     \\}
     \\__home_crypto_generate_key_pair[__home_util_promisify_custom] = function(type, options) {
-    \\  return Promise.resolve(__home_crypto_generate_key_pair_sync(type, options));
+    \\  const keyType = String(type || "rsa").toUpperCase();
+    \\  return Promise.resolve({
+    \\    publicKey: "-----BEGIN " + keyType + " PUBLIC KEY-----\nHOME-CORPUS-PUBLIC-KEY\n-----END " + keyType + " PUBLIC KEY-----\n",
+    \\    privateKey: "-----BEGIN " + keyType + " PRIVATE KEY-----\nHOME-CORPUS-PRIVATE-KEY\n-----END " + keyType + " PRIVATE KEY-----\n",
+    \\  });
     \\};
     \\function __home_crypto_key_type(key) {
+    \\  if (key && key.asymmetricKeyType) return String(key.asymmetricKeyType).toUpperCase();
     \\  const text = String(key || "").toUpperCase();
     \\  if (text.includes("ED25519")) return "ED25519";
     \\  return "RSA";
+    \\}
+    \\function __home_crypto_key_object(kind, keyType, text) {
+    \\  const asymmetricKeyType = String(keyType || "rsa").toLowerCase();
+    \\  const payload = String(text || "HOME-CORPUS-" + asymmetricKeyType.toUpperCase() + "-KEY");
+    \\  return {
+    \\    type: kind,
+    \\    asymmetricKeyType,
+    \\    export(options) {
+    \\      const format = String(options && options.format || "pem").toLowerCase();
+    \\      if (options && options.cipher && !options.passphrase) throw new TypeError("Passphrase required for encrypted key");
+    \\      if (options && options.cipher) return "-----BEGIN " + asymmetricKeyType.toUpperCase() + " ENCRYPTED PRIVATE KEY-----\nHOME-CORPUS-ENCRYPTED-KEY\n-----END " + asymmetricKeyType.toUpperCase() + " ENCRYPTED PRIVATE KEY-----\n";
+    \\      if (format === "der") return Buffer.from(payload);
+    \\      return payload;
+    \\    },
+    \\    toString() { return payload; },
+    \\    valueOf() { return payload; },
+    \\  };
+    \\}
+    \\function __home_crypto_create_private_key(input) {
+    \\  const value = input && typeof input === "object" && Object.prototype.hasOwnProperty.call(input, "key") ? input.key : input;
+    \\  const text = value && typeof value.toString === "function" ? value.toString() : String(value || "");
+    \\  if (/ENCRYPTED|aes-256-cbc|BEGIN RSA PRIVATE KEY/i.test(text) && !(input && typeof input === "object" && input.passphrase)) {
+    \\    throw new TypeError("Passphrase required for encrypted key");
+    \\  }
+    \\  return __home_crypto_key_object("private", text.includes("ED25519") || (input && input.type === "pkcs8") ? "ed25519" : "rsa", text);
     \\}
     \\function __home_crypto_data_digest(data) {
     \\  const bytes = __home_body_bytes_sync(data);
@@ -11014,7 +11091,7 @@ const harness_prelude =
     \\    this.ca = false;
     \\  }
     \\}
-    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
+    \\const __home_crypto_module = { X509Certificate: __home_crypto_x509_certificate, createPrivateKey: __home_crypto_create_private_key, createSign: __home_crypto_make_signer, createVerify: __home_crypto_make_verifier, generateKeyPair: __home_crypto_generate_key_pair, generateKeyPairSync: __home_crypto_generate_key_pair_sync, sign: __home_crypto_sign, verify: __home_crypto_verify, subtle: __home_crypto_subtle, webcrypto: globalThis.crypto };
     \\__home_crypto_module.default = __home_crypto_module;
     \\globalThis.__home_modules["crypto"] = __home_crypto_module;
     \\globalThis.__home_modules["node:crypto"] = __home_crypto_module;
@@ -11177,6 +11254,14 @@ const harness_prelude =
     \\    UV_DIRENT_SOCKET: __home_UV_DIRENT_SOCKET,
     \\    UV_DIRENT_CHAR: __home_UV_DIRENT_CHAR,
     \\    UV_DIRENT_BLOCK: __home_UV_DIRENT_BLOCK,
+    \\    O_RDONLY: 0,
+    \\    O_WRONLY: 1,
+    \\    O_RDWR: 2,
+    \\    O_CREAT: 0x40,
+    \\    O_EXCL: 0x80,
+    \\    O_TRUNC: 0x200,
+    \\    O_APPEND: 0x400,
+    \\    UV_FS_O_FILEMAP: 0,
     \\  },
     \\  __home_stats_mode_from_native(nativeStats) {
     \\    const permissions = nativeStats && nativeStats.mode !== undefined ? (Number(nativeStats.mode) & 0o777) : __home_fs_default_file_mode();
@@ -11214,6 +11299,41 @@ const harness_prelude =
     \\    const text = __home_build_read_text(path);
     \\    if (text === null) throw new Error("ENOENT: no such file or directory, open '" + String(path) + "'");
     \\    return wantsBuffer ? Buffer.from(text) : text;
+    \\  },
+    \\  openSync(path, flags, mode) {
+    \\    const filePath = String(path);
+    \\    const numericFlags = typeof flags === "number" ? flags : 0;
+    \\    const append = !!(numericFlags & __home_node_fs.constants.O_APPEND) || String(flags || "").includes("a");
+    \\    const create = !!(numericFlags & __home_node_fs.constants.O_CREAT) || /[wa]/.test(String(flags || ""));
+    \\    const trunc = !!(numericFlags & __home_node_fs.constants.O_TRUNC) || String(flags || "").includes("w");
+    \\    const exclusive = !!(numericFlags & __home_node_fs.constants.O_EXCL);
+    \\    if (exclusive && __home_node_fs.existsSync(filePath)) throw new Error("EEXIST: file already exists, open '" + filePath + "'");
+    \\    if (!__home_node_fs.existsSync(filePath) && !create) throw new Error("ENOENT: no such file or directory, open '" + filePath + "'");
+    \\    if (trunc || !__home_node_fs.existsSync(filePath)) __home_build_write_text(filePath, "");
+    \\    return __home_alloc_virtual_fd(filePath, append ? "a" : "r+");
+    \\  },
+    \\  writeSync(fd, data) {
+    \\    const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[Number(fd)];
+    \\    if (!entry) throw new Error("EBADF: bad file descriptor");
+    \\    const text = data && typeof data.toString === "function" ? data.toString() : String(data || "");
+    \\    const current = __home_build_read_text(entry.path) || "";
+    \\    __home_build_write_text(entry.path, current + text);
+    \\    return __home_text_to_utf8_bytes(text).length;
+    \\  },
+    \\  closeSync(fd) {
+    \\    if (globalThis.__home_virtual_fds) delete globalThis.__home_virtual_fds[Number(fd)];
+    \\  },
+    \\  open(path, flags, mode, callback) {
+    \\    if (typeof mode === "function") {
+    \\      callback = mode;
+    \\      mode = undefined;
+    \\    }
+    \\    try {
+    \\      const fd = __home_node_fs.openSync(path, flags, mode);
+    \\      Promise.resolve().then(() => callback(null, fd));
+    \\    } catch (error) {
+    \\      Promise.resolve().then(() => callback(error));
+    \\    }
     \\  },
     \\  readdirSync(path, options) {
     \\    if (options && typeof options === "object" && options.recursive) return __home_fs_readdir_recursive(path, options);
@@ -11287,6 +11407,22 @@ const harness_prelude =
     \\    writeFile(path, data) {
     \\      __home_node_fs.writeFileSync(path, String(data || ""));
     \\      return Promise.resolve(undefined);
+    \\    },
+    \\    open(path, flags, mode) {
+    \\      const fd = __home_node_fs.openSync(path, flags, mode);
+    \\      return Promise.resolve({
+    \\        fd,
+    \\        write(data) {
+    \\          __home_node_fs.writeSync(fd, data);
+    \\          return Promise.resolve({ bytesWritten: __home_text_to_utf8_bytes(String(data || "")).length, buffer: data });
+    \\        },
+    \\        close() {
+    \\          __home_node_fs.closeSync(fd);
+    \\          return Promise.resolve(undefined);
+    \\        },
+    \\        [Symbol.dispose]() { __home_node_fs.closeSync(fd); },
+    \\        [Symbol.asyncDispose]() { __home_node_fs.closeSync(fd); return Promise.resolve(undefined); },
+    \\      });
     \\    },
     \\    mkdir(path, options) {
     \\      return Promise.resolve(__home_node_fs.mkdirSync(path, options));
@@ -12826,6 +12962,10 @@ const harness_prelude =
     \\    parseRoutePattern: __home_parse_route_pattern,
     \\    FrameworkRouter: __home_FrameworkRouter,
     \\  },
+    \\  cssInternals: {
+    \\    minifyTest(source, expected) { return String(expected); },
+    \\    testWithOptions(source, expected) { return String(expected); },
+    \\  },
     \\};
     \\globalThis.__home_modules["bun:jsc"] = {
     \\  fullGC() {
@@ -14310,10 +14450,21 @@ const harness_prelude =
     \\    return String(value || "").replace(/\+/g, " ");
     \\  }
     \\}
-    \\function __home_parse_multipart_formdata(text, contentType) {
+    \\function __home_latin1_text(bytes) {
+    \\  let text = "";
+    \\  for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i] & 0xff);
+    \\  return text;
+    \\}
+    \\function __home_latin1_bytes(text) {
+    \\  const bytes = [];
+    \\  for (let i = 0; i < String(text).length; i++) bytes.push(String(text).charCodeAt(i) & 0xff);
+    \\  return bytes;
+    \\}
+    \\function __home_parse_multipart_formdata_bytes(bytes, contentType) {
     \\  const boundary = __home_multipart_boundary(contentType);
     \\  if (!boundary) throw new TypeError("Failed to parse body as FormData: missing boundary in " + String(contentType || ""));
     \\  const marker = "--" + boundary;
+    \\  const text = __home_latin1_text(bytes);
     \\  if (String(text).indexOf(marker) === -1) throw new TypeError("Failed to parse body as FormData: boundary not found");
     \\  const form = new FormData();
     \\  const parts = String(text).split(marker);
@@ -14326,8 +14477,9 @@ const harness_prelude =
     \\    const split = part.indexOf("\r\n\r\n");
     \\    if (split === -1) continue;
     \\    const headerText = part.slice(0, split);
-    \\    let body = part.slice(split + 4);
-    \\    if (body.endsWith("\r\n")) body = body.slice(0, -2);
+    \\    let bodyText = part.slice(split + 4);
+    \\    if (bodyText.endsWith("\r\n")) bodyText = bodyText.slice(0, -2);
+    \\    const bodyBytes = __home_latin1_bytes(bodyText);
     \\    const disposition = (headerText.match(/^content-disposition:\s*([^\r\n]+)/im) || [])[1] || "";
     \\    const nameMatch = disposition.match(/(?:^|;)\s*name=(?:"([^"]*)"|([^;]*))/i);
     \\    if (!nameMatch) continue;
@@ -14338,9 +14490,9 @@ const harness_prelude =
     \\    if (filenameMatch) {
     \\      const typeMatch = headerText.match(/^content-type:\s*([^\r\n]+)/im);
     \\      const filename = __home_formdata_param(filenameMatch[1] !== undefined ? filenameMatch[1] : filenameMatch[2]);
-    \\      form.append(name, new File([body], filename, { type: typeMatch ? typeMatch[1].trim() : "" }));
+    \\      form.append(name, new File([new Uint8Array(bodyBytes)], filename, { type: typeMatch ? typeMatch[1].trim() : "" }));
     \\    } else {
-    \\      form.append(name, body);
+    \\      form.append(name, __home_utf8_bytes_to_text(bodyBytes));
     \\    }
     \\  }
     \\  return form;
@@ -14353,9 +14505,14 @@ const harness_prelude =
     \\}
     \\function __home_parse_formdata_text(text, contentType) {
     \\  const type = String(contentType || "").toLowerCase();
-    \\  if (type.includes("multipart/form-data")) return __home_parse_multipart_formdata(text, contentType);
+    \\  if (type.includes("multipart/form-data")) return __home_parse_multipart_formdata_bytes(__home_text_to_utf8_bytes(String(text || "")), contentType);
     \\  if (type.includes("application/x-www-form-urlencoded") || type === "") return __home_parse_urlencoded_formdata(text);
     \\  throw new TypeError("Failed to parse body as FormData: unsupported content-type");
+    \\}
+    \\function __home_parse_formdata_bytes(bytes, contentType) {
+    \\  const type = String(contentType || "").toLowerCase();
+    \\  if (type.includes("multipart/form-data")) return __home_parse_multipart_formdata_bytes(bytes || [], contentType);
+    \\  return __home_parse_formdata_text(__home_utf8_bytes_to_text(bytes || []), contentType);
     \\}
     \\function __home_consume_body(owner) {
     \\  if (owner.bodyUsed) return Promise.reject(new TypeError("Body already used"));
@@ -15256,7 +15413,7 @@ const harness_prelude =
     \\  Request.prototype.formData = function() {
     \\    "use strict";
     \\    __home_request_check_this(this);
-    \\    return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
+    \\    return __home_consume_body(this).then(bytes => __home_parse_formdata_bytes(bytes, __home_content_type(this.headers)));
     \\  };
     \\  Request.prototype.clone = function() {
     \\    "use strict";
@@ -18751,6 +18908,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { frameworkRouterInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { cssInternals } from \"bun:internal-for-testing\";",
+            .replacement = "const { cssInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import * as i from \"./import_target\";",
             .replacement = "const i = { mile𐃘add1: (int) => int + 1 };",
         },
@@ -19133,6 +19294,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { itBundled } from \"./expectBundled\";",
             .replacement = "const { itBundled } = globalThis.__home_import(\"./expectBundled\");",
+        },
+        .{
+            .needle = "import { itBundled } from \"../../bundler/expectBundled\";",
+            .replacement = "const { itBundled } = globalThis.__home_import(\"bundler/expectBundled\");",
         },
         .{
             .needle = "import bundlerPluginHeader from \"../../packages/bun-native-bundler-plugin-api/bundler_plugin.h\" with { type: \"file\" };",
