@@ -44,6 +44,8 @@ pub const Options = struct {
     watch: bool = false,
     /// `--pretty` / `--no-pretty`. `null` means "auto" (TTY detect).
     pretty: ?bool = null,
+    /// `--traceResolution`.
+    trace_resolution: bool = false,
     /// `--listFiles`.
     list_files: bool = false,
     /// `--listFilesOnly`.
@@ -131,6 +133,10 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.pretty = true;
         } else if (std.mem.eql(u8, a, "--no-pretty")) {
             opts.pretty = false;
+        } else if (std.mem.eql(u8, a, "--traceResolution")) {
+            opts.trace_resolution = true;
+        } else if (std.mem.eql(u8, a, "--no-traceResolution")) {
+            opts.trace_resolution = false;
         } else if (std.mem.eql(u8, a, "--listFiles")) {
             opts.list_files = true;
         } else if (std.mem.eql(u8, a, "--listFilesOnly")) {
@@ -1326,6 +1332,13 @@ test "parseArgs: --pretty and --no-pretty" {
         defer T.allocator.free(opts.files);
         try T.expectEqual(@as(?bool, false), opts.pretty);
     }
+}
+
+test "parseArgs: --traceResolution toggles resolver tracing" {
+    const argv = [_][]const u8{"--traceResolution"};
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expect(opts.trace_resolution);
 }
 
 test "parseArgs: --pretty default + tsc_main resolution semantics" {

@@ -86,6 +86,10 @@ pub const Config = struct {
     /// Relative entries are interpreted relative to `config_file_path`.
     root_dirs: []const []const u8 = &.{},
     config_file_path: []const u8 = "",
+    /// Project-reference redirect config name when a host resolves with
+    /// compiler options borrowed from that referenced project. When set
+    /// and tracing is active, resolution emits TS6215.
+    project_reference_redirect_config: []const u8 = "",
     /// True when source-to-output fallback should be surfaced as TS6305
     /// metadata for project-reference consumers. Plain package self-name
     /// fallback leaves this false so same-project imports remain clean.
@@ -344,6 +348,15 @@ pub const Resolver = struct {
         sink.entries.append(a, .{ .code = code, .text = text }) catch {};
     }
 
+    fn traceResolutionUsingProjectReference(self: *Resolver) void {
+        if (self.config.project_reference_redirect_config.len == 0) return;
+        self.traceMsg(
+            6215,
+            "Using compiler options of project reference redirect '{s}'.",
+            .{self.config.project_reference_redirect_config},
+        );
+    }
+
     /// Resolve `specifier` from a file located at `containing_file`.
     /// `containing_file` is the importer; specifier is its argument
     /// to `import`/`require`/`from`. Memoizes per (directory, specifier)
@@ -407,6 +420,7 @@ pub const Resolver = struct {
             } else {
                 self.traceMsg(6242, "======== Resolving type reference directive '{s}', containing file '{s}'. ========", .{ directive, containing_file });
             }
+            self.traceResolutionUsingProjectReference();
         }
         const result = self.resolveTypeReferenceDirectiveImpl(directive, containing_file);
         if (result) |found| {
@@ -434,6 +448,7 @@ pub const Resolver = struct {
     ) ResolveError!Resolution {
         if (self.trace != null) {
             self.traceMsg(6086, "======== Resolving module '{s}' from '{s}'. ========", .{ specifier, containing_file });
+            self.traceResolutionUsingProjectReference();
         }
         const result = self.resolveImpl(specifier, containing_file);
         if (result) |r| {
@@ -2656,6 +2671,31 @@ test "Resolver: --traceResolution emits TS6086/6089/6095/6096/6097 banners and f
     try T.expect(saw_6089);
     try T.expect(saw_6095);
     try T.expect(saw_6097);
+}
+
+test "Resolver: project-reference redirect trace emits TS6215" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/repo/ref/index.ts", "export const x = 1;");
+    try vfs.addFile("/repo/app.ts", "import './ref/index';");
+
+    var sink = TraceSink.init(T.allocator);
+    defer sink.deinit();
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .project_reference_redirect_config = "/repo/ref/tsconfig.json",
+    });
+    defer r.deinit();
+    r.trace = &sink;
+
+    _ = try r.resolve("./ref/index", "/repo/app.ts");
+
+    var found = false;
+    for (sink.entries.items) |e| {
+        if (e.code != 6215) continue;
+        try T.expectEqualStrings("Using compiler options of project reference redirect '/repo/ref/tsconfig.json'.", e.text);
+        found = true;
+    }
+    try T.expect(found);
 }
 
 test "Resolver: node_modules + package.json resolution traces TS6098/6125/6099/6101" {

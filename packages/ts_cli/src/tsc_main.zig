@@ -283,6 +283,12 @@ fn reportWatchErrorStatus(error_count: usize) void {
     }
 }
 
+fn printTraceEntries(sink: *const ts_resolver.TraceSink, printed_count: *usize) void {
+    while (printed_count.* < sink.entries.items.len) : (printed_count.* += 1) {
+        std.debug.print("{s}\n", .{sink.entries.items[printed_count.*].text});
+    }
+}
+
 /// A project is up to date when every expected output (`.js`, and `.d.ts`
 /// when declarations are emitted) exists and is at least as new as every
 /// input file. Mirrors the timestamp half of tsc's getUpToDateStatus.
@@ -732,6 +738,7 @@ fn buildInfoOptionsJson(gpa: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) ![]u
         .{ .name = "skipLibCheck", .field = "skip_lib_check" },
         .{ .name = "skipDefaultLibCheck", .field = "skip_default_lib_check" },
         .{ .name = "forceConsistentCasingInFileNames", .field = "force_consistent_casing_in_file_names" },
+        .{ .name = "traceResolution", .field = "trace_resolution" },
         .{ .name = "keyofStringsOnly", .field = "keyof_strings_only" },
         .{ .name = "suppressExcessPropertyErrors", .field = "suppress_excess_property_errors" },
         .{ .name = "suppressImplicitAnyIndexErrors", .field = "suppress_implicit_any_index_errors" },
@@ -2175,6 +2182,17 @@ pub fn main(init: std.process.Init) !void {
         .{};
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
+    const trace_resolution = opts.trace_resolution or blk: {
+        if (loaded_cfg) |c| break :blk (c.compiler_options.trace_resolution orelse false);
+        break :blk false;
+    };
+    var trace_sink: ?ts_resolver.TraceSink = null;
+    defer if (trace_sink) |*sink| sink.deinit();
+    if (trace_resolution) {
+        trace_sink = ts_resolver.TraceSink.init(gpa);
+        resolver.trace = &trace_sink.?;
+    }
+    var printed_trace_entries: usize = 0;
 
     var program = ts_program.Program.init(gpa, &resolver);
     defer program.deinit();
@@ -2270,6 +2288,7 @@ pub fn main(init: std.process.Init) !void {
     // "Imported via … from file …" reason. Best-effort: resolution gaps
     // simply leave the program partial, as they did before.
     _ = program.loadImportClosure(compile_opts) catch {};
+    if (trace_sink) |*sink| printTraceEntries(sink, &printed_trace_entries);
 
     // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input
     // path the program will compile. `--listFilesOnly` exits before
@@ -2344,6 +2363,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
+    if (trace_sink) |*sink| printTraceEntries(sink, &printed_trace_entries);
     if (loaded_cfg) |c| {
         if (c.compiler_options.composite orelse false) {
             const composite_summary = printCompositeProjectFileListDiagnostics(

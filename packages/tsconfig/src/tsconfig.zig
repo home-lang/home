@@ -213,6 +213,7 @@ pub const CompilerOptions = struct {
     skip_lib_check: ?bool = null,
     skip_default_lib_check: ?bool = null,
     force_consistent_casing_in_file_names: ?bool = null,
+    trace_resolution: ?bool = null,
     keyof_strings_only: ?bool = null,
     suppress_excess_property_errors: ?bool = null,
     suppress_implicit_any_index_errors: ?bool = null,
@@ -1999,6 +2000,7 @@ fn fillCompilerOptions(
             .{ .name = "skipLibCheck", .field = "skip_lib_check" },
             .{ .name = "skipDefaultLibCheck", .field = "skip_default_lib_check" },
             .{ .name = "forceConsistentCasingInFileNames", .field = "force_consistent_casing_in_file_names" },
+            .{ .name = "traceResolution", .field = "trace_resolution" },
             .{ .name = "keyofStringsOnly", .field = "keyof_strings_only" },
             .{ .name = "suppressExcessPropertyErrors", .field = "suppress_excess_property_errors" },
             .{ .name = "suppressImplicitAnyIndexErrors", .field = "suppress_implicit_any_index_errors" },
@@ -2437,6 +2439,15 @@ test "tsconfig: noEmit + skipLibCheck" {
     );
     try t.expectEqual(@as(?bool, true), cfg.compiler_options.no_emit);
     try t.expectEqual(@as(?bool, true), cfg.compiler_options.skip_lib_check);
+}
+
+test "tsconfig: traceResolution boolean" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "traceResolution": true } }
+    );
+    try t.expectEqual(@as(?bool, true), cfg.compiler_options.trace_resolution);
 }
 
 test "tsconfig: unknown keys preserved in extra" {
