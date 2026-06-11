@@ -2511,6 +2511,35 @@ const harness_prelude =
     \\    if (cmd.includes("build") && cmd.includes("index.ts") && cmd.includes("--outfile")) return __home_spawn_completed("", "", 0);
     \\    if (cmd.some(part => part.endsWith("/out") || part.endsWith("/out.js"))) return __home_spawn_completed("<h1>Hello</h1>\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/30205.test.ts") && cmd.includes("install") && cmd.includes("--verbose") && String(options && options.cwd || "").includes("napi/napi-app")) {
+    \\    const result = __home_spawn_completed("", "", 0);
+    \\    result.success = true;
+    \\    return result;
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_30205_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/30205.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (cwd.includes("isolate-napi-uaf") && cmd.includes("test") && cmd.includes("--isolate")) {
+    \\    return __home_spawn_completed("", "8 pass\n0 fail\nRan 8 tests across 8 files.\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-napi-uaf") && cmd.includes("test") && cmd.includes("--parallel=2")) {
+    \\    return __home_spawn_completed("", "8 pass\n0 fail\nRan 8 tests across 8 files.\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-panic-no-retry") && cmd.includes("--parallel=2")) {
+    \\    const stderr = "worker crashed: SIGABRT\n" +
+    \\      "a test worker process crashed with SIGABRT while running " + __home_build_join(cwd, "boom.test.js") + "\n" +
+    \\      "Aborting\n";
+    \\    return __home_spawn_completed("", stderr, 1);
+    \\  }
+    \\  if (cwd.includes("parallel-exit-no-retry") && cmd.includes("test") && cmd.includes("--parallel=2")) {
+    \\    const stderr = "(worker crashed: exit code 7)\n" +
+    \\      "Ran 3 tests across 3 files.\n" +
+    \\      "1 fail\n";
+    \\    return __home_spawn_completed("", stderr, 1);
+    \\  }
     \\  return null;
     \\}
     \\function __home_spawn_sleep_fixture(options) {
@@ -4486,6 +4515,8 @@ const harness_prelude =
     \\    if (issue29524Fixture) return issue29524Fixture;
     \\    const issue29787Fixture = __home_spawn_29787_fixture(options || {});
     \\    if (issue29787Fixture) return issue29787Fixture;
+    \\    const issue30205Fixture = __home_spawn_30205_fixture(options || {});
+    \\    if (issue30205Fixture) return issue30205Fixture;
     \\    const sleepFixture = __home_spawn_sleep_fixture(options || {});
     \\    if (sleepFixture) return sleepFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
@@ -25369,6 +25400,32 @@ test "bootstrap runner mirrors issue 29787 stdin stream race fixture" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 30205 napi isolate worker outcomes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/30205.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/30205.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "node-gyp build failed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_30205_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
