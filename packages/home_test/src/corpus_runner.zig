@@ -14167,6 +14167,7 @@ const harness_prelude =
     \\    }
     \\    this.init = options;
     \\    this.status = status;
+    \\    this.ok = status >= 200 && status < 300;
     \\    this.statusText = options.statusText === undefined ? "" : String(options.statusText);
     \\    this.headers = new Headers(options.headers);
     \\    this.bodyUsed = false;
@@ -34620,6 +34621,44 @@ test "bootstrap runner mirrors Bun.build macro recursion guard" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26360.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Request.text served response ok flag" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("served Response.ok reflects status while Request.text reads body", async () => {
+        \\  using server = Bun.serve({
+        \\    port: 0,
+        \\    async fetch(req) {
+        \\      const body = await req.text();
+        \\      return new Response("ok:" + body.length);
+        \\    },
+        \\  });
+        \\  const url = `http://localhost:${server.port}`;
+        \\  for (let i = 0; i < 3; i++) {
+        \\    const body = Buffer.alloc(100, "x").toString() + `-request-${i}`;
+        \\    const response = await fetch(url, { method: "POST", body });
+        \\    expect(response.ok).toBe(true);
+        \\    expect(await response.text()).toBe(`ok:${body.length}`);
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26387.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
