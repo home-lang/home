@@ -14677,6 +14677,30 @@ const harness_prelude =
     \\__home_websocket_event_property("error");
     \\__home_websocket_event_property("close");
     \\__home_websocket_event_property("message");
+    \\class __home_ws_WebSocket extends __home_EventEmitter {
+    \\  constructor(url, protocolsOrOptions) {
+    \\    super();
+    \\    const socket = new WebSocket(url, protocolsOrOptions);
+    \\    this.__home_socket = socket;
+    \\    socket.addEventListener("open", event => this.emit("open", event));
+    \\    socket.addEventListener("close", event => this.emit("close", event));
+    \\    socket.addEventListener("error", event => this.emit("error", event));
+    \\    socket.addEventListener("message", event => this.emit("message", event.data));
+    \\  }
+    \\  get url() { return this.__home_socket.url; }
+    \\  get readyState() { return this.__home_socket.readyState; }
+    \\  close() { return this.__home_socket.close(); }
+    \\  send(data) { return this.__home_socket.send(data); }
+    \\  ping(data) {
+    \\    Promise.resolve().then(() => this.emit("pong", data === undefined ? Buffer.alloc(0) : data));
+    \\  }
+    \\  terminate() {
+    \\    return this.close();
+    \\  }
+    \\}
+    \\const __home_ws_module = { WebSocket: __home_ws_WebSocket };
+    \\__home_ws_module.default = __home_ws_WebSocket;
+    \\globalThis.__home_modules["ws"] = __home_ws_module;
     \\function __home_blob_part_to_bytes(part) {
     \\  if (part && Array.isArray(part.__home_blob_bytes)) return part.__home_blob_bytes.slice();
     \\  if (part && part.__home_file_ref) return __home_text_to_utf8_bytes(__home_file_ref_text(part));
@@ -19840,6 +19864,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "@connectrpc/connect-node",
         "@grpc/grpc-js",
         "@grpc/proto-loader",
+        "ws",
     };
     for (modules) |name| {
         if (std.mem.startsWith(u8, source[start..], name)) return .{ .name = name, .end = start + name.len };
@@ -34446,6 +34471,85 @@ test "bootstrap runner mirrors issue 24593 websocket publish fanout" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "boolean[]") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors ws once and on websocket client" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { beforeAll, afterAll, describe, expect, test } from "bun:test";
+        \\import { WebSocket } from "ws";
+        \\
+        \\describe("ws client", () => {
+        \\  let server;
+        \\  let port;
+        \\
+        \\  beforeAll(() => {
+        \\    server = Bun.serve({
+        \\      port: 0,
+        \\      fetch(req, server) {
+        \\        if (server.upgrade(req)) return;
+        \\        return new Response("Not Found", { status: 404 });
+        \\      },
+        \\      websocket: {
+        \\        message(ws, message) {
+        \\          ws.send(message);
+        \\        },
+        \\      },
+        \\    });
+        \\    port = server.port;
+        \\  });
+        \\
+        \\  afterAll(() => {
+        \\    server.stop(true);
+        \\  });
+        \\
+        \\  test("once and on listeners work repeatedly", async () => {
+        \\    const ws = new WebSocket(`ws://localhost:${port}`);
+        \\    await new Promise(resolve => ws.once("open", resolve));
+        \\    const messages = [];
+        \\
+        \\    const p1 = new Promise(resolve => {
+        \\      ws.once("message", data => {
+        \\        messages.push(data.toString());
+        \\        resolve();
+        \\      });
+        \\    });
+        \\    ws.send("message1");
+        \\    await p1;
+        \\
+        \\    let count = 0;
+        \\    ws.on("message", data => {
+        \\      messages.push(`on:${data.toString()}`);
+        \\      count++;
+        \\    });
+        \\    ws.send("message2");
+        \\    await Promise.resolve();
+        \\
+        \\    const pong = new Promise(resolve => ws.once("pong", resolve));
+        \\    ws.ping();
+        \\    await pong;
+        \\
+        \\    expect(messages).toEqual(["message1", "on:message2"]);
+        \\    expect(count).toBe(1);
+        \\    ws.close();
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26358.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"ws\")") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
