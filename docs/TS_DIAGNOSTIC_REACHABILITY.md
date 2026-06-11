@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 537 |
-| active reachable (parity targets) | 72 |
+| catalog-only total | 536 |
+| active reachable (parity targets) | 71 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -28,8 +28,8 @@ diverge from the reference compiler.
 | 1xxx — parser / syntactic + program file-inclusion | 37 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
-| 2xxx — checker / type engine | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
+| 2xxx — checker / type engine | 1 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (37)
 
@@ -108,15 +108,14 @@ diverge from the reference compiler.
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 2xxx — checker / type engine (2)
-
-- TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
-- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
-
 ### 6xxx — CLI / build / watch / resolution-trace messages (2)
 
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
+
+### 2xxx — checker / type engine (1)
+
+- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
 ## Blocked/effectively-dead references
 

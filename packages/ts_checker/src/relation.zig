@@ -35,7 +35,7 @@ pub const Interner = interner.Interner;
 /// comfortably exceed any realistic hand-written nesting depth while
 /// staying well under the native stack budget; mirrors the spirit of
 /// tsc's `recursiveTypeRelatedTo` stack-depth==100 overflow cutoff.
-const max_relate_depth: u32 = 200;
+pub const max_relate_depth: u32 = 200;
 
 pub const Relation = enum(u8) {
     identity,
@@ -336,6 +336,7 @@ pub const Engine = struct {
     /// limit we treat the in-flight comparison as related (optimistic,
     /// same as a detected cycle) rather than overflowing the stack.
     relate_depth: u32 = 0,
+    relation_stack_depth_overflowed: bool = false,
     source_stack: std.ArrayListUnmanaged(TypeId) = .empty,
     target_stack: std.ArrayListUnmanaged(TypeId) = .empty,
 
@@ -361,6 +362,16 @@ pub const Engine = struct {
 
     pub fn setRestSignatures(self: *Engine, rs: *const std.AutoHashMapUnmanaged(TypeId, void)) void {
         self.rest_signatures = rs;
+    }
+
+    pub fn clearRelationStackDepthOverflow(self: *Engine) void {
+        self.relation_stack_depth_overflowed = false;
+    }
+
+    pub fn consumeRelationStackDepthOverflow(self: *Engine) bool {
+        const overflowed = self.relation_stack_depth_overflowed;
+        self.relation_stack_depth_overflowed = false;
+        return overflowed;
     }
 
     /// §4.A.X TS 4.0 — when `sig`'s last param is a tuple (or a
@@ -592,7 +603,10 @@ pub const Engine = struct {
         // produces for assignability — instead of overflowing the
         // native stack. The limit is generous so genuine (finite)
         // deep object graphs still get a real structural answer.
-        if (self.relate_depth >= max_relate_depth) return true;
+        if (self.relate_depth >= max_relate_depth) {
+            self.relation_stack_depth_overflowed = true;
+            return true;
+        }
         if (self.isDeeplyNestedPair(source, target)) return true;
 
         try self.cache.put(.assignable, source, target, .pending);
@@ -3163,6 +3177,8 @@ test "Engine: over-deep comparison unwinds via depth guard without overflow" {
     const src = try buildNestedChain(&ti, x, Primitive.number_t, deep, tag);
     const tgt = try buildNestedChain(&ti, x, Primitive.number_t, deep, tag);
     try T.expect(try e.isAssignableTo(src, tgt));
+    try T.expect(e.consumeRelationStackDepthOverflow());
+    try T.expect(!e.consumeRelationStackDepthOverflow());
 }
 
 test "Engine: same-origin generated recursive chains short-circuit when deeply nested" {
