@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 521 |
-| active reachable (parity targets) | 56 |
+| catalog-only total | 520 |
+| active reachable (parity targets) | 55 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,12 +25,12 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 32 |
+| 1xxx — parser / syntactic + program file-inclusion | 31 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 5 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 1xxx — parser / syntactic + program file-inclusion (32)
+### 1xxx — parser / syntactic + program file-inclusion (31)
 
 - TS1012 `Unexpected_token_1012`
 - TS1394 `Imported_via_0_from_file_1_with_packageId_2_1394`
@@ -55,7 +55,6 @@ diverge from the reference compiler.
 - TS1426 `File_is_default_library_for_target_specified_here_1426`
 - TS1428 `File_is_output_of_project_reference_source_0_1428`
 - TS1429 `File_redirects_to_file_0_1429`
-- TS1430 `The_file_is_in_the_program_because_Colon_1430`
 - TS1458 `File_is_ECMAScript_module_because_0_has_field_type_with_value_module_1458`
 - TS1459 `File_is_CommonJS_module_because_0_has_field_type_whose_value_is_not_module_1459`
 - TS1460 `File_is_CommonJS_module_because_0_does_not_have_field_type_1460`

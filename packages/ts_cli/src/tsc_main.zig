@@ -1208,9 +1208,44 @@ fn caseOnlyInputRelatedInfo(
     return out[0..len];
 }
 
+fn caseOnlyInputReasonChain(
+    gpa: std.mem.Allocator,
+    ctx: CaseOnlyInputRootContext,
+    top: *[1]ts_diagnostics.ChainEntry,
+    children: *[1]ts_diagnostics.ChainEntry,
+    owned_child_message: *?[]u8,
+) ![]const ts_diagnostics.ChainEntry {
+    const code_file_in_program_because: u32 = 1430;
+    const code_include_pattern: u32 = 1407;
+    const code_files_list: u32 = 1409;
+    const child_message: []const u8 = switch (ctx.kind) {
+        .files => (ts_diagnostics.codes.lookup(code_files_list) orelse unreachable).message,
+        .include => blk: {
+            const pattern = if (ctx.specs.len > 0) ctx.specs[0] else "**/*";
+            const config_name = if (ctx.config_path.len > 0) ctx.config_path else "tsconfig.json";
+            owned_child_message.* = try std.fmt.allocPrint(
+                gpa,
+                "Matched by include pattern '{s}' in '{s}'",
+                .{ pattern, config_name },
+            );
+            _ = code_include_pattern;
+            break :blk owned_child_message.*.?;
+        },
+        .none => return &.{},
+    };
+
+    children[0] = .{ .message = child_message };
+    top[0] = .{
+        .message = (ts_diagnostics.codes.lookup(code_file_in_program_because) orelse unreachable).message,
+        .children = children[0..1],
+    };
+    return top[0..1];
+}
+
 fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
     gpa: std.mem.Allocator,
     mismatch: CaseOnlyInputFileMismatch,
+    chain: []const ts_diagnostics.ChainEntry,
     related: []const ts_diagnostics.Related,
 ) ![]u8 {
     const message = try alreadyIncludedFileNameDiffersOnlyInCasingMessage(gpa, mismatch.file_name, mismatch.existing_file_name);
@@ -1224,6 +1259,7 @@ fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
         .severity = .err,
         .message = message,
         .span_len = 0,
+        .chain = chain,
         .related = related,
     };
     return ts_diagnostics.formatDefault(gpa, diag);
@@ -1231,9 +1267,14 @@ fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
 
 fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []const []const u8, root_context: CaseOnlyInputRootContext) bool {
     const mismatch = findCaseOnlyInputFileMismatch(input_files) orelse return false;
+    var chain_top_buf: [1]ts_diagnostics.ChainEntry = undefined;
+    var chain_child_buf: [1]ts_diagnostics.ChainEntry = undefined;
+    var owned_chain_child_message: ?[]u8 = null;
+    defer if (owned_chain_child_message) |msg| gpa.free(msg);
+    const chain = caseOnlyInputReasonChain(gpa, root_context, &chain_top_buf, &chain_child_buf, &owned_chain_child_message) catch &.{};
     var related_buf: [2]ts_diagnostics.Related = undefined;
     const related = caseOnlyInputRelatedInfo(root_context, mismatch, &related_buf);
-    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch, related) catch return true;
+    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch, chain, related) catch return true;
     defer gpa.free(msg);
     std.debug.print("{s}\n", .{msg});
     return true;
@@ -3354,7 +3395,7 @@ test "tsc_main: TS1261 reports input files that differ only by casing" {
     try std.testing.expectEqual(@as(usize, 1), found.file_index);
     try std.testing.expectEqual(@as(usize, 0), found.existing_file_index);
 
-    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, found, &.{});
+    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, found, &.{}, &.{});
     defer std.testing.allocator.free(msg);
     try std.testing.expectEqualStrings(
         "error TS1261: Already included file name '/repo/src/Foo.ts' differs from file name '/repo/src/foo.ts' only in casing.",
@@ -3389,8 +3430,19 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     try std.testing.expectEqual(@as(u32, 1410), files_related[0].code);
     try std.testing.expectEqualStrings("File is matched by 'files' list specified here.", files_related[0].message);
 
-    const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_related);
+    var chain_top_buf: [1]ts_diagnostics.ChainEntry = undefined;
+    var chain_child_buf: [1]ts_diagnostics.ChainEntry = undefined;
+    var owned_chain_child_message: ?[]u8 = null;
+    defer if (owned_chain_child_message) |msg| std.testing.allocator.free(msg);
+    const files_chain = try caseOnlyInputReasonChain(std.testing.allocator, .{
+        .kind = .files,
+        .config_path = "/repo/tsconfig.json",
+        .config_source = config_source,
+        .specs = &files,
+    }, &chain_top_buf, &chain_child_buf, &owned_chain_child_message);
+    const files_msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(std.testing.allocator, mismatch, files_chain, files_related);
     defer std.testing.allocator.free(files_msg);
+    try std.testing.expect(std.mem.indexOf(u8, files_msg, "\n  The file is in the program because:\n    Part of 'files' list in tsconfig.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,13): File is matched by 'files' list specified here.") != null);
     try std.testing.expect(std.mem.indexOf(u8, files_msg, "/repo/tsconfig.json(2,27): File is matched by 'files' list specified here.") != null);
 
@@ -3405,6 +3457,20 @@ test "tsc_main: TS1261 carries config-root related information for files and inc
     try std.testing.expectEqual(@as(usize, 2), include_related.len);
     try std.testing.expectEqual(@as(u32, 1408), include_related[0].code);
     try std.testing.expectEqualStrings("File is matched by include pattern specified here.", include_related[0].message);
+
+    var include_chain_top_buf: [1]ts_diagnostics.ChainEntry = undefined;
+    var include_chain_child_buf: [1]ts_diagnostics.ChainEntry = undefined;
+    var include_owned_chain_child_message: ?[]u8 = null;
+    defer if (include_owned_chain_child_message) |msg| std.testing.allocator.free(msg);
+    const include_chain = try caseOnlyInputReasonChain(std.testing.allocator, .{
+        .kind = .include,
+        .config_path = "/repo/tsconfig.json",
+        .config_source = config_source,
+        .specs = &include,
+    }, &include_chain_top_buf, &include_chain_child_buf, &include_owned_chain_child_message);
+    try std.testing.expectEqual(@as(usize, 1), include_chain.len);
+    try std.testing.expectEqualStrings("The file is in the program because:", include_chain[0].message);
+    try std.testing.expectEqualStrings("Matched by include pattern 'src/**/*' in '/repo/tsconfig.json'", include_chain[0].children[0].message);
 }
 
 test "tsc_main: TS6307 diagnostic message and anchor match composite file list validation" {
