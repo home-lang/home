@@ -540,8 +540,9 @@ pub fn parse(
     const v = try p.parseValue();
     p.skipWhitespace();
     if (p.pos != source.len) {
-        p.report("trailing content after value");
-        return error.UnexpectedCharacter;
+        p.report("Unexpected token.");
+        _ = p.parseInvalidValue();
+        p.skipWhitespace();
     }
     return .{
         .value = v,
@@ -557,6 +558,7 @@ const t = std.testing;
 
 fn parseString(source: []const u8, arena: std.mem.Allocator) !Value {
     const r = try parse(t.allocator, arena, source);
+    defer t.allocator.free(r.diagnostics);
     return r.value;
 }
 
@@ -616,6 +618,18 @@ test "jsonc: trailing commas in objects and arrays" {
     try t.expectEqual(@as(usize, 3), arr.len);
     try t.expectApproxEqRel(@as(f64, 1), arr[0].asNumber().?, 1e-9);
     try t.expectApproxEqRel(@as(f64, 3), arr[2].asNumber().?, 1e-9);
+}
+
+test "jsonc: trailing top-level content records TS1012-shaped diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const r = try parse(t.allocator, arena.allocator(), "{} {}");
+    defer t.allocator.free(r.diagnostics);
+    try t.expectEqual(@as(usize, 1), r.diagnostics.len);
+    try t.expectEqual(@as(u32, 3), r.diagnostics[0].pos);
+    try t.expectEqual(@as(u32, 1), r.diagnostics[0].line);
+    try t.expectEqual(@as(u32, 3), r.diagnostics[0].column);
+    try t.expectEqualStrings("Unexpected token.", r.diagnostics[0].message);
 }
 
 test "jsonc: nested objects" {
@@ -705,12 +719,13 @@ test "jsonc: unterminated string is an error" {
     , arena.allocator()));
 }
 
-test "jsonc: trailing content is an error" {
+test "jsonc: trailing content is reported and recovered" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
-    try t.expectError(error.UnexpectedCharacter, parseString(
+    const v = try parseString(
         \\{} {}
-    , arena.allocator()));
+    , arena.allocator());
+    try t.expectEqual(@as(usize, 0), v.asObject().?.keys.len);
 }
 
 test "jsonc: invalid property values recover as sentinel values" {

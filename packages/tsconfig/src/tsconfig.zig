@@ -335,6 +335,16 @@ pub const OptionParseDiagnostic = struct {
     got_type: []const u8 = "",
 };
 
+/// Syntax diagnostics produced by the JSONC parser that TypeScript
+/// reports while still recovering a usable config tree.
+pub const JsonParseDiagnostic = struct {
+    code: u32,
+    pos: u32,
+    line: u32,
+    column: u32,
+    message: []const u8,
+};
+
 pub const TsConfig = struct {
     /// The path this config came from (set by the loader; empty when
     /// parsed via `parseString`).
@@ -374,6 +384,10 @@ pub const TsConfig = struct {
     /// next to the TS50xx consistency diagnostics. Empty when the
     /// config parsed cleanly.
     option_parse_diagnostics: []OptionParseDiagnostic = &.{},
+    /// JSON syntax diagnostics that did not prevent recovery. Today this
+    /// covers TS1012 ("Unexpected token.") for extra top-level JSON
+    /// expressions after the config object.
+    json_parse_diagnostics: []JsonParseDiagnostic = &.{},
     /// True when the config file's JSON root was present but was not an
     /// object (e.g. a top-level array, string, number, boolean, or
     /// `null`). tsc's `convertConfigFileToObject` reports TS5092 and
@@ -414,6 +428,17 @@ pub const TsConfig = struct {
                 .code = 5092,
                 .message = msg,
                 .owns_message = true,
+                .field = "",
+            });
+        }
+
+        // TS1012: JSON parser recovery for extra top-level expressions
+        // after the config object. TypeScript keeps the first config
+        // object and reports the unexpected token.
+        for (self.json_parse_diagnostics) |parse_diag| {
+            try diags.append(gpa, .{
+                .code = parse_diag.code,
+                .message = parse_diag.message,
                 .field = "",
             });
         }
@@ -1594,7 +1619,17 @@ pub fn parseString(
     source: []const u8,
 ) LoadError!TsConfig {
     const doc = try jsonc.parse(gpa, arena, source);
-    gpa.free(doc.diagnostics);
+    defer gpa.free(doc.diagnostics);
+    const json_parse_diagnostics = try arena.alloc(JsonParseDiagnostic, doc.diagnostics.len);
+    for (doc.diagnostics, 0..) |diag, i| {
+        json_parse_diagnostics[i] = .{
+            .code = 1012,
+            .pos = diag.pos,
+            .line = diag.line,
+            .column = diag.column,
+            .message = diag.message,
+        };
+    }
 
     // TS5092: the root value parsed but is not an object. Mirror tsc's
     // `convertConfigFileToObject` recovery — for a top-level array, adopt
@@ -1621,6 +1656,7 @@ pub fn parseString(
         .exclude = null,
         .references = &.{},
         .unknown_type_acquisition_options = &.{},
+        .json_parse_diagnostics = json_parse_diagnostics,
         .root_not_object = root_not_object,
     };
 
@@ -2711,6 +2747,21 @@ test "tsconfig.validate: object root does not report TS5092" {
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), countCode(diags, 5092));
+}
+
+test "tsconfig.validate: trailing top-level JSON reports TS1012 and recovers config" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strict": true } } {}
+    );
+    try t.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
+    try t.expectEqual(@as(usize, 1), cfg.json_parse_diagnostics.len);
+    try t.expectEqual(@as(u32, 1012), cfg.json_parse_diagnostics[0].code);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    const d = findCode(diags, 1012) orelse return error.TestExpectedDiagnostic;
+    try t.expectEqualStrings("Unexpected token.", d.message);
 }
 
 test "tsconfig.validate: composite without declaration reports TS6304-shaped diagnostic" {
