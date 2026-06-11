@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 513 |
-| active reachable (parity targets) | 48 |
+| catalog-only total | 509 |
+| active reachable (parity targets) | 44 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,11 +25,11 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 26 |
+| 1xxx — parser / syntactic + program file-inclusion | 22 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 5 |
 
-### 1xxx — parser / syntactic + program file-inclusion (26)
+### 1xxx — parser / syntactic + program file-inclusion (22)
 
 - TS1394 `Imported_via_0_from_file_1_with_packageId_2_1394`
 - TS1395 `Imported_via_0_from_file_1_to_import_importHelpers_as_specified_in_compilerOptions_1395`
@@ -53,10 +53,6 @@ diverge from the reference compiler.
 - TS1426 `File_is_default_library_for_target_specified_here_1426`
 - TS1428 `File_is_output_of_project_reference_source_0_1428`
 - TS1429 `File_redirects_to_file_0_1429`
-- TS1480 `To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_create_a_local_packag_1480`
-- TS1481 `To_convert_this_file_to_an_ECMAScript_module_change_its_file_extension_to_0_or_add_the_field_type_Co_1481`
-- TS1482 `To_convert_this_file_to_an_ECMAScript_module_add_the_field_type_Colon_module_to_0_1482`
-- TS1483 `To_convert_this_file_to_an_ECMAScript_module_create_a_local_package_json_file_with_type_Colon_module_1483`
 
 ### 9xxxx — editor code-fix / refactor (language service) (17)
 
