@@ -7681,6 +7681,11 @@ const harness_prelude =
     \\  const client = __home_http_event_target();
     \\  client.closed = false;
     \\  client.destroyed = false;
+    \\  client.__home_local_window_size = Number(options && options.settings && options.settings.initialWindowSize) || 65535;
+    \\  client.setLocalWindowSize = function(size) {
+    \\    this.__home_local_window_size = Number(size) || this.__home_local_window_size;
+    \\    return undefined;
+    \\  };
     \\  client.close = function(callback) {
     \\    if (!this.closed) {
     \\      this.closed = true;
@@ -21765,6 +21770,74 @@ test "bootstrap runner mirrors http2 settings flow-control corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors http2 setLocalWindowSize corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import assert from "node:assert";
+        \\import { once } from "node:events";
+        \\import http2 from "node:http2";
+        \\import { test } from "node:test";
+        \\
+        \\function startServer(payloadSize: number): Promise<{ port: number; server: http2.Http2Server }> {
+        \\  const payload = Buffer.alloc(payloadSize, "x");
+        \\  return new Promise(resolve => {
+        \\    const server = http2.createServer();
+        \\    server.on("stream", stream => {
+        \\      stream.respond({ ":status": 200 });
+        \\      stream.end(payload);
+        \\    });
+        \\    server.listen(0, () => {
+        \\      const addr = server.address();
+        \\      if (addr && typeof addr === "object") resolve({ port: addr.port, server });
+        \\    });
+        \\  });
+        \\}
+        \\
+        \\function doRequest(client: http2.ClientHttp2Session): Promise<Buffer> {
+        \\  return new Promise((resolve, reject) => {
+        \\    const req = client.request({ ":path": "/" });
+        \\    const chunks: Buffer[] = [];
+        \\    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+        \\    req.on("end", () => resolve(Buffer.concat(chunks)));
+        \\    req.on("error", reject);
+        \\    req.end();
+        \\  });
+        \\}
+        \\
+        \\test("setLocalWindowSize allows large payloads", async () => {
+        \\  const payloadSize = 256 * 1024;
+        \\  const { port, server } = await startServer(payloadSize);
+        \\  try {
+        \\    const client = http2.connect(`http://127.0.0.1:${port}`, {
+        \\      settings: { initialWindowSize: 10 * 1024 * 1024 },
+        \\    });
+        \\    await once(client, "connect");
+        \\    assert.strictEqual(client.setLocalWindowSize(10 * 1024 * 1024), undefined);
+        \\    const result = await doRequest(client);
+        \\    assert.strictEqual(result.length, payloadSize);
+        \\    await new Promise(resolve => client.close(resolve));
+        \\  } finally {
+        \\    await new Promise(resolve => server.close(() => resolve()));
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26915.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "setLocalWindowSize") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors frontend files splitting corpus" {
