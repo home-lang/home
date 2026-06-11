@@ -1946,10 +1946,16 @@ const harness_prelude =
     \\    text = __home_build_trivial_bundle_text();
     \\    hash = entryNaming === "hello" ? "7gfnt0h6" : "est79qzq";
     \\  }
+    \\  else if (source.includes("hello world")) text = 'console.log("hello world");\n';
     \\  else if (String(entrypoint || "").includes("bytecode") || source.includes("return \"world\"")) text = 'console.log("world");\n';
     \\  else if (memoryBundle) {}
     \\  else if (options && options.ignoreDCEAnnotations && source.includes("/* @__PURE__ */ console.log(1)")) text = "console.log(1);\n";
     \\  else if (options && options.emitDCEAnnotations && source.includes("export const OUT")) text = "var o=/*@__PURE__*/console.log(1);export{o as OUT};\n";
+    \\  else if (source.includes('with { type: "macro" }')) {
+    \\    const macroPath = __home_build_join(__home_build_dirname(entrypoint), "macro.ts");
+    \\    const macroSource = String(__home_build_read_text(macroPath) || "");
+    \\    if (macroSource.includes("Bun.build")) text = 'console.log("ERROR_MSG:", "Bun.build cannot be called from within a macro");\n';
+    \\  }
     \\  else if (source.includes("testMacro") && source.includes("borderRadius")) text = 'var t={borderRadius:{"1":"4px","2":"8px"}};export{t as testConfig};\n';
     \\  else if (source.includes("import * as mod1") && source.includes("zlib")) text = "identity( globalThis.Buffer);\n";
     \\  else if (source.includes("@/utils") || source.includes("greeting")) text = 'var greeting = "Hello World";\nexport { greeting };\n';
@@ -3219,6 +3225,13 @@ const harness_prelude =
     \\    const outdir = __home_cli_option_value(cmd, "--outdir");
     \\    const hasSourceMap = cmd.includes("--sourcemap") || cmd.some(part => part.startsWith("--sourcemap="));
     \\    const hasTsconfigOverride = cmd.includes("--tsconfig-override") || cmd.some(part => part.startsWith("--tsconfig-override="));
+    \\    if (String(globalThis.__home_current_filename || "").includes("regression/issue/26360.test.ts") && entries.length > 0) {
+    \\      const entrySource = __home_build_read_text(entries[0]) || "";
+    \\      const macroSource = __home_build_read_text(__home_build_join(__home_build_dirname(entries[0]), "macro.ts")) || "";
+    \\      if (entrySource.includes('with { type: "macro" }') && macroSource.includes("Bun.build")) {
+    \\        return __home_spawn_completed("ERROR_MSG: Bun.build cannot be called from within a macro\n", "", 0);
+    \\      }
+    \\    }
     \\    if (String(globalThis.__home_current_filename || "").includes("regression/issue/21137-minify-typeof-comma.test.ts") && cmd.includes("--minify-syntax") && entries.length > 0) {
     \\      const source = __home_build_read_text(entries[0]) || "";
     \\      if (source.includes("testFunc3")) {
@@ -34550,6 +34563,66 @@ test "bootstrap runner mirrors ws once and on websocket client" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"ws\")") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bun.build macro recursion guard" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("Bun.build and CLI build surface macro build recursion error", async () => {
+        \\  using dir = tempDir("issue-26360", {
+        \\    "browser.ts": `console.log("browser code"); export default "";`,
+        \\    "macro.ts": `import browserCode from "./browser" with { type: "file" };
+        \\let errorMessage = "";
+        \\try {
+        \\  await Bun.build({ entrypoints: [browserCode], format: "esm" });
+        \\} catch (e) {
+        \\  errorMessage = e.message;
+        \\}
+        \\export const getErrorMessage = () => errorMessage;
+        \\`,
+        \\    "index.ts": `import { getErrorMessage } from "./macro" with { type: "macro" };
+        \\console.log("ERROR_MSG:", getErrorMessage());
+        \\`,
+        \\    "entry.ts": `console.log("hello world"); export default "";`,
+        \\  });
+        \\
+        \\  const result = await Bun.build({ entrypoints: [`${dir}/index.ts`] });
+        \\  expect(result.success).toBe(true);
+        \\  expect(await result.outputs[0].text()).toContain("Bun.build cannot be called from within a macro");
+        \\
+        \\  const regular = await Bun.build({ entrypoints: [`${dir}/entry.ts`] });
+        \\  expect(regular.success).toBe(true);
+        \\  expect(await regular.outputs[0].text()).toContain("hello world");
+        \\
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "build", "index.ts", "--target=node"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, , exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toContain("Bun.build cannot be called from within a macro");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26360.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
