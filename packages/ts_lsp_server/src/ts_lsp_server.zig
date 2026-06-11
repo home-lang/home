@@ -1927,10 +1927,9 @@ pub fn handleCodeAction(
     defer {
         for (actions) |a| {
             // `title` is sometimes static ("Organize Imports") and
-            // sometimes heap-allocated ("Add explicit type to x").
-            // We can't tell the two apart; mirror the test fixtures
-            // which only free the heap-allocated quick_fix titles.
-            if (a.kind == .quick_fix) gpa.free(a.title);
+            // otherwise heap-allocated ("Add explicit type to x",
+            // fix-all titles, etc.).
+            if (a.kind != .organize_imports) gpa.free(a.title);
             for (a.edits) |e| gpa.free(e.new_text);
             gpa.free(a.edits);
         }
@@ -1946,7 +1945,14 @@ pub fn handleCodeAction(
         try writeJsonStringContents(&buf, gpa, action.title);
         try buf.appendSlice(gpa, "\",\"kind\":\"");
         try buf.appendSlice(gpa, lspCodeActionKind(action.kind));
-        try buf.appendSlice(gpa, "\",\"edit\":{\"changes\":{");
+        try buf.append(gpa, '"');
+        if (action.code) |code| {
+            var code_buf: [32]u8 = undefined;
+            try buf.appendSlice(gpa, ",\"data\":{\"tsCode\":");
+            try buf.appendSlice(gpa, try std.fmt.bufPrint(&code_buf, "{d}", .{code}));
+            try buf.append(gpa, '}');
+        }
+        try buf.appendSlice(gpa, ",\"edit\":{\"changes\":{");
         // All edits in a single CodeAction may target multiple files;
         // group them by file like rename does.
         var by_file: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
@@ -2037,7 +2043,7 @@ pub fn handleExecuteCommand(
         const actions = try service.codeActions(gpa, path);
         defer {
             for (actions) |a| {
-                if (a.kind == .quick_fix) gpa.free(a.title);
+                if (a.kind != .organize_imports) gpa.free(a.title);
                 for (a.edits) |e| gpa.free(e.new_text);
                 gpa.free(a.edits);
             }
@@ -5668,6 +5674,7 @@ test "handleCodeAction: returns CodeAction array with title/kind/edit" {
     try T.expect(std.mem.indexOf(u8, out, "\"id\":81") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"title\":\"Add explicit type to x\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"quickfix\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"data\":{\"tsCode\":90062}") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"edit\":{\"changes\":") != null);
 }
 

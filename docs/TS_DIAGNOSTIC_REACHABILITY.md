@@ -16,35 +16,30 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 482 |
-| active reachable (parity targets) | 17 |
+| catalog-only total | 476 |
+| active reachable (parity targets) | 12 |
 | blocked/effectively-dead references | 4 |
-| dead in tsgo (leave catalog-only) | 461 |
+| dead in tsgo (leave catalog-only) | 460 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 9xxxx — editor code-fix / refactor (language service) | 17 |
+| 9xxxx — editor code-fix / refactor (language service) | 12 |
 
-### 9xxxx — editor code-fix / refactor (language service) (17)
+### 9xxxx — editor code-fix / refactor (language service) (12)
 
 - TS90014 `Change_0_to_1_90014`
 - TS90055 `Remove_type_from_import_declaration_from_0_90055`
 - TS90056 `Remove_type_from_import_of_0_from_1_90056`
-- TS90057 `Add_import_from_0_90057`
 - TS90058 `Update_import_from_0_90058`
-- TS90062 `Add_annotation_of_type_0_90062`
-- TS90063 `Add_return_type_0_90063`
 - TS90064 `Extract_base_class_to_variable_90064`
 - TS90065 `Extract_default_export_to_variable_90065`
 - TS90066 `Extract_binding_expressions_to_variable_90066`
-- TS90067 `Add_all_missing_type_annotations_90067`
 - TS90068 `Add_satisfies_and_an_inline_type_assertion_with_0_90068`
 - TS90069 `Extract_to_variable_and_replace_with_0_as_typeof_0_90069`
 - TS90070 `Mark_array_literal_as_const_90070`
 - TS90071 `Annotate_types_of_properties_expando_function_in_a_namespace_90071`
-- TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
 ## Blocked/effectively-dead references
@@ -74,7 +69,7 @@ Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully catalog-only)
 
-461 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
+460 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
 
 <details><summary>Show dead codes</summary>
 
@@ -331,7 +326,6 @@ Confirm against this list before picking one:
 - TS90022 `Change_spelling_to_0_90022`
 - TS90023 `Declare_method_0_90023`
 - TS90024 `Declare_static_method_0_90024`
-- TS90025 `Prefix_0_with_an_underscore_90025`
 - TS90026 `Rewrite_as_the_indexed_access_type_0_90026`
 - TS90027 `Declare_static_property_0_90027`
 - TS90028 `Call_decorator_expression_90028`

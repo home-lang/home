@@ -261,6 +261,11 @@ pub const CodeAction = struct {
     title: []const u8,
     kind: Kind,
     edits: []TextEdit,
+    /// Optional upstream TS message code for editor-facing code-fix /
+    /// refactor actions. This lets the protocol layer expose the
+    /// canonical `TS9xxxx` message identity alongside Home's local
+    /// title and edit payload.
+    code: ?u32 = null,
 
     pub const Kind = enum {
         organize_imports,
@@ -2269,6 +2274,9 @@ pub const Service = struct {
             });
         }
 
+        var missing_type_annotation_edits: std.ArrayListUnmanaged(TextEdit) = .empty;
+        defer missing_type_annotation_edits.deinit(gpa);
+
         // ---- Add explicit type annotation ---------------------------------
         // For each top-level let/const/var with no annotation but a
         // well-defined inferred type, surface a quick-fix that
@@ -2310,11 +2318,14 @@ pub const Service = struct {
                 .end_col = co,
                 .new_text = new_text,
             };
+            const edit = edits[0];
             try actions.append(gpa, .{
                 .title = title,
                 .kind = .quick_fix,
                 .edits = edits,
+                .code = ts_checker.check.TsCodes.codefix_add_annotation_of_type,
             });
+            try missing_type_annotation_edits.append(gpa, edit);
         }
 
         // ---- Add missing return type --------------------------------------
@@ -2386,11 +2397,13 @@ pub const Service = struct {
                 .title = title,
                 .kind = .quick_fix,
                 .edits = edits,
+                .code = ts_checker.check.TsCodes.codefix_add_return_type,
             });
             // Track the same edit (no copy yet) so the fix-all
             // aggregate can decide whether to emit. We dupe only when
             // emitting so single-fix runs don't leak the duplicate.
             try return_type_edits.append(gpa, edit);
+            try missing_type_annotation_edits.append(gpa, edit);
         }
         // Fix-all aggregate: when at least two functions are missing a
         // return type, bundle every per-fn insertion into one action
@@ -2419,6 +2432,28 @@ pub const Service = struct {
                 .edits = agg_edits,
             });
         }
+        if (missing_type_annotation_edits.items.len >= 2) {
+            const agg_title = try gpa.dupe(u8, "Add all missing type annotations");
+            errdefer gpa.free(agg_title);
+            const agg_edits = try gpa.alloc(TextEdit, missing_type_annotation_edits.items.len);
+            errdefer gpa.free(agg_edits);
+            for (missing_type_annotation_edits.items, 0..) |e, idx| {
+                agg_edits[idx] = .{
+                    .file = e.file,
+                    .start_line = e.start_line,
+                    .start_col = e.start_col,
+                    .end_line = e.end_line,
+                    .end_col = e.end_col,
+                    .new_text = try gpa.dupe(u8, e.new_text),
+                };
+            }
+            try actions.append(gpa, .{
+                .title = agg_title,
+                .kind = .fix_all,
+                .edits = agg_edits,
+                .code = ts_checker.check.TsCodes.codefix_add_all_missing_type_annotations,
+            });
+        }
 
         // ---- Add import for unresolved identifier (TS2304) ----------------
         // For each "Cannot find name 'X'." diagnostic in this file,
@@ -2427,9 +2462,20 @@ pub const Service = struct {
         // inserts `import { X } from "<path>";\n` at the top of the
         // file. Mirrors the auto-import-completion logic, but driven
         // off the diagnostic stream rather than the cursor position.
+        var add_all_import_edits: std.ArrayListUnmanaged(TextEdit) = .empty;
+        defer add_all_import_edits.deinit(gpa);
+        var add_all_import_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer add_all_import_names.deinit(gpa);
         for (c.diagnostics.items) |d| {
             if (d.code != ts_checker.check.TsCodes.cannot_find_name) continue;
             const ident = parseCannotFindName(d.message) orelse continue;
+            var already_captured_for_all = false;
+            for (add_all_import_names.items) |name| {
+                if (std.mem.eql(u8, name, ident)) {
+                    already_captured_for_all = true;
+                    break;
+                }
+            }
             for (self.program.files.items) |other| {
                 if (std.mem.eql(u8, other.path, file_path)) continue;
                 const oc = other.compilation orelse continue;
@@ -2464,12 +2510,41 @@ pub const Service = struct {
                     .end_col = 0,
                     .new_text = new_text,
                 };
+                const edit = edits[0];
                 try actions.append(gpa, .{
                     .title = title,
                     .kind = .quick_fix,
                     .edits = edits,
+                    .code = ts_checker.check.TsCodes.codefix_add_import_from,
                 });
+                if (!already_captured_for_all) {
+                    try add_all_import_edits.append(gpa, edit);
+                    try add_all_import_names.append(gpa, ident);
+                    already_captured_for_all = true;
+                }
             }
+        }
+        if (add_all_import_edits.items.len >= 2) {
+            const agg_title = try gpa.dupe(u8, "Add all missing imports");
+            errdefer gpa.free(agg_title);
+            const agg_edits = try gpa.alloc(TextEdit, add_all_import_edits.items.len);
+            errdefer gpa.free(agg_edits);
+            for (add_all_import_edits.items, 0..) |e, idx| {
+                agg_edits[idx] = .{
+                    .file = e.file,
+                    .start_line = e.start_line,
+                    .start_col = e.start_col,
+                    .end_line = e.end_line,
+                    .end_col = e.end_col,
+                    .new_text = try gpa.dupe(u8, e.new_text),
+                };
+            }
+            try actions.append(gpa, .{
+                .title = agg_title,
+                .kind = .fix_all,
+                .edits = agg_edits,
+                .code = ts_checker.check.TsCodes.codefix_add_all_missing_imports,
+            });
         }
 
         // ---- Prefix unused identifier with underscore (TS6133) -----------
@@ -2518,6 +2593,7 @@ pub const Service = struct {
                 .title = title,
                 .kind = .quick_fix,
                 .edits = edits,
+                .code = ts_checker.check.TsCodes.codefix_prefix_with_underscore,
             });
         }
 
@@ -7981,6 +8057,7 @@ test "Service: codeActions adds explicit type annotation for inferred lets" {
     }
     try T.expectEqual(@as(usize, 1), actions.len);
     try T.expectEqual(@as(CodeAction.Kind, .quick_fix), actions[0].kind);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_add_annotation_of_type), actions[0].code);
     try T.expectEqualStrings("Add explicit type to x", actions[0].title);
     try T.expectEqual(@as(usize, 1), actions[0].edits.len);
     try T.expectEqualStrings(": number", actions[0].edits[0].new_text);
@@ -8099,6 +8176,7 @@ test "Service: codeActions surfaces add-import quick-fix for unresolved identifi
         if (a.kind != .quick_fix) continue;
         if (std.mem.indexOf(u8, a.title, "Add import for 'foo'") == null) continue;
         saw_add_import = true;
+        try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_add_import_from), a.code);
         try T.expectEqual(@as(usize, 1), a.edits.len);
         try T.expectEqualStrings("/main.ts", a.edits[0].file);
         try T.expectEqualStrings("import { foo } from \"/lib.ts\";\n", a.edits[0].new_text);
@@ -8108,6 +8186,43 @@ test "Service: codeActions surfaces add-import quick-fix for unresolved identifi
         try T.expectEqual(@as(u32, 0), a.edits[0].end_col);
     }
     try T.expect(saw_add_import);
+}
+
+test "Service: codeActions emits add-all-missing-imports aggregate" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/a.ts", "export function alpha() { }");
+    _ = try program.add("/b.ts", "export function beta() { }");
+    _ = try program.add("/main.ts", "alpha(); beta();");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (a.kind == .fix_all and std.mem.eql(u8, a.title, "Add all missing imports")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_add_all_missing_imports), a.code);
+    try T.expectEqual(@as(usize, 2), a.edits.len);
 }
 
 test "Service: formatDocument returns a TextEdit list (no-op stub)" {
@@ -9054,6 +9169,7 @@ test "Service: codeActions surfaces add-return-type quick-fix for fn without ann
     try T.expect(found_add_return != null);
     const a = found_add_return.?;
     try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_add_return_type), a.code);
     try T.expectEqualStrings("Add return type to add", a.title);
     try T.expectEqual(@as(usize, 1), a.edits.len);
     try T.expectEqualStrings(": number", a.edits[0].new_text);
@@ -9127,6 +9243,45 @@ test "Service: codeActions emits fix-all aggregate when ≥2 fns lack return typ
     try T.expectEqual(@as(usize, 2), fix_all.?.edits.len);
 }
 
+test "Service: codeActions emits add-all-missing-type-annotations aggregate" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        "let value = 42;\n" ++
+            "function add(a: number, b: number) { return a + b; }",
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (a.kind == .fix_all and std.mem.eql(u8, a.title, "Add all missing type annotations")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_add_all_missing_type_annotations), a.code);
+    try T.expectEqual(@as(usize, 2), a.edits.len);
+}
+
 test "Service: codeActions omits fix-all when only one fn needs a return type" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -9191,6 +9346,7 @@ test "Service: codeActions surfaces prefix-underscore quick-fix for unused local
     try T.expect(found != null);
     const a = found.?;
     try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_prefix_with_underscore), a.code);
     try T.expectEqualStrings("Prefix 'unread' with an underscore", a.title);
     try T.expectEqual(@as(usize, 1), a.edits.len);
     try T.expectEqualStrings("_", a.edits[0].new_text);
