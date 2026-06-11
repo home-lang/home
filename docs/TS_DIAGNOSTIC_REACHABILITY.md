@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 534 |
-| active reachable (parity targets) | 69 |
+| catalog-only total | 533 |
+| active reachable (parity targets) | 68 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -29,7 +29,6 @@ diverge from the reference compiler.
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 12 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
-| 2xxx — checker / type engine | 1 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (37)
 
@@ -110,10 +109,6 @@ diverge from the reference compiler.
 
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
-
-### 2xxx — checker / type engine (1)
-
-- TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
 ## Blocked/effectively-dead references
 
