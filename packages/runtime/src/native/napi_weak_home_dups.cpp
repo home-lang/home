@@ -50,3 +50,13 @@ namespace Napi {
 HOME_WEAK void defineProperty(napi_env env, JSC::JSObject *to, const napi_property_descriptor &property, bool isInstance, JSC::ThrowScope &scope) {}
 HOME_WEAK void executePendingNapiModule(Zig::GlobalObject *globalObject) {}
 }
+
+// `napi_module_register` (the legacy N-API addon registration entry,
+// `void napi_module_register(napi_module*)`) is referenced by
+// `Bun::Process_functionDlopen` in BunProcess.cpp.o but its only definition
+// lives in `src/jsc/bindings/napi.cpp.o`, which `build.zig` deliberately skips
+// (`native_skip_paths`). The main executable dead-strips the unused dlopen
+// path, but the home_rt test target keeps it and fails to link without a
+// definition. Provide a weak no-op so the link resolves; if napi.cpp.o is ever
+// un-skipped, its strong definition wins.
+extern "C" HOME_WEAK void napi_module_register(void *mod) {}
