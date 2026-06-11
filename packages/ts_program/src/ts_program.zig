@@ -29,32 +29,38 @@ pub const FileId = u32;
 /// `FileIncludeReason` (the subset Home can determine today). Drives the
 /// `--explainFiles` line for each file. Root-file provenance is supplied
 /// by the CLI layer (which knows how the path was specified); the
-/// program records the *import* reason here while building the edge
-/// graph, so `--explainFiles` can render TS1393 and diagnostics can
-/// attach the corresponding related-information anchor (TS1399/TS1401).
-pub const IncludeKind = enum { root, import, reference_file };
+/// program records the transitive reason here while building the edge
+/// graph, so `--explainFiles` can render TS1393/TS1400/TS1402/TS1405
+/// and diagnostics can attach the corresponding related-information
+/// anchor (TS1399/TS1401/TS1404/TS1406).
+pub const IncludeKind = enum { root, import, reference_file, type_reference, lib_reference };
 
 pub const IncludeReason = struct {
     kind: IncludeKind = .root,
-    /// For `.import` / `.reference_file`: the file id that pulled this
-    /// one in (the importer, or the file containing the `/// <reference
-    /// path>` directive).
+    /// For non-root reasons: the file id that pulled this one in (the
+    /// importer, or the file containing the triple-slash directive).
     importer: FileId = 0,
     /// The reference text as written: for `.import` the module specifier
     /// quoted to match tsgo's `referenceLocation.text()`; for
-    /// `.reference_file` the bare reference path (TS1400 renders it
-    /// single-quoted itself). Owned by the program.
+    /// triple-slash references the bare target text. Owned by the program.
     specifier_text: []const u8 = "",
+    /// tsc package identity for type-reference directives when the
+    /// resolver found one. Owned by the program when non-empty.
+    package_id: []const u8 = "",
     /// Byte offset of the import/reference specifier in the importer.
-    /// Used for TS1399/TS1401 related-information anchors.
+    /// Used for related-information anchors.
     specifier_pos: u32 = 0,
 
     pub fn relatedDiagnosticCode(self: IncludeReason) ?u32 {
         const code_file_included_via_import_here: u32 = 1399;
         const code_file_included_via_reference_here: u32 = 1401;
+        const code_file_included_via_type_reference_here: u32 = 1404;
+        const code_file_included_via_lib_reference_here: u32 = 1406;
         return switch (self.kind) {
             .import => code_file_included_via_import_here,
             .reference_file => code_file_included_via_reference_here,
+            .type_reference => code_file_included_via_type_reference_here,
+            .lib_reference => code_file_included_via_lib_reference_here,
             .root => null,
         };
     }
@@ -63,6 +69,8 @@ pub const IncludeReason = struct {
         return switch (self.kind) {
             .import => "File is included via import here.",
             .reference_file => "File is included via reference here.",
+            .type_reference => "File is included via type library reference here.",
+            .lib_reference => "File is included via library reference here.",
             .root => null,
         };
     }
@@ -152,6 +160,7 @@ pub const Program = struct {
             f.imports.deinit(self.gpa);
             if (f.include_reason) |ir| {
                 if (ir.specifier_text.len != 0) self.gpa.free(ir.specifier_text);
+                if (ir.package_id.len != 0) self.gpa.free(ir.package_id);
             }
             self.gpa.free(f.path);
             self.gpa.destroy(f);
@@ -1473,37 +1482,60 @@ pub const Program = struct {
                     };
                     new_in_round += 1;
                 }
-                // Triple-slash `/// <reference path="X" />` directives
-                // pull X into the program as a referenced file (tsgo's
-                // `fileIncludeKindReferenceFile`). Reference paths are
-                // literal file paths relative to the containing file —
-                // NOT module specifiers — so resolve by path-join, not
-                // through the module resolver. `types`/`lib` references
-                // need @types / bundled-lib resolution Home does not
-                // have, so they are intentionally not followed.
+                // Triple-slash directives pull files into the program
+                // with distinct explainFiles reasons: path (TS1400),
+                // types (TS1402/TS1403), and lib (TS1405). `path`
+                // directives are literal file paths; `types` use the
+                // resolver's type-reference API; `lib` uses Home's
+                // currently available local lib.<name>.d.ts convention.
                 for (c.references.items) |ref| {
-                    if (ref.kind != .path) continue;
-                    const candidate = self.joinReferencePath(f.path, ref.name) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                    };
-                    defer self.gpa.free(candidate);
-                    if (self.by_path.get(candidate) != null) continue;
-                    const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
-                    defer self.gpa.free(rsrc);
-                    const new_id = self.add(candidate, rsrc) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => continue,
-                    };
-                    const target = self.files.items[new_id];
-                    if (target.include_reason == null) {
-                        target.include_reason = .{
-                            .kind = .reference_file,
-                            .importer = f.id,
-                            .specifier_text = try self.gpa.dupe(u8, ref.name),
-                            .specifier_pos = ref.pos,
-                        };
+                    switch (ref.kind) {
+                        .path => {
+                            const candidate = self.joinReferencePath(f.path, ref.name) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                            };
+                            defer self.gpa.free(candidate);
+                            if (self.by_path.get(candidate) != null) continue;
+                            const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
+                            defer self.gpa.free(rsrc);
+                            const new_id = self.add(candidate, rsrc) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => continue,
+                            };
+                            try self.recordReferenceIncludeReason(new_id, .reference_file, f.id, ref.name, "", ref.pos);
+                            new_in_round += 1;
+                        },
+                        .types => {
+                            const res = self.resolver.resolveTypeReferenceDirective(ref.name, f.path) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => continue,
+                            };
+                            if (self.by_path.get(res.path) != null) continue;
+                            const rsrc = self.resolver.fs.readFile(self.gpa, res.path) catch continue;
+                            defer self.gpa.free(rsrc);
+                            const new_id = self.add(res.path, rsrc) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => continue,
+                            };
+                            try self.recordReferenceIncludeReason(new_id, .type_reference, f.id, ref.name, res.package_id orelse "", ref.pos);
+                            new_in_round += 1;
+                        },
+                        .lib => {
+                            const candidate = self.resolveLibReferencePath(f.path, ref.name) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                            } orelse continue;
+                            defer self.gpa.free(candidate);
+                            if (self.by_path.get(candidate) != null) continue;
+                            const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
+                            defer self.gpa.free(rsrc);
+                            const new_id = self.add(candidate, rsrc) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => continue,
+                            };
+                            try self.recordReferenceIncludeReason(new_id, .lib_reference, f.id, ref.name, "", ref.pos);
+                            new_in_round += 1;
+                        },
                     }
-                    new_in_round += 1;
                 }
             }
             added += new_in_round;
@@ -1521,6 +1553,46 @@ pub const Program = struct {
             return std.fs.path.resolvePosix(self.gpa, &.{ dir, ref });
         }
         return std.fs.path.resolvePosix(self.gpa, &.{ref});
+    }
+
+    fn recordReferenceIncludeReason(
+        self: *Program,
+        target_id: FileId,
+        kind: IncludeKind,
+        importer: FileId,
+        text: []const u8,
+        package_id: []const u8,
+        pos: u32,
+    ) ProgramError!void {
+        const target = self.files.items[target_id];
+        if (target.include_reason != null) return;
+        target.include_reason = .{
+            .kind = kind,
+            .importer = importer,
+            .specifier_text = try self.gpa.dupe(u8, text),
+            .package_id = if (package_id.len == 0) "" else try self.gpa.dupe(u8, package_id),
+            .specifier_pos = pos,
+        };
+    }
+
+    fn resolveLibReferencePath(self: *Program, containing_file: []const u8, name: []const u8) error{OutOfMemory}!?[]u8 {
+        if (name.len == 0) return null;
+        const file_name = try std.fmt.allocPrint(self.gpa, "lib.{s}.d.ts", .{name});
+        defer self.gpa.free(file_name);
+        var dir = std.fs.path.dirname(containing_file) orelse "";
+        while (true) {
+            const candidate = if (dir.len == 0)
+                try self.gpa.dupe(u8, file_name)
+            else
+                try std.fs.path.join(self.gpa, &.{ dir, file_name });
+            if (self.resolver.fs.fileExists(candidate)) return candidate;
+            self.gpa.free(candidate);
+            if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
+            const parent = std.fs.path.dirname(dir) orelse "";
+            if (std.mem.eql(u8, parent, dir)) break;
+            dir = parent;
+        }
+        return null;
     }
 
     /// Re-compile only the subset of files whose paths appear in
@@ -2335,6 +2407,62 @@ test "Program: loadImportClosure follows /// <reference path> (TS1400 reason)" {
     const main_source = p.fileById(main_id).source;
     const ref_pos = dep.include_reason.?.specifier_pos;
     try T.expectEqualStrings("./dep.ts", main_source[ref_pos .. ref_pos + dep.include_reason.?.specifierSpanLen()]);
+}
+
+test "Program: loadImportClosure follows /// <reference types> (TS1402/TS1403 reason)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "/// <reference types=\"node\" />\n");
+    try vfs.addFile("/proj/node_modules/@types/node/package.json",
+        \\{ "name": "@types/node", "version": "1.0.0", "types": "index.d.ts" }
+    );
+    try vfs.addFile("/proj/node_modules/@types/node/index.d.ts", "declare const process: unknown;\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const main_id = try p.add("/proj/main.ts", "/// <reference types=\"node\" />\n");
+
+    const added = try p.loadImportClosure(.{});
+    try T.expectEqual(@as(usize, 1), added);
+
+    const type_id = p.lookupPath("/proj/node_modules/@types/node/index.d.ts") orelse return error.TestUnexpectedResult;
+    const type_file = p.fileById(type_id);
+    try T.expect(type_file.include_reason != null);
+    try T.expectEqual(IncludeKind.type_reference, type_file.include_reason.?.kind);
+    try T.expectEqual(main_id, type_file.include_reason.?.importer);
+    try T.expectEqualStrings("node", type_file.include_reason.?.specifier_text);
+    try T.expectEqualStrings("@types/node/index.d.ts@1.0.0", type_file.include_reason.?.package_id);
+    try T.expectEqual(@as(?u32, 1404), type_file.include_reason.?.relatedDiagnosticCode());
+    try T.expectEqualStrings("File is included via type library reference here.", type_file.include_reason.?.relatedDiagnosticMessage().?);
+    try T.expectEqual(@as(u32, 22), type_file.include_reason.?.specifier_pos);
+    try T.expectEqual(@as(u32, 4), type_file.include_reason.?.specifierSpanLen());
+}
+
+test "Program: loadImportClosure follows /// <reference lib> (TS1405 reason)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/main.ts", "/// <reference lib=\"es2015\" />\n");
+    try vfs.addFile("/proj/lib.es2015.d.ts", "interface Promise<T> {}\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const main_id = try p.add("/proj/src/main.ts", "/// <reference lib=\"es2015\" />\n");
+
+    const added = try p.loadImportClosure(.{});
+    try T.expectEqual(@as(usize, 1), added);
+
+    const lib_id = p.lookupPath("/proj/lib.es2015.d.ts") orelse return error.TestUnexpectedResult;
+    const lib = p.fileById(lib_id);
+    try T.expect(lib.include_reason != null);
+    try T.expectEqual(IncludeKind.lib_reference, lib.include_reason.?.kind);
+    try T.expectEqual(main_id, lib.include_reason.?.importer);
+    try T.expectEqualStrings("es2015", lib.include_reason.?.specifier_text);
+    try T.expectEqual(@as(?u32, 1406), lib.include_reason.?.relatedDiagnosticCode());
+    try T.expectEqualStrings("File is included via library reference here.", lib.include_reason.?.relatedDiagnosticMessage().?);
+    try T.expectEqual(@as(u32, 20), lib.include_reason.?.specifier_pos);
+    try T.expectEqual(@as(u32, 6), lib.include_reason.?.specifierSpanLen());
 }
 
 test "Program: tsx flag inherits from .tsx file extension" {

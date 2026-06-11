@@ -1482,6 +1482,20 @@ fn printExplainFiles(
     // a `/// <reference path="…" />` directive.
     const code_referenced_via: u32 = 1400;
     _ = code_referenced_via;
+    // TS1402/TS1403 — type library pulled in by `/// <reference types>`.
+    const code_type_library_referenced_via: u32 = 1402;
+    const code_type_library_referenced_via_package: u32 = 1403;
+    _ = code_type_library_referenced_via;
+    _ = code_type_library_referenced_via_package;
+    // TS1404 — related-info anchor for the `types` directive.
+    const code_file_included_via_type_library_reference_here: u32 = 1404;
+    _ = code_file_included_via_type_library_reference_here;
+    // TS1405 — library pulled in by `/// <reference lib>`.
+    const code_library_referenced_via: u32 = 1405;
+    _ = code_library_referenced_via;
+    // TS1406 — related-info anchor for the `lib` directive.
+    const code_file_included_via_library_reference_here: u32 = 1406;
+    _ = code_file_included_via_library_reference_here;
     // TS1458–TS1461 explain how Node16/NodeNext implied module format was
     // derived from the nearest package.json, mirroring tsgo's
     // explainRedirectAndImpliedFormat helper.
@@ -1519,6 +1533,37 @@ fn printExplainFiles(
                         const msg = std.fmt.allocPrint(
                             gpa,
                             "  Referenced via '{s}' from file '{s}'",
+                            .{ ir.specifier_text, referencing_path },
+                        ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
+                        continue;
+                    },
+                    .type_reference => {
+                        const referencing_path = program.files.items[ir.importer].path;
+                        const msg = if (ir.package_id.len != 0)
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Type library referenced via '{s}' from file '{s}' with packageId '{s}'",
+                                .{ ir.specifier_text, referencing_path, ir.package_id },
+                            ) catch return
+                        else
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Type library referenced via '{s}' from file '{s}'",
+                                .{ ir.specifier_text, referencing_path },
+                            ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
+                        continue;
+                    },
+                    .lib_reference => {
+                        const referencing_path = program.files.items[ir.importer].path;
+                        const msg = std.fmt.allocPrint(
+                            gpa,
+                            "  Library referenced via '{s}' from file '{s}'",
                             .{ ir.specifier_text, referencing_path },
                         ) catch return;
                         defer gpa.free(msg);
