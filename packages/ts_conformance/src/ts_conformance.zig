@@ -51603,15 +51603,28 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     const trace_fixtures = envBoolOne("HOME_TS_CONFORMANCE_TRACE");
     // Optional fixture-name filter for targeted verification runs:
     // `HOME_TS_CONFORMANCE_FILTER=nameA,nameB` runs only entries whose
-    // name contains one of the comma-separated substrings.
+    // name contains one of the comma-separated substrings. A `!`-prefixed
+    // pattern EXCLUDES matching entries instead — `!parserRealSource14`
+    // alone runs the whole corpus minus that fixture (useful to route a
+    // full survey around a known-slow case).
     const name_filter: ?[]const u8 = if (std.c.getenv("HOME_TS_CONFORMANCE_FILTER")) |p| std.mem.span(p) else null;
     for (corpus[start..end], requested_start..) |entry, idx| {
         if (name_filter) |filters| {
             var fit = std.mem.splitScalar(u8, filters, ',');
-            const matched = while (fit.next()) |f| {
-                if (f.len != 0 and std.mem.indexOf(u8, entry.name, f) != null) break true;
-            } else false;
-            if (!matched) continue;
+            var has_include = false;
+            var included = false;
+            var excluded = false;
+            while (fit.next()) |f| {
+                if (f.len == 0) continue;
+                if (f[0] == '!') {
+                    if (f.len > 1 and std.mem.indexOf(u8, entry.name, f[1..]) != null) excluded = true;
+                } else {
+                    has_include = true;
+                    if (std.mem.indexOf(u8, entry.name, f) != null) included = true;
+                }
+            }
+            if (excluded) continue;
+            if (has_include and !included) continue;
         }
         if (trace_fixtures) {
             std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, display_total, entry.name });
