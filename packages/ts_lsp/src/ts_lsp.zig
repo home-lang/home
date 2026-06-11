@@ -1772,6 +1772,9 @@ pub const Service = struct {
         }
         const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return .not_renamable;
         if (c.hir.kindOf(node) != .identifier) return .not_renamable;
+        if (self.prepareRenameSymbolFailure(f, c, node)) |failure| {
+            return .{ .failure = failure };
+        }
         const id = hir_mod.identifierOf(&c.hir, node);
         const span = c.hir.spanOf(node);
         const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
@@ -1819,6 +1822,60 @@ pub const Service = struct {
                 .code = ts_checker.check.TsCodes.rename_global_import_module,
                 .message = "You cannot rename a module via a global import.",
             };
+        }
+        return null;
+    }
+
+    fn prepareRenameSymbolFailure(
+        self: *Service,
+        file: *const ts_program.File,
+        c: *const ts_driver.Compilation,
+        node: hir_mod.NodeId,
+    ) ?RenameFailure {
+        if (isStandardLibraryFile(file)) {
+            return .{
+                .code = ts_checker.check.TsCodes.rename_standard_library_element,
+                .message = "You cannot rename elements that are defined in the standard TypeScript library.",
+            };
+        }
+
+        const id = hir_mod.identifierOf(&c.hir, node);
+        const scope = enclosingScopeOf(c.module, &c.hir, node);
+        const sym = scope.lookup(id.name) orelse c.module.root.lookup(id.name) orelse return null;
+        if (!sym.flags.is_import and scope != c.module.root) return null;
+
+        const target_file = self.directNamedImportTargetFile(c, file.path, id.name) orelse return null;
+        if (isStandardLibraryFile(target_file)) {
+            return .{
+                .code = ts_checker.check.TsCodes.rename_standard_library_element,
+                .message = "You cannot rename elements that are defined in the standard TypeScript library.",
+            };
+        }
+
+        return nodeModulesRenameFailure(file.path, target_file.path);
+    }
+
+    fn directNamedImportTargetFile(
+        self: *Service,
+        c: *const ts_driver.Compilation,
+        importer_path: []const u8,
+        local_name: string_interner.StringId,
+    ) ?*const ts_program.File {
+        if (c.hir.kindOf(c.root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(&c.hir, c.root)) |stmt| {
+            if (c.hir.kindOf(stmt) != .import_decl) continue;
+            const imp = hir_mod.importOf(&c.hir, stmt);
+            for (hir_mod.importNamed(&c.hir, stmt)) |spec_node| {
+                if (c.hir.kindOf(spec_node) != .import_specifier) continue;
+                const spec = hir_mod.importSpecifierOf(&c.hir, spec_node);
+                if (spec.local != local_name) continue;
+                if (spec.imported != spec.local) return null;
+                const module_name = c.interner.get(imp.module);
+                if (module_name.len == 0) return null;
+                const res = self.program.resolver.resolve(module_name, importer_path) catch return null;
+                const target_id = self.program.lookupPath(res.path) orelse return null;
+                return self.program.fileById(target_id);
+            }
         }
         return null;
     }
@@ -5158,6 +5215,65 @@ fn importModuleSpecifierSpan(
     };
 }
 
+fn isStandardLibraryFile(file: *const ts_program.File) bool {
+    if (!file.is_declaration) return false;
+    const reason = file.include_reason orelse return false;
+    return switch (reason.kind) {
+        .default_lib_reference, .compiler_lib_reference, .lib_reference => true,
+        else => false,
+    };
+}
+
+fn nodeModulesRenameFailure(original_path: []const u8, target_path: []const u8) ?RenameFailure {
+    const original_package = nodeModulesPackageRoot(original_path);
+    const target_package = nodeModulesPackageRoot(target_path);
+    if (original_package == null) {
+        if (target_package != null) {
+            return .{
+                .code = ts_checker.check.TsCodes.rename_node_modules_element,
+                .message = "You cannot rename elements that are defined in a 'node_modules' folder.",
+            };
+        }
+        return null;
+    }
+    if (target_package) |target| {
+        if (!std.mem.eql(u8, original_package.?, target)) {
+            return .{
+                .code = ts_checker.check.TsCodes.rename_other_node_modules_element,
+                .message = "You cannot rename elements that are defined in another 'node_modules' folder.",
+            };
+        }
+    }
+    return null;
+}
+
+fn nodeModulesPackageRoot(path: []const u8) ?[]const u8 {
+    const marker = "/node_modules/";
+    const after_marker = if (std.mem.lastIndexOf(u8, path, marker)) |idx|
+        idx + marker.len
+    else if (std.mem.startsWith(u8, path, "node_modules/"))
+        "node_modules/".len
+    else
+        return null;
+    if (after_marker >= path.len) return null;
+
+    var end = componentEnd(path, after_marker);
+    if (end == after_marker) return null;
+    if (path[after_marker] == '@' and end < path.len and path[end] == '/') {
+        const scoped_name_start = end + 1;
+        const scoped_name_end = componentEnd(path, scoped_name_start);
+        if (scoped_name_end == scoped_name_start) return null;
+        end = scoped_name_end;
+    }
+    return path[0..end];
+}
+
+fn componentEnd(path: []const u8, start: usize) usize {
+    var i = start;
+    while (i < path.len and path[i] != '/') : (i += 1) {}
+    return i;
+}
+
 /// Classify an identifier node as `.read` or `.write` based on the
 /// shape of its parent. Writes: assignment targets, `++`/`--`
 /// operands, and the name slot of a declaration (var/let/const/fn/
@@ -6824,6 +6940,118 @@ test "Service: prepareRenameInfo reports TS8031 for global import module specifi
         .failure => |failure| {
             try T.expectEqual(@as(u32, ts_checker.check.TsCodes.rename_global_import_module), failure.code);
             try T.expectEqualStrings("You cannot rename a module via a global import.", failure.message);
+        },
+        else => return error.TestExpectedSome,
+    }
+}
+
+test "Service: prepareRenameInfo reports TS8001 for standard library declarations" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "interface Promise<T> {}\n";
+    const lib_id = try program.add("/proj/lib.es2021.d.ts", src);
+    program.fileById(lib_id).include_reason = .{ .kind = .default_lib_reference };
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const pos = std.mem.indexOf(u8, src, "Promise").? + 1;
+    const info = try svc.prepareRenameInfo(T.allocator, "/proj/lib.es2021.d.ts", @intCast(pos));
+    switch (info) {
+        .failure => |failure| {
+            try T.expectEqual(@as(u32, ts_checker.check.TsCodes.rename_standard_library_element), failure.code);
+            try T.expectEqualStrings("You cannot rename elements that are defined in the standard TypeScript library.", failure.message);
+        },
+        else => return error.TestExpectedSome,
+    }
+}
+
+test "Service: prepareRenameInfo reports TS8035 for direct named imports from node_modules" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "import { y } from 'dep';\ny;\n");
+    try vfs.addFile("/proj/node_modules/dep/package.json", "{\"name\":\"dep\",\"version\":\"1.0.0\",\"types\":\"index.d.ts\"}");
+    try vfs.addFile("/proj/node_modules/dep/index.d.ts", "export declare const y: number;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "import { y } from 'dep';\ny;\n";
+    _ = try program.add("/proj/main.ts", src);
+    _ = try program.add("/proj/node_modules/dep/index.d.ts", "export declare const y: number;\n");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const pos = std.mem.lastIndexOf(u8, src, "y").?;
+    const info = try svc.prepareRenameInfo(T.allocator, "/proj/main.ts", @intCast(pos));
+    switch (info) {
+        .failure => |failure| {
+            try T.expectEqual(@as(u32, ts_checker.check.TsCodes.rename_node_modules_element), failure.code);
+            try T.expectEqualStrings("You cannot rename elements that are defined in a 'node_modules' folder.", failure.message);
+        },
+        else => return error.TestExpectedSome,
+    }
+}
+
+test "Service: prepareRenameInfo allows aliased named imports from node_modules" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "import { y as local } from 'dep';\nlocal;\n");
+    try vfs.addFile("/proj/node_modules/dep/package.json", "{\"name\":\"dep\",\"version\":\"1.0.0\",\"types\":\"index.d.ts\"}");
+    try vfs.addFile("/proj/node_modules/dep/index.d.ts", "export declare const y: number;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "import { y as local } from 'dep';\nlocal;\n";
+    _ = try program.add("/proj/main.ts", src);
+    _ = try program.add("/proj/node_modules/dep/index.d.ts", "export declare const y: number;\n");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const pos = std.mem.lastIndexOf(u8, src, "local").? + 1;
+    const info = try svc.prepareRenameInfo(T.allocator, "/proj/main.ts", @intCast(pos));
+    switch (info) {
+        .success => |result| {
+            defer T.allocator.free(result.placeholder);
+            try T.expectEqualStrings("local", result.placeholder);
+        },
+        else => return error.TestExpectedSome,
+    }
+}
+
+test "Service: prepareRenameInfo reports TS8036 across node_modules package folders" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/app/node_modules/consumer/index.ts", "import { y } from 'dep';\ny;\n");
+    try vfs.addFile("/app/node_modules/consumer/node_modules/dep/package.json", "{\"name\":\"dep\",\"version\":\"1.0.0\",\"types\":\"index.d.ts\"}");
+    try vfs.addFile("/app/node_modules/consumer/node_modules/dep/index.d.ts", "export declare const y: number;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "import { y } from 'dep';\ny;\n";
+    _ = try program.add("/app/node_modules/consumer/index.ts", src);
+    _ = try program.add("/app/node_modules/consumer/node_modules/dep/index.d.ts", "export declare const y: number;\n");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const pos = std.mem.lastIndexOf(u8, src, "y").?;
+    const info = try svc.prepareRenameInfo(T.allocator, "/app/node_modules/consumer/index.ts", @intCast(pos));
+    switch (info) {
+        .failure => |failure| {
+            try T.expectEqual(@as(u32, ts_checker.check.TsCodes.rename_other_node_modules_element), failure.code);
+            try T.expectEqualStrings("You cannot rename elements that are defined in another 'node_modules' folder.", failure.message);
         },
         else => return error.TestExpectedSome,
     }
