@@ -1986,6 +1986,69 @@ pub const Service = struct {
             });
         }
 
+        // ---- Remove invalid `type` import modifier (TS1361 -> TS90055/6) --
+        // When a type-only import is later used as a value, upstream offers
+        // a fix to remove either the declaration-level `import type` marker
+        // or the specifier-level `type` marker. Emit the same catalog codes
+        // using narrow source edits around the exact `type` keyword.
+        var remove_type_import_ranges: std.ArrayListUnmanaged(ByteRange) = .empty;
+        defer remove_type_import_ranges.deinit(gpa);
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.type_only_import_used_as_value) continue;
+            const ident = parseCannotFindName(d.message) orelse continue;
+            for (stmts) |s| {
+                if (c.hir.kindOf(s) != .import_decl) continue;
+                const imp = hir_mod.importOf(&c.hir, s);
+                const module_name = c.interner.get(imp.module);
+                if (imp.is_type_only and importDeclBindsDiagnosticName(&c.hir, &c.interner, s, imp, ident)) {
+                    const span = c.hir.spanOf(s);
+                    const range = removeImportDeclTypeKeywordRange(f.source, span) orelse continue;
+                    if (byteRangeAlreadyEmitted(remove_type_import_ranges.items, range.start, range.end)) continue;
+                    try remove_type_import_ranges.append(gpa, .{ .start = range.start, .end = range.end });
+                    const title = try std.fmt.allocPrint(gpa, "Remove 'type' from import declaration from \"{s}\"", .{module_name});
+                    errdefer gpa.free(title);
+                    var edits = try gpa.alloc(TextEdit, 1);
+                    edits[0] = try textEditForByteRange(gpa, f.path, f.source, range.start, range.end, "");
+                    try actions.append(gpa, .{
+                        .title = title,
+                        .kind = .quick_fix,
+                        .edits = edits,
+                        .code = ts_checker.check.TsCodes.codefix_remove_type_from_import_decl,
+                    });
+                    continue;
+                }
+                if (imp.is_type_only) continue;
+                for (hir_mod.importNamed(&c.hir, s)) |spec_node| {
+                    if (c.hir.kindOf(spec_node) != .import_specifier) continue;
+                    const spec = hir_mod.importSpecifierOf(&c.hir, spec_node);
+                    if (!spec.is_type_only) continue;
+                    if (!std.mem.eql(u8, c.interner.get(spec.local), ident) and
+                        !std.mem.eql(u8, c.interner.get(spec.imported), ident))
+                    {
+                        continue;
+                    }
+                    const local_name = c.interner.get(spec.local);
+                    const imported_name = c.interner.get(spec.imported);
+                    const span = c.hir.spanOf(spec_node);
+                    const range = removeLeadingTypeKeywordRange(f.source, span) orelse
+                        removeNamedImportTypeKeywordRange(f.source, c.hir.spanOf(s), imported_name, local_name) orelse
+                        continue;
+                    if (byteRangeAlreadyEmitted(remove_type_import_ranges.items, range.start, range.end)) continue;
+                    try remove_type_import_ranges.append(gpa, .{ .start = range.start, .end = range.end });
+                    const title = try std.fmt.allocPrint(gpa, "Remove 'type' from import of '{s}' from \"{s}\"", .{ local_name, module_name });
+                    errdefer gpa.free(title);
+                    var edits = try gpa.alloc(TextEdit, 1);
+                    edits[0] = try textEditForByteRange(gpa, f.path, f.source, range.start, range.end, "");
+                    try actions.append(gpa, .{
+                        .title = title,
+                        .kind = .quick_fix,
+                        .edits = edits,
+                        .code = ts_checker.check.TsCodes.codefix_remove_type_from_import_specifier,
+                    });
+                }
+            }
+        }
+
         // ---- Generate JSDoc skeleton for top-level fn_decl ---------------
         // Surface a quick-fix that inserts a `/** … */` block above a
         // top-level function declaration that doesn't already have one.
@@ -4857,6 +4920,126 @@ fn collectParameterNameHints(
             });
         }
     }
+}
+
+const ByteRange = struct {
+    start: u32,
+    end: u32,
+};
+
+fn textEditForByteRange(
+    gpa: std.mem.Allocator,
+    file_path: []const u8,
+    source: []const u8,
+    start: u32,
+    end: u32,
+    new_text: []const u8,
+) !TextEdit {
+    const sp = ts_diagnostics.positionToLineCol(source, start);
+    const ep = ts_diagnostics.positionToLineCol(source, end);
+    return .{
+        .file = file_path,
+        .start_line = if (sp.line > 0) sp.line - 1 else 0,
+        .start_col = if (sp.col > 0) sp.col - 1 else 0,
+        .end_line = if (ep.line > 0) ep.line - 1 else 0,
+        .end_col = if (ep.col > 0) ep.col - 1 else 0,
+        .new_text = try gpa.dupe(u8, new_text),
+    };
+}
+
+fn byteRangeAlreadyEmitted(ranges: []const ByteRange, start: u32, end: u32) bool {
+    for (ranges) |range| {
+        if (range.start == start and range.end == end) return true;
+    }
+    return false;
+}
+
+fn removeImportDeclTypeKeywordRange(source: []const u8, span: hir_mod.Span) ?ByteRange {
+    if (span.end > source.len or span.start >= span.end) return null;
+    const src = source[span.start..span.end];
+    if (!std.mem.startsWith(u8, src, "import")) return null;
+    var i: usize = "import".len;
+    while (i < src.len and std.ascii.isWhitespace(src[i])) : (i += 1) {}
+    const type_start = i;
+    if (!sourceRangeStartsWithKeyword(src, type_start, "type")) return null;
+    i = type_start + "type".len;
+    while (i < src.len and std.ascii.isWhitespace(src[i])) : (i += 1) {}
+    return .{
+        .start = span.start + @as(u32, @intCast(type_start)),
+        .end = span.start + @as(u32, @intCast(i)),
+    };
+}
+
+fn removeLeadingTypeKeywordRange(source: []const u8, span: hir_mod.Span) ?ByteRange {
+    if (span.end > source.len or span.start >= span.end) return null;
+    const src = source[span.start..span.end];
+    var i: usize = 0;
+    while (i < src.len and std.ascii.isWhitespace(src[i])) : (i += 1) {}
+    const type_start = i;
+    if (!sourceRangeStartsWithKeyword(src, type_start, "type")) return null;
+    i = type_start + "type".len;
+    while (i < src.len and std.ascii.isWhitespace(src[i])) : (i += 1) {}
+    return .{
+        .start = span.start + @as(u32, @intCast(type_start)),
+        .end = span.start + @as(u32, @intCast(i)),
+    };
+}
+
+fn removeNamedImportTypeKeywordRange(source: []const u8, span: hir_mod.Span, imported_name: []const u8, local_name: []const u8) ?ByteRange {
+    if (span.end > source.len or span.start >= span.end) return null;
+    const src = source[span.start..span.end];
+    var i: usize = 0;
+    while (i < src.len) : (i += 1) {
+        if (!sourceRangeStartsWithKeyword(src, i, "type")) continue;
+        var after_type = i + "type".len;
+        while (after_type < src.len and std.ascii.isWhitespace(src[after_type])) : (after_type += 1) {}
+        if (!sourceRangeStartsWithKeyword(src, after_type, imported_name) and
+            !sourceRangeStartsWithKeyword(src, after_type, local_name))
+        {
+            continue;
+        }
+        return .{
+            .start = span.start + @as(u32, @intCast(i)),
+            .end = span.start + @as(u32, @intCast(after_type)),
+        };
+    }
+    return null;
+}
+
+fn sourceRangeStartsWithKeyword(source: []const u8, start: usize, keyword: []const u8) bool {
+    if (start + keyword.len > source.len) return false;
+    if (!std.mem.eql(u8, source[start .. start + keyword.len], keyword)) return false;
+    const before_ok = start == 0 or !isIdentChar(source[start - 1]);
+    const after = start + keyword.len;
+    const after_ok = after >= source.len or !isIdentChar(source[after]);
+    return before_ok and after_ok;
+}
+
+fn importDeclBindsDiagnosticName(
+    hir: *const hir_mod.Hir,
+    interner: *const string_interner.Interner,
+    import_node: hir_mod.NodeId,
+    imp: hir_mod.ImportPayload,
+    ident: []const u8,
+) bool {
+    if (imp.default_binding != hir_mod.none_node_id and hir.kindOf(imp.default_binding) == .identifier) {
+        const id = hir_mod.identifierOf(hir, imp.default_binding);
+        if (std.mem.eql(u8, interner.get(id.name), ident)) return true;
+    }
+    if (imp.namespace_binding != hir_mod.none_node_id and hir.kindOf(imp.namespace_binding) == .identifier) {
+        const id = hir_mod.identifierOf(hir, imp.namespace_binding);
+        if (std.mem.eql(u8, interner.get(id.name), ident)) return true;
+    }
+    for (hir_mod.importNamed(hir, import_node)) |spec_node| {
+        if (hir.kindOf(spec_node) != .import_specifier) continue;
+        const spec = hir_mod.importSpecifierOf(hir, spec_node);
+        if (std.mem.eql(u8, interner.get(spec.local), ident) or
+            std.mem.eql(u8, interner.get(spec.imported), ident))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Extract the identifier from a TS2304 diagnostic message. The
@@ -8362,6 +8545,90 @@ test "Service: codeActions updates existing import for unresolved identifier" {
     try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_update_import_from), a.code);
     try T.expectEqual(@as(usize, 1), a.edits.len);
     try T.expectEqualStrings(", bar", a.edits[0].new_text);
+}
+
+test "Service: codeActions removes declaration-level type import for value use" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export class Foo {}");
+    _ = try program.add("/main.ts", "import type { Foo } from \"/lib.ts\";\nnew Foo();");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Remove 'type' from import declaration from \"/lib.ts\"")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_remove_type_from_import_decl), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings("", a.edits[0].new_text);
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_line);
+    try T.expectEqual(@as(u32, 7), a.edits[0].start_col);
+    try T.expectEqual(@as(u32, 0), a.edits[0].end_line);
+    try T.expectEqual(@as(u32, 12), a.edits[0].end_col);
+}
+
+test "Service: codeActions removes specifier-level type import for value use" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export class Foo {}");
+    _ = try program.add("/main.ts", "import { type Foo } from \"/lib.ts\";\nnew Foo();");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Remove 'type' from import of 'Foo' from \"/lib.ts\"")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_remove_type_from_import_specifier), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings("", a.edits[0].new_text);
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_line);
+    try T.expectEqual(@as(u32, 9), a.edits[0].start_col);
+    try T.expectEqual(@as(u32, 0), a.edits[0].end_line);
+    try T.expectEqual(@as(u32, 14), a.edits[0].end_col);
 }
 
 test "Service: codeActions marks isolatedDeclarations array literal as const" {
