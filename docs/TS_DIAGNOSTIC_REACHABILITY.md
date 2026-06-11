@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 467 |
-| active reachable (parity targets) | 2 |
+| catalog-only total | 466 |
+| active reachable (parity targets) | 1 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,12 +25,11 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 9xxxx — editor code-fix / refactor (language service) | 2 |
+| 9xxxx — editor code-fix / refactor (language service) | 1 |
 
-### 9xxxx — editor code-fix / refactor (language service) (2)
+### 9xxxx — editor code-fix / refactor (language service) (1)
 
 - TS90066 `Extract_binding_expressions_to_variable_90066`
-- TS90071 `Annotate_types_of_properties_expando_function_in_a_namespace_90071`
 
 ## Blocked/effectively-dead references
 

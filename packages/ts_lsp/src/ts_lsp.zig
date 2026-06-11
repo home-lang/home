@@ -2857,6 +2857,168 @@ pub const Service = struct {
             });
         }
 
+        // ---- Add namespace annotations for expando function props (TS9023 -> TS90071)
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.isolated_declarations_expando_function_property) continue;
+
+            var target_name: hir_mod.StringId = 0;
+            var found_target = false;
+            var node_i: hir_mod.NodeId = 1;
+            while (node_i < c.hir.nodeCount()) : (node_i += 1) {
+                if (c.hir.kindOf(node_i) != .assignment) continue;
+                const a = hir_mod.assignmentOf(&c.hir, node_i);
+                if (a.op != null or a.target == hir_mod.none_node_id) continue;
+                const target_span = c.hir.spanOf(a.target);
+                if (target_span.start != d.pos) continue;
+                switch (c.hir.kindOf(a.target)) {
+                    .member_access => {
+                        const m = hir_mod.memberOf(&c.hir, a.target);
+                        if (m.optional or m.object == hir_mod.none_node_id or c.hir.kindOf(m.object) != .identifier) continue;
+                        target_name = hir_mod.identifierOf(&c.hir, m.object).name;
+                        found_target = true;
+                    },
+                    .element_access => {
+                        const e = hir_mod.elementOf(&c.hir, a.target);
+                        if (e.optional or e.object == hir_mod.none_node_id or c.hir.kindOf(e.object) != .identifier) continue;
+                        target_name = hir_mod.identifierOf(&c.hir, e.object).name;
+                        found_target = true;
+                    },
+                    else => {},
+                }
+                if (found_target) break;
+            }
+            if (!found_target) continue;
+
+            var fn_stmt: hir_mod.NodeId = hir_mod.none_node_id;
+            var fn_decl: hir_mod.NodeId = hir_mod.none_node_id;
+            var direct_export = false;
+            for (stmts) |s| {
+                const inner = if (c.hir.kindOf(s) == .export_decl) hir_mod.exportOf(&c.hir, s).decl else s;
+                if (inner == hir_mod.none_node_id or c.hir.kindOf(inner) != .fn_decl) continue;
+                const fnp = hir_mod.fnDeclOf(&c.hir, inner);
+                if (fnp.name == hir_mod.none_node_id or c.hir.kindOf(fnp.name) != .identifier) continue;
+                if (hir_mod.identifierOf(&c.hir, fnp.name).name != target_name) continue;
+                fn_stmt = s;
+                fn_decl = inner;
+                direct_export = c.hir.kindOf(s) == .export_decl;
+                break;
+            }
+            if (fn_stmt == hir_mod.none_node_id or fn_decl == hir_mod.none_node_id) continue;
+
+            const Prop = struct {
+                name: hir_mod.StringId,
+                type_text: []u8,
+            };
+            var props: std.ArrayListUnmanaged(Prop) = .empty;
+            defer {
+                for (props.items) |p| gpa.free(p.type_text);
+                props.deinit(gpa);
+            }
+
+            node_i = 1;
+            while (node_i < c.hir.nodeCount()) : (node_i += 1) {
+                if (c.hir.kindOf(node_i) != .assignment) continue;
+                const a = hir_mod.assignmentOf(&c.hir, node_i);
+                if (a.op != null or a.target == hir_mod.none_node_id or a.value == hir_mod.none_node_id) continue;
+
+                var prop_name: hir_mod.StringId = 0;
+                switch (c.hir.kindOf(a.target)) {
+                    .member_access => {
+                        const m = hir_mod.memberOf(&c.hir, a.target);
+                        if (m.optional or m.object == hir_mod.none_node_id or c.hir.kindOf(m.object) != .identifier) continue;
+                        if (hir_mod.identifierOf(&c.hir, m.object).name != target_name) continue;
+                        prop_name = m.name;
+                    },
+                    .element_access => {
+                        const e = hir_mod.elementOf(&c.hir, a.target);
+                        if (e.optional or e.object == hir_mod.none_node_id or c.hir.kindOf(e.object) != .identifier) continue;
+                        if (hir_mod.identifierOf(&c.hir, e.object).name != target_name) continue;
+                        if (e.index == hir_mod.none_node_id or c.hir.kindOf(e.index) != .literal_string) continue;
+                        prop_name = hir_mod.literalStringOf(&c.hir, e.index).value;
+                    },
+                    else => continue,
+                }
+
+                const prop_text = c.interner.get(prop_name);
+                if (prop_text.len == 0 or !isIdentStart(prop_text[0])) continue;
+                var ident_ok = true;
+                for (prop_text[1..]) |ch| {
+                    if (!isIdentCont(ch)) {
+                        ident_ok = false;
+                        break;
+                    }
+                }
+                if (!ident_ok) continue;
+
+                var already = false;
+                for (props.items) |p| {
+                    if (p.name == prop_name) {
+                        already = true;
+                        break;
+                    }
+                }
+                if (already) continue;
+
+                const type_text = switch (c.hir.kindOf(a.value)) {
+                    .literal_number => try gpa.dupe(u8, "number"),
+                    .literal_string => try gpa.dupe(u8, "string"),
+                    .literal_bool => try gpa.dupe(u8, "boolean"),
+                    else => blk: {
+                        const t = c.hir.typeOf(a.value);
+                        if (t == ts_checker.Primitive.none) break :blk try gpa.dupe(u8, "any");
+                        break :blk renderType(gpa, &c.type_interner, &c.interner, t) catch continue;
+                    },
+                };
+                errdefer gpa.free(type_text);
+                try props.append(gpa, .{ .name = prop_name, .type_text = type_text });
+            }
+            if (props.items.len == 0) continue;
+
+            const fn_span = c.hir.spanOf(fn_stmt);
+            if (fn_span.end > f.source.len) continue;
+            var namespace_text: std.ArrayListUnmanaged(u8) = .empty;
+            errdefer namespace_text.deinit(gpa);
+            const fn_name = c.interner.get(target_name);
+            if (direct_export) {
+                const header = try std.fmt.allocPrint(gpa, "\nexport declare namespace {s} {{", .{fn_name});
+                defer gpa.free(header);
+                try namespace_text.appendSlice(gpa, header);
+            } else {
+                const header = try std.fmt.allocPrint(gpa, "\ndeclare namespace {s} {{", .{fn_name});
+                defer gpa.free(header);
+                try namespace_text.appendSlice(gpa, header);
+            }
+            for (props.items) |p| {
+                const line_text = try std.fmt.allocPrint(gpa, "\n  export var {s}: {s};", .{ c.interner.get(p.name), p.type_text });
+                defer gpa.free(line_text);
+                try namespace_text.appendSlice(gpa, line_text);
+            }
+            try namespace_text.appendSlice(gpa, "\n}");
+            const new_text = try namespace_text.toOwnedSlice(gpa);
+            errdefer gpa.free(new_text);
+
+            const title = try gpa.dupe(u8, "Annotate types of properties expando function in a namespace");
+            errdefer gpa.free(title);
+            const insert_pos = ts_diagnostics.positionToLineCol(f.source, fn_span.end);
+            const line = if (insert_pos.line > 0) insert_pos.line - 1 else 0;
+            const col = if (insert_pos.col > 0) insert_pos.col - 1 else 0;
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = line,
+                .start_col = col,
+                .end_line = line,
+                .end_col = col,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+                .code = 90071,
+            });
+        }
+
         // ---- Extract object-property value to variable (TS901x -> TS90069)
         for (c.diagnostics.items) |d| {
             switch (d.code) {
@@ -9103,6 +9265,49 @@ test "Service: codeActions extracts isolatedDeclarations class base expression t
     try T.expectEqual(@as(u32, 25), a.edits[1].start_col);
     try T.expectEqual(@as(u32, 2), a.edits[1].end_line);
     try T.expectEqual(@as(u32, 33), a.edits[1].end_col);
+}
+
+test "Service: codeActions annotates expando function properties in namespace" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "export function direct(): void {}\ndirect.x = 1;\ndirect[\"y\"] = \"s\";");
+    try program.compileAll(.{ .strict_flags = .{ .isolated_declarations = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Annotate types of properties expando function in a namespace")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, 90071), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings(
+        "\nexport declare namespace direct {\n  export var x: number;\n  export var y: string;\n}",
+        a.edits[0].new_text,
+    );
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_line);
+    try T.expectEqual(a.edits[0].start_line, a.edits[0].end_line);
+    try T.expectEqual(a.edits[0].start_col, a.edits[0].end_col);
 }
 
 test "Service: codeActions extracts isolatedDeclarations object property value to variable" {
