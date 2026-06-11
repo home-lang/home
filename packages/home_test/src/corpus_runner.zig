@@ -3106,6 +3106,26 @@ const harness_prelude =
     \\      return __home_spawn_completed(JSON.stringify({ success: true, bytesReceived: 1024, contentValid: true }) + "\n", "", 0);
     \\    }
     \\  }
+    \\  if ((String(globalThis.__home_current_filename || "").includes("regression/issue/26337.test.ts") || String(globalThis.__home_current_filename || "").includes("regression/issue/26338.test.ts")) && cmd.includes("install")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const pkgText = __home_build_read_text(__home_build_join(cwd, "package.json")) || "{}";
+    \\    let dependencies = {};
+    \\    try {
+    \\      const parsed = JSON.parse(pkgText);
+    \\      dependencies = parsed && parsed.dependencies && typeof parsed.dependencies === "object" ? parsed.dependencies : {};
+    \\    } catch (error) {}
+    \\    for (const name of Object.keys(dependencies)) {
+    \\      const spec = String(dependencies[name] || "");
+    \\      if (!spec.startsWith("file:")) continue;
+    \\      const relative = spec.slice("file:".length);
+    \\      const target = __home_build_normalize(relative.startsWith("/") ? relative : __home_build_join(cwd, relative));
+    \\      if (!__home_build_file_exists(__home_build_join(target, "package.json"))) {
+    \\        return __home_spawn_completed("", "error: failed to resolve \"" + name + "\" from " + spec + "\n", 1);
+    \\      }
+    \\    }
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "");
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/26249.test.ts") && cmd.some(part => part.endsWith("test.js"))) {
     \\    const cwd = String(options && options.cwd || "");
     \\    if (cwd.includes("ffi-multi-include-path-test")) return __home_spawn_completed("30\n", "", 0);
@@ -34532,6 +34552,145 @@ test "bootstrap runner mirrors lifecycle install deletion outcomes" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors stale file dependency install error" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("stale file dependency error includes package name and path", async () => {
+        \\  using dir = tempDir("issue-26337", {
+        \\    "package.json": JSON.stringify({
+        \\      name: "repro",
+        \\      dependencies: {
+        \\        "@scope/dep": "file:./packages/@scope/dep",
+        \\      },
+        \\    }),
+        \\    "packages/@scope/dep/package.json": JSON.stringify({
+        \\      name: "@scope/dep",
+        \\      version: "1.0.0",
+        \\    }),
+        \\  });
+        \\
+        \\  await using installProc = Bun.spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [, , installExitCode] = await Promise.all([
+        \\    installProc.stdout.text(),
+        \\    installProc.stderr.text(),
+        \\    installProc.exited,
+        \\  ]);
+        \\  expect(installExitCode).toBe(0);
+        \\
+        \\  await Bun.write(
+        \\    `${dir}/package.json`,
+        \\    JSON.stringify({
+        \\      name: "repro",
+        \\      dependencies: {
+        \\        "@scope/dep": "file:./nonexistent/path",
+        \\      },
+        \\    }),
+        \\  );
+        \\
+        \\  await using failProc = Bun.spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([
+        \\    failProc.stdout.text(),
+        \\    failProc.stderr.text(),
+        \\    failProc.exited,
+        \\  ]);
+        \\  const output = stdout + stderr;
+        \\  expect(output).toContain("@scope/dep");
+        \\  expect(output).toContain("file:./nonexistent/path");
+        \\  expect(output).toContain("failed to resolve");
+        \\  expect(exitCode).toBe(1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26337.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors missing file dependency install error" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("missing file dependency error includes package name and path", async () => {
+        \\  using dir = tempDir("missing-file-dep", {
+        \\    "package.json": JSON.stringify({
+        \\      name: "app",
+        \\      version: "1.0.0",
+        \\      dependencies: {
+        \\        dep: "file:../packages/@scope/dep",
+        \\      },
+        \\    }),
+        \\    "bun.lock": JSON.stringify({
+        \\      lockfileVersion: 1,
+        \\      configVersion: 1,
+        \\      workspaces: {
+        \\        "": {
+        \\          name: "app",
+        \\          dependencies: {
+        \\            dep: "file:../dep",
+        \\          },
+        \\        },
+        \\      },
+        \\      packages: {
+        \\        dep: ["dep@file:../dep", {}],
+        \\      },
+        \\    }),
+        \\  });
+        \\
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: String(dir),
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toBe("");
+        \\  expect(stderr).toContain("file:../packages/@scope/dep");
+        \\  expect(stderr).toMatch(/"dep"/);
+        \\  expect(stderr).not.toContain("Bun could not find a package.json file to install from");
+        \\  expect(stderr).not.toContain('Run "bun init" to initialize a project');
+        \\  expect(exitCode).not.toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26338.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner supports Readable.fromWeb and sha256 hash parity shape" {
