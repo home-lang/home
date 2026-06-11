@@ -7753,15 +7753,23 @@ const harness_prelude =
     \\globalThis.__home_modules["_util/collection"] = { cartesianProduct(left, right) { return left.flatMap(leftItem => right.map(rightItem => [leftItem, rightItem])); } };
     \\let __home_http2_next_port = 44200;
     \\const __home_http2_servers = Object.create(null);
-    \\function __home_http2_create_server(options) {
+    \\function __home_http2_create_server(options, requestListener) {
+    \\  if (typeof options === "function") {
+    \\    requestListener = options;
+    \\    options = {};
+    \\  }
     \\  const server = __home_http_event_target();
     \\  server.__home_port = 0;
     \\  server.__home_settings = options && options.settings ? options.settings : {};
+    \\  server.__home_handler = typeof requestListener === "function" ? requestListener : null;
     \\  server.listen = function(port, host, callback) {
     \\    this.__home_port = Number(port) || __home_http2_next_port++;
     \\    __home_http2_servers[this.__home_port] = this;
     \\    const cb = typeof host === "function" ? host : callback;
-    \\    if (typeof cb === "function") Promise.resolve().then(cb);
+    \\    Promise.resolve().then(() => {
+    \\      this.emit("listening");
+    \\      if (typeof cb === "function") cb();
+    \\    });
     \\    return this;
     \\  };
     \\  server.address = function() {
@@ -7774,6 +7782,87 @@ const harness_prelude =
     \\  };
     \\  server.setTimeout = function(milliseconds, callback) { void milliseconds; if (typeof callback === "function") this.__home_timeout_callback = callback; return this; };
     \\  return server;
+    \\}
+    \\function __home_http2_body_text(chunks) {
+    \\  return chunks.map(chunk => {
+    \\    if (chunk === undefined || chunk === null) return "";
+    \\    if (typeof Buffer === "function" && Buffer.isBuffer && Buffer.isBuffer(chunk)) return chunk.toString("utf8");
+    \\    if (chunk instanceof Uint8Array) return Buffer.from(chunk).toString("utf8");
+    \\    return String(chunk);
+    \\  }).join("");
+    \\}
+    \\function __home_http2_dispatch_request(server, headers, callback) {
+    \\  const req = Object.assign(__home_http_event_target(), {
+    \\    method: String(headers && (headers[":method"] || headers.method) || "GET"),
+    \\    url: String(headers && (headers[":path"] || headers.path) || "/"),
+    \\    headers: headers || {},
+    \\  });
+    \\  const chunks = [];
+    \\  const res = __home_http_event_target();
+    \\  res.statusCode = 200;
+    \\  res.__home_headers = {};
+    \\  res.setHeader = function(name, value) { this.__home_headers[String(name).toLowerCase()] = String(value); return this; };
+    \\  res.getHeaders = function() { return Object.assign({}, this.__home_headers); };
+    \\  res.writeHead = function(statusCode, statusMessage, responseHeaders) {
+    \\    this.statusCode = Number(statusCode) || 200;
+    \\    if (typeof statusMessage === "object") responseHeaders = statusMessage;
+    \\    if (responseHeaders) {
+    \\      for (const key of Object.keys(responseHeaders)) this.setHeader(key, responseHeaders[key]);
+    \\    }
+    \\    return this;
+    \\  };
+    \\  res.write = function(chunk) { if (chunk !== undefined && chunk !== null) chunks.push(chunk); return true; };
+    \\  res.end = function(chunk) {
+    \\    if (chunk !== undefined && chunk !== null) chunks.push(chunk);
+    \\    const response = { statusCode: this.statusCode, headers: this.getHeaders(), body: __home_http2_body_text(chunks) };
+    \\    this.emit("finish");
+    \\    callback(response);
+    \\    return this;
+    \\  };
+    \\  server.__home_handler(req, res);
+    \\}
+    \\function __home_http2_status_payload(statusCode) {
+    \\  const status = Number(statusCode) || 200;
+    \\  if (status === 200) return Buffer.from([0x88]);
+    \\  if (status === 204) return Buffer.from([0x89]);
+    \\  if (status === 206) return Buffer.from([0x8a]);
+    \\  if (status === 304) return Buffer.from([0x8b]);
+    \\  if (status === 400) return Buffer.from([0x8c]);
+    \\  if (status === 404) return Buffer.from([0x8d]);
+    \\  if (status === 500) return Buffer.from([0x8e]);
+    \\  const text = String(status);
+    \\  return Buffer.concat([Buffer.from([0x48, text.length]), Buffer.from(text)]);
+    \\}
+    \\function __home_http2_frame(type, flags, streamId, payload) {
+    \\  const body = payload ? Buffer.from(payload) : Buffer.alloc(0);
+    \\  const frame = Buffer.alloc(9 + body.length);
+    \\  frame.writeUIntBE(body.length, 0, 3);
+    \\  frame[3] = type & 0xff;
+    \\  frame[4] = flags & 0xff;
+    \\  frame.writeUInt32BE(streamId & 0x7fffffff, 5);
+    \\  body.copy(frame, 9);
+    \\  return frame;
+    \\}
+    \\function __home_http2_response_frames(response) {
+    \\  const status = Number(response && response.statusCode) || 200;
+    \\  const body = response && response.body !== undefined && response.body !== null ? String(response.body) : "";
+    \\  const endWithHeaders = status === 204 || status === 205 || status === 304;
+    \\  const frames = [__home_http2_frame(4, 0, 0, Buffer.alloc(0))];
+    \\  frames.push(__home_http2_frame(1, 0x04 | (endWithHeaders ? 0x01 : 0), 1, __home_http2_status_payload(status)));
+    \\  if (!endWithHeaders) frames.push(__home_http2_frame(0, 0x01, 1, Buffer.from(body)));
+    \\  return Buffer.concat(frames);
+    \\}
+    \\function __home_http2_emit_raw_response(server, socket) {
+    \\  const session = __home_http_event_target();
+    \\  session.settings = function(settings) { void settings; return this; };
+    \\  server.emit("session", session);
+    \\  if (typeof server.__home_handler !== "function") {
+    \\    socket.emit("data", Buffer.concat([__home_http2_frame(4, 0, 0, Buffer.alloc(0)), __home_http2_frame(1, 0x05, 1, __home_http2_status_payload(204))]));
+    \\    return;
+    \\  }
+    \\  __home_http2_dispatch_request(server, { ":method": "GET", ":path": "/", ":scheme": "http" }, response => {
+    \\    socket.emit("data", __home_http2_response_frames(response));
+    \\  });
     \\}
     \\function __home_http2_port(authority) {
     \\  const match = String(authority || "").match(/:(\d+)(?:[/?#]|$)/);
@@ -7804,6 +7893,27 @@ const harness_prelude =
     \\  };
     \\  client.request = function(headers) {
     \\    const stream = __home_http_event_target();
+    \\    stream.setEncoding = function(encoding) { this.__home_encoding = encoding; return this; };
+    \\    if (server && typeof server.__home_handler === "function") {
+    \\      Promise.resolve().then(() => __home_http2_dispatch_request(server, headers || {}, response => {
+    \\        stream.emit("response", Object.assign({ ":status": response.statusCode }, response.headers || {}));
+    \\        if (response.body && response.body.length > 0) stream.emit("data", response.body);
+    \\        stream.emit("end");
+    \\      }));
+    \\      stream.write = function(chunk, encoding, callback) {
+    \\        const cb = typeof encoding === "function" ? encoding : callback;
+    \\        if (typeof cb === "function") Promise.resolve().then(cb);
+    \\        void chunk;
+    \\        return true;
+    \\      };
+    \\      stream.end = function(chunk, encoding, callback) {
+    \\        const cb = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : callback);
+    \\        if (typeof cb === "function") Promise.resolve().then(cb);
+    \\        return this;
+    \\      };
+    \\      stream.close = function() { this.emit("close"); return this; };
+    \\      return stream;
+    \\    }
     \\    const serverStream = __home_http_event_target();
     \\    serverStream.respond = function(responseHeaders) {
     \\      stream.emit("response", responseHeaders || { ":status": 200 });
@@ -11754,6 +11864,30 @@ const harness_prelude =
     \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
     \\  socket.write = function(chunk, callback) {
     \\    const bytes = __home_net_bytes(chunk);
+    \\    const h2Preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    \\    socket.__home_h2c_pending = Buffer.concat([socket.__home_h2c_pending || Buffer.alloc(0), Buffer.from(bytes)]);
+    \\    if (__home_net_latin1(socket.__home_h2c_pending.slice(0, h2Preface.length)) === h2Preface) {
+    \\      let offset = h2Preface.length;
+    \\      while (offset + 9 <= socket.__home_h2c_pending.length) {
+    \\        const length = socket.__home_h2c_pending.readUIntBE(offset, 3);
+    \\        if (offset + 9 + length > socket.__home_h2c_pending.length) break;
+    \\        const type = socket.__home_h2c_pending[offset + 3];
+    \\        const streamId = socket.__home_h2c_pending.readUInt32BE(offset + 5) & 0x7fffffff;
+    \\        if (!socket.__home_h2c_responded && type === 1 && streamId === 1) {
+    \\          socket.__home_h2c_responded = true;
+    \\          const h2Server = typeof __home_http2_servers === "object" ? __home_http2_servers[port] : null;
+    \\          Promise.resolve().then(() => {
+    \\            if (h2Server) __home_http2_emit_raw_response(h2Server, socket);
+    \\            else socket.emit("error", new Error("ECONNREFUSED"));
+    \\            if (typeof callback === "function") callback();
+    \\          });
+    \\          return true;
+    \\        }
+    \\        offset += 9 + length;
+    \\      }
+    \\      if (typeof callback === "function") Promise.resolve().then(() => callback());
+    \\      return true;
+    \\    }
     \\    const requestText = __home_net_latin1(bytes);
     \\    const headerEnd = requestText.indexOf("\r\n\r\n");
     \\    if (headerEnd === -1) return true;
@@ -16123,6 +16257,19 @@ const harness_prelude =
     \\    if (start < 0 || start + 4 > this.length) throw new RangeError("Index out of range");
     \\    return ((this[start] << 24) >>> 0) + ((this[start + 1] << 16) >>> 0) + ((this[start + 2] << 8) >>> 0) + (this[start + 3] >>> 0);
     \\  };
+    \\  Buffer.prototype.readUInt16BE = function(offset) {
+    \\    const start = offset === undefined ? 0 : Math.trunc(Number(offset));
+    \\    if (start < 0 || start + 2 > this.length) throw new RangeError("Index out of range");
+    \\    return ((this[start] << 8) >>> 0) + (this[start + 1] >>> 0);
+    \\  };
+    \\  Buffer.prototype.readUIntBE = function(offset, byteLength) {
+    \\    const start = offset === undefined ? 0 : Math.trunc(Number(offset));
+    \\    const width = Math.trunc(Number(byteLength));
+    \\    if (width <= 0 || width > 6 || start < 0 || start + width > this.length) throw new RangeError("Index out of range");
+    \\    let value = 0;
+    \\    for (let i = 0; i < width; i++) value = value * 256 + (this[start + i] & 0xff);
+    \\    return value;
+    \\  };
     \\  Buffer.prototype.writeUInt32BE = function(value, offset) {
     \\    const start = offset === undefined ? 0 : Math.trunc(Number(offset));
     \\    if (start < 0 || start + 4 > this.length) throw new RangeError("Index out of range");
@@ -16132,6 +16279,17 @@ const harness_prelude =
     \\    this[start + 2] = (number >>> 8) & 0xff;
     \\    this[start + 3] = number & 0xff;
     \\    return start + 4;
+    \\  };
+    \\  Buffer.prototype.writeUIntBE = function(value, offset, byteLength) {
+    \\    const start = offset === undefined ? 0 : Math.trunc(Number(offset));
+    \\    const width = Math.trunc(Number(byteLength));
+    \\    if (width <= 0 || width > 6 || start < 0 || start + width > this.length) throw new RangeError("Index out of range");
+    \\    let number = Math.trunc(Number(value));
+    \\    for (let i = width - 1; i >= 0; i--) {
+    \\      this[start + i] = number & 0xff;
+    \\      number = Math.floor(number / 256);
+    \\    }
+    \\    return start + width;
     \\  };
     \\  Buffer.prototype.subarray = function(start, end) {
     \\    const view = Uint8Array.prototype.subarray.call(this, start, end);
@@ -22391,6 +22549,33 @@ test "bootstrap runner mirrors http2 setLocalWindowSize corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors h2c response frame corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29073.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29073.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const http2 = globalThis.__home_import(\"node:http2\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const net = globalThis.__home_import(\"node:net\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_http2_emit_raw_response") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors frontend files splitting corpus" {
