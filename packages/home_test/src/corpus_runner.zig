@@ -1757,10 +1757,10 @@ const harness_prelude =
     \\    if (logicalRadiusCss !== null) return logicalRadiusCss;
     \\  }
     \\  css = css.replace(/@import\s+url\(\s*["']([^"']+)["']\s*\)\s+layer\(\s*([^)]+)\s*\)\s*;?/g, function(_all, specifier, layer) {
-    \\    return "@layer " + String(layer).trim() + " {\n" + __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen) + "}\n";
+    \\    return "@layer " + String(layer).trim() + " {\n" + __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), Object.assign(Object.create(null), seen)) + "}\n";
     \\  });
     \\  css = css.replace(/@import\s+["']([^"']+)["']\s+layer\(\s*([^)]+)\s*\)\s*;?/g, function(_all, specifier, layer) {
-    \\    return "@layer " + String(layer).trim() + " {\n" + __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen) + "}\n";
+    \\    return "@layer " + String(layer).trim() + " {\n" + __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), Object.assign(Object.create(null), seen)) + "}\n";
     \\  });
     \\  css = css.replace(/@import\s+["']([^"']+)["'];?/g, function(_all, specifier) {
     \\    return __home_build_inline_css_file(__home_build_join(__home_build_dirname(normalized), specifier), seen);
@@ -11218,6 +11218,89 @@ const harness_prelude =
     \\  };
     \\  return stream;
     \\};
+    \\function __home_stream_invalid_chunk_error(chunk) {
+    \\  const error = new TypeError('The "chunk" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ' + __home_determine_specific_type(chunk));
+    \\  error.code = "ERR_INVALID_ARG_TYPE";
+    \\  return error;
+    \\}
+    \\function __home_stream_is_byte_chunk(chunk) {
+    \\  return typeof chunk === "string" || chunk instanceof Uint8Array || chunk instanceof ArrayBuffer || (typeof DataView === "function" && chunk instanceof DataView);
+    \\}
+    \\function __home_stream_transform(options) {
+    \\  const opts = options || {};
+    \\  const stream = __home_http_event_target();
+    \\  stream.__home_object_mode = !!(opts.objectMode || opts.readableObjectMode);
+    \\  stream.__home_chunks = [];
+    \\  stream.__home_waiters = [];
+    \\  stream.__home_ended = false;
+    \\  stream.__home_error = null;
+    \\  stream.push = function(chunk) {
+    \\    if (chunk === null) {
+    \\      this.__home_ended = true;
+    \\      while (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: true, value: undefined });
+    \\      this.emit("end");
+    \\      return false;
+    \\    }
+    \\    if (!this.__home_object_mode && !__home_stream_is_byte_chunk(chunk)) {
+    \\      const error = __home_stream_invalid_chunk_error(chunk);
+    \\      this.__home_error = error;
+    \\      this.emit("error", error);
+    \\      while (this.__home_waiters.length) this.__home_waiters.shift().reject(error);
+    \\      return false;
+    \\    }
+    \\    if (this.__home_waiters.length) this.__home_waiters.shift().resolve({ done: false, value: chunk });
+    \\    else this.__home_chunks.push(chunk);
+    \\    this.emit("readable");
+    \\    this.emit("data", chunk);
+    \\    return true;
+    \\  };
+    \\  stream._transform = typeof opts.transform === "function" ? opts.transform : function(chunk, _encoding, cb) { cb(null, chunk); };
+    \\  stream.write = function(chunk, encoding, callback) {
+    \\    if (typeof encoding === "function") {
+    \\      callback = encoding;
+    \\      encoding = undefined;
+    \\    }
+    \\    const self = this;
+    \\    this._transform.call(this, chunk, encoding, function(error, data) {
+    \\      if (error) {
+    \\        self.__home_error = error;
+    \\        self.emit("error", error);
+    \\        while (self.__home_waiters.length) self.__home_waiters.shift().reject(error);
+    \\      } else if (data !== undefined && data !== null) {
+    \\        self.push(data);
+    \\      }
+    \\      if (typeof callback === "function") callback(error);
+    \\    });
+    \\    return true;
+    \\  };
+    \\  stream.end = function(chunk, encoding, callback) {
+    \\    if (typeof chunk === "function") {
+    \\      callback = chunk;
+    \\      chunk = undefined;
+    \\    } else if (typeof encoding === "function") {
+    \\      callback = encoding;
+    \\      encoding = undefined;
+    \\    }
+    \\    if (chunk !== undefined) this.write(chunk, encoding);
+    \\    this.push(null);
+    \\    this.emit("finish");
+    \\    if (typeof callback === "function") callback();
+    \\    return this;
+    \\  };
+    \\  stream[Symbol.asyncIterator] = function() {
+    \\    const self = this;
+    \\    return {
+    \\      next() {
+    \\        if (self.__home_chunks.length) return Promise.resolve({ done: false, value: self.__home_chunks.shift() });
+    \\        if (self.__home_error) return Promise.reject(self.__home_error);
+    \\        if (self.__home_ended) return Promise.resolve({ done: true, value: undefined });
+    \\        return new Promise((resolve, reject) => self.__home_waiters.push({ resolve, reject }));
+    \\      },
+    \\      [Symbol.asyncIterator]() { return this; },
+    \\    };
+    \\  };
+    \\  return stream;
+    \\}
     \\function __home_stream_pass_through() {
     \\  const stream = __home_http_event_target();
     \\  stream.__home_chunks = [];
@@ -11234,7 +11317,7 @@ const harness_prelude =
     \\  };
     \\  return stream;
     \\}
-    \\const __home_stream_module = { Readable: __home_stream_readable, PassThrough: __home_stream_pass_through };
+    \\const __home_stream_module = { Readable: __home_stream_readable, Transform: __home_stream_transform, PassThrough: __home_stream_pass_through };
     \\__home_stream_module.default = __home_stream_module;
     \\globalThis.__home_modules["stream"] = __home_stream_module;
     \\globalThis.__home_modules["node:stream"] = __home_stream_module;
@@ -18683,6 +18766,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { Readable } = globalThis.__home_import(\"node:stream\");",
         },
         .{
+            .needle = "import { Readable, Transform } from \"node:stream\";",
+            .replacement = "const { Readable, Transform } = globalThis.__home_import(\"node:stream\");",
+        },
+        .{
             .needle = "import path, { join } from \"path\";",
             .replacement = "const path = globalThis.__home_import(\"path\");\nconst { join } = path;",
         },
@@ -20636,9 +20723,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const rewritten = try rewriteBunTestImport(allocator, source, relative_path);
-    const allow_no_tests = std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts");
+    const allow_no_tests = corpusAllowsNoTests(relative_path);
     if (hasBunTestImport(rewritten)) {
         return .{
             .path = relative_path,
@@ -20668,6 +20753,13 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
         .source = rewritten,
         .allow_no_tests = allow_no_tests,
     };
+}
+
+fn corpusAllowsNoTests(relative_path: []const u8) bool {
+    return std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts") or
+        std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
 pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, subset: Subset) !Summary {
@@ -20834,6 +20926,16 @@ test "harness prelude surfaces ERR_INVALID_THIS from Request body methods" {
     // as undefined instead of coercing it to the global object.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.formData = function() {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "\"use strict\";\n    __home_request_check_this(this);") != null);
+}
+
+test "harness prelude exports node stream Transform" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_stream_transform(options) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_TYPE\";") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Transform: __home_stream_transform") != null);
+}
+
+test "harness CSS layered imports keep branch-local seen state" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.assign(Object.create(null), seen)") != null);
 }
 
 test "harness prelude exposes Bun's conditional test modifiers" {
@@ -24011,6 +24113,20 @@ test "Node http and stream import rewrite lowers issue 19111 syntax" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as IncomingMessage") == null);
 }
 
+test "Node stream import rewrite lowers Readable and Transform imports" {
+    const source =
+        \\import { Readable, Transform } from "node:stream";
+        \\import { test } from "node:test";
+        \\test("stream transform", () => new Transform({ transform(chunk, _encoding, cb) { this.push(chunk); cb(); } }).end(Readable.from([])));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/28431.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { Readable, Transform } = globalThis.__home_import(\"node:stream\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:stream\"") == null);
+}
+
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -26068,6 +26184,33 @@ test "bootstrap runner allows expectTypeOf doctest as type-only smoke" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+}
+
+test "bootstrap runner allows docker-gated issue 28632 with no registered tests" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { test } from "bun:test";
+        \\import { isDockerEnabled } from "harness";
+        \\if (isDockerEnabled()) {
+        \\  test("docker only", () => {});
+        \\}
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/28632.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.fileSpec().allow_no_tests);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner covers expectTypeOf type-only smokes" {
