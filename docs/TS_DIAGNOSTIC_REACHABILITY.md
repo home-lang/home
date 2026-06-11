@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 528 |
-| active reachable (parity targets) | 63 |
+| catalog-only total | 526 |
+| active reachable (parity targets) | 61 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -27,7 +27,7 @@ diverge from the reference compiler.
 | --- | ---: |
 | 1xxx — parser / syntactic + program file-inclusion | 37 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| other | 7 |
+| other | 5 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (37)
@@ -90,15 +90,13 @@ diverge from the reference compiler.
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### other (7)
+### other (5)
 
 - TS8001 `You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001`
 - TS8031 `You_cannot_rename_a_module_via_a_global_import_8031`
 - TS8035 `You_cannot_rename_elements_that_are_defined_in_a_node_modules_folder_8035`
 - TS8036 `You_cannot_rename_elements_that_are_defined_in_another_node_modules_folder_8036`
 - TS9026 `Declaration_emit_for_this_file_requires_preserving_this_import_for_augmentations_This_is_not_support_9026`
-- TS9035 `Add_satisfies_and_a_type_assertion_to_this_expression_satisfies_T_as_T_to_make_the_type_explicit_9035`
-- TS9036 `Move_the_expression_in_default_export_to_a_variable_and_add_a_type_annotation_to_it_9036`
 
 ### 6xxx — CLI / build / watch / resolution-trace messages (2)
 
