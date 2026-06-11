@@ -2857,6 +2857,88 @@ pub const Service = struct {
             });
         }
 
+        // ---- Extract object-property value to variable (TS901x -> TS90069)
+        for (c.diagnostics.items) |d| {
+            switch (d.code) {
+                ts_checker.check.TsCodes.isolated_declarations_expression_type_inferred,
+                ts_checker.check.TsCodes.isolated_declarations_object_spread_inferred,
+                ts_checker.check.TsCodes.isolated_declarations_array_spread_inferred,
+                => {},
+                else => continue,
+            }
+
+            var prop_node: hir_mod.NodeId = hir_mod.none_node_id;
+            var value_node: hir_mod.NodeId = hir_mod.none_node_id;
+            var best_len: u32 = std.math.maxInt(u32);
+            var node_i: hir_mod.NodeId = 1;
+            while (node_i < c.hir.nodeCount()) : (node_i += 1) {
+                if (c.hir.kindOf(node_i) != .object_property) continue;
+                const op = hir_mod.objectPropertyOf(&c.hir, node_i);
+                if (op.is_shorthand or op.is_method or op.value == hir_mod.none_node_id) continue;
+                const value_span = c.hir.spanOf(op.value);
+                if (value_span.start > d.pos or d.pos >= value_span.end) continue;
+                const len = value_span.end - value_span.start;
+                if (len < best_len) {
+                    prop_node = node_i;
+                    value_node = op.value;
+                    best_len = len;
+                }
+            }
+            if (prop_node == hir_mod.none_node_id or value_node == hir_mod.none_node_id) continue;
+            const value_kind = c.hir.kindOf(value_node);
+            if (value_kind == .identifier or value_kind == .member_access) continue;
+
+            const value_span = c.hir.spanOf(value_node);
+            if (value_span.start >= value_span.end or value_span.end > f.source.len) continue;
+
+            var stmt_node: hir_mod.NodeId = hir_mod.none_node_id;
+            var stmt_span: hir_mod.Span = undefined;
+            for (stmts) |s| {
+                const span = c.hir.spanOf(s);
+                if (span.start <= value_span.start and value_span.end <= span.end) {
+                    stmt_node = s;
+                    stmt_span = span;
+                    break;
+                }
+            }
+            if (stmt_node == hir_mod.none_node_id) continue;
+
+            const value_src = f.source[value_span.start..value_span.end];
+            const name = "newLocal";
+            const insert_text = try std.fmt.allocPrint(gpa, "const {s} = {s};\n", .{ name, value_src });
+            errdefer gpa.free(insert_text);
+            const replace_text = try std.fmt.allocPrint(gpa, "{s} as typeof {s}", .{ name, name });
+            errdefer gpa.free(replace_text);
+            const title = try std.fmt.allocPrint(gpa, "Extract to variable and replace with '{s} as typeof {s}'", .{ name, name });
+            errdefer gpa.free(title);
+            const stmt_start = ts_diagnostics.positionToLineCol(f.source, stmt_span.start);
+            const value_start = ts_diagnostics.positionToLineCol(f.source, value_span.start);
+            const value_end = ts_diagnostics.positionToLineCol(f.source, value_span.end);
+            var edits = try gpa.alloc(TextEdit, 2);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = if (stmt_start.line > 0) stmt_start.line - 1 else 0,
+                .start_col = if (stmt_start.col > 0) stmt_start.col - 1 else 0,
+                .end_line = if (stmt_start.line > 0) stmt_start.line - 1 else 0,
+                .end_col = if (stmt_start.col > 0) stmt_start.col - 1 else 0,
+                .new_text = insert_text,
+            };
+            edits[1] = .{
+                .file = f.path,
+                .start_line = if (value_start.line > 0) value_start.line - 1 else 0,
+                .start_col = if (value_start.col > 0) value_start.col - 1 else 0,
+                .end_line = if (value_end.line > 0) value_end.line - 1 else 0,
+                .end_col = if (value_end.col > 0) value_end.col - 1 else 0,
+                .new_text = replace_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+                .code = 90069,
+            });
+        }
+
         // ---- Add satisfies + inline type assertion (TS9013 -> TS90068) ----
         for (c.diagnostics.items) |d| {
             if (d.code != ts_checker.check.TsCodes.isolated_declarations_expression_type_inferred) continue;
@@ -9021,6 +9103,50 @@ test "Service: codeActions extracts isolatedDeclarations class base expression t
     try T.expectEqual(@as(u32, 25), a.edits[1].start_col);
     try T.expectEqual(@as(u32, 2), a.edits[1].end_line);
     try T.expectEqual(@as(u32, 33), a.edits[1].end_col);
+}
+
+test "Service: codeActions extracts isolatedDeclarations object property value to variable" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "const c = [1] as const;\nexport let o = { p: [0, ...c] as const };");
+    try program.compileAll(.{ .strict_flags = .{ .isolated_declarations = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Extract to variable and replace with 'newLocal as typeof newLocal'")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, 90069), a.code);
+    try T.expectEqual(@as(usize, 2), a.edits.len);
+    try T.expectEqualStrings("const newLocal = [0, ...c] as const;\n", a.edits[0].new_text);
+    try T.expectEqualStrings("newLocal as typeof newLocal", a.edits[1].new_text);
+    try T.expectEqual(@as(u32, 1), a.edits[0].start_line);
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_col);
+    try T.expectEqual(@as(u32, 1), a.edits[1].start_line);
+    try T.expectEqual(@as(u32, 20), a.edits[1].start_col);
+    try T.expectEqual(@as(u32, 1), a.edits[1].end_line);
+    try T.expectEqual(@as(u32, 38), a.edits[1].end_col);
 }
 
 test "Service: codeActions adds satisfies inline assertion for inferred isolatedDeclarations expression" {
