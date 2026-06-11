@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 540 |
-| active reachable (parity targets) | 75 |
+| catalog-only total | 539 |
+| active reachable (parity targets) | 74 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -28,7 +28,7 @@ diverge from the reference compiler.
 | 1xxx — parser / syntactic + program file-inclusion | 37 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
-| 2xxx — checker / type engine | 5 |
+| 2xxx — checker / type engine | 4 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (37)
@@ -108,11 +108,10 @@ diverge from the reference compiler.
 - TS18015 `Property_0_in_type_1_refers_to_a_different_member_that_cannot_be_accessed_from_within_type_2_18015`
 - TS18044 `_0_is_automatically_exported_here_18044`
 
-### 2xxx — checker / type engine (5)
+### 2xxx — checker / type engine (4)
 
 - TS2321 `Excessive_stack_depth_comparing_types_0_and_1_2321`
 - TS2563 `The_containing_function_or_module_body_is_too_large_for_control_flow_analysis_2563`
-- TS2719 `Type_0_is_not_assignable_to_type_1_Two_different_types_with_this_name_exist_but_they_are_unrelated_2719`
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
