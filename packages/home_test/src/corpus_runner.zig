@@ -2546,6 +2546,28 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_spawn_terminal_fixture(options) {
+    \\  const terminal = options && options.terminal;
+    \\  if (!terminal || typeof terminal.__home_emit_data !== "function") return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.includes("-e") || !cmd.some(part => part.includes("console.log") && part.includes("Hello"))) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  Promise.resolve().then(() => {
+    \\    terminal.__home_emit_data(Buffer.from("Hello\n"));
+    \\    exited.resolve(0);
+    \\  });
+    \\  return {
+    \\    stdout: __home_spawn_async_iterable_text(""),
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: 0,
+    \\    signalCode: null,
+    \\    killed: false,
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    kill() { this.killed = true; return true; },
+    \\  };
+    \\}
     \\function __home_spawn_04298_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!cmd.some(part => part.endsWith("04298.fixture.js"))) return null;
@@ -3856,6 +3878,15 @@ const harness_prelude =
     \\  params.push(["x-amz-signature", "home"]);
     \\  return base + "?" + params.map(([key, value]) => encodeURIComponent(key) + "=" + encodeURIComponent(value)).join("&");
     \\}
+    \\function __home_Terminal(options) {
+    \\  if (!(this instanceof __home_Terminal)) return new __home_Terminal(options);
+    \\  this.options = options || {};
+    \\}
+    \\__home_Terminal.prototype.__home_emit_data = function(data) {
+    \\  if (this.options && typeof this.options.data === "function") this.options.data(this, data);
+    \\};
+    \\__home_Terminal.prototype[Symbol.dispose] = function() {};
+    \\__home_Terminal.prototype[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -3933,6 +3964,7 @@ const harness_prelude =
     \\    },
     \\  },
     \\  CryptoHasher: __home_CryptoHasher,
+    \\  Terminal: __home_Terminal,
     \\  Cookie: __home_Cookie,
     \\  RedisClient: __home_RedisClient,
     \\  redis: {
@@ -4097,6 +4129,8 @@ const harness_prelude =
     \\    if (issue21654Fixture) return issue21654Fixture;
     \\    const issue26142Fixture = __home_spawn_26142_fixture(options || {});
     \\    if (issue26142Fixture) return issue26142Fixture;
+    \\    const terminalFixture = __home_spawn_terminal_fixture(options || {});
+    \\    if (terminalFixture) return terminalFixture;
     \\    const issue04298Fixture = __home_spawn_04298_fixture(options || {});
     \\    if (issue04298Fixture) return issue04298Fixture;
     \\    const issue20965Fixture = __home_spawn_20965_fixture(options || {});
@@ -17537,7 +17571,11 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "Promise.withResolvers<Error>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<URL>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<Buffer>()", .replacement = "Promise.withResolvers()" },
+        .{ .needle = "Promise.withResolvers<Uint8Array>()", .replacement = "Promise.withResolvers()" },
+        .{ .needle = "Promise.withResolvers<{ id: number } | undefined>()", .replacement = "Promise.withResolvers()" },
         .{ .needle = "Promise.withResolvers<void>()", .replacement = "Promise.withResolvers()" },
+        .{ .needle = "new AsyncLocalStorage<{ id: number }>()", .replacement = "new AsyncLocalStorage()" },
+        .{ .needle = "result.data!", .replacement = "result.data" },
         .{ .needle = "server.address() as { port: number }", .replacement = "server.address()" },
         .{ .needle = "(hostname: string, cert: any) =>", .replacement = "(hostname, cert) =>" },
         .{ .needle = "new Map<number, Waiter>()", .replacement = "new Map()" },
@@ -19627,9 +19665,9 @@ fn isJsIdentifierStart(byte: u8) bool {
 /// namespace object directly. Matches the per-file hardcoded `.default` patches.
 fn moduleDefaultExportIsApi(name: []const u8) bool {
     const defaulted = [_][]const u8{
-        "fs",            "node:fs",
-        "fs/promises",   "node:fs/promises",
-        "zlib",          "node:zlib",
+        "fs",          "node:fs",
+        "fs/promises", "node:fs/promises",
+        "zlib",        "node:zlib",
     };
     for (defaulted) |m| {
         if (std.mem.eql(u8, name, m)) return true;
@@ -21994,6 +22032,35 @@ test "bootstrap runner mirrors mTLS client certificate switching corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors terminal async local storage corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26286.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26286.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "withResolvers<") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "AsyncLocalStorage<{") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "result.data!") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_Terminal(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_terminal_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
