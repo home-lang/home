@@ -43,6 +43,19 @@ pub const us_socket_t = opaque {
 
     pub fn close(this: *us_socket_t, code: CloseCode) void {
         debug("us_socket_close({p}, {s})", .{ this, @tagName(code) });
+        // A socket detached from its group (`s->group == NULL`) cannot be
+        // closed: uSockets' `us_socket_close` → `us_internal_socket_close_raw`
+        // dereferences `s->group->loop` unconditionally (guarded only by
+        // `!us_socket_is_closed`), so closing a groupless socket segfaults at
+        // `s->group->loop`. This is reachable from a deferred IPC close
+        // (`SendQueue.closeSocketNextTick` → `_closeSocketTask`) that fires
+        // after the underlying socketpair was detached from the shared
+        // spawn-IPC group — the SendQueue still sees `.open` because no
+        // `on_close` was dispatched for the detach. A groupless socket is
+        // already out of the loop with nothing to tear down, so skip it.
+        // Reading `us_socket_group` is a plain field load and is safe on any
+        // live socket (the C close path itself first passes `us_socket_is_closed`).
+        if (@intFromPtr(c.us_socket_group(this)) == 0) return;
         _ = c.us_socket_close(this, code, null);
     }
 
