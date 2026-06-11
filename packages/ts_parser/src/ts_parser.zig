@@ -14473,6 +14473,15 @@ pub const Parser = struct {
                 continue;
             }
             const right = try self.parseBinaryExpressionWithIn(next_min, allow_in);
+            if (t.kind == .kw_instanceof and self.peek().kind == .less_than) {
+                if (self.findStandaloneInstantiationTypeArgsEnd(self.cursor)) |after_gt| {
+                    const pos = self.hir.spanOf(right).start;
+                    try self.reportCodeAt(pos, self.sourceLineAtPos(pos), 2848, "The right-hand side of an 'instanceof' expression must not be an instantiation expression.");
+                    const type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                    defer self.gpa.free(type_args);
+                    try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
+                }
+            }
             const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
             if (prec_mod.binOpOf(t.kind)) |bop| {
                 left = try self.builder.addBinaryOp(sp, bop, left, right);
@@ -17394,6 +17403,60 @@ pub const Parser = struct {
             else => false,
         };
     }
+
+    fn findStandaloneInstantiationTypeArgsEnd(self: *Parser, start: u32) ?u32 {
+        if (start >= self.tokens.len or self.tokens[start].kind != .less_than) return null;
+        var depth: i32 = 1;
+        var i: u32 = start + 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            switch (tk) {
+                .less_than => depth += 1,
+                .greater_than, .greater_greater, .greater_greater_greater => {
+                    const count: u8 = switch (tk) {
+                        .greater_than => 1,
+                        .greater_greater => 2,
+                        .greater_greater_greater => 3,
+                        else => unreachable,
+                    };
+                    var n: u8 = 0;
+                    while (n < count) : (n += 1) {
+                        depth -= 1;
+                        if (depth == 0) {
+                            const next = i + 1;
+                            if (next >= self.tokens.len) return null;
+                            switch (self.tokens[next].kind) {
+                                .semicolon,
+                                .comma,
+                                .colon,
+                                .question,
+                                .close_paren,
+                                .close_bracket,
+                                .close_brace,
+                                .eof,
+                                => return next,
+                                else => return null,
+                            }
+                        }
+                    }
+                },
+                .open_paren, .open_bracket, .open_brace => {
+                    if (self.skipBalancedFrom(i)) |after| {
+                        i = after - 1;
+                    } else return null;
+                },
+                .equal,
+                .semicolon,
+                .arrow,
+                .question_dot,
+                .invalid,
+                .eof,
+                => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
 };
 
 // ====================================================================
@@ -17813,6 +17876,19 @@ test "parser: parenthesized expression overrides precedence" {
     try T.expectEqual(hir_mod.BinOp.mul, top_op.op);
     // LHS should be 1 + 2.
     try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(top_op.lhs));
+}
+
+test "parser: instanceof RHS instantiation expression reports TS2848" {
+    var s = try newTestSetup("x instanceof C<string>;");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(top));
+    try T.expectEqual(hir_mod.BinOp.instanceof, hir_mod.binopOf(&s.hir, top).op);
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2848), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("The right-hand side of an 'instanceof' expression must not be an instantiation expression.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: identifier expression" {
