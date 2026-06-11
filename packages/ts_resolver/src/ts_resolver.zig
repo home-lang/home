@@ -86,6 +86,10 @@ pub const Config = struct {
     /// Relative entries are interpreted relative to `config_file_path`.
     root_dirs: []const []const u8 = &.{},
     config_file_path: []const u8 = "",
+    /// True when source-to-output fallback should be surfaced as TS6305
+    /// metadata for project-reference consumers. Plain package self-name
+    /// fallback leaves this false so same-project imports remain clean.
+    project_reference_output_diagnostics: bool = false,
     /// `compilerOptions.typeRoots` or harness `@typeRoots` roots.
     /// These are custom package-root directories such as `/a/types`;
     /// explicit `node_modules/@types` roots still use TypeScript's
@@ -143,6 +147,12 @@ pub const Resolution = struct {
     /// elaboration on TS7016. Null when there is no such alternate.
     /// Borrowed from the resolver's arena like `path`.
     alternate_result: ?[]const u8 = null,
+    /// When an `exports`/`imports` target under `declarationDir`/`outDir`
+    /// was reverse-mapped to a source input because the emitted output
+    /// file is absent, this is the missing output path. The checker uses
+    /// it to report TS6305 instead of treating the source as a normal
+    /// implementation-file resolution.
+    project_reference_output: ?[]const u8 = null,
     /// tsc's package identity string for node_modules resolutions when
     /// the owning package.json has both `name` and `version`.
     package_id: ?[]const u8 = null,
@@ -705,7 +715,14 @@ pub const Resolver = struct {
             return null; // `name` matched only as a prefix of a longer name
         const outcome = try self.resolvePackageSubpath(scope.dir, scope.pkg_json, subpath);
         switch (outcome) {
-            .resolved => |r| return .{ .path = r.path, .source = .package_exports, .is_declaration = r.is_declaration },
+            .resolved => |r| return .{
+                .path = r.path,
+                .source = .package_exports,
+                .is_declaration = r.is_declaration,
+                .alternate_result = r.alternate_result,
+                .project_reference_output = r.project_reference_output,
+                .package_id = r.package_id,
+            },
             .blocked, .none => return null,
         }
     }
@@ -2147,6 +2164,7 @@ pub const Resolver = struct {
                     .path = candidate,
                     .source = .package_exports,
                     .is_declaration = isDeclarationPath(candidate),
+                    .project_reference_output = if (self.config.project_reference_output_diagnostics) output_path else null,
                 };
             }
         }
@@ -4015,6 +4033,7 @@ test "Resolver: self-name exports declarationDir target maps back to source inpu
     const res = try r.resolve("@this/package", "/src/thing.ts");
     try T.expectEqualStrings("/index.ts", res.path);
     try T.expectEqual(Resolution.Source.package_exports, res.source);
+    try T.expect(res.project_reference_output == null);
 }
 
 test "Resolver: self-name exports outDir default target maps back to source input" {
@@ -4042,6 +4061,37 @@ test "Resolver: self-name exports outDir default target maps back to source inpu
     const res = try r.resolve("@this/package", "/src/thing.ts");
     try T.expectEqualStrings("/index.ts", res.path);
     try T.expectEqual(Resolution.Source.package_exports, res.source);
+    try T.expect(res.project_reference_output == null);
+}
+
+test "Resolver: project-reference output diagnostics preserve missing declaration output" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{
+        \\  "name": "@this/package",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": {
+        \\      "types": "./types/index.d.ts",
+        \\      "default": "./dist/index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/index.ts", "export {};");
+    try vfs.addFile("/src/thing.ts", "import '@this/package';");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .nodenext,
+        .declaration_dir = "./types",
+        .out_dir = "./dist",
+        .config_file_path = "/tsconfig.json",
+        .project_reference_output_diagnostics = true,
+    });
+    defer r.deinit();
+    const res = try r.resolve("@this/package", "/src/thing.ts");
+    try T.expectEqualStrings("/index.ts", res.path);
+    try T.expectEqualStrings("/types/index.d.ts", res.project_reference_output.?);
 }
 
 test "Resolver: nestedPackageJsonRedirect — subpath has its own package.json with relative types" {

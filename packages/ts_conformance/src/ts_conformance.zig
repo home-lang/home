@@ -79,6 +79,7 @@ const CheckerResolverAdapter = struct {
             .path = r.path,
             .is_declaration = r.is_declaration,
             .alternate_result = r.alternate_result,
+            .project_reference_output = r.project_reference_output,
         };
     }
 

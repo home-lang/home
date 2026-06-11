@@ -472,8 +472,10 @@ fn buildOneProject(
     // TS6358 — `Building project '{0}'...`
     if (verbose) buildStatusMessage(6358, "Building project '{s}'...\n", .{config_path});
 
+    const resolver_config = resolverConfigFromConfig(arena, cfg, null);
+
     var resolver_fs = ResolverRealFs{};
-    var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), .{});
+    var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
     var program = ts_program.Program.init(gpa, &resolver);
     defer program.deinit();
@@ -903,6 +905,46 @@ fn moduleResolutionOptionName(value: tsconfig_mod.ModuleResolution) []const u8 {
     return @tagName(value);
 }
 
+fn resolverConfigFromConfig(
+    arena: std.mem.Allocator,
+    cfg: tsconfig_mod.TsConfig,
+    cli_out_dir: ?[]const u8,
+) ts_resolver.Config {
+    const co = cfg.compiler_options;
+    var resolver_config: ts_resolver.Config = .{};
+    if (co.module_resolution) |mr| {
+        resolver_config.strategy = switch (mr) {
+            .classic => .classic,
+            .node10 => .node10,
+            .node16 => .node16,
+            .nodenext => .nodenext,
+            .bundler => .bundler,
+        };
+        resolver_config.explicit_strategy = true;
+    }
+    if (co.base_url) |base_url| resolver_config.base_url = base_url;
+    if (co.paths) |paths| {
+        resolver_config.paths = ts_resolver.Config.pathEntriesFromParallel(
+            arena,
+            paths.patterns,
+            paths.substitutions,
+        ) catch &.{};
+    }
+    const effective_out_dir = cli_out_dir orelse co.out_dir;
+    if (effective_out_dir) |out_dir_value| resolver_config.out_dir = out_dir_value;
+    if (co.declaration_dir) |declaration_dir_value| {
+        resolver_config.declaration_dir = declaration_dir_value;
+    } else if (effective_out_dir) |out_dir_value| {
+        resolver_config.declaration_dir = out_dir_value;
+    }
+    if (co.root_dir) |root_dir| resolver_config.root_dir = root_dir;
+    if (co.root_dirs) |root_dirs| resolver_config.root_dirs = root_dirs;
+    if (co.type_roots) |type_roots| resolver_config.type_roots = type_roots;
+    resolver_config.config_file_path = cfg.file_path;
+    resolver_config.project_reference_output_diagnostics = cfg.references.len > 0;
+    return resolver_config;
+}
+
 fn targetOptionName(value: tsconfig_mod.Target) []const u8 {
     return @tagName(value);
 }
@@ -1168,7 +1210,8 @@ fn findTsConfigSpecLineCol(config_source: []const u8, property: []const u8, spec
     else
         null;
     const absolute_pos = if (pos) |p| start + p else start;
-    return ts_diagnostics.positionToLineCol(config_source, @intCast(@min(absolute_pos, std.math.maxInt(u32))));
+    const line_col = ts_diagnostics.positionToLineCol(config_source, @intCast(@min(absolute_pos, std.math.maxInt(u32))));
+    return .{ .line = line_col.line, .col = line_col.col };
 }
 
 fn caseOnlyInputRelatedInfo(
@@ -1614,6 +1657,7 @@ const CheckerResolverAdapter = struct {
             .path = r.path,
             .is_declaration = r.is_declaration,
             .alternate_result = r.alternate_result,
+            .project_reference_output = r.project_reference_output,
         };
     }
 
@@ -2125,7 +2169,11 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var resolver_fs = ResolverRealFs{};
-    var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), .{});
+    const resolver_config: ts_resolver.Config = if (loaded_cfg) |c|
+        resolverConfigFromConfig(cfg_arena.allocator(), c, opts.out_dir)
+    else
+        .{};
+    var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
 
     var program = ts_program.Program.init(gpa, &resolver);
