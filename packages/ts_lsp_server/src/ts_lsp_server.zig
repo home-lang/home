@@ -1726,8 +1726,17 @@ pub fn handlePrepareRename(
     const char_u: u32 = if (character < 0) 0 else @intCast(character);
     const byte_pos = lineColToByte(f.source, line_u, char_u);
 
-    const result = (try service.prepareRename(gpa, path, byte_pos)) orelse {
-        return encodeResponse(gpa, request_id, "null");
+    const result = switch (try service.prepareRenameInfo(gpa, path, byte_pos)) {
+        .success => |result| result,
+        .failure => |failure| {
+            var msg_buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer msg_buf.deinit(gpa);
+            var nbuf: [32]u8 = undefined;
+            try msg_buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "TS{d}: ", .{failure.code}));
+            try msg_buf.appendSlice(gpa, failure.message);
+            return encodeError(gpa, request_id, .{ .code = -32001, .message = msg_buf.items });
+        },
+        .not_renamable => return encodeResponse(gpa, request_id, "null"),
     };
     defer gpa.free(result.placeholder);
 
@@ -5519,6 +5528,29 @@ test "handlePrepareRename: returns range + placeholder for identifier" {
     const out2 = try handlePrepareRename(&svc, T.allocator, .{ .integer = 152 }, empty);
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
+}
+
+test "handlePrepareRename: returns TS8031 error for global import module specifier" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "import { x } from \"react\";");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":153,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":20}}}
+    ;
+    const out = try handlePrepareRename(&svc, T.allocator, .{ .integer = 153 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":153") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"error\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TS8031") != null);
+    try T.expect(std.mem.indexOf(u8, out, "You cannot rename a module via a global import.") != null);
 }
 
 test "handleCompletionItemResolve: echoes input item back" {

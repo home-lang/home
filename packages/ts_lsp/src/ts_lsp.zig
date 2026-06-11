@@ -218,6 +218,17 @@ pub const PrepareRenameResult = struct {
     placeholder: []const u8,
 };
 
+pub const RenameFailure = struct {
+    code: u32,
+    message: []const u8,
+};
+
+pub const PrepareRenameInfo = union(enum) {
+    success: PrepareRenameResult,
+    failure: RenameFailure,
+    not_renamable,
+};
+
 /// LSP `TextDocumentSaveReason` — passed to `willSaveWaitUntil` so
 /// the server can adapt formatting/edit behavior per trigger source.
 /// Values mirror the LSP wire numbers (1..4) but are exposed as a
@@ -1748,25 +1759,26 @@ pub const Service = struct {
     }
 
     /// LSP `textDocument/prepareRename`: probe whether the cursor sits
-    /// on a renamable identifier. Returns `null` when the position
-    /// isn't on an identifier (whitespace, punctuation, comment), and
-    /// otherwise the identifier's source `Range` plus its current
-    /// text as the placeholder. Editors call this before
-    /// `textDocument/rename` to validate the position and pre-fill
-    /// the rename input. Caller owns `result.placeholder`.
-    pub fn prepareRename(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) !?PrepareRenameResult {
-        const file_id = self.program.lookupPath(file_path) orelse return null;
+    /// on a renamable identifier. Returns `.not_renamable` for whitespace,
+    /// punctuation, comments, or non-renamable syntax; `.success` for an
+    /// identifier the editor can rename; and `.failure` for TypeScript
+    /// rename-info diagnostics such as TS8031.
+    pub fn prepareRenameInfo(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) !PrepareRenameInfo {
+        const file_id = self.program.lookupPath(file_path) orelse return .not_renamable;
         const f = self.program.fileById(file_id);
-        const c = f.compilation orelse return null;
-        const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
-        if (c.hir.kindOf(node) != .identifier) return null;
+        const c = f.compilation orelse return .not_renamable;
+        if (self.prepareRenameModuleSpecifierFailure(&c.hir, &c.interner, f.source, c.root, byte_pos)) |failure| {
+            return .{ .failure = failure };
+        }
+        const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return .not_renamable;
+        if (c.hir.kindOf(node) != .identifier) return .not_renamable;
         const id = hir_mod.identifierOf(&c.hir, node);
         const span = c.hir.spanOf(node);
         const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
         const ep = ts_diagnostics.positionToLineCol(f.source, span.end);
         const name = c.interner.get(id.name);
         const placeholder = try gpa.dupe(u8, name);
-        return .{
+        return .{ .success = .{
             .range = .{
                 .start_line = sp.line,
                 .start_col = sp.col,
@@ -1774,7 +1786,41 @@ pub const Service = struct {
                 .end_col = ep.col,
             },
             .placeholder = placeholder,
+        } };
+    }
+
+    /// Compatibility wrapper for callers that only need the LSP success/null
+    /// shape. Call `prepareRenameInfo` when TS-coded failure details matter.
+    pub fn prepareRename(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) !?PrepareRenameResult {
+        return switch (try self.prepareRenameInfo(gpa, file_path, byte_pos)) {
+            .success => |result| result,
+            .failure, .not_renamable => null,
         };
+    }
+
+    fn prepareRenameModuleSpecifierFailure(
+        self: *Service,
+        hir: *const hir_mod.Hir,
+        interner: *const string_interner.Interner,
+        source: []const u8,
+        root: hir_mod.NodeId,
+        byte_pos: u32,
+    ) ?RenameFailure {
+        _ = self;
+        if (root == hir_mod.none_node_id or hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(hir, root)) |stmt| {
+            if (hir.kindOf(stmt) != .import_decl) continue;
+            const imp = hir_mod.importOf(hir, stmt);
+            const module_name = interner.get(imp.module);
+            if (module_name.len == 0 or std.mem.startsWith(u8, module_name, ".")) continue;
+            const span = importModuleSpecifierSpan(hir, source, stmt, module_name) orelse continue;
+            if (byte_pos < span.start or byte_pos >= span.end) continue;
+            return .{
+                .code = ts_checker.check.TsCodes.rename_global_import_module,
+                .message = "You cannot rename a module via a global import.",
+            };
+        }
+        return null;
     }
 
     /// Rename the symbol under the cursor across the entire program.
@@ -5095,6 +5141,23 @@ fn findInnermostNode(hir: *const hir_mod.Hir, root: hir_mod.NodeId, byte_pos: u3
     return best;
 }
 
+fn importModuleSpecifierSpan(
+    hir: *const hir_mod.Hir,
+    source: []const u8,
+    import_node: hir_mod.NodeId,
+    module_name: []const u8,
+) ?struct { start: u32, end: u32 } {
+    const stmt_span = hir.spanOf(import_node);
+    if (stmt_span.start >= stmt_span.end or stmt_span.end > source.len) return null;
+    const stmt_src = source[stmt_span.start..stmt_span.end];
+    const rel = std.mem.lastIndexOf(u8, stmt_src, module_name) orelse return null;
+    const lit_start: u32 = stmt_span.start + @as(u32, @intCast(rel));
+    return .{
+        .start = lit_start,
+        .end = lit_start + @as(u32, @intCast(module_name.len)),
+    };
+}
+
 /// Classify an identifier node as `.read` or `.write` based on the
 /// shape of its parent. Writes: assignment targets, `++`/`--`
 /// operands, and the name slot of a declaration (var/let/const/fn/
@@ -6740,6 +6803,30 @@ test "Service: prepareRename returns range + placeholder for identifier" {
     // is not a renamable identifier — returns null.
     const miss = try svc.prepareRename(T.allocator, "/main.ts", 3);
     try T.expect(miss == null);
+}
+
+test "Service: prepareRenameInfo reports TS8031 for global import module specifier" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "import { x } from \"react\";";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const pos = std.mem.indexOf(u8, src, "react").? + 1;
+    const info = try svc.prepareRenameInfo(T.allocator, "/main.ts", @intCast(pos));
+    switch (info) {
+        .failure => |failure| {
+            try T.expectEqual(@as(u32, ts_checker.check.TsCodes.rename_global_import_module), failure.code);
+            try T.expectEqualStrings("You cannot rename a module via a global import.", failure.message);
+        },
+        else => return error.TestExpectedSome,
+    }
 }
 
 test "Service: callHierarchyIncoming finds callers of the target fn" {
