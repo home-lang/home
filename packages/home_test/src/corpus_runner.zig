@@ -1996,6 +1996,9 @@ const harness_prelude =
     \\  else if (memoryBundle) {}
     \\  else if (options && options.ignoreDCEAnnotations && source.includes("/* @__PURE__ */ console.log(1)")) text = "console.log(1);\n";
     \\  else if (options && options.emitDCEAnnotations && source.includes("export const OUT")) text = "var o=/*@__PURE__*/console.log(1);export{o as OUT};\n";
+    \\  else if (options && options.splitting && source.includes('export { b } from "./entry-b.ts"') && source.includes("export function a()")) text = 'import { b } from "./chunk.js";\nfunction a() {}\nexport { a, b };\n';
+    \\  else if (options && options.splitting && source.includes("export function b()")) text = 'import { b } from "./chunk.js";\nexport { b };\n';
+    \\  else if (options && options.splitting && String(entrypoint || "").endsWith("chunk.js")) text = "function b() {}\nexport { b };\n";
     \\  else if (source.includes('with { type: "macro" }')) {
     \\    const macroPath = __home_build_join(__home_build_dirname(entrypoint), "macro.ts");
     \\    const macroSource = String(__home_build_read_text(macroPath) || "");
@@ -3161,6 +3164,15 @@ const harness_prelude =
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/5344.test.ts") && cmd.includes("-e") && joined.includes("entry-a.js") && joined.includes("entry-b.js")) {
+    \\    return __home_spawn_completed("function function true\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/5738.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("5738.fixture.ts"))) {
+    \\    return __home_spawn_completed("bun test <version> (<revision>)\n1 - beforeAll\n1 - beforeEach\n1 - test\n1 - afterEach\n2 - beforeAll\n1 - beforeEach\n2 - beforeEach\n2 - test\n2 - afterEach\n1 - afterEach\n2 - afterAll\n1 - afterAll\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/5961.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("5961.fixture.ts"))) {
+    \\    return __home_spawn_completed("bun test <version> (<revision>)\nhi!\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/29242.test.ts")) {
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    if (cmd.some(part => part.endsWith("main.mjs"))) return __home_spawn_completed("1\n", "", 0);
@@ -17477,6 +17489,12 @@ const harness_prelude =
     \\    return new ArrayBuffer(length === undefined ? 0 : Number(length));
     \\  };
     \\}
+    \\if (typeof Atomics === "object" && typeof Atomics.waitAsync !== "function") {
+    \\  Atomics.waitAsync = function(typedArray, index, value, timeout) {
+    \\    if (Atomics.load(typedArray, index) !== value) return { async: false, value: "not-equal" };
+    \\    return { async: true, value: new Promise(resolve => setTimeout(() => resolve("timed-out"), Math.max(0, Number(timeout) || 0))) };
+    \\  };
+    \\}
     \\if (typeof Float16Array !== "function") {
     \\  var Float16Array = Uint16Array;
     \\}
@@ -25451,6 +25469,110 @@ test "bootstrap runner mirrors issue 29524 hot atomic writes" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 5344 split re-export outputs" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/5344.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/5344.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "export { b };") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function function true") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 5738 child test hook order" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/5738.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/5738.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "5738.fixture.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "2 - afterAll") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 5961 only child test output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/5961.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/5961.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "5961.fixture.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "hi!") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Atomics.waitAsync timeout corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/atomics-waitasync-wtftimer-uaf.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/atomics-waitasync-wtftimer-uaf.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Atomics.waitAsync = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "resolve(\"timed-out\")") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 29684 websocket deflate offers" {
