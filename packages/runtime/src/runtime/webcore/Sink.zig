@@ -599,7 +599,15 @@ pub fn JSSink(comptime SinkType: type, comptime abi_name: []const u8) type {
         }
 
         comptime {
-            if (bun.Environment.export_cpp_apis) {
+            // Export the JS<->Zig sink bridge UNCONDITIONALLY. These symbols are
+            // never provided by the prebuilt Bun objects, so the `export_cpp_apis`
+            // gate (false for the `.Exe` runtime build) left them resolved to the
+            // noop stubs in `native_stubs.zig`, which silently no-op'd every
+            // FileSink/HTTPResponseSink/ArrayBufferSink JS `.write()/.end()/.flush()`
+            // in the full-VM runner; e.g. subprocess `stdin:"pipe"` writes never
+            // reached the child (cat hung on read). The generated-C++ JSSink
+            // prototype calls these by name, so they must be the real impls.
+            if (true) {
                 @export(&finalize, .{ .name = abi_name ++ "__finalize" });
                 @export(&jsWrite, .{ .name = abi_name ++ "__write" });
                 @export(&jsGetInternalFd, .{ .name = abi_name ++ "__getInternalFd" });

@@ -839,7 +839,10 @@ pub fn assignToStream(this: *FileSink, stream: *jsc.WebCore.ReadableStream, glob
 
 comptime {
     const export_prefix = "Bun__FileSink";
-    if (bun.Environment.export_cpp_apis) {
+    // Unconditional; see the note on `Sink.JSSink`'s export block. Not provided
+    // by prebuilt Bun objects; the `export_cpp_apis` gate left these as noop
+    // stubs in the `.Exe` runtime build, breaking FileSink stream completion.
+    if (true) {
         @export(&jsc.toJSHostFn(onResolveStream), .{ .name = export_prefix ++ "__onResolveStream" });
         @export(&jsc.toJSHostFn(onRejectStream), .{ .name = export_prefix ++ "__onRejectStream" });
     }
