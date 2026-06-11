@@ -3356,7 +3356,12 @@ fn printErrorInstance(
         const display_line = source.line + 1;
 
         const int_size = std.fmt.count("{d}", .{display_line});
-        const pad = max_line_number_pad - int_size;
+        // Saturating subtraction (mirrors Bun's `max_line_number_pad.saturating_sub`
+        // in VirtualMachine.rs): a source-line iterator can yield a line number
+        // with more digits than `max_line + 1` (the max of source_lines_numbers),
+        // which would underflow this unsigned subtraction and panic while printing
+        // the error — crashing the runtime for any throw with that shape.
+        const pad = max_line_number_pad -| int_size;
         last_pad = pad;
         try writer.splatByteAll(' ', pad);
 
@@ -3452,7 +3457,9 @@ fn printErrorInstance(
             defer did_print_name = true;
             const display_line = source.line + 1;
             const int_size = std.fmt.count("{d}", .{display_line});
-            const pad = max_line_number_pad - int_size;
+            // Saturating subtraction — see the matching note above (Bun's
+            // VirtualMachine.rs uses `saturating_sub` here too).
+            const pad = max_line_number_pad -| int_size;
             try writer.splatByteAll(' ', pad);
             defer source.text.deinit();
             const text = source.text.slice();
