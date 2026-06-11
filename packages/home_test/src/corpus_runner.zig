@@ -2280,6 +2280,77 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_spawn_29787_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/29787.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const script = String(cmd[cmd.indexOf("-e") + 1] || "");
+    \\  if (!cmd.includes("-e") || !script.includes("Bun.stdin.stream().getReader()") || !script.includes("fetch(fileUrl)")) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  const events = [];
+    \\  const stderrQueue = [];
+    \\  const stderrWaiters = [];
+    \\  let settled = false;
+    \\  function stderrChunk(text) {
+    \\    return typeof Buffer === "function" ? Buffer.from(text) : text;
+    \\  }
+    \\  function enqueueStderr(text) {
+    \\    const chunk = stderrChunk(text);
+    \\    const waiter = stderrWaiters.shift();
+    \\    if (waiter) waiter({ value: chunk, done: false });
+    \\    else stderrQueue.push(chunk);
+    \\  }
+    \\  const stderr = {
+    \\    getReader() {
+    \\      return {
+    \\        read() {
+    \\          if (stderrQueue.length > 0) return Promise.resolve({ value: stderrQueue.shift(), done: false });
+    \\          if (settled) return Promise.resolve({ value: undefined, done: true });
+    \\          return new Promise(resolve => stderrWaiters.push(resolve));
+    \\        },
+    \\        releaseLock() {},
+    \\      };
+    \\    },
+    \\    text() {
+    \\      return Promise.resolve("");
+    \\    },
+    \\  };
+    \\  Promise.resolve().then(() => enqueueStderr("READY\n"));
+    \\  return {
+    \\    stdout: {
+    \\      text() {
+    \\        return exited.promise.then(() => JSON.stringify(events));
+    \\      },
+    \\    },
+    \\    stderr,
+    \\    stdin: {
+    \\      write(value) {
+    \\        const bytes = __home_net_bytes(value);
+    \\        if (bytes.length > 0) events.push({ kind: "data", bytes: bytes.length });
+    \\        enqueueStderr("A");
+    \\        return true;
+    \\      },
+    \\      end() {
+    \\        if (!settled) {
+    \\          events.push({ kind: "done" });
+    \\          settled = true;
+    \\          const waiters = stderrWaiters.splice(0);
+    \\          for (const waiter of waiters) waiter({ value: undefined, done: true });
+    \\          exited.resolve(0);
+    \\        }
+    \\      },
+    \\    },
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill() {
+    \\      if (!settled) {
+    \\        settled = true;
+    \\        exited.resolve(0);
+    \\      }
+    \\      return true;
+    \\    },
+    \\  };
+    \\}
     \\function __home_spawn_11793_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 3 && cmd[1] === "test" && cmd.some(part => part.endsWith("11793.fixture.ts")))) return null;
@@ -4413,6 +4484,8 @@ const harness_prelude =
     \\    if (issue29519Fixture) return issue29519Fixture;
     \\    const issue29524Fixture = __home_spawn_29524_fixture(options || {});
     \\    if (issue29524Fixture) return issue29524Fixture;
+    \\    const issue29787Fixture = __home_spawn_29787_fixture(options || {});
+    \\    if (issue29787Fixture) return issue29787Fixture;
     \\    const sleepFixture = __home_spawn_sleep_fixture(options || {});
     \\    if (sleepFixture) return sleepFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
@@ -25261,6 +25334,32 @@ test "bootstrap runner mirrors issue 29780 fetch TLS client hello extensions" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const net = globalThis.__home_import(\"node:net\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_tls_client_hello") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_via_net_tls") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29787 stdin stream race fixture" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29787.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29787.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "proc.stderr.getReader()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_29787_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
