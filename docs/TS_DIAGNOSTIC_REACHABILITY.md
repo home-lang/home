@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 503 |
-| active reachable (parity targets) | 38 |
+| catalog-only total | 498 |
+| active reachable (parity targets) | 33 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -26,7 +26,7 @@ diverge from the reference compiler.
 | Range | Count |
 | --- | ---: |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
-| 1xxx — parser / syntactic + program file-inclusion | 16 |
+| 1xxx — parser / syntactic + program file-inclusion | 11 |
 | other | 5 |
 
 ### 9xxxx — editor code-fix / refactor (language service) (17)
@@ -49,19 +49,14 @@ diverge from the reference compiler.
 - TS95064 `Add_all_missing_imports_95064`
 - TS95174 `Use_0_95174`
 
-### 1xxx — parser / syntactic + program file-inclusion (16)
+### 1xxx — parser / syntactic + program file-inclusion (11)
 
 - TS1395 `Imported_via_0_from_file_1_to_import_importHelpers_as_specified_in_compilerOptions_1395`
 - TS1396 `Imported_via_0_from_file_1_with_packageId_2_to_import_importHelpers_as_specified_in_compilerOptions_1396`
 - TS1397 `Imported_via_0_from_file_1_to_import_jsx_and_jsxs_factory_functions_1397`
 - TS1398 `Imported_via_0_from_file_1_with_packageId_2_to_import_jsx_and_jsxs_factory_functions_1398`
-- TS1417 `Entry_point_of_type_library_0_specified_in_compilerOptions_1417`
-- TS1418 `Entry_point_of_type_library_0_specified_in_compilerOptions_with_packageId_1_1418`
-- TS1419 `File_is_entry_point_of_type_library_specified_here_1419`
 - TS1420 `Entry_point_for_implicit_type_library_0_1420`
 - TS1421 `Entry_point_for_implicit_type_library_0_with_packageId_1_1421`
-- TS1422 `Library_0_specified_in_compilerOptions_1422`
-- TS1423 `File_is_library_specified_here_1423`
 - TS1424 `Default_library_1424`
 - TS1425 `Default_library_for_target_0_1425`
 - TS1426 `File_is_default_library_for_target_specified_here_1426`

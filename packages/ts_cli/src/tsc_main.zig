@@ -1498,6 +1498,18 @@ fn printExplainFiles(
     // TS1406 — related-info anchor for the `lib` directive.
     const code_file_included_via_library_reference_here: u32 = 1406;
     _ = code_file_included_via_library_reference_here;
+    // TS1417/TS1418/TS1419 — explicit compilerOptions.types entries.
+    const code_entry_point_type_library: u32 = 1417;
+    const code_entry_point_type_library_package: u32 = 1418;
+    const code_file_is_entry_point_type_library_here: u32 = 1419;
+    _ = code_entry_point_type_library;
+    _ = code_entry_point_type_library_package;
+    _ = code_file_is_entry_point_type_library_here;
+    // TS1422/TS1423 — explicit compilerOptions.lib entries.
+    const code_library_in_compiler_options: u32 = 1422;
+    const code_file_is_library_specified_here: u32 = 1423;
+    _ = code_library_in_compiler_options;
+    _ = code_file_is_library_specified_here;
     // TS1458–TS1461 explain how Node16/NodeNext implied module format was
     // derived from the nearest package.json, mirroring tsgo's
     // explainRedirectAndImpliedFormat helper.
@@ -1574,6 +1586,35 @@ fn printExplainFiles(
                             gpa,
                             "  Library referenced via '{s}' from file '{s}'",
                             .{ ir.specifier_text, referencing_path },
+                        ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
+                        continue;
+                    },
+                    .compiler_type_reference => {
+                        const msg = if (ir.package_id.len != 0)
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Entry point of type library '{s}' specified in compilerOptions with packageId '{s}'",
+                                .{ ir.specifier_text, ir.package_id },
+                            ) catch return
+                        else
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Entry point of type library '{s}' specified in compilerOptions",
+                                .{ir.specifier_text},
+                            ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
+                        continue;
+                    },
+                    .compiler_lib_reference => {
+                        const msg = std.fmt.allocPrint(
+                            gpa,
+                            "  Library '{s}' specified in compilerOptions",
+                            .{ir.specifier_text},
                         ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});

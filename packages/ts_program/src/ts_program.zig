@@ -20,6 +20,7 @@ const std = @import("std");
 const ts_driver = @import("ts_driver");
 const ts_resolver = @import("ts_resolver");
 const ts_cache = @import("ts_cache");
+const tsconfig_mod = @import("tsconfig");
 const hir_mod_ns = @import("hir");
 const binder = @import("binder");
 
@@ -31,9 +32,17 @@ pub const FileId = u32;
 /// by the CLI layer (which knows how the path was specified); the
 /// program records the transitive reason here while building the edge
 /// graph, so `--explainFiles` can render TS1393/TS1400/TS1402/TS1405
-/// and diagnostics can attach the corresponding related-information
-/// anchor (TS1399/TS1401/TS1404/TS1406).
-pub const IncludeKind = enum { root, import, reference_file, type_reference, lib_reference };
+/// plus compilerOptions type/lib entries, and diagnostics can attach
+/// the corresponding related-information anchors.
+pub const IncludeKind = enum {
+    root,
+    import,
+    reference_file,
+    type_reference,
+    lib_reference,
+    compiler_type_reference,
+    compiler_lib_reference,
+};
 
 pub const IncludeReason = struct {
     kind: IncludeKind = .root,
@@ -57,11 +66,15 @@ pub const IncludeReason = struct {
         const code_file_included_via_reference_here: u32 = 1401;
         const code_file_included_via_type_reference_here: u32 = 1404;
         const code_file_included_via_lib_reference_here: u32 = 1406;
+        const code_file_is_entry_point_of_type_library_specified_here: u32 = 1419;
+        const code_file_is_library_specified_here: u32 = 1423;
         return switch (self.kind) {
             .import => code_file_included_via_import_here,
             .reference_file => code_file_included_via_reference_here,
             .type_reference => code_file_included_via_type_reference_here,
             .lib_reference => code_file_included_via_lib_reference_here,
+            .compiler_type_reference => code_file_is_entry_point_of_type_library_specified_here,
+            .compiler_lib_reference => code_file_is_library_specified_here,
             .root => null,
         };
     }
@@ -72,6 +85,8 @@ pub const IncludeReason = struct {
             .reference_file => "File is included via reference here.",
             .type_reference => "File is included via type library reference here.",
             .lib_reference => "File is included via library reference here.",
+            .compiler_type_reference => "File is entry point of type library specified here.",
+            .compiler_lib_reference => "File is library specified here.",
             .root => null,
         };
     }
@@ -1457,6 +1472,7 @@ pub const Program = struct {
     pub fn loadImportClosure(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
         const hir_mod = @import("hir");
         var added: usize = 0;
+        added += try self.loadCompilerOptionIncludes(options);
         while (true) {
             try self.compileAll(options);
             var new_in_round: usize = 0;
@@ -1547,6 +1563,55 @@ pub const Program = struct {
             if (new_in_round == 0) break;
         }
         return added;
+    }
+
+    fn loadCompilerOptionIncludes(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
+        const cfg = options.pub_tsconfig orelse return 0;
+        var added: usize = 0;
+        const containing_file = compilerOptionContainingFile(cfg, self.files.items);
+        if (cfg.compiler_options.types) |types| {
+            for (types) |type_name| {
+                if (type_name.len == 0) continue;
+                const res = self.resolver.resolveTypeReferenceDirective(type_name, containing_file) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => continue,
+                };
+                const target_id = try self.addResolvedIncludeFile(res.path);
+                if (target_id == null) continue;
+                try self.recordReferenceIncludeReason(target_id.?, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
+                added += 1;
+            }
+        }
+        if (cfg.compiler_options.lib) |libs| {
+            for (libs) |lib_name| {
+                if (lib_name.len == 0) continue;
+                const candidate = self.resolveLibReferencePath(containing_file, lib_name) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                } orelse continue;
+                defer self.gpa.free(candidate);
+                const target_id = try self.addResolvedIncludeFile(candidate);
+                if (target_id == null) continue;
+                try self.recordReferenceIncludeReason(target_id.?, .compiler_lib_reference, 0, lib_name, "", 0);
+                added += 1;
+            }
+        }
+        return added;
+    }
+
+    fn compilerOptionContainingFile(cfg: *const tsconfig_mod.TsConfig, files: []const *File) []const u8 {
+        if (cfg.file_path.len != 0) return cfg.file_path;
+        if (files.len != 0) return files[0].path;
+        return "";
+    }
+
+    fn addResolvedIncludeFile(self: *Program, path: []const u8) ProgramError!?FileId {
+        if (self.by_path.get(path) != null) return null;
+        const src = self.resolver.fs.readFile(self.gpa, path) catch return null;
+        defer self.gpa.free(src);
+        return self.add(path, src) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
     }
 
     /// Resolve a triple-slash reference path (a literal file path) to a
@@ -2407,6 +2472,72 @@ test "Program: node_modules import records package-id include reason (TS1394)" {
     try T.expectEqualStrings("\"dep\"", dep.include_reason.?.specifier_text);
     try T.expectEqualStrings("dep/index.d.ts@1.2.3", dep.include_reason.?.package_id);
     try T.expectEqual(@as(?u32, 1399), dep.include_reason.?.relatedDiagnosticCode());
+}
+
+test "Program: loadImportClosure follows compilerOptions.types (TS1417/TS1418 reason)" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"types":["node"]}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/node_modules/@types/node/package.json",
+        \\{"name":"@types/node","version":"2.0.0","types":"index.d.ts"}
+    );
+    try vfs.addFile("/proj/node_modules/@types/node/index.d.ts", "declare const process: unknown;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 1), added);
+
+    const type_id = p.lookupPath("/proj/node_modules/@types/node/index.d.ts") orelse return error.TestUnexpectedResult;
+    const type_file = p.fileById(type_id);
+    try T.expect(type_file.include_reason != null);
+    try T.expectEqual(IncludeKind.compiler_type_reference, type_file.include_reason.?.kind);
+    try T.expectEqualStrings("node", type_file.include_reason.?.specifier_text);
+    try T.expectEqualStrings("@types/node/index.d.ts@2.0.0", type_file.include_reason.?.package_id);
+    try T.expectEqual(@as(?u32, 1419), type_file.include_reason.?.relatedDiagnosticCode());
+    try T.expectEqualStrings("File is entry point of type library specified here.", type_file.include_reason.?.relatedDiagnosticMessage().?);
+}
+
+test "Program: loadImportClosure follows compilerOptions.lib (TS1422 reason)" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"lib":["es2020"]}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/lib.es2020.d.ts", "interface Promise<T> {}\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 1), added);
+
+    const lib_id = p.lookupPath("/proj/lib.es2020.d.ts") orelse return error.TestUnexpectedResult;
+    const lib = p.fileById(lib_id);
+    try T.expect(lib.include_reason != null);
+    try T.expectEqual(IncludeKind.compiler_lib_reference, lib.include_reason.?.kind);
+    try T.expectEqualStrings("es2020", lib.include_reason.?.specifier_text);
+    try T.expectEqual(@as(?u32, 1423), lib.include_reason.?.relatedDiagnosticCode());
+    try T.expectEqualStrings("File is library specified here.", lib.include_reason.?.relatedDiagnosticMessage().?);
 }
 
 test "Program: loadImportClosure follows /// <reference path> (TS1400 reason)" {

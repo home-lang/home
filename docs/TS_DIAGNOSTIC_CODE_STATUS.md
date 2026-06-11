@@ -29,10 +29,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1571 |
+| emitted | 1576 |
 | declared | 4 |
 | tested-only | 1 |
-| catalog-only | 503 |
+| catalog-only | 498 |
 | total upstream codes | 2079 |
 
 ## Codes
@@ -362,17 +362,17 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1396 | message | catalog-only |  | Imported_via_0_from_file_1_with_packageId_2_to_import_importHelpers_as_specified_in_compilerOptions_1396 |
 | TS1397 | message | catalog-only |  | Imported_via_0_from_file_1_to_import_jsx_and_jsxs_factory_functions_1397 |
 | TS1398 | message | catalog-only |  | Imported_via_0_from_file_1_with_packageId_2_to_import_jsx_and_jsxs_factory_functions_1398 |
-| TS1399 | message | emitted | packages/ts_program/src/ts_program.zig:56 | File_is_included_via_import_here_1399 |
+| TS1399 | message | emitted | packages/ts_program/src/ts_program.zig:65 | File_is_included_via_import_here_1399 |
 | TS1400 | message | emitted | packages/ts_cli/src/tsc_main.zig:1485 | Referenced_via_0_from_file_1_1400 |
-| TS1401 | message | emitted | packages/ts_program/src/ts_program.zig:57 | File_is_included_via_reference_here_1401 |
+| TS1401 | message | emitted | packages/ts_program/src/ts_program.zig:66 | File_is_included_via_reference_here_1401 |
 | TS1402 | message | emitted | packages/ts_cli/src/tsc_main.zig:1488 | Type_library_referenced_via_0_from_file_1_1402 |
 | TS1403 | message | emitted | packages/ts_cli/src/tsc_main.zig:1489 | Type_library_referenced_via_0_from_file_1_with_packageId_2_1403 |
-| TS1404 | message | emitted | packages/ts_program/src/ts_program.zig:58<br>packages/ts_cli/src/tsc_main.zig:1493 | File_is_included_via_type_library_reference_here_1404 |
+| TS1404 | message | emitted | packages/ts_program/src/ts_program.zig:67<br>packages/ts_cli/src/tsc_main.zig:1493 | File_is_included_via_type_library_reference_here_1404 |
 | TS1405 | message | emitted | packages/ts_cli/src/tsc_main.zig:1496 | Library_referenced_via_0_from_file_1_1405 |
-| TS1406 | message | emitted | packages/ts_program/src/ts_program.zig:59<br>packages/ts_cli/src/tsc_main.zig:1499 | File_is_included_via_library_reference_here_1406 |
-| TS1407 | message | emitted | packages/ts_cli/src/tsc_main.zig:2612<br>packages/ts_cli/src/tsc_main.zig:1269<br>packages/ts_cli/src/tsc_main.zig:1475 | Matched_by_include_pattern_0_in_1_1407 |
+| TS1406 | message | emitted | packages/ts_program/src/ts_program.zig:68<br>packages/ts_cli/src/tsc_main.zig:1499 | File_is_included_via_library_reference_here_1406 |
+| TS1407 | message | emitted | packages/ts_cli/src/tsc_main.zig:2653<br>packages/ts_cli/src/tsc_main.zig:1269<br>packages/ts_cli/src/tsc_main.zig:1475 | Matched_by_include_pattern_0_in_1_1407 |
 | TS1408 | message | emitted | packages/ts_cli/src/tsc_main.zig:1229 | File_is_matched_by_include_pattern_specified_here_1408 |
-| TS1409 | message | emitted | packages/ts_cli/src/tsc_main.zig:2608<br>packages/ts_cli/src/tsc_main.zig:1270<br>packages/ts_cli/src/tsc_main.zig:1473 | Part_of_files_list_in_tsconfig_json_1409 |
+| TS1409 | message | emitted | packages/ts_cli/src/tsc_main.zig:2649<br>packages/ts_cli/src/tsc_main.zig:1270<br>packages/ts_cli/src/tsc_main.zig:1473 | Part_of_files_list_in_tsconfig_json_1409 |
 | TS1410 | message | emitted | packages/ts_cli/src/tsc_main.zig:1230 | File_is_matched_by_files_list_specified_here_1410 |
 | TS1411 | message | catalog-only |  | Output_from_referenced_project_0_included_because_1_specified_1411 |
 | TS1412 | message | catalog-only |  | Output_from_referenced_project_0_included_because_module_is_specified_as_none_1412 |
@@ -380,17 +380,17 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1414 | message | catalog-only |  | Source_from_referenced_project_0_included_because_1_specified_1414 |
 | TS1415 | message | catalog-only |  | Source_from_referenced_project_0_included_because_module_is_specified_as_none_1415 |
 | TS1416 | message | catalog-only |  | File_is_source_from_referenced_project_specified_here_1416 |
-| TS1417 | message | catalog-only |  | Entry_point_of_type_library_0_specified_in_compilerOptions_1417 |
-| TS1418 | message | catalog-only |  | Entry_point_of_type_library_0_specified_in_compilerOptions_with_packageId_1_1418 |
-| TS1419 | message | catalog-only |  | File_is_entry_point_of_type_library_specified_here_1419 |
+| TS1417 | message | emitted | packages/ts_cli/src/tsc_main.zig:1502 | Entry_point_of_type_library_0_specified_in_compilerOptions_1417 |
+| TS1418 | message | emitted | packages/ts_cli/src/tsc_main.zig:1503 | Entry_point_of_type_library_0_specified_in_compilerOptions_with_packageId_1_1418 |
+| TS1419 | message | emitted | packages/ts_program/src/ts_program.zig:69<br>packages/ts_cli/src/tsc_main.zig:1504 | File_is_entry_point_of_type_library_specified_here_1419 |
 | TS1420 | message | catalog-only |  | Entry_point_for_implicit_type_library_0_1420 |
 | TS1421 | message | catalog-only |  | Entry_point_for_implicit_type_library_0_with_packageId_1_1421 |
-| TS1422 | message | catalog-only |  | Library_0_specified_in_compilerOptions_1422 |
-| TS1423 | message | catalog-only |  | File_is_library_specified_here_1423 |
+| TS1422 | message | emitted | packages/ts_cli/src/tsc_main.zig:1509 | Library_0_specified_in_compilerOptions_1422 |
+| TS1423 | message | emitted | packages/ts_program/src/ts_program.zig:70<br>packages/ts_cli/src/tsc_main.zig:1510 | File_is_library_specified_here_1423 |
 | TS1424 | message | catalog-only |  | Default_library_1424 |
 | TS1425 | message | catalog-only |  | Default_library_for_target_0_1425 |
 | TS1426 | message | catalog-only |  | File_is_default_library_for_target_specified_here_1426 |
-| TS1427 | message | emitted | packages/ts_cli/src/tsc_main.zig:2604<br>packages/ts_cli/src/tsc_main.zig:1472 | Root_file_specified_for_compilation_1427 |
+| TS1427 | message | emitted | packages/ts_cli/src/tsc_main.zig:2645<br>packages/ts_cli/src/tsc_main.zig:1472 | Root_file_specified_for_compilation_1427 |
 | TS1428 | message | catalog-only |  | File_is_output_of_project_reference_source_0_1428 |
 | TS1429 | message | catalog-only |  | File_redirects_to_file_0_1429 |
 | TS1430 | message | emitted | packages/ts_cli/src/tsc_main.zig:1268 | The_file_is_in_the_program_because_Colon_1430 |
@@ -415,11 +415,11 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1454 | err | emitted | packages/ts_checker/src/check.zig:36876<br>packages/ts_checker/src/check.zig:132624 | resolution_mode_can_only_be_set_for_type_only_imports_1454 |
 | TS1455 | err | emitted | packages/ts_parser/src/ts_parser.zig:11899 | resolution_mode_is_the_only_valid_key_for_type_import_assertions_1455 |
 | TS1456 | err | emitted | packages/ts_parser/src/ts_parser.zig:11889 | Type_import_assertions_should_have_exactly_one_key_resolution_mode_with_value_import_or_require_1456 |
-| TS1457 | message | emitted | packages/ts_cli/src/tsc_main.zig:2610<br>packages/ts_cli/src/tsc_main.zig:1474 | Matched_by_default_include_pattern_Asterisk_Asterisk_Slash_Asterisk_1457 |
-| TS1458 | message | emitted | packages/ts_cli/src/tsc_main.zig:1419<br>packages/ts_cli/src/tsc_main.zig:1504 | File_is_ECMAScript_module_because_0_has_field_type_with_value_module_1458 |
-| TS1459 | message | emitted | packages/ts_cli/src/tsc_main.zig:1427<br>packages/ts_cli/src/tsc_main.zig:1505 | File_is_CommonJS_module_because_0_has_field_type_whose_value_is_not_module_1459 |
-| TS1460 | message | emitted | packages/ts_cli/src/tsc_main.zig:1435<br>packages/ts_cli/src/tsc_main.zig:1506 | File_is_CommonJS_module_because_0_does_not_have_field_type_1460 |
-| TS1461 | message | emitted | packages/ts_cli/src/tsc_main.zig:1411<br>packages/ts_cli/src/tsc_main.zig:1507 | File_is_CommonJS_module_because_package_json_was_not_found_1461 |
+| TS1457 | message | emitted | packages/ts_cli/src/tsc_main.zig:2651<br>packages/ts_cli/src/tsc_main.zig:1474 | Matched_by_default_include_pattern_Asterisk_Asterisk_Slash_Asterisk_1457 |
+| TS1458 | message | emitted | packages/ts_cli/src/tsc_main.zig:1419<br>packages/ts_cli/src/tsc_main.zig:1516 | File_is_ECMAScript_module_because_0_has_field_type_with_value_module_1458 |
+| TS1459 | message | emitted | packages/ts_cli/src/tsc_main.zig:1427<br>packages/ts_cli/src/tsc_main.zig:1517 | File_is_CommonJS_module_because_0_has_field_type_whose_value_is_not_module_1459 |
+| TS1460 | message | emitted | packages/ts_cli/src/tsc_main.zig:1435<br>packages/ts_cli/src/tsc_main.zig:1518 | File_is_CommonJS_module_because_0_does_not_have_field_type_1460 |
+| TS1461 | message | emitted | packages/ts_cli/src/tsc_main.zig:1411<br>packages/ts_cli/src/tsc_main.zig:1519 | File_is_CommonJS_module_because_package_json_was_not_found_1461 |
 | TS1463 | err | emitted | packages/ts_checker/src/check.zig:36842<br>packages/ts_checker/src/check.zig:132580<br>packages/ts_checker/src/check.zig:132601 | resolution_mode_is_the_only_valid_key_for_type_import_attributes_1463 |
 | TS1464 | err | emitted | packages/ts_checker/src/check.zig:36833<br>packages/ts_checker/src/check.zig:132581<br>packages/ts_checker/src/check.zig:132602 | Type_import_attributes_should_have_exactly_one_key_resolution_mode_with_value_import_or_require_1464 |
 | TS1470 | err | emitted | packages/ts_checker/src/check.zig:65136<br>packages/ts_checker/src/check.zig:102917<br>packages/ts_checker/src/check.zig:102933 | The_import_meta_meta_property_is_not_allowed_in_files_which_will_build_into_CommonJS_output_1470 |
@@ -546,7 +546,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2339 | err | emitted | packages/ts_checker/src/check.zig:17830<br>packages/ts_checker/src/check.zig:18003<br>packages/ts_checker/src/check.zig:18168 | Property_0_does_not_exist_on_type_1_2339 |
 | TS2340 | err | emitted | packages/ts_checker/src/check.zig:67823 | Only_public_and_protected_methods_of_the_base_class_are_accessible_via_the_super_keyword_2340 |
 | TS2341 | err | emitted | packages/ts_checker/src/check.zig:30740<br>packages/ts_checker/src/check.zig:107325<br>packages/ts_checker/src/check.zig:107350 | Property_0_is_private_and_only_accessible_within_class_1_2341 |
-| TS2343 | err | emitted | packages/ts_driver/src/ts_driver.zig:2081<br>packages/ts_program/src/ts_program.zig:1681 | This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_ve_2343 |
+| TS2343 | err | emitted | packages/ts_driver/src/ts_driver.zig:2081<br>packages/ts_program/src/ts_program.zig:1746 | This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_ve_2343 |
 | TS2344 | err | emitted | packages/ts_checker/src/check.zig:81226<br>packages/ts_checker/src/check.zig:135370<br>packages/ts_checker/src/check.zig:135388 | Type_0_does_not_satisfy_the_constraint_1_2344 |
 | TS2345 | err | emitted | packages/ts_checker/src/check.zig:68811<br>packages/ts_checker/src/check.zig:88680<br>packages/ts_checker/src/check.zig:88743 | Argument_of_type_0_is_not_assignable_to_parameter_of_type_1_2345 |
 | TS2346 | err | emitted | packages/ts_checker/src/check.zig:69038<br>packages/ts_checker/src/check.zig:136121 | Call_target_does_not_contain_any_signatures_2346 |
@@ -1143,7 +1143,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5024 | err | emitted | packages/tsconfig/src/tsconfig.zig:459<br>packages/tsconfig/src/tsconfig.zig:1899 | Compiler_option_0_requires_a_value_of_type_1_5024 |
 | TS5025 | err | emitted | packages/tsconfig/src/tsconfig.zig:517 | Unknown_compiler_option_0_Did_you_mean_1_5025 |
 | TS5033 | err | emitted | packages/ts_cli/src/ts_cli.zig:780 | Could_not_write_file_0_Colon_1_5033 |
-| TS5042 | err | emitted | packages/ts_cli/src/tsc_main.zig:3270 | Option_project_cannot_be_mixed_with_source_files_on_a_command_line_5042 |
+| TS5042 | err | emitted | packages/ts_cli/src/tsc_main.zig:3311 | Option_project_cannot_be_mixed_with_source_files_on_a_command_line_5042 |
 | TS5047 | err | emitted | packages/tsconfig/src/tsconfig.zig:605 | Option_isolatedModules_can_only_be_used_when_either_option_module_is_provided_or_option_target_is_ES_5047 |
 | TS5051 | err | emitted | packages/tsconfig/src/tsconfig.zig:1174 | Option_0_can_only_be_used_when_either_option_inlineSourceMap_or_option_sourceMap_is_provided_5051 |
 | TS5052 | err | emitted | packages/tsconfig/src/tsconfig.zig:1143 | Option_0_cannot_be_specified_without_specifying_option_1_5052 |
@@ -1152,7 +1152,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5055 | err | emitted | packages/ts_cli/src/ts_cli.zig:886<br>packages/ts_cli/src/ts_cli.zig:1960<br>packages/ts_cli/src/ts_cli.zig:1964 | Cannot_write_file_0_because_it_would_overwrite_input_file_5055 |
 | TS5056 | err | emitted | packages/ts_cli/src/ts_cli.zig:899<br>packages/ts_cli/src/ts_cli.zig:1970 | Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056 |
 | TS5057 | err | catalog-only |  | Cannot_find_a_tsconfig_json_file_at_the_specified_directory_Colon_0_5057 |
-| TS5058 | err | emitted | packages/ts_cli/src/tsc_main.zig:3281 | The_specified_path_does_not_exist_Colon_0_5058 |
+| TS5058 | err | emitted | packages/ts_cli/src/tsc_main.zig:3322 | The_specified_path_does_not_exist_Colon_0_5058 |
 | TS5059 | err | emitted | packages/tsconfig/src/tsconfig.zig:1560 | Invalid_value_for_reactNamespace_0_is_not_a_valid_identifier_5059 |
 | TS5061 | err | emitted | packages/ts_checker/src/check.zig:8226<br>packages/tsconfig/src/tsconfig.zig:1231<br>packages/ts_checker/src/check.zig:101689 | Pattern_0_can_have_at_most_one_Asterisk_character_5061 |
 | TS5062 | err | emitted | packages/tsconfig/src/tsconfig.zig:1246 | Substitution_0_in_pattern_1_can_have_at_most_one_Asterisk_character_5062 |
@@ -1174,7 +1174,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5078 | err | catalog-only |  | Unknown_watch_option_0_5078 |
 | TS5079 | err | catalog-only |  | Unknown_watch_option_0_Did_you_mean_1_5079 |
 | TS5080 | err | emitted | packages/ts_cli/src/ts_cli.zig:671 | Watch_option_0_requires_a_value_of_type_1_5080 |
-| TS5081 | err | emitted | packages/ts_cli/src/tsc_main.zig:3293 | Cannot_find_a_tsconfig_json_file_at_the_current_directory_Colon_0_5081 |
+| TS5081 | err | emitted | packages/ts_cli/src/tsc_main.zig:3334 | Cannot_find_a_tsconfig_json_file_at_the_current_directory_Colon_0_5081 |
 | TS5082 | err | emitted | packages/ts_checker/src/check.zig:96273<br>packages/ts_checker/src/check.zig:113957<br>packages/ts_checker/src/check.zig:124597 | _0_could_be_instantiated_with_an_arbitrary_type_which_could_be_unrelated_to_1_5082 |
 | TS5083 | err | emitted | packages/ts_cli/src/ts_cli.zig:791 | Cannot_read_file_0_5083 |
 | TS5085 | err | emitted | packages/ts_parser/src/ts_parser.zig:10366 | A_tuple_member_cannot_be_both_optional_and_rest_5085 |
@@ -1185,7 +1185,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5090 | err | emitted | packages/tsconfig/src/tsconfig.zig:1273 | Non_relative_paths_are_not_allowed_when_baseUrl_is_not_set_Did_you_forget_a_leading_Slash_5090 |
 | TS5091 | err | emitted | packages/tsconfig/src/tsconfig.zig:1476 | Option_preserveConstEnums_cannot_be_disabled_when_0_is_enabled_5091 |
 | TS5092 | err | emitted | packages/tsconfig/src/tsconfig.zig:429 | The_root_value_of_a_0_file_must_be_an_object_5092 |
-| TS5093 | err | emitted | packages/ts_cli/src/tsc_main.zig:2120 | Compiler_option_0_may_only_be_used_with_build_5093 |
+| TS5093 | err | emitted | packages/ts_cli/src/tsc_main.zig:2161 | Compiler_option_0_may_only_be_used_with_build_5093 |
 | TS5094 | err | emitted | packages/ts_cli/src/ts_cli.zig:1100 | Compiler_option_0_may_not_be_used_with_build_5094 |
 | TS5095 | err | emitted | packages/tsconfig/src/tsconfig.zig:1399 | Option_0_can_only_be_used_when_module_is_set_to_preserve_commonjs_or_es2015_or_later_5095 |
 | TS5096 | err | emitted | packages/tsconfig/src/tsconfig.zig:615 | Option_allowImportingTsExtensions_can_only_be_used_when_one_of_noEmit_emitDeclarationOnly_or_rewrite_5096 |
@@ -1226,8 +1226,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6027 | message | catalog-only |  | Options_Colon_6027 |
 | TS6029 | message | emitted | packages/ts_cli/src/ts_cli.zig:428 | Version_0_6029 |
 | TS6030 | message | catalog-only |  | Insert_command_line_options_and_files_from_a_file_6030 |
-| TS6031 | message | emitted | packages/ts_cli/src/tsc_main.zig:2546 | Starting_compilation_in_watch_mode_6031 |
-| TS6032 | message | emitted | packages/ts_cli/src/tsc_main.zig:2900 | File_change_detected_Starting_incremental_compilation_6032 |
+| TS6031 | message | emitted | packages/ts_cli/src/tsc_main.zig:2587 | Starting_compilation_in_watch_mode_6031 |
+| TS6032 | message | emitted | packages/ts_cli/src/tsc_main.zig:2941 | File_change_detected_Starting_incremental_compilation_6032 |
 | TS6034 | message | catalog-only |  | KIND_6034 |
 | TS6035 | message | catalog-only |  | FILE_6035 |
 | TS6036 | message | catalog-only |  | VERSION_6036 |
@@ -1235,7 +1235,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6038 | message | catalog-only |  | DIRECTORY_6038 |
 | TS6039 | message | catalog-only |  | STRATEGY_6039 |
 | TS6040 | message | catalog-only |  | FILE_OR_DIRECTORY_6040 |
-| TS6041 | message | emitted | packages/ts_cli/src/tsc_main.zig:3071 | Errors_Files_6041 |
+| TS6041 | message | emitted | packages/ts_cli/src/tsc_main.zig:3112 | Errors_Files_6041 |
 | TS6043 | message | catalog-only |  | Generates_corresponding_map_file_6043 |
 | TS6044 | err | emitted | packages/ts_cli/src/ts_cli.zig:660 | Compiler_option_0_expects_an_argument_6044 |
 | TS6045 | err | emitted | packages/ts_cli/src/ts_cli.zig:798 | Unterminated_quoted_string_in_response_file_0_6045 |
@@ -1245,7 +1245,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6051 | err | catalog-only |  | Corrupted_locale_file_0_6051 |
 | TS6052 | message | catalog-only |  | Raise_error_on_expressions_and_declarations_with_an_implied_any_type_6052 |
 | TS6053 | err | emitted | packages/ts_driver/src/ts_driver.zig:699<br>packages/ts_driver/src/ts_driver.zig:4519<br>packages/ts_driver/src/ts_driver.zig:4699 | File_0_not_found_6053 |
-| TS6054 | err | emitted | packages/ts_cli/src/tsc_main.zig:3375 | File_0_has_an_unsupported_extension_The_only_supported_extensions_are_1_6054 |
+| TS6054 | err | emitted | packages/ts_cli/src/tsc_main.zig:3416 | File_0_has_an_unsupported_extension_The_only_supported_extensions_are_1_6054 |
 | TS6055 | message | catalog-only |  | Suppress_noImplicitAny_errors_for_indexing_objects_lacking_index_signatures_6055 |
 | TS6056 | message | catalog-only |  | Do_not_emit_declarations_for_code_that_has_an_internal_annotation_6056 |
 | TS6058 | message | catalog-only |  | Specify_the_root_directory_of_input_files_Use_to_control_the_output_directory_structure_with_outDir_6058 |
@@ -1256,7 +1256,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6065 | message | catalog-only |  | Enables_experimental_support_for_ES7_decorators_6065 |
 | TS6066 | message | catalog-only |  | Enables_experimental_support_for_emitting_type_metadata_for_decorators_6066 |
 | TS6070 | message | emitted | packages/ts_cli/src/options_table.zig:61 | Initializes_a_TypeScript_project_and_creates_a_tsconfig_json_file_6070 |
-| TS6071 | message | emitted | packages/ts_cli/src/tsc_main.zig:2216 | Successfully_created_a_tsconfig_json_file_6071 |
+| TS6071 | message | emitted | packages/ts_cli/src/tsc_main.zig:2257 | Successfully_created_a_tsconfig_json_file_6071 |
 | TS6072 | message | catalog-only |  | Suppress_excess_property_checks_for_object_literals_6072 |
 | TS6073 | message | catalog-only |  | Stylize_errors_and_messages_using_color_and_context_experimental_6073 |
 | TS6074 | message | catalog-only |  | Do_not_report_errors_on_unused_labels_6074 |
@@ -1379,8 +1379,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6213 | message | emitted | packages/ts_checker/src/check.zig:59576<br>packages/ts_checker/src/check.zig:143226<br>packages/ts_checker/src/check.zig:143270 | Did_you_mean_to_use_new_with_this_expression_6213 |
 | TS6214 | message | catalog-only |  | Enable_strict_bind_call_and_apply_methods_on_functions_6214 |
 | TS6215 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:353<br>packages/ts_resolver/src/ts_resolver.zig:354 | Using_compiler_options_of_project_reference_redirect_0_6215 |
-| TS6216 | message | emitted | packages/ts_cli/src/tsc_main.zig:2587 | Found_1_error_6216 |
-| TS6217 | message | emitted | packages/ts_cli/src/tsc_main.zig:2596 | Found_0_errors_6217 |
+| TS6216 | message | emitted | packages/ts_cli/src/tsc_main.zig:2628 | Found_1_error_6216 |
+| TS6217 | message | emitted | packages/ts_cli/src/tsc_main.zig:2637 | Found_0_errors_6217 |
 | TS6218 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:457<br>packages/ts_resolver/src/ts_resolver.zig:4301 | Module_name_0_was_successfully_resolved_to_1_with_Package_ID_2_6218 |
 | TS6219 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:429 | Type_reference_directive_0_was_successfully_resolved_to_1_with_Package_ID_2_primary_Colon_3_6219 |
 | TS6220 | message | emitted | packages/ts_resolver/src/ts_resolver.zig:1099<br>packages/ts_resolver/src/ts_resolver.zig:1139 | package_json_had_a_falsy_0_field_6220 |
@@ -1395,7 +1395,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6230 | err | emitted | packages/ts_cli/src/ts_cli.zig:703 | Option_0_can_only_be_specified_in_tsconfig_json_file_or_set_to_false_or_null_on_command_line_6230 |
 | TS6231 | err | emitted | packages/ts_driver/src/ts_driver.zig:679<br>packages/ts_driver/src/ts_driver.zig:4536 | Could_not_resolve_the_path_0_with_the_extensions_Colon_1_6231 |
 | TS6232 | err | emitted | packages/ts_checker/src/check.zig:41924<br>packages/ts_checker/src/check.zig:41939 | Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232 |
-| TS6233 | err | emitted | packages/ts_checker/src/check.zig:41933<br>packages/ts_program/src/ts_program.zig:2573 | This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233 |
+| TS6233 | err | emitted | packages/ts_checker/src/check.zig:41933<br>packages/ts_program/src/ts_program.zig:2704 | This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233 |
 | TS6234 | err | emitted | packages/ts_checker/src/check.zig:59879<br>packages/ts_checker/src/check.zig:143140<br>packages/ts_checker/src/check.zig:143143 | This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234 |
 | TS6235 | message | catalog-only |  | Disable_loading_referenced_projects_6235 |
 | TS6236 | err | emitted | packages/ts_checker/src/check.zig:88991<br>packages/ts_checker/src/check.zig:101092 | Arguments_for_the_rest_parameter_0_were_not_provided_6236 |
@@ -1421,9 +1421,9 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6256 | message | emitted | packages/ts_cli/src/options_table.zig:34<br>packages/ts_cli/src/options_table.zig:38<br>packages/ts_cli/src/options_table.zig:135 | Output_Formatting_6256 |
 | TS6257 | message | emitted | packages/ts_cli/src/options_table.zig:132<br>packages/ts_cli/src/options_table.zig:147 | Completeness_6257 |
 | TS6258 | err | catalog-only |  | _0_should_be_set_inside_the_compilerOptions_object_of_the_config_json_file_6258 |
-| TS6259 | message | emitted | packages/ts_cli/src/tsc_main.zig:2585 | Found_1_error_in_0_6259 |
-| TS6260 | message | emitted | packages/ts_cli/src/tsc_main.zig:2594 | Found_0_errors_in_the_same_file_starting_at_Colon_1_6260 |
-| TS6261 | message | emitted | packages/ts_cli/src/tsc_main.zig:2591 | Found_0_errors_in_1_files_6261 |
+| TS6259 | message | emitted | packages/ts_cli/src/tsc_main.zig:2626 | Found_1_error_in_0_6259 |
+| TS6260 | message | emitted | packages/ts_cli/src/tsc_main.zig:2635 | Found_0_errors_in_the_same_file_starting_at_Colon_1_6260 |
+| TS6261 | message | emitted | packages/ts_cli/src/tsc_main.zig:2632 | Found_0_errors_in_1_files_6261 |
 | TS6262 | message | catalog-only |  | File_name_0_has_a_1_extension_looking_up_2_instead_6262 |
 | TS6263 | err | emitted | packages/ts_checker/src/check.zig:37275<br>packages/ts_checker/src/check.zig:37291<br>packages/ts_checker/src/check.zig:116804 | Module_0_was_resolved_to_1_but_allowArbitraryExtensions_is_not_set_6263 |
 | TS6264 | message | emitted | packages/ts_cli/src/options_table.zig:130 | Enable_importing_files_with_any_extension_provided_a_declaration_file_is_present_6264 |
@@ -1447,34 +1447,34 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6304 | err | emitted | packages/tsconfig/src/tsconfig.zig:744 | Composite_projects_may_not_disable_declaration_emit_6304 |
 | TS6305 | err | emitted | packages/ts_checker/src/check.zig:38037<br>packages/ts_checker/src/check.zig:135004 | Output_file_0_has_not_been_built_from_source_file_1_6305 |
 | TS6306 | err | emitted | packages/ts_cli/src/tsc_main.zig:234 | Referenced_project_0_must_have_setting_composite_Colon_true_6306 |
-| TS6307 | err | emitted | packages/ts_cli/src/tsc_main.zig:1702 | File_0_is_not_listed_within_the_file_list_of_project_1_Projects_must_list_all_files_or_use_an_includ_6307 |
+| TS6307 | err | emitted | packages/ts_cli/src/tsc_main.zig:1743 | File_0_is_not_listed_within_the_file_list_of_project_1_Projects_must_list_all_files_or_use_an_includ_6307 |
 | TS6310 | err | emitted | packages/ts_cli/src/tsc_main.zig:243 | Referenced_project_0_may_not_disable_emit_6310 |
 | TS6350 | message | emitted | packages/ts_cli/src/tsc_main.zig:326<br>packages/ts_cli/src/tsc_main.zig:342 | Project_0_is_out_of_date_because_output_1_is_older_than_input_2_6350 |
 | TS6351 | message | emitted | packages/ts_cli/src/tsc_main.zig:354 | Project_0_is_up_to_date_because_newest_input_1_is_older_than_output_2_6351 |
 | TS6352 | message | emitted | packages/ts_cli/src/tsc_main.zig:321<br>packages/ts_cli/src/tsc_main.zig:338 | Project_0_is_out_of_date_because_output_file_1_does_not_exist_6352 |
 | TS6353 | message | catalog-only |  | Project_0_is_out_of_date_because_its_dependency_1_is_out_of_date_6353 |
 | TS6354 | message | emitted | packages/ts_cli/src/tsc_main.zig:471 | Project_0_is_up_to_date_with_d_ts_files_from_its_dependencies_6354 |
-| TS6355 | message | emitted | packages/ts_cli/src/tsc_main.zig:1964 | Projects_in_this_build_Colon_0_6355 |
+| TS6355 | message | emitted | packages/ts_cli/src/tsc_main.zig:2005 | Projects_in_this_build_Colon_0_6355 |
 | TS6356 | message | emitted | packages/ts_cli/src/tsc_main.zig:1155 | A_non_dry_build_would_delete_the_following_files_Colon_0_6356 |
-| TS6357 | message | emitted | packages/ts_cli/src/tsc_main.zig:1985 | A_non_dry_build_would_build_project_0_6357 |
+| TS6357 | message | emitted | packages/ts_cli/src/tsc_main.zig:2026 | A_non_dry_build_would_build_project_0_6357 |
 | TS6358 | message | emitted | packages/ts_cli/src/tsc_main.zig:479 | Building_project_0_6358 |
 | TS6359 | message | emitted | packages/ts_cli/src/tsc_main.zig:465 | Updating_output_timestamps_of_project_0_6359 |
-| TS6361 | message | emitted | packages/ts_cli/src/tsc_main.zig:1993 | Project_0_is_up_to_date_6361 |
-| TS6362 | message | emitted | packages/ts_cli/src/tsc_main.zig:2030 | Skipping_build_of_project_0_because_its_dependency_1_has_errors_6362 |
-| TS6363 | message | emitted | packages/ts_cli/src/tsc_main.zig:2029 | Project_0_can_t_be_built_because_its_dependency_1_has_errors_6363 |
+| TS6361 | message | emitted | packages/ts_cli/src/tsc_main.zig:2034 | Project_0_is_up_to_date_6361 |
+| TS6362 | message | emitted | packages/ts_cli/src/tsc_main.zig:2071 | Skipping_build_of_project_0_because_its_dependency_1_has_errors_6362 |
+| TS6363 | message | emitted | packages/ts_cli/src/tsc_main.zig:2070 | Project_0_can_t_be_built_because_its_dependency_1_has_errors_6363 |
 | TS6364 | message | emitted | packages/ts_cli/src/options_table.zig:163 | Build_one_or_more_projects_and_their_dependencies_if_out_of_date_6364 |
 | TS6365 | message | emitted | packages/ts_cli/src/options_table.zig:167 | Delete_the_outputs_of_all_projects_6365 |
 | TS6367 | message | emitted | packages/ts_cli/src/options_table.zig:165 | Show_what_would_be_built_or_deleted_if_specified_with_clean_6367 |
-| TS6369 | err | emitted | packages/ts_cli/src/ts_cli.zig:1097<br>packages/ts_cli/src/tsc_main.zig:2128 | Option_build_must_be_the_first_command_line_argument_6369 |
+| TS6369 | err | emitted | packages/ts_cli/src/ts_cli.zig:1097<br>packages/ts_cli/src/tsc_main.zig:2169 | Option_build_must_be_the_first_command_line_argument_6369 |
 | TS6370 | err | emitted | packages/ts_cli/src/ts_cli.zig:1114<br>packages/ts_cli/src/ts_cli.zig:1118 | Options_0_and_1_cannot_be_combined_6370 |
 | TS6371 | message | emitted | packages/ts_cli/src/tsc_main.zig:1068 | Updating_unchanged_output_timestamps_of_project_0_6371 |
-| TS6374 | message | emitted | packages/ts_cli/src/tsc_main.zig:1989 | A_non_dry_build_would_update_timestamps_for_output_of_project_0_6374 |
+| TS6374 | message | emitted | packages/ts_cli/src/tsc_main.zig:2030 | A_non_dry_build_would_update_timestamps_for_output_of_project_0_6374 |
 | TS6377 | err | emitted | packages/ts_cli/src/tsc_main.zig:252 | Cannot_write_file_0_because_it_will_overwrite_tsbuildinfo_file_generated_by_referenced_project_1_6377 |
 | TS6379 | err | emitted | packages/tsconfig/src/tsconfig.zig:758 | Composite_projects_may_not_disable_incremental_compilation_6379 |
 | TS6380 | message | catalog-only |  | Specify_file_to_store_incremental_compilation_information_6380 |
 | TS6381 | message | emitted | packages/ts_cli/src/tsc_main.zig:444 | Project_0_is_out_of_date_because_output_for_it_was_generated_with_version_1_that_differs_with_curren_6381 |
-| TS6382 | message | emitted | packages/ts_cli/src/tsc_main.zig:2026 | Skipping_build_of_project_0_because_its_dependency_1_was_not_built_6382 |
-| TS6383 | message | emitted | packages/ts_cli/src/tsc_main.zig:2025 | Project_0_can_t_be_built_because_its_dependency_1_was_not_built_6383 |
+| TS6382 | message | emitted | packages/ts_cli/src/tsc_main.zig:2067 | Skipping_build_of_project_0_because_its_dependency_1_was_not_built_6382 |
+| TS6383 | message | emitted | packages/ts_cli/src/tsc_main.zig:2066 | Project_0_can_t_be_built_because_its_dependency_1_was_not_built_6383 |
 | TS6384 | message | catalog-only |  | Have_recompiles_in_incremental_and_watch_assume_that_changes_within_a_file_will_only_affect_files_di_6384 |
 | TS6386 | message | catalog-only |  | Performance_timings_for_diagnostics_or_extendedDiagnostics_are_not_available_in_this_session_A_nativ_6386 |
 | TS6388 | message | emitted | packages/ts_cli/src/tsc_main.zig:477 | Project_0_is_being_forcibly_rebuilt_6388 |
@@ -1515,7 +1515,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6501 | message | emitted | packages/ts_checker/src/check.zig:59648<br>packages/ts_checker/src/check.zig:143325 | The_expected_type_comes_from_this_index_signature_6501 |
 | TS6502 | message | emitted | packages/ts_checker/src/check.zig:59668<br>packages/ts_checker/src/check.zig:143345 | The_expected_type_comes_from_the_return_type_of_this_signature_6502 |
 | TS6503 | message | emitted | packages/ts_cli/src/options_table.zig:64 | Print_names_of_files_that_are_part_of_the_compilation_and_then_stop_processing_6503 |
-| TS6504 | err | emitted | packages/ts_cli/src/tsc_main.zig:3363 | File_0_is_a_JavaScript_file_Did_you_mean_to_enable_the_allowJs_option_6504 |
+| TS6504 | err | emitted | packages/ts_cli/src/tsc_main.zig:3404 | File_0_is_a_JavaScript_file_Did_you_mean_to_enable_the_allowJs_option_6504 |
 | TS6505 | message | catalog-only |  | Print_names_of_files_and_the_reason_they_are_part_of_the_compilation_6505 |
 | TS6506 | message | emitted | packages/ts_checker/src/check.zig:9001 | Consider_adding_a_declare_modifier_to_this_class_6506 |
 | TS6600 | message | catalog-only |  | Allow_JavaScript_files_to_be_a_part_of_your_program_Use_the_checkJS_option_to_get_errors_from_these__6600 |
@@ -1814,7 +1814,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS17020 | err | emitted | packages/ts_parser/src/ts_parser.zig:9732<br>packages/ts_parser/src/ts_parser.zig:9744 | _0_at_the_start_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17020 |
 | TS17021 | err | emitted | packages/ts_parser/src/ts_parser.zig:16354<br>packages/ts_parser/src/ts_parser.zig:16649<br>packages/ts_parser/src/ts_parser.zig:22290 | Unicode_escape_sequence_cannot_appear_here_17021 |
 | TS18002 | err | emitted | packages/tsconfig/src/tsconfig.zig:556 | The_files_list_in_config_file_0_is_empty_18002 |
-| TS18003 | err | emitted | packages/ts_cli/src/tsc_main.zig:3307 | No_inputs_were_found_in_config_file_0_Specified_include_paths_were_1_and_exclude_paths_were_2_18003 |
+| TS18003 | err | emitted | packages/ts_cli/src/tsc_main.zig:3348 | No_inputs_were_found_in_config_file_0_Specified_include_paths_were_1_and_exclude_paths_were_2_18003 |
 | TS18004 | err | emitted | packages/ts_checker/src/check.zig:65058<br>packages/ts_checker/src/check.zig:112796<br>packages/ts_checker/src/check.zig:112814 | No_value_exists_in_scope_for_the_shorthand_property_0_Either_declare_one_or_provide_an_initializer_18004 |
 | TS18006 | err | emitted | packages/ts_checker/src/check.zig:27774<br>packages/ts_checker/src/check.zig:102073<br>packages/ts_checker/src/check.zig:102087 | Classes_may_not_have_a_field_named_constructor_18006 |
 | TS18007 | err | emitted | packages/ts_parser/src/ts_parser.zig:16210 | JSX_expressions_may_not_use_the_comma_operator_Did_you_mean_to_write_an_array_18007 |
