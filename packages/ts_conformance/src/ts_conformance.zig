@@ -51601,7 +51601,18 @@ test "conformance: opt-in full local TypeScript corpus survey" {
 
     var stats: Stats = .{};
     const trace_fixtures = envBoolOne("HOME_TS_CONFORMANCE_TRACE");
+    // Optional fixture-name filter for targeted verification runs:
+    // `HOME_TS_CONFORMANCE_FILTER=nameA,nameB` runs only entries whose
+    // name contains one of the comma-separated substrings.
+    const name_filter: ?[]const u8 = if (std.c.getenv("HOME_TS_CONFORMANCE_FILTER")) |p| std.mem.span(p) else null;
     for (corpus[start..end], requested_start..) |entry, idx| {
+        if (name_filter) |filters| {
+            var fit = std.mem.splitScalar(u8, filters, ',');
+            const matched = while (fit.next()) |f| {
+                if (f.len != 0 and std.mem.indexOf(u8, entry.name, f) != null) break true;
+            } else false;
+            if (!matched) continue;
+        }
         if (trace_fixtures) {
             std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, display_total, entry.name });
         }
