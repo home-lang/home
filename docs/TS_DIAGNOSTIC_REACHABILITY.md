@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 524 |
-| active reachable (parity targets) | 59 |
+| catalog-only total | 523 |
+| active reachable (parity targets) | 58 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,15 +25,14 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 35 |
+| 1xxx — parser / syntactic + program file-inclusion | 34 |
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 5 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
 
-### 1xxx — parser / syntactic + program file-inclusion (35)
+### 1xxx — parser / syntactic + program file-inclusion (34)
 
 - TS1012 `Unexpected_token_1012`
-- TS1261 `Already_included_file_name_0_differs_from_file_name_1_only_in_casing_1261`
 - TS1394 `Imported_via_0_from_file_1_with_packageId_2_1394`
 - TS1395 `Imported_via_0_from_file_1_to_import_importHelpers_as_specified_in_compilerOptions_1395`
 - TS1396 `Imported_via_0_from_file_1_with_packageId_2_to_import_importHelpers_as_specified_in_compilerOptions_1396`

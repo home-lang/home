@@ -1109,6 +1109,45 @@ fn printDryCleanOutputs(outputs: []const []u8) void {
     }
 }
 
+fn alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
+    gpa: std.mem.Allocator,
+    file_name: []const u8,
+    existing_file_name: []const u8,
+) ![]u8 {
+    const code_already_included_differs_only_in_casing: u32 = 1261;
+    return std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Already included file name '{s}' differs from file name '{s}' only in casing.",
+        .{ code_already_included_differs_only_in_casing, file_name, existing_file_name },
+    );
+}
+
+const CaseOnlyInputFileMismatch = struct {
+    file_name: []const u8,
+    existing_file_name: []const u8,
+};
+
+fn findCaseOnlyInputFileMismatch(input_files: []const []const u8) ?CaseOnlyInputFileMismatch {
+    for (input_files, 0..) |path, i| {
+        var j: usize = 0;
+        while (j < i) : (j += 1) {
+            const previous = input_files[j];
+            if (std.mem.eql(u8, previous, path)) break;
+            if (!std.ascii.eqlIgnoreCase(previous, path)) continue;
+            return .{ .file_name = path, .existing_file_name = previous };
+        }
+    }
+    return null;
+}
+
+fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []const []const u8) bool {
+    const mismatch = findCaseOnlyInputFileMismatch(input_files) orelse return false;
+    const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch.file_name, mismatch.existing_file_name) catch return true;
+    defer gpa.free(msg);
+    std.debug.print("{s}\n", .{msg});
+    return true;
+}
+
 /// How a root (input) file was specified, for `--explainFiles`.
 const RootInclusion = struct {
     /// TS1427 / TS1409 / TS1457 / TS1407 — chosen by provenance.
@@ -1966,6 +2005,12 @@ pub fn main(init: std.process.Init) !void {
     // unsupported extension is TS6054. (`allowNonTsExtensions` — the
     // upstream escape hatch — has no CLI surface in Home yet, so the
     // check always runs.)
+    const force_consistent_casing: bool = blk: {
+        if (loaded_cfg) |c| break :blk (c.compiler_options.force_consistent_casing_in_file_names orelse true);
+        break :blk true;
+    };
+    if (force_consistent_casing and reportCaseOnlyInputFileDiagnostics(gpa, input_files.items)) std.process.exit(1);
+
     const allow_js: bool = blk: {
         if (loaded_cfg) |c| break :blk (c.compiler_options.allow_js orelse false);
         break :blk false;
@@ -3182,6 +3227,27 @@ test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
     defer std.testing.allocator.free(msg);
 
     try std.testing.expect(std.mem.indexOf(u8, msg, "src/\\u0001*.ts") != null);
+}
+
+test "tsc_main: TS1261 reports input files that differ only by casing" {
+    const msg = try alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(
+        std.testing.allocator,
+        "/repo/src/Foo.ts",
+        "/repo/src/foo.ts",
+    );
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS1261: Already included file name '/repo/src/Foo.ts' differs from file name '/repo/src/foo.ts' only in casing.",
+        msg,
+    );
+
+    const exact = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/foo.ts" };
+    try std.testing.expect(findCaseOnlyInputFileMismatch(&exact) == null);
+
+    const mismatch = [_][]const u8{ "/repo/src/foo.ts", "/repo/src/Foo.ts" };
+    const found = findCaseOnlyInputFileMismatch(&mismatch) orelse return error.TestExpectedSome;
+    try std.testing.expectEqualStrings("/repo/src/Foo.ts", found.file_name);
+    try std.testing.expectEqualStrings("/repo/src/foo.ts", found.existing_file_name);
 }
 
 test "tsc_main: TS6307 diagnostic message and anchor match composite file list validation" {
