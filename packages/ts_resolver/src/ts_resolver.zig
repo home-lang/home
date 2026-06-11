@@ -196,8 +196,15 @@ pub const FileSystem = struct {
         directoryExists: *const fn (self: *anyopaque, path: []const u8) bool,
         /// Reads the file's bytes into the given allocator. Caller frees.
         readFile: *const fn (self: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8,
+        /// Lists immediate directory entries. Caller frees with `freeDirEntries`.
+        readDir: *const fn (self: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]DirEntry,
         /// Returns the filesystem real path. Caller frees.
         realpath: *const fn (self: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8,
+    };
+
+    pub const DirEntry = struct {
+        name: []const u8,
+        is_dir: bool,
     };
 
     pub fn fileExists(self: FileSystem, path: []const u8) bool {
@@ -209,8 +216,16 @@ pub const FileSystem = struct {
     pub fn readFile(self: FileSystem, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
         return self.vtable.readFile(self.ptr, gpa, path);
     }
+    pub fn readDir(self: FileSystem, gpa: std.mem.Allocator, path: []const u8) anyerror![]DirEntry {
+        return self.vtable.readDir(self.ptr, gpa, path);
+    }
     pub fn realpath(self: FileSystem, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
         return self.vtable.realpath(self.ptr, gpa, path);
+    }
+
+    pub fn freeDirEntries(gpa: std.mem.Allocator, entries: []DirEntry) void {
+        for (entries) |entry| gpa.free(entry.name);
+        gpa.free(entries);
     }
 };
 
@@ -2557,6 +2572,7 @@ pub const VirtualFs = struct {
         .fileExists = vfsFileExists,
         .directoryExists = vfsDirExists,
         .readFile = vfsReadFile,
+        .readDir = vfsReadDir,
         .realpath = vfsRealpath,
     };
 
@@ -2576,12 +2592,83 @@ pub const VirtualFs = struct {
         return gpa.dupe(u8, v);
     }
 
+    fn vfsReadDir(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]FileSystem.DirEntry {
+        const self: *VirtualFs = @ptrCast(@alignCast(p));
+        if (!self.dirs.contains(path)) return error.FileNotFound;
+        var out: std.ArrayListUnmanaged(FileSystem.DirEntry) = .empty;
+        errdefer {
+            for (out.items) |entry| gpa.free(entry.name);
+            out.deinit(gpa);
+        }
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer {
+            var it = seen.iterator();
+            while (it.next()) |entry| gpa.free(entry.key_ptr.*);
+            seen.deinit(gpa);
+        }
+
+        var dit = self.dirs.iterator();
+        while (dit.next()) |entry| {
+            const child = immediateChildName(path, entry.key_ptr.*) orelse continue;
+            if (seen.contains(child)) continue;
+            try appendVfsDirEntry(gpa, &out, &seen, child, true);
+        }
+
+        var fit = self.files.iterator();
+        while (fit.next()) |entry| {
+            const child = immediateChildName(path, entry.key_ptr.*) orelse continue;
+            if (seen.contains(child)) continue;
+            try appendVfsDirEntry(gpa, &out, &seen, child, false);
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
     fn vfsRealpath(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
         const self: *VirtualFs = @ptrCast(@alignCast(p));
         const v = self.realpaths.get(path) orelse path;
         return gpa.dupe(u8, v);
     }
 };
+
+fn appendVfsDirEntry(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(FileSystem.DirEntry),
+    seen: *std.StringHashMapUnmanaged(void),
+    child: []const u8,
+    is_dir: bool,
+) !void {
+    const name = try gpa.dupe(u8, child);
+    const seen_key = try gpa.dupe(u8, child);
+    seen.put(gpa, seen_key, {}) catch |err| {
+        gpa.free(name);
+        gpa.free(seen_key);
+        return err;
+    };
+    out.append(gpa, .{ .name = name, .is_dir = is_dir }) catch |err| {
+        gpa.free(name);
+        return err;
+    };
+}
+
+fn immediateChildName(parent: []const u8, candidate: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, parent, candidate)) return null;
+    const rest = if (parent.len == 0 or std.mem.eql(u8, parent, "/"))
+        trimLeadingSlashes(candidate)
+    else blk: {
+        if (!std.mem.startsWith(u8, candidate, parent)) return null;
+        if (candidate.len <= parent.len or candidate[parent.len] != '/') return null;
+        break :blk candidate[parent.len + 1 ..];
+    };
+    if (rest.len == 0) return null;
+    if (std.mem.indexOfScalar(u8, rest, '/')) |slash| return rest[0..slash];
+    return rest;
+}
+
+fn trimLeadingSlashes(path: []const u8) []const u8 {
+    var start: usize = 0;
+    while (start < path.len and path[start] == '/') : (start += 1) {}
+    return path[start..];
+}
 
 // =============================================================================
 // Tests

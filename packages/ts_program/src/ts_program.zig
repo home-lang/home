@@ -41,6 +41,7 @@ pub const IncludeKind = enum {
     type_reference,
     lib_reference,
     compiler_type_reference,
+    implicit_type_reference,
     compiler_lib_reference,
     default_lib_reference,
 };
@@ -78,7 +79,7 @@ pub const IncludeReason = struct {
             .compiler_type_reference => code_file_is_entry_point_of_type_library_specified_here,
             .compiler_lib_reference => code_file_is_library_specified_here,
             .default_lib_reference => code_file_is_default_library_for_target_specified_here,
-            .root => null,
+            .root, .implicit_type_reference => null,
         };
     }
 
@@ -91,7 +92,7 @@ pub const IncludeReason = struct {
             .compiler_type_reference => "File is entry point of type library specified here.",
             .compiler_lib_reference => "File is library specified here.",
             .default_lib_reference => "File is default library for target specified here.",
-            .root => null,
+            .root, .implicit_type_reference => null,
         };
     }
 
@@ -1585,6 +1586,8 @@ pub const Program = struct {
                 try self.recordReferenceIncludeReason(target_id.?, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
                 added += 1;
             }
+        } else {
+            added += try self.loadImplicitTypeLibraries(cfg, containing_file);
         }
         if (cfg.compiler_options.lib) |libs| {
             for (libs) |lib_name| {
@@ -1611,6 +1614,140 @@ pub const Program = struct {
             }
         }
         return added;
+    }
+
+    fn loadImplicitTypeLibraries(
+        self: *Program,
+        cfg: *const tsconfig_mod.TsConfig,
+        containing_file: []const u8,
+    ) ProgramError!usize {
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer {
+            for (names.items) |name| self.gpa.free(name);
+            names.deinit(self.gpa);
+        }
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer {
+            var it = seen.iterator();
+            while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
+            seen.deinit(self.gpa);
+        }
+
+        try self.collectImplicitTypeLibraryNames(cfg, containing_file, &names, &seen);
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+
+        var added: usize = 0;
+        for (names.items) |type_name| {
+            const res = self.resolver.resolveTypeReferenceDirective(type_name, containing_file) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            const target_id = try self.addResolvedIncludeFile(res.path);
+            if (target_id == null) continue;
+            try self.recordReferenceIncludeReason(target_id.?, .implicit_type_reference, 0, type_name, res.package_id orelse "", 0);
+            added += 1;
+        }
+        return added;
+    }
+
+    fn collectImplicitTypeLibraryNames(
+        self: *Program,
+        cfg: *const tsconfig_mod.TsConfig,
+        containing_file: []const u8,
+        names: *std.ArrayListUnmanaged([]const u8),
+        seen: *std.StringHashMapUnmanaged(void),
+    ) ProgramError!void {
+        if (cfg.compiler_options.type_roots) |roots| {
+            for (roots) |root| {
+                if (root.len == 0) continue;
+                try self.collectTypeLibraryNamesFromRoot(root, names, seen);
+            }
+            return;
+        }
+
+        var dir = std.fs.path.dirname(containing_file) orelse "";
+        while (true) {
+            const nm = if (dir.len == 0)
+                try self.gpa.dupe(u8, "node_modules")
+            else
+                try std.fs.path.join(self.gpa, &.{ dir, "node_modules" });
+            defer self.gpa.free(nm);
+            const at_types = try std.fs.path.join(self.gpa, &.{ nm, "@types" });
+            defer self.gpa.free(at_types);
+            try self.collectTypeLibraryNamesFromRoot(at_types, names, seen);
+
+            if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
+            const parent = std.fs.path.dirname(dir) orelse "";
+            if (std.mem.eql(u8, parent, dir)) break;
+            dir = parent;
+        }
+    }
+
+    fn collectTypeLibraryNamesFromRoot(
+        self: *Program,
+        root: []const u8,
+        names: *std.ArrayListUnmanaged([]const u8),
+        seen: *std.StringHashMapUnmanaged(void),
+    ) ProgramError!void {
+        const entries = self.resolver.fs.readDir(self.gpa, root) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        defer ts_resolver.FileSystem.freeDirEntries(self.gpa, entries);
+        for (entries) |entry| {
+            if (!entry.is_dir or entry.name.len == 0 or entry.name[0] == '.') continue;
+            if (entry.name[0] == '@') {
+                const scope_root = try std.fs.path.join(self.gpa, &.{ root, entry.name });
+                defer self.gpa.free(scope_root);
+                try self.collectScopedTypeLibraryNames(scope_root, entry.name, names, seen);
+                continue;
+            }
+            try appendUniqueTypeLibraryName(self.gpa, names, seen, entry.name);
+        }
+    }
+
+    fn collectScopedTypeLibraryNames(
+        self: *Program,
+        scope_root: []const u8,
+        scope_name: []const u8,
+        names: *std.ArrayListUnmanaged([]const u8),
+        seen: *std.StringHashMapUnmanaged(void),
+    ) ProgramError!void {
+        const entries = self.resolver.fs.readDir(self.gpa, scope_root) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        defer ts_resolver.FileSystem.freeDirEntries(self.gpa, entries);
+        for (entries) |entry| {
+            if (!entry.is_dir or entry.name.len == 0 or entry.name[0] == '.') continue;
+            const type_name = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ scope_name, entry.name });
+            defer self.gpa.free(type_name);
+            try appendUniqueTypeLibraryName(self.gpa, names, seen, type_name);
+        }
+    }
+
+    fn appendUniqueTypeLibraryName(
+        gpa: std.mem.Allocator,
+        names: *std.ArrayListUnmanaged([]const u8),
+        seen: *std.StringHashMapUnmanaged(void),
+        name: []const u8,
+    ) ProgramError!void {
+        if (seen.contains(name)) return;
+        const owned = try gpa.dupe(u8, name);
+        const seen_key = try gpa.dupe(u8, name);
+        seen.put(gpa, seen_key, {}) catch |err| {
+            gpa.free(owned);
+            gpa.free(seen_key);
+            return err;
+        };
+        names.append(gpa, owned) catch |err| {
+            gpa.free(owned);
+            return err;
+        };
     }
 
     fn compilerOptionContainingFile(cfg: *const tsconfig_mod.TsConfig, files: []const *File) []const u8 {
@@ -2546,6 +2683,68 @@ test "Program: loadImportClosure follows compilerOptions.types (TS1417/TS1418 re
     try T.expectEqualStrings("@types/node/index.d.ts@2.0.0", type_file.include_reason.?.package_id);
     try T.expectEqual(@as(?u32, 1419), type_file.include_reason.?.relatedDiagnosticCode());
     try T.expectEqualStrings("File is entry point of type library specified here.", type_file.include_reason.?.relatedDiagnosticMessage().?);
+}
+
+test "Program: loadImportClosure follows implicit @types package (TS1420/TS1421 reason)" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/node_modules/@types/node/package.json",
+        \\{"name":"@types/node","version":"2.0.0","types":"index.d.ts"}
+    );
+    try vfs.addFile("/proj/node_modules/@types/node/index.d.ts", "declare const process: unknown;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 1), added);
+
+    const type_id = p.lookupPath("/proj/node_modules/@types/node/index.d.ts") orelse return error.TestUnexpectedResult;
+    const type_file = p.fileById(type_id);
+    try T.expect(type_file.include_reason != null);
+    try T.expectEqual(IncludeKind.implicit_type_reference, type_file.include_reason.?.kind);
+    try T.expectEqualStrings("node", type_file.include_reason.?.specifier_text);
+    try T.expectEqualStrings("@types/node/index.d.ts@2.0.0", type_file.include_reason.?.package_id);
+    try T.expectEqual(@as(?u32, null), type_file.include_reason.?.relatedDiagnosticCode());
+    try T.expect(type_file.include_reason.?.relatedDiagnosticMessage() == null);
+}
+
+test "Program: loadImportClosure skips implicit @types when compilerOptions.types is empty" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"types":[]}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/node_modules/@types/node/package.json",
+        \\{"name":"@types/node","version":"2.0.0","types":"index.d.ts"}
+    );
+    try vfs.addFile("/proj/node_modules/@types/node/index.d.ts", "declare const process: unknown;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 0), added);
+    try T.expect(p.lookupPath("/proj/node_modules/@types/node/index.d.ts") == null);
 }
 
 test "Program: loadImportClosure follows compilerOptions.lib (TS1422 reason)" {

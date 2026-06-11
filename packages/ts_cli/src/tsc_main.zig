@@ -1505,6 +1505,11 @@ fn printExplainFiles(
     _ = code_entry_point_type_library;
     _ = code_entry_point_type_library_package;
     _ = code_file_is_entry_point_type_library_here;
+    // TS1420/TS1421 — automatic visible `@types` inclusions.
+    const code_entry_point_implicit_type_library: u32 = 1420;
+    const code_entry_point_implicit_type_library_package: u32 = 1421;
+    _ = code_entry_point_implicit_type_library;
+    _ = code_entry_point_implicit_type_library_package;
     // TS1422/TS1423 — explicit compilerOptions.lib entries.
     const code_library_in_compiler_options: u32 = 1422;
     const code_file_is_library_specified_here: u32 = 1423;
@@ -1610,6 +1615,24 @@ fn printExplainFiles(
                             std.fmt.allocPrint(
                                 gpa,
                                 "  Entry point of type library '{s}' specified in compilerOptions",
+                                .{ir.specifier_text},
+                            ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
+                        continue;
+                    },
+                    .implicit_type_reference => {
+                        const msg = if (ir.package_id.len != 0)
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Entry point for implicit type library '{s}' with packageId '{s}'",
+                                .{ ir.specifier_text, ir.package_id },
+                            ) catch return
+                        else
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Entry point for implicit type library '{s}'",
                                 .{ir.specifier_text},
                             ) catch return;
                         defer gpa.free(msg);
@@ -1827,6 +1850,7 @@ const ResolverRealFs = struct {
         .fileExists = fileExists,
         .directoryExists = directoryExists,
         .readFile = readFile,
+        .readDir = readDir,
         .realpath = realpath,
     };
 
@@ -1853,6 +1877,30 @@ const ResolverRealFs = struct {
     fn readFile(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
         const bytes = try RealFs.read(gpa, path);
         return @constCast(bytes);
+    }
+
+    fn readDir(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]ts_resolver.FileSystem.DirEntry {
+        var threaded = std.Io.Threaded.init(gpa, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const cwd = std.Io.Dir.cwd();
+        var dir = try cwd.openDir(io, path, .{ .iterate = true });
+        defer dir.close(io);
+
+        var out: std.ArrayListUnmanaged(ts_resolver.FileSystem.DirEntry) = .empty;
+        errdefer {
+            for (out.items) |entry| gpa.free(entry.name);
+            out.deinit(gpa);
+        }
+        var iter = dir.iterate();
+        while (try iter.next(io)) |entry| {
+            const name = try gpa.dupe(u8, entry.name);
+            out.append(gpa, .{ .name = name, .is_dir = entry.kind == .directory }) catch |err| {
+                gpa.free(name);
+                return err;
+            };
+        }
+        return out.toOwnedSlice(gpa);
     }
 
     fn realpath(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
