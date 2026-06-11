@@ -17,17 +17,17 @@ diverge from the reference compiler.
 | Bucket | Count |
 | --- | ---: |
 | catalog-only total | 471 |
-| active reachable (parity targets) | 7 |
+| active reachable (parity targets) | 6 |
 | blocked/effectively-dead references | 4 |
-| dead in tsgo (leave catalog-only) | 460 |
+| dead in tsgo (leave catalog-only) | 461 |
 
 ## Reachable worklist by range
 
 | Range | Count |
 | --- | ---: |
-| 9xxxx — editor code-fix / refactor (language service) | 7 |
+| 9xxxx — editor code-fix / refactor (language service) | 6 |
 
-### 9xxxx — editor code-fix / refactor (language service) (7)
+### 9xxxx — editor code-fix / refactor (language service) (6)
 
 - TS90064 `Extract_base_class_to_variable_90064`
 - TS90065 `Extract_default_export_to_variable_90065`
@@ -35,7 +35,6 @@ diverge from the reference compiler.
 - TS90068 `Add_satisfies_and_an_inline_type_assertion_with_0_90068`
 - TS90069 `Extract_to_variable_and_replace_with_0_as_typeof_0_90069`
 - TS90071 `Annotate_types_of_properties_expando_function_in_a_namespace_90071`
-- TS95174 `Use_0_95174`
 
 ## Blocked/effectively-dead references
 
@@ -64,7 +63,7 @@ Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully catalog-only)
 
-460 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
+461 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
 
 <details><summary>Show dead codes</summary>
 
@@ -505,6 +504,7 @@ Confirm against this list before picking one:
 - TS95171 `Delete_unused_param_tag_0_95171`
 - TS95172 `Delete_all_unused_param_tags_95172`
 - TS95173 `Rename_param_tag_name_0_to_1_95173`
+- TS95174 `Use_0_95174`
 - TS95175 `Use_Number_isNaN_in_all_conditions_95175`
 - TS95176 `Convert_typedef_to_TypeScript_type_95176`
 - TS95177 `Convert_all_typedef_to_TypeScript_types_95177`

@@ -83,8 +83,13 @@ for (const m of generatedText.matchAll(
 function isReachable(name) {
   // Catalogue keys are truncated to a max length before the `_<code>`
   // suffix, so a referenced (untruncated) name may be longer than the key
-  // name. Match on equality or referenced-name-startsWith-key-name.
-  for (const r of referenced) if (r === name || r.startsWith(name)) return true;
+  // name. Only apply that prefix fallback to long keys; otherwise short names
+  // like TS95174 `Use_0` incorrectly match unrelated names such as TS5106
+  // `Use_0_instead`.
+  for (const r of referenced) {
+    if (r === name) return true;
+    if (name.length >= 80 && r.startsWith(name)) return true;
+  }
   const alias = generatedAliases.get(name);
   if (alias && referenced.has(alias)) return true;
   return false;
