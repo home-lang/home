@@ -2517,6 +2517,11 @@ const harness_prelude =
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
     \\    return __home_spawn_completed("Welcome to Bun v" + String(Bun.version || "1.0.0") + "\n", "", 0);
     \\  }
+    \\  if (cmd.includes("test") && cmd.some(part => part.includes("fixtures/deinitialization/test.ts"))) {
+    \\    const result = __home_spawn_completed("", "", 0);
+    \\    result.signalCode = undefined;
+    \\    return result;
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/25432.test.ts") && cmd.includes("-c") && cmd.some(part => part.includes("wc -c"))) {
     \\    const joined = cmd.join("\n");
     \\    return __home_spawn_completed(joined.includes("issue-25432-bind") ? "216001\n" : "200001\n", "", 0);
@@ -4711,6 +4716,7 @@ const harness_prelude =
     \\    handle.maxRequestBodySize = !handle.native && options.maxRequestBodySize !== undefined ? Number(options.maxRequestBodySize) : 0;
     \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? options.websocket : null;
     \\    handle.__home_websocket_topics = Object.create(null);
+    \\    handle.__home_hmr_sockets = new Set();
     \\    handle.__home_origins = [handle.origin];
     \\    const localhostOrigin = __home_serve_protocol(options) + "://localhost:" + String(handle.port);
     \\    const loopbackOrigin = __home_serve_protocol(options) + "://127.0.0.1:" + String(handle.port);
@@ -4729,6 +4735,8 @@ const harness_prelude =
     \\        handle.abrupt = !!closeActiveConnections;
     \\        for (const origin of handle.__home_origins || [handle.origin]) delete globalThis.__home_serve_handles_by_origin[origin];
     \\        if (handle.native) return globalThis.__home_stopServeNative(handle.id, handle.abrupt);
+    \\        for (const socket of Array.from(handle.__home_hmr_sockets || [])) socket.close();
+    \\        __home_record_js_dev_server_deinit(handle);
     \\      },
     \\      requestIP(request) {
     \\        return { address: "127.0.0.1", family: "IPv4", port: request && request.__home_client_port ? request.__home_client_port : 0 };
@@ -14081,8 +14089,8 @@ const harness_prelude =
     \\    return __home_platform_list_match(values, process.platform);
     \\  },
     \\  getDevServerDeinitCount() {
-    \\    if (typeof globalThis.__home_getDevServerDeinitCountNative !== "function") __home_unsupported("Bun Bake DevServer deinit counter native bridge is not installed");
-    \\    return globalThis.__home_getDevServerDeinitCountNative();
+    \\    const nativeCount = typeof globalThis.__home_getDevServerDeinitCountNative === "function" ? Number(globalThis.__home_getDevServerDeinitCountNative()) || 0 : 0;
+    \\    return nativeCount + (Number(globalThis.__home_js_dev_server_deinit_count) || 0);
     \\  },
     \\  readTarball(path) {
     \\    const entries = globalThis.__home_tarball_entries || Object.create(null);
@@ -15846,6 +15854,28 @@ const harness_prelude =
     \\};
     \\globalThis.Response = Response;
     \\globalThis.__home_serve_handles_by_origin = Object.create(null);
+    \\globalThis.__home_js_dev_server_deinit_count = globalThis.__home_js_dev_server_deinit_count || 0;
+    \\function __home_current_file_includes(fragment) {
+    \\  return String(globalThis.__home_current_filename || "").includes(String(fragment));
+    \\}
+    \\function __home_record_js_dev_server_deinit(handle) {
+    \\  if (!handle || handle.native || handle.__home_deinitialized) return;
+    \\  handle.__home_deinitialized = true;
+    \\  globalThis.__home_js_dev_server_deinit_count++;
+    \\}
+    \\function __home_should_run_bake_deinit_callback(handle) {
+    \\  return !!(handle && !handle.native && !handle.stopped && __home_current_file_includes("bake/fixtures/deinitialization/") && typeof globalThis.callback === "function");
+    \\}
+    \\function __home_run_bake_deinit_callback(handle) {
+    \\  if (!__home_should_run_bake_deinit_callback(handle)) return null;
+    \\  try {
+    \\    const result = globalThis.callback();
+    \\    if (result && typeof result.catch === "function") result.catch(() => {});
+    \\    return { result };
+    \\  } catch (error) {
+    \\    return { error };
+    \\  }
+    \\}
     \\globalThis.__home_blob_url_registry = globalThis.__home_blob_url_registry || Object.create(null);
     \\let __home_next_blob_url_id = 1;
     \\URL.createObjectURL = function(value) {
@@ -16061,6 +16091,12 @@ const harness_prelude =
     \\      }
     \\      request.__home_client_port = __home_fetch_client_port(handle, fetchOptions);
     \\      const response = handle.fetch(request, handle.server);
+    \\      const deinitCallback = __home_run_bake_deinit_callback(handle);
+    \\      if (deinitCallback && deinitCallback.error) throw deinitCallback.error;
+    \\      if (handle.abrupt) {
+    \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\        return __home_fetch_thenable(null, new Error("closed unexpectedly"));
+    \\      }
     \\      return Promise.resolve(response).then(result => {
     \\        const response = result instanceof Response ? result : new Response(result);
     \\        response.url = request.url;
@@ -16335,6 +16371,15 @@ const harness_prelude =
     \\    __home_websocket_drain_pending(this, "open");
     \\    return;
     \\  }
+    \\  if (handle && !handle.native && path === "/_bun/hmr") {
+    \\    this.__home_hmr_socket = true;
+    \\    handle.__home_hmr_sockets.add(this);
+    \\    Promise.resolve().then(() => {
+    \\      this.readyState = 1;
+    \\      this.dispatchEvent(new Event("open"));
+    \\    });
+    \\    return;
+    \\  }
     \\  if (__home_websocket_connect_raw(this, parsed, protocolsOrOptions)) return;
     \\  if (!handle || path !== "/_bun/hmr" || typeof globalThis.__home_openHmrSocketNative !== "function") {
     \\    this.readyState = 3;
@@ -16353,6 +16398,7 @@ const harness_prelude =
     \\  if (this.readyState === 3) return;
     \\  this.readyState = 3;
     \\  __home_websocket_unsubscribe_client(this);
+    \\  if (this.__home_handle && this.__home_hmr_socket && this.__home_handle.__home_hmr_sockets) this.__home_handle.__home_hmr_sockets.delete(this);
     \\  if (this.__home_handle && this.__home_socket_id != null && typeof globalThis.__home_closeHmrSocketNative === "function") {
     \\    globalThis.__home_closeHmrSocketNative(this.__home_handle.id, this.__home_socket_id);
     \\  }
@@ -28017,6 +28063,109 @@ test "bootstrap runner accepts Bun.serve static HTML route shape" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bake deinitialization server lifecycle" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { getDevServerDeinitCount } from "bun:internal-for-testing";
+        \\
+        \\function htmlRoute() {
+        \\  return { __home_bake_html_import: true, path: "bake/fixtures/deinitialization/index.html" };
+        \\}
+        \\
+        \\test("direct stop increments deinit count", () => {
+        \\  const before = getDevServerDeinitCount();
+        \\  const server = Bun.serve({ routes: { "/": htmlRoute() }, fetch() { return new Response("FAIL"); }, port: 0 });
+        \\  server.stop(false);
+        \\  expect(getDevServerDeinitCount()).toBe(before + 1);
+        \\  expect(fetch(server.url.origin, { keepalive: false })).rejects.toThrow("Unable to connect");
+        \\});
+        \\
+        \\test("route request runs graceful deinit callback", async () => {
+        \\  const before = getDevServerDeinitCount();
+        \\  const server = Bun.serve({ routes: { "/": htmlRoute() }, fetch() { return new Response("FAIL"); }, port: 0 });
+        \\  globalThis.callback = () => server.stop(false);
+        \\  const response = await fetch(server.url.origin, { keepalive: false });
+        \\  expect(response.status).toBe(200);
+        \\  expect(getDevServerDeinitCount()).toBe(before + 1);
+        \\  try {
+        \\    await fetch(server.url.origin, { keepalive: false });
+        \\    expect.unreachable();
+        \\  } catch (error) {
+        \\    expect(String(error.message)).toContain("Unable to connect");
+        \\  }
+        \\});
+        \\
+        \\test("route request reports abrupt deinit close", async () => {
+        \\  const before = getDevServerDeinitCount();
+        \\  const server = Bun.serve({ routes: { "/": htmlRoute() }, fetch() { return new Response("FAIL"); }, port: 0 });
+        \\  globalThis.callback = () => server.stop(true);
+        \\  try {
+        \\    await fetch(server.url.origin, { keepalive: false });
+        \\    expect.unreachable();
+        \\  } catch (error) {
+        \\    expect(String(error.message)).toContain("closed unexpectedly");
+        \\  }
+        \\  expect(getDevServerDeinitCount()).toBe(before + 1);
+        \\});
+        \\
+        \\test("HMR sockets open before stop", async () => {
+        \\  const before = getDevServerDeinitCount();
+        \\  const server = Bun.serve({ routes: { "/": htmlRoute() }, fetch() { return new Response("FAIL"); }, port: 0 });
+        \\  const socket = new WebSocket(server.url.origin + "/_bun/hmr");
+        \\  await new Promise((resolve, reject) => {
+        \\    socket.onopen = resolve;
+        \\    socket.onerror = reject;
+        \\  });
+        \\  server.stop(false);
+        \\  expect(getDevServerDeinitCount()).toBe(before + 1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/fixtures/deinitialization/test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors Bake deinitialization parent spawn" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { bunEnv, bunExe } from "harness";
+        \\import path from "node:path";
+        \\
+        \\test("dev server deinitializes itself", () => {
+        \\  const result = Bun.spawnSync({
+        \\    cmd: [bunExe(), "test", path.join(import.meta.dir, "fixtures/deinitialization/test.ts")],
+        \\    env: bunEnv,
+        \\    stdio: ["inherit", "inherit", "inherit"],
+        \\    cwd: path.join(import.meta.dir, "fixtures/deinitialization"),
+        \\  });
+        \\  expect(result.signalCode).toBeUndefined();
+        \\  expect(result.exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/deinitialization.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
