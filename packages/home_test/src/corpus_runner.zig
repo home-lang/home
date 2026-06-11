@@ -15162,6 +15162,97 @@ const harness_prelude =
     \\  if (ports[key] === undefined) ports[key] = __home_fetch_next_client_port++;
     \\  return ports[key];
     \\}
+    \\function __home_fetch_proxy_response_text(text) {
+    \\  const headerEnd = text.indexOf("\r\n\r\n");
+    \\  const headerText = headerEnd === -1 ? text : text.slice(0, headerEnd);
+    \\  const body = headerEnd === -1 ? "" : text.slice(headerEnd + 4);
+    \\  const lines = headerText.split("\r\n");
+    \\  const statusLine = String(lines.shift() || "HTTP/1.1 200 OK").split(" ");
+    \\  const status = Number(statusLine[1] || 200) || 200;
+    \\  const headers = new Headers();
+    \\  for (const line of lines) {
+    \\    const colon = line.indexOf(":");
+    \\    if (colon === -1) continue;
+    \\    headers.set(line.slice(0, colon), __home_net_trim_header_value(line.slice(colon + 1)));
+    \\  }
+    \\  return new Response(body, { status, headers });
+    \\}
+    \\function __home_fetch_proxy_request_body(fetchOptions) {
+    \\  if (!fetchOptions || fetchOptions.body === undefined || fetchOptions.body === null) return "";
+    \\  const body = fetchOptions.body;
+    \\  if (typeof body === "string") return body;
+    \\  if (body instanceof Uint8Array || body instanceof ArrayBuffer || (typeof Buffer === "function" && Buffer.isBuffer(body))) return __home_net_latin1(__home_net_bytes(body));
+    \\  return String(body);
+    \\}
+    \\function __home_fetch_proxy_authority(url) {
+    \\  const host = String(url && url.host || "");
+    \\  if (url && url.protocol === "http:" && host.endsWith(":80")) return host.slice(0, -3);
+    \\  if (url && url.protocol === "https:" && host.endsWith(":443")) return host.slice(0, -4);
+    \\  return host;
+    \\}
+    \\function __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod) {
+    \\  const proxyValue = fetchOptions && fetchOptions.proxy;
+    \\  if (!proxyValue) return null;
+    \\  let target = null;
+    \\  let proxy = null;
+    \\  try {
+    \\    target = new URL(href);
+    \\    proxy = new URL(String(proxyValue));
+    \\  } catch (error) {
+    \\    return __home_fetch_thenable(null, error);
+    \\  }
+    \\  if (target.protocol !== "http:" || proxy.protocol !== "http:") return null;
+    \\  const port = Number(proxy.port || 80);
+    \\  const proxyServer = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  if (!proxyServer || typeof proxyServer.__home_net_handler !== "function") return __home_fetch_thenable(null, new Error("Unable to connect"));
+    \\  const body = __home_fetch_proxy_request_body(fetchOptions);
+    \\  const authority = __home_fetch_proxy_authority(target);
+    \\  const requestTarget = target.protocol + "//" + authority + (target.pathname || "/") + target.search;
+    \\  const headers = new Headers((fetchOptions && fetchOptions.headers) || {});
+    \\  if (!headers.has("host")) headers.set("Host", authority);
+    \\  if (body !== "" && !headers.has("content-length")) headers.set("Content-Length", String(Buffer.byteLength(body)));
+    \\  let requestText = fetchMethod + " " + requestTarget + " HTTP/1.1\r\n";
+    \\  for (const entry of headers.entries()) requestText += __home_http_raw_header_name(entry[0]) + ": " + entry[1] + "\r\n";
+    \\  requestText += "\r\n" + body;
+    \\  return new Promise((resolve, reject) => {
+    \\    const socket = __home_http_event_target();
+    \\    let responseText = "";
+    \\    let settled = false;
+    \\    function finish() {
+    \\      if (settled) return;
+    \\      settled = true;
+    \\      resolve(__home_fetch_proxy_response_text(responseText));
+    \\    }
+    \\    socket._handle = { fd: __home_alloc_virtual_fd("tcp-proxy:" + String(port), "r") };
+    \\    socket.destroyed = false;
+    \\    socket.write = function(chunk, callback) {
+    \\      responseText += __home_net_latin1(__home_net_bytes(chunk));
+    \\      if (typeof callback === "function") Promise.resolve().then(() => callback());
+    \\      return true;
+    \\    };
+    \\    socket.end = function(chunk) {
+    \\      if (chunk !== undefined) this.write(chunk);
+    \\      this.destroyed = true;
+    \\      Promise.resolve().then(finish);
+    \\      return this;
+    \\    };
+    \\    socket.destroy = function(error) {
+    \\      this.destroyed = true;
+    \\      if (!settled) {
+    \\        settled = true;
+    \\        if (error) reject(error);
+    \\        else resolve(__home_fetch_proxy_response_text(responseText));
+    \\      }
+    \\      return this;
+    \\    };
+    \\    try {
+    \\      proxyServer.__home_net_handler(socket);
+    \\      Promise.resolve().then(() => socket.emit("data", Buffer.from(requestText)));
+    \\    } catch (error) {
+    \\      reject(error);
+    \\    }
+    \\  });
+    \\}
     \\function fetch(input, init) {
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
     \\  const fetchOptions = init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
@@ -15177,6 +15268,8 @@ const harness_prelude =
     \\  if (href === "http://example.com/" || href === "http://example.com") {
     \\    return __home_fetch_thenable(new Response("<!doctype html><title>Example Domain</title><p>Example Domain</p>", { headers: { "Content-Type": "text/html" } }), null);
     \\  }
+    \\  const proxyResponse = __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod);
+    \\  if (proxyResponse) return proxyResponse;
     \\  let origin = href;
     \\  const scheme = href.indexOf("://");
     \\  if (scheme !== -1) {
@@ -24781,6 +24874,31 @@ test "bootstrap runner mirrors issue 29298 standalone HTML file-loader inlining"
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29371 proxy request-line default ports" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29371.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29371.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_via_http_proxy") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
