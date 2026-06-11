@@ -352,6 +352,10 @@ pub const CompileOptions = struct {
     /// language service / LSP opts in via this flag. Suggestions never
     /// set `has_errors`. Mirrors tsc `getSuggestionDiagnostics`.
     include_suggestions: bool = false,
+    /// Multi-file Program compilation validates imported helpers after
+    /// every source file is loaded, so it can see a sibling `tslib.d.ts`.
+    /// Suppress the single-file virtual-section check on that path.
+    suppress_import_helper_diagnostics: bool = false,
 };
 
 fn appendDriverDiagnostic(
@@ -1636,7 +1640,7 @@ pub fn compileSource(
     const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
     const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);
     var missing_imported_helpers_reported = false;
-    if (effective_import_helpers and !effective_experimental_decorators) {
+    if (effective_import_helpers and !effective_experimental_decorators and !options.suppress_import_helper_diagnostics) {
         try appendMissingImportedHelperDiagnostics(gpa, c, source);
         missing_imported_helpers_reported = true;
     }
@@ -1981,7 +1985,9 @@ pub fn compileSource(
         if (!is_suggestion) c.has_errors = true;
     }
 
-    if (effective_import_helpers and !effective_experimental_decorators and !missing_imported_helpers_reported) {
+    if (effective_import_helpers and !effective_experimental_decorators and
+        !options.suppress_import_helper_diagnostics and !missing_imported_helpers_reported)
+    {
         try appendMissingImportedHelperDiagnostics(gpa, c, source);
     }
 
@@ -2062,7 +2068,22 @@ fn appendMissingImportedHelperDiagnostics(
     c: *Compilation,
     source: []const u8,
 ) CompileError!void {
-    const tslib_source = tslibDeclarationSource(source) orelse return;
+    const tslib_source = tslibDeclarationSource(source) orelse {
+        if (sourceRequiresExternalEmitHelper(source)) {
+            try c.diagnostics.append(gpa, .{
+                .phase = .bind,
+                .pos = 0,
+                .line = 0,
+                .span_len = 0,
+                .code = 2354,
+                .is_global = true,
+                .message = try gpa.dupe(u8, "This syntax requires an imported helper but module 'tslib' cannot be found."),
+            });
+            c.has_errors = true;
+        }
+        return;
+    };
+    try appendImportedPrivateHelperArityDiagnostics(gpa, c, source, tslib_source);
     var search_from: usize = 0;
     while (findStage3DecoratedClassExpression(source, search_from)) |decorated| {
         const helpers = [_][]const u8{ "__esDecorate", "__runInitializers", "__setFunctionName" };
@@ -2086,6 +2107,68 @@ fn appendMissingImportedHelperDiagnostics(
         }
         search_from = decorated.at_pos + 1;
     }
+}
+
+fn appendImportedPrivateHelperArityDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    tslib_source: []const u8,
+) CompileError!void {
+    const hash_pos = firstPrivateIdentifierHash(source) orelse return;
+    const checks = [_]struct { name: []const u8, required: usize }{
+        .{ .name = "__classPrivateFieldGet", .required = 4 },
+        .{ .name = "__classPrivateFieldSet", .required = 5 },
+    };
+    for (checks) |check| {
+        const actual = helperParameterCount(tslib_source, check.name) orelse continue;
+        if (actual >= check.required) continue;
+        const msg = try std.fmt.allocPrint(
+            gpa,
+            "This syntax requires an imported helper named '{s}' with {d} parameters, which is not compatible with the one in 'tslib'. Consider upgrading your version of 'tslib'.",
+            .{ check.name, check.required },
+        );
+        try c.diagnostics.append(gpa, .{
+            .phase = .bind,
+            .pos = @intCast(hash_pos),
+            .line = 0,
+            .span_len = @intCast(check.name.len),
+            .code = 2807,
+            .message = msg,
+        });
+        c.has_errors = true;
+    }
+}
+
+fn sourceRequiresExternalEmitHelper(source: []const u8) bool {
+    return findStage3DecoratedClassExpression(source, 0) != null or firstPrivateIdentifierHash(source) != null;
+}
+
+fn firstPrivateIdentifierHash(source: []const u8) ?usize {
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, source, i, '#')) |hash| {
+        if (positionInLineComment(source, hash) or positionInBlockComment(source, hash)) {
+            i = hash + 1;
+            continue;
+        }
+        if (hash + 1 < source.len and isIdentifierStart(source[hash + 1])) return hash;
+        i = hash + 1;
+    }
+    return null;
+}
+
+fn helperParameterCount(tslib_source: []const u8, name: []const u8) ?usize {
+    const name_pos = std.mem.indexOf(u8, tslib_source, name) orelse return null;
+    const open_rel = std.mem.indexOfScalar(u8, tslib_source[name_pos + name.len ..], '(') orelse return null;
+    const params_start = name_pos + name.len + open_rel + 1;
+    const close_rel = std.mem.indexOfScalar(u8, tslib_source[params_start..], ')') orelse return null;
+    const params = std.mem.trim(u8, tslib_source[params_start .. params_start + close_rel], " \t\r\n");
+    if (params.len == 0) return 0;
+    var count: usize = 1;
+    for (params) |c_param| {
+        if (c_param == ',') count += 1;
+    }
+    return count;
 }
 
 const DecoratedClass = struct {
@@ -3714,6 +3797,62 @@ test "driver: importHelpers reports missing Stage 3 decorator helpers from virtu
     try T.expect(seen_set_function_name);
 }
 
+test "driver: importHelpers reports missing tslib module for helper syntax" {
+    const source =
+        \\// @target: es2022
+        \\// @importHelpers: true
+        \\export {};
+        \\declare var dec: any;
+        \\var C;
+        \\C = @dec class {};
+    ;
+    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_2354 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2354 and std.mem.indexOf(u8, d.message, "module 'tslib' cannot be found") != null) {
+            saw_2354 = true;
+        }
+    }
+    try T.expect(saw_2354);
+}
+
+test "driver: importHelpers reports incompatible private field helper arity" {
+    const source =
+        \\// @target: es2015
+        \\// @importHelpers: true
+        \\// @filename: main.ts
+        \\export {};
+        \\class C {
+        \\    #x = 1;
+        \\    get() { return this.#x; }
+        \\}
+        \\
+        \\// @filename: tslib.d.ts
+        \\export declare function __classPrivateFieldGet(receiver: any, state: any, kind: any): any;
+        \\export declare function __classPrivateFieldSet(receiver: any, state: any, value: any, kind: any): any;
+    ;
+    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_get = false;
+    var saw_set = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2807) continue;
+        if (std.mem.indexOf(u8, d.message, "'__classPrivateFieldGet' with 4 parameters") != null) saw_get = true;
+        if (std.mem.indexOf(u8, d.message, "'__classPrivateFieldSet' with 5 parameters") != null) saw_set = true;
+    }
+    try T.expect(saw_get);
+    try T.expect(saw_set);
+}
+
 test "driver: discriminated union narrowing — string discriminant" {
     var c = try compileSource(T.allocator,
         \\type Shape = { kind: "circle"; r: number } | { kind: "square"; w: number };
@@ -4232,7 +4371,8 @@ test "driver: automatic-runtime JSX fragment does not require factory scope (no 
     // requirement is classic-only). Mirrors conformance
     // `intraExpressionInferencesJsx`.
     inline for (.{ "react-jsx", "react-jsxdev" }) |mode| {
-        var c = try compileSource(T.allocator,
+        var c = try compileSource(
+            T.allocator,
             "// @jsx: " ++ mode ++ "\nlet v = <></>;",
             .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true },
         );
@@ -4247,7 +4387,8 @@ test "driver: automatic-runtime JSX fragment does not require factory scope (no 
 }
 
 test "driver: classic JSX fragment via @jsx directive still reports TS2879" {
-    var c = try compileSource(T.allocator,
+    var c = try compileSource(
+        T.allocator,
         "// @jsx: react\nlet v = <></>;",
         .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true },
     );

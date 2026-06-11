@@ -355,6 +355,7 @@ pub const Program = struct {
             per_file.script_object_expandos = script_object_expandos;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
+            per_file.suppress_import_helper_diagnostics = true;
             // Per-file declaration-file flag. Multi-file fixtures
             // (e.g. `react.d.ts` + `app.tsx` in one conformance case)
             // share a global `options.is_declaration_file` that the
@@ -385,6 +386,7 @@ pub const Program = struct {
         }
 
         try self.appendMissingImportedHelperDiagnostics(options);
+        try self.appendRootDirDiagnostics(options);
 
         try self.resolveImports();
     }
@@ -424,6 +426,7 @@ pub const Program = struct {
             per_file.script_object_expandos = script_object_expandos;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
+            per_file.suppress_import_helper_diagnostics = true;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -435,6 +438,8 @@ pub const Program = struct {
             f.compilation = c;
             callback(ctx, f.path, c.diagnostics.items);
         }
+
+        try self.appendRootDirDiagnostics(options);
 
         try self.resolveImports();
     }
@@ -1416,6 +1421,7 @@ pub const Program = struct {
             if (f.compilation == null) try pending.append(self.gpa, idx);
         }
         if (pending.items.len == 0) {
+            try self.appendRootDirDiagnostics(options);
             try self.resolveImports();
             return;
         }
@@ -1434,6 +1440,7 @@ pub const Program = struct {
                     var per_file = opts;
                     per_file.is_tsx = opts.is_tsx or f.is_tsx;
                     per_file.is_declaration_file = f.is_declaration;
+                    per_file.suppress_import_helper_diagnostics = true;
                     if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
                     const c = ts_driver.compileSource(prog.gpa, f.source, per_file) catch {
                         _ = fail.fetchAdd(1, .seq_cst);
@@ -1464,7 +1471,83 @@ pub const Program = struct {
             return error.ParseError;
         }
 
+        try self.appendRootDirDiagnostics(options);
+
         try self.resolveImports();
+    }
+
+    fn appendRootDirDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        const cfg = options.pub_tsconfig orelse return;
+        const root_raw = cfg.compiler_options.root_dir orelse return;
+        if (root_raw.len == 0 or cfg.file_path.len == 0) return;
+        const config_dir = std.fs.path.dirname(cfg.file_path) orelse return;
+        const root_dir = try self.resolveConfigRelativePath(config_dir, root_raw);
+        defer self.gpa.free(root_dir);
+
+        for (self.files.items) |f| {
+            if (f.redirect_target != null or f.is_declaration) continue;
+            const c = f.compilation orelse continue;
+            const file_path = try normalizeProgramPath(self.gpa, f.path);
+            defer self.gpa.free(file_path);
+            if (pathHasDirPrefix(file_path, root_dir)) continue;
+            const msg = try std.fmt.allocPrint(
+                self.gpa,
+                "File '{s}' is not under 'rootDir' '{s}'. 'rootDir' is expected to contain all source files.",
+                .{ file_path, root_dir },
+            );
+            try c.diagnostics.append(self.gpa, .{
+                .phase = .parse,
+                .pos = 0,
+                .line = 0,
+                .span_len = 0,
+                .code = 6059,
+                .is_global = true,
+                .message = msg,
+            });
+            c.has_errors = true;
+        }
+    }
+
+    fn resolveConfigRelativePath(self: *Program, config_dir: []const u8, raw: []const u8) ProgramError![]u8 {
+        if (std.fs.path.isAbsolute(raw)) return normalizeProgramPath(self.gpa, raw);
+        const joined = try std.fs.path.join(self.gpa, &.{ config_dir, raw });
+        defer self.gpa.free(joined);
+        return normalizeProgramPath(self.gpa, joined);
+    }
+
+    fn normalizeProgramPath(gpa: std.mem.Allocator, raw: []const u8) ProgramError![]u8 {
+        var parts: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer parts.deinit(gpa);
+        const absolute = std.mem.startsWith(u8, raw, "/");
+        var it = std.mem.splitScalar(u8, raw, '/');
+        while (it.next()) |part| {
+            if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+            if (std.mem.eql(u8, part, "..") and parts.items.len != 0) {
+                _ = parts.pop();
+                continue;
+            }
+            try parts.append(gpa, part);
+        }
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer out.deinit(gpa);
+        if (absolute) try out.append(gpa, '/');
+        for (parts.items, 0..) |part, i| {
+            if (i != 0) try out.append(gpa, '/');
+            try out.appendSlice(gpa, part);
+        }
+        if (out.items.len == 0) try out.appendSlice(gpa, if (absolute) "/" else ".");
+        return try out.toOwnedSlice(gpa);
+    }
+
+    fn pathHasDirPrefix(path: []const u8, dir: []const u8) bool {
+        var trimmed_dir = dir;
+        while (trimmed_dir.len > 1 and trimmed_dir[trimmed_dir.len - 1] == '/') {
+            trimmed_dir = trimmed_dir[0 .. trimmed_dir.len - 1];
+        }
+        if (std.mem.eql(u8, path, trimmed_dir)) return true;
+        if (!std.mem.startsWith(u8, path, trimmed_dir)) return false;
+        return path.len > trimmed_dir.len and path[trimmed_dir.len] == '/';
     }
 
     /// Walk every compiled file's import declarations and resolve
@@ -2063,7 +2146,23 @@ pub const Program = struct {
         if (f.is_declaration) return;
         if (legacyDecoratorsEnabled(f.source, options)) return;
         const c = f.compilation orelse return;
-        const tslib = self.findTslibDeclaration() orelse return;
+        const tslib = self.findTslibDeclaration() orelse {
+            if (sourceRequiresExternalEmitHelper(f.source)) {
+                try c.diagnostics.append(self.gpa, .{
+                    .phase = .bind,
+                    .pos = 0,
+                    .line = 0,
+                    .span_len = 0,
+                    .code = 2354,
+                    .is_global = true,
+                    .message = try self.gpa.dupe(u8, "This syntax requires an imported helper but module 'tslib' cannot be found."),
+                });
+                c.has_errors = true;
+            }
+            return;
+        };
+
+        try appendImportedPrivateHelperArityDiagnostics(self.gpa, c, f.source, tslib.source);
 
         var search_from: usize = 0;
         while (findStage3DecoratedClassExpression(f.source, search_from)) |decorated| {
@@ -2089,6 +2188,68 @@ pub const Program = struct {
             search_from = decorated.at_pos + 1;
         }
         sortDiagnosticsBySourceOrder(c.diagnostics.items);
+    }
+
+    fn appendImportedPrivateHelperArityDiagnostics(
+        gpa: std.mem.Allocator,
+        c: *ts_driver.Compilation,
+        source: []const u8,
+        tslib_source: []const u8,
+    ) ProgramError!void {
+        const hash_pos = firstPrivateIdentifierHash(source) orelse return;
+        const checks = [_]struct { name: []const u8, required: usize }{
+            .{ .name = "__classPrivateFieldGet", .required = 4 },
+            .{ .name = "__classPrivateFieldSet", .required = 5 },
+        };
+        for (checks) |check| {
+            const actual = helperParameterCount(tslib_source, check.name) orelse continue;
+            if (actual >= check.required) continue;
+            const msg = try std.fmt.allocPrint(
+                gpa,
+                "This syntax requires an imported helper named '{s}' with {d} parameters, which is not compatible with the one in 'tslib'. Consider upgrading your version of 'tslib'.",
+                .{ check.name, check.required },
+            );
+            try c.diagnostics.append(gpa, .{
+                .phase = .bind,
+                .pos = @intCast(hash_pos),
+                .line = 0,
+                .span_len = @intCast(check.name.len),
+                .code = 2807,
+                .message = msg,
+            });
+            c.has_errors = true;
+        }
+    }
+
+    fn sourceRequiresExternalEmitHelper(source: []const u8) bool {
+        return findStage3DecoratedClassExpression(source, 0) != null or firstPrivateIdentifierHash(source) != null;
+    }
+
+    fn firstPrivateIdentifierHash(source: []const u8) ?usize {
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, source, i, '#')) |hash| {
+            if (positionInLineComment(source, hash) or positionInBlockComment(source, hash)) {
+                i = hash + 1;
+                continue;
+            }
+            if (hash + 1 < source.len and isIdentifierStart(source[hash + 1])) return hash;
+            i = hash + 1;
+        }
+        return null;
+    }
+
+    fn helperParameterCount(tslib_source: []const u8, name: []const u8) ?usize {
+        const name_pos = std.mem.indexOf(u8, tslib_source, name) orelse return null;
+        const open_rel = std.mem.indexOfScalar(u8, tslib_source[name_pos + name.len ..], '(') orelse return null;
+        const params_start = name_pos + name.len + open_rel + 1;
+        const close_rel = std.mem.indexOfScalar(u8, tslib_source[params_start..], ')') orelse return null;
+        const params = std.mem.trim(u8, tslib_source[params_start .. params_start + close_rel], " \t\r\n");
+        if (params.len == 0) return 0;
+        var count: usize = 1;
+        for (params) |c_param| {
+            if (c_param == ',') count += 1;
+        }
+        return count;
     }
 
     fn findTslibDeclaration(self: *Program) ?*File {
@@ -2751,6 +2912,38 @@ test "Program: resolves imports between files" {
     const a = p.fileById(a_id);
     try T.expectEqual(@as(usize, 1), a.imports.items.len);
     try T.expectEqual(b_id, a.imports.items[0]);
+}
+
+test "Program: rootDir reports source files outside configured root" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"rootDir":"src"}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const inside_id = try p.add("/proj/src/a.ts", "export const a = 1;");
+    const outside_id = try p.add("/proj/other/b.ts", "export const b = 2;");
+    try p.compileAll(.{ .pub_tsconfig = &cfg, .no_emit = true });
+
+    for (p.fileById(inside_id).compilation.?.diagnostics.items) |d| {
+        try T.expect(d.code != 6059);
+    }
+    var saw_6059 = false;
+    for (p.fileById(outside_id).compilation.?.diagnostics.items) |d| {
+        if (d.code == 6059 and
+            std.mem.indexOf(u8, d.message, "File '/proj/other/b.ts' is not under 'rootDir' '/proj/src'") != null)
+        {
+            saw_6059 = true;
+        }
+    }
+    try T.expect(saw_6059);
 }
 
 test "Program: imported file records TS1393 include reason (specifier + importer)" {
@@ -3618,6 +3811,63 @@ test "Program: importHelpers reports missing Stage 3 decorator helpers from tsli
     try T.expect(seen_es_decorate);
     try T.expect(seen_run_initializers);
     try T.expect(seen_set_function_name);
+}
+
+test "Program: importHelpers reports missing tslib module for helper syntax" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/main.ts",
+        \\export {};
+        \\declare var dec: any;
+        \\var C;
+        \\C = @dec class {};
+    );
+    try p.compileAll(.{ .emit = .{ .import_helpers = true } });
+
+    const c = p.fileById(0).compilation.?;
+    var saw_2354 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2354 and std.mem.indexOf(u8, d.message, "module 'tslib' cannot be found") != null) {
+            saw_2354 = true;
+        }
+    }
+    try T.expect(saw_2354);
+}
+
+test "Program: importHelpers reports incompatible private field helper arity" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/main.ts",
+        \\export {};
+        \\class C {
+        \\    #x = 1;
+        \\    get() { return this.#x; }
+        \\}
+    );
+    _ = try p.add("/tslib.d.ts",
+        \\export declare function __classPrivateFieldGet(receiver: any, state: any, kind: any): any;
+        \\export declare function __classPrivateFieldSet(receiver: any, state: any, value: any, kind: any): any;
+    );
+    try p.compileAll(.{ .emit = .{ .import_helpers = true } });
+
+    const c = p.fileById(0).compilation.?;
+    var saw_get = false;
+    var saw_set = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2807) continue;
+        if (std.mem.indexOf(u8, d.message, "'__classPrivateFieldGet' with 4 parameters") != null) saw_get = true;
+        if (std.mem.indexOf(u8, d.message, "'__classPrivateFieldSet' with 5 parameters") != null) saw_set = true;
+    }
+    try T.expect(saw_get);
+    try T.expect(saw_set);
 }
 
 test "Program: collectGlobalAugmentations finds none for plain files" {

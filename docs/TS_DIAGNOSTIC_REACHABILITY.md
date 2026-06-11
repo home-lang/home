@@ -16,10 +16,10 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| non-emitted total | 466 |
+| non-emitted total | 462 |
 | active reachable (parity targets) | 0 |
-| blocked/effectively-dead references | 4 |
-| dead in tsgo (leave non-emitted) | 462 |
+| blocked/effectively-dead references | 7 |
+| dead in tsgo (leave non-emitted) | 455 |
 
 ## Reachable worklist by range
 
@@ -36,6 +36,9 @@ non-emitted until the reference compiler grows a live emission path.
 - TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060` — Referenced only from the low-level promised-type helper. Modern awaited-type callers probe that helper without an error node, then emit wrapper diagnostics such as TS1058 or TS1320 instead.
 - TS5078 `Unknown_watch_option_0_5078` — Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079` — Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.
+- TS90006 `Implement_interface_0_90006` — Referenced only as the language-service code-action title for the implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.
+- TS95032 `Implement_all_unimplemented_interfaces_95032` — Referenced only as the language-service fix-all title for the implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.
+- TS95158 `Method_not_implemented_95158` — Referenced only as the stub body text inserted by the language-service implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.
 
 ## Notes: heuristic false-positives & subsystem-gated clusters
 
@@ -53,7 +56,7 @@ Confirm against this list before picking one:
 
 ## Dead in tsgo (faithfully non-emitted)
 
-462 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
+455 codes. Listed for auditability; none should be `emitted` unless a production tsgo reference appears.
 
 <details><summary>Show dead codes</summary>
 
@@ -77,8 +80,6 @@ Confirm against this list before picking one:
 - TS2211 `Add_extends_constraint_2211`
 - TS2212 `Add_extends_constraint_to_all_type_parameters_2212`
 - TS2334 (declared) `this_cannot_be_referenced_in_a_static_property_initializer_2334`
-- TS2354 `This_syntax_requires_an_imported_helper_but_module_0_cannot_be_found_2354`
-- TS2379 `Argument_of_type_0_is_not_assignable_to_parameter_of_type_1_with_exactOptionalPropertyTypes_Colon_tr_2379`
 - TS2399 `Duplicate_identifier_this_Compiler_uses_variable_declaration_this_to_capture_this_reference_2399`
 - TS2400 `Expression_resolves_to_variable_declaration_this_that_compiler_uses_to_capture_this_reference_2400`
 - TS2402 `Expression_resolves_to_super_that_compiler_uses_to_capture_base_class_reference_2402`
@@ -100,7 +101,6 @@ Confirm against this list before picking one:
 - TS2606 `Property_0_of_JSX_spread_attribute_is_not_assignable_to_target_property_2606`
 - TS2617 `_0_can_only_be_imported_by_using_import_1_require_2_or_by_turning_on_the_esModuleInterop_flag_and_us_2617`
 - TS2733 `Property_0_was_also_declared_here_2733`
-- TS2807 `This_syntax_requires_an_imported_helper_named_1_with_2_parameters_which_is_not_compatible_with_the_o_2807`
 - TS2811 `Initializer_for_property_0_2811`
 - TS2817 `Property_0_has_no_initializer_and_is_not_definitely_assigned_in_a_class_static_block_2817`
 - TS2822 `Import_assertions_cannot_be_used_with_type_only_imports_or_exports_2822`
@@ -148,7 +148,6 @@ Confirm against this list before picking one:
 - TS6055 `Suppress_noImplicitAny_errors_for_indexing_objects_lacking_index_signatures_6055`
 - TS6056 `Do_not_emit_declarations_for_code_that_has_an_internal_annotation_6056`
 - TS6058 `Specify_the_root_directory_of_input_files_Use_to_control_the_output_directory_structure_with_outDir_6058`
-- TS6059 `File_0_is_not_under_rootDir_1_rootDir_is_expected_to_contain_all_source_files_6059`
 - TS6060 `Specify_the_end_of_line_sequence_to_be_used_when_emitting_files_Colon_CRLF_dos_or_LF_unix_6060`
 - TS6061 `NEWLINE_6061`
 - TS6065 `Enables_experimental_support_for_ES7_decorators_6065`
@@ -295,7 +294,6 @@ Confirm against this list before picking one:
 - TS90003 `Change_extends_to_implements_90003`
 - TS90004 `Remove_unused_declaration_for_Colon_0_90004`
 - TS90005 `Remove_import_from_0_90005`
-- TS90006 `Implement_interface_0_90006`
 - TS90007 `Implement_inherited_abstract_class_90007`
 - TS90008 `Add_0_to_unresolved_variable_90008`
 - TS90010 `Remove_variable_statement_90010`
@@ -358,7 +356,6 @@ Confirm against this list before picking one:
 - TS95029 `Add_undefined_type_to_all_uninitialized_properties_95029`
 - TS95030 `Change_all_jsdoc_style_types_to_TypeScript_95030`
 - TS95031 `Change_all_jsdoc_style_types_to_TypeScript_and_add_undefined_to_nullable_types_95031`
-- TS95032 `Implement_all_unimplemented_interfaces_95032`
 - TS95033 `Install_all_missing_types_packages_95033`
 - TS95034 `Rewrite_all_as_indexed_access_types_95034`
 - TS95035 `Convert_all_to_default_imports_95035`
@@ -479,7 +476,6 @@ Confirm against this list before picking one:
 - TS95155 `Selection_is_not_a_valid_statement_or_statements_95155`
 - TS95156 `Add_missing_function_declaration_0_95156`
 - TS95157 `Add_all_missing_function_declarations_95157`
-- TS95158 `Method_not_implemented_95158`
 - TS95159 `Function_not_implemented_95159`
 - TS95160 `Add_override_modifier_95160`
 - TS95161 `Remove_override_modifier_95161`

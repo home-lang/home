@@ -122,6 +122,18 @@ const effectivelyDeadByCode = new Map([
     "TS5079",
     "Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.",
   ],
+  [
+    "TS90006",
+    "Referenced only as the language-service code-action title for the implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.",
+  ],
+  [
+    "TS95032",
+    "Referenced only as the language-service fix-all title for the implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.",
+  ],
+  [
+    "TS95158",
+    "Referenced only as the stub body text inserted by the language-service implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.",
+  ],
 ]);
 
 for (const row of nonEmitted) {
