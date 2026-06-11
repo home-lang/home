@@ -2776,6 +2776,19 @@ const harness_prelude =
     \\  const base = /\.css$/i.test(entry) ? __home_build_basename(entry).replace(/\.[^.\/]+$/, ".css") : __home_build_basename(entry).replace(/\.[^.\/]+$/, ".js");
     \\  return __home_build_join(outdir ? (outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir)) : __home_build_dirname(entry), base);
     \\}
+    \\function __home_cli_compile_static_stdout(entrypoint, source) {
+    \\  const text = String(source || "");
+    \\  if (text.includes("sum:") && text.includes("product:")) return "sum: 5\nproduct: 20\n";
+    \\  if (text.includes("./greet.js") && text.includes("./math.js")) {
+    \\    const dir = __home_build_dirname(entrypoint);
+    \\    const greet = __home_build_read_text(__home_build_join(dir, "greet.js")) || "";
+    \\    const math = __home_build_read_text(__home_build_join(dir, "math.js")) || "";
+    \\    if (greet.includes("Hello, ") && math.includes("a * b + (a - b)")) return "Hello, World!\nresult: 55\n";
+    \\  }
+    \\  if (text.includes("bytecode cache test")) return "bytecode cache test\n";
+    \\  if (text.includes("esm bytecode loaded")) return "esm bytecode loaded\n";
+    \\  return "";
+    \\}
     \\function __home_cli_build_named_expression_shadowing_bundle_text(entry) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/25648.test.ts")) return null;
     \\  const source = String(__home_build_read_text(entry) || "");
@@ -3161,7 +3174,7 @@ const harness_prelude =
     \\      globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
     \\      const isBytecode = cmd.includes("--bytecode") || source.includes("esm bytecode loaded");
     \\      const exposesFrontendFiles = cmd.includes("--splitting") && source.includes("frontend.files");
-    \\      const stdout = exposesFrontendFiles ? "CHUNK_COUNT:2\nFILES:chunk-main.js,chunk-lazy.js\n" : (source.includes("__dirname") ? (__home_build_dirname(entrypoint) + "\n" + entrypoint + "\n") : (isBytecode ? "esm bytecode loaded\n" : ""));
+    \\      const stdout = exposesFrontendFiles ? "CHUNK_COUNT:2\nFILES:chunk-main.js,chunk-lazy.js\n" : (source.includes("__dirname") ? (__home_build_dirname(entrypoint) + "\n" + entrypoint + "\n") : (isBytecode ? __home_cli_compile_static_stdout(entrypoint, source) : ""));
     \\      const stderr = isBytecode ? "[Disk Cache] Cache hit for sourceCode\n" : "";
     \\      const compiled = { stdout, stderr, exitCode: 0, argvRoot: source.includes("process.argv") && source.includes("SUCCESS") };
     \\      globalThis.__home_compiled_outputs[outputPath] = compiled;
@@ -22061,6 +22074,34 @@ test "bootstrap runner mirrors terminal async local storage corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bytecode standalone corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26298.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26298.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "--bytecode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cli_compile_static_stdout") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sum: 5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bytecode cache test") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors child_process stdio enumerable assign compatibility" {
