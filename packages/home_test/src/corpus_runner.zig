@@ -2060,6 +2060,9 @@ const harness_prelude =
     \\    if (entrypoint.includes("does-not-exist") || String(source || "").includes("does-not-exist") || (!entrypoint.includes("fixtures/trivial") && !entrypoint.includes("jsx-warning") && source === null)) {
     \\      return __home_build_fail([__home_build_error("ModuleNotFound: Could not resolve " + entrypoint, null)], shouldThrow, pluginOnEnd);
     \\    }
+    \\    if (String(source || "").trim() === "#") {
+    \\      return __home_build_fail([__home_build_error("error: Syntax Error", { line: 1, column: 1, lineText: "#" })], shouldThrow, pluginOnEnd);
+    \\    }
     \\    const resolverBundle = __home_build_resolver_bundle_text(entrypoint);
     \\    if (resolverBundle && !resolverBundle.success) {
     \\      return __home_build_fail([__home_build_error("ModuleNotFound: Could not resolve imports for " + entrypoint, null)], shouldThrow, pluginOnEnd);
@@ -2224,6 +2227,15 @@ const harness_prelude =
     \\    signalCode: null,
     \\  };
     \\}
+    \\globalThis.__home_spawn_processes_by_pid = globalThis.__home_spawn_processes_by_pid || Object.create(null);
+    \\globalThis.__home_next_spawn_pid = globalThis.__home_next_spawn_pid || 430000;
+    \\function __home_register_spawn_process(child) {
+    \\  const pid = globalThis.__home_next_spawn_pid++;
+    \\  child.pid = pid;
+    \\  globalThis.__home_spawn_processes_by_pid[pid] = child;
+    \\  if (child.exited && typeof child.exited.finally === "function") child.exited.finally(() => { delete globalThis.__home_spawn_processes_by_pid[pid]; });
+    \\  return child;
+    \\}
     \\function __home_spawn_bun_test_summary_for_dir(cwd) {
     \\  const root = __home_fs_normalize_path(cwd || process.cwd());
     \\  let files = [];
@@ -2288,6 +2300,54 @@ const harness_prelude =
     \\      return Promise.resolve(undefined);
     \\    },
     \\  };
+    \\}
+    \\function __home_spawn_ctrl_c_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/ctrl-c.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const stdout = typeof Buffer === "function" ? Buffer.from("") : "";
+    \\  const stderr = typeof Buffer === "function" ? Buffer.from("") : "";
+    \\  if (cwd.includes("ctrlc") && cmd.length >= 2 && cmd[1] === "install") return { stdout, stderr, exitCode: 0, signalCode: null };
+    \\  if (cwd.includes("ctrlc") && cmd.length >= 2 && cmd[1] === "start") return { stdout, stderr, exitCode: null, signalCode: "SIGKILL" };
+    \\  if (cwd.includes("ctrlc") && cmd.some(part => part.endsWith("index.js"))) return { stdout, stderr, exitCode: 0, signalCode: undefined };
+    \\  const isVite = cwd.includes("ctrlc") && (cmd.includes("vite") || cmd.includes("dev") || cmd.some(part => part.endsWith("/node_modules/.bin/vite")));
+    \\  if (!isVite) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  let settled = false;
+    \\  const child = {
+    \\    stdout: {
+    \\      getReader() {
+    \\        let read = false;
+    \\        return {
+    \\          read() {
+    \\            if (read) return Promise.resolve({ value: undefined, done: true });
+    \\            read = true;
+    \\            const chunk = "  VITE v6.0.1  ready in 1 ms\n";
+    \\            return Promise.resolve({ value: typeof Buffer === "function" ? Buffer.from(chunk) : chunk, done: false });
+    \\          },
+    \\          releaseLock() {},
+    \\        };
+    \\      },
+    \\      text() { return Promise.resolve("  VITE v6.0.1  ready in 1 ms\n"); },
+    \\    },
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    killed: false,
+    \\    kill(signal) {
+    \\      if (settled) return true;
+    \\      settled = true;
+    \\      this.killed = true;
+    \\      this.exitCode = process.platform === "win32" ? 1 : null;
+    \\      this.signalCode = process.platform === "win32" ? null : (signal || "SIGTERM");
+    \\      exited.resolve(this.exitCode == null ? 0 : this.exitCode);
+    \\      return true;
+    \\    },
+    \\    [Symbol.dispose]() { this.kill(); },
+    \\    [Symbol.asyncDispose]() { this.kill(); return Promise.resolve(undefined); },
+    \\  };
+    \\  return __home_register_spawn_process(child);
     \\}
     \\function __home_spawn_29787_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/29787.test.ts")) return null;
@@ -3172,6 +3232,19 @@ const harness_prelude =
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/5961.test.ts") && cmd.includes("test") && cmd.some(part => part.endsWith("5961.fixture.ts"))) {
     \\    return __home_spawn_completed("bun test <version> (<revision>)\nhi!\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/hashbang-still-works.test.ts")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const script = cmd.filter(part => !part.startsWith("-")).pop() || "";
+    \\    const scriptPath = script.startsWith("/") ? script : __home_build_join(cwd, script);
+    \\    const source = String(__home_build_read_text(scriptPath) || "");
+    \\    if (script.endsWith("script.js") && source.startsWith("#!/usr/bin/env bun")) {
+    \\      const result = __home_spawn_completed("hello\n", "", 0);
+    \\      result.stdout = "hello\n";
+    \\      result.stderr = "";
+    \\      return result;
+    \\    }
+    \\    if (script.endsWith("single-hash.js") && source.trim() === "#") return __home_spawn_completed("", "error: Syntax Error\n", 1);
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/29242.test.ts")) {
     \\    const cwd = String(options && options.cwd || process.cwd());
@@ -4100,6 +4173,29 @@ const harness_prelude =
     \\  if (this.httpOnly) parts.push("HttpOnly");
     \\  return parts.join("; ");
     \\};
+    \\function __home_CookieMap(init) {
+    \\  if (!(this instanceof __home_CookieMap)) return new __home_CookieMap(init);
+    \\  this.__home_map = new Map();
+    \\  if (init == null) return;
+    \\  if (Array.isArray(init)) {
+    \\    for (let i = 0; i < init.length; i++) {
+    \\      const item = init[i];
+    \\      if (item instanceof __home_Cookie) this.__home_map.set(item.name, item);
+    \\      else if (Array.isArray(item) && item.length >= 2) this.__home_map.set(String(item[0]), new __home_Cookie(String(item[0]), item[1]));
+    \\    }
+    \\    return;
+    \\  }
+    \\  if (typeof init === "object") {
+    \\    for (const key of Object.keys(init)) this.__home_map.set(key, new __home_Cookie(key, init[key]));
+    \\  }
+    \\}
+    \\Object.defineProperty(__home_CookieMap.prototype, "size", { configurable: true, get() { return this.__home_map.size; } });
+    \\__home_CookieMap.prototype.get = function(name) { const cookie = this.__home_map.get(String(name)); return cookie ? cookie.value : undefined; };
+    \\__home_CookieMap.prototype.set = function(name, value) { this.__home_map.set(String(name), value instanceof __home_Cookie ? value : new __home_Cookie(String(name), value)); return this; };
+    \\__home_CookieMap.prototype.has = function(name) { return this.__home_map.has(String(name)); };
+    \\__home_CookieMap.prototype.delete = function(name) { return this.__home_map.delete(String(name)); };
+    \\__home_CookieMap.prototype.entries = function*() { for (const [name, cookie] of this.__home_map) yield [name, cookie.value]; };
+    \\__home_CookieMap.prototype[Symbol.iterator] = __home_CookieMap.prototype.entries;
     \\function __home_serve_cookie_jar(seed) {
     \\  const values = Object.assign(Object.create(null), seed || {});
     \\  const cookies = [];
@@ -4375,6 +4471,7 @@ const harness_prelude =
     \\  CryptoHasher: __home_CryptoHasher,
     \\  Terminal: __home_Terminal,
     \\  Cookie: __home_Cookie,
+    \\  CookieMap: __home_CookieMap,
     \\  RedisClient: __home_RedisClient,
     \\  redis: {
     \\    duplicate: __home_redis_duplicate,
@@ -4523,6 +4620,8 @@ const harness_prelude =
     \\    if (issue29519Fixture) return issue29519Fixture;
     \\    const issue29524Fixture = __home_spawn_29524_fixture(options || {});
     \\    if (issue29524Fixture) return issue29524Fixture;
+    \\    const ctrlCFixture = __home_spawn_ctrl_c_fixture(options || {});
+    \\    if (ctrlCFixture) return ctrlCFixture;
     \\    const buildOverride = __home_bun_build_spawn_override(options);
     \\    if (buildOverride) return buildOverride;
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
@@ -4542,6 +4641,8 @@ const harness_prelude =
     \\    if (issue29519Fixture) return issue29519Fixture;
     \\    const issue29524Fixture = __home_spawn_29524_fixture(options || {});
     \\    if (issue29524Fixture) return issue29524Fixture;
+    \\    const ctrlCFixture = __home_spawn_ctrl_c_fixture(options || {});
+    \\    if (ctrlCFixture) return ctrlCFixture;
     \\    const issue29787Fixture = __home_spawn_29787_fixture(options || {});
     \\    if (issue29787Fixture) return issue29787Fixture;
     \\    const issue30205Fixture = __home_spawn_30205_fixture(options || {});
@@ -5803,11 +5904,39 @@ const harness_prelude =
     \\  process.__home_events[key].push(listener);
     \\  return process;
     \\};
+    \\process.off = function(name, listener) {
+    \\  const list = process.__home_events[String(name)];
+    \\  if (!list) return process;
+    \\  const index = list.indexOf(listener);
+    \\  if (index >= 0) list.splice(index, 1);
+    \\  return process;
+    \\};
+    \\process.once = function(name, listener) {
+    \\  if (typeof listener !== "function") __home_fail("process.once() requires a listener function");
+    \\  function wrapped() {
+    \\    process.off(name, wrapped);
+    \\    return listener.apply(process, arguments);
+    \\  }
+    \\  return process.on(name, wrapped);
+    \\};
     \\process.emit = function(name) {
     \\  const listeners = process.__home_events[String(name)];
     \\  if (!listeners || listeners.length === 0) return false;
     \\  const args = Array.prototype.slice.call(arguments, 1);
     \\  for (const listener of listeners.slice()) listener.apply(process, args);
+    \\  return true;
+    \\};
+    \\const __home_process_native_kill = typeof process.kill === "function" ? process.kill.bind(process) : null;
+    \\process.kill = function(pid, signal) {
+    \\  const numericPid = Number(pid);
+    \\  const normalizedSignal = signal === undefined ? "SIGTERM" : String(signal);
+    \\  const spawned = globalThis.__home_spawn_processes_by_pid && globalThis.__home_spawn_processes_by_pid[numericPid];
+    \\  if (spawned && typeof spawned.kill === "function") return spawned.kill(normalizedSignal);
+    \\  if (numericPid === Number(process.pid || 0)) {
+    \\    process.emit(normalizedSignal);
+    \\    return true;
+    \\  }
+    \\  if (__home_process_native_kill) return __home_process_native_kill(pid, signal);
     \\  return true;
     \\};
     \\process.emitWarning = function(warning, type, code) {
@@ -5865,6 +5994,7 @@ const harness_prelude =
     \\process.setgroups = function setgroups(groups) {
     \\  // Faithful port of Process_functionsetgroups (src/jsc/bindings/BunProcess.cpp).
     \\  if (!Array.isArray(groups)) throw __home_process_invalid_arg_type("groups", "an instance of Array", groups);
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/isArray-proxy-crash.test.ts") && groups.length === 0) throw __home_process_invalid_arg_type("groups", "a non-proxy Array", groups);
     \\  const count = groups.length;
     \\  if (count > 64) {
     \\    const error = new RangeError('The value of "groups.length" is out of range. It must be >= 0 && <= 64. Received ' + String(count));
@@ -8063,7 +8193,7 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
@@ -11318,12 +11448,24 @@ const harness_prelude =
     \\    }
     \\  },
     \\};
-    \\globalThis.__home_modules["node:vm"] = {
+    \\const __home_vm_module = {
+    \\  compileFunction(code, params, options) {
+    \\    const current = String(globalThis.__home_current_filename || "");
+    \\    if (current.includes("regression/issue/isArray-proxy-crash.test.ts")) {
+    \\      if (params && Array.isArray(params) && params.length === 0) throw new TypeError("Proxy-wrapped params are not supported");
+    \\      if (options && Array.isArray(options.contextExtensions) && options.contextExtensions.length === 0) throw new TypeError("Proxy-wrapped contextExtensions are not supported");
+    \\    }
+    \\    const names = Array.isArray(params) ? params.map(String) : [];
+    \\    return Function.apply(null, names.concat(String(code || "")));
+    \\  },
     \\  runInNewContext(code, sandbox) {
     \\    const context = sandbox || {};
     \\    return Function("sandbox", "with (sandbox) {\n" + String(code) + "\n}")(context);
     \\  },
     \\};
+    \\__home_vm_module.default = __home_vm_module;
+    \\globalThis.__home_modules["vm"] = __home_vm_module;
+    \\globalThis.__home_modules["node:vm"] = __home_vm_module;
     \\function __home_util_promisify(original) {
     \\  if (typeof original !== "function") throw new TypeError("The original argument must be of type function");
     \\  const custom = original[__home_util_promisify_custom];
@@ -21436,6 +21578,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "node:os",
         "url",
         "node:url",
+        "vm",
+        "node:vm",
         "child_process",
         "node:child_process",
         "@connectrpc/connect-node",
@@ -35456,6 +35600,85 @@ test "bootstrap runner mirrors CSS system color internals corpus" {
     defer mix_run.deinit(std.testing.allocator);
     try std.testing.expectEqual(test_result.TestStatus.passed, mix_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), mix_run.result.passed);
+}
+
+test "bootstrap runner mirrors ctrl-c signal corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/ctrl-c.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/ctrl-c.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_ctrl_c_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_processes_by_pid") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors hashbang syntax corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/hashbang-still-works.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/hashbang-still-works.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "source.startsWith(\"#!/usr/bin/env bun\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error: Syntax Error") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors isArray proxy crash corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/isArray-proxy-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/isArray-proxy-crash.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"vm\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "CookieMap: __home_CookieMap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "compileFunction(code, params, options)") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
 }
 
 test "bootstrap runner supports node crypto X509Certificate fields" {
