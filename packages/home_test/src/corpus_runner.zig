@@ -4114,7 +4114,8 @@ const harness_prelude =
     \\      const id = "js-" + (Bun.__home_next_js_serve_id++);
     \\      const port = 43000 + Bun.__home_next_js_serve_id;
     \\      const protocol = __home_serve_protocol(options);
-    \\      handle = { id, port, hostname: "localhost", origin: protocol + "://localhost:" + String(port), native: false };
+    \\      const hostname = String(options.hostname || "localhost");
+    \\      handle = { id, port, hostname, origin: protocol + "://" + hostname + ":" + String(port), native: false };
     \\    } else {
     \\      if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
     \\      handle = globalThis.__home_serveNative(options);
@@ -4126,7 +4127,12 @@ const harness_prelude =
     \\    handle.maxRequestBodySize = !handle.native && options.maxRequestBodySize !== undefined ? Number(options.maxRequestBodySize) : 0;
     \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? options.websocket : null;
     \\    handle.__home_websocket_topics = Object.create(null);
-    \\    globalThis.__home_serve_handles_by_origin[handle.origin] = handle;
+    \\    handle.__home_origins = [handle.origin];
+    \\    const localhostOrigin = __home_serve_protocol(options) + "://localhost:" + String(handle.port);
+    \\    const loopbackOrigin = __home_serve_protocol(options) + "://127.0.0.1:" + String(handle.port);
+    \\    if (!handle.__home_origins.includes(localhostOrigin)) handle.__home_origins.push(localhostOrigin);
+    \\    if (!handle.__home_origins.includes(loopbackOrigin)) handle.__home_origins.push(loopbackOrigin);
+    \\    for (const origin of handle.__home_origins) globalThis.__home_serve_handles_by_origin[origin] = handle;
     \\    const url = { origin: handle.origin, href: handle.origin + "/", hostname: handle.hostname || "localhost", port: String(handle.port), toString() { return this.href; } };
     \\    const server = {
     \\      __home_id: handle.id,
@@ -4137,8 +4143,11 @@ const harness_prelude =
     \\        if (handle.stopped) return;
     \\        handle.stopped = true;
     \\        handle.abrupt = !!closeActiveConnections;
-    \\        delete globalThis.__home_serve_handles_by_origin[handle.origin];
+    \\        for (const origin of handle.__home_origins || [handle.origin]) delete globalThis.__home_serve_handles_by_origin[origin];
     \\        if (handle.native) return globalThis.__home_stopServeNative(handle.id, handle.abrupt);
+    \\      },
+    \\      requestIP(request) {
+    \\        return { address: "127.0.0.1", family: "IPv4", port: request && request.__home_client_port ? request.__home_client_port : 0 };
     \\      },
     \\      fetch(input, init) {
     \\        const inputType = typeof input;
@@ -8058,7 +8067,7 @@ const harness_prelude =
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -11951,6 +11960,39 @@ const harness_prelude =
     \\  for (const key of Object.keys(headers)) target.setHeader(key, headers[key]);
     \\  return target;
     \\}
+    \\function __home_http_headers_object(headers) {
+    \\  const out = {};
+    \\  if (!headers) return out;
+    \\  if (headers instanceof Headers || headers instanceof Map) {
+    \\    headers.forEach((value, key) => { out[String(key).toLowerCase()] = String(value); });
+    \\    return out;
+    \\  }
+    \\  if (Array.isArray(headers)) {
+    \\    for (const entry of headers) {
+    \\      if (Array.isArray(entry) && entry.length >= 2) out[String(entry[0]).toLowerCase()] = String(entry[1]);
+    \\    }
+    \\    return out;
+    \\  }
+    \\  for (const key of Object.keys(headers)) out[String(key).toLowerCase()] = String(headers[key]);
+    \\  return out;
+    \\}
+    \\function __home_http_body_text(chunks) {
+    \\  return chunks.map(chunk => {
+    \\    if (chunk === undefined || chunk === null) return "";
+    \\    if (typeof chunk === "string") return chunk;
+    \\    if (typeof Buffer !== "undefined" && typeof Buffer.isBuffer === "function" && Buffer.isBuffer(chunk)) return chunk.toString();
+    \\    if (chunk instanceof Uint8Array) return new TextDecoder().decode(chunk);
+    \\    return String(chunk);
+    \\  }).join("");
+    \\}
+    \\function __home_http_body_event_chunk(chunk) {
+    \\  if (chunk === undefined || chunk === null) return chunk;
+    \\  if (typeof Buffer !== "undefined" && typeof Buffer.from === "function") {
+    \\    if (typeof Buffer.isBuffer === "function" && Buffer.isBuffer(chunk)) return chunk;
+    \\    if (chunk instanceof Uint8Array || typeof chunk === "string") return Buffer.from(chunk);
+    \\  }
+    \\  return chunk;
+    \\}
     \\function __home_http_emit_client_response(clientRequest, callback, statusCode, headers, body) {
     \\  const responseEvents = Object.assign(__home_http_event_target(), {
     \\    statusCode: Number(statusCode) || 200,
@@ -11960,6 +12002,7 @@ const harness_prelude =
     \\    }, {}),
     \\  });
     \\  if (typeof callback === "function") callback(responseEvents);
+    \\  clientRequest.emit("response", responseEvents);
     \\  Promise.resolve().then(() => {
     \\    const text = body === undefined || body === null ? "" : String(body);
     \\    if (text.length > 0) responseEvents.emit("data", text);
@@ -12109,15 +12152,15 @@ const harness_prelude =
     \\      return __home_http_apply_headers(this, headers);
     \\    },
     \\    write(chunk) {
-    \\      chunks.push(String(chunk || ""));
+    \\      if (chunk !== undefined) chunks.push(chunk);
     \\      return true;
     \\    },
     \\    end(chunk) {
-    \\      if (chunk !== undefined) chunks.push(String(chunk || ""));
+    \\      if (chunk !== undefined) chunks.push(chunk);
     \\      const serveHandle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
     \\      if (serveHandle && typeof serveHandle.fetch === "function") {
     \\        const requestInit = { method: String((options && options.method) || "GET").toUpperCase(), headers: new Headers(clientRequest.__home_headers) };
-    \\        if (chunks.length > 0) requestInit.body = chunks.join("");
+    \\        if (chunks.length > 0) requestInit.body = __home_http_body_text(chunks);
     \\        const request = new Request(url.href, requestInit);
     \\        Promise.resolve(serveHandle.fetch(request)).then(response => {
     \\          response = response || new Response("");
@@ -12134,9 +12177,12 @@ const harness_prelude =
     \\        Promise.resolve().then(() => clientRequest.emit("error", new Error("ECONNREFUSED")));
     \\        return this;
     \\      }
+    \\      const requestHeaders = __home_http_headers_object(clientRequest.__home_headers);
+    \\      if (requestHeaders["transfer-encoding"] !== undefined) delete requestHeaders["content-length"];
+    \\      else if (chunks.length > 0 && requestHeaders["content-length"] === undefined) requestHeaders["transfer-encoding"] = "chunked";
     \\      const serverRequest = Object.assign(__home_http_event_target(), {
     \\        method: String((options && options.method) || "GET").toUpperCase(),
-    \\        headers: new Headers(clientRequest.__home_headers),
+    \\        headers: requestHeaders,
     \\      });
     \\      const serverResponse = {
     \\        statusCode: 200,
@@ -12158,8 +12204,7 @@ const harness_prelude =
     \\      };
     \\      server.__home_handler(serverRequest, serverResponse);
     \\      Promise.resolve().then(() => {
-    \\        const text = chunks.join("");
-    \\        if (text.length > 0) serverRequest.emit("data", text);
+    \\        for (const chunk of chunks) serverRequest.emit("data", __home_http_body_event_chunk(chunk));
     \\        serverRequest.emit("end");
     \\      });
     \\      return this;
@@ -14508,6 +14553,19 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\let __home_fetch_next_client_port = 47000;
+    \\function __home_fetch_tls_keepalive_key(fetchOptions) {
+    \\  const tls = fetchOptions && fetchOptions.tls;
+    \\  if (!tls || typeof tls !== "object") return "";
+    \\  return Object.keys(tls).sort().map(key => key + ":" + String(tls[key])).join("|");
+    \\}
+    \\function __home_fetch_client_port(handle, fetchOptions) {
+    \\  if (!fetchOptions || !fetchOptions.keepalive) return __home_fetch_next_client_port++;
+    \\  const key = __home_fetch_tls_keepalive_key(fetchOptions);
+    \\  const ports = handle.__home_keepalive_ports || (handle.__home_keepalive_ports = Object.create(null));
+    \\  if (ports[key] === undefined) ports[key] = __home_fetch_next_client_port++;
+    \\  return ports[key];
+    \\}
     \\function fetch(input, init) {
     \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
     \\  const fetchOptions = init || (input && typeof input === "object" && !(typeof input.href === "string") ? input : {});
@@ -14557,7 +14615,8 @@ const harness_prelude =
     \\          return __home_fetch_thenable(new Response("", { status: 413 }), null);
     \\        }
     \\      }
-    \\      const response = handle.fetch(request);
+    \\      request.__home_client_port = __home_fetch_client_port(handle, fetchOptions);
+    \\      const response = handle.fetch(request, handle.server);
     \\      return Promise.resolve(response).finally(() => {
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      });
@@ -15597,6 +15656,28 @@ const harness_prelude =
     \\      }
     \\    }
     \\    return buffer;
+    \\  };
+    \\  Buffer.allocUnsafe = function(size) {
+    \\    if (!Number.isFinite(size) || size < 0) throw new RangeError("Invalid Buffer size");
+    \\    return new Buffer(size >>> 0);
+    \\  };
+    \\  Buffer.prototype.fill = function(value, offset, end, encoding) {
+    \\    if (typeof offset === "string") {
+    \\      encoding = offset;
+    \\      offset = 0;
+    \\      end = this.length;
+    \\    }
+    \\    const start = Math.max(0, Math.trunc(Number(offset === undefined ? 0 : offset)));
+    \\    const stop = Math.min(this.length, Math.max(start, Math.trunc(Number(end === undefined ? this.length : end))));
+    \\    if (typeof value === "number") {
+    \\      const byte = value & 0xff;
+    \\      for (let i = start; i < stop; i++) this[i] = byte;
+    \\      return this;
+    \\    }
+    \\    const bytes = ArrayBuffer.isView(value) ? Array.from(value) : __home_buffer_write_bytes(String(value === undefined ? 0 : value), encoding);
+    \\    if (bytes.length === 0) return this;
+    \\    for (let i = start; i < stop; i++) this[i] = bytes[(i - start) % bytes.length] & 0xff;
+    \\    return this;
     \\  };
     \\  Buffer.from = function(value, encoding) {
     \\    if (Array.isArray(value)) {
@@ -20970,6 +21051,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "arrayBufferToString(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "allocUnsafe(size)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync(milliseconds)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getSecret(name)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.sleepSync expects a non-negative number of milliseconds") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync: Bun.sleepSync") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "nanoseconds()") != null);
@@ -21122,6 +21204,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.prototype.clone") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_client_port") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestIP(request)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var HTMLRewriter = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTMLRewriter.prototype.onDocument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "doctype.remove") != null);
@@ -21136,6 +21220,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"yargs/yargs\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"jsonwebtoken\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc = function(size, fill)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.allocUnsafe = function(size)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.prototype.fill = function(value, offset, end, encoding)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "String.fromCharCode(this[i])") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.prototype.compare") != null);
@@ -23727,6 +23813,85 @@ test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpu
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/27049.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:http\"") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors ClientRequest content length corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import http from "node:http";
+        \\
+        \\async function post(headers, chunks) {
+        \\  const { promise, resolve } = Promise.withResolvers();
+        \\  const server = http.createServer((req, res) => {
+        \\    const body = [];
+        \\    req.on("data", chunk => body.push(chunk));
+        \\    req.on("end", () => {
+        \\      resolve({
+        \\        contentLength: req.headers["content-length"],
+        \\        transferEncoding: req.headers["transfer-encoding"],
+        \\        bodyLength: Buffer.concat(body).length,
+        \\      });
+        \\      res.writeHead(200);
+        \\      res.end("ok");
+        \\    });
+        \\  });
+        \\  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+        \\  try {
+        \\    const req = http.request({
+        \\      hostname: "127.0.0.1",
+        \\      port: server.address().port,
+        \\      method: "POST",
+        \\      headers,
+        \\    });
+        \\    await new Promise((resolve, reject) => {
+        \\      req.on("error", reject);
+        \\      req.on("response", () => resolve());
+        \\      for (let i = 0; i < chunks.length - 1; i++) req.write(chunks[i]);
+        \\      req.end(chunks[chunks.length - 1]);
+        \\    });
+        \\    return await promise;
+        \\  } finally {
+        \\    server.close();
+        \\  }
+        \\}
+        \\
+        \\test("preserves explicit Content-Length over multiple chunks", async () => {
+        \\  const result = await post({ "Content-Length": "6" }, [Buffer.from("abc"), Buffer.from("def")]);
+        \\  expect(result.contentLength).toBe("6");
+        \\  expect(result.transferEncoding).toBeUndefined();
+        \\  expect(result.bodyLength).toBe(6);
+        \\});
+        \\
+        \\test("uses chunked encoding without explicit Content-Length", async () => {
+        \\  const result = await post({}, [Buffer.from("abc"), Buffer.from("def")]);
+        \\  expect(result.contentLength).toBeUndefined();
+        \\  expect(result.transferEncoding).toBe("chunked");
+        \\  expect(result.bodyLength).toBe(6);
+        \\});
+        \\
+        \\test("explicit Transfer-Encoding wins over Content-Length", async () => {
+        \\  const result = await post({ "Content-Length": "6", "Transfer-Encoding": "chunked" }, [Buffer.from("abc"), Buffer.from("def")]);
+        \\  expect(result.contentLength).toBeUndefined();
+        \\  expect(result.transferEncoding).toBe("chunked");
+        \\  expect(result.bodyLength).toBe(6);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/27061.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
