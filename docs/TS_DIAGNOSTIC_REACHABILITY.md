@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 546 |
-| active reachable (parity targets) | 83 |
+| catalog-only total | 545 |
+| active reachable (parity targets) | 82 |
 | blocked/effectively-dead references | 2 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -29,8 +29,8 @@ diverge from the reference compiler.
 | 9xxxx — editor code-fix / refactor (language service) | 17 |
 | other | 14 |
 | 2xxx — checker / type engine | 9 |
-| 4xxx — declaration-emit (privacy / serialization) | 2 |
 | 6xxx — CLI / build / watch / resolution-trace messages | 2 |
+| 4xxx — declaration-emit (privacy / serialization) | 1 |
 
 ### 1xxx — parser / syntactic + program file-inclusion (39)
 
@@ -123,15 +123,14 @@ diverge from the reference compiler.
 - TS2859 `Excessive_complexity_comparing_types_0_and_1_2859`
 - TS2878 `This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878`
 
-### 4xxx — declaration-emit (privacy / serialization) (2)
-
-- TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
-- TS4118 `The_type_of_this_node_cannot_be_serialized_because_its_property_0_cannot_be_serialized_4118`
-
 ### 6xxx — CLI / build / watch / resolution-trace messages (2)
 
 - TS6215 `Using_compiler_options_of_project_reference_redirect_0_6215`
 - TS6305 `Output_file_0_has_not_been_built_from_source_file_1_6305`
+
+### 4xxx — declaration-emit (privacy / serialization) (1)
+
+- TS4082 `Default_export_of_the_module_has_or_is_using_private_name_0_4082`
 
 ## Blocked/effectively-dead references
 
