@@ -42,6 +42,7 @@ pub const IncludeKind = enum {
     lib_reference,
     compiler_type_reference,
     compiler_lib_reference,
+    default_lib_reference,
 };
 
 pub const IncludeReason = struct {
@@ -68,6 +69,7 @@ pub const IncludeReason = struct {
         const code_file_included_via_lib_reference_here: u32 = 1406;
         const code_file_is_entry_point_of_type_library_specified_here: u32 = 1419;
         const code_file_is_library_specified_here: u32 = 1423;
+        const code_file_is_default_library_for_target_specified_here: u32 = 1426;
         return switch (self.kind) {
             .import => code_file_included_via_import_here,
             .reference_file => code_file_included_via_reference_here,
@@ -75,6 +77,7 @@ pub const IncludeReason = struct {
             .lib_reference => code_file_included_via_lib_reference_here,
             .compiler_type_reference => code_file_is_entry_point_of_type_library_specified_here,
             .compiler_lib_reference => code_file_is_library_specified_here,
+            .default_lib_reference => code_file_is_default_library_for_target_specified_here,
             .root => null,
         };
     }
@@ -87,6 +90,7 @@ pub const IncludeReason = struct {
             .lib_reference => "File is included via library reference here.",
             .compiler_type_reference => "File is entry point of type library specified here.",
             .compiler_lib_reference => "File is library specified here.",
+            .default_lib_reference => "File is default library for target specified here.",
             .root => null,
         };
     }
@@ -1594,6 +1598,17 @@ pub const Program = struct {
                 try self.recordReferenceIncludeReason(target_id.?, .compiler_lib_reference, 0, lib_name, "", 0);
                 added += 1;
             }
+        } else if (cfg.compiler_options.no_lib != true) {
+            const default_lib = defaultLibNameForTarget(cfg.compiler_options.target);
+            const candidate = self.resolveLibReferencePath(containing_file, default_lib.lib_name) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+            } orelse return added;
+            defer self.gpa.free(candidate);
+            const target_id = try self.addResolvedIncludeFile(candidate);
+            if (target_id) |id| {
+                try self.recordReferenceIncludeReason(id, .default_lib_reference, 0, default_lib.target_name, "", 0);
+                added += 1;
+            }
         }
         return added;
     }
@@ -1611,6 +1626,30 @@ pub const Program = struct {
         return self.add(path, src) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return null,
+        };
+    }
+
+    const DefaultLibName = struct {
+        lib_name: []const u8,
+        target_name: []const u8,
+    };
+
+    fn defaultLibNameForTarget(target: ?tsconfig_mod.Target) DefaultLibName {
+        const resolved = target orelse return .{ .lib_name = "es2024", .target_name = "" };
+        return switch (resolved) {
+            .es3, .es5 => .{ .lib_name = "es5", .target_name = "es5" },
+            .es2015 => .{ .lib_name = "es2015", .target_name = "es2015" },
+            .es2016 => .{ .lib_name = "es2016", .target_name = "es2016" },
+            .es2017 => .{ .lib_name = "es2017", .target_name = "es2017" },
+            .es2018 => .{ .lib_name = "es2018", .target_name = "es2018" },
+            .es2019 => .{ .lib_name = "es2019", .target_name = "es2019" },
+            .es2020 => .{ .lib_name = "es2020", .target_name = "es2020" },
+            .es2021 => .{ .lib_name = "es2021", .target_name = "es2021" },
+            .es2022 => .{ .lib_name = "es2022", .target_name = "es2022" },
+            .es2023 => .{ .lib_name = "es2023", .target_name = "es2023" },
+            .es2024 => .{ .lib_name = "es2024", .target_name = "es2024" },
+            .es2025 => .{ .lib_name = "es2025", .target_name = "es2025" },
+            .esnext => .{ .lib_name = "esnext", .target_name = "esnext" },
         };
     }
 
@@ -2538,6 +2577,90 @@ test "Program: loadImportClosure follows compilerOptions.lib (TS1422 reason)" {
     try T.expectEqualStrings("es2020", lib.include_reason.?.specifier_text);
     try T.expectEqual(@as(?u32, 1423), lib.include_reason.?.relatedDiagnosticCode());
     try T.expectEqualStrings("File is library specified here.", lib.include_reason.?.relatedDiagnosticMessage().?);
+}
+
+test "Program: loadImportClosure follows default library for target (TS1425 reason)" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"target":"es2021"}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/lib.es2021.d.ts", "interface Promise<T> {}\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 1), added);
+
+    const lib_id = p.lookupPath("/proj/lib.es2021.d.ts") orelse return error.TestUnexpectedResult;
+    const lib = p.fileById(lib_id);
+    try T.expect(lib.include_reason != null);
+    try T.expectEqual(IncludeKind.default_lib_reference, lib.include_reason.?.kind);
+    try T.expectEqualStrings("es2021", lib.include_reason.?.specifier_text);
+    try T.expectEqual(@as(?u32, 1426), lib.include_reason.?.relatedDiagnosticCode());
+    try T.expectEqualStrings("File is default library for target specified here.", lib.include_reason.?.relatedDiagnosticMessage().?);
+}
+
+test "Program: loadImportClosure follows default library without explicit target (TS1424 reason)" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/lib.es2024.d.ts", "interface Promise<T> {}\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 1), added);
+
+    const lib_id = p.lookupPath("/proj/lib.es2024.d.ts") orelse return error.TestUnexpectedResult;
+    const lib = p.fileById(lib_id);
+    try T.expect(lib.include_reason != null);
+    try T.expectEqual(IncludeKind.default_lib_reference, lib.include_reason.?.kind);
+    try T.expectEqualStrings("", lib.include_reason.?.specifier_text);
+}
+
+test "Program: loadImportClosure respects compilerOptions.noLib" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"target":"es2021","noLib":true}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/lib.es2021.d.ts", "interface Promise<T> {}\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+
+    const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
+    try T.expectEqual(@as(usize, 0), added);
+    try T.expect(p.lookupPath("/proj/lib.es2021.d.ts") == null);
 }
 
 test "Program: loadImportClosure follows /// <reference path> (TS1400 reason)" {

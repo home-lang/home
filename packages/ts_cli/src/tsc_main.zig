@@ -1510,6 +1510,13 @@ fn printExplainFiles(
     const code_file_is_library_specified_here: u32 = 1423;
     _ = code_library_in_compiler_options;
     _ = code_file_is_library_specified_here;
+    // TS1424/TS1425/TS1426 — implicit default library inclusion.
+    const code_default_library: u32 = 1424;
+    const code_default_library_for_target: u32 = 1425;
+    const code_file_is_default_library_for_target_here: u32 = 1426;
+    _ = code_default_library;
+    _ = code_default_library_for_target;
+    _ = code_file_is_default_library_for_target_here;
     // TS1458–TS1461 explain how Node16/NodeNext implied module format was
     // derived from the nearest package.json, mirroring tsgo's
     // explainRedirectAndImpliedFormat helper.
@@ -1616,6 +1623,24 @@ fn printExplainFiles(
                             "  Library '{s}' specified in compilerOptions",
                             .{ir.specifier_text},
                         ) catch return;
+                        defer gpa.free(msg);
+                        std.debug.print("{s}\n", .{msg});
+                        printNodeFormatExplain(gpa, fs, f, module);
+                        continue;
+                    },
+                    .default_lib_reference => {
+                        const msg = if (ir.specifier_text.len != 0)
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Default library for target '{s}'",
+                                .{ir.specifier_text},
+                            ) catch return
+                        else
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Default library",
+                                .{},
+                            ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printNodeFormatExplain(gpa, fs, f, module);
