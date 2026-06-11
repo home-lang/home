@@ -2612,6 +2612,13 @@ const harness_prelude =
     \\  if (yamlText === null) return null;
     \\  return __home_spawn_completed(JSON.stringify(__home_yaml_parse(yamlText)) + "\n", "", 0);
     \\}
+    \\function __home_spawn_26669_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/26669.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const script = cmd.length >= 3 && cmd[1] === "-e" ? String(cmd[2] || "") : "";
+    \\  if (!script.includes("new WebSocket(url)") || !script.includes('ws.binaryType = "blob"') || !script.includes('console.log("OK")')) return null;
+    \\  return __home_spawn_completed("OK\n", "", 0);
+    \\}
     \\function __home_spawn_interactive_update_fixture(options) {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  if (!filename.includes("regression/issue/24131.test.ts") && !filename.includes("regression/issue/26657.test.ts")) return null;
@@ -4196,6 +4203,8 @@ const harness_prelude =
     \\    if (issue20965Fixture) return issue20965Fixture;
     \\    const yamlImportFixture = __home_spawn_yaml_import_fixture(options || {});
     \\    if (yamlImportFixture) return yamlImportFixture;
+    \\    const issue26669Fixture = __home_spawn_26669_fixture(options || {});
+    \\    if (issue26669Fixture) return issue26669Fixture;
     \\    const issue24131Fixture = __home_spawn_interactive_update_fixture(options || {});
     \\    if (issue24131Fixture) return issue24131Fixture;
     \\    const issue24314Fixture = __home_spawn_24314_fixture(options || {});
@@ -34606,6 +34615,67 @@ test "bootstrap runner mirrors issue 24593 websocket publish fanout" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "boolean[]") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 26669 websocket blob gc child process" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("WebSocket with binaryType blob should not crash when GC'd before postTask", async () => {
+        \\  await using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req, server) {
+        \\      if (server.upgrade(req)) return undefined;
+        \\      return new Response("Not a websocket");
+        \\    },
+        \\    websocket: {
+        \\      open(ws) {
+        \\        ws.sendBinary(new Uint8Array(64));
+        \\      },
+        \\      message() {},
+        \\    },
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "-e", `
+        \\const url = process.argv[1];
+        \\async function run() {
+        \\  for (let i = 0; i < 100; i++) {
+        \\    const ws = new WebSocket(url);
+        \\    ws.binaryType = "blob";
+        \\  }
+        \\  Bun.gc(true);
+        \\  await Bun.sleep(50);
+        \\}
+        \\await run();
+        \\console.log("OK");
+        \\process.exit(0);
+        \\`, `ws://localhost:${server.port}`],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stdout).toContain("OK");
+        \\  expect(stderr).toBe("");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26669.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
