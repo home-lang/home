@@ -19824,6 +19824,7 @@ fn appendBootstrapTypeScriptReplacement(
 
     for (replacements) |entry| {
         if (std.mem.startsWith(u8, source[idx..], entry.needle)) {
+            if (bootstrapReplacementWouldEraseTernaryFalseBranch(source, idx, entry.needle)) return null;
             try out.appendSlice(allocator, entry.replacement);
             return idx + entry.needle.len;
         }
@@ -19872,6 +19873,29 @@ fn isBootstrapTypeScriptNonNullAssertion(source: []const u8, idx: usize) bool {
 
     const next = nextBootstrapNonSpaceByte(source, idx) orelse return true;
     return isBootstrapNonNullFollower(next);
+}
+
+fn bootstrapReplacementWouldEraseTernaryFalseBranch(source: []const u8, idx: usize, needle: []const u8) bool {
+    if (!std.mem.startsWith(u8, needle, ": ")) return false;
+    const can_erase_expression =
+        std.mem.endsWith(u8, needle, ";") or
+        std.mem.endsWith(u8, needle, ")") or
+        std.mem.endsWith(u8, needle, "=>");
+    if (!can_erase_expression) return false;
+    if (std.mem.indexOfScalar(u8, needle, '=') != null and !std.mem.endsWith(u8, needle, "=>")) return false;
+
+    if (previousBootstrapNonSpaceByte(source, idx)) |previous| {
+        if (previous == '?') return false;
+    }
+
+    var line_start = idx;
+    while (line_start > 0 and source[line_start - 1] != '\n' and source[line_start - 1] != '\r') : (line_start -= 1) {}
+    const before_colon = source[line_start..idx];
+    if (std.mem.lastIndexOfScalar(u8, before_colon, '?')) |question_offset| {
+        const after_question = before_colon[question_offset + 1 ..];
+        if (std.mem.indexOfAny(u8, after_question, ";{}") == null) return true;
+    }
+    return false;
 }
 
 fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -28555,6 +28579,22 @@ test "bootstrap rewrite erases as any assertions" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, " as any") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new (BigInt)(1)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const invalidValues = [true, false, \"hi\", {}, [], undefined, null];") != null);
+}
+
+test "bootstrap rewrite preserves ternary false branches named like types" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("works", () => {
+        \\  let serverPort: number;
+        \\  const numberOfImports = serverPort > 100 ? 100 : number;
+        \\  expect(numberOfImports).toBe(numberOfImports);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/bundler_plugin.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "let serverPort;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "serverPort > 100 ? 100 : number;") != null);
 }
 
 test "bootstrap rewrite erases admitted type-only syntax" {
