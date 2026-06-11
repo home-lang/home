@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| catalog-only total | 466 |
-| active reachable (parity targets) | 1 |
+| catalog-only total | 465 |
+| active reachable (parity targets) | 0 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave catalog-only) | 461 |
 
@@ -25,11 +25,6 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 9xxxx — editor code-fix / refactor (language service) | 1 |
-
-### 9xxxx — editor code-fix / refactor (language service) (1)
-
-- TS90066 `Extract_binding_expressions_to_variable_90066`
 
 ## Blocked/effectively-dead references
 

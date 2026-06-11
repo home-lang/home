@@ -3019,6 +3019,107 @@ pub const Service = struct {
             });
         }
 
+        // ---- Extract exported binding patterns to typed variables (TS9019 -> TS90066)
+        var seen_binding_pattern_decls: std.ArrayListUnmanaged(hir_mod.NodeId) = .empty;
+        defer seen_binding_pattern_decls.deinit(gpa);
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.isolated_declarations_binding_element_exported) continue;
+
+            var var_node: hir_mod.NodeId = hir_mod.none_node_id;
+            for (stmts) |s| {
+                const inner = if (c.hir.kindOf(s) == .export_decl) hir_mod.exportOf(&c.hir, s).decl else s;
+                if (inner == hir_mod.none_node_id) continue;
+                const k = c.hir.kindOf(inner);
+                if (k != .let_decl and k != .const_decl and k != .var_decl) continue;
+                const v = hir_mod.varDeclOf(&c.hir, inner);
+                if (v.name == hir_mod.none_node_id) continue;
+                const name_kind = c.hir.kindOf(v.name);
+                if (name_kind != .object_pattern and name_kind != .array_pattern) continue;
+                const pattern_span = c.hir.spanOf(v.name);
+                if (d.pos < pattern_span.start or d.pos >= pattern_span.end) continue;
+                var_node = inner;
+                break;
+            }
+            if (var_node == hir_mod.none_node_id) continue;
+
+            var already_seen = false;
+            for (seen_binding_pattern_decls.items) |seen| {
+                if (seen == var_node) {
+                    already_seen = true;
+                    break;
+                }
+            }
+            if (already_seen) continue;
+            try seen_binding_pattern_decls.append(gpa, var_node);
+
+            const v = hir_mod.varDeclOf(&c.hir, var_node);
+            if (v.init == hir_mod.none_node_id) continue;
+            if (v.name == hir_mod.none_node_id) continue;
+            const pattern_kind = c.hir.kindOf(v.name);
+            if (pattern_kind != .object_pattern and pattern_kind != .array_pattern) continue;
+
+            const parent = c.hir.parentOf(var_node);
+            const direct_export = parent != hir_mod.none_node_id and c.hir.kindOf(parent) == .export_decl and hir_mod.exportOf(&c.hir, parent).decl == var_node;
+            const replace_node = if (direct_export) parent else var_node;
+            const replace_span = c.hir.spanOf(replace_node);
+            if (replace_span.end > f.source.len) continue;
+
+            const init_span = c.hir.spanOf(v.init);
+            if (init_span.start >= init_span.end or init_span.end > f.source.len) continue;
+            const init_src = f.source[init_span.start..init_span.end];
+            const init_type = c.hir.typeOf(v.init);
+
+            var new_text_buf: std.ArrayListUnmanaged(u8) = .empty;
+            errdefer new_text_buf.deinit(gpa);
+            const base_expr = if (c.hir.kindOf(v.init) == .identifier) init_src else "dest";
+            if (c.hir.kindOf(v.init) != .identifier) {
+                const dest_line = try std.fmt.allocPrint(gpa, "const dest = {s};\n", .{init_src});
+                defer gpa.free(dest_line);
+                try new_text_buf.appendSlice(gpa, dest_line);
+            }
+
+            var temp_count: u32 = 0;
+            var computed_count: u32 = 0;
+            const extracted_count = try appendExtractedBindingDeclarations(
+                gpa,
+                &new_text_buf,
+                c,
+                f.source,
+                v.name,
+                base_expr,
+                init_type,
+                if (direct_export) "export " else "",
+                &temp_count,
+                &computed_count,
+            );
+            if (extracted_count == 0) {
+                new_text_buf.deinit(gpa);
+                continue;
+            }
+            const new_text = try new_text_buf.toOwnedSlice(gpa);
+            errdefer gpa.free(new_text);
+
+            const title = try gpa.dupe(u8, "Extract binding expressions to variable");
+            errdefer gpa.free(title);
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, replace_span.start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, replace_span.end);
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                .start_col = if (start_pos.col > 0) start_pos.col - 1 else 0,
+                .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                .end_col = if (end_pos.col > 0) end_pos.col - 1 else 0,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+                .code = 90066,
+            });
+        }
+
         // ---- Extract object-property value to variable (TS901x -> TS90069)
         for (c.diagnostics.items) |d| {
             switch (d.code) {
@@ -4725,6 +4826,243 @@ pub const Service = struct {
         return gpa.dupe(InlineCompletion, empty);
     }
 };
+
+const BindingAccess = struct {
+    text: []u8,
+    type_id: hir_mod.TypeId,
+};
+
+fn appendExtractedBindingDeclarations(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    c: anytype,
+    source: []const u8,
+    pattern: hir_mod.NodeId,
+    base_expr: []const u8,
+    base_type: hir_mod.TypeId,
+    export_prefix: []const u8,
+    temp_count: *u32,
+    computed_count: *u32,
+) !usize {
+    const pattern_kind = c.hir.kindOf(pattern);
+    if (pattern_kind != .object_pattern and pattern_kind != .array_pattern) return 0;
+
+    var emitted: usize = 0;
+    var pending_key: hir_mod.NodeId = hir_mod.none_node_id;
+    var array_index: u32 = 0;
+    for (hir_mod.patternElements(&c.hir, pattern)) |elem| {
+        if (elem == hir_mod.none_node_id) {
+            if (pattern_kind == .array_pattern) array_index += 1;
+            continue;
+        }
+        if (c.hir.kindOf(elem) != .parameter) {
+            if (pattern_kind == .array_pattern) array_index += 1;
+            continue;
+        }
+        const p = hir_mod.parameterOf(&c.hir, elem);
+        if (p.flags.is_rename_binding_key or p.flags.is_computed_binding_key) {
+            pending_key = elem;
+            continue;
+        }
+        if (p.name == hir_mod.none_node_id) {
+            if (pattern_kind == .array_pattern) array_index += 1;
+            pending_key = hir_mod.none_node_id;
+            continue;
+        }
+
+        const access = if (pattern_kind == .array_pattern)
+            BindingAccess{
+                .text = try std.fmt.allocPrint(gpa, "{s}[{d}]", .{ base_expr, array_index }),
+                .type_id = bindingArrayElementType(c, base_type, array_index),
+            }
+        else
+            try bindingObjectAccess(gpa, out, c, source, base_expr, base_type, p, pending_key, computed_count) orelse {
+                pending_key = hir_mod.none_node_id;
+                continue;
+            };
+        defer gpa.free(access.text);
+        pending_key = hir_mod.none_node_id;
+
+        const name_kind = c.hir.kindOf(p.name);
+        if (name_kind == .object_pattern or name_kind == .array_pattern) {
+            emitted += try appendExtractedBindingDeclarations(
+                gpa,
+                out,
+                c,
+                source,
+                p.name,
+                access.text,
+                access.type_id,
+                export_prefix,
+                temp_count,
+                computed_count,
+            );
+        } else if (name_kind == .identifier) {
+            emitted += try appendExtractedBindingLeaf(
+                gpa,
+                out,
+                c,
+                source,
+                p,
+                access.text,
+                access.type_id,
+                export_prefix,
+                temp_count,
+            );
+        }
+
+        if (pattern_kind == .array_pattern) array_index += 1;
+    }
+    return emitted;
+}
+
+fn bindingObjectAccess(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    c: anytype,
+    source: []const u8,
+    base_expr: []const u8,
+    base_type: hir_mod.TypeId,
+    p: hir_mod.ParameterPayload,
+    pending_key: hir_mod.NodeId,
+    computed_count: *u32,
+) !?BindingAccess {
+    if (p.flags.is_rest) return null;
+    var prop_name: hir_mod.StringId = 0;
+    if (pending_key != hir_mod.none_node_id) {
+        const key = hir_mod.parameterOf(&c.hir, pending_key);
+        if (key.default_value == hir_mod.none_node_id) return null;
+        const key_span = c.hir.spanOf(key.default_value);
+        if (key_span.start >= key_span.end or key_span.end > source.len) return null;
+        if (key.flags.is_computed_binding_key) {
+            const key_src = source[key_span.start..key_span.end];
+            const key_name = try generatedBindingTempName(gpa, computed_count, "_");
+            defer gpa.free(key_name);
+            const key_line = try std.fmt.allocPrint(gpa, "const {s} = {s};\n", .{ key_name, key_src });
+            defer gpa.free(key_line);
+            try out.appendSlice(gpa, key_line);
+            if (std.mem.indexOfScalar(u8, base_expr, '.') != null) {
+                return .{
+                    .text = try std.fmt.allocPrint(gpa, "({s})[{s}]", .{ base_expr, key_name }),
+                    .type_id = c.hir.typeOf(p.name),
+                };
+            }
+            return .{
+                .text = try std.fmt.allocPrint(gpa, "{s}[{s}]", .{ base_expr, key_name }),
+                .type_id = c.hir.typeOf(p.name),
+            };
+        }
+        if (c.hir.kindOf(key.default_value) == .identifier) {
+            prop_name = hir_mod.identifierOf(&c.hir, key.default_value).name;
+        }
+        const key_src = source[key_span.start..key_span.end];
+        if (isIdentifierText(key_src)) {
+            return .{
+                .text = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ base_expr, key_src }),
+                .type_id = bindingObjectPropertyType(c, base_type, prop_name, p.name),
+            };
+        }
+        return .{
+            .text = try std.fmt.allocPrint(gpa, "{s}[{s}]", .{ base_expr, key_src }),
+            .type_id = bindingObjectPropertyType(c, base_type, prop_name, p.name),
+        };
+    }
+
+    if (c.hir.kindOf(p.name) != .identifier) return null;
+    prop_name = hir_mod.identifierOf(&c.hir, p.name).name;
+    const name = c.interner.get(prop_name);
+    if (!isIdentifierText(name)) return null;
+    return .{
+        .text = try std.fmt.allocPrint(gpa, "{s}.{s}", .{ base_expr, name }),
+        .type_id = bindingObjectPropertyType(c, base_type, prop_name, p.name),
+    };
+}
+
+fn appendExtractedBindingLeaf(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    c: anytype,
+    source: []const u8,
+    p: hir_mod.ParameterPayload,
+    access_expr: []const u8,
+    access_type: hir_mod.TypeId,
+    export_prefix: []const u8,
+    temp_count: *u32,
+) !usize {
+    if (c.hir.kindOf(p.name) != .identifier) return 0;
+    const name = c.interner.get(hir_mod.identifierOf(&c.hir, p.name).name);
+    if (!isIdentifierText(name)) return 0;
+    var t = access_type;
+    if (t == ts_checker.Primitive.none) t = c.hir.typeOf(p.name);
+    if (t == ts_checker.Primitive.none) return 0;
+    const type_text = renderType(gpa, &c.type_interner, &c.interner, t) catch return 0;
+    defer gpa.free(type_text);
+
+    if (p.default_value != hir_mod.none_node_id) {
+        const default_span = c.hir.spanOf(p.default_value);
+        if (default_span.start >= default_span.end or default_span.end > source.len) return 0;
+        const default_src = source[default_span.start..default_span.end];
+        const temp_name = try generatedBindingTempName(gpa, temp_count, "temp");
+        defer gpa.free(temp_name);
+        const temp_line = try std.fmt.allocPrint(gpa, "const {s} = {s};\n", .{ temp_name, access_expr });
+        defer gpa.free(temp_line);
+        try out.appendSlice(gpa, temp_line);
+        const line = try std.fmt.allocPrint(
+            gpa,
+            "{s}const {s}: {s} = {s} === undefined ? {s} : {s};\n",
+            .{ export_prefix, name, type_text, temp_name, default_src, access_expr },
+        );
+        defer gpa.free(line);
+        try out.appendSlice(gpa, line);
+        return 1;
+    }
+
+    const line = try std.fmt.allocPrint(
+        gpa,
+        "{s}const {s}: {s} = {s};\n",
+        .{ export_prefix, name, type_text, access_expr },
+    );
+    defer gpa.free(line);
+    try out.appendSlice(gpa, line);
+    return 1;
+}
+
+fn bindingObjectPropertyType(c: anytype, base_type: hir_mod.TypeId, prop_name: hir_mod.StringId, fallback_node: hir_mod.NodeId) hir_mod.TypeId {
+    if (base_type != ts_checker.Primitive.none and prop_name != 0) {
+        if (c.type_interner.objectMember(base_type, prop_name)) |member_t| return member_t;
+    }
+    if (fallback_node != hir_mod.none_node_id) return c.hir.typeOf(fallback_node);
+    return ts_checker.Primitive.none;
+}
+
+fn bindingArrayElementType(c: anytype, base_type: hir_mod.TypeId, index: u32) hir_mod.TypeId {
+    if (base_type == ts_checker.Primitive.none) return ts_checker.Primitive.none;
+    const flags = c.type_interner.pool.flagsOf(base_type);
+    if (flags.is_tuple) {
+        const payload = c.type_interner.pool.tuple_payloads.items[c.type_interner.pool.payloadOf(base_type)];
+        const elems = c.type_interner.pool.tuple_element_pool.items[payload.elements_start .. payload.elements_start + payload.elements_len];
+        if (index < elems.len) return elems[index].type;
+    }
+    return c.type_interner.objectNumberIndex(base_type);
+}
+
+fn generatedBindingTempName(gpa: std.mem.Allocator, count: *u32, prefix: []const u8) ![]u8 {
+    const idx = count.*;
+    count.* += 1;
+    if (std.mem.eql(u8, prefix, "_") and idx < 26) {
+        return std.fmt.allocPrint(gpa, "_{c}", .{@as(u8, 'a') + @as(u8, @intCast(idx))});
+    }
+    if (idx == 0) return gpa.dupe(u8, prefix);
+    return std.fmt.allocPrint(gpa, "{s}_{d}", .{ prefix, idx });
+}
+
+fn isIdentifierText(text: []const u8) bool {
+    if (text.len == 0 or !isIdentStart(text[0])) return false;
+    for (text[1..]) |ch| {
+        if (!isIdentCont(ch)) return false;
+    }
+    return true;
+}
 
 /// Byte span of a JSX tag name. Used by `findMatchingOpener` /
 /// `findMatchingCloser` so callers can pin the result to a single
@@ -9308,6 +9646,51 @@ test "Service: codeActions annotates expando function properties in namespace" {
     try T.expectEqual(@as(u32, 0), a.edits[0].start_line);
     try T.expectEqual(a.edits[0].start_line, a.edits[0].end_line);
     try T.expectEqual(a.edits[0].start_col, a.edits[0].end_col);
+}
+
+test "Service: codeActions extracts exported binding patterns to typed variables" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts",
+        \\function foo() {
+        \\    return { x: 1, y: 1 };
+        \\}
+        \\export const { x, y } = foo();
+    );
+    try program.compileAll(.{ .strict_flags = .{ .isolated_declarations = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Extract binding expressions to variable")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, 90066), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings(
+        "const dest = foo();\nexport const x: number = dest.x;\nexport const y: number = dest.y;\n",
+        a.edits[0].new_text,
+    );
 }
 
 test "Service: codeActions extracts isolatedDeclarations object property value to variable" {
