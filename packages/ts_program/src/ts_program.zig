@@ -30,7 +30,8 @@ pub const FileId = u32;
 /// `--explainFiles` line for each file. Root-file provenance is supplied
 /// by the CLI layer (which knows how the path was specified); the
 /// program records the *import* reason here while building the edge
-/// graph, so `--explainFiles` can render TS1393.
+/// graph, so `--explainFiles` can render TS1393 and diagnostics can
+/// attach the corresponding related-information anchor (TS1399/TS1401).
 pub const IncludeKind = enum { root, import, reference_file };
 
 pub const IncludeReason = struct {
@@ -44,7 +45,52 @@ pub const IncludeReason = struct {
     /// `.reference_file` the bare reference path (TS1400 renders it
     /// single-quoted itself). Owned by the program.
     specifier_text: []const u8 = "",
+    /// Byte offset of the import/reference specifier in the importer.
+    /// Used for TS1399/TS1401 related-information anchors.
+    specifier_pos: u32 = 0,
+
+    pub fn relatedDiagnosticCode(self: IncludeReason) ?u32 {
+        const code_file_included_via_import_here: u32 = 1399;
+        const code_file_included_via_reference_here: u32 = 1401;
+        return switch (self.kind) {
+            .import => code_file_included_via_import_here,
+            .reference_file => code_file_included_via_reference_here,
+            .root => null,
+        };
+    }
+
+    pub fn relatedDiagnosticMessage(self: IncludeReason) ?[]const u8 {
+        return switch (self.kind) {
+            .import => "File is included via import here.",
+            .reference_file => "File is included via reference here.",
+            .root => null,
+        };
+    }
+
+    pub fn specifierSpanLen(self: IncludeReason) u32 {
+        return @intCast(@min(self.specifier_text.len, std.math.maxInt(u32)));
+    }
 };
+
+fn findIncludeSpecifierPosition(source: []const u8, specifier_text: []const u8) u32 {
+    if (specifier_text.len == 0) return 0;
+    if (std.mem.indexOf(u8, source, specifier_text)) |pos| {
+        return @intCast(@min(pos, std.math.maxInt(u32)));
+    }
+    var needle = specifier_text;
+    if (specifier_text.len >= 2) {
+        const first = specifier_text[0];
+        const last = specifier_text[specifier_text.len - 1];
+        if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) {
+            needle = specifier_text[1 .. specifier_text.len - 1];
+        }
+    }
+    if (std.mem.indexOf(u8, source, needle)) |pos| {
+        const quoted_pos = if (pos > 0 and (source[pos - 1] == '"' or source[pos - 1] == '\'')) pos - 1 else pos;
+        return @intCast(@min(quoted_pos, std.math.maxInt(u32)));
+    }
+    return 0;
+}
 
 /// One file in the program. Owned by the program.
 pub const File = struct {
@@ -1375,6 +1421,7 @@ pub const Program = struct {
                             .kind = .import,
                             .importer = f.id,
                             .specifier_text = quoted,
+                            .specifier_pos = findIncludeSpecifierPosition(f.source, quoted),
                         };
                     }
                 }
@@ -1453,6 +1500,7 @@ pub const Program = struct {
                             .kind = .reference_file,
                             .importer = f.id,
                             .specifier_text = try self.gpa.dupe(u8, ref.name),
+                            .specifier_pos = ref.pos,
                         };
                     }
                     new_in_round += 1;
@@ -2245,6 +2293,13 @@ test "Program: imported file records TS1393 include reason (specifier + importer
     try T.expectEqual(IncludeKind.import, b.include_reason.?.kind);
     try T.expectEqual(a_id, b.include_reason.?.importer);
     try T.expectEqualStrings("\"./b\"", b.include_reason.?.specifier_text);
+    try T.expectEqual(@as(?u32, 1399), b.include_reason.?.relatedDiagnosticCode());
+    try T.expectEqualStrings("File is included via import here.", b.include_reason.?.relatedDiagnosticMessage().?);
+    try T.expectEqual(@as(u32, 18), b.include_reason.?.specifier_pos);
+    try T.expectEqual(@as(u32, 5), b.include_reason.?.specifierSpanLen());
+    const a_source = p.fileById(a_id).source;
+    const import_pos = b.include_reason.?.specifier_pos;
+    try T.expectEqualStrings("'./b'", a_source[import_pos .. import_pos + b.include_reason.?.specifierSpanLen()]);
 
     // The root importer itself has no recorded import reason — its
     // provenance is supplied by the CLI layer.
@@ -2273,6 +2328,13 @@ test "Program: loadImportClosure follows /// <reference path> (TS1400 reason)" {
     try T.expectEqual(IncludeKind.reference_file, dep.include_reason.?.kind);
     try T.expectEqual(main_id, dep.include_reason.?.importer);
     try T.expectEqualStrings("./dep.ts", dep.include_reason.?.specifier_text);
+    try T.expectEqual(@as(?u32, 1401), dep.include_reason.?.relatedDiagnosticCode());
+    try T.expectEqualStrings("File is included via reference here.", dep.include_reason.?.relatedDiagnosticMessage().?);
+    try T.expectEqual(@as(u32, 21), dep.include_reason.?.specifier_pos);
+    try T.expectEqual(@as(u32, 8), dep.include_reason.?.specifierSpanLen());
+    const main_source = p.fileById(main_id).source;
+    const ref_pos = dep.include_reason.?.specifier_pos;
+    try T.expectEqualStrings("./dep.ts", main_source[ref_pos .. ref_pos + dep.include_reason.?.specifierSpanLen()]);
 }
 
 test "Program: tsx flag inherits from .tsx file extension" {
@@ -2334,8 +2396,7 @@ test "Program: declaration emit reports nonlocal module interface augmentation (
     var p = Program.init(T.allocator, &resolver);
     defer p.deinit();
     _ = try p.add("/a.ts", "export interface A { value: string; }");
-    _ = try p.add(
-        "/augment.ts",
+    _ = try p.add("/augment.ts",
         \\import "./a";
         \\declare module "./a" {
         \\  interface A { extra(): string; }

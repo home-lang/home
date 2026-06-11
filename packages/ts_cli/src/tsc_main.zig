@@ -1121,7 +1121,8 @@ const RootInclusion = struct {
 
 /// `--explainFiles`: print each program file with the reason it is part of
 /// the compilation, mirroring tsc's `ExplainFiles`. Root (input) files use
-/// the provenance-derived reason; any transitively-added file uses TS1399.
+/// the provenance-derived reason; transitively-added files use their recorded
+/// import/reference reason.
 fn printExplainFiles(
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
@@ -1239,41 +1240,32 @@ fn compositeDiagnosticAnchor(
     if (f.include_reason) |reason| {
         if (reason.importer < program.files.items.len) {
             const importer = program.fileById(reason.importer);
-            const pos = findIncludeSpecifierPosition(importer.source, reason.specifier_text);
-            const span_len: u32 = blk: {
-                if (reason.specifier_text.len >= 2) {
-                    const first = reason.specifier_text[0];
-                    const last = reason.specifier_text[reason.specifier_text.len - 1];
-                    if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) {
-                        break :blk @intCast(@min(reason.specifier_text.len, std.math.maxInt(u32)));
-                    }
-                }
-                break :blk @intCast(@min(reason.specifier_text.len, std.math.maxInt(u32)));
-            };
-            return .{ .file = importer, .pos = pos, .span_len = span_len };
+            return .{ .file = importer, .pos = reason.specifier_pos, .span_len = reason.specifierSpanLen() };
         }
     }
     return .{ .file = f, .pos = 0, .span_len = 0 };
 }
 
-fn findIncludeSpecifierPosition(source: []const u8, specifier_text: []const u8) u32 {
-    if (specifier_text.len == 0) return 0;
-    if (std.mem.indexOf(u8, source, specifier_text)) |pos| {
-        return @intCast(@min(pos, std.math.maxInt(u32)));
-    }
-    var needle = specifier_text;
-    if (specifier_text.len >= 2) {
-        const first = specifier_text[0];
-        const last = specifier_text[specifier_text.len - 1];
-        if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) {
-            needle = specifier_text[1 .. specifier_text.len - 1];
-        }
-    }
-    if (std.mem.indexOf(u8, source, needle)) |pos| {
-        const quoted_pos = if (pos > 0 and (source[pos - 1] == '"' or source[pos - 1] == '\'')) pos - 1 else pos;
-        return @intCast(@min(quoted_pos, std.math.maxInt(u32)));
-    }
-    return 0;
+fn compositeDiagnosticRelated(
+    program: *const ts_program.Program,
+    f: *const ts_program.File,
+    out: *[1]ts_diagnostics.Related,
+) []const ts_diagnostics.Related {
+    const reason = f.include_reason orelse return &.{};
+    if (reason.importer >= program.files.items.len) return &.{};
+    const code = reason.relatedDiagnosticCode() orelse return &.{};
+    const message = reason.relatedDiagnosticMessage() orelse return &.{};
+    const importer = program.fileById(reason.importer);
+    const lc = ts_diagnostics.positionToLineCol(importer.source, reason.specifier_pos);
+    out[0] = .{
+        .file = importer.path,
+        .line = lc.line,
+        .col = lc.col,
+        .code = code,
+        .code_prefix = .TS,
+        .message = message,
+    };
+    return out[0..1];
 }
 
 fn printCompositeProjectFileListDiagnostics(
@@ -1294,6 +1286,8 @@ fn printCompositeProjectFileListDiagnostics(
         const lc = ts_diagnostics.positionToLineCol(anchor.file.source, anchor.pos);
         const message = compositeProjectFileListMessage(gpa, f.path, config_path) catch continue;
         defer gpa.free(message);
+        var related_buf: [1]ts_diagnostics.Related = undefined;
+        const related = compositeDiagnosticRelated(program, f, &related_buf);
         const diag: ts_diagnostics.Diagnostic = .{
             .file = anchor.file.path,
             .line = lc.line,
@@ -1303,6 +1297,7 @@ fn printCompositeProjectFileListDiagnostics(
             .severity = .err,
             .message = message,
             .span_len = anchor.span_len,
+            .related = related,
         };
         const formatted = if (use_pretty)
             ts_diagnostics.formatPretty(gpa, diag, anchor.file.source, use_color) catch continue
@@ -3201,9 +3196,30 @@ test "tsc_main: TS6307 diagnostic message and anchor match composite file list v
         msg,
     );
 
-    const src = "import { dep } from './dep';\n";
-    const pos = findIncludeSpecifierPosition(src, "\"./dep\"");
-    const lc = ts_diagnostics.positionToLineCol(src, pos);
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/repo/src/main.ts", "import { dep } from './dep';\n");
+    try vfs.addFile("/repo/src/dep.ts", "export const dep = 1;\n");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/repo/src/main.ts", "import { dep } from './dep';\n");
+    const dep_id = try program.add("/repo/src/dep.ts", "export const dep = 1;\n");
+    try program.compileAll(.{});
+
+    const dep = program.fileById(dep_id);
+    const anchor = compositeDiagnosticAnchor(&program, dep);
+    const lc = ts_diagnostics.positionToLineCol(anchor.file.source, anchor.pos);
+    try std.testing.expectEqualStrings("/repo/src/main.ts", anchor.file.path);
     try std.testing.expectEqual(@as(u32, 1), lc.line);
     try std.testing.expectEqual(@as(u32, 21), lc.col);
+    try std.testing.expectEqual(@as(u32, 7), anchor.span_len);
+
+    var related_buf: [1]ts_diagnostics.Related = undefined;
+    const related = compositeDiagnosticRelated(&program, dep, &related_buf);
+    try std.testing.expectEqual(@as(usize, 1), related.len);
+    try std.testing.expectEqual(@as(u32, 1399), related[0].code);
+    try std.testing.expectEqualStrings("File is included via import here.", related[0].message);
+    try std.testing.expectEqualStrings("/repo/src/main.ts", related[0].file);
 }
