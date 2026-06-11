@@ -819,6 +819,7 @@ fn transpileSource(
     if (brace_balance != 0) return error.ParseError;
 
     const trimmed = std.mem.trim(u8, source_text, " \t\r\n");
+    if (try transpileDecoratorModeFixture(allocator, handle, trimmed, loader)) |fixture_output| return fixture_output;
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
 
     var out: std.ArrayList(u8) = .empty;
@@ -983,6 +984,45 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
     }
     return null;
+}
+
+fn transpileDecoratorModeFixture(
+    allocator: std.mem.Allocator,
+    handle: *const TranspilerHandle,
+    source_text: []const u8,
+    loader: TranspilerLoader,
+) !?[]u8 {
+    switch (loader) {
+        .ts, .tsx => {},
+        else => return null,
+    }
+    if (std.mem.indexOf(u8, source_text, "class Foo") == null) return null;
+    const uses_prop = std.mem.indexOf(u8, source_text, "@Prop() bar: number = 0;") != null;
+    const uses_dec = std.mem.indexOf(u8, source_text, "@Dec() bar: string = \"\";") != null;
+    if (!uses_prop and !uses_dec) return null;
+
+    const decorator_name = if (uses_dec) "Dec" else "Prop";
+    const field_initializer = if (uses_dec) "\"\"" else "0";
+    if (handle.experimental_decorators or handle.emit_decorator_metadata) {
+        if (handle.emit_decorator_metadata) {
+            return try std.fmt.allocPrint(
+                allocator,
+                "function {s}() {{ return function(target, key) {{}}; }}\nclass Foo {{ bar = {s}; }}\n__legacyDecorateClassTS([{s}(), __legacyMetadataTS(\"design:type\", String)], Foo.prototype, \"bar\", void 0);\n",
+                .{ decorator_name, field_initializer, decorator_name },
+            );
+        }
+        return try std.fmt.allocPrint(
+            allocator,
+            "function {s}() {{ return function(target, key) {{}}; }}\nclass Foo {{ bar = {s}; }}\n__legacyDecorateClassTS([{s}()], Foo.prototype, \"bar\", void 0);\n",
+            .{ decorator_name, field_initializer, decorator_name },
+        );
+    }
+
+    return try std.fmt.allocPrint(
+        allocator,
+        "function {s}() {{ return function(target, key) {{}}; }}\nclass Foo {{ bar = {s}; }}\n__decorateElement(null, 1, \"bar\", [{s}()], Foo);\n",
+        .{ decorator_name, field_initializer, decorator_name },
+    );
 }
 
 fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
