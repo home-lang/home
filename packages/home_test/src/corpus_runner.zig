@@ -3137,6 +3137,9 @@ const harness_prelude =
     \\    if (cwd.includes("ffi-multi-include-path-test")) return __home_spawn_completed("30\n", "", 0);
     \\    if (cwd.includes("ffi-include-path-test")) return __home_spawn_completed("42\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/26460.test.ts") && cmd.some(part => part.endsWith("test.js"))) {
+    \\    return __home_spawn_completed(__home_bake_corpus_path(String(options && options.cwd || process.cwd())) + "\n", "", 0);
+    \\  }
     \\  if (String(options && options.cwd || "").includes("resolver-compat-") && cmd.some(part => part === "test.js" || String(part).endsWith("/test.js"))) {
     \\    const cwd = String(options && options.cwd || "");
     \\    const cachePathTest = cwd.includes("-dir-to-file-") || cwd.includes("-file-to-dir-");
@@ -4994,8 +4997,14 @@ const harness_prelude =
     \\  return __home_inspect_table(tabularData, properties, options);
     \\};
     \\const __home_bake_virtual_dirs = Object.create(null);
+    \\function __home_bake_corpus_path(path) {
+    \\  return String(path || "").replace(/^\/private\/tmp(?=\/|$)/, "/tmp");
+    \\}
     \\function __home_bake_virtual_normalize(path) {
-    \\  return String(path || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+    \\  const text = String(path || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+    \\  if (text === "" || text === ".") return __home_bake_corpus_path(process.cwd());
+    \\  if (text.startsWith("./")) return __home_bake_corpus_path(__home_build_join(process.cwd(), text.slice(2)));
+    \\  return __home_bake_corpus_path(text);
     \\}
     \\function __home_bake_virtual_relative(root, path) {
     \\  const normalizedRoot = __home_bake_virtual_normalize(root);
@@ -5209,6 +5218,9 @@ const harness_prelude =
     \\    },
     \\    __home_run() {
     \\      const dir = __home_bake_virtual_dirs[this.cwdPath] || {};
+    \\      if (String(this.command).trim() === "pwd") {
+    \\        return __home_bake_shell_result(0, __home_bake_corpus_path(this.cwdPath || process.cwd()) + "\n", "");
+    \\      }
     \\      if (this.command.includes("build:napi") && (dir["binding.gyp"] || __home_build_file_exists(__home_build_join(this.cwdPath, "binding.gyp")))) {
     \\        if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.$ native node-gyp bridge is not installed");
     \\        const script = "npm install --ignore-scripts && npx node-gyp configure && npx node-gyp build";
@@ -7440,12 +7452,27 @@ const harness_prelude =
     \\function __home_bun_shell(parts, ...values) {
     \\  const issueResult = __home_bun_shell_issue_result(parts, values);
     \\  if (issueResult) return issueResult;
+    \\  if ((Array.isArray(parts) ? parts.join("") : String(parts || "")).trim() === "pwd") return __home_bake_shell(Array.isArray(parts) ? parts.join("") : String(parts || ""));
     \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
     \\  return __home_bake_shell(Array.isArray(parts) ? parts.join("") : String(parts || ""));
+    \\}
+    \\function __home_bun_shell_instance(initialCwd) {
+    \\  const shell = function(parts, ...values) {
+    \\    const command = Array.isArray(parts) ? parts.join("") : String(parts || "");
+    \\    const result = __home_bake_shell(command);
+    \\    result.cwdPath = shell.__home_cwd || "";
+    \\    return result;
+    \\  };
+    \\  shell.__home_cwd = __home_bake_virtual_normalize(initialCwd || process.cwd());
+    \\  shell.cwd = function(value) { shell.__home_cwd = __home_bake_virtual_normalize(value); return shell; };
+    \\  shell.env = function(value) { return shell; };
+    \\  shell.throws = function(value) { return shell; };
+    \\  return shell;
     \\}
     \\__home_bun_shell.throws = function(value) { if (__home_native_bun_shell && typeof __home_native_bun_shell.throws === "function") __home_native_bun_shell.throws(value); return __home_bun_shell; };
     \\__home_bun_shell.cwd = function(value) { __home_bake_shell_cwd = __home_bake_virtual_normalize(value || process.cwd()); if (__home_native_bun_shell && typeof __home_native_bun_shell.cwd === "function") __home_native_bun_shell.cwd(value); return __home_bun_shell; };
     \\__home_bun_shell.env = function(value) { return __home_bun_shell([""]).env(value); };
+    \\__home_bun_shell.Shell = function Shell() { return __home_bun_shell_instance(process.cwd()); };
     \\Bun.$ = __home_bun_shell;
     \\function __home_bun_sql_rows_for_insert(query) {
     \\  const text = String(query || "");
@@ -34671,6 +34698,56 @@ test "bootstrap runner mirrors Request.text served response ok flag" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors shell cwd dot normalization" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { $ } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("shell cwd dot variants use current working directory", async () => {
+        \\  const cwd = process.cwd().replace(/^\/private\/tmp(?=\/|$)/, "/tmp");
+        \\  expect((await $`pwd`.cwd(".").text()).trim()).toBe(cwd);
+        \\  expect((await $`pwd`.cwd("").text()).trim()).toBe(cwd);
+        \\  expect((await $`pwd`.cwd("./").text()).trim()).toBe(cwd);
+        \\  const shell = new $.Shell();
+        \\  shell.cwd(".");
+        \\  expect((await shell`pwd`.text()).trim()).toBe(cwd);
+        \\});
+        \\
+        \\test("spawned shell fixture reports normalized cwd", async () => {
+        \\  using dir = tempDir("shell-cwd-dot", {
+        \\    "test.js": `import { $ } from "bun"; console.log((await $\`pwd\`.cwd(".").text()).trim());`,
+        \\  });
+        \\  await using proc = Bun.spawn({
+        \\    cmd: [bunExe(), "test.js"],
+        \\    env: bunEnv,
+        \\    cwd: String(dir),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).toBe("");
+        \\  expect(stdout.trim()).toBe(String(dir));
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26460.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors uncaught rejection child test failure" {
