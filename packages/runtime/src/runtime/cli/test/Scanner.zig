@@ -120,6 +120,26 @@ fn readDirWithName(this: *Scanner, name: []const u8, handle: ?std.Io.Dir) !*File
     return try this.fs.fs.readDirectoryWithIterator(name, handle, 0, true, *Scanner, this);
 }
 
+/// Directory names whose entire subtree is skipped while scanning for test
+/// files. Upstream Bun only prunes `node_modules`; Home additionally vendors
+/// dependencies (and the pinned Zig toolchain) under `pantry/`, which is the
+/// project's package directory (see CLAUDE.md).
+///
+/// Pruning `pantry/` is not merely a speed optimization. The resolver keeps a
+/// directory-entry cache that holds every scanned directory's fd open (see
+/// `RealFS.needToCloseFiles`, which never closes when the soft NOFILE limit has
+/// been raised to 1<<20). `pantry/` is ~7.9k directories, so scanning it leaves
+/// >10k fds open. On macOS that silently breaks `posix_spawn`: a file action
+/// `dup2`-ing a stdio socketpair whose fd lands at or above OPEN_MAX (10240)
+/// does not connect in the child, so any spawned subprocess with a `"pipe"`
+/// stdout/stderr produces empty output (and the child sees EPIPE). Keeping the
+/// scan's fd footprint small is what keeps subprocess pipe I/O working.
+pub fn isExcludedDirName(name: []const u8) bool {
+    if (name.len > 0 and name[0] == '.') return true;
+    return strings.eqlComptime(name, "node_modules") or
+        strings.eqlComptime(name, "pantry");
+}
+
 pub const test_name_suffixes = [_][]const u8{
     ".test",
     "_test",
@@ -200,7 +220,7 @@ pub fn next(this: *Scanner, entry: *FileSystem.Entry, fd: bun.FD) void {
     this.has_iterated = true;
     switch (entry.kind(&this.fs.fs, true)) {
         .dir => {
-            if ((name.len > 0 and name[0] == '.') or strings.eqlComptime(name, "node_modules")) {
+            if (isExcludedDirName(name)) {
                 return;
             }
 
@@ -266,3 +286,27 @@ const jest = jsc.Jest;
 
 const strings = bun.strings;
 const StringOrTinyString = strings.StringOrTinyString;
+
+test "isExcludedDirName: prunes dependency and dotfile trees" {
+    const testing = std.testing;
+    // Dependency directories: upstream node_modules + Home's pantry.
+    try testing.expect(isExcludedDirName("node_modules"));
+    try testing.expect(isExcludedDirName("pantry"));
+    // Any dot-prefixed directory (.git, .zig-cache, .native, .hidden).
+    try testing.expect(isExcludedDirName(".git"));
+    try testing.expect(isExcludedDirName(".zig-cache"));
+    try testing.expect(isExcludedDirName("."));
+}
+
+test "isExcludedDirName: keeps ordinary source directories" {
+    const testing = std.testing;
+    try testing.expect(!isExcludedDirName("packages"));
+    try testing.expect(!isExcludedDirName("src"));
+    try testing.expect(!isExcludedDirName("tests"));
+    // Substring / prefix matches must not trigger exclusion — only exact names.
+    try testing.expect(!isExcludedDirName("pantry-utils"));
+    try testing.expect(!isExcludedDirName("my_node_modules"));
+    try testing.expect(!isExcludedDirName("node_modules_old"));
+    // A bare empty name is not a dotfile and not a dependency dir.
+    try testing.expect(!isExcludedDirName(""));
+}
