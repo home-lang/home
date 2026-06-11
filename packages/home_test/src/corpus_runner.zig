@@ -4866,6 +4866,14 @@ const harness_prelude =
     \\  inspect(value) {
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
     \\    if (value instanceof Error) return String(value.stack || value.name + ": " + value.message);
+    \\    if (typeof value === "function") {
+    \\      const name = value.name || "";
+    \\      const source = Function.prototype.toString.call(value);
+    \\      const classMatch = source.match(/^class\s+([A-Za-z_$][A-Za-z0-9_$]*)?(?:\s+extends\s+([A-Za-z_$][A-Za-z0-9_$]*))?/);
+    \\      const knownClassNames = new Set(["Blob", "ByteLengthQueuingStrategy", "CompressionStream", "CountQueuingStrategy", "DecompressionStream", "Event", "ReadableByteStreamController", "ReadableStream", "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest", "ReadableStreamDefaultController", "ReadableStreamDefaultReader", "Request", "Response", "TextDecoderStream", "TextEncoderStream", "TransformStream", "TransformStreamDefaultController", "URL", "WritableStream", "WritableStreamDefaultController", "WritableStreamDefaultWriter"]);
+    \\      if (classMatch) return "[class " + (classMatch[1] || name || "anonymous") + (classMatch[2] ? " extends " + classMatch[2] : "") + "]";
+    \\      if (knownClassNames.has(name)) return "[class " + name + "]";
+    \\    }
     \\    if (typeof Headers === "function" && value instanceof Headers) {
     \\      const json = value.toJSON();
     \\      let keys = Object.keys(json);
@@ -17236,6 +17244,39 @@ const harness_prelude =
     \\    };
     \\  }
     \\}
+    \\var __home_ByteLengthQueuingStrategy = typeof globalThis.ByteLengthQueuingStrategy === "function" ? globalThis.ByteLengthQueuingStrategy : function ByteLengthQueuingStrategy() {};
+    \\var __home_CompressionStream = typeof globalThis.CompressionStream === "function" ? globalThis.CompressionStream : function CompressionStream() {};
+    \\var __home_CountQueuingStrategy = typeof globalThis.CountQueuingStrategy === "function" ? globalThis.CountQueuingStrategy : function CountQueuingStrategy() {};
+    \\var __home_DecompressionStream = typeof globalThis.DecompressionStream === "function" ? globalThis.DecompressionStream : function DecompressionStream() {};
+    \\var __home_ReadableByteStreamController = typeof globalThis.ReadableByteStreamController === "function" ? globalThis.ReadableByteStreamController : function ReadableByteStreamController() {};
+    \\var __home_ReadableStreamBYOBRequest = typeof globalThis.ReadableStreamBYOBRequest === "function" ? globalThis.ReadableStreamBYOBRequest : function ReadableStreamBYOBRequest() {};
+    \\var __home_ReadableStreamDefaultController = typeof globalThis.ReadableStreamDefaultController === "function" ? globalThis.ReadableStreamDefaultController : function ReadableStreamDefaultController() {};
+    \\var __home_ReadableStreamDefaultReader = typeof globalThis.ReadableStreamDefaultReader === "function" ? globalThis.ReadableStreamDefaultReader : function ReadableStreamDefaultReader() {};
+    \\var __home_TransformStreamDefaultController = typeof globalThis.TransformStreamDefaultController === "function" ? globalThis.TransformStreamDefaultController : function TransformStreamDefaultController() {};
+    \\var __home_WritableStreamDefaultController = typeof globalThis.WritableStreamDefaultController === "function" ? globalThis.WritableStreamDefaultController : function WritableStreamDefaultController() {};
+    \\var __home_WritableStreamDefaultWriter = typeof globalThis.WritableStreamDefaultWriter === "function" ? globalThis.WritableStreamDefaultWriter : function WritableStreamDefaultWriter() {};
+    \\var __home_ReadableStreamBYOBReader = typeof globalThis.ReadableStreamBYOBReader === "function" ? globalThis.ReadableStreamBYOBReader : function ReadableStreamBYOBReader(stream) { this.__home_stream = stream || null; };
+    \\globalThis.ByteLengthQueuingStrategy = __home_ByteLengthQueuingStrategy;
+    \\globalThis.CompressionStream = __home_CompressionStream;
+    \\globalThis.CountQueuingStrategy = __home_CountQueuingStrategy;
+    \\globalThis.DecompressionStream = __home_DecompressionStream;
+    \\globalThis.ReadableByteStreamController = __home_ReadableByteStreamController;
+    \\globalThis.ReadableStreamBYOBReader = __home_ReadableStreamBYOBReader;
+    \\globalThis.ReadableStreamBYOBRequest = __home_ReadableStreamBYOBRequest;
+    \\globalThis.ReadableStreamDefaultController = __home_ReadableStreamDefaultController;
+    \\globalThis.ReadableStreamDefaultReader = __home_ReadableStreamDefaultReader;
+    \\globalThis.TransformStreamDefaultController = __home_TransformStreamDefaultController;
+    \\globalThis.WritableStreamDefaultController = __home_WritableStreamDefaultController;
+    \\globalThis.WritableStreamDefaultWriter = __home_WritableStreamDefaultWriter;
+    \\if (!__home_ReadableStreamBYOBReader.prototype.releaseLock) __home_ReadableStreamBYOBReader.prototype.releaseLock = function() { this.__home_stream = null; };
+    \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_byob_reader_shim) {
+    \\  const __home_readable_stream_get_reader = ReadableStream.prototype.getReader;
+    \\  Object.defineProperty(ReadableStream.prototype, "__home_byob_reader_shim", { value: true });
+    \\  ReadableStream.prototype.getReader = function(options) {
+    \\    if (options && options.mode === "byob") return new __home_ReadableStreamBYOBReader(this);
+    \\    return typeof __home_readable_stream_get_reader === "function" ? __home_readable_stream_get_reader.call(this, options) : { read() { return Promise.resolve({ done: true, value: undefined }); } };
+    \\  };
+    \\}
     \\// Faithful WHATWG TransformStream + TextEncoderStream/TextDecoderStream.
     \\// Ported from Bun's TextEncoderStream.ts / TextDecoderStream.ts which build
     \\// on a transform stream: a transformAlgorithm runs per chunk, enqueuing into
@@ -17428,6 +17469,10 @@ const harness_prelude =
     \\  };
     \\  globalThis.TextDecoderStream.__home_corpus_transform = true;
     \\}
+    \\const __home_stream_web_module = { ByteLengthQueuingStrategy: __home_ByteLengthQueuingStrategy, CompressionStream: __home_CompressionStream, CountQueuingStrategy: __home_CountQueuingStrategy, DecompressionStream: __home_DecompressionStream, ReadableByteStreamController: __home_ReadableByteStreamController, ReadableStream: globalThis.ReadableStream, ReadableStreamBYOBReader: __home_ReadableStreamBYOBReader, ReadableStreamBYOBRequest: __home_ReadableStreamBYOBRequest, ReadableStreamDefaultController: __home_ReadableStreamDefaultController, ReadableStreamDefaultReader: __home_ReadableStreamDefaultReader, TextDecoderStream: globalThis.TextDecoderStream, TextEncoderStream: globalThis.TextEncoderStream, TransformStream: globalThis.TransformStream, TransformStreamDefaultController: __home_TransformStreamDefaultController, WritableStream: globalThis.WritableStream, WritableStreamDefaultController: __home_WritableStreamDefaultController, WritableStreamDefaultWriter: __home_WritableStreamDefaultWriter };
+    \\__home_stream_web_module.default = __home_stream_web_module;
+    \\globalThis.__home_modules["stream/web"] = __home_stream_web_module;
+    \\globalThis.__home_modules["node:stream/web"] = __home_stream_web_module;
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
     \\};
@@ -20632,6 +20677,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "node:crypto",
         "zlib",
         "node:zlib",
+        "stream/web",
+        "node:stream/web",
         "stream",
         "node:stream",
         "net",
@@ -21207,6 +21254,9 @@ test "harness prelude defines TransformStream and Text{Encoder,Decoder}Stream" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.TransformStream = function TransformStream(transformer) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.TextEncoderStream = function TextEncoderStream() {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.TextDecoderStream = function TextDecoderStream(label, options) {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_modules[\"node:stream/web\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream.prototype.getReader = function(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function ReadableStreamBYOBReader(stream)") != null);
     // A transform error must reject reads, writes, and both closed promises.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_transform_error(state, reason) {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const text = String(chunk);") != null);
@@ -24368,6 +24418,59 @@ test "Node stream import rewrite lowers Readable and Transform imports" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { Readable, Transform } = globalThis.__home_import(\"node:stream\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:stream\"") == null);
+}
+
+test "Node stream web import rewrite lowers BYOB reader imports" {
+    const source =
+        \\import { ReadableStreamBYOBReader } from "node:stream/web";
+        \\import { test } from "bun:test";
+        \\test("byob", () => new ReadableStreamBYOBReader());
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29225.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { ReadableStreamBYOBReader } = globalThis.__home_import(\"node:stream/web\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:stream/web\"") == null);
+}
+
+test "bootstrap runner mirrors stream web BYOB reader inspection" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { ReadableStreamBYOBReader } from "node:stream/web";
+        \\
+        \\test("stream web BYOB reader", () => {
+        \\  expect(Bun.inspect(ReadableStreamBYOBReader)).toBe("[class ReadableStreamBYOBReader]");
+        \\  const stream = new ReadableStream({
+        \\    type: "bytes",
+        \\    start(c) {
+        \\      c.enqueue(new Uint8Array([1, 2, 3]));
+        \\      c.close();
+        \\    },
+        \\  });
+        \\  const reader = stream.getReader({ mode: "byob" });
+        \\  expect(reader).toBeInstanceOf(ReadableStreamBYOBReader);
+        \\  expect(Object.getPrototypeOf(reader)).toBe(ReadableStreamBYOBReader.prototype);
+        \\  reader.releaseLock();
+        \\  class Sub extends ReadableStreamBYOBReader {}
+        \\  expect(Object.getPrototypeOf(Sub.prototype)).toBe(ReadableStreamBYOBReader.prototype);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29225.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
