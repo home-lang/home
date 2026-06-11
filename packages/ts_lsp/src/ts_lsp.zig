@@ -2822,6 +2822,59 @@ pub const Service = struct {
             });
         }
 
+        // ---- Extract default export expression to typed variable ----------
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.isolated_declarations_default_export_inferred) continue;
+            var export_node: hir_mod.NodeId = hir_mod.none_node_id;
+            var export_expr: hir_mod.NodeId = hir_mod.none_node_id;
+            for (stmts) |s| {
+                if (c.hir.kindOf(s) != .export_decl) continue;
+                const ex = hir_mod.exportOf(&c.hir, s);
+                if (!ex.is_default or ex.decl == hir_mod.none_node_id or ex.is_export_equals) continue;
+                if (c.hir.spanOf(ex.decl).start != d.pos) continue;
+                export_node = s;
+                export_expr = ex.decl;
+                break;
+            }
+            if (export_node == hir_mod.none_node_id or export_expr == hir_mod.none_node_id) continue;
+            const t = c.hir.typeOf(export_expr);
+            if (t == ts_checker.Primitive.none) continue;
+            if (t == ts_checker.Primitive.any) continue;
+            if (t == ts_checker.Primitive.unknown) continue;
+            const repr = renderType(gpa, &c.type_interner, &c.interner, t) catch continue;
+            defer gpa.free(repr);
+            const export_span = c.hir.spanOf(export_node);
+            const expr_span = c.hir.spanOf(export_expr);
+            if (export_span.start >= export_span.end or export_span.end > f.source.len) continue;
+            if (expr_span.start >= expr_span.end or expr_span.end > f.source.len) continue;
+            const expr_src = f.source[expr_span.start..expr_span.end];
+            const new_text = try std.fmt.allocPrint(
+                gpa,
+                "const _default: {s} = {s};\nexport default _default;",
+                .{ repr, expr_src },
+            );
+            errdefer gpa.free(new_text);
+            const title = try gpa.dupe(u8, "Extract default export to variable");
+            errdefer gpa.free(title);
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, export_span.start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, export_span.end);
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                .start_col = if (start_pos.col > 0) start_pos.col - 1 else 0,
+                .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                .end_col = if (end_pos.col > 0) end_pos.col - 1 else 0,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+                .code = 90065,
+            });
+        }
+
         // ---- Prefix unused identifier with underscore (TS6133) -----------
         // For each "'x' is declared but its value is never read." (TS6133)
         // diagnostic in this file, surface a quick-fix that renames the
@@ -8863,6 +8916,47 @@ test "Service: codeActions adds satisfies inline assertion for inferred isolated
     try T.expectEqual(@as(u32, 22), a.edits[0].start_col);
     try T.expectEqual(@as(u32, 0), a.edits[0].end_line);
     try T.expectEqual(@as(u32, 27), a.edits[0].end_col);
+}
+
+test "Service: codeActions extracts inferred default export expression to typed variable" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "export default 1 + 1;");
+    try program.compileAll(.{ .strict_flags = .{ .isolated_declarations = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Extract default export to variable")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, 90065), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings("const _default: number = 1 + 1;\nexport default _default;", a.edits[0].new_text);
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_line);
+    try T.expectEqual(@as(u32, 0), a.edits[0].start_col);
+    try T.expectEqual(@as(u32, 0), a.edits[0].end_line);
+    try T.expectEqual(@as(u32, 21), a.edits[0].end_col);
 }
 
 test "Service: formatDocument returns a TextEdit list (no-op stub)" {

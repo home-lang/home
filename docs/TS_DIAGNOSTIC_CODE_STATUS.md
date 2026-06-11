@@ -29,10 +29,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1604 |
+| emitted | 1605 |
 | declared | 4 |
 | tested-only | 1 |
-| catalog-only | 470 |
+| catalog-only | 469 |
 | total upstream codes | 2079 |
 
 ## Codes
@@ -1724,7 +1724,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS7059 | err | emitted | packages/ts_checker/src/check.zig:11613 | This_syntax_is_reserved_in_files_with_the_mts_or_cts_extension_Use_an_as_expression_instead_7059 |
 | TS7060 | err | emitted | packages/ts_checker/src/check.zig:11596<br>packages/ts_checker/src/check.zig:105471<br>packages/ts_checker/src/check.zig:105480 | This_syntax_is_reserved_in_files_with_the_mts_or_cts_extension_Add_a_trailing_comma_or_explicit_cons_7060 |
 | TS7061 | err | emitted | packages/ts_parser/src/ts_parser.zig:10505 | A_mapped_type_may_not_declare_properties_or_methods_7061 |
-| TS8001 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:1842<br>packages/ts_lsp/src/ts_lsp.zig:1855<br>packages/ts_lsp/src/ts_lsp.zig:7437 | You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001 |
+| TS8001 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:1842<br>packages/ts_lsp/src/ts_lsp.zig:1855<br>packages/ts_lsp/src/ts_lsp.zig:7490 | You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001 |
 | TS8002 | err | emitted | packages/ts_checker/src/check.zig:36302<br>packages/ts_checker/src/check.zig:102868<br>packages/ts_checker/src/check.zig:102884 | import_can_only_be_used_in_TypeScript_files_8002 |
 | TS8003 | err | emitted | packages/ts_parser/src/ts_parser.zig:6429 | export_can_only_be_used_in_TypeScript_files_8003 |
 | TS8004 | err | emitted | packages/ts_checker/src/check.zig:55256<br>packages/ts_driver/src/ts_driver.zig:2496<br>packages/ts_checker/src/check.zig:110681 | Type_parameter_declarations_can_only_be_used_in_TypeScript_files_8004 |
@@ -1750,12 +1750,12 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS8028 | err | catalog-only |  | JSDoc_may_only_appear_in_the_last_parameter_of_a_signature_8028 |
 | TS8029 | err | emitted | packages/ts_checker/src/check.zig:55746 | JSDoc_param_tag_has_name_0_but_there_is_no_parameter_with_that_name_It_would_match_arguments_if_it_h_8029 |
 | TS8030 | err | emitted | packages/ts_checker/src/check.zig:12163<br>packages/ts_checker/src/check.zig:129993 | The_type_of_a_function_declaration_must_match_the_function_s_signature_8030 |
-| TS8031 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:1827<br>packages/ts_lsp/src/ts_lsp.zig:7412 | You_cannot_rename_a_module_via_a_global_import_8031 |
+| TS8031 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:1827<br>packages/ts_lsp/src/ts_lsp.zig:7465 | You_cannot_rename_a_module_via_a_global_import_8031 |
 | TS8032 | err | emitted | packages/ts_parser/src/ts_parser.zig:1162 | Qualified_name_0_is_not_allowed_without_a_leading_param_object_1_8032 |
 | TS8033 | err | emitted | packages/ts_parser/src/ts_parser.zig:1421 | A_JSDoc_typedef_comment_may_not_contain_multiple_type_tags_8033 |
 | TS8034 | err | emitted | packages/ts_parser/src/ts_parser.zig:1432 | The_tag_was_first_specified_here_8034 |
-| TS8035 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:5704<br>packages/ts_lsp/src/ts_lsp.zig:7466 | You_cannot_rename_elements_that_are_defined_in_a_node_modules_folder_8035 |
-| TS8036 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:5713<br>packages/ts_lsp/src/ts_lsp.zig:7524 | You_cannot_rename_elements_that_are_defined_in_another_node_modules_folder_8036 |
+| TS8035 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:5757<br>packages/ts_lsp/src/ts_lsp.zig:7519 | You_cannot_rename_elements_that_are_defined_in_a_node_modules_folder_8035 |
+| TS8036 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:5766<br>packages/ts_lsp/src/ts_lsp.zig:7577 | You_cannot_rename_elements_that_are_defined_in_another_node_modules_folder_8036 |
 | TS8037 | err | emitted | packages/ts_checker/src/check.zig:63997<br>packages/ts_driver/src/ts_driver.zig:2492<br>packages/ts_checker/src/check.zig:112554 | Type_satisfaction_expressions_can_only_be_used_in_TypeScript_files_8037 |
 | TS8038 | err | emitted | packages/ts_checker/src/check.zig:23312<br>packages/ts_checker/src/check.zig:105364<br>packages/ts_checker/src/check.zig:108346 | Decorators_may_not_appear_after_export_or_export_default_if_they_also_appear_before_export_8038 |
 | TS8039 | err | emitted | packages/ts_parser/src/ts_parser.zig:1525<br>packages/ts_parser/src/ts_parser.zig:26162 | A_JSDoc_template_tag_may_not_follow_a_typedef_callback_or_overload_tag_8039 |
@@ -1790,7 +1790,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS9034 | err | emitted | packages/ts_checker/src/check.zig:6511<br>packages/ts_checker/src/check.zig:125873 | Add_a_return_type_to_the_method_9034 |
 | TS9035 | err | emitted | packages/ts_checker/src/check.zig:6430<br>packages/ts_checker/src/check.zig:125777<br>packages/ts_checker/src/check.zig:125830 | Add_satisfies_and_a_type_assertion_to_this_expression_satisfies_T_as_T_to_make_the_type_explicit_9035 |
 | TS9036 | err | emitted | packages/ts_checker/src/check.zig:6417<br>packages/ts_checker/src/check.zig:125751<br>packages/ts_checker/src/check.zig:125803 | Move_the_expression_in_default_export_to_a_variable_and_add_a_type_annotation_to_it_9036 |
-| TS9037 | err | emitted | packages/ts_checker/src/check.zig:5766<br>packages/ts_checker/src/check.zig:125747<br>packages/ts_checker/src/check.zig:125852 | Default_exports_can_t_be_inferred_with_isolatedDeclarations_9037 |
+| TS9037 | err | emitted | packages/ts_checker/src/check.zig:5766<br>packages/ts_lsp/src/ts_lsp.zig:2827<br>packages/ts_checker/src/check.zig:125747 | Default_exports_can_t_be_inferred_with_isolatedDeclarations_9037 |
 | TS9038 | err | emitted | packages/ts_checker/src/check.zig:6567<br>packages/ts_checker/src/check.zig:6636<br>packages/ts_checker/src/check.zig:6643 | Computed_property_names_on_class_or_object_literals_cannot_be_inferred_with_isolatedDeclarations_9038 |
 | TS9039 | err | emitted | packages/ts_checker/src/check.zig:7151<br>packages/ts_checker/src/check.zig:125647<br>packages/ts_checker/src/check.zig:125670 | Type_containing_private_name_0_can_t_be_used_with_isolatedDeclarations_9039 |
 | TS17001 | err | emitted | packages/ts_parser/src/ts_parser.zig:16410 | JSX_elements_cannot_have_multiple_attributes_with_the_same_name_17001 |
@@ -1893,7 +1893,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS90022 | message | catalog-only |  | Change_spelling_to_0_90022 |
 | TS90023 | message | catalog-only |  | Declare_method_0_90023 |
 | TS90024 | message | catalog-only |  | Declare_static_method_0_90024 |
-| TS90025 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2871<br>packages/ts_lsp/src/ts_lsp.zig:9989 | Prefix_0_with_an_underscore_90025 |
+| TS90025 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2924<br>packages/ts_lsp/src/ts_lsp.zig:10083 | Prefix_0_with_an_underscore_90025 |
 | TS90026 | message | catalog-only |  | Rewrite_as_the_indexed_access_type_0_90026 |
 | TS90027 | message | catalog-only |  | Declare_static_property_0_90027 |
 | TS90028 | message | catalog-only |  | Call_decorator_expression_90028 |
@@ -1909,22 +1909,22 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS90041 | message | catalog-only |  | Remove_unused_declarations_for_Colon_0_90041 |
 | TS90053 | message | catalog-only |  | Declare_a_private_field_named_0_90053 |
 | TS90054 | message | catalog-only |  | Includes_imports_of_types_referenced_by_0_90054 |
-| TS90055 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2016<br>packages/ts_lsp/src/ts_lsp.zig:8737 | Remove_type_from_import_declaration_from_0_90055 |
-| TS90056 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2046<br>packages/ts_lsp/src/ts_lsp.zig:8779 | Remove_type_from_import_of_0_from_1_90056 |
-| TS90057 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2688<br>packages/ts_lsp/src/ts_lsp.zig:8574 | Add_import_from_0_90057 |
-| TS90058 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2656<br>packages/ts_lsp/src/ts_lsp.zig:8656 | Update_import_from_0_90058 |
+| TS90055 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2016<br>packages/ts_lsp/src/ts_lsp.zig:8790 | Remove_type_from_import_declaration_from_0_90055 |
+| TS90056 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2046<br>packages/ts_lsp/src/ts_lsp.zig:8832 | Remove_type_from_import_of_0_from_1_90056 |
+| TS90057 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2688<br>packages/ts_lsp/src/ts_lsp.zig:8627 | Add_import_from_0_90057 |
+| TS90058 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2656<br>packages/ts_lsp/src/ts_lsp.zig:8709 | Update_import_from_0_90058 |
 | TS90059 | message | catalog-only |  | Export_0_from_module_1_90059 |
 | TS90060 | message | catalog-only |  | Export_all_referenced_locals_90060 |
 | TS90061 | message | catalog-only |  | Update_modifiers_of_0_90061 |
-| TS90062 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2389<br>packages/ts_lsp/src/ts_lsp.zig:8455 | Add_annotation_of_type_0_90062 |
-| TS90063 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2463<br>packages/ts_lsp/src/ts_lsp.zig:9812 | Add_return_type_0_90063 |
+| TS90062 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2389<br>packages/ts_lsp/src/ts_lsp.zig:8508 | Add_annotation_of_type_0_90062 |
+| TS90063 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2463<br>packages/ts_lsp/src/ts_lsp.zig:9906 | Add_return_type_0_90063 |
 | TS90064 | message | catalog-only |  | Extract_base_class_to_variable_90064 |
-| TS90065 | message | catalog-only |  | Extract_default_export_to_variable_90065 |
+| TS90065 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2874 | Extract_default_export_to_variable_90065 |
 | TS90066 | message | catalog-only |  | Extract_binding_expressions_to_variable_90066 |
-| TS90067 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2517<br>packages/ts_lsp/src/ts_lsp.zig:9921 | Add_all_missing_type_annotations_90067 |
+| TS90067 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2517<br>packages/ts_lsp/src/ts_lsp.zig:10015 | Add_all_missing_type_annotations_90067 |
 | TS90068 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2821 | Add_satisfies_and_an_inline_type_assertion_with_0_90068 |
 | TS90069 | message | catalog-only |  | Extract_to_variable_and_replace_with_0_as_typeof_0_90069 |
-| TS90070 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2757<br>packages/ts_lsp/src/ts_lsp.zig:8820 | Mark_array_literal_as_const_90070 |
+| TS90070 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2757<br>packages/ts_lsp/src/ts_lsp.zig:8873 | Mark_array_literal_as_const_90070 |
 | TS90071 | message | catalog-only |  | Annotate_types_of_properties_expando_function_in_a_namespace_90071 |
 | TS95001 | message | catalog-only |  | Convert_function_to_an_ES2015_class_95001 |
 | TS95003 | message | catalog-only |  | Convert_0_to_1_in_0_95003 |
@@ -1987,7 +1987,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS95061 | message | catalog-only |  | Convert_default_export_to_named_export_95061 |
 | TS95062 | message | catalog-only |  | Convert_named_export_to_default_export_95062 |
 | TS95063 | message | catalog-only |  | Add_missing_enum_member_0_95063 |
-| TS95064 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2716<br>packages/ts_lsp/src/ts_lsp.zig:8619 | Add_all_missing_imports_95064 |
+| TS95064 | message | emitted | packages/ts_lsp/src/ts_lsp.zig:2716<br>packages/ts_lsp/src/ts_lsp.zig:8672 | Add_all_missing_imports_95064 |
 | TS95065 | message | catalog-only |  | Convert_to_async_function_95065 |
 | TS95066 | message | catalog-only |  | Convert_all_to_async_functions_95066 |
 | TS95067 | message | catalog-only |  | Add_missing_call_parentheses_95067 |
