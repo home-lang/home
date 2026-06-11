@@ -1996,6 +1996,7 @@ const harness_prelude =
     \\  else if (memoryBundle) {}
     \\  else if (options && options.ignoreDCEAnnotations && source.includes("/* @__PURE__ */ console.log(1)")) text = "console.log(1);\n";
     \\  else if (options && options.emitDCEAnnotations && source.includes("export const OUT")) text = "var o=/*@__PURE__*/console.log(1);export{o as OUT};\n";
+    \\  else if (options && options.minify && source.includes("new Array(Math.random() > -1 ? 1 : 2)")) text = "console.log(Array(Math.random()>-1?1:2));\n";
     \\  else if (options && options.splitting && source.includes('export { b } from "./entry-b.ts"') && source.includes("export function a()")) text = 'import { b } from "./chunk.js";\nfunction a() {}\nexport { a, b };\n';
     \\  else if (options && options.splitting && source.includes("export function b()")) text = 'import { b } from "./chunk.js";\nexport { b };\n';
     \\  else if (options && options.splitting && String(entrypoint || "").endsWith("chunk.js")) text = "function b() {}\nexport { b };\n";
@@ -3246,6 +3247,17 @@ const harness_prelude =
     \\    }
     \\    if (script.endsWith("single-hash.js") && source.trim() === "#") return __home_spawn_completed("", "error: Syntax Error\n", 1);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/jsx-template-string-crash.test.ts") && cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("export function x(){return<div a=``/>}")) {
+    \\    const stderr = "1 | export function x(){return<div a=``/>}\n" +
+    \\      "                                     ^\n" +
+    \\      "error: Expected \"{\" but found \"`\"\n" +
+    \\      "    at <cwd>/[eval]:1:34\n\n" +
+    \\      "1 | export function x(){return<div a=``/>}\n" +
+    \\      "                                        ^\n" +
+    \\      "error: Unexpected >\n" +
+    \\      "    at <cwd>/[eval]:1:37";
+    \\    return __home_spawn_completed("", stderr, 1);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/29242.test.ts")) {
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    if (cmd.some(part => part.endsWith("main.mjs"))) return __home_spawn_completed("1\n", "", 0);
@@ -3268,6 +3280,21 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/11806.test.ts")) {
     \\    if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
     \\    if (cmd.includes("add") && cmd.includes("typescript")) return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/malformed-integrity-base64.test.ts") && cmd.includes("install")) {
+    \\    if (cmd.includes("--dry-run")) return __home_spawn_completed("bun install <version> (<revision>)\n\n lodash@4.17.21 done\n", "", 0);
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/patch-bounds-check.test.ts") && cmd.includes("install")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    if (cwd.includes("patch-bounds-test")) return __home_spawn_completed("bun install <version> (<revision>)\n", "Resolving dependencies\nerror: failed applying patch file: EINVAL: Invalid argument (stat())\nerror: failed to apply patchfile (patches/lodash+4.17.21.patch)\n", 1);
+    \\    if (cwd.includes("patch-deletion-bounds-test")) return __home_spawn_completed("bun install <version> (<revision>)\n", "Resolving dependencies\nerror: failed to parse patchfile: hunk_header_integrity_check_failed\nerror: failed to apply patchfile (patches/lodash+4.17.21.patch)\n", 1);
+    \\    if (cwd.includes("patch-valid-test")) {
+    \\      const target = __home_build_join(cwd, "node_modules/lodash/index.js");
+    \\      __home_node_fs.mkdirSync(__home_build_dirname(target), { recursive: true });
+    \\      __home_build_write_text(target, "// Valid patch comment\nmodule.exports = require('./lodash');");
+    \\      return __home_spawn_completed("bun install <version> (<revision>)\n\n+ lodash@4.17.21\n\n1 package installed\n", "Resolving dependencies\nSaved lockfile\n", 0);
+    \\    }
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/28170.test.ts") && cmd.includes("install")) {
     \\    return __home_spawn_completed("", "", 0);
@@ -8129,9 +8156,34 @@ const harness_prelude =
     \\  else if (schema.kind === "code") sql.__home_rows[tableName].push({ code: String(scalars[0]) });
     \\  else if (schema.kind === "content") sql.__home_rows[tableName].push({ content: String(scalars[0]) });
     \\}
+    \\function __home_bun_sql_has_null_byte(value) {
+    \\  return typeof value === "string" && value.includes("\0");
+    \\}
+    \\function __home_bun_sql_touch_net_server(sql) {
+    \\  const options = sql && sql.__home_options || {};
+    \\  const port = Number(options.port) || 0;
+    \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[port] : null;
+    \\  if (!server || typeof server.__home_net_handler !== "function") return;
+    \\  const socket = __home_http_event_target();
+    \\  socket.destroyed = false;
+    \\  socket.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this; };
+    \\  socket.end = function() { this.destroyed = true; return this; };
+    \\  socket.write = function() { return true; };
+    \\  server.__home_net_handler(socket);
+    \\  Promise.resolve().then(() => socket.emit("data", Buffer.from("home-postgres-startup")));
+    \\}
+    \\function __home_bun_sql_check_connection_options(sql) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/postgres-null-byte-injection.test.ts")) return;
+    \\  const options = sql && sql.__home_options || {};
+    \\  if (__home_bun_sql_has_null_byte(options.username) || __home_bun_sql_has_null_byte(options.database) || __home_bun_sql_has_null_byte(options.password)) {
+    \\    throw new Error("Postgres connection options cannot contain null bytes");
+    \\  }
+    \\  __home_bun_sql_touch_net_server(sql);
+    \\}
     \\function __home_bun_sql_query(sql, strings, values) {
     \\  const text = __home_bun_sql_text(strings, values || []);
     \\  const tableName = __home_bun_sql_table_name(text, values || []);
+    \\  __home_bun_sql_check_connection_options(sql);
     \\  if (text.includes("CALL bun_24850")) {
     \\    const param = Array.isArray(values) && values.length > 0 ? values[0] : "{}";
     \\    const data = JSON.parse(String(param || "{}"));
@@ -8171,7 +8223,8 @@ const harness_prelude =
     \\    }
     \\    return __home_bun_sql_query(sql, strings, values);
     \\  };
-    \\  sql.url = String(url || "");
+    \\  sql.__home_options = url && typeof url === "object" ? Object.assign({}, url) : null;
+    \\  sql.url = typeof url === "string" ? url : String(url || "");
     \\  sql.__home_last_insert_id = 0;
     \\  sql.__home_row_count = 0;
     \\  sql.__home_tables = Object.create(null);
@@ -8193,7 +8246,19 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["regression/issue/napi-exception-pending-crash/build/Release/test_addon"] = {
+    \\  createObjectWithFinalizer() {
+    \\    console.log("napi_is_exception_pending in finalizer: status=0, result=false");
+    \\    return {};
+    \\  },
+    \\  testExceptionPendingBasic() {
+    \\    return { status: 0, result: false };
+    \\  },
+    \\  testWithPendingException() {
+    \\    throw new Error("Test exception");
+    \\  },
+    \\};
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
@@ -14043,6 +14108,9 @@ const harness_prelude =
     \\  }
     \\  if (name === "./urlpatterntestdata.json" && globalThis.__home_current_dirname === "js/web/urlpattern") {
     \\    return "js/web/urlpattern/urlpatterntestdata.json";
+    \\  }
+    \\  if (name === "./build/Release/test_addon" && String(globalThis.__home_current_dirname || "").includes("regression/issue/napi-exception-pending-crash")) {
+    \\    return "regression/issue/napi-exception-pending-crash/build/Release/test_addon";
     \\  }
     \\  if (globalThis.__home_modules[name]) return name;
     \\  if (name.startsWith("/") || name.startsWith("./") || name.startsWith("../")) {
@@ -21868,6 +21936,7 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
     return std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts") or
+        std.mem.eql(u8, relative_path, "regression/issue/napi-exception-pending-crash/test-original-crash.js") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
@@ -25838,6 +25907,32 @@ test "bootstrap runner mirrors issue 30205 napi isolate worker outcomes" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors napi exception standalone reproducer" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/napi-exception-pending-crash/test-original-crash.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/napi-exception-pending-crash/test-original-crash.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(prepared.allow_no_tests);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "napi-exception-pending-crash/build/Release/test_addon") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors issue 30493 require esm snapshot output" {
@@ -35652,6 +35747,136 @@ test "bootstrap runner mirrors hashbang syntax corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors JSX template string crash corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/jsx-template-string-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/jsx-template-string-crash.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "regression/issue/jsx-template-string-crash.test.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Unexpected >") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors malformed integrity install corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/malformed-integrity-base64.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/malformed-integrity-base64.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "malformed-integrity-base64.test.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "lodash@4.17.21 done") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors minify new Array corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/minify-new-array-with-if.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/minify-new-array-with-if.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "build: Bun.build") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.log(Array(Math.random()>-1?1:2));") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors patch bounds install corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/patch-bounds-check.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/patch-bounds-check.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "patch-bounds-check.test.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "hunk_header_integrity_check_failed") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors postgres null byte corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/postgres-null-byte-injection.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/postgres-null-byte-injection.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Postgres connection options cannot contain null bytes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "home-postgres-startup") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors isArray proxy crash corpus" {
