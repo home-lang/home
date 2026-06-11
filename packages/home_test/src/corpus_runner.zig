@@ -11936,6 +11936,36 @@ const harness_prelude =
     \\function __home_http_incoming_message() {
     \\  return __home_http_event_target();
     \\}
+    \\function __home_http_apply_headers(target, headers) {
+    \\  if (!headers) return target;
+    \\  if (headers instanceof Headers || headers instanceof Map) {
+    \\    headers.forEach((value, key) => target.setHeader(key, value));
+    \\    return target;
+    \\  }
+    \\  if (Array.isArray(headers)) {
+    \\    for (const entry of headers) {
+    \\      if (Array.isArray(entry) && entry.length >= 2) target.setHeader(entry[0], entry[1]);
+    \\    }
+    \\    return target;
+    \\  }
+    \\  for (const key of Object.keys(headers)) target.setHeader(key, headers[key]);
+    \\  return target;
+    \\}
+    \\function __home_http_emit_client_response(clientRequest, callback, statusCode, headers, body) {
+    \\  const responseEvents = Object.assign(__home_http_event_target(), {
+    \\    statusCode: Number(statusCode) || 200,
+    \\    headers: Object.keys(headers || {}).reduce((out, key) => {
+    \\      out[String(key).toLowerCase()] = headers[key];
+    \\      return out;
+    \\    }, {}),
+    \\  });
+    \\  if (typeof callback === "function") callback(responseEvents);
+    \\  Promise.resolve().then(() => {
+    \\    const text = body === undefined || body === null ? "" : String(body);
+    \\    if (text.length > 0) responseEvents.emit("data", text);
+    \\    responseEvents.emit("end");
+    \\  });
+    \\}
     \\function __home_http_server_response(request) {
     \\  const response = __home_http_event_target();
     \\  response.req = request;
@@ -11949,12 +11979,13 @@ const harness_prelude =
     \\  response.getHeaders = function() {
     \\    return Object.assign({}, this.__home_headers);
     \\  };
+    \\  response.setHeaders = function(headers) {
+    \\    return __home_http_apply_headers(this, headers);
+    \\  };
     \\  response.writeHead = function(statusCode, statusMessage, headers) {
     \\    this.statusCode = Number(statusCode) || 200;
     \\    if (typeof statusMessage === "object") headers = statusMessage;
-    \\    if (headers) {
-    \\      for (const key of Object.keys(headers)) this.setHeader(key, headers[key]);
-    \\    }
+    \\    __home_http_apply_headers(this, headers);
     \\    return this;
     \\  };
     \\  response.write = function(chunk) {
@@ -11992,9 +12023,16 @@ const harness_prelude =
     \\            const serverResponse = {
     \\              statusCode: 200,
     \\              headers: {},
+    \\              setHeader(name, value) {
+    \\                this.headers[String(name).toLowerCase()] = value;
+    \\                return this;
+    \\              },
+    \\              setHeaders(headers) {
+    \\                return __home_http_apply_headers(this, headers);
+    \\              },
     \\              writeHead(statusCode, headers) {
     \\                this.statusCode = Number(statusCode) || 200;
-    \\                this.headers = Object.assign({}, headers || {});
+    \\                __home_http_apply_headers(this, headers);
     \\              },
     \\              end(body) {
     \\                resolve(new Response(body === undefined || body === null ? "" : String(body), { status: this.statusCode, headers: this.headers }));
@@ -12020,47 +12058,102 @@ const harness_prelude =
     \\  });
     \\  return server;
     \\}
-    \\function __home_http_request(options, callback) {
+    \\function __home_http_normalize_request_args(args) {
+    \\  let input = args[0];
+    \\  let options = {};
+    \\  let callback = null;
+    \\  if (typeof args[1] === "function") callback = args[1];
+    \\  else if (args[1] && typeof args[1] === "object") options = Object.assign({}, args[1]);
+    \\  if (typeof args[2] === "function") callback = args[2];
+    \\  let url = null;
+    \\  if (typeof input === "string" || input instanceof URL) {
+    \\    url = new URL(String(input));
+    \\  } else if (input && typeof input === "object") {
+    \\    options = Object.assign({}, input, options);
+    \\    const protocol = options.protocol || "http:";
+    \\    const hostname = options.hostname || options.host || "localhost";
+    \\    const port = options.port ? ":" + String(options.port) : "";
+    \\    const path = options.path || "/";
+    \\    url = new URL(protocol + "//" + hostname + port + path);
+    \\  } else {
+    \\    url = new URL("http://localhost/");
+    \\  }
+    \\  if (options.method === undefined) options.method = "GET";
+    \\  if (options.headers === undefined) options.headers = {};
+    \\  return { url, options, callback };
+    \\}
+    \\function __home_http_request() {
+    \\  const normalized = __home_http_normalize_request_args(arguments);
+    \\  const options = normalized.options;
+    \\  const callback = normalized.callback;
+    \\  const url = normalized.url;
     \\  const requestEvents = __home_http_event_target();
     \\  const chunks = [];
-    \\  const port = Number(options && options.port);
+    \\  const port = Number(url.port || options.port || 80);
     \\  const clientRequest = Object.assign(requestEvents, {
+    \\    __home_headers: Object.assign({}, options && options.headers || {}),
+    \\    setHeader(name, value) {
+    \\      this.__home_headers[String(name).toLowerCase()] = value;
+    \\      return this;
+    \\    },
+    \\    getHeader(name) {
+    \\      return this.__home_headers[String(name).toLowerCase()];
+    \\    },
+    \\    getHeaders() {
+    \\      return Object.assign({}, this.__home_headers);
+    \\    },
+    \\    removeHeader(name) {
+    \\      delete this.__home_headers[String(name).toLowerCase()];
+    \\    },
+    \\    setHeaders(headers) {
+    \\      return __home_http_apply_headers(this, headers);
+    \\    },
     \\    write(chunk) {
     \\      chunks.push(String(chunk || ""));
     \\      return true;
     \\    },
     \\    end(chunk) {
     \\      if (chunk !== undefined) chunks.push(String(chunk || ""));
+    \\      const serveHandle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
+    \\      if (serveHandle && typeof serveHandle.fetch === "function") {
+    \\        const requestInit = { method: String((options && options.method) || "GET").toUpperCase(), headers: new Headers(clientRequest.__home_headers) };
+    \\        if (chunks.length > 0) requestInit.body = chunks.join("");
+    \\        const request = new Request(url.href, requestInit);
+    \\        Promise.resolve(serveHandle.fetch(request)).then(response => {
+    \\          response = response || new Response("");
+    \\          return response.text().then(text => {
+    \\            const headers = {};
+    \\            response.headers.forEach((value, key) => { headers[key] = value; });
+    \\            __home_http_emit_client_response(clientRequest, callback, response.status, headers, text);
+    \\          });
+    \\        }, error => clientRequest.emit("error", error));
+    \\        return this;
+    \\      }
     \\      const server = __home_http_servers[port];
     \\      if (!server) {
     \\        Promise.resolve().then(() => clientRequest.emit("error", new Error("ECONNREFUSED")));
-    \\        return;
+    \\        return this;
     \\      }
     \\      const serverRequest = Object.assign(__home_http_event_target(), {
     \\        method: String((options && options.method) || "GET").toUpperCase(),
-    \\        headers: new Headers(options && options.headers || {}),
+    \\        headers: new Headers(clientRequest.__home_headers),
     \\      });
     \\      const serverResponse = {
     \\        statusCode: 200,
     \\        headers: {},
+    \\        setHeader(name, value) {
+    \\          this.headers[String(name).toLowerCase()] = value;
+    \\          return this;
+    \\        },
+    \\        setHeaders(headers) {
+    \\          return __home_http_apply_headers(this, headers);
+    \\        },
     \\        writeHead(statusCode, headers) {
     \\          this.statusCode = Number(statusCode) || 200;
-    \\          this.headers = Object.assign({}, headers || {});
+    \\          __home_http_apply_headers(this, headers);
     \\        },
     \\        end(body) {
-    \\          const responseEvents = Object.assign(__home_http_event_target(), {
-    \\            statusCode: this.statusCode,
-    \\            headers: Object.keys(this.headers || {}).reduce((out, key) => {
-    \\              out[String(key).toLowerCase()] = this.headers[key];
-    \\              return out;
-    \\            }, {}),
-    \\          });
-    \\          if (typeof callback === "function") callback(responseEvents);
-    \\          Promise.resolve().then(() => {
-    \\            const text = body === undefined || body === null ? "" : String(body);
-    \\            if (text.length > 0) responseEvents.emit("data", text);
-    \\            responseEvents.emit("end");
-    \\          });
+    \\          __home_http_emit_client_response(clientRequest, callback, this.statusCode, this.headers, body);
     \\        },
     \\      };
     \\      server.__home_handler(serverRequest, serverResponse);
@@ -12069,6 +12162,7 @@ const harness_prelude =
     \\        if (text.length > 0) serverRequest.emit("data", text);
     \\        serverRequest.emit("end");
     \\      });
+    \\      return this;
     \\    },
     \\  });
     \\  return clientRequest;
@@ -23565,6 +23659,87 @@ test "Node http and stream import rewrite lowers issue 19111 syntax" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, ": IncomingMessage") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "statusCode: number") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as IncomingMessage") == null);
+}
+
+test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import http from "node:http";
+        \\
+        \\test("ClientRequest.setHeaders works with Headers", async () => {
+        \\  await using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req) {
+        \\      return new Response(req.headers.get("x-test") ?? "missing");
+        \\    },
+        \\  });
+        \\  const { resolve, reject, promise } = Promise.withResolvers();
+        \\  const req = http.request(`http://localhost:${server.port}/test`, { method: "GET" }, res => {
+        \\    let data = "";
+        \\    res.on("data", chunk => { data += chunk.toString(); });
+        \\    res.on("end", () => resolve(data));
+        \\  });
+        \\  req.on("error", reject);
+        \\  req.setHeaders(new Headers({ "x-test": "value" }));
+        \\  req.end();
+        \\  expect(await promise).toBe("value");
+        \\});
+        \\
+        \\test("ClientRequest.setHeaders works with Map", async () => {
+        \\  await using server = Bun.serve({
+        \\    port: 0,
+        \\    fetch(req) {
+        \\      return new Response(req.headers.get("x-map-test") ?? "missing");
+        \\    },
+        \\  });
+        \\  const { resolve, reject, promise } = Promise.withResolvers();
+        \\  const req = http.request(`http://localhost:${server.port}/test`, { method: "GET" }, res => {
+        \\    let data = "";
+        \\    res.on("data", chunk => { data += chunk.toString(); });
+        \\    res.on("end", () => resolve(data));
+        \\  });
+        \\  req.on("error", reject);
+        \\  req.setHeaders(new Map([["x-map-test", "map-value"]]));
+        \\  req.end();
+        \\  expect(await promise).toBe("map-value");
+        \\});
+        \\
+        \\test("ServerResponse.setHeaders works before writeHead", async () => {
+        \\  const { resolve, reject, promise } = Promise.withResolvers();
+        \\  const server = http.createServer((req, res) => {
+        \\    res.setHeaders(new Headers({ "x-custom": "server-value" }));
+        \\    res.writeHead(200);
+        \\    res.end("ok");
+        \\  });
+        \\  try {
+        \\    server.listen(0, () => {
+        \\      const port = server.address().port;
+        \\      const req = http.request(`http://localhost:${port}/test`, res => resolve(res.headers["x-custom"]));
+        \\      req.on("error", reject);
+        \\      req.end();
+        \\    });
+        \\    expect(await promise).toBe("server-value");
+        \\  } finally {
+        \\    server.close();
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/27049.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:http\"") == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "Node path import rewrite lowers path fixtures import" {
