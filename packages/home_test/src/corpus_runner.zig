@@ -5901,7 +5901,7 @@ const harness_prelude =
     \\    env() { return this; },
     \\    cwd(path) { this.cwdPath = __home_bake_virtual_normalize(path); return this; },
     \\    quiet() { return Promise.resolve(this.__home_result()); },
-    \\    throws() { this.throwOnError = true; return this; },
+    \\    throws(value) { this.throwOnError = value !== false; return this; },
     \\    nothrow() { this.throwOnError = false; return this; },
     \\    text() { return Promise.resolve(this.__home_result().stdout); },
     \\    json() {
@@ -8231,16 +8231,30 @@ const harness_prelude =
     \\  if (issue17454) return issue17454;
     \\  return null;
     \\}
+    \\function __home_bun_shell_command(parts, values) {
+    \\  if (!Array.isArray(parts)) return String(parts || "");
+    \\  let command = "";
+    \\  for (let i = 0; i < parts.length; i++) {
+    \\    command += String(parts[i]);
+    \\    if (i < values.length) command += String(values[i]);
+    \\  }
+    \\  return command;
+    \\}
+    \\function __home_current_file_is_bake_corpus() {
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  return filename === "bake" || filename.startsWith("bake/");
+    \\}
     \\function __home_bun_shell(parts, ...values) {
     \\  const issueResult = __home_bun_shell_issue_result(parts, values);
     \\  if (issueResult) return issueResult;
-    \\  if ((Array.isArray(parts) ? parts.join("") : String(parts || "")).trim() === "pwd") return __home_bake_shell(Array.isArray(parts) ? parts.join("") : String(parts || ""));
+    \\  const command = __home_bun_shell_command(parts, values);
+    \\  if (command.trim() === "pwd" || __home_current_file_is_bake_corpus()) return __home_bake_shell(command);
     \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
-    \\  return __home_bake_shell(Array.isArray(parts) ? parts.join("") : String(parts || ""));
+    \\  return __home_bake_shell(command);
     \\}
     \\function __home_bun_shell_instance(initialCwd) {
     \\  const shell = function(parts, ...values) {
-    \\    const command = Array.isArray(parts) ? parts.join("") : String(parts || "");
+    \\    const command = __home_bun_shell_command(parts, values);
     \\    const result = __home_bake_shell(command);
     \\    result.cwdPath = shell.__home_cwd || "";
     \\    return result;
@@ -28166,6 +28180,46 @@ test "bootstrap runner mirrors Bake deinitialization parent spawn" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/deinitialization.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner keeps Bake production shell virtual" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunExe } from "harness";
+        \\import { tempDirWithBakeDeps } from "../bake-harness";
+        \\
+        \\test("production build shell stays virtual", async () => {
+        \\  const failingDir = await tempDirWithBakeDeps("bake-production-sourcemap", {
+        \\    "src/index.tsx": `export default { app: { framework: "react" } };`,
+        \\    "pages/index.tsx": `export default function IndexPage() { throw new Error("oh no!"); }`,
+        \\  });
+        \\  const failed = await Bun.$`${bunExe()} build --app ./src/index.tsx`.cwd(failingDir).throws(false);
+        \\  expect(failed.exitCode).toBe(1);
+        \\  expect(failed.stderr.toString()).toContain("throw new Error");
+        \\
+        \\  const passingDir = await tempDirWithBakeDeps("bake-production-import-meta", {
+        \\    "src/index.tsx": `export default { app: { framework: "react" } };`,
+        \\    "pages/index.tsx": `export default function IndexPage() { return <div>Hello World</div>; }`,
+        \\  });
+        \\  const passed = await Bun.$`${bunExe()} build --app ./src/index.tsx --outdir ./dist`.cwd(passingDir).throws(false);
+        \\  expect(passed.exitCode).toBe(0);
+        \\  expect(await Bun.$`ls -la dist/`.cwd(passingDir).text()).toContain("index.html");
+        \\  expect(await Bun.file(passingDir + "/dist/index.html").text()).toContain("Hello World");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/production.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
