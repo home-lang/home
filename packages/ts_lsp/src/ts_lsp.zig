@@ -2489,6 +2489,66 @@ pub const Service = struct {
                     break;
                 }
                 if (!matched) continue;
+                var emitted_update_import = false;
+                for (stmts) |existing_stmt| {
+                    if (c.hir.kindOf(existing_stmt) != .import_decl) continue;
+                    const existing_imp = hir_mod.importOf(&c.hir, existing_stmt);
+                    if (existing_imp.is_type_only or existing_imp.named_len == 0) continue;
+                    const existing_module = c.interner.get(existing_imp.module);
+                    var same_module = std.mem.eql(u8, existing_module, other.path);
+                    if (!same_module) {
+                        const resolved_existing = self.program.resolver.resolve(existing_module, file_path) catch null;
+                        if (resolved_existing) |resolved| {
+                            same_module = std.mem.eql(u8, resolved.path, other.path);
+                        }
+                    }
+                    if (!same_module) continue;
+                    var already_imported = false;
+                    for (hir_mod.importNamed(&c.hir, existing_stmt)) |spec_node| {
+                        if (c.hir.kindOf(spec_node) != .import_specifier) continue;
+                        const spec = hir_mod.importSpecifierOf(&c.hir, spec_node);
+                        if (std.mem.eql(u8, c.interner.get(spec.local), ident) or
+                            std.mem.eql(u8, c.interner.get(spec.imported), ident))
+                        {
+                            already_imported = true;
+                            break;
+                        }
+                    }
+                    if (already_imported) continue;
+                    const import_span = c.hir.spanOf(existing_stmt);
+                    const import_src = f.source[import_span.start..import_span.end];
+                    const close_rel = std.mem.lastIndexOfScalar(u8, import_src, '}') orelse continue;
+                    const insert_byte: u32 = import_span.start + @as(u32, @intCast(close_rel));
+                    const pos = ts_diagnostics.positionToLineCol(f.source, insert_byte);
+                    const ln: u32 = if (pos.line > 0) pos.line - 1 else 0;
+                    const co: u32 = if (pos.col > 0) pos.col - 1 else 0;
+                    const new_text = try std.fmt.allocPrint(gpa, ", {s}", .{ident});
+                    errdefer gpa.free(new_text);
+                    const title = try std.fmt.allocPrint(
+                        gpa,
+                        "Update import from \"{s}\"",
+                        .{existing_module},
+                    );
+                    errdefer gpa.free(title);
+                    var edits = try gpa.alloc(TextEdit, 1);
+                    edits[0] = .{
+                        .file = f.path,
+                        .start_line = ln,
+                        .start_col = co,
+                        .end_line = ln,
+                        .end_col = co,
+                        .new_text = new_text,
+                    };
+                    try actions.append(gpa, .{
+                        .title = title,
+                        .kind = .quick_fix,
+                        .edits = edits,
+                        .code = ts_checker.check.TsCodes.codefix_update_import_from,
+                    });
+                    emitted_update_import = true;
+                    break;
+                }
+                if (emitted_update_import) continue;
                 const new_text = try std.fmt.allocPrint(
                     gpa,
                     "import {{ {s} }} from \"{s}\";\n",
@@ -8264,6 +8324,44 @@ test "Service: codeActions emits add-all-missing-imports aggregate" {
     const a = found.?;
     try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_add_all_missing_imports), a.code);
     try T.expectEqual(@as(usize, 2), a.edits.len);
+}
+
+test "Service: codeActions updates existing import for unresolved identifier" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export function foo() { }\nexport function bar() { }");
+    _ = try program.add("/main.ts", "import { foo } from \"/lib.ts\";\nbar();");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Update import from \"/lib.ts\"")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_update_import_from), a.code);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings(", bar", a.edits[0].new_text);
 }
 
 test "Service: codeActions marks isolatedDeclarations array literal as const" {
