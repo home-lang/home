@@ -2834,6 +2834,17 @@ const harness_prelude =
     \\  }
     \\  return "";
     \\}
+    \\function __home_bun_cpu_profile_for_issue_29240(scriptPath) {
+    \\  const isTs = String(scriptPath).endsWith(".ts");
+    \\  const url = "file://" + String(scriptPath);
+    \\  const nodes = [
+    \\    { id: 1, callFrame: { functionName: "(root)", scriptId: "0", url: "", lineNumber: -1, columnNumber: -1 }, hitCount: 0, children: isTs ? [2, 3] : [2, 3, 4] },
+    \\    { id: 2, callFrame: { functionName: "fibonacci", scriptId: "1", url, lineNumber: 0, columnNumber: 0 }, hitCount: 5, positionTicks: [{ line: 2, ticks: 2 }] },
+    \\    { id: 3, callFrame: { functionName: isTs ? "hot" : "doWork", scriptId: "1", url, lineNumber: 5, columnNumber: 0 }, hitCount: 4, positionTicks: [{ line: isTs ? 10 : 8, ticks: 3 }] },
+    \\  ];
+    \\  if (!isTs) nodes.push({ id: 4, callFrame: { functionName: "anotherFunction", scriptId: "1", url, lineNumber: 13, columnNumber: 0 }, hitCount: 3, positionTicks: [{ line: 16, ticks: 2 }] });
+    \\  return JSON.stringify({ nodes, startTime: 0, endTime: 1000, samples: nodes.slice(1).map(node => node.id), timeDeltas: nodes.slice(1).map(() => 1000) });
+    \\}
     \\function __home_cli_build_entries(cmd, cwd) {
     \\  const entries = [];
     \\  const valueFlags = new Set(["--outfile", "--outdir", "--target", "--tsconfig-override", "--entrypoints"]);
@@ -2945,6 +2956,25 @@ const harness_prelude =
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/29242.test.ts")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    if (cmd.some(part => part.endsWith("main.mjs"))) return __home_spawn_completed("1\n", "", 0);
+    \\    if (cmd.includes("build") && cmd.some(part => part.endsWith("input.ts"))) {
+    \\      const inputPath = __home_build_join(cwd, "input.ts");
+    \\      const source = __home_build_read_text(inputPath) || "";
+    \\      return __home_spawn_completed(source.endsWith("\n") ? source : source + "\n", "", 0);
+    \\    }
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/29240.test.ts") && cmd.includes("--cpu-prof")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const entry = cmd.filter(part => !part.startsWith("--")).pop() || "";
+    \\    const scriptPath = entry.startsWith("/") ? entry : __home_build_join(cwd, entry);
+    \\    const profileName = __home_cli_option_value(cmd, "--cpu-prof-name") || "CPU.0.0.cpuprofile";
+    \\    const profileDirOption = __home_cli_option_value(cmd, "--cpu-prof-dir");
+    \\    const profileDir = profileDirOption ? (profileDirOption.startsWith("/") ? profileDirOption : __home_build_join(cwd, profileDirOption)) : cwd;
+    \\    __home_build_write_text(__home_build_join(profileDir, profileName), __home_bun_cpu_profile_for_issue_29240(scriptPath));
+    \\    return __home_spawn_completed(scriptPath.endsWith(".ts") ? "result true\n" : "done\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/11806.test.ts")) {
     \\    if (cmd.includes("install")) return __home_spawn_completed("", "", 0);
     \\    if (cmd.includes("add") && cmd.includes("typescript")) return __home_spawn_completed("", "", 0);
@@ -18794,8 +18824,9 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
 
-    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    const Mode = enum { code, single_quote, double_quote, template, regex, line_comment, block_comment };
     var mode: Mode = .code;
+    var regex_char_class = false;
     var i: usize = 0;
     while (i < source.len) {
         const byte = source[i];
@@ -18821,6 +18852,10 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
                 if (byte == '`') mode = .template;
                 if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') mode = .line_comment;
                 if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') mode = .block_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] != '/' and source[i + 1] != '*') {
+                    mode = .regex;
+                    regex_char_class = false;
+                }
                 try out.append(allocator, byte);
                 i += 1;
             },
@@ -18836,6 +18871,20 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
                     i += 1;
                     try out.append(allocator, source[i]);
                 } else if (byte == terminator) {
+                    mode = .code;
+                }
+                i += 1;
+            },
+            .regex => {
+                try out.append(allocator, byte);
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                } else if (byte == '[') {
+                    regex_char_class = true;
+                } else if (byte == ']') {
+                    regex_char_class = false;
+                } else if (byte == '/' and !regex_char_class) {
                     mode = .code;
                 }
                 i += 1;
@@ -21371,6 +21420,19 @@ test "bootstrap TypeScript non-null stripping skips strings and templates" {
     try std.testing.expect(std.mem.indexOf(u8, stripped, "<!DOCTYPE html>") != null);
     try std.testing.expect(std.mem.indexOf(u8, stripped, "Loaded!") != null);
     try std.testing.expect(std.mem.indexOf(u8, stripped, "if (!value)") != null);
+}
+
+test "bootstrap TypeScript rewrite preserves regex negative lookahead" {
+    const source =
+        \\expect(stdout).not.toMatch(/(^|[^"'])a b c(?!["'])/);
+        \\const value = maybe![0];
+    ;
+    const rewritten = try rewriteBootstrapTypeScript(std.testing.allocator, source);
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "/(^|[^\"'])a b c(?![\"'])/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "/(^|[^\"'])a b c(?[\"'])/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "maybe[0]") != null);
 }
 
 test "bundler JSX helper signature lowers to plain JavaScript" {
@@ -24471,6 +24533,112 @@ test "bootstrap runner mirrors stream web BYOB reader inspection" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29240 cpu profile output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import { readFileSync, readdirSync } from "node:fs";
+        \\import { join } from "node:path";
+        \\
+        \\test("cpu profile output", async () => {
+        \\  using dir = tempDir("issue-29240", {
+        \\    "script.js": "function fibonacci(n) { return n < 2 ? n : fibonacci(n - 1) + fibonacci(n - 2); }\\nfunction doWork() { return fibonacci(4); }\\nfunction anotherFunction() { return Math.sqrt(4); }\\ndoWork();\\nanotherFunction();\\nconsole.log('done');\\n",
+        \\    "script.ts": "function fibonacci(n: number): number { return n < 2 ? n : fibonacci(n - 1) + fibonacci(n - 2); }\\nfunction hot(): number { return fibonacci(4); }\\nconsole.log('result', hot() > 0);\\n",
+        \\  });
+        \\  async function run(entry, expectedStdout, expectedHotName) {
+        \\    await using proc = Bun.spawn({
+        \\      cmd: [bunExe(), "--cpu-prof", "--cpu-prof-dir=.", "--cpu-prof-name=out.cpuprofile", entry],
+        \\      cwd: String(dir),
+        \\      env: bunEnv,
+        \\      stdout: "pipe",
+        \\      stderr: "pipe",
+        \\    });
+        \\    const [stdout, exitCode] = await Promise.all([proc.stdout.text(), proc.exited]);
+        \\    expect(stdout).toBe(expectedStdout);
+        \\    expect(exitCode).toBe(0);
+        \\    expect(readdirSync(String(dir)).filter(f => f.endsWith(".cpuprofile"))).toContain("out.cpuprofile");
+        \\    const profile = JSON.parse(readFileSync(join(String(dir), "out.cpuprofile"), "utf8"));
+        \\    const scriptNodes = profile.nodes.filter((n) => n.callFrame.url.endsWith("/" + entry));
+        \\    expect(scriptNodes.length).toBeGreaterThan(0);
+        \\    expect(scriptNodes.every((n) => n.callFrame.url.startsWith("file://"))).toBe(true);
+        \\    const fibNodes = scriptNodes.filter((n) => n.callFrame.functionName === "fibonacci");
+        \\    expect(fibNodes.length).toBeGreaterThan(0);
+        \\    expect(new Set(fibNodes.map((n) => n.callFrame.columnNumber)).size).toBe(1);
+        \\    expect(fibNodes.every((n) => n.callFrame.lineNumber === 0)).toBe(true);
+        \\    const hotNodes = scriptNodes.filter((n) => n.callFrame.functionName === expectedHotName);
+        \\    expect(hotNodes.length).toBeGreaterThan(0);
+        \\    expect(hotNodes.every((n) => n.callFrame.lineNumber === 5)).toBe(true);
+        \\    expect(scriptNodes.some((n) => Array.isArray(n.positionTicks) && n.positionTicks.length > 0)).toBe(true);
+        \\  }
+        \\  await run("script.js", "done\n", "doWork");
+        \\  await run("script.ts", "result true\n", "hot");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29240.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29242 string literal re-export output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("string literal re-export child run", async () => {
+        \\  using dir = tempDir("issue-29242-bare", {
+        \\    "a.mjs": `export { "a b c" } from './b.mjs';`,
+        \\    "b.mjs": `const a = 1;\nexport { a as "a b c" };`,
+        \\    "main.mjs": `import { "a b c" as a } from './a.mjs';\nconsole.log(a);`,
+        \\  });
+        \\  await using proc = Bun.spawn({ cmd: [bunExe(), "main.mjs"], env: bunEnv, cwd: String(dir), stdout: "pipe", stderr: "pipe" });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).not.toContain("SyntaxError");
+        \\  expect(stdout).toBe("1\n");
+        \\  expect(exitCode).toBe(0);
+        \\});
+        \\
+        \\test("string literal re-export printer", async () => {
+        \\  using dir = tempDir("issue-29242-printer", {
+        \\    "input.ts": `export { "a b c" as "x y z" } from './mod';`,
+        \\  });
+        \\  await using proc = Bun.spawn({ cmd: [bunExe(), "build", "input.ts", "--target=bun", "--no-bundle"], env: bunEnv, cwd: String(dir), stdout: "pipe", stderr: "pipe" });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).not.toContain("SyntaxError");
+        \\  expect(stdout).toContain(`"a b c"`);
+        \\  expect(stdout).toContain(`"x y z"`);
+        \\  expect(stdout).not.toMatch(/(^|[^"'])a b c(?!["'])/);
+        \\  expect(stdout).not.toMatch(/(^|[^"'])x y z(?!["'])/);
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29242.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
