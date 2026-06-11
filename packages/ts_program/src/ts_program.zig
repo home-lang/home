@@ -44,8 +44,9 @@ pub const IncludeReason = struct {
     /// quoted to match tsgo's `referenceLocation.text()`; for
     /// triple-slash references the bare target text. Owned by the program.
     specifier_text: []const u8 = "",
-    /// tsc package identity for type-reference directives when the
-    /// resolver found one. Owned by the program when non-empty.
+    /// tsc package identity for node_modules imports/type-reference
+    /// directives when the resolver found one. Owned by the program when
+    /// non-empty.
     package_id: []const u8 = "",
     /// Byte offset of the import/reference specifier in the importer.
     /// Used for related-information anchors.
@@ -1425,11 +1426,15 @@ pub const Program = struct {
                     // quotes, so we normalize to double quotes.
                     const target = self.files.items[target_id];
                     if (target.include_reason == null) {
+                        const package_id = if (res.package_id) |id| try self.gpa.dupe(u8, id) else "";
+                        errdefer if (package_id.len != 0) self.gpa.free(package_id);
                         const quoted = try std.fmt.allocPrint(self.gpa, "\"{s}\"", .{module_name});
+                        errdefer self.gpa.free(quoted);
                         target.include_reason = .{
                             .kind = .import,
                             .importer = f.id,
                             .specifier_text = quoted,
+                            .package_id = package_id,
                             .specifier_pos = findIncludeSpecifierPosition(f.source, quoted),
                         };
                     }
@@ -2376,6 +2381,32 @@ test "Program: imported file records TS1393 include reason (specifier + importer
     // The root importer itself has no recorded import reason — its
     // provenance is supplied by the CLI layer.
     try T.expect(p.fileById(a_id).include_reason == null);
+}
+
+test "Program: node_modules import records package-id include reason (TS1394)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/a.ts", "import { y } from 'dep';\n");
+    try vfs.addFile("/proj/node_modules/dep/package.json",
+        \\{"name":"dep","version":"1.2.3","types":"index.d.ts"}
+    );
+    try vfs.addFile("/proj/node_modules/dep/index.d.ts", "export declare const y: number;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const a_id = try p.add("/proj/a.ts", "import { y } from 'dep';\n");
+    const dep_id = try p.add("/proj/node_modules/dep/index.d.ts", "export declare const y: number;\n");
+    try p.compileAll(.{});
+
+    const dep = p.fileById(dep_id);
+    try T.expect(dep.include_reason != null);
+    try T.expectEqual(IncludeKind.import, dep.include_reason.?.kind);
+    try T.expectEqual(a_id, dep.include_reason.?.importer);
+    try T.expectEqualStrings("\"dep\"", dep.include_reason.?.specifier_text);
+    try T.expectEqualStrings("dep/index.d.ts@1.2.3", dep.include_reason.?.package_id);
+    try T.expectEqual(@as(?u32, 1399), dep.include_reason.?.relatedDiagnosticCode());
 }
 
 test "Program: loadImportClosure follows /// <reference path> (TS1400 reason)" {

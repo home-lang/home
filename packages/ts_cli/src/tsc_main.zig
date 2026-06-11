@@ -1473,11 +1473,13 @@ fn printExplainFiles(
     const code_files_list: u32 = 1409;
     const code_default_include: u32 = 1457;
     const code_include_pattern: u32 = 1407;
-    // TS1393 `Imported via {0} from file '{1}'` — the reason a
+    // TS1393/TS1394 `Imported via {0} from file '{1}'` — the reason a
     // transitively-included (non-root) file is in the program. Mirrors
     // tsgo's `fileIncludeKindImport` branch of `computeReferenceFileDiagnostic`.
     const code_imported_via: u32 = 1393;
+    const code_imported_via_package: u32 = 1394;
     _ = code_imported_via;
+    _ = code_imported_via_package;
     // TS1400 `Referenced via '{0}' from file '{1}'` — a file pulled in by
     // a `/// <reference path="…" />` directive.
     const code_referenced_via: u32 = 1400;
@@ -1518,11 +1520,18 @@ fn printExplainFiles(
                 switch (ir.kind) {
                     .import => {
                         const importer_path = program.files.items[ir.importer].path;
-                        const msg = std.fmt.allocPrint(
-                            gpa,
-                            "  Imported via {s} from file '{s}'",
-                            .{ ir.specifier_text, importer_path },
-                        ) catch return;
+                        const msg = if (ir.package_id.len != 0)
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Imported via {s} from file '{s}' with packageId '{s}'",
+                                .{ ir.specifier_text, importer_path, ir.package_id },
+                            ) catch return
+                        else
+                            std.fmt.allocPrint(
+                                gpa,
+                                "  Imported via {s} from file '{s}'",
+                                .{ ir.specifier_text, importer_path },
+                            ) catch return;
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
                         printNodeFormatExplain(gpa, fs, f, module);
