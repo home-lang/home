@@ -29,9 +29,9 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 1611 |
+| emitted | 1612 |
 | declared | 2 |
-| tested-only | 1 |
+| tested-only | 0 |
 | catalog-only | 465 |
 | total upstream codes | 2079 |
 
@@ -39,13 +39,13 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Code | Category | Home status | Sample Home references | Upstream key |
 | --- | --- | --- | --- | --- |
-| TS1002 | err | emitted | packages/ts_driver/src/ts_driver.zig:2257<br>packages/ts_driver/src/ts_driver.zig:2315<br>packages/ts_driver/src/ts_driver.zig:4460 | Unterminated_string_literal_1002 |
+| TS1002 | err | emitted | packages/ts_driver/src/ts_driver.zig:2258<br>packages/ts_driver/src/ts_driver.zig:2316<br>packages/ts_driver/src/ts_driver.zig:4640 | Unterminated_string_literal_1002 |
 | TS1003 | err | emitted | packages/ts_parser/src/ts_parser.zig:3805<br>packages/ts_parser/src/ts_parser.zig:4202<br>packages/ts_parser/src/ts_parser.zig:5088 | Identifier_expected_1003 |
 | TS1005 | err | emitted | packages/ts_parser/src/ts_parser.zig:581<br>packages/ts_parser/src/ts_parser.zig:651<br>packages/ts_parser/src/ts_parser.zig:2182 | _0_expected_1005 |
-| TS1006 | err | emitted | packages/ts_driver/src/ts_driver.zig:1088<br>packages/ts_driver/src/ts_driver.zig:4693<br>packages/ts_driver/src/ts_driver.zig:4718 | A_file_cannot_have_a_reference_to_itself_1006 |
-| TS1007 | err | emitted | packages/ts_parser/src/ts_parser.zig:735<br>packages/ts_driver/src/ts_driver.zig:3192 | The_parser_expected_to_find_a_1_to_match_the_0_token_here_1007 |
+| TS1006 | err | emitted | packages/ts_driver/src/ts_driver.zig:1088<br>packages/ts_driver/src/ts_driver.zig:4873<br>packages/ts_driver/src/ts_driver.zig:4898 | A_file_cannot_have_a_reference_to_itself_1006 |
+| TS1007 | err | emitted | packages/ts_parser/src/ts_parser.zig:735<br>packages/ts_driver/src/ts_driver.zig:3372 | The_parser_expected_to_find_a_1_to_match_the_0_token_here_1007 |
 | TS1009 | err | emitted | packages/ts_parser/src/ts_parser.zig:1666<br>packages/ts_parser/src/ts_parser.zig:4862<br>packages/ts_parser/src/ts_parser.zig:4903 | Trailing_comma_not_allowed_1009 |
-| TS1010 | err | emitted | packages/ts_driver/src/ts_driver.zig:2267<br>packages/ts_driver/src/ts_driver.zig:4505 | Asterisk_Slash_expected_1010 |
+| TS1010 | err | emitted | packages/ts_driver/src/ts_driver.zig:2268<br>packages/ts_driver/src/ts_driver.zig:4685 | Asterisk_Slash_expected_1010 |
 | TS1011 | err | emitted | packages/ts_parser/src/ts_parser.zig:15301 | An_element_access_expression_should_take_an_argument_1011 |
 | TS1012 | err | emitted | packages/tsconfig/src/tsconfig.zig:1627 | Unexpected_token_1012 |
 | TS1013 | err | emitted | packages/ts_parser/src/ts_parser.zig:4409<br>packages/ts_parser/src/ts_parser.zig:4712 | A_rest_parameter_or_binding_pattern_may_not_have_a_trailing_comma_1013 |
@@ -96,7 +96,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1070 | err | emitted | packages/ts_parser/src/ts_parser.zig:10697<br>packages/ts_parser/src/ts_parser.zig:10756 | _0_modifier_cannot_appear_on_a_type_member_1070 |
 | TS1071 | err | emitted | packages/ts_parser/src/ts_parser.zig:5164<br>packages/ts_parser/src/ts_parser.zig:5175<br>packages/ts_parser/src/ts_parser.zig:5179 | _0_modifier_cannot_appear_on_an_index_signature_1071 |
 | TS1079 | err | emitted | packages/ts_parser/src/ts_parser.zig:2329 | A_0_modifier_cannot_be_used_with_an_import_declaration_1079 |
-| TS1084 | err | emitted | packages/ts_driver/src/ts_driver.zig:1124<br>packages/ts_driver/src/ts_driver.zig:4560 | Invalid_reference_directive_syntax_1084 |
+| TS1084 | err | emitted | packages/ts_driver/src/ts_driver.zig:1124<br>packages/ts_driver/src/ts_driver.zig:4740 | Invalid_reference_directive_syntax_1084 |
 | TS1089 | err | emitted | packages/ts_parser/src/ts_parser.zig:5506<br>packages/ts_parser/src/ts_parser.zig:5511<br>packages/ts_parser/src/ts_parser.zig:5519 | _0_modifier_cannot_appear_on_a_constructor_declaration_1089 |
 | TS1090 | err | emitted | packages/ts_parser/src/ts_parser.zig:4024 | _0_modifier_cannot_appear_on_a_parameter_1090 |
 | TS1091 | err | emitted | packages/ts_parser/src/ts_parser.zig:3387 | Only_a_single_variable_declaration_is_allowed_in_a_for_in_statement_1091 |
@@ -119,7 +119,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1108 | err | emitted | packages/ts_checker/src/check.zig:5201<br>packages/ts_checker/src/check.zig:112746<br>packages/ts_checker/src/check.zig:112755 | A_return_statement_can_only_be_used_within_a_function_body_1108 |
 | TS1109 | err | emitted | packages/ts_parser/src/ts_parser.zig:2975<br>packages/ts_parser/src/ts_parser.zig:4830<br>packages/ts_parser/src/ts_parser.zig:7442 | Expression_expected_1109 |
 | TS1110 | err | emitted | packages/ts_parser/src/ts_parser.zig:9754<br>packages/ts_parser/src/ts_parser.zig:10360<br>packages/ts_parser/src/ts_parser.zig:26870 | Type_expected_1110 |
-| TS1111 | err | emitted | packages/ts_checker/src/check.zig:33039<br>packages/ts_driver/src/ts_driver.zig:2483<br>packages/ts_driver/src/ts_driver.zig:2954 | Private_field_0_must_be_declared_in_an_enclosing_class_1111 |
+| TS1111 | err | emitted | packages/ts_checker/src/check.zig:33039<br>packages/ts_driver/src/ts_driver.zig:2484<br>packages/ts_driver/src/ts_driver.zig:3134 | Private_field_0_must_be_declared_in_an_enclosing_class_1111 |
 | TS1113 | err | emitted | packages/ts_checker/src/check.zig:11376<br>packages/ts_checker/src/check.zig:122407 | A_default_clause_cannot_appear_more_than_once_in_a_switch_statement_1113 |
 | TS1114 | err | emitted | packages/ts_parser/src/ts_parser.zig:1903<br>packages/ts_parser/src/ts_parser.zig:19126<br>packages/ts_parser/src/ts_parser.zig:19141 | Duplicate_label_0_1114 |
 | TS1115 | err | emitted | packages/ts_parser/src/ts_parser.zig:3510<br>packages/ts_parser/src/ts_parser.zig:3525<br>packages/ts_parser/src/ts_parser.zig:19077 | A_continue_statement_can_only_jump_to_a_label_of_an_enclosing_iteration_statement_1115 |
@@ -130,9 +130,9 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1120 | err | emitted | packages/ts_parser/src/ts_parser.zig:7849<br>packages/ts_parser/src/ts_parser.zig:7889 | An_export_assignment_cannot_have_modifiers_1120 |
 | TS1121 | err | emitted | packages/ts_parser/src/ts_parser.zig:2834<br>packages/ts_parser/src/ts_parser.zig:2837<br>packages/ts_parser/src/ts_parser.zig:2919 | Octal_literals_are_not_allowed_Use_the_syntax_0_1121 |
 | TS1123 | err | emitted | packages/ts_parser/src/ts_parser.zig:3085<br>packages/ts_parser/src/ts_parser.zig:3120<br>packages/ts_parser/src/ts_parser.zig:8435 | Variable_declaration_list_cannot_be_empty_1123 |
-| TS1124 | err | emitted | packages/ts_driver/src/ts_driver.zig:2285 | Digit_expected_1124 |
-| TS1125 | err | emitted | packages/ts_driver/src/ts_driver.zig:2288 | Hexadecimal_digit_expected_1125 |
-| TS1126 | err | emitted | packages/ts_driver/src/ts_driver.zig:2264 | Unexpected_end_of_text_1126 |
+| TS1124 | err | emitted | packages/ts_driver/src/ts_driver.zig:2286 | Digit_expected_1124 |
+| TS1125 | err | emitted | packages/ts_driver/src/ts_driver.zig:2289 | Hexadecimal_digit_expected_1125 |
+| TS1126 | err | emitted | packages/ts_driver/src/ts_driver.zig:2265 | Unexpected_end_of_text_1126 |
 | TS1127 | err | emitted | packages/ts_parser/src/ts_parser.zig:2451<br>packages/ts_parser/src/ts_parser.zig:3991<br>packages/ts_parser/src/ts_parser.zig:6955 | Invalid_character_1127 |
 | TS1128 | err | emitted | packages/ts_parser/src/ts_parser.zig:2220<br>packages/ts_parser/src/ts_parser.zig:2368<br>packages/ts_parser/src/ts_parser.zig:2370 | Declaration_or_statement_expected_1128 |
 | TS1129 | err | emitted | packages/ts_parser/src/ts_parser.zig:3680 | Statement_expected_1129 |
@@ -156,11 +156,11 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1149 | err | emitted | packages/ts_checker/src/check.zig:35915<br>packages/ts_checker/src/check.zig:35925<br>packages/ts_checker/src/check.zig:117609 | File_name_0_differs_from_already_included_file_name_1_only_in_casing_1149 |
 | TS1155 | err | emitted | packages/ts_parser/src/ts_parser.zig:3189<br>packages/ts_parser/src/ts_parser.zig:8542<br>packages/ts_parser/src/ts_parser.zig:8576 | _0_declarations_must_be_initialized_1155 |
 | TS1156 | err | emitted | packages/ts_parser/src/ts_parser.zig:8823 | _0_declarations_can_only_be_declared_inside_a_block_1156 |
-| TS1160 | err | emitted | packages/ts_driver/src/ts_driver.zig:2246 | Unterminated_template_literal_1160 |
+| TS1160 | err | emitted | packages/ts_driver/src/ts_driver.zig:2247 | Unterminated_template_literal_1160 |
 | TS1161 | err | emitted | packages/ts_parser/src/ts_parser.zig:12723 | Unterminated_regular_expression_literal_1161 |
 | TS1162 | err | emitted | packages/ts_parser/src/ts_parser.zig:17159 | An_object_member_cannot_be_declared_optional_1162 |
 | TS1163 | err | emitted | packages/ts_parser/src/ts_parser.zig:14837<br>packages/ts_parser/src/ts_parser.zig:14887<br>packages/ts_parser/src/ts_parser.zig:25292 | A_yield_expression_is_only_allowed_in_a_generator_body_1163 |
-| TS1164 | err | emitted | packages/ts_parser/src/ts_parser.zig:6971<br>packages/ts_driver/src/ts_driver.zig:3490 | Computed_property_names_are_not_allowed_in_enums_1164 |
+| TS1164 | err | emitted | packages/ts_parser/src/ts_parser.zig:6971<br>packages/ts_driver/src/ts_driver.zig:3670 | Computed_property_names_are_not_allowed_in_enums_1164 |
 | TS1165 | err | emitted | packages/ts_checker/src/check.zig:27546<br>packages/ts_checker/src/check.zig:143044 | A_computed_property_name_in_an_ambient_context_must_refer_to_an_expression_whose_type_is_a_literal_t_1165 |
 | TS1166 | err | emitted | packages/ts_checker/src/check.zig:27548<br>packages/ts_checker/src/check.zig:124320<br>packages/ts_checker/src/check.zig:124341 | A_computed_property_name_in_a_class_property_declaration_must_have_a_simple_literal_type_or_a_unique_1166 |
 | TS1168 | err | emitted | packages/ts_checker/src/check.zig:27090<br>packages/ts_checker/src/check.zig:143068<br>packages/ts_checker/src/check.zig:143088 | A_computed_property_name_in_a_method_overload_must_refer_to_an_expression_whose_type_is_a_literal_ty_1168 |
@@ -172,15 +172,15 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1174 | err | emitted | packages/ts_parser/src/ts_parser.zig:4864 | Classes_can_only_extend_a_single_class_1174 |
 | TS1175 | err | emitted | packages/ts_parser/src/ts_parser.zig:4930 | implements_clause_already_seen_1175 |
 | TS1176 | err | emitted | packages/ts_parser/src/ts_parser.zig:6813 | Interface_declaration_cannot_have_implements_clause_1176 |
-| TS1177 | err | emitted | packages/ts_driver/src/ts_driver.zig:2291 | Binary_digit_expected_1177 |
-| TS1178 | err | emitted | packages/ts_driver/src/ts_driver.zig:2294 | Octal_digit_expected_1178 |
+| TS1177 | err | emitted | packages/ts_driver/src/ts_driver.zig:2292 | Binary_digit_expected_1177 |
+| TS1178 | err | emitted | packages/ts_driver/src/ts_driver.zig:2295 | Octal_digit_expected_1178 |
 | TS1179 | err | emitted | packages/ts_parser/src/ts_parser.zig:4955 | Unexpected_token_expected_1179 |
 | TS1180 | err | emitted | packages/ts_parser/src/ts_parser.zig:4563 | Property_destructuring_pattern_expected_1180 |
 | TS1181 | err | emitted | packages/ts_parser/src/ts_parser.zig:4563 | Array_element_destructuring_pattern_expected_1181 |
 | TS1182 | err | emitted | packages/ts_checker/src/check.zig:54629 | A_destructuring_declaration_must_have_an_initializer_1182 |
 | TS1183 | err | emitted | packages/ts_parser/src/ts_parser.zig:3862<br>packages/ts_parser/src/ts_parser.zig:5482<br>packages/ts_parser/src/ts_parser.zig:6082 | An_implementation_cannot_be_declared_in_ambient_contexts_1183 |
 | TS1184 | err | emitted | packages/ts_parser/src/ts_parser.zig:2559<br>packages/ts_parser/src/ts_parser.zig:5013 | Modifiers_cannot_appear_here_1184 |
-| TS1185 | err | emitted | packages/ts_driver/src/ts_driver.zig:2338<br>packages/ts_driver/src/ts_driver.zig:2798 | Merge_conflict_marker_encountered_1185 |
+| TS1185 | err | emitted | packages/ts_driver/src/ts_driver.zig:2339<br>packages/ts_driver/src/ts_driver.zig:2978 | Merge_conflict_marker_encountered_1185 |
 | TS1186 | err | emitted | packages/ts_checker/src/check.zig:53034<br>packages/ts_parser/src/ts_parser.zig:4679 | A_rest_element_cannot_have_an_initializer_1186 |
 | TS1187 | err | emitted | packages/ts_parser/src/ts_parser.zig:4229 | A_parameter_property_may_not_be_declared_using_a_binding_pattern_1187 |
 | TS1188 | err | emitted | packages/ts_parser/src/ts_parser.zig:3387 | Only_a_single_variable_declaration_is_allowed_in_a_for_of_statement_1188 |
@@ -193,8 +193,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1195 | err | emitted | packages/ts_checker/src/check.zig:40069<br>packages/ts_checker/src/check.zig:136228 | export_Asterisk_does_not_re_export_a_default_1195 |
 | TS1196 | err | emitted | packages/ts_parser/src/ts_parser.zig:3599 | Catch_clause_variable_type_annotation_must_be_any_or_unknown_if_specified_1196 |
 | TS1197 | err | emitted | packages/ts_parser/src/ts_parser.zig:3613 | Catch_clause_variable_cannot_have_an_initializer_1197 |
-| TS1198 | err | emitted | packages/ts_checker/src/check.zig:16066<br>packages/ts_driver/src/ts_driver.zig:2304 | An_extended_Unicode_escape_value_must_be_between_0x0_and_0x10FFFF_inclusive_1198 |
-| TS1199 | err | emitted | packages/ts_driver/src/ts_driver.zig:2297 | Unterminated_Unicode_escape_sequence_1199 |
+| TS1198 | err | emitted | packages/ts_checker/src/check.zig:16066<br>packages/ts_driver/src/ts_driver.zig:2305 | An_extended_Unicode_escape_value_must_be_between_0x0_and_0x10FFFF_inclusive_1198 |
+| TS1199 | err | emitted | packages/ts_driver/src/ts_driver.zig:2298 | Unterminated_Unicode_escape_sequence_1199 |
 | TS1200 | err | emitted | packages/ts_parser/src/ts_parser.zig:12200<br>packages/ts_parser/src/ts_parser.zig:12356 | Line_terminator_not_permitted_before_arrow_1200 |
 | TS1202 | err | emitted | packages/ts_checker/src/check.zig:36295<br>packages/ts_checker/src/check.zig:102883<br>packages/ts_checker/src/check.zig:137684 | Import_assignment_cannot_be_used_when_targeting_ECMAScript_modules_Consider_using_import_Asterisk_as_1202 |
 | TS1203 | err | emitted | packages/ts_checker/src/check.zig:10026 | Export_assignment_cannot_be_used_when_targeting_ECMAScript_modules_Consider_using_export_default_or__1203 |
@@ -283,7 +283,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1292 | err | emitted | packages/ts_checker/src/check.zig:10409<br>packages/ts_checker/src/check.zig:137619 | _0_resolves_to_a_type_and_must_be_marked_type_only_in_this_file_before_re_exporting_when_1_is_enable_1292 |
 | TS1293 | err | emitted | packages/ts_checker/src/check.zig:36082<br>packages/ts_checker/src/check.zig:102852 | ESM_syntax_is_not_allowed_in_a_CommonJS_module_when_module_is_set_to_preserve_1293 |
 | TS1300 | err | emitted | packages/ts_checker/src/check.zig:15211<br>packages/ts_checker/src/check.zig:112845 | with_statements_are_not_allowed_in_an_async_function_block_1300 |
-| TS1308 | err | emitted | packages/ts_checker/src/check.zig:64819<br>packages/ts_checker/src/check.zig:64843<br>packages/ts_driver/src/ts_driver.zig:2485 | await_expressions_are_only_allowed_within_async_functions_and_at_the_top_levels_of_modules_1308 |
+| TS1308 | err | emitted | packages/ts_checker/src/check.zig:64819<br>packages/ts_checker/src/check.zig:64843<br>packages/ts_driver/src/ts_driver.zig:2486 | await_expressions_are_only_allowed_within_async_functions_and_at_the_top_levels_of_modules_1308 |
 | TS1309 | err | emitted | packages/ts_checker/src/check.zig:64869<br>packages/ts_checker/src/check.zig:64877<br>packages/ts_checker/src/check.zig:132972 | The_current_file_is_a_CommonJS_module_and_cannot_use_await_at_the_top_level_1309 |
 | TS1312 | err | emitted | packages/ts_checker/src/check.zig:98039<br>packages/ts_checker/src/check.zig:126966<br>packages/ts_checker/src/check.zig:126989 | Did_you_mean_to_use_a_Colon_An_can_only_follow_a_property_name_when_the_containing_object_literal_is_1312 |
 | TS1313 | err | emitted | packages/ts_parser/src/ts_parser.zig:2968 | The_body_of_an_if_statement_cannot_be_the_empty_statement_1313 |
@@ -300,7 +300,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1324 | err | emitted | packages/ts_checker/src/check.zig:62539<br>packages/ts_checker/src/check.zig:131727<br>packages/ts_checker/src/check.zig:131765 | Dynamic_imports_only_support_a_second_argument_when_the_module_option_is_set_to_esnext_node16_nodene_1324 |
 | TS1325 | err | emitted | packages/ts_checker/src/check.zig:62556<br>packages/ts_checker/src/check.zig:131747<br>packages/ts_checker/src/check.zig:131766 | Argument_of_dynamic_import_cannot_be_spread_element_1325 |
 | TS1326 | err | emitted | packages/ts_checker/src/check.zig:62532<br>packages/ts_checker/src/check.zig:131713 | This_use_of_import_is_invalid_import_calls_can_be_written_but_they_must_have_parentheses_and_cannot__1326 |
-| TS1327 | err | tested-only | packages/ts_conformance/src/ts_conformance.zig:3146 | String_literal_with_double_quotes_expected_1327 |
+| TS1327 | err | emitted | packages/ts_driver/src/ts_driver.zig:2756<br>packages/ts_driver/src/ts_driver.zig:5196<br>packages/ts_conformance/src/ts_conformance.zig:3146 | String_literal_with_double_quotes_expected_1327 |
 | TS1328 | err | emitted | packages/tsconfig/src/tsconfig.zig:804<br>packages/tsconfig/src/tsconfig.zig:1793 | Property_value_can_only_be_string_literal_numeric_literal_true_false_null_object_literal_or_array_li_1328 |
 | TS1329 | err | emitted | packages/ts_checker/src/check.zig:24333<br>packages/ts_checker/src/check.zig:108551<br>packages/ts_checker/src/check.zig:108568 | _0_accepts_too_few_arguments_to_be_used_as_a_decorator_here_Did_you_mean_to_call_it_first_and_write__1329 |
 | TS1330 | err | emitted | packages/ts_checker/src/check.zig:41776<br>packages/ts_checker/src/check.zig:142898<br>packages/ts_checker/src/check.zig:142900 | A_property_of_an_interface_or_type_literal_whose_type_is_a_unique_symbol_type_must_be_readonly_1330 |
@@ -322,9 +322,9 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1348 | err | emitted | packages/ts_checker/src/check.zig:12246 | Non_simple_parameter_declared_here_1348 |
 | TS1349 | err | emitted | packages/ts_checker/src/check.zig:12231 | use_strict_directive_used_here_1349 |
 | TS1350 | message | emitted | packages/ts_cli/src/options_table.zig:63 | Print_the_final_configuration_instead_of_building_1350 |
-| TS1351 | err | emitted | packages/ts_driver/src/ts_driver.zig:2276<br>packages/ts_driver/src/ts_driver.zig:4489 | An_identifier_or_keyword_cannot_immediately_follow_a_numeric_literal_1351 |
-| TS1352 | err | emitted | packages/ts_driver/src/ts_driver.zig:2279<br>packages/ts_driver/src/ts_driver.zig:4483 | A_bigint_literal_cannot_use_exponential_notation_1352 |
-| TS1353 | err | emitted | packages/ts_driver/src/ts_driver.zig:2282<br>packages/ts_driver/src/ts_driver.zig:4486 | A_bigint_literal_must_be_an_integer_1353 |
+| TS1351 | err | emitted | packages/ts_driver/src/ts_driver.zig:2277<br>packages/ts_driver/src/ts_driver.zig:4669 | An_identifier_or_keyword_cannot_immediately_follow_a_numeric_literal_1351 |
+| TS1352 | err | emitted | packages/ts_driver/src/ts_driver.zig:2280<br>packages/ts_driver/src/ts_driver.zig:4663 | A_bigint_literal_cannot_use_exponential_notation_1352 |
+| TS1353 | err | emitted | packages/ts_driver/src/ts_driver.zig:2283<br>packages/ts_driver/src/ts_driver.zig:4666 | A_bigint_literal_must_be_an_integer_1353 |
 | TS1354 | err | emitted | packages/ts_checker/src/check.zig:49089<br>packages/ts_checker/src/check.zig:115603 | readonly_type_modifier_is_only_permitted_on_array_and_tuple_literal_types_1354 |
 | TS1355 | err | emitted | packages/ts_checker/src/check.zig:63979<br>packages/ts_checker/src/check.zig:142999 | A_const_assertions_can_only_be_applied_to_references_to_enum_members_or_string_number_boolean_array__1355 |
 | TS1356 | err | emitted | packages/ts_checker/src/check.zig:15184<br>packages/ts_checker/src/check.zig:64837<br>packages/ts_checker/src/check.zig:105392 | Did_you_mean_to_mark_this_function_as_async_1356 |
@@ -439,10 +439,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1484 | err | emitted | packages/ts_checker/src/check.zig:10714<br>packages/ts_checker/src/check.zig:106023<br>packages/ts_checker/src/check.zig:137393 | _0_is_a_type_and_must_be_imported_using_a_type_only_import_when_verbatimModuleSyntax_is_enabled_1484 |
 | TS1485 | err | emitted | packages/ts_checker/src/check.zig:10712<br>packages/ts_checker/src/check.zig:137394<br>packages/ts_checker/src/check.zig:137415 | _0_resolves_to_a_type_only_declaration_and_must_be_imported_using_a_type_only_import_when_verbatimMo_1485 |
 | TS1486 | err | emitted | packages/ts_checker/src/check.zig:23306<br>packages/ts_checker/src/check.zig:105367 | Decorator_used_before_export_here_1486 |
-| TS1487 | err | emitted | packages/ts_driver/src/ts_driver.zig:2321<br>packages/ts_driver/src/ts_driver.zig:2347<br>packages/ts_driver/src/ts_driver.zig:2837 | Octal_escape_sequences_are_not_allowed_Use_the_syntax_0_1487 |
-| TS1488 | err | emitted | packages/ts_driver/src/ts_driver.zig:2326<br>packages/ts_driver/src/ts_driver.zig:2347<br>packages/ts_driver/src/ts_driver.zig:2841 | Escape_sequence_0_is_not_allowed_1488 |
+| TS1487 | err | emitted | packages/ts_driver/src/ts_driver.zig:2322<br>packages/ts_driver/src/ts_driver.zig:2348<br>packages/ts_driver/src/ts_driver.zig:3017 | Octal_escape_sequences_are_not_allowed_Use_the_syntax_0_1487 |
+| TS1488 | err | emitted | packages/ts_driver/src/ts_driver.zig:2327<br>packages/ts_driver/src/ts_driver.zig:2348<br>packages/ts_driver/src/ts_driver.zig:3021 | Escape_sequence_0_is_not_allowed_1488 |
 | TS1489 | err | emitted | packages/ts_parser/src/ts_parser.zig:2911 | Decimals_with_leading_zeros_are_not_allowed_1489 |
-| TS1490 | err | emitted | packages/ts_driver/src/ts_driver.zig:2335<br>packages/ts_driver/src/ts_driver.zig:2872 | File_appears_to_be_binary_1490 |
+| TS1490 | err | emitted | packages/ts_driver/src/ts_driver.zig:2336<br>packages/ts_driver/src/ts_driver.zig:3052 | File_appears_to_be_binary_1490 |
 | TS1491 | err | emitted | packages/ts_parser/src/ts_parser.zig:8761 | _0_modifier_cannot_appear_on_a_using_declaration_1491 |
 | TS1492 | err | emitted | packages/ts_parser/src/ts_parser.zig:3103<br>packages/ts_parser/src/ts_parser.zig:8678<br>packages/ts_parser/src/ts_parser.zig:8717 | _0_declarations_may_not_have_binding_patterns_1492 |
 | TS1493 | err | emitted | packages/ts_parser/src/ts_parser.zig:3144 | The_left_hand_side_of_a_for_in_statement_cannot_be_a_using_declaration_1493 |
@@ -451,7 +451,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1496 | err | catalog-only |  | Identifier_string_literal_or_number_literal_expected_1496 |
 | TS1497 | err | emitted | packages/ts_parser/src/ts_parser.zig:8340<br>packages/ts_parser/src/ts_parser.zig:22806<br>packages/ts_parser/src/ts_parser.zig:22837 | Expression_must_be_enclosed_in_parentheses_to_be_used_as_a_decorator_1497 |
 | TS1498 | err | emitted | packages/ts_parser/src/ts_parser.zig:8347<br>packages/ts_parser/src/ts_parser.zig:22810<br>packages/ts_parser/src/ts_parser.zig:22841 | Invalid_syntax_in_decorator_1498 |
-| TS1499 | err | emitted | packages/ts_parser/src/ts_parser.zig:12663<br>packages/ts_parser/src/ts_parser.zig:12991<br>packages/ts_driver/src/ts_driver.zig:2332 | Unknown_regular_expression_flag_1499 |
+| TS1499 | err | emitted | packages/ts_parser/src/ts_parser.zig:12663<br>packages/ts_parser/src/ts_parser.zig:12991<br>packages/ts_driver/src/ts_driver.zig:2333 | Unknown_regular_expression_flag_1499 |
 | TS1500 | err | emitted | packages/ts_parser/src/ts_parser.zig:12665<br>packages/ts_parser/src/ts_parser.zig:12993 | Duplicate_regular_expression_flag_1500 |
 | TS1501 | err | emitted | packages/ts_checker/src/check.zig:16020 | This_regular_expression_flag_is_only_available_when_targeting_0_or_later_1501 |
 | TS1502 | err | emitted | packages/ts_parser/src/ts_parser.zig:12667 | The_Unicode_u_flag_and_the_Unicode_Sets_v_flag_cannot_be_set_simultaneously_1502 |
@@ -460,7 +460,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1505 | err | emitted | packages/ts_parser/src/ts_parser.zig:12860<br>packages/ts_parser/src/ts_parser.zig:23556 | Incomplete_quantifier_Digit_expected_1505 |
 | TS1506 | err | emitted | packages/ts_parser/src/ts_parser.zig:12878 | Numbers_out_of_order_in_quantifier_1506 |
 | TS1507 | err | emitted | packages/ts_parser/src/ts_parser.zig:12835<br>packages/ts_parser/src/ts_parser.zig:12898 | There_is_nothing_available_for_repetition_1507 |
-| TS1508 | err | emitted | packages/ts_driver/src/ts_driver.zig:2318 | Unexpected_0_Did_you_mean_to_escape_it_with_backslash_1508 |
+| TS1508 | err | emitted | packages/ts_driver/src/ts_driver.zig:2319 | Unexpected_0_Did_you_mean_to_escape_it_with_backslash_1508 |
 | TS1509 | err | emitted | packages/ts_parser/src/ts_parser.zig:12995<br>packages/ts_parser/src/ts_parser.zig:23573 | This_regular_expression_flag_cannot_be_toggled_within_a_subpattern_1509 |
 | TS1510 | err | emitted | packages/ts_parser/src/ts_parser.zig:13117<br>packages/ts_parser/src/ts_parser.zig:23675<br>packages/ts_parser/src/ts_parser.zig:23691 | k_must_be_followed_by_a_capturing_group_name_enclosed_in_angle_brackets_1510 |
 | TS1511 | err | emitted | packages/ts_parser/src/ts_parser.zig:13126<br>packages/ts_parser/src/ts_parser.zig:23650 | q_is_only_available_inside_character_class_1511 |
@@ -546,7 +546,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2339 | err | emitted | packages/ts_checker/src/check.zig:17853<br>packages/ts_checker/src/check.zig:18026<br>packages/ts_checker/src/check.zig:18191 | Property_0_does_not_exist_on_type_1_2339 |
 | TS2340 | err | emitted | packages/ts_checker/src/check.zig:67886 | Only_public_and_protected_methods_of_the_base_class_are_accessible_via_the_super_keyword_2340 |
 | TS2341 | err | emitted | packages/ts_checker/src/check.zig:30763<br>packages/ts_checker/src/check.zig:107388<br>packages/ts_checker/src/check.zig:107413 | Property_0_is_private_and_only_accessible_within_class_1_2341 |
-| TS2343 | err | emitted | packages/ts_driver/src/ts_driver.zig:2081<br>packages/ts_program/src/ts_program.zig:2084 | This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_ve_2343 |
+| TS2343 | err | emitted | packages/ts_driver/src/ts_driver.zig:2082<br>packages/ts_program/src/ts_program.zig:2084 | This_syntax_requires_an_imported_helper_named_1_which_does_not_exist_in_0_Consider_upgrading_your_ve_2343 |
 | TS2344 | err | emitted | packages/ts_checker/src/check.zig:81289<br>packages/ts_checker/src/check.zig:135433<br>packages/ts_checker/src/check.zig:135451 | Type_0_does_not_satisfy_the_constraint_1_2344 |
 | TS2345 | err | emitted | packages/ts_checker/src/check.zig:68874<br>packages/ts_checker/src/check.zig:88743<br>packages/ts_checker/src/check.zig:88806 | Argument_of_type_0_is_not_assignable_to_parameter_of_type_1_2345 |
 | TS2346 | err | emitted | packages/ts_checker/src/check.zig:69101<br>packages/ts_checker/src/check.zig:136184 | Call_target_does_not_contain_any_signatures_2346 |
@@ -713,7 +713,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2524 | err | emitted | packages/ts_parser/src/ts_parser.zig:14819<br>packages/ts_parser/src/ts_parser.zig:14829 | await_expressions_cannot_be_used_in_a_parameter_initializer_2524 |
 | TS2526 | err | emitted | packages/ts_checker/src/check.zig:100651<br>packages/ts_checker/src/check.zig:134152<br>packages/ts_checker/src/check.zig:134163 | A_this_type_is_available_only_in_a_non_static_member_of_a_class_or_interface_2526 |
 | TS2527 | err | emitted | packages/ts_checker/src/check.zig:81589<br>packages/ts_checker/src/check.zig:140745<br>packages/ts_checker/src/check.zig:140746 | The_inferred_type_of_0_references_an_inaccessible_1_type_A_type_annotation_is_necessary_2527 |
-| TS2528 | err | emitted | packages/ts_checker/src/check.zig:9715<br>packages/ts_driver/src/ts_driver.zig:2518<br>packages/ts_checker/src/check.zig:102263 | A_module_cannot_have_multiple_default_exports_2528 |
+| TS2528 | err | emitted | packages/ts_checker/src/check.zig:9715<br>packages/ts_driver/src/ts_driver.zig:2519<br>packages/ts_checker/src/check.zig:102263 | A_module_cannot_have_multiple_default_exports_2528 |
 | TS2529 | err | emitted | packages/ts_checker/src/check.zig:14772<br>packages/ts_checker/src/check.zig:138195<br>packages/ts_checker/src/check.zig:138225 | Duplicate_identifier_0_Compiler_reserves_name_1_in_top_level_scope_of_a_module_containing_async_func_2529 |
 | TS2530 | err | emitted | packages/ts_checker/src/check.zig:95506<br>packages/ts_checker/src/check.zig:140638 | Property_0_is_incompatible_with_index_signature_2530 |
 | TS2531 | err | emitted | packages/ts_checker/src/check.zig:99804<br>packages/ts_checker/src/check.zig:105627<br>packages/ts_checker/src/check.zig:105650 | Object_is_possibly_null_2531 |
@@ -848,7 +848,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2685 | err | emitted | packages/ts_checker/src/check.zig:94895<br>packages/ts_checker/src/check.zig:145414<br>packages/ts_checker/src/check.zig:145415 | The_this_types_of_each_signature_are_incompatible_2685 |
 | TS2686 | err | emitted | packages/ts_checker/src/check.zig:79771<br>packages/ts_checker/src/check.zig:79781<br>packages/ts_checker/src/check.zig:80061 | _0_refers_to_a_UMD_global_but_the_current_file_is_a_module_Consider_adding_an_import_instead_2686 |
 | TS2687 | err | emitted | packages/ts_checker/src/check.zig:9235 | All_declarations_of_0_must_have_identical_modifiers_2687 |
-| TS2688 | err | emitted | packages/ts_driver/src/ts_driver.zig:753<br>packages/ts_driver/src/ts_driver.zig:4595 | Cannot_find_type_definition_file_for_0_2688 |
+| TS2688 | err | emitted | packages/ts_driver/src/ts_driver.zig:753<br>packages/ts_driver/src/ts_driver.zig:4775 | Cannot_find_type_definition_file_for_0_2688 |
 | TS2689 | err | emitted | packages/ts_checker/src/check.zig:46797<br>packages/ts_checker/src/check.zig:112913 | Cannot_extend_an_interface_0_Did_you_mean_implements_2689 |
 | TS2690 | err | emitted | packages/ts_checker/src/check.zig:79987<br>packages/ts_checker/src/check.zig:79998<br>packages/ts_checker/src/check.zig:124952 | _0_only_refers_to_a_type_but_is_being_used_as_a_value_here_Did_you_mean_to_use_1_in_0_2690 |
 | TS2692 | err | emitted | packages/ts_checker/src/check.zig:95049<br>packages/ts_checker/src/check.zig:144975<br>packages/ts_checker/src/check.zig:144979 | _0_is_a_primitive_but_1_is_a_wrapper_object_Prefer_using_0_when_possible_2692 |
@@ -988,7 +988,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2836 | err | catalog-only |  | Import_assertions_are_not_allowed_on_statements_that_compile_to_CommonJS_require_calls_2836 |
 | TS2837 | err | catalog-only |  | Import_assertion_values_must_be_string_literal_expressions_2837 |
 | TS2838 | err | emitted | packages/ts_checker/src/check.zig:97974<br>packages/ts_checker/src/check.zig:119322<br>packages/ts_checker/src/check.zig:119334 | All_declarations_of_0_must_have_identical_constraints_2838 |
-| TS2839 | err | emitted | packages/ts_checker/src/check.zig:96632<br>packages/ts_driver/src/ts_driver.zig:2505<br>packages/ts_checker/src/check.zig:103432 | This_condition_will_always_return_0_since_JavaScript_compares_objects_by_reference_not_value_2839 |
+| TS2839 | err | emitted | packages/ts_checker/src/check.zig:96632<br>packages/ts_driver/src/ts_driver.zig:2506<br>packages/ts_checker/src/check.zig:103432 | This_condition_will_always_return_0_since_JavaScript_compares_objects_by_reference_not_value_2839 |
 | TS2840 | err | emitted | packages/ts_checker/src/check.zig:47217 | An_interface_cannot_extend_a_primitive_type_like_0_It_can_only_extend_other_named_object_types_2840 |
 | TS2842 | err | emitted | packages/ts_parser/src/ts_parser.zig:10250 | _0_is_an_unused_renaming_of_1_Did_you_intend_to_use_it_as_a_type_annotation_2842 |
 | TS2843 | err | emitted | packages/ts_parser/src/ts_parser.zig:10244<br>packages/ts_parser/src/ts_parser.zig:22018 | We_can_only_write_a_type_for_0_by_adding_a_type_for_the_entire_parameter_here_2843 |
@@ -1021,12 +1021,12 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2871 | err | emitted | packages/ts_checker/src/check.zig:86616<br>packages/ts_checker/src/check.zig:140980<br>packages/ts_checker/src/check.zig:140991 | This_expression_is_always_nullish_2871 |
 | TS2872 | err | emitted | packages/ts_checker/src/check.zig:86511<br>packages/ts_checker/src/check.zig:86631<br>packages/ts_checker/src/check.zig:86644 | This_kind_of_expression_is_always_truthy_2872 |
 | TS2873 | err | emitted | packages/ts_checker/src/check.zig:86519<br>packages/ts_checker/src/check.zig:86530<br>packages/ts_checker/src/check.zig:86650 | This_kind_of_expression_is_always_falsy_2873 |
-| TS2874 | err | emitted | packages/ts_driver/src/ts_driver.zig:1440<br>packages/ts_driver/src/ts_driver.zig:4010<br>packages/ts_driver/src/ts_driver.zig:4150 | This_JSX_tag_requires_0_to_be_in_scope_but_it_could_not_be_found_2874 |
-| TS2875 | err | emitted | packages/ts_driver/src/ts_driver.zig:1422<br>packages/ts_driver/src/ts_driver.zig:4209 | This_JSX_tag_requires_the_module_path_0_to_exist_but_none_could_be_found_Make_sure_you_have_types_fo_2875 |
+| TS2874 | err | emitted | packages/ts_driver/src/ts_driver.zig:1440<br>packages/ts_driver/src/ts_driver.zig:4190<br>packages/ts_driver/src/ts_driver.zig:4330 | This_JSX_tag_requires_0_to_be_in_scope_but_it_could_not_be_found_2874 |
+| TS2875 | err | emitted | packages/ts_driver/src/ts_driver.zig:1422<br>packages/ts_driver/src/ts_driver.zig:4389 | This_JSX_tag_requires_the_module_path_0_to_exist_but_none_could_be_found_Make_sure_you_have_types_fo_2875 |
 | TS2876 | err | emitted | packages/ts_checker/src/check.zig:36307<br>packages/ts_checker/src/check.zig:131881 | This_relative_import_path_is_unsafe_to_rewrite_because_it_looks_like_a_file_name_but_actually_resolv_2876 |
 | TS2877 | err | emitted | packages/ts_checker/src/check.zig:37650<br>packages/ts_checker/src/check.zig:131904 | This_import_uses_a_0_extension_to_resolve_to_an_input_TypeScript_file_but_will_not_be_rewritten_duri_2877 |
 | TS2878 | err | emitted | packages/ts_checker/src/check.zig:37694<br>packages/ts_checker/src/check.zig:131935<br>packages/ts_checker/src/check.zig:131966 | This_import_path_is_unsafe_to_rewrite_because_it_resolves_to_another_project_and_the_relative_path_b_2878 |
-| TS2879 | err | emitted | packages/ts_checker/src/check.zig:65298<br>packages/ts_driver/src/ts_driver.zig:4040<br>packages/ts_driver/src/ts_driver.zig:4080 | Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879 |
+| TS2879 | err | emitted | packages/ts_checker/src/check.zig:65298<br>packages/ts_driver/src/ts_driver.zig:4220<br>packages/ts_driver/src/ts_driver.zig:4260 | Using_JSX_fragments_requires_fragment_factory_0_to_be_in_scope_but_it_could_not_be_found_2879 |
 | TS4002 | err | emitted | packages/ts_checker/src/check.zig:25292<br>packages/ts_checker/src/check.zig:140161<br>packages/ts_checker/src/check.zig:140174 | Type_parameter_0_of_exported_class_has_or_is_using_private_name_1_4002 |
 | TS4004 | err | emitted | packages/ts_checker/src/check.zig:25293<br>packages/ts_checker/src/check.zig:140172<br>packages/ts_checker/src/check.zig:140185 | Type_parameter_0_of_exported_interface_has_or_is_using_private_name_1_4004 |
 | TS4006 | err | emitted | packages/ts_checker/src/check.zig:26154<br>packages/ts_checker/src/check.zig:140470 | Type_parameter_0_of_constructor_signature_from_exported_interface_has_or_is_using_private_name_1_4006 |
@@ -1160,11 +1160,11 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5064 | err | emitted | packages/tsconfig/src/tsconfig.zig:468<br>packages/tsconfig/src/tsconfig.zig:2191<br>packages/tsconfig/src/tsconfig.zig:465 | Substitution_0_for_pattern_1_has_incorrect_type_expected_string_got_2_5064 |
 | TS5065 | err | emitted | packages/tsconfig/src/tsconfig.zig:1084<br>packages/tsconfig/src/tsconfig.zig:1092 | File_specification_cannot_contain_a_parent_directory_that_appears_after_a_recursive_directory_wildca_5065 |
 | TS5066 | err | emitted | packages/tsconfig/src/tsconfig.zig:1260 | Substitutions_for_pattern_0_shouldn_t_be_an_empty_array_5066 |
-| TS5067 | err | emitted | packages/ts_driver/src/ts_driver.zig:389<br>packages/tsconfig/src/tsconfig.zig:1530<br>packages/ts_driver/src/ts_driver.zig:4326 | Invalid_value_for_jsxFactory_0_is_not_a_valid_identifier_or_qualified_name_5067 |
+| TS5067 | err | emitted | packages/ts_driver/src/ts_driver.zig:389<br>packages/tsconfig/src/tsconfig.zig:1530<br>packages/ts_driver/src/ts_driver.zig:4506 | Invalid_value_for_jsxFactory_0_is_not_a_valid_identifier_or_qualified_name_5067 |
 | TS5068 | err | emitted | packages/ts_cli/src/ts_cli.zig:915 | Adding_a_tsconfig_json_file_will_help_organize_projects_that_contain_both_TypeScript_and_JavaScript__5068 |
 | TS5069 | err | emitted | packages/tsconfig/src/tsconfig.zig:1445 | Option_0_cannot_be_specified_without_specifying_option_1_or_option_2_5069 |
-| TS5070 | err | emitted | packages/ts_driver/src/ts_driver.zig:453<br>packages/ts_driver/src/ts_driver.zig:4956 | Option_resolveJsonModule_cannot_be_specified_when_moduleResolution_is_set_to_classic_5070 |
-| TS5071 | err | emitted | packages/ts_driver/src/ts_driver.zig:466<br>packages/ts_driver/src/ts_driver.zig:4934<br>packages/ts_driver/src/ts_driver.zig:4962 | Option_resolveJsonModule_cannot_be_specified_when_module_is_set_to_none_system_or_umd_5071 |
+| TS5070 | err | emitted | packages/ts_driver/src/ts_driver.zig:453<br>packages/ts_driver/src/ts_driver.zig:5136 | Option_resolveJsonModule_cannot_be_specified_when_moduleResolution_is_set_to_classic_5070 |
+| TS5071 | err | emitted | packages/ts_driver/src/ts_driver.zig:466<br>packages/ts_driver/src/ts_driver.zig:5114<br>packages/ts_driver/src/ts_driver.zig:5142 | Option_resolveJsonModule_cannot_be_specified_when_module_is_set_to_none_system_or_umd_5071 |
 | TS5072 | err | emitted | packages/ts_cli/src/ts_cli.zig:1107 | Unknown_build_option_0_5072 |
 | TS5073 | err | emitted | packages/ts_cli/src/ts_cli.zig:1089 | Build_option_0_requires_a_value_of_type_1_5073 |
 | TS5074 | err | catalog-only |  | Option_incremental_can_only_be_specified_using_tsconfig_emitting_to_single_file_or_when_option_tsBui_5074 |
@@ -1191,13 +1191,13 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5096 | err | emitted | packages/tsconfig/src/tsconfig.zig:615 | Option_allowImportingTsExtensions_can_only_be_used_when_one_of_noEmit_emitDeclarationOnly_or_rewrite_5096 |
 | TS5097 | err | emitted | packages/ts_checker/src/check.zig:37586<br>packages/ts_checker/src/check.zig:37837<br>packages/ts_checker/src/check.zig:131939 | An_import_path_can_only_end_with_a_0_extension_when_allowImportingTsExtensions_is_enabled_5097 |
 | TS5098 | err | emitted | packages/tsconfig/src/tsconfig.zig:1413 | Option_0_can_only_be_used_when_moduleResolution_is_set_to_node16_nodenext_or_bundler_5098 |
-| TS5101 | err | emitted | packages/ts_driver/src/ts_driver.zig:479<br>packages/ts_driver/src/ts_driver.zig:4860<br>packages/ts_conformance/src/ts_conformance.zig:50544 | Option_0_is_deprecated_and_will_stop_functioning_in_TypeScript_1_Specify_compilerOption_ignoreDeprec_5101 |
+| TS5101 | err | emitted | packages/ts_driver/src/ts_driver.zig:479<br>packages/ts_driver/src/ts_driver.zig:5040<br>packages/ts_conformance/src/ts_conformance.zig:50544 | Option_0_is_deprecated_and_will_stop_functioning_in_TypeScript_1_Specify_compilerOption_ignoreDeprec_5101 |
 | TS5102 | err | emitted | packages/ts_checker/src/check.zig:4911<br>packages/tsconfig/src/tsconfig.zig:1056 | Option_0_has_been_removed_Please_remove_it_from_your_configuration_5102 |
 | TS5103 | err | emitted | packages/tsconfig/src/tsconfig.zig:596 | Invalid_value_for_ignoreDeprecations_5103 |
 | TS5104 | err | catalog-only |  | Option_0_is_redundant_and_cannot_be_specified_with_option_1_5104 |
-| TS5105 | err | emitted | packages/ts_driver/src/ts_driver.zig:525<br>packages/ts_driver/src/ts_driver.zig:5052 | Option_verbatimModuleSyntax_cannot_be_used_when_module_is_set_to_UMD_AMD_or_System_5105 |
+| TS5105 | err | emitted | packages/ts_driver/src/ts_driver.zig:525<br>packages/ts_driver/src/ts_driver.zig:5255 | Option_verbatimModuleSyntax_cannot_be_used_when_module_is_set_to_UMD_AMD_or_System_5105 |
 | TS5106 | message | emitted | packages/tsconfig/src/tsconfig.zig:1063 | Use_0_instead_5106 |
-| TS5107 | err | emitted | packages/ts_driver/src/ts_driver.zig:508<br>packages/ts_driver/src/ts_driver.zig:1619<br>packages/ts_driver/src/ts_driver.zig:4894 | Option_0_1_is_deprecated_and_will_stop_functioning_in_TypeScript_2_Specify_compilerOption_ignoreDepr_5107 |
+| TS5107 | err | emitted | packages/ts_driver/src/ts_driver.zig:508<br>packages/ts_driver/src/ts_driver.zig:1619<br>packages/ts_driver/src/ts_driver.zig:5074 | Option_0_1_is_deprecated_and_will_stop_functioning_in_TypeScript_2_Specify_compilerOption_ignoreDepr_5107 |
 | TS5108 | err | emitted | packages/tsconfig/src/tsconfig.zig:1059 | Option_0_1_has_been_removed_Please_remove_it_from_your_configuration_5108 |
 | TS5109 | err | emitted | packages/tsconfig/src/tsconfig.zig:1385 | Option_moduleResolution_must_be_set_to_0_or_left_unspecified_when_option_module_is_set_to_1_5109 |
 | TS5110 | err | emitted | packages/tsconfig/src/tsconfig.zig:1428 | Option_module_must_be_set_to_0_when_option_moduleResolution_is_set_to_1_5110 |
@@ -1244,7 +1244,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6050 | err | catalog-only |  | Unable_to_open_file_0_6050 |
 | TS6051 | err | catalog-only |  | Corrupted_locale_file_0_6051 |
 | TS6052 | message | catalog-only |  | Raise_error_on_expressions_and_declarations_with_an_implied_any_type_6052 |
-| TS6053 | err | emitted | packages/ts_driver/src/ts_driver.zig:699<br>packages/ts_driver/src/ts_driver.zig:4519<br>packages/ts_driver/src/ts_driver.zig:4699 | File_0_not_found_6053 |
+| TS6053 | err | emitted | packages/ts_driver/src/ts_driver.zig:699<br>packages/ts_driver/src/ts_driver.zig:4699<br>packages/ts_driver/src/ts_driver.zig:4879 | File_0_not_found_6053 |
 | TS6054 | err | emitted | packages/ts_cli/src/tsc_main.zig:3585 | File_0_has_an_unsupported_extension_The_only_supported_extensions_are_1_6054 |
 | TS6055 | message | catalog-only |  | Suppress_noImplicitAny_errors_for_indexing_objects_lacking_index_signatures_6055 |
 | TS6056 | message | catalog-only |  | Do_not_emit_declarations_for_code_that_has_an_internal_annotation_6056 |
@@ -1355,8 +1355,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6184 | message | catalog-only |  | Reusing_resolution_of_module_0_from_1_of_old_program_it_was_successfully_resolved_to_2_with_Package__6184 |
 | TS6186 | message | catalog-only |  | Enable_strict_checking_of_function_types_6186 |
 | TS6187 | message | catalog-only |  | Enable_strict_checking_of_property_initialization_in_classes_6187 |
-| TS6188 | err | emitted | packages/ts_parser/src/ts_parser.zig:2883<br>packages/ts_driver/src/ts_driver.zig:2270 | Numeric_separators_are_not_allowed_here_6188 |
-| TS6189 | err | emitted | packages/ts_driver/src/ts_driver.zig:2273 | Multiple_consecutive_numeric_separators_are_not_permitted_6189 |
+| TS6188 | err | emitted | packages/ts_parser/src/ts_parser.zig:2883<br>packages/ts_driver/src/ts_driver.zig:2271 | Numeric_separators_are_not_allowed_here_6188 |
+| TS6189 | err | emitted | packages/ts_driver/src/ts_driver.zig:2274 | Multiple_consecutive_numeric_separators_are_not_permitted_6189 |
 | TS6191 | message | catalog-only |  | Whether_to_keep_outdated_console_output_in_watch_mode_instead_of_clearing_the_screen_6191 |
 | TS6193 | message | emitted | packages/ts_cli/src/tsc_main.zig:280 | Found_1_error_Watching_for_file_changes_6193 |
 | TS6194 | message | emitted | packages/ts_cli/src/tsc_main.zig:282 | Found_0_errors_Watching_for_file_changes_6194 |
@@ -1393,7 +1393,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6227 | message | catalog-only |  | Specify_strategy_for_creating_a_polling_watch_when_it_fails_to_create_using_file_system_events_Colon_6227 |
 | TS6229 | err | emitted | packages/ts_checker/src/check.zig:67404<br>packages/ts_checker/src/check.zig:106834 | Tag_0_expects_at_least_1_arguments_but_the_JSX_factory_2_provides_at_most_3_6229 |
 | TS6230 | err | emitted | packages/ts_cli/src/ts_cli.zig:703 | Option_0_can_only_be_specified_in_tsconfig_json_file_or_set_to_false_or_null_on_command_line_6230 |
-| TS6231 | err | emitted | packages/ts_driver/src/ts_driver.zig:679<br>packages/ts_driver/src/ts_driver.zig:4536 | Could_not_resolve_the_path_0_with_the_extensions_Colon_1_6231 |
+| TS6231 | err | emitted | packages/ts_driver/src/ts_driver.zig:679<br>packages/ts_driver/src/ts_driver.zig:4716 | Could_not_resolve_the_path_0_with_the_extensions_Colon_1_6231 |
 | TS6232 | err | emitted | packages/ts_checker/src/check.zig:41946<br>packages/ts_checker/src/check.zig:41961 | Declaration_augments_declaration_in_another_file_This_cannot_be_serialized_6232 |
 | TS6233 | err | emitted | packages/ts_checker/src/check.zig:41955<br>packages/ts_program/src/ts_program.zig:3348 | This_is_the_declaration_being_augmented_Consider_moving_the_augmenting_declaration_into_the_same_fil_6233 |
 | TS6234 | err | emitted | packages/ts_checker/src/check.zig:59901<br>packages/ts_checker/src/check.zig:143203<br>packages/ts_checker/src/check.zig:143206 | This_expression_is_not_callable_because_it_is_a_get_accessor_Did_you_mean_to_use_it_without_6234 |
@@ -1696,7 +1696,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS7031 | err | emitted | packages/ts_checker/src/check.zig:18392<br>packages/ts_checker/src/check.zig:18415<br>packages/ts_checker/src/check.zig:18503 | Binding_element_0_implicitly_has_an_1_type_7031 |
 | TS7032 | err | emitted | packages/ts_checker/src/check.zig:42432<br>packages/ts_checker/src/check.zig:112209<br>packages/ts_checker/src/check.zig:133342 | Property_0_implicitly_has_type_any_because_its_set_accessor_lacks_a_parameter_type_annotation_7032 |
 | TS7033 | err | emitted | packages/ts_checker/src/check.zig:20793<br>packages/ts_checker/src/check.zig:114986<br>packages/ts_checker/src/check.zig:114996 | Property_0_implicitly_has_type_any_because_its_get_accessor_lacks_a_return_type_annotation_7033 |
-| TS7034 | err | emitted | packages/ts_checker/src/check.zig:54993<br>packages/ts_driver/src/ts_driver.zig:1930<br>packages/ts_checker/src/check.zig:111214 | Variable_0_implicitly_has_type_1_in_some_locations_where_its_type_cannot_be_determined_7034 |
+| TS7034 | err | emitted | packages/ts_checker/src/check.zig:54993<br>packages/ts_driver/src/ts_driver.zig:1931<br>packages/ts_checker/src/check.zig:111214 | Variable_0_implicitly_has_type_1_in_some_locations_where_its_type_cannot_be_determined_7034 |
 | TS7035 | err | emitted | packages/ts_checker/src/check.zig:38185<br>packages/ts_checker/src/check.zig:117221<br>packages/ts_checker/src/check.zig:135094 | Try_npm_i_save_dev_types_Slash_1_if_it_exists_or_add_a_new_declaration_d_ts_file_containing_declare__7035 |
 | TS7036 | err | emitted | packages/ts_checker/src/check.zig:62580<br>packages/ts_checker/src/check.zig:131557<br>packages/ts_checker/src/check.zig:141513 | Dynamic_import_s_specifier_must_be_of_type_string_but_here_has_type_0_7036 |
 | TS7037 | message | catalog-only |  | Enables_emit_interoperability_between_CommonJS_and_ES_Modules_via_creation_of_namespace_objects_for__7037 |
@@ -1727,7 +1727,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS8001 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:1842<br>packages/ts_lsp/src/ts_lsp.zig:1855<br>packages/ts_lsp/src/ts_lsp.zig:8171 | You_cannot_rename_elements_that_are_defined_in_the_standard_TypeScript_library_8001 |
 | TS8002 | err | emitted | packages/ts_checker/src/check.zig:36302<br>packages/ts_checker/src/check.zig:102868<br>packages/ts_checker/src/check.zig:102884 | import_can_only_be_used_in_TypeScript_files_8002 |
 | TS8003 | err | emitted | packages/ts_parser/src/ts_parser.zig:6429 | export_can_only_be_used_in_TypeScript_files_8003 |
-| TS8004 | err | emitted | packages/ts_checker/src/check.zig:55256<br>packages/ts_driver/src/ts_driver.zig:2496<br>packages/ts_checker/src/check.zig:110681 | Type_parameter_declarations_can_only_be_used_in_TypeScript_files_8004 |
+| TS8004 | err | emitted | packages/ts_checker/src/check.zig:55256<br>packages/ts_driver/src/ts_driver.zig:2497<br>packages/ts_checker/src/check.zig:110681 | Type_parameter_declarations_can_only_be_used_in_TypeScript_files_8004 |
 | TS8005 | err | emitted | packages/ts_parser/src/ts_parser.zig:6434 | implements_clauses_can_only_be_used_in_TypeScript_files_8005 |
 | TS8006 | err | emitted | packages/ts_checker/src/check.zig:10491<br>packages/ts_checker/src/check.zig:10505<br>packages/ts_checker/src/check.zig:36648 | _0_declarations_can_only_be_used_in_TypeScript_files_8006 |
 | TS8008 | err | emitted | packages/ts_parser/src/ts_parser.zig:6439 | Type_aliases_can_only_be_used_in_TypeScript_files_8008 |
@@ -1737,7 +1737,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS8012 | err | emitted | packages/ts_parser/src/ts_parser.zig:6444 | Parameter_modifiers_can_only_be_used_in_TypeScript_files_8012 |
 | TS8013 | err | emitted | packages/ts_parser/src/ts_parser.zig:6449 | Non_null_assertions_can_only_be_used_in_TypeScript_files_8013 |
 | TS8016 | err | emitted | packages/ts_parser/src/ts_parser.zig:6455 | Type_assertion_expressions_can_only_be_used_in_TypeScript_files_8016 |
-| TS8017 | err | emitted | packages/ts_checker/src/check.zig:55269<br>packages/ts_checker/src/check.zig:55274<br>packages/ts_driver/src/ts_driver.zig:2500 | Signature_declarations_can_only_be_used_in_TypeScript_files_8017 |
+| TS8017 | err | emitted | packages/ts_checker/src/check.zig:55269<br>packages/ts_checker/src/check.zig:55274<br>packages/ts_driver/src/ts_driver.zig:2501 | Signature_declarations_can_only_be_used_in_TypeScript_files_8017 |
 | TS8019 | message | catalog-only |  | Report_errors_in_js_files_8019 |
 | TS8020 | err | emitted | packages/ts_parser/src/ts_parser.zig:9721<br>packages/ts_parser/src/ts_parser.zig:9727<br>packages/ts_parser/src/ts_parser.zig:9985 | JSDoc_types_can_only_be_used_inside_documentation_comments_8020 |
 | TS8021 | err | emitted | packages/ts_checker/src/check.zig:4615<br>packages/ts_checker/src/check.zig:129353<br>packages/ts_checker/src/check.zig:129381 | JSDoc_typedef_tag_should_either_have_a_type_annotation_or_be_followed_by_property_or_member_tags_8021 |
@@ -1756,7 +1756,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS8034 | err | emitted | packages/ts_parser/src/ts_parser.zig:1432 | The_tag_was_first_specified_here_8034 |
 | TS8035 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:6438<br>packages/ts_lsp/src/ts_lsp.zig:8200 | You_cannot_rename_elements_that_are_defined_in_a_node_modules_folder_8035 |
 | TS8036 | err | emitted | packages/ts_lsp/src/ts_lsp.zig:6447<br>packages/ts_lsp/src/ts_lsp.zig:8258 | You_cannot_rename_elements_that_are_defined_in_another_node_modules_folder_8036 |
-| TS8037 | err | emitted | packages/ts_checker/src/check.zig:63997<br>packages/ts_driver/src/ts_driver.zig:2492<br>packages/ts_checker/src/check.zig:112554 | Type_satisfaction_expressions_can_only_be_used_in_TypeScript_files_8037 |
+| TS8037 | err | emitted | packages/ts_checker/src/check.zig:63997<br>packages/ts_driver/src/ts_driver.zig:2493<br>packages/ts_checker/src/check.zig:112554 | Type_satisfaction_expressions_can_only_be_used_in_TypeScript_files_8037 |
 | TS8038 | err | emitted | packages/ts_checker/src/check.zig:23312<br>packages/ts_checker/src/check.zig:105364<br>packages/ts_checker/src/check.zig:108346 | Decorators_may_not_appear_after_export_or_export_default_if_they_also_appear_before_export_8038 |
 | TS8039 | err | emitted | packages/ts_parser/src/ts_parser.zig:1525<br>packages/ts_parser/src/ts_parser.zig:26252 | A_JSDoc_template_tag_may_not_follow_a_typedef_callback_or_overload_tag_8039 |
 | TS9005 | err | catalog-only |  | Declaration_emit_for_this_file_requires_using_private_name_0_An_explicit_type_annotation_may_unblock_9005 |
@@ -1795,7 +1795,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS9039 | err | emitted | packages/ts_checker/src/check.zig:7151<br>packages/ts_checker/src/check.zig:125647<br>packages/ts_checker/src/check.zig:125670 | Type_containing_private_name_0_can_t_be_used_with_isolatedDeclarations_9039 |
 | TS17001 | err | emitted | packages/ts_parser/src/ts_parser.zig:16424 | JSX_elements_cannot_have_multiple_attributes_with_the_same_name_17001 |
 | TS17002 | err | emitted | packages/ts_parser/src/ts_parser.zig:16554 | Expected_corresponding_JSX_closing_tag_for_0_17002 |
-| TS17004 | err | emitted | packages/ts_checker/src/check.zig:65234<br>packages/ts_driver/src/ts_driver.zig:3935<br>packages/ts_driver/src/ts_driver.zig:3962 | Cannot_use_JSX_unless_the_jsx_flag_is_provided_17004 |
+| TS17004 | err | emitted | packages/ts_checker/src/check.zig:65234<br>packages/ts_driver/src/ts_driver.zig:4115<br>packages/ts_driver/src/ts_driver.zig:4142 | Cannot_use_JSX_unless_the_jsx_flag_is_provided_17004 |
 | TS17005 | err | emitted | packages/ts_checker/src/check.zig:62433 | A_constructor_cannot_contain_a_super_call_when_its_class_extends_null_17005 |
 | TS17006 | err | emitted | packages/ts_parser/src/ts_parser.zig:14576<br>packages/ts_parser/src/ts_parser.zig:24111 | An_unary_expression_with_the_0_operator_is_not_allowed_in_the_left_hand_side_of_an_exponentiation_ex_17006 |
 | TS17007 | err | emitted | packages/ts_parser/src/ts_parser.zig:14556<br>packages/ts_parser/src/ts_parser.zig:24127 | A_type_assertion_expression_is_not_allowed_in_the_left_hand_side_of_an_exponentiation_expression_Con_17007 |
@@ -1807,8 +1807,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS17013 | err | emitted | packages/ts_parser/src/ts_parser.zig:15751<br>packages/ts_parser/src/ts_parser.zig:21665 | Meta_property_0_is_only_allowed_in_the_body_of_a_function_declaration_function_expression_or_constru_17013 |
 | TS17014 | err | emitted | packages/ts_parser/src/ts_parser.zig:16349<br>packages/ts_parser/src/ts_parser.zig:16353 | JSX_fragment_has_no_corresponding_closing_tag_17014 |
 | TS17015 | err | emitted | packages/ts_parser/src/ts_parser.zig:16322 | Expected_corresponding_closing_tag_for_JSX_fragment_17015 |
-| TS17016 | err | emitted | packages/ts_checker/src/check.zig:65275<br>packages/ts_driver/src/ts_driver.zig:4253 | The_jsxFragmentFactory_compiler_option_must_be_provided_to_use_JSX_fragments_with_the_jsxFactory_com_17016 |
-| TS17017 | err | emitted | packages/ts_checker/src/check.zig:65278<br>packages/ts_driver/src/ts_driver.zig:1448<br>packages/ts_driver/src/ts_driver.zig:4226 | An_jsxFrag_pragma_is_required_when_using_an_jsx_pragma_with_JSX_fragments_17017 |
+| TS17016 | err | emitted | packages/ts_checker/src/check.zig:65275<br>packages/ts_driver/src/ts_driver.zig:4433 | The_jsxFragmentFactory_compiler_option_must_be_provided_to_use_JSX_fragments_with_the_jsxFactory_com_17016 |
+| TS17017 | err | emitted | packages/ts_checker/src/check.zig:65278<br>packages/ts_driver/src/ts_driver.zig:1448<br>packages/ts_driver/src/ts_driver.zig:4406 | An_jsxFrag_pragma_is_required_when_using_an_jsx_pragma_with_JSX_fragments_17017 |
 | TS17018 | err | emitted | packages/tsconfig/src/tsconfig.zig:582 | Unknown_type_acquisition_option_0_Did_you_mean_1_17018 |
 | TS17019 | err | emitted | packages/ts_parser/src/ts_parser.zig:9634 | _0_at_the_end_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17019 |
 | TS17020 | err | emitted | packages/ts_parser/src/ts_parser.zig:9737<br>packages/ts_parser/src/ts_parser.zig:9749 | _0_at_the_start_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17020 |
@@ -1830,7 +1830,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS18018 | err | emitted | packages/ts_checker/src/check.zig:30984 | The_declaration_of_0_that_you_probably_intended_to_use_is_defined_here_18018 |
 | TS18019 | err | emitted | packages/ts_parser/src/ts_parser.zig:6224<br>packages/ts_parser/src/ts_parser.zig:6231<br>packages/ts_parser/src/ts_parser.zig:6223 | _0_modifier_cannot_be_used_with_a_private_identifier_18019 |
 | TS18024 | err | emitted | packages/ts_parser/src/ts_parser.zig:6986 | An_enum_member_cannot_be_named_with_a_private_identifier_18024 |
-| TS18026 | err | emitted | packages/ts_driver/src/ts_driver.zig:2341<br>packages/ts_driver/src/ts_driver.zig:2819 | can_only_be_used_at_the_start_of_a_file_18026 |
+| TS18026 | err | emitted | packages/ts_driver/src/ts_driver.zig:2342<br>packages/ts_driver/src/ts_driver.zig:2999 | can_only_be_used_at_the_start_of_a_file_18026 |
 | TS18027 | err | emitted | packages/ts_checker/src/check.zig:14864<br>packages/ts_checker/src/check.zig:108843<br>packages/ts_checker/src/check.zig:108882 | Compiler_reserves_name_0_when_emitting_private_identifier_downlevel_18027 |
 | TS18028 | err | emitted | packages/ts_parser/src/ts_parser.zig:6239<br>packages/ts_parser/src/ts_parser.zig:6238<br>packages/ts_parser/src/ts_parser.zig:24749 | Private_identifiers_are_only_available_when_targeting_ECMAScript_2015_and_higher_18028 |
 | TS18029 | err | emitted | packages/ts_parser/src/ts_parser.zig:8449 | Private_identifiers_are_not_allowed_in_variable_declarations_18029 |
@@ -1839,7 +1839,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS18032 | err | emitted | packages/ts_checker/src/check.zig:60421<br>packages/ts_checker/src/check.zig:145756<br>packages/ts_checker/src/check.zig:145760 | The_intersection_0_was_reduced_to_never_because_property_1_exists_in_multiple_constituents_and_is_pr_18032 |
 | TS18033 | err | emitted | packages/ts_checker/src/check.zig:44262<br>packages/ts_checker/src/check.zig:125051<br>packages/ts_checker/src/check.zig:125256 | Type_0_is_not_assignable_to_type_1_as_required_for_computed_enum_member_values_18033 |
 | TS18034 | message | catalog-only |  | Specify_the_JSX_fragment_factory_function_to_use_when_targeting_react_JSX_emit_with_jsxFactory_compi_18034 |
-| TS18035 | err | emitted | packages/ts_driver/src/ts_driver.zig:389<br>packages/tsconfig/src/tsconfig.zig:1545<br>packages/ts_driver/src/ts_driver.zig:4304 | Invalid_value_for_jsxFragmentFactory_0_is_not_a_valid_identifier_or_qualified_name_18035 |
+| TS18035 | err | emitted | packages/ts_driver/src/ts_driver.zig:389<br>packages/tsconfig/src/tsconfig.zig:1545<br>packages/ts_driver/src/ts_driver.zig:4484 | Invalid_value_for_jsxFragmentFactory_0_is_not_a_valid_identifier_or_qualified_name_18035 |
 | TS18036 | err | emitted | packages/ts_checker/src/check.zig:23320<br>packages/ts_checker/src/check.zig:23377<br>packages/ts_checker/src/check.zig:108815 | Class_decorators_can_t_be_used_with_static_private_identifier_Consider_removing_the_experimental_dec_18036 |
 | TS18037 | err | emitted | packages/ts_checker/src/check.zig:64727<br>packages/ts_checker/src/check.zig:132487 | await_expression_cannot_be_used_inside_a_class_static_block_18037 |
 | TS18038 | err | emitted | packages/ts_checker/src/check.zig:15171<br>packages/ts_checker/src/check.zig:132502 | for_await_loops_cannot_be_used_inside_a_class_static_block_18038 |

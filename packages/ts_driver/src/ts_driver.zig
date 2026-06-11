@@ -1631,6 +1631,7 @@ pub fn compileSource(
     try reportMissingReferencePathDiagnostics(gpa, c, source);
     try reportMissingReferenceTypesDiagnostics(gpa, c, source);
     try extractReferenceDirectives(gpa, c, source);
+    try appendJsonModuleValidationDiagnostics(gpa, c, source, options.importer_path);
 
     const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
     const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);
@@ -2597,6 +2598,17 @@ fn pathIsJsLike(path: []const u8) bool {
         std.mem.endsWith(u8, path, ".cjs");
 }
 
+fn pathIsJsonModule(path: []const u8) bool {
+    if (!std.mem.endsWith(u8, path, ".json")) return false;
+    var p = path;
+    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    return !std.ascii.eqlIgnoreCase(p, "package.json") and
+        !std.mem.endsWith(u8, p, "/package.json") and
+        !std.mem.endsWith(u8, p, "/tsconfig.json") and
+        !std.ascii.eqlIgnoreCase(p, "tsconfig.json");
+}
+
 fn pathIsDeclarationLike(path: []const u8) bool {
     if (std.mem.endsWith(u8, path, ".d.ts")) return true;
     if (std.mem.endsWith(u8, path, ".d.mts")) return true;
@@ -2612,6 +2624,174 @@ fn virtualPathIsNodeModules(path: []const u8) bool {
     while (std.mem.startsWith(u8, p, "./")) p = p[2..];
     return std.mem.startsWith(u8, p, "node_modules/") or
         std.mem.indexOf(u8, p, "/node_modules/") != null;
+}
+
+fn appendJsonModuleValidationDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    path: []const u8,
+) CompileError!void {
+    if (!pathIsJsonModule(path)) return;
+    var i: usize = 0;
+    while (i < source.len) {
+        i = skipJsonTrivia(source, i);
+        if (i >= source.len) break;
+        i = try validateJsonModuleValue(gpa, c, source, i);
+    }
+}
+
+fn validateJsonModuleValue(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    start: usize,
+) CompileError!usize {
+    var i = skipJsonTrivia(source, start);
+    if (i >= source.len) return i;
+    switch (source[i]) {
+        '{' => return try validateJsonModuleObject(gpa, c, source, i + 1),
+        '[' => return try validateJsonModuleArray(gpa, c, source, i + 1),
+        '"' => return jsonStringEnd(source, i, '"') orelse (i + 1),
+        '\'' => {
+            try appendJsonDoubleQuoteDiagnostic(gpa, c, @intCast(i), 1);
+            return jsonStringEnd(source, i, '\'') orelse (i + 1);
+        },
+        '-' => {
+            i += 1;
+            while (i < source.len and std.ascii.isDigit(source[i])) i += 1;
+            return i;
+        },
+        else => {
+            while (i < source.len and
+                source[i] != ',' and
+                source[i] != '}' and
+                source[i] != ']')
+            {
+                i += 1;
+            }
+            return i;
+        },
+    }
+}
+
+fn validateJsonModuleObject(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    start: usize,
+) CompileError!usize {
+    var i = start;
+    while (i < source.len) {
+        i = skipJsonTrivia(source, i);
+        if (i >= source.len) return i;
+        if (source[i] == '}') return i + 1;
+        if (source[i] == ',') {
+            i += 1;
+            continue;
+        }
+
+        if (source[i] != '"') {
+            const key_end = jsonModuleInvalidObjectKeyEnd(source, i);
+            try appendJsonDoubleQuoteDiagnostic(gpa, c, @intCast(i), @intCast(@max(@as(usize, 1), key_end - i)));
+            i = key_end;
+        } else {
+            i = jsonStringEnd(source, i, '"') orelse (i + 1);
+        }
+
+        i = skipJsonTrivia(source, i);
+        if (i < source.len and source[i] == ':') {
+            i = try validateJsonModuleValue(gpa, c, source, i + 1);
+        }
+    }
+    return i;
+}
+
+fn validateJsonModuleArray(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    start: usize,
+) CompileError!usize {
+    var i = start;
+    while (i < source.len) {
+        i = skipJsonTrivia(source, i);
+        if (i >= source.len) return i;
+        if (source[i] == ']') return i + 1;
+        if (source[i] == ',') {
+            i += 1;
+            continue;
+        }
+        i = try validateJsonModuleValue(gpa, c, source, i);
+    }
+    return i;
+}
+
+fn jsonModuleInvalidObjectKeyEnd(source: []const u8, start: usize) usize {
+    if (start < source.len and source[start] == '\'') {
+        return jsonStringEnd(source, start, '\'') orelse (start + 1);
+    }
+    var i = start;
+    while (i < source.len and
+        source[i] != ':' and
+        source[i] != ',' and
+        source[i] != '}')
+    {
+        i += 1;
+    }
+    return i;
+}
+
+fn appendJsonDoubleQuoteDiagnostic(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    pos_byte: u32,
+    span_len: u32,
+) CompileError!void {
+    try c.diagnostics.append(gpa, .{
+        .phase = .parse,
+        .pos = pos_byte,
+        .line = 0,
+        .span_len = span_len,
+        .code = 1327,
+        .message = try gpa.dupe(u8, "String literal with double quotes expected."),
+    });
+    c.has_errors = true;
+}
+
+fn skipJsonTrivia(source: []const u8, start: usize) usize {
+    var i = start;
+    while (i < source.len) {
+        switch (source[i]) {
+            ' ', '\t', '\r', '\n' => i += 1,
+            '/' => {
+                if (i + 1 < source.len and source[i + 1] == '/') {
+                    i += 2;
+                    while (i < source.len and source[i] != '\n') i += 1;
+                } else if (i + 1 < source.len and source[i + 1] == '*') {
+                    i += 2;
+                    while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) i += 1;
+                    if (i + 1 < source.len) i += 2;
+                } else {
+                    return i;
+                }
+            },
+            else => return i,
+        }
+    }
+    return i;
+}
+
+fn jsonStringEnd(source: []const u8, quote: usize, quote_char: u8) ?usize {
+    var i = quote + 1;
+    while (i < source.len) : (i += 1) {
+        if (source[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (source[i] == quote_char) return i + 1;
+    }
+    return null;
 }
 
 fn directiveBool(source: []const u8, name: []const u8) ?bool {
@@ -4997,6 +5177,29 @@ test "driver: explicit resolveJsonModule false suppresses bundler TS5071" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 5071);
     }
+}
+
+test "driver: json module validation reports TS1327 for non-double-quoted strings" {
+    var c = try compileSource(T.allocator,
+        \\{
+        \\  [name]: "value",
+        \\  "single": 'value'
+        \\}
+    , .{ .no_emit = true, .importer_path = "data.json" });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var count_1327: usize = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1327) {
+            count_1327 += 1;
+            try T.expectEqualStrings("String literal with double quotes expected.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count_1327);
+    try T.expect(c.has_errors);
 }
 
 test "driver: @module: umd emits TS5107 module=UMD deprecation" {

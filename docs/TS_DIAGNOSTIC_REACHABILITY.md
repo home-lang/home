@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| non-emitted total | 468 |
-| active reachable (parity targets) | 2 |
+| non-emitted total | 467 |
+| active reachable (parity targets) | 1 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave non-emitted) | 462 |
 
@@ -25,12 +25,7 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 1xxx — parser / syntactic + program file-inclusion | 1 |
 | 2xxx — checker / type engine | 1 |
-
-### 1xxx — parser / syntactic + program file-inclusion (1)
-
-- TS1327 (tested-only) `String_literal_with_double_quotes_expected_1327`
 
 ### 2xxx — checker / type engine (1)
 
