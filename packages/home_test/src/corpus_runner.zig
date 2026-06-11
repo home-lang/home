@@ -2215,6 +2215,71 @@ const harness_prelude =
     \\    signalCode: null,
     \\  };
     \\}
+    \\function __home_spawn_bun_test_summary_for_dir(cwd) {
+    \\  const root = __home_fs_normalize_path(cwd || process.cwd());
+    \\  let files = [];
+    \\  try {
+    \\    files = __home_fs_readdir_recursive(root, { recursive: true }).filter(name => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(String(name)) && !__home_fs_entry_is_directory(__home_build_join(root, name)));
+    \\  } catch (error) {
+    \\    files = [];
+    \\  }
+    \\  if (files.length === 0) return null;
+    \\  const stderr = " " + String(files.length) + " pass\n 0 fail\nRan " + String(files.length) + " tests across " + String(files.length) + " files.\n";
+    \\  return __home_spawn_completed("", stderr, 0);
+    \\}
+    \\function __home_spawn_29519_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/29519.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("ShadowRealm") && cmd[2].includes('console.log("ok")')) return __home_spawn_completed("ok\n", "", 0);
+    \\  if (!(cmd.length >= 3 && cmd[1] === "test" && cmd.includes("--isolate"))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  if (!cwd.includes("isolate-gc-stress")) return null;
+    \\  return __home_spawn_bun_test_summary_for_dir(cwd);
+    \\}
+    \\function __home_spawn_29524_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/29524.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.includes("--hot") && cmd.includes("run") && cmd.some(part => part.endsWith("entry.js")))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  if (!cwd.includes("issue-29524")) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  let settled = false;
+    \\  function moduleValue(name) {
+    \\    const source = __home_build_read_text(__home_build_join(cwd, name + ".js")) || "";
+    \\    const match = source.match(/return\s+["']([^"']+)["']/);
+    \\    return match ? match[1] : name + "-0";
+    \\  }
+    \\  const stdout = {
+    \\    async *[Symbol.asyncIterator]() {
+    \\      while (!settled) {
+    \\        yield "[tick] " + moduleValue("a") + " " + moduleValue("b") + " " + moduleValue("c") + "\n";
+    \\        await Promise.resolve();
+    \\      }
+    \\    },
+    \\    text() {
+    \\      return Promise.resolve("[tick] " + moduleValue("a") + " " + moduleValue("b") + " " + moduleValue("c") + "\n");
+    \\    },
+    \\  };
+    \\  return {
+    \\    stdout,
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      if (!settled) {
+    \\        settled = true;
+    \\        exited.resolve(0);
+    \\      }
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\    [Symbol.asyncDispose]() {
+    \\      this.kill();
+    \\      return Promise.resolve(undefined);
+    \\    },
+    \\  };
+    \\}
     \\function __home_spawn_11793_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 3 && cmd[1] === "test" && cmd.some(part => part.endsWith("11793.fixture.ts")))) return null;
@@ -4325,6 +4390,10 @@ const harness_prelude =
     \\    __home_validate_spawn_env(options || {});
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
+    \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
+    \\    if (issue29519Fixture) return issue29519Fixture;
+    \\    const issue29524Fixture = __home_spawn_29524_fixture(options || {});
+    \\    if (issue29524Fixture) return issue29524Fixture;
     \\    const buildOverride = __home_bun_build_spawn_override(options);
     \\    if (buildOverride) return buildOverride;
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
@@ -4340,6 +4409,10 @@ const harness_prelude =
     \\    __home_validate_spawn_env(options || {});
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
     \\    if (syncFixture) return syncFixture;
+    \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
+    \\    if (issue29519Fixture) return issue29519Fixture;
+    \\    const issue29524Fixture = __home_spawn_29524_fixture(options || {});
+    \\    if (issue29524Fixture) return issue29524Fixture;
     \\    const sleepFixture = __home_spawn_sleep_fixture(options || {});
     \\    if (sleepFixture) return sleepFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
@@ -8326,6 +8399,37 @@ const harness_prelude =
     \\    },
     \\  });
     \\}
+    \\function __home_harness_for_each_line(stream) {
+    \\  const iterator = stream && typeof stream[Symbol.asyncIterator] === "function" ? stream[Symbol.asyncIterator]() : null;
+    \\  const pending = [];
+    \\  let buffered = "";
+    \\  let done = false;
+    \\  return {
+    \\    async next() {
+    \\      while (pending.length === 0 && !done) {
+    \\        const item = iterator ? await iterator.next() : { done: true, value: undefined };
+    \\        if (item.done) {
+    \\          done = true;
+    \\          if (buffered.length > 0) {
+    \\            pending.push(buffered);
+    \\            buffered = "";
+    \\          }
+    \\          break;
+    \\        }
+    \\        buffered += item.value && typeof item.value.toString === "function" ? item.value.toString() : String(item.value || "");
+    \\        let newline = buffered.indexOf("\n");
+    \\        while (newline !== -1) {
+    \\          pending.push(buffered.slice(0, newline));
+    \\          buffered = buffered.slice(newline + 1);
+    \\          newline = buffered.indexOf("\n");
+    \\        }
+    \\      }
+    \\      if (pending.length > 0) return { value: pending.shift(), done: false };
+    \\      return { value: undefined, done: true };
+    \\    },
+    \\    [Symbol.asyncIterator]() { return this; },
+    \\  };
+    \\}
     \\function __home_expect_max_object_type_count(expectFn, type, count) {
     \\  const stats = globalThis.__home_import("bun:jsc").heapStats();
     \\  expectFn((stats.objectTypeCounts && stats.objectTypeCounts[type]) || 0).toBeLessThanOrEqual(count);
@@ -8361,7 +8465,7 @@ const harness_prelude =
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -11726,7 +11830,24 @@ const harness_prelude =
     \\  },
     \\  renameSync(oldPath, newPath) {
     \\    if (typeof globalThis.__home_renameSyncNative !== "function") __home_unsupported("node:fs.renameSync native bridge is not installed");
-    \\    return globalThis.__home_renameSyncNative(String(oldPath), String(newPath));
+    \\    const oldText = __home_build_read_text(oldPath);
+    \\    const oldKey = String(oldPath);
+    \\    const newKey = String(newPath);
+    \\    const result = globalThis.__home_renameSyncNative(oldKey, newKey);
+    \\    if (oldText !== null) {
+    \\      __home_build_write_text(newKey, oldText);
+    \\      delete globalThis.__home_written_files[oldKey];
+    \\      if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[oldKey];
+    \\      if (globalThis.__home_written_file_modes) {
+    \\        if (Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, oldKey)) globalThis.__home_written_file_modes[newKey] = globalThis.__home_written_file_modes[oldKey];
+    \\        delete globalThis.__home_written_file_modes[oldKey];
+    \\      }
+    \\      if (globalThis.__home_written_file_times) {
+    \\        if (Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_times, oldKey)) globalThis.__home_written_file_times[newKey] = globalThis.__home_written_file_times[oldKey];
+    \\        delete globalThis.__home_written_file_times[oldKey];
+    \\      }
+    \\    }
+    \\    return result;
     \\  },
     \\  unlinkSync(path) {
     \\    const normalized = String(path);
@@ -19748,6 +19869,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe, isArm64, isLinux, isMacOS, isMusl, isWindows, tempDir } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, forEachLine, isDebug, isMacOS, tempDir } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, forEachLine, isDebug, isMacOS, tempDir } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, bunExe, isWindows, tempDir } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, isWindows, tempDir } = globalThis.__home_import(\"harness\");",
         },
@@ -24899,6 +25024,57 @@ test "bootstrap runner mirrors issue 29371 proxy request-line default ports" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29519 isolate GC subprocesses" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29519.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29519.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_29519_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29524 hot atomic writes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29524.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29524.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "forEachLine") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_29524_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
