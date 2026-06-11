@@ -139,7 +139,11 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/{s}", .{ bun_obj_root, entry.path }) });
     }
 
-    m.addObjectFile(.{ .cwd_relative = ".native/napi_weak_home_dups.cpp.o" });
+    m.addCSourceFile(.{
+        .file = b.path("packages/runtime/src/native/napi_weak_home_dups.cpp"),
+        .flags = &.{ "-std=c++20", "-Wno-unused-parameter" },
+        .language = .cpp,
+    });
 
     // WebKit static libs (JavaScriptCore engine + WTF + bmalloc).
     m.addObjectFile(.{ .cwd_relative = b.fmt("{s}/libJavaScriptCore.a", .{bun_webkit_lib}) });
