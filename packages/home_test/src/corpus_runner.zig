@@ -12025,6 +12025,15 @@ const harness_prelude =
     \\  for (const entry of headers.entries()) text += __home_http_raw_header_name(entry[0]) + ": " + entry[1] + "\r\n";
     \\  return text + "\r\n" + String(body);
     \\}
+    \\function __home_net_pipe(source, destination) {
+    \\  source.on("data", chunk => {
+    \\    if (destination && typeof destination.write === "function") destination.write(chunk);
+    \\  });
+    \\  source.on("end", () => {
+    \\    if (destination && typeof destination.end === "function") destination.end();
+    \\  });
+    \\  return destination;
+    \\}
     \\function __home_net_connect(portOrOptions, host) {
     \\  const port = typeof portOrOptions === "object" && portOrOptions !== null ? Number(portOrOptions.port) : Number(portOrOptions);
     \\  const hostname = typeof portOrOptions === "object" && portOrOptions !== null ? String(portOrOptions.host || portOrOptions.hostname || "127.0.0.1") : String(host || "127.0.0.1");
@@ -12081,6 +12090,8 @@ const harness_prelude =
     \\    };
     \\    client.destroy = function(error) { this.destroyed = true; __home_net_clear_idle_timeout(this); if (error) this.emit("error", error); this.emit("close"); return this; };
     \\    peer.destroy = function(error) { this.destroyed = true; __home_net_clear_idle_timeout(this); if (error) this.emit("error", error); this.emit("close"); return this; };
+    \\    client.pipe = function(destination) { return __home_net_pipe(this, destination); };
+    \\    peer.pipe = function(destination) { return __home_net_pipe(this, destination); };
     \\    Promise.resolve().then(() => {
     \\      inMemoryServer.__home_net_handler(peer);
     \\      client.emit("connect");
@@ -12274,6 +12285,7 @@ const harness_prelude =
     \\    this.__home_port = Number(port) || __home_net_next_server_port++;
     \\    __home_net_servers[this.__home_port] = this;
     \\    if (typeof host === "function") callback = host;
+    \\    else if (typeof callback !== "function" && typeof arguments[3] === "function") callback = arguments[3];
     \\    if (typeof callback === "function") this.on("listening", callback);
     \\    Promise.resolve().then(() => this.emit("listening"));
     \\    return this;
@@ -15528,6 +15540,86 @@ const harness_prelude =
     \\  }
     \\  return (parsed.protocol === "wss:" ? "https://" : "http://") + parsed.host + (parsed.pathname || "/") + parsed.search;
     \\}
+    \\function __home_websocket_permessage_deflate_enabled(options) {
+    \\  if (options && typeof options === "object" && !Array.isArray(options) && Object.prototype.hasOwnProperty.call(options, "perMessageDeflate")) return !!options.perMessageDeflate;
+    \\  return true;
+    \\}
+    \\function __home_websocket_raw_request(parsed, offerDeflate) {
+    \\  const path = (parsed.pathname || "/") + (parsed.search || "");
+    \\  let text = "GET " + path + " HTTP/1.1\r\n" +
+    \\    "Host: " + parsed.host + "\r\n" +
+    \\    "Upgrade: websocket\r\n" +
+    \\    "Connection: Upgrade\r\n" +
+    \\    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+    \\    "Sec-WebSocket-Version: 13\r\n";
+    \\  if (offerDeflate) text += "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n";
+    \\  return text + "\r\n";
+    \\}
+    \\function __home_websocket_fail(socket, message) {
+    \\  socket.readyState = 3;
+    \\  socket.__home_pending_error = String(message || "WebSocket upgrade failed");
+    \\  socket.__home_pending_close = true;
+    \\  __home_websocket_drain_pending(socket, "error");
+    \\}
+    \\function __home_websocket_complete_open(socket) {
+    \\  socket.__home_pending_open = true;
+    \\  __home_websocket_drain_pending(socket, "open");
+    \\}
+    \\function __home_websocket_connect_raw(socket, parsed, options) {
+    \\  if (!parsed || parsed.protocol !== "ws:") return false;
+    \\  const offerDeflate = __home_websocket_permessage_deflate_enabled(options);
+    \\  const targetPort = Number(parsed.port || 80);
+    \\  const targetHost = parsed.hostname || "127.0.0.1";
+    \\  let connectPort = targetPort;
+    \\  let connectHost = targetHost;
+    \\  let proxy = null;
+    \\  if (options && typeof options === "object" && options.proxy) {
+    \\    try { proxy = new URL(String(options.proxy)); } catch (error) { __home_websocket_fail(socket, error && error.message || error); return true; }
+    \\    if (proxy.protocol !== "http:") return false;
+    \\    connectPort = Number(proxy.port || 80);
+    \\    connectHost = proxy.hostname || "127.0.0.1";
+    \\  }
+    \\  const server = typeof __home_net_servers === "object" ? __home_net_servers[connectPort] : null;
+    \\  if (!server || typeof server.__home_net_handler !== "function") return false;
+    \\  const tcp = __home_net_connect({ port: connectPort, host: connectHost });
+    \\  let responseText = "";
+    \\  let stage = proxy ? "connect" : "upgrade";
+    \\  function sendUpgrade() {
+    \\    tcp.write(Buffer.from(__home_websocket_raw_request(parsed, offerDeflate)));
+    \\  }
+    \\  tcp.on("connect", () => {
+    \\    if (proxy) tcp.write("CONNECT " + targetHost + ":" + String(targetPort) + " HTTP/1.1\r\nHost: " + targetHost + ":" + String(targetPort) + "\r\n\r\n");
+    \\    else sendUpgrade();
+    \\  });
+    \\  tcp.on("data", chunk => {
+    \\    responseText += __home_net_latin1(__home_net_bytes(chunk));
+    \\    const headerEnd = responseText.indexOf("\r\n\r\n");
+    \\    if (headerEnd === -1) return;
+    \\    const headerText = responseText.slice(0, headerEnd);
+    \\    responseText = responseText.slice(headerEnd + 4);
+    \\    if (stage === "connect") {
+    \\      if (!/^HTTP\/1\.[01]\s+2\d\d/i.test(headerText)) {
+    \\        __home_websocket_fail(socket, "WebSocket proxy CONNECT failed");
+    \\        return;
+    \\      }
+    \\      stage = "upgrade";
+    \\      sendUpgrade();
+    \\      return;
+    \\    }
+    \\    if (!/^HTTP\/1\.[01]\s+101\b/i.test(headerText)) {
+    \\      __home_websocket_fail(socket, "WebSocket upgrade failed");
+    \\      return;
+    \\    }
+    \\    const lower = headerText.toLowerCase();
+    \\    if (!offerDeflate && lower.includes("sec-websocket-extensions:")) {
+    \\      __home_websocket_fail(socket, "Server accepted permessage-deflate when the client did not offer it");
+    \\      return;
+    \\    }
+    \\    __home_websocket_complete_open(socket);
+    \\  });
+    \\  tcp.on("error", error => __home_websocket_fail(socket, error && error.message || error));
+    \\  return true;
+    \\}
     \\function WebSocket(url, protocolsOrOptions) {
     \\  this.__home_listeners = Object.create(null);
     \\  let href = String(url);
@@ -15604,6 +15696,7 @@ const harness_prelude =
     \\    __home_websocket_drain_pending(this, "open");
     \\    return;
     \\  }
+    \\  if (__home_websocket_connect_raw(this, parsed, protocolsOrOptions)) return;
     \\  if (!handle || path !== "/_bun/hmr" || typeof globalThis.__home_openHmrSocketNative !== "function") {
     \\    this.readyState = 3;
     \\    const message = "WebSocket connection to '" + href + "' failed: Failed to connect";
@@ -16544,6 +16637,23 @@ const harness_prelude =
     \\    if (normalized === "utf8" || normalized === "utf-8") return __home_utf8_bytes(value).length;
     \\    if (normalized === "utf16le" || normalized === "utf-16le" || normalized === "ucs2" || normalized === "ucs-2") return String(value).length * 2;
     \\    return String(value).length;
+    \\  };
+    \\  Buffer.prototype.indexOf = function(value, byteOffset, encoding) {
+    \\    const start = Math.max(0, Math.trunc(Number(byteOffset === undefined ? 0 : byteOffset)));
+    \\    if (start >= this.length) return -1;
+    \\    let needle;
+    \\    if (typeof value === "number") needle = [value & 0xff];
+    \\    else if (typeof value === "string") needle = __home_buffer_write_bytes(value, encoding);
+    \\    else if (ArrayBuffer.isView(value)) needle = Array.from(value);
+    \\    else needle = Array.from(Buffer.from(value || []));
+    \\    if (needle.length === 0) return start;
+    \\    outer: for (let i = start; i <= this.length - needle.length; i++) {
+    \\      for (let j = 0; j < needle.length; j++) {
+    \\        if ((this[i + j] & 0xff) !== (needle[j] & 0xff)) continue outer;
+    \\      }
+    \\      return i;
+    \\    }
+    \\    return -1;
     \\  };
     \\  Buffer.prototype.compare = function(target, targetStart, targetEnd, sourceStart, sourceEnd) {
     \\    if (!target || typeof target.length !== "number") throw new TypeError("The target argument must be an instance of Buffer or Uint8Array");
@@ -20898,6 +21008,7 @@ fn moduleDefaultExportIsApi(name: []const u8) bool {
         "fs",          "node:fs",
         "fs/promises", "node:fs/promises",
         "zlib",        "node:zlib",
+        "ws",
     };
     for (defaulted) |m| {
         if (std.mem.eql(u8, name, m)) return true;
@@ -25075,6 +25186,34 @@ test "bootstrap runner mirrors issue 29524 hot atomic writes" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29684 websocket deflate offers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29684.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29684.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const WebSocket = globalThis.__home_import(\"ws\").default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.prototype.indexOf = function(value, byteOffset, encoding)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_net_pipe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_websocket_connect_raw") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
