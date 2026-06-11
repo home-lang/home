@@ -16,8 +16,8 @@ diverge from the reference compiler.
 
 | Bucket | Count |
 | --- | ---: |
-| non-emitted total | 467 |
-| active reachable (parity targets) | 1 |
+| non-emitted total | 466 |
+| active reachable (parity targets) | 0 |
 | blocked/effectively-dead references | 4 |
 | dead in tsgo (leave non-emitted) | 462 |
 
@@ -25,11 +25,6 @@ diverge from the reference compiler.
 
 | Range | Count |
 | --- | ---: |
-| 2xxx — checker / type engine | 1 |
-
-### 2xxx — checker / type engine (1)
-
-- TS2338 (declared) `super_property_access_is_permitted_only_in_a_constructor_member_function_or_member_accessor_of_a_der_2338`
 
 ## Blocked/effectively-dead references
 
