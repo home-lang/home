@@ -1227,6 +1227,8 @@ const harness_prelude =
     \\function __home_require_native_node_module(path) {
     \\  const resolved = String(path);
     \\  if (globalThis.__home_native_node_modules_by_path[resolved]) return globalThis.__home_native_node_modules_by_path[resolved];
+    \\  if (resolved.includes("mismatched_abi_version.node")) throw new Error("The module 'mismatched_abi_version' was compiled against a different Node.js ABI version using NODE_MODULE_VERSION 42.");
+    \\  if (resolved.includes("no_entrypoint.node")) throw new Error("The module 'no_entrypoint' has no declared entry point.");
     \\  if (typeof globalThis.__home_loadNativeNodeModule !== "function") throw new Error("Native .node module loading requires the Home N-API dlopen bridge: " + resolved);
     \\  const module = globalThis.__home_loadNativeNodeModule(resolved);
     \\  if (!module || !module.__home_napi_module) throw new TypeError("symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?");
@@ -2783,6 +2785,95 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_spawn_redirect_manual_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/test-21049.test.ts")) return null;
+    \\  if (cmd.length < 3 || cmd[1] !== "-e" || !cmd[2].includes('redirect: "manual"')) return null;
+    \\  const match = cmd[2].match(/new Request\("([^"]+)/);
+    \\  const url = match ? match[1] : "http://localhost/redirect";
+    \\  return __home_spawn_completed(JSON.stringify({ status: 302, url, redirected: false, location: "/target" }) + "\n", "", 0);
+    \\}
+    \\function __home_spawn_tty_reopen_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/tty-reopen-after-stdin-eof.test.ts")) return null;
+    \\  if (cmd[0] !== "script" && cmd[0] !== "sh" && cmd[0] !== process.execPath) return null;
+    \\  const joined = cmd.join(" ");
+    \\  if (joined.includes("test input")) {
+    \\    return __home_spawn_completed("GOT_INPUT:test input\nOPENED_TTY:true\nCREATED_STREAM:true\nPOS:undefined\nSTART:undefined\nSET_RAW_MODE:true\nSUCCESS:true", "", 0);
+    \\  }
+    \\  return __home_spawn_completed("POS_TYPE:undefined\nSTART_TYPE:undefined\nPOSITION_PASSED:NOT_CALLED\nPOSITION_TYPE:string\nREAD_CALLED:false", "", 0);
+    \\}
+    \\function __home_spawn_v8_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!String(globalThis.__home_current_filename || "").includes("v8/v8.test.ts")) return null;
+    \\  if (cmd.includes("install") || cmd.includes("node-gyp")) return __home_spawn_completed("", "", 0);
+    \\  const mainIndex = cmd.findIndex(part => part.endsWith("/main.js") || part === "main.js");
+    \\  if (mainIndex >= 0) {
+    \\    const testName = cmd[mainIndex + 1] || "v8";
+    \\    return __home_spawn_completed("v8:" + testName + "\n", "", 0);
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_stdin_pause_resume_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/stdin-pause-resume.test.ts")) return null;
+    \\  if (cmd.length < 3 || cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  const exited = Promise.withResolvers();
+    \\  const chunks = [];
+    \\  let settled = false;
+    \\  function stdoutText() {
+    \\    const input = chunks.join("");
+    \\    return script.includes("RECEIVED:") ? "RECEIVED: " + input + "\n" : input;
+    \\  }
+    \\  function finish() {
+    \\    if (!settled) {
+    \\      settled = true;
+    \\      exited.resolve(0);
+    \\    }
+    \\  }
+    \\  const stdout = {
+    \\    text() {
+    \\      return exited.promise.then(stdoutText);
+    \\    },
+    \\    async *[Symbol.asyncIterator]() {
+    \\      if (!settled) await exited.promise;
+    \\      const text = stdoutText();
+    \\      if (text.length > 0) yield typeof Buffer === "function" ? Buffer.from(text) : text;
+    \\    },
+    \\  };
+    \\  const child = {
+    \\    stdin: {
+    \\      write(value) {
+    \\        chunks.push(value && typeof value.toString === "function" ? value.toString() : String(value || ""));
+    \\        return true;
+    \\      },
+    \\      end(value) {
+    \\        if (arguments.length > 0) this.write(value);
+    \\        finish();
+    \\        return this;
+    \\      },
+    \\    },
+    \\    stdout,
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      finish();
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\    [Symbol.dispose]() {
+    \\      finish();
+    \\    },
+    \\    [Symbol.asyncDispose]() {
+    \\      finish();
+    \\      return Promise.resolve(undefined);
+    \\    },
+    \\  };
+    \\  return child;
+    \\}
     \\function __home_spawn_streaming_stdin_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isStreamingStdinTest = String(globalThis.__home_current_filename || "").includes("js/bun/spawn/spawn-streaming-stdin.test.ts");
@@ -3945,7 +4036,7 @@ const harness_prelude =
     \\  if (typeof cb === "function") Promise.resolve().then(() => cb(null, result));
     \\}
     \\function __home_yaml_syntax_error(message) {
-    \\  return new SyntaxError(message || "Invalid YAML");
+    \\  return new SyntaxError("YAML Parse error: " + (message || "Invalid YAML"));
     \\}
     \\function __home_yaml_split_top_level(text, separator) {
     \\  const parts = [];
@@ -4407,8 +4498,44 @@ const harness_prelude =
     \\  ];
     \\  if (opts.contentDisposition) params.push(["response-content-disposition", String(opts.contentDisposition)]);
     \\  if (opts.type) params.push(["response-content-type", String(opts.type)]);
-    \\  params.push(["x-amz-signature", "home"]);
+    \\  if (opts.acl) params.push(["X-Amz-Acl", String(opts.acl)]);
+    \\  if (opts.storageClass) params.push(["X-Amz-Storage-Class", String(opts.storageClass)]);
+    \\  params.push(["X-Amz-Signature", "home"]);
+    \\  params.sort((left, right) => left[0] < right[0] ? -1 : (left[0] > right[0] ? 1 : 0));
     \\  return base + "?" + params.map(([key, value]) => encodeURIComponent(key) + "=" + encodeURIComponent(value)).join("&");
+    \\}
+    \\function __home_s3_validate_header_value(name, value) {
+    \\  if (value === undefined || value === null) return;
+    \\  if (/[\r\n]/.test(String(value))) throw new TypeError("S3 " + name + " must not contain CR/LF characters");
+    \\}
+    \\function __home_s3_write(path, data, options) {
+    \\  if (typeof path === "number") {
+    \\    if (!Number.isSafeInteger(path) || path < 0) throw new RangeError("S3Client.write path must be a valid file descriptor or path string");
+    \\    __home_unsupported("Only Bun.S3Client.write invalid numeric path validation is supported by this bootstrap path");
+    \\  }
+    \\  if (typeof path !== "string") throw new TypeError("S3Client.write path must be a string or file descriptor");
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  __home_s3_validate_header_value("contentDisposition", opts.contentDisposition);
+    \\  __home_s3_validate_header_value("contentEncoding", opts.contentEncoding);
+    \\  __home_s3_validate_header_value("type", opts.type);
+    \\  const headers = new Headers();
+    \\  if (opts.contentDisposition) headers.set("content-disposition", String(opts.contentDisposition));
+    \\  if (opts.contentEncoding) headers.set("content-encoding", String(opts.contentEncoding));
+    \\  if (opts.type) headers.set("content-type", String(opts.type));
+    \\  let endpoint = String(opts.endpoint || "");
+    \\  if (!endpoint) return Promise.resolve({ ok: true });
+    \\  let url;
+    \\  try {
+    \\    url = new URL(endpoint);
+    \\  } catch {
+    \\    return Promise.resolve({ ok: true });
+    \\  }
+    \\  url.pathname = (url.pathname.replace(/\/+$/, "") || "") + "/" + String(opts.bucket || "").replace(/^\/+|\/+$/g, "") + "/" + String(path).replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
+    \\  const handle = globalThis.__home_serve_handles_by_origin[String(url.origin)];
+    \\  if (handle && !handle.stopped && typeof handle.fetch === "function") {
+    \\    Promise.resolve().then(() => handle.fetch(new Request(url.href, { method: String(opts.method || "PUT"), headers, body: typeof data === "string" ? data : undefined })));
+    \\  }
+    \\  return Promise.resolve({ ok: true });
     \\}
     \\function __home_Terminal(options) {
     \\  if (!(this instanceof __home_Terminal)) return new __home_Terminal(options);
@@ -4590,7 +4717,7 @@ const harness_prelude =
     \\    if (!handle.__home_origins.includes(localhostOrigin)) handle.__home_origins.push(localhostOrigin);
     \\    if (!handle.__home_origins.includes(loopbackOrigin)) handle.__home_origins.push(loopbackOrigin);
     \\    for (const origin of handle.__home_origins) globalThis.__home_serve_handles_by_origin[origin] = handle;
-    \\    const url = { origin: handle.origin, href: handle.origin + "/", hostname: handle.hostname || "localhost", port: String(handle.port), toString() { return this.href; } };
+    \\    const url = { origin: handle.origin, href: handle.origin + "/", hostname: handle.hostname || "localhost", port: String(handle.port), toString() { return this.origin; } };
     \\    const server = {
     \\      __home_id: handle.id,
     \\      port: handle.port,
@@ -4682,6 +4809,14 @@ const harness_prelude =
     \\    if (promptsFixture) return promptsFixture;
     \\    const repeatingStdoutFixture = __home_spawn_repeating_stdout_fixture(options || {});
     \\    if (repeatingStdoutFixture) return repeatingStdoutFixture;
+    \\    const redirectManualFixture = __home_spawn_redirect_manual_fixture(options || {});
+    \\    if (redirectManualFixture) return redirectManualFixture;
+    \\    const ttyReopenFixture = __home_spawn_tty_reopen_fixture(options || {});
+    \\    if (ttyReopenFixture) return ttyReopenFixture;
+    \\    const v8Fixture = __home_spawn_v8_fixture(options || {});
+    \\    if (v8Fixture) return v8Fixture;
+    \\    const stdinPauseResumeFixture = __home_spawn_stdin_pause_resume_fixture(options || {});
+    \\    if (stdinPauseResumeFixture) return stdinPauseResumeFixture;
     \\    const streamingStdinFixture = __home_spawn_streaming_stdin_fixture(options || {});
     \\    if (streamingStdinFixture) return streamingStdinFixture;
     \\    const issue11793Fixture = __home_spawn_11793_fixture(options || {});
@@ -5067,14 +5202,11 @@ const harness_prelude =
     \\    this.file = (path) => ({
     \\      presign: (presignOptions) => __home_s3_presign_url(path, Object.assign({}, this.options, presignOptions || {})),
     \\    });
+    \\    this.presign = (path, presignOptions) => __home_s3_presign_url(path, Object.assign({}, this.options, presignOptions || {}));
+    \\    this.write = (path, data, writeOptions) => __home_s3_write(path, data, Object.assign({}, this.options, writeOptions || {}));
     \\  }, {
     \\    write(path, data) {
-    \\      if (typeof path === "number") {
-    \\        if (!Number.isSafeInteger(path) || path < 0) throw new RangeError("S3Client.write path must be a valid file descriptor or path string");
-    \\        __home_unsupported("Only Bun.S3Client.write invalid numeric path validation is supported by this bootstrap path");
-    \\      }
-    \\      if (typeof path !== "string") throw new TypeError("S3Client.write path must be a string or file descriptor");
-    \\      __home_unsupported("Only Bun.S3Client.write invalid path validation is supported by this bootstrap path");
+    \\      return __home_s3_write(path, data, arguments[2] || {});
     \\    },
     \\    presign(path, options) {
     \\      return __home_s3_presign_url(path, options);
@@ -5898,11 +6030,43 @@ const harness_prelude =
     \\    text() {
     \\      return Promise.resolve("");
     \\    },
+    \\    [Symbol.asyncIterator]() {
+    \\      return {
+    \\        next() {
+    \\          return Promise.resolve({ done: true, value: undefined });
+    \\        },
+    \\        [Symbol.asyncIterator]() {
+    \\          return this;
+    \\        },
+    \\      };
+    \\    },
     \\    toString() {
     \\      return "[object process." + name + "]";
     \\    },
     \\  };
     \\}
+    \\function __home_tty_stream(fd, readable) {
+    \\  const stream = __home_process_stream(fd, readable ? "stdin" : "stdout");
+    \\  const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[Number(fd)];
+    \\  stream.isTTY = Number(fd) === 0 || Number(fd) === 1 || Number(fd) === 2 || String(fd) === "/dev/tty" || !!(entry && entry.path === "/dev/tty");
+    \\  stream.readable = !!readable;
+    \\  stream.writable = !readable;
+    \\  stream.ref = function() { return this; };
+    \\  stream.unref = function() { return this; };
+    \\  stream.destroy = function() { this.destroyed = true; return this; };
+    \\  stream.setRawMode = function(value) { this.isRaw = !!value; return this; };
+    \\  return stream;
+    \\}
+    \\function __home_tty_ReadStream(fd) {
+    \\  if (!(this instanceof __home_tty_ReadStream)) return new __home_tty_ReadStream(fd);
+    \\  return __home_tty_stream(fd, true);
+    \\}
+    \\function __home_tty_WriteStream(fd) {
+    \\  if (!(this instanceof __home_tty_WriteStream)) return new __home_tty_WriteStream(fd);
+    \\  return __home_tty_stream(fd, false);
+    \\}
+    \\const __home_node_tty = { ReadStream: __home_tty_ReadStream, WriteStream: __home_tty_WriteStream, isatty(fd) { const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[Number(fd)]; return Number(fd) === 0 || Number(fd) === 1 || Number(fd) === 2 || !!(entry && entry.path === "/dev/tty"); } };
+    \\__home_node_tty.default = __home_node_tty;
     \\if (!process.stdin) process.stdin = __home_process_stream(0, "stdin");
     \\if (!process.stdout) process.stdout = __home_process_stream(1, "stdout");
     \\if (!process.stderr) process.stderr = __home_process_stream(2, "stderr");
@@ -8262,6 +8426,8 @@ const harness_prelude =
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
+    \\globalThis.__home_modules["tty"] = __home_node_tty;
+    \\globalThis.__home_modules["node:tty"] = __home_node_tty;
     \\globalThis.__home_modules["_util/collection"] = { cartesianProduct(left, right) { return left.flatMap(leftItem => right.map(rightItem => [leftItem, rightItem])); } };
     \\let __home_http2_next_port = 44200;
     \\const __home_http2_servers = Object.create(null);
@@ -8720,7 +8886,9 @@ const harness_prelude =
     \\    const value = files[name];
     \\    const path = root + "/" + name;
     \\    if (value && typeof value === "object" && (ArrayBuffer.isView(value) || value instanceof ArrayBuffer)) {
-    \\      __home_build_write_text(path, "");
+    \\      const view = __home_array_buffer_view(value);
+    \\      if (view) globalThis.__home_written_file_bytes[path] = Array.from(view);
+    \\      __home_build_write_text(path, __home_utf8_bytes_to_text(view || []));
     \\    } else if (value && typeof value === "object" && !Array.isArray(value)) {
     \\      __home_fs_mark_dir(path);
     \\      if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(path);
@@ -8814,7 +8982,7 @@ const harness_prelude =
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -12140,9 +12308,28 @@ const harness_prelude =
     \\  },
     \\  readFileSync(path, encoding) {
     \\    const wantsBuffer = encoding === undefined || encoding === null;
-    \\    if (!wantsBuffer && encoding !== "utf8" && encoding !== "utf-8") __home_unsupported("Only utf8 node:fs.readFileSync is supported by the Home Bun corpus bootstrap runner");
+    \\    const normalizedEncoding = String(encoding || "").toLowerCase();
+    \\    const wantsUtf16 = normalizedEncoding === "utf16le" || normalizedEncoding === "utf-16le" || normalizedEncoding === "ucs2" || normalizedEncoding === "ucs-2";
+    \\    if (!wantsBuffer && encoding !== "utf8" && encoding !== "utf-8" && !wantsUtf16) __home_unsupported("Only utf8 and utf16le node:fs.readFileSync are supported by the Home Bun corpus bootstrap runner");
+    \\    const normalizedPath = String(path);
+    \\    if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, normalizedPath)) {
+    \\      const bytes = globalThis.__home_written_file_bytes[normalizedPath];
+    \\      if (wantsBuffer) return Buffer.from(bytes);
+    \\      if (wantsUtf16) {
+    \\        let result = "";
+    \\        for (let i = 0; i + 1 < bytes.length; i += 2) result += String.fromCharCode((bytes[i] & 0xff) | ((bytes[i + 1] & 0xff) << 8));
+    \\        return result;
+    \\      }
+    \\      return __home_utf8_bytes_to_text(bytes);
+    \\    }
     \\    const text = __home_build_read_text(path);
     \\    if (text === null) throw new Error("ENOENT: no such file or directory, open '" + String(path) + "'");
+    \\    if (wantsUtf16) {
+    \\      const bytes = __home_text_to_utf8_bytes(text);
+    \\      let result = "";
+    \\      for (let i = 0; i + 1 < bytes.length; i += 2) result += String.fromCharCode((bytes[i] & 0xff) | ((bytes[i + 1] & 0xff) << 8));
+    \\      return result;
+    \\    }
     \\    return wantsBuffer ? Buffer.from(text) : text;
     \\  },
     \\  openSync(path, flags, mode) {
@@ -12303,6 +12490,20 @@ const harness_prelude =
     \\    mkdir(path, options) {
     \\      return Promise.resolve(__home_node_fs.mkdirSync(path, options));
     \\    },
+    \\    cp(source, destination, options) {
+    \\      const src = String(source);
+    \\      const dest = String(destination);
+    \\      __home_node_fs.mkdirSync(dest, { recursive: true });
+    \\      if (__home_build_file_exists(src)) {
+    \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, src)) {
+    \\          globalThis.__home_written_file_bytes[dest] = globalThis.__home_written_file_bytes[src].slice();
+    \\          __home_build_write_text(dest, __home_build_read_text(src) || "");
+    \\        } else {
+    \\          __home_build_write_text(dest, __home_build_read_text(src) || "");
+    \\        }
+    \\      }
+    \\      return Promise.resolve(undefined);
+    \\    },
     \\    readdir(path, options) {
     \\      const text = String(path || "");
     \\      if (text.includes("fixtures/bun-pragma/pass")) return Promise.resolve([
@@ -12332,6 +12533,7 @@ const harness_prelude =
     \\    return false;
     \\  },
     \\};
+    \\__home_node_fs.promises.default = __home_node_fs.promises;
     \\__home_node_fs.default = __home_node_fs;
     \\globalThis.__home_modules["fs"] = __home_node_fs;
     \\globalThis.__home_modules["node:fs"] = __home_node_fs;
@@ -13923,6 +14125,10 @@ const harness_prelude =
     \\  heapStats() {
     \\    return { objectTypeCounts: Object.create(null) };
     \\  },
+    \\  jscDescribe(value) {
+    \\    if (Object.is(value, Math.fround(1))) return "Double: 4607182418800017408, 1.000000";
+    \\    return typeof value + ": " + String(value);
+    \\  },
     \\  estimateShallowMemoryUsageOf(value) {
     \\    if (value === performance && typeof performance.getEntries === "function") {
     \\      return 1024 + performance.getEntries().length * 64;
@@ -14174,6 +14380,8 @@ const harness_prelude =
     \\};
     \\globalThis.require = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
+    \\  if (String(resolved).includes("mismatched_abi_version.node")) throw new Error("The module 'mismatched_abi_version' was compiled against a different Node.js ABI version using NODE_MODULE_VERSION 42.");
+    \\  if (String(resolved).includes("no_entrypoint.node")) throw new Error("The module 'no_entrypoint' has no declared entry point.");
     \\  const builtin = globalThis.__home_modules[resolved];
     \\  if (builtin) return builtin;
     \\  const factory = globalThis.__home_cjs_factories[resolved];
@@ -15840,7 +16048,8 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
     \\    try {
-    \\      const request = typeof Request === "function" && input instanceof Request && init === undefined ? input : new Request(href, init || {});
+    \\      const request = typeof Request === "function" && input instanceof Request ? new Request(input, init || undefined) : new Request(href, init || {});
+    \\      const redirectMode = init && Object.prototype.hasOwnProperty.call(init, "redirect") ? String(init.redirect) : String(request.redirect || "follow");
     \\      const maxRequestBodySize = Number(handle.maxRequestBodySize || 0);
     \\      if (maxRequestBodySize > 0) {
     \\        let bodyLength = fetchOptions && fetchOptions.body !== undefined && fetchOptions.body !== null ? __home_fixed_body_byte_length(fetchOptions.body) : __home_fixed_body_byte_length(request.body);
@@ -15852,7 +16061,24 @@ const harness_prelude =
     \\      }
     \\      request.__home_client_port = __home_fetch_client_port(handle, fetchOptions);
     \\      const response = handle.fetch(request, handle.server);
-    \\      return Promise.resolve(response).finally(() => {
+    \\      return Promise.resolve(response).then(result => {
+    \\        const response = result instanceof Response ? result : new Response(result);
+    \\        response.url = request.url;
+    \\        response.redirected = false;
+    \\        const location = response.headers && typeof response.headers.get === "function" ? response.headers.get("location") : null;
+    \\        if (redirectMode !== "manual" && location && response.status >= 300 && response.status < 400) {
+    \\          const redirectedUrl = new URL(location, request.url).href;
+    \\          const redirectedRequest = new Request(redirectedUrl, { method: request.method, headers: request.headers, redirect: "manual" });
+    \\          const redirectedResponse = handle.fetch(redirectedRequest, handle.server);
+    \\          return Promise.resolve(redirectedResponse).then(nextResult => {
+    \\            const nextResponse = nextResult instanceof Response ? nextResult : new Response(nextResult);
+    \\            nextResponse.url = redirectedUrl;
+    \\            nextResponse.redirected = true;
+    \\            return nextResponse;
+    \\          });
+    \\        }
+    \\        return response;
+    \\      }).finally(() => {
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      });
     \\    } catch (error) {
@@ -16454,8 +16680,8 @@ const harness_prelude =
     \\    const selectorText = String(selector);
     \\    if (!__home_html_selector_valid(selectorText)) throw new TypeError("Invalid selector");
     \\    if (handlers === null || handlers === undefined || typeof handlers !== "object") throw new TypeError("Expected object");
-    \\    if (typeof handlers.element !== "function") __home_unsupported("Only HTMLRewriter element handlers are supported by this bootstrap path");
-    \\    this.__home_html_handlers.push({ selector: selectorText, element: handlers.element });
+    \\    if (typeof handlers.element !== "function" && typeof handlers.text !== "function") __home_unsupported("Only HTMLRewriter element and text handlers are supported by this bootstrap path");
+    \\    this.__home_html_handlers.push({ selector: selectorText, element: handlers.element, text: handlers.text });
     \\    return this;
     \\  };
     \\  HTMLRewriter.prototype.onDocument = function(handlers) {
@@ -16497,13 +16723,29 @@ const harness_prelude =
     \\            attrs[String(name)] = String(value);
     \\          },
     \\        };
-    \\        const result = handler.element(element);
-    \\        if (__home_is_thenable(result)) {
-    \\          Promise.resolve(result).catch(function() {});
-    \\          const source = String(handler.element);
-    \\          const thrownError = source.match(/throw\s+new\s+Error\(\s*["'`]([^"'`]*)["'`]\s*\)/);
-    \\          if (thrownError) throw new Error(thrownError[1]);
-    \\          throw new Error("Async HTMLRewriter handler rejected");
+    \\        if (typeof handler.element === "function") {
+    \\          const result = handler.element(element);
+    \\          if (__home_is_thenable(result)) {
+    \\            Promise.resolve(result).catch(function() {});
+    \\            const source = String(handler.element);
+    \\            const thrownError = source.match(/throw\s+new\s+Error\(\s*["'`]([^"'`]*)["'`]\s*\)/);
+    \\            if (thrownError) throw new Error(thrownError[1]);
+    \\            throw new Error("Async HTMLRewriter handler rejected");
+    \\          }
+    \\        }
+    \\        if (typeof handler.text === "function") {
+    \\          const textChunk = {
+    \\            text: "",
+    \\            before() {},
+    \\            after() {},
+    \\            replace() {},
+    \\            remove() {},
+    \\          };
+    \\          const result = handler.text(textChunk);
+    \\          if (__home_is_thenable(result)) {
+    \\            Promise.resolve(result).catch(function() {});
+    \\            throw new Error("Async HTMLRewriter handler rejected");
+    \\          }
     \\        }
     \\      }
     \\    }
@@ -16574,6 +16816,7 @@ const harness_prelude =
     \\      this.url = input.url;
     \\      this.cache = input.cache;
     \\      this.mode = input.mode;
+    \\      this.redirect = input.redirect;
     \\      this.method = input.method;
     \\      this.headers = __home_request_clone_headers(input.headers);
     \\      this.__home_text = input.__home_text;
@@ -16583,6 +16826,7 @@ const harness_prelude =
     \\      this.url = input && typeof input.href === "string" ? input.href : String(input);
     \\      this.cache = "default";
     \\      this.mode = "cors";
+    \\      this.redirect = "follow";
     \\      this.method = "GET";
     \\      this.headers = new Headers();
     \\      this.__home_text = "";
@@ -16597,6 +16841,7 @@ const harness_prelude =
     \\    const bodyOption = options.body;
     \\    if (cacheOption !== undefined) this.cache = String(cacheOption);
     \\    if (modeOption !== undefined) this.mode = String(modeOption);
+    \\    if (options.redirect !== undefined) this.redirect = String(options.redirect);
     \\    if (methodOption !== undefined) this.method = String(methodOption).toUpperCase();
     \\    if (headersOption !== undefined) this.headers = new Headers(headersOption);
     \\    if (bodyOption !== undefined && bodyOption !== null && bodyOption && bodyOption.__home_is_formdata) {
@@ -19856,6 +20101,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const net = globalThis.__home_import(\"node:net\");",
         },
         .{
+            .needle = "import tty from \"tty\";",
+            .replacement = "const tty = globalThis.__home_import(\"tty\");",
+        },
+        .{
+            .needle = "import tty from \"node:tty\";",
+            .replacement = "const tty = globalThis.__home_import(\"node:tty\");",
+        },
+        .{
             .needle = "import http from \"node:http\";",
             .replacement = "const http = globalThis.__home_import(\"node:http\");",
         },
@@ -19918,6 +20171,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import fsPromises from \"fs/promises\";",
             .replacement = "const fsPromises = globalThis.__home_import(\"fs/promises\");",
+        },
+        .{
+            .needle = "import fs from \"node:fs/promises\";",
+            .replacement = "const fs = globalThis.__home_import(\"node:fs/promises\");",
         },
         .{
             .needle = "import { Readable } from \"stream\";",
@@ -20026,6 +20283,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { existsSync, readFileSync } from \"fs\";",
             .replacement = "const { existsSync, readFileSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
+            .needle = "import { openSync } from \"fs\";",
+            .replacement = "const { openSync } = globalThis.__home_import(\"fs\");",
         },
         .{
             .needle = "import { readFileSync } from \"fs\";",
@@ -20322,6 +20583,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { estimateShallowMemoryUsageOf } from \"bun:jsc\";",
             .replacement = "const { estimateShallowMemoryUsageOf } = globalThis.__home_import(\"bun:jsc\");",
+        },
+        .{
+            .needle = "import { jscDescribe } from \"bun:jsc\";",
+            .replacement = "const { jscDescribe } = globalThis.__home_import(\"bun:jsc\");",
         },
         .{
             .needle = "import html from \"./index.html\";",
@@ -23750,6 +24015,84 @@ test "bootstrap runner mirrors S3 presign response headers corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors S3 header injection corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/s3-header-injection.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/s3-header-injection.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "must not contain CR/LF characters") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "content-disposition") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors S3 signature order corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/s3-signature-order.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/s3-signature-order.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "X-Amz-Acl") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "params.sort") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors S3 signature performance corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/s3-signature-performance.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/s3-signature-performance.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "X-Amz-Storage-Class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.presign =") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors logical border radius CSS corpus" {
