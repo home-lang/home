@@ -240,6 +240,12 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_rmSyncNative",
+            rmSyncNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_createDirPathNative",
             createDirPathNative,
         );
@@ -2683,6 +2689,55 @@ fn unlinkSyncNative(
         setExceptionFmt(actual_ctx, exception, "node:fs.unlinkSync() failed: {s}", .{@errorName(err)});
         return null;
     };
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn rmSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.rmSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.rmSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    const recursive = argument_count >= 2 and arguments[1] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[1].?);
+    const force = argument_count >= 3 and arguments[2] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[2].?);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = Io.Dir.cwd();
+
+    if (recursive) {
+        cwd.deleteTree(io, path) catch |err| {
+            if (force and err == error.FileNotFound) return extern_fns.JSValueMakeUndefined(actual_ctx);
+            setExceptionFmt(actual_ctx, exception, "node:fs.rmSync() failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    } else {
+        cwd.deleteFile(io, path) catch |err| {
+            if (force and err == error.FileNotFound) return extern_fns.JSValueMakeUndefined(actual_ctx);
+            setExceptionFmt(actual_ctx, exception, "node:fs.rmSync() failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
+
     return extern_fns.JSValueMakeUndefined(actual_ctx);
 }
 

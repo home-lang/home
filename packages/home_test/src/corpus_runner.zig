@@ -12464,6 +12464,13 @@ const harness_prelude =
     \\    const recursive = options && typeof options === "object" && options.recursive === true;
     \\    const force = options && typeof options === "object" && options.force === true;
     \\    __home_fs_mark_deleted(path);
+    \\    if (typeof globalThis.__home_rmSyncNative === "function") {
+    \\      try {
+    \\        return globalThis.__home_rmSyncNative(String(path), recursive, force);
+    \\      } catch (error) {
+    \\        if (!force && !recursive) throw error;
+    \\      }
+    \\    }
     \\    if (typeof globalThis.__home_unlinkSyncNative === "function") {
     \\      try {
     \\        return globalThis.__home_unlinkSyncNative(String(path));
@@ -24753,6 +24760,14 @@ test "bootstrap runner supports recursive mkdir existing path smoke" {
         \\  expect(async () => {
         \\    await mkdir(file, { recursive: true });
         \\  }).toThrow("EEXIST: file already exists");
+        \\
+        \\  const fsPromises = globalThis.__home_import("fs/promises");
+        \\  const dir4 = join(testDir, "delete-recreate", "subdir");
+        \\  mkdirSync(dir4, { recursive: true });
+        \\  writeFileSync(join(dir4, "index.js"), "export const value = 1;");
+        \\  await fsPromises.rm(dir4, { recursive: true });
+        \\  expect(await mkdir(dir4)).toBeUndefined();
+        \\  await fsPromises.writeFile(join(dir4, "index.js"), "export const value = 2;");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/16474.test.ts");
