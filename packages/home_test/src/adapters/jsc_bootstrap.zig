@@ -885,8 +885,8 @@ fn transpileSource(
 }
 
 fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader, handle: *const TranspilerHandle) bool {
-    _ = source_text;
     _ = handle;
+    if (std.mem.indexOfScalar(u8, source_text, '#') != null) return true;
     return switch (loader) {
         .ts, .tsx => true,
         else => false,
@@ -4295,6 +4295,7 @@ test "adapter routes TypeScript transforms through the native parser path" {
     try std.testing.expect(shouldUseBunParserForTranspile("enum ABC { A = () => {} }", .ts, &default_handle));
     try std.testing.expect(shouldUseBunParserForTranspile("let x: number = y", .tsx, &default_handle));
     try std.testing.expect(shouldUseBunParserForTranspile("const source = \"enum ABC { A }\";", .ts, &default_handle));
+    try std.testing.expect(shouldUseBunParserForTranspile("class Foo { #foo }", .js, &default_handle));
     try std.testing.expect(!shouldUseBunParserForTranspile("enum ABC { A }", .js, &default_handle));
 
     const tree_shaking_handle = TranspilerHandle{ .tree_shaking = true };
