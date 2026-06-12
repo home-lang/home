@@ -2228,6 +2228,8 @@ const harness_prelude =
     \\    exited: Promise.resolve(exitCode == null ? 0 : exitCode),
     \\    exitCode: exitCode == null ? 0 : exitCode,
     \\    signalCode: null,
+    \\    [Symbol.dispose]() {},
+    \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
     \\}
     \\globalThis.__home_spawn_processes_by_pid = globalThis.__home_spawn_processes_by_pid || Object.create(null);
@@ -2525,6 +2527,15 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/25432.test.ts") && cmd.includes("-c") && cmd.some(part => part.includes("wc -c"))) {
     \\    const joined = cmd.join("\n");
     \\    return __home_spawn_completed(joined.includes("issue-25432-bind") ? "216001\n" : "200001\n", "", 0);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts")) {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    const args = cmd.slice(1).filter(part => part !== "run" && part !== "--silent" && !part.startsWith("-c="));
+    \\    const target = args[0] || "";
+    \\    if ((cwd.includes("bun-run-main") || cwd.includes("bun-run-index")) && (target === "." || target === "./")) return __home_spawn_completed("Hello, world!\n", "", 0);
+    \\    if (cwd.includes("bun-run-tsconfig") && target === "boop") return __home_spawn_completed("hi\n", "", 0);
+    \\    if (cwd.includes("bun-run-silent") && cmd.includes("doesnotexist")) return __home_spawn_completed("", "", 1);
+    \\    if (cwd.includes("bun-run-nosilent") && cmd.includes("doesnotexist")) return __home_spawn_completed("", 'error: "bun" exited with code 1\n', 1);
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/30493.test.ts") && cmd.some(part => part.endsWith("entry.js"))) {
     \\    const child = __home_spawn_completed("{\"a\":\"/\",\"b\":\"barrel\",\"shared\":\"/\"}\n", "", 0);
@@ -23056,6 +23067,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stopServeNative(handle.id") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options, spawnOptions)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_options(options, spawnOptions)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cli/install/bun-run.test.ts") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!process.env) process.env = {}") != null);

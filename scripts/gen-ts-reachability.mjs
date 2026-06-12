@@ -124,15 +124,15 @@ const effectivelyDeadByCode = new Map([
   ],
   [
     "TS90006",
-    "Referenced only as the language-service code-action title for the implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.",
+    "Referenced only as the language-service code-action title for the implement-interface fixer. Home implements this in TS LSP code actions; it remains non-emitted because it is not a compiler diagnostic parity target.",
   ],
   [
     "TS95032",
-    "Referenced only as the language-service fix-all title for the implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.",
+    "Referenced only as the language-service fix-all title for the implement-interface fixer. Home implements this in TS LSP code actions; it remains non-emitted because it is not a compiler diagnostic parity target.",
   ],
   [
     "TS95158",
-    "Referenced only as the stub body text inserted by the language-service implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.",
+    "Referenced only as the stub body text inserted by the language-service implement-interface fixer. Home implements this in TS LSP code actions; it remains non-emitted because it is not a compiler diagnostic parity target.",
   ],
 ]);
 

@@ -957,6 +957,7 @@ pub const Parser = struct {
 
         const start = self.peek();
         while (self.hasPendingStatement() or self.peek().kind != .eof) {
+            if (!self.hasPendingStatement() and self.skipVirtualJsonSection()) continue;
             const stmt = try self.parseStatement();
             try stmts.append(self.gpa, stmt);
         }
@@ -6415,6 +6416,39 @@ pub const Parser = struct {
             std.mem.endsWith(u8, filename, ".jsx") or
             std.mem.endsWith(u8, filename, ".mjs") or
             std.mem.endsWith(u8, filename, ".cjs");
+    }
+
+    fn isJsonFilename(filename: []const u8) bool {
+        return std.mem.endsWith(u8, filename, ".json");
+    }
+
+    fn nextVirtualSectionStartAfter(self: *const Parser, pos: u32) ?usize {
+        const start: usize = @min(@as(usize, pos), self.source.len);
+        var scan = start;
+        while (scan < self.source.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, scan, '\n') orelse self.source.len;
+            const line = self.source[scan..line_end];
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                return scan;
+            }
+            if (line_end == self.source.len) break;
+            scan = line_end + 1;
+        }
+        return null;
+    }
+
+    fn skipVirtualJsonSection(self: *Parser) bool {
+        const current = self.peek();
+        if (current.kind == .eof) return false;
+        const filename = self.virtualSectionFilenameAt(current.span.start) orelse return false;
+        if (!isJsonFilename(filename)) return false;
+        const next_section_start = self.nextVirtualSectionStartAfter(current.span.start + 1) orelse self.source.len;
+        while (self.peek().kind != .eof and self.peek().span.start < next_section_start) {
+            _ = self.advance();
+        }
+        return true;
     }
 
     fn reportTypeArgumentsOnlyInTsIfNeeded(self: *Parser, args: []const NodeId) ParseError!void {
@@ -12525,7 +12559,7 @@ pub const Parser = struct {
         return null;
     }
 
-    fn findInstantiationTypeArgsPropertyAccessEnd(self: *Parser, start: u32) ?u32 {
+    fn findInstantiationTypeArgsEnd(self: *Parser, start: u32) ?u32 {
         if (start >= self.tokens.len or self.tokens[start].kind != .less_than) return null;
         var depth: i32 = 1;
         var i: u32 = start + 1;
@@ -12545,8 +12579,18 @@ pub const Parser = struct {
                         depth -= 1;
                         if (depth == 0) {
                             const next = i + 1;
-                            if (next < self.tokens.len and self.tokens[next].kind == .dot) return next;
-                            return null;
+                            if (next >= self.tokens.len) return null;
+                            switch (self.tokens[next].kind) {
+                                .dot,
+                                .semicolon,
+                                .comma,
+                                .close_paren,
+                                .close_bracket,
+                                .close_brace,
+                                .eof,
+                                => return next,
+                                else => return null,
+                            }
                         }
                     }
                 },
@@ -14486,6 +14530,13 @@ pub const Parser = struct {
                     defer self.gpa.free(type_args);
                     try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
                 }
+            } else if (t.kind == .kw_instanceof and
+                self.hir.kindOf(right) == .call_expr and
+                hir_mod.callArgs(self.hir, right).len == 0 and
+                hir_mod.callTypeArgs(self.hir, right).len > 0)
+            {
+                const pos = self.hir.spanOf(right).start;
+                try self.reportCodeAt(pos, self.sourceLineAtPos(pos), 2848, "The right-hand side of an 'instanceof' expression must not be an instantiation expression.");
             }
             const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
             if (prec_mod.binOpOf(t.kind)) |bop| {
@@ -14801,6 +14852,15 @@ pub const Parser = struct {
                     next_kind == .comma or
                     next_kind == .colon or
                     next_kind == .eof;
+                if (!in_async and self.static_block_depth == 0 and next_kind == .open_paren) {
+                    _ = self.advance();
+                    const id = try self.internToken(t);
+                    const callee = try self.builder.addIdentifier(tokenSpan(t), id);
+                    const args = try self.parseArgumentList();
+                    defer self.gpa.free(args);
+                    const close_pos = self.tokens[self.cursor - 1].span.end;
+                    return try self.builder.addCall(.{ .start = t.span.start, .end = close_pos }, callee, args);
+                }
                 if (terminator_follows and !in_async) {
                     _ = self.advance();
                     const id = try self.internToken(t);
@@ -15202,12 +15262,14 @@ pub const Parser = struct {
                             const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
                             node = try self.builder.addCallWithTypeArgs(sp, node, args, type_args);
                         }
-                    } else if (self.findInstantiationTypeArgsPropertyAccessEnd(self.cursor)) |after_gt| {
+                    } else if (self.findInstantiationTypeArgsEnd(self.cursor)) |after_gt| {
                         const less = self.peek();
                         const type_args = try self.parseExplicitCallTypeArgs(after_gt);
                         defer self.gpa.free(type_args);
                         try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
-                        try self.reportCodeAt(less.span.start, less.line, 1477, "An instantiation expression cannot be followed by a property access.");
+                        if (after_gt < self.tokens.len and self.tokens[after_gt].kind == .dot) {
+                            try self.reportCodeAt(less.span.start, less.line, 1477, "An instantiation expression cannot be followed by a property access.");
+                        }
                         const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else self.hir.spanOf(node).end;
                         const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = end_pos };
                         node = try self.builder.addCallWithTypeArgs(sp, node, &.{}, type_args);
@@ -23974,7 +24036,7 @@ test "parser: unknown unicode property value reports TS1526" {
 
 test "parser: unicode property typos report TS1369 suggestions" {
     var s = try newTestSetup(
-        "let a = /\\p{Scirpt=Greek}/u; let b = /\\p{Script=Grek}/u; let c = /\\p{Alphabeticc}/u;",
+        "let a = /\\p{Scirpt=Greek}/u; let b = /\\p{Script=Greeek}/u; let c = /\\p{Alphabeticc}/u;",
     );
     defer destroyTestSetup(s);
     _ = try s.parser.parseSourceFile();
@@ -24186,7 +24248,7 @@ test "parser: `unique <non-symbol>` reports TS1005 and recovers" {
     var saw_spurious = false;
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 1005 and std.mem.eql(u8, d.message, "'symbol' expected.")) saw_1005 = true
-        // A `';' expected` here would mean the operand was left unconsumed.
+            // A `';' expected` here would mean the operand was left unconsumed.
         else if (d.code == 1005 and std.mem.eql(u8, d.message, "';' expected.")) saw_spurious = true;
     }
     try T.expect(saw_1005);

@@ -755,6 +755,21 @@ pub const Engine = struct {
             return false;
         }
 
+        // Whole numeric enum nominals can carry either a bare brand
+        // (`__enum:E`) or a scope-qualified brand (`__enum:<scope>:E`)
+        // depending on whether the type came from widening an enum
+        // member or from a declaration-scoped type reference. They
+        // still denote the same enum for assignability purposes.
+        if (sf.is_intersection and tf.is_intersection and
+            self.isNumericEnumNominal(source) and self.isNumericEnumNominal(target))
+        {
+            if (self.numericEnumNominalName(source)) |source_enum| {
+                if (self.numericEnumNominalName(target)) |target_enum| {
+                    if (std.mem.eql(u8, bareEnumName(source_enum), bareEnumName(target_enum))) return true;
+                }
+            }
+        }
+
         // Numeric enum types are represented as branded
         // intersections (`number & { __enum:E: never }`), while TS
         // still allows plain numbers to flow into numeric enum

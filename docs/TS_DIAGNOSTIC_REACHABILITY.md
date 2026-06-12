@@ -36,9 +36,9 @@ non-emitted until the reference compiler grows a live emission path.
 - TS1060 `The_first_parameter_of_the_then_method_of_a_promise_must_be_a_callback_1060` — Referenced only from the low-level promised-type helper. Modern awaited-type callers probe that helper without an error node, then emit wrapper diagnostics such as TS1058 or TS1320 instead.
 - TS5078 `Unknown_watch_option_0_5078` — Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.
 - TS5079 `Unknown_watch_option_0_Did_you_mean_1_5079` — Referenced only from watchOptionsDidYouMeanDiagnostics; tsgo's JSON watchOptions parser is commented out, so the live path uses TS5080 instead.
-- TS90006 `Implement_interface_0_90006` — Referenced only as the language-service code-action title for the implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.
-- TS95032 `Implement_all_unimplemented_interfaces_95032` — Referenced only as the language-service fix-all title for the implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.
-- TS95158 `Method_not_implemented_95158` — Referenced only as the stub body text inserted by the language-service implement-interface fixer. Home has LSP code actions, but not this fixer yet; it is not a compiler diagnostic parity target.
+- TS90006 `Implement_interface_0_90006` — Referenced only as the language-service code-action title for the implement-interface fixer. Home implements this in TS LSP code actions; it remains non-emitted because it is not a compiler diagnostic parity target.
+- TS95032 `Implement_all_unimplemented_interfaces_95032` — Referenced only as the language-service fix-all title for the implement-interface fixer. Home implements this in TS LSP code actions; it remains non-emitted because it is not a compiler diagnostic parity target.
+- TS95158 `Method_not_implemented_95158` — Referenced only as the stub body text inserted by the language-service implement-interface fixer. Home implements this in TS LSP code actions; it remains non-emitted because it is not a compiler diagnostic parity target.
 
 ## Notes: heuristic false-positives & subsystem-gated clusters
 

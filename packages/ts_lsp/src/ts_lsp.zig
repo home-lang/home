@@ -2049,6 +2049,98 @@ pub const Service = struct {
             }
         }
 
+        // ---- Implement missing interface members (TS2420 -> TS90006/95032/95158)
+        // Upstream's implement-interface fixer is a language-service code
+        // action, not a compiler diagnostic. Offer it only when TS2420 is
+        // present and only for named interface members the class does not
+        // already declare. Type-incompatible existing members remain a
+        // checker error and do not get overwritten by this fixer.
+        var implement_interface_groups: std.ArrayListUnmanaged(ImplementInterfaceGroup) = .empty;
+        defer {
+            for (implement_interface_groups.items) |*group| group.deinit(gpa);
+            implement_interface_groups.deinit(gpa);
+        }
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.class_incorrectly_implements_interface) continue;
+            const class_node = findClassDeclForImplementsDiagnostic(&c.hir, stmts, d.pos) orelse continue;
+            const class_payload = hir_mod.classOf(&c.hir, class_node);
+            _ = classNameText(&c.hir, &c.interner, class_payload.name) orelse continue;
+            const insert_byte = classImplementationInsertByte(f.source, c.hir.spanOf(class_node)) orelse continue;
+            const indent = try classMemberIndent(gpa, f.source, insert_byte);
+            defer gpa.free(indent);
+            const implements_nodes = c.hir.childSlice(class_payload.implements_start, class_payload.implements_len);
+            for (implements_nodes) |impl_node| {
+                const interface_name = typeReferenceRightmostName(&c.hir, &c.interner, impl_node) orelse continue;
+                if (implementInterfaceGroupExists(implement_interface_groups.items, insert_byte, interface_name)) continue;
+                const interface_node = findInterfaceDeclInProgram(self.program, interface_name) orelse continue;
+                const iface_file = interface_node.file;
+                const iface_comp = iface_file.compilation orelse continue;
+                const iface_payload = hir_mod.interfaceOf(&iface_comp.hir, interface_node.node);
+                var missing = try collectMissingInterfaceStubs(
+                    gpa,
+                    &c.hir,
+                    &c.interner,
+                    class_node,
+                    iface_file.source,
+                    &iface_comp.hir,
+                    &iface_comp.interner,
+                    iface_payload,
+                    indent,
+                );
+                errdefer {
+                    for (missing.items) |stub| gpa.free(stub);
+                    missing.deinit(gpa);
+                }
+                if (missing.items.len == 0) {
+                    missing.deinit(gpa);
+                    continue;
+                }
+                const title = try std.fmt.allocPrint(gpa, "Implement interface '{s}'", .{interface_name});
+                errdefer gpa.free(title);
+                const new_text = try joinInterfaceStubs(gpa, missing.items);
+                defer gpa.free(new_text);
+                var edits = try gpa.alloc(TextEdit, 1);
+                edits[0] = try textEditForByteRange(gpa, f.path, f.source, insert_byte, insert_byte, new_text);
+                try implement_interface_groups.append(gpa, .{
+                    .insert_byte = insert_byte,
+                    .interface_name = interface_name,
+                    .title = title,
+                    .edits = edits,
+                    .stub_texts = try missing.toOwnedSlice(gpa),
+                });
+            }
+        }
+        var implement_all_count: usize = 0;
+        for (implement_interface_groups.items) |group| {
+            implement_all_count += group.stub_texts.len;
+            try actions.append(gpa, .{
+                .title = group.title,
+                .kind = .quick_fix,
+                .edits = group.edits,
+                .code = ts_checker.check.TsCodes.codefix_implement_interface,
+            });
+        }
+        if (implement_interface_groups.items.len >= 2 or implement_all_count >= 2) {
+            var all_text: std.ArrayListUnmanaged(u8) = .empty;
+            errdefer all_text.deinit(gpa);
+            for (implement_interface_groups.items) |group| {
+                for (group.stub_texts) |stub| try all_text.appendSlice(gpa, stub);
+            }
+            const new_text = try all_text.toOwnedSlice(gpa);
+            defer gpa.free(new_text);
+            const title = try gpa.dupe(u8, "Implement all unimplemented interfaces");
+            errdefer gpa.free(title);
+            const insert_byte = implement_interface_groups.items[0].insert_byte;
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = try textEditForByteRange(gpa, f.path, f.source, insert_byte, insert_byte, new_text);
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .fix_all,
+                .edits = edits,
+                .code = ts_checker.check.TsCodes.codefix_implement_all_unimplemented_interfaces,
+            });
+        }
+
         // ---- Generate JSDoc skeleton for top-level fn_decl ---------------
         // Surface a quick-fix that inserts a `/** … */` block above a
         // top-level function declaration that doesn't already have one.
@@ -5767,6 +5859,318 @@ fn collectParameterNameHints(
     }
 }
 
+const InterfaceDeclRef = struct {
+    file: *ts_program.File,
+    node: hir_mod.NodeId,
+};
+
+const ImplementInterfaceGroup = struct {
+    title: []const u8,
+    edits: []TextEdit,
+    insert_byte: u32,
+    interface_name: []const u8,
+    stub_texts: [][]u8,
+
+    fn deinit(self: *ImplementInterfaceGroup, gpa: std.mem.Allocator) void {
+        for (self.stub_texts) |stub| gpa.free(stub);
+        gpa.free(self.stub_texts);
+    }
+};
+
+fn implementInterfaceGroupExists(groups: []const ImplementInterfaceGroup, insert_byte: u32, interface_name: []const u8) bool {
+    for (groups) |group| {
+        if (group.insert_byte == insert_byte and std.mem.eql(u8, group.interface_name, interface_name)) return true;
+    }
+    return false;
+}
+
+fn findClassDeclForImplementsDiagnostic(
+    hir: *const hir_mod.Hir,
+    stmts: []const hir_mod.NodeId,
+    pos: u32,
+) ?hir_mod.NodeId {
+    for (stmts) |stmt| {
+        var node = stmt;
+        if (hir.kindOf(node) == .export_decl) {
+            const ex = hir_mod.exportOf(hir, node);
+            if (ex.decl == hir_mod.none_node_id) continue;
+            node = ex.decl;
+        }
+        if (hir.kindOf(node) != .class_decl) continue;
+        const cls = hir_mod.classOf(hir, node);
+        if (cls.name == hir_mod.none_node_id) continue;
+        const name_span = hir.spanOf(cls.name);
+        if (pos >= name_span.start and pos <= name_span.end) return node;
+        const class_span = hir.spanOf(node);
+        if (pos >= class_span.start and pos <= class_span.end) return node;
+    }
+    return null;
+}
+
+fn classNameText(hir: *const hir_mod.Hir, interner: *const string_interner.Interner, name_node: hir_mod.NodeId) ?[]const u8 {
+    if (name_node == hir_mod.none_node_id or hir.kindOf(name_node) != .identifier) return null;
+    return interner.get(hir_mod.identifierOf(hir, name_node).name);
+}
+
+fn typeReferenceRightmostName(hir: *const hir_mod.Hir, interner: *const string_interner.Interner, node: hir_mod.NodeId) ?[]const u8 {
+    if (node == hir_mod.none_node_id or hir.kindOf(node) != .type_ref) return null;
+    return interner.get(hir_mod.typeRefOf(hir, node).name);
+}
+
+fn findInterfaceDeclInProgram(program: *ts_program.Program, name: []const u8) ?InterfaceDeclRef {
+    for (program.files.items) |file| {
+        const comp = file.compilation orelse continue;
+        if (comp.hir.kindOf(comp.root) != .block_stmt) continue;
+        if (findInterfaceDeclInStatements(file, &comp.hir, &comp.interner, hir_mod.blockStmts(&comp.hir, comp.root), name)) |found| {
+            return found;
+        }
+    }
+    return null;
+}
+
+fn findInterfaceDeclInStatements(
+    file: *ts_program.File,
+    hir: *const hir_mod.Hir,
+    interner: *const string_interner.Interner,
+    stmts: []const hir_mod.NodeId,
+    name: []const u8,
+) ?InterfaceDeclRef {
+    for (stmts) |stmt| {
+        var node = stmt;
+        if (hir.kindOf(node) == .export_decl) {
+            const ex = hir_mod.exportOf(hir, node);
+            if (ex.decl == hir_mod.none_node_id) continue;
+            node = ex.decl;
+        }
+        if (hir.kindOf(node) == .interface_decl) {
+            const iface = hir_mod.interfaceOf(hir, node);
+            if (iface.name != hir_mod.none_node_id and hir.kindOf(iface.name) == .identifier) {
+                const ident = hir_mod.identifierOf(hir, iface.name);
+                if (std.mem.eql(u8, interner.get(ident.name), name)) return .{ .file = file, .node = node };
+            }
+        } else if (hir.kindOf(node) == .namespace_decl or hir.kindOf(node) == .module_decl) {
+            const ns = hir_mod.namespaceOf(hir, node);
+            const body = hir.childSlice(ns.body_start, ns.body_len);
+            if (findInterfaceDeclInStatements(file, hir, interner, body, name)) |found| return found;
+        }
+    }
+    return null;
+}
+
+fn classImplementationInsertByte(source: []const u8, class_span: hir_mod.Span) ?u32 {
+    if (class_span.end > source.len or class_span.start >= class_span.end) return null;
+    var i: usize = class_span.end;
+    while (i > class_span.start) {
+        i -= 1;
+        if (source[i] == '}') return @intCast(i);
+    }
+    return null;
+}
+
+fn classMemberIndent(gpa: std.mem.Allocator, source: []const u8, closing_brace_byte: u32) ![]u8 {
+    var line_start: usize = @min(@as(usize, closing_brace_byte), source.len);
+    while (line_start > 0 and source[line_start - 1] != '\n') : (line_start -= 1) {}
+    var line_indent_end = line_start;
+    while (line_indent_end < source.len and (source[line_indent_end] == ' ' or source[line_indent_end] == '\t')) : (line_indent_end += 1) {}
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa, source[line_start..line_indent_end]);
+    try buf.appendSlice(gpa, "    ");
+    return buf.toOwnedSlice(gpa);
+}
+
+fn collectMissingInterfaceStubs(
+    gpa: std.mem.Allocator,
+    class_hir: *const hir_mod.Hir,
+    class_interner: *const string_interner.Interner,
+    class_node: hir_mod.NodeId,
+    iface_source: []const u8,
+    iface_hir: *const hir_mod.Hir,
+    iface_interner: *const string_interner.Interner,
+    iface_payload: hir_mod.InterfacePayload,
+    indent: []const u8,
+) !std.ArrayListUnmanaged([]u8) {
+    var stubs: std.ArrayListUnmanaged([]u8) = .empty;
+    errdefer {
+        for (stubs.items) |stub| gpa.free(stub);
+        stubs.deinit(gpa);
+    }
+    const members = iface_hir.childSlice(iface_payload.members_start, iface_payload.members_len);
+    for (members) |member| {
+        if (iface_hir.kindOf(member) != .interface_member) continue;
+        const im = hir_mod.interfaceMemberOf(iface_hir, member);
+        if (im.name == 0 or im.is_optional) continue;
+        const name = iface_interner.get(im.name);
+        if (!isIdentifierText(name)) continue;
+        if (classDeclaresMemberName(class_hir, class_interner, class_node, name)) continue;
+        const stub = if (im.is_method and im.type_node != hir_mod.none_node_id and iface_hir.kindOf(im.type_node) == .fn_type)
+            try renderInterfaceMethodStub(gpa, iface_source, iface_hir, iface_interner, name, im.type_node, indent)
+        else
+            try renderInterfacePropertyStub(gpa, iface_source, iface_hir, name, im.type_node, indent);
+        try stubs.append(gpa, stub);
+    }
+    return stubs;
+}
+
+fn classDeclaresMemberName(
+    hir: *const hir_mod.Hir,
+    interner: *const string_interner.Interner,
+    class_node: hir_mod.NodeId,
+    name: []const u8,
+) bool {
+    for (hir_mod.classMembers(hir, class_node)) |member| {
+        switch (hir.kindOf(member)) {
+            .fn_decl, .fn_expr, .arrow_fn => {
+                const fp = hir_mod.fnDeclOf(hir, member);
+                if (fp.flags.is_static or fp.name == hir_mod.none_node_id) continue;
+                if (hir.kindOf(fp.name) == .identifier) {
+                    const got = interner.get(hir_mod.identifierOf(hir, fp.name).name);
+                    if (std.mem.eql(u8, got, name)) return true;
+                }
+            },
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(hir, member);
+                if (op.is_static or op.key == hir_mod.none_node_id) continue;
+                switch (hir.kindOf(op.key)) {
+                    .identifier => {
+                        const got = interner.get(hir_mod.identifierOf(hir, op.key).name);
+                        if (std.mem.eql(u8, got, name)) return true;
+                    },
+                    .literal_string => {
+                        const got = interner.get(hir_mod.literalStringOf(hir, op.key).value);
+                        if (std.mem.eql(u8, got, name)) return true;
+                    },
+                    else => {},
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn renderInterfaceMethodStub(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    hir: *const hir_mod.Hir,
+    interner: *const string_interner.Interner,
+    name: []const u8,
+    fn_type_node: hir_mod.NodeId,
+    indent: []const u8,
+) ![]u8 {
+    const ft = hir_mod.fnTypeOf(hir, fn_type_node);
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.append(gpa, '\n');
+    try buf.appendSlice(gpa, indent);
+    try buf.appendSlice(gpa, name);
+    try appendTypeParamsSource(&buf, gpa, source, hir, ft.type_params_start, ft.type_params_len);
+    try buf.append(gpa, '(');
+    const params = hir.childSlice(ft.params_start, ft.params_len);
+    for (params, 0..) |param, idx| {
+        if (idx > 0) try buf.appendSlice(gpa, ", ");
+        try appendParamStub(&buf, gpa, source, hir, interner, param, idx);
+    }
+    try buf.append(gpa, ')');
+    try buf.appendSlice(gpa, ": ");
+    try appendTypeNodeSource(&buf, gpa, source, hir, ft.return_type, "void");
+    try buf.appendSlice(gpa, " {\n");
+    try buf.appendSlice(gpa, indent);
+    try buf.appendSlice(gpa, "    throw new Error(\"Method not implemented.\");\n");
+    try buf.appendSlice(gpa, indent);
+    try buf.appendSlice(gpa, "}\n");
+    return buf.toOwnedSlice(gpa);
+}
+
+fn renderInterfacePropertyStub(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    hir: *const hir_mod.Hir,
+    name: []const u8,
+    type_node: hir_mod.NodeId,
+    indent: []const u8,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.append(gpa, '\n');
+    try buf.appendSlice(gpa, indent);
+    try buf.appendSlice(gpa, name);
+    try buf.appendSlice(gpa, ": ");
+    try appendTypeNodeSource(&buf, gpa, source, hir, type_node, "any");
+    try buf.appendSlice(gpa, ";\n");
+    return buf.toOwnedSlice(gpa);
+}
+
+fn appendTypeParamsSource(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    hir: *const hir_mod.Hir,
+    start: u32,
+    len: u32,
+) !void {
+    const params = hir.childSlice(start, len);
+    if (params.len == 0) return;
+    const first = hir.spanOf(params[0]);
+    const last = hir.spanOf(params[params.len - 1]);
+    if (first.start >= last.end or last.end > source.len) return;
+    try buf.append(gpa, '<');
+    try buf.appendSlice(gpa, source[first.start..last.end]);
+    try buf.append(gpa, '>');
+}
+
+fn appendParamStub(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    hir: *const hir_mod.Hir,
+    interner: *const string_interner.Interner,
+    param: hir_mod.NodeId,
+    index: usize,
+) !void {
+    if (hir.kindOf(param) != .parameter) {
+        try buf.print(gpa, "arg{d}: any", .{index});
+        return;
+    }
+    const p = hir_mod.parameterOf(hir, param);
+    if (p.flags.is_rest) try buf.appendSlice(gpa, "...");
+    if (p.name != hir_mod.none_node_id and hir.kindOf(p.name) == .identifier) {
+        try buf.appendSlice(gpa, interner.get(hir_mod.identifierOf(hir, p.name).name));
+    } else {
+        try buf.print(gpa, "arg{d}", .{index});
+    }
+    if (p.flags.is_optional and !p.flags.is_rest) try buf.append(gpa, '?');
+    try buf.appendSlice(gpa, ": ");
+    try appendTypeNodeSource(buf, gpa, source, hir, p.type_annotation, "any");
+}
+
+fn appendTypeNodeSource(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    hir: *const hir_mod.Hir,
+    type_node: hir_mod.NodeId,
+    fallback: []const u8,
+) !void {
+    if (type_node == hir_mod.none_node_id) {
+        try buf.appendSlice(gpa, fallback);
+        return;
+    }
+    const span = hir.spanOf(type_node);
+    if (span.start >= span.end or span.end > source.len) {
+        try buf.appendSlice(gpa, fallback);
+        return;
+    }
+    try buf.appendSlice(gpa, std.mem.trim(u8, source[span.start..span.end], " \t\r\n"));
+}
+
+fn joinInterfaceStubs(gpa: std.mem.Allocator, stubs: []const []const u8) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    for (stubs) |stub| try buf.appendSlice(gpa, stub);
+    return buf.toOwnedSlice(gpa);
+}
+
 const ByteRange = struct {
     start: u32,
     end: u32,
@@ -8363,6 +8767,60 @@ test "Service: codeActions sorts top-level imports" {
     const a_pos = std.mem.indexOf(u8, nt, "\"./a\"") orelse return error.NotFound;
     const z_pos = std.mem.indexOf(u8, nt, "\"./z\"") orelse return error.NotFound;
     try T.expect(a_pos < z_pos);
+}
+
+test "Service: codeActions implements missing interface members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\interface I {
+        \\  value: number;
+        \\  run(input: string): boolean;
+        \\  optional?: string;
+        \\}
+        \\interface J {
+        \\  count: number;
+        \\}
+        \\class C implements I, J {
+        \\}
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var found_i: ?CodeAction = null;
+    var found_all: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Implement interface 'I'")) found_i = a;
+        if (std.mem.eql(u8, a.title, "Implement all unimplemented interfaces")) found_all = a;
+    }
+    try T.expect(found_i != null);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_implement_interface), found_i.?.code);
+    try T.expectEqual(@as(usize, 1), found_i.?.edits.len);
+    const i_text = found_i.?.edits[0].new_text;
+    try T.expect(std.mem.indexOf(u8, i_text, "\n    value: number;\n") != null);
+    try T.expect(std.mem.indexOf(u8, i_text, "run(input: string): boolean") != null);
+    try T.expect(std.mem.indexOf(u8, i_text, "throw new Error(\"Method not implemented.\");") != null);
+    try T.expect(std.mem.indexOf(u8, i_text, "optional") == null);
+
+    try T.expect(found_all != null);
+    try T.expectEqual(@as(?u32, ts_checker.check.TsCodes.codefix_implement_all_unimplemented_interfaces), found_all.?.code);
+    try T.expect(std.mem.indexOf(u8, found_all.?.edits[0].new_text, "\n    count: number;\n") != null);
 }
 
 test "Service: codeActions sorts top-level object-literal keys" {
