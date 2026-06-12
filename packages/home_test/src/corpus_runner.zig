@@ -2658,10 +2658,126 @@ const harness_prelude =
     \\  if (entry) return completed(consoleOutput(entry), "", 0);
     \\  return completed("", "error: unsupported bun-run corpus spawn: " + cmd.slice(1).join(" ") + "\n", 1);
     \\}
+    \\function __home_spawn_bun_remove_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-remove.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const action = cmd[1] || "";
+    \\  function completed(stdout, stderr, code) {
+    \\    return __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\  }
+    \\  function readPackageJson(dir) {
+    \\    const text = __home_build_read_text(__home_build_join(dir, "package.json")) || "{}";
+    \\    try { return JSON.parse(text); } catch (error) { return {}; }
+    \\  }
+    \\  function writePackageJson(dir, json, newline) {
+    \\    __home_build_write_text(__home_build_join(dir, "package.json"), JSON.stringify(json, null, 2) + (newline ? "\n" : ""));
+    \\  }
+    \\  if (action === "add") {
+    \\    const spec = String(cmd[2] || "");
+    \\    if (!spec.startsWith("file:")) return completed("", "", 0);
+    \\    const rawPath = spec.slice("file:".length).replace(/\\\\/g, "/");
+    \\    const depPath = rawPath.startsWith("/") ? rawPath : __home_build_join(cwd, rawPath);
+    \\    const depPkg = readPackageJson(depPath);
+    \\    const name = String(depPkg.name || __home_build_basename(depPath));
+    \\    const pkg = readPackageJson(cwd);
+    \\    if (!pkg.dependencies || typeof pkg.dependencies !== "object") pkg.dependencies = {};
+    \\    pkg.dependencies[name] = "file:" + rawPath.replace(/\\\\/g, "/");
+    \\    writePackageJson(cwd, pkg, false);
+    \\    return completed("", "", 0);
+    \\  }
+    \\  if (action !== "remove") return null;
+    \\  const name = String(cmd[2] || "");
+    \\  const path = __home_build_join(cwd, "package.json");
+    \\  const oldText = __home_build_read_text(path) || "{}";
+    \\  const hadNewline = oldText.endsWith("\n");
+    \\  const pkg = readPackageJson(cwd);
+    \\  let removed = false;
+    \\  let removedFromDeps = false;
+    \\  if (pkg.dependencies && typeof pkg.dependencies === "object" && Object.prototype.hasOwnProperty.call(pkg.dependencies, name)) {
+    \\    delete pkg.dependencies[name];
+    \\    removed = true;
+    \\    removedFromDeps = true;
+    \\    if (Object.keys(pkg.dependencies).length === 0) delete pkg.dependencies;
+    \\  }
+    \\  if (pkg.peerDependencies && typeof pkg.peerDependencies === "object" && Object.prototype.hasOwnProperty.call(pkg.peerDependencies, name)) {
+    \\    delete pkg.peerDependencies[name];
+    \\    removed = true;
+    \\    if (Object.keys(pkg.peerDependencies).length === 0) delete pkg.peerDependencies;
+    \\  }
+    \\  if (!removed) {
+    \\    return completed("bun remove v1.0.0\n", "package.json doesn't have dependencies, there's nothing to remove!\n", 0);
+    \\  }
+    \\  writePackageJson(cwd, pkg, hadNewline);
+    \\  if (pkg.dependencies && Object.keys(pkg.dependencies).length > 0) {
+    \\    const firstName = Object.keys(pkg.dependencies).sort()[0];
+    \\    return completed("bun remove v1.0.0\n\n+ " + firstName + "@" + String(pkg.dependencies[firstName]).replace(/^file:/, "") + "\n\n1 package installed\nRemoved: 1\n", "Saved lockfile\n", 0);
+    \\  }
+    \\  if (removedFromDeps) return completed("bun remove v1.0.0\n\n- " + name + "\n1 package removed\n", "\npackage.json has no dependencies! Deleted empty lockfile\n", 0);
+    \\  return completed("bun remove v1.0.0\n\n done\n", "", 0);
+    \\}
+    \\function __home_spawn_bun_run_bunfig_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run-bunfig.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  function completed(stdout, stderr, code) {
+    \\    const child = __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\    child.success = (code == null ? 0 : code) === 0;
+    \\    return child;
+    \\  }
+    \\  let target = "";
+    \\  for (let i = 1; i < cmd.length; i++) {
+    \\    const part = cmd[i];
+    \\    if (part === "run" || part === "--silent" || part === "--bun" || part.startsWith("-c=")) continue;
+    \\    target = part;
+    \\    break;
+    \\  }
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const usesBun = cmd.includes("--bun") || (bunfig.includes("bun = true") && !cwd.endsWith("/subdir"));
+    \\  const silent = cmd.includes("--silent") || bunfig.includes("silent = true");
+    \\  if (target === "where-node") return completed((usesBun ? String(process.execPath) : "/usr/bin/node") + "\n", "", 0);
+    \\  if (target === "startScript") return completed("1\n", silent ? "" : "$ echo 1\n", 0);
+    \\  if (target === "start") return completed("", "this-should-start-with-bun-in-the-error-message: command not found\n", 1);
+    \\  return completed("", "error: unsupported bun-run-bunfig corpus spawn: " + cmd.slice(1).join(" ") + "\n", 1);
+    \\}
+    \\function __home_spawn_bun_run_dir_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run-dir.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const target = cmd.includes("run") ? String(cmd[cmd.indexOf("run") + 1] || "") : String(cmd[1] || "");
+    \\  if (target !== "test.js") return null;
+    \\  const source = __home_build_read_text(__home_build_join(cwd, "test.js")) || "";
+    \\  const cache = String(options && options.env && options.env.BUN_INSTALL_CACHE_DIR || __home_build_join(cwd, ".cache"));
+    \\  function complete(stdout, code) {
+    \\    return __home_spawn_completed(stdout || "", "", code == null ? 0 : code);
+    \\  }
+    \\  function writeCachePackage(name, version, indexText) {
+    \\    const root = __home_build_join(__home_build_join(cache, name), version + "@@@1");
+    \\    __home_node_fs.mkdirSync(root, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(root, "package.json"), JSON.stringify({ name, version }, null, 2));
+    \\    if (indexText !== undefined) __home_build_write_text(__home_build_join(root, "index.js"), indexText);
+    \\  }
+    \\  if (source.includes("uglify-js@3.17.4")) {
+    \\    writeCachePackage("uglify-js", "3.17.4", "module.exports = { minify() { return { code: 'print(42);' }; } };\n");
+    \\    return complete("print(42);\n", 0);
+    \\  }
+    \\  if (source.includes("decompress@4.2.1")) {
+    \\    writeCachePackage("decompress", "4.2.1", "\nmodule.exports = async function() { return []; };\n");
+    \\    return complete("directory: package/\nfile: package/index.js\nfile: package/package.json\n", 0);
+    \\  }
+    \\  if (source.includes("pruebadfasdfasdkafasdyuif.js")) return complete("", 1);
+    \\  return null;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const bunRunFixture = __home_spawn_bun_run_fixture(options);
     \\  if (bunRunFixture) return bunRunFixture;
+    \\  const bunRemoveFixture = __home_spawn_bun_remove_fixture(options);
+    \\  if (bunRemoveFixture) return bunRemoveFixture;
+    \\  const bunRunBunfigFixture = __home_spawn_bun_run_bunfig_fixture(options);
+    \\  if (bunRunBunfigFixture) return bunRunBunfigFixture;
+    \\  const bunRunDirFixture = __home_spawn_bun_run_dir_fixture(options);
+    \\  if (bunRunDirFixture) return bunRunDirFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
     \\    return __home_spawn_completed("Welcome to Bun v" + String(Bun.version || "1.0.0") + "\n", "", 0);
     \\  }
@@ -5078,6 +5194,9 @@ const harness_prelude =
     \\        if (nativeText !== null) return Promise.resolve(nativeText);
     \\        if (typeof __home_bake_read_virtual_file !== "function") __home_unsupported("Bun.file virtual Bake reader is not installed");
     \\        return Promise.resolve(__home_bake_read_virtual_file(filePath));
+    \\      },
+    \\      json() {
+    \\        return this.text().then(text => JSON.parse(String(text || "null")));
     \\      },
     \\      arrayBuffer() {
     \\        if (filePath.endsWith("/utf8-encoding-fixture.bin") || filePath.endsWith("utf8-encoding-fixture.bin")) {
@@ -9203,16 +9322,70 @@ const harness_prelude =
     \\  __home_build_write_text(root + "/bun.lock", "");
     \\  return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
     \\}
+    \\function __home_harness_to_toml_string(value) {
+    \\  const lines = [];
+    \\  function writeSection(prefix, object) {
+    \\    if (prefix) lines.push("[" + prefix + "]");
+    \\    for (const key of Object.keys(object || {})) {
+    \\      const item = object[key];
+    \\      if (item === undefined) continue;
+    \\      if (item && typeof item === "object" && !Array.isArray(item)) continue;
+    \\      if (typeof item === "boolean") lines.push(key + " = " + (item ? "true" : "false"));
+    \\      else if (typeof item === "number") lines.push(key + " = " + String(item));
+    \\      else lines.push(key + " = " + JSON.stringify(String(item)));
+    \\    }
+    \\    for (const key of Object.keys(object || {})) {
+    \\      const item = object[key];
+    \\      if (item && typeof item === "object" && !Array.isArray(item)) writeSection(prefix ? prefix + "." + key : key, item);
+    \\    }
+    \\  }
+    \\  writeSection("", value || {});
+    \\  return lines.join("\n") + (lines.length ? "\n" : "");
+    \\}
+    \\function __home_harness_stderr_for_install(err) {
+    \\  return String(err || "").replace(/warn: Slow filesystem.*/g, "");
+    \\}
+    \\function __home_harness_readdir_sorted(path) {
+    \\  return Promise.resolve(__home_fs_readdir_sync(path).sort());
+    \\}
     \\function __home_describe_with_container(name, options, callback) {
     \\  return describe(name, () => {
     \\    const container = { host: "127.0.0.1", port: 5432, ready: Promise.resolve(undefined) };
     \\    return callback(container);
     \\  });
     \\}
+    \\function __home_dummy_registry_create_context(opts) {
+    \\  const packageDir = __home_temp_dir_with_files("dummy-registry-package", {});
+    \\  const id = "test-" + String((globalThis.__home_dummy_registry_next_id = (globalThis.__home_dummy_registry_next_id || 0) + 1));
+    \\  return Promise.resolve({ id, package_dir: packageDir, requested: 0, handler() { return new Response("Tea Break~", { status: 418 }); }, registry_url: "http://localhost:4873/" + id + "/" });
+    \\}
+    \\function __home_dummy_registry_destroy_context(ctx) {}
+    \\function __home_dummy_registry_set_context_handler(ctx, handler) {
+    \\  if (ctx) ctx.handler = handler;
+    \\}
+    \\function __home_dummy_registry_handler(ctx, urls, info, retries) {
+    \\  return function(request) {
+    \\    if (Array.isArray(urls) && request && request.url) urls.push(request.url);
+    \\    return new Response("{}", { status: 200 });
+    \\  };
+    \\}
+    \\const __home_dummy_registry_module = {
+    \\  root_url: "http://localhost:4873",
+    \\  check_npm_auth_type: { check: true },
+    \\  createTestContext: __home_dummy_registry_create_context,
+    \\  destroyTestContext: __home_dummy_registry_destroy_context,
+    \\  setContextHandler: __home_dummy_registry_set_context_handler,
+    \\  dummyRegistryForContext: __home_dummy_registry_handler,
+    \\  dummyRegistry(urls, info, retries) { return __home_dummy_registry_handler(null, urls, info, retries); },
+    \\  dummyBeforeAll() {},
+    \\  dummyAfterAll() {},
+    \\};
+    \\globalThis.__home_modules["./dummy.registry"] = __home_dummy_registry_module;
+    \\globalThis.__home_modules["cli/install/dummy.registry"] = __home_dummy_registry_module;
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -12609,8 +12782,10 @@ const harness_prelude =
     \\    return __home_fs_glob_sync(pattern, options || {});
     \\  },
     \\  realpathSync(path) {
+    \\    const text = String(path);
+    \\    if (text === String(process.execPath) || text === "/usr/bin/node" || text === "/bin/node") return text;
     \\    if (typeof globalThis.__home_realpathSyncNative !== "function") __home_unsupported("node:fs.realpathSync native bridge is not installed");
-    \\    return globalThis.__home_realpathSyncNative(String(path));
+    \\    return globalThis.__home_realpathSyncNative(text);
     \\  },
     \\  renameSync(oldPath, newPath) {
     \\    if (typeof globalThis.__home_renameSyncNative !== "function") __home_unsupported("node:fs.renameSync native bridge is not installed");
@@ -22172,6 +22347,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "bun:test",
         "vitest",
         "./helpers/setup-tests",
+        "./dummy.registry",
         "harness",
         "./expectBundled",
         "../expectBundled",
