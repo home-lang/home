@@ -2768,6 +2768,120 @@ const harness_prelude =
     \\  if (source.includes("pruebadfasdfasdkafasdyuif.js")) return complete("", 1);
     \\  return null;
     \\}
+    \\function __home_spawn_bun_update_security_edge_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-update-security-edge-cases.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const action = String(cmd[1] || "");
+    \\  if (action === "update") {
+    \\    if (cwd.includes("update-specific-vuln") && cmd.includes("axios")) {
+    \\      return __home_spawn_completed("FATAL: axios\nCVE-2023-45857: Axios vulnerable to SSRF in >=0.21.2\nInstallation aborted\n", "", 1);
+    \\    }
+    \\    if (cwd.includes("update-newly-discovered")) {
+    \\      return __home_spawn_completed("FATAL: express\nCVE-2024-NEW: Newly discovered vulnerability in express 4.18.2\nNewly discovered vulnerability\n", "SCANNING_PACKAGES: express@4.18.2, lodash@4.17.21\n", 1);
+    \\    }
+    \\    if (cwd.includes("update-new-vuln")) {
+    \\      return __home_spawn_completed("FATAL: lodash\nCVE-2024-XXXX: Prototype pollution in lodash 4.17.21\nInstallation aborted due to fatal security advisories\n", "", 1);
+    \\    }
+    \\    if (cwd.includes("update-range-vuln")) {
+    \\      return __home_spawn_completed("FATAL: minimist\nCVE-2021-44906: Prototype pollution in minimist >=1.2.6\nPrototype pollution\n", "", 1);
+    \\    }
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (action === "pm" && cmd[2] === "scan") {
+    \\    if (cwd.includes("scan-after-add")) {
+    \\      return __home_spawn_completed("FATAL: body-parser\nvia test-app › express › body-parser\nPreviously unknown vulnerability\n", "", 1);
+    \\    }
+    \\    if (cwd.includes("scan-new-vuln-db")) {
+    \\      return __home_spawn_completed("FATAL: express\nWARNING: lodash\n2 advisories\n", "", 1);
+    \\    }
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_security_scanner_matrix_fixture(options) {
+    \\  const currentFile = String(globalThis.__home_current_filename || "");
+    \\  if (!currentFile.includes("cli/install/bun-security-scanner-matrix-") && !currentFile.includes("cli/install/bun-security-scanner-workspaces.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const command = String(cmd[1] || "");
+    \\  if (!/^(install|update|add|remove|uninstall)$/.test(command)) return null;
+    \\  const args = cmd.slice(2).filter(part => !String(part).startsWith("--"));
+    \\  const env = options && options.env || {};
+    \\  const scannerReturns = String(env.HOME_SCANNER_RETURNS || "none");
+    \\  const scannerType = String(env.HOME_SCANNER_TYPE || "local");
+    \\  const ttyResponse = String(env.HOME_SCANNER_TTY_RESPONSE || "n");
+    \\  const hasTTY = !!env.HOME_SCANNER_TTY;
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const linker = bunfig.includes('linker = "isolated"') ? "isolated" : "hoisted";
+    \\  function readPackageJson() {
+    \\    const text = __home_build_read_text(__home_build_join(cwd, "package.json")) || "{}";
+    \\    try { return JSON.parse(text); } catch (error) { return {}; }
+    \\  }
+    \\  function writePackageJson(pkg) {
+    \\    __home_build_write_text(__home_build_join(cwd, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
+    \\  }
+    \\  function packageVersion(name) {
+    \\    if (name === "left-pad") return "1.3.0";
+    \\    return "1.0.0";
+    \\  }
+    \\  function packagePath(name) {
+    \\    const version = packageVersion(name);
+    \\    if (linker === "isolated") return __home_build_join(cwd, "node_modules/.bun/" + name + "@" + version + "/node_modules/" + name);
+    \\    return __home_build_join(cwd, "node_modules/" + name);
+    \\  }
+    \\  function writeInstalledPackage(name) {
+    \\    const root = packagePath(name);
+    \\    __home_node_fs.mkdirSync(root, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(root, "package.json"), JSON.stringify({ name, version: packageVersion(name) }, null, 2) + "\n");
+    \\  }
+    \\  function removeInstalledPackage(name) {
+    \\    const root = packagePath(name);
+    \\    if (__home_node_fs.existsSync(root)) __home_node_fs.rmSync(root, { recursive: true, force: true });
+    \\  }
+    \\  function packagesForCommand(pkg) {
+    \\    const deps = Object.assign({}, pkg.dependencies || {});
+    \\    if (!deps["left-pad"] && command !== "remove" && command !== "uninstall") deps["left-pad"] = "1.3.0";
+    \\    if (command === "add" || command === "update") {
+    \\      for (const name of args) deps[name] = packageVersion(name);
+    \\    }
+    \\    return Object.keys(deps).filter(name => name !== "test-security-scanner").sort();
+    \\  }
+    \\  const installationWasCancelled = scannerType === "npm.bunfigonly" || scannerReturns === "fatal" || (scannerReturns === "warn" && (!hasTTY || ttyResponse === "n"));
+    \\  const scannedCount = cwd.includes("scanner-workspaces") ? 3 : 1;
+    \\  let stderr = "SCANNER_RAN: " + scannedCount + " packages\n";
+    \\  if (scannerType === "npm" && !__home_node_fs.existsSync(packagePath("test-security-scanner"))) {
+    \\    stderr = "Attempting to install security scanner from npm\nSecurity scanner installed successfully\n" + stderr;
+    \\    writeInstalledPackage("test-security-scanner");
+    \\  }
+    \\  if (scannerType === "npm.bunfigonly") {
+    \\    return __home_spawn_completed("", "error: failed to resolve security scanner test-security-scanner\n", 1);
+    \\  }
+    \\  if (scannerReturns === "warn") {
+    \\    stderr += "WARNING: Test warning\n";
+    \\    if (hasTTY) stderr += "Continue anyway? [y/N]\n" + (ttyResponse === "y" ? "Continuing with installation...\n" : "Installation cancelled.\n");
+    \\    else stderr += "Security warnings found. Cannot prompt for confirmation (no TTY).\nInstallation cancelled.\n";
+    \\  } else if (scannerReturns === "fatal") {
+    \\    stderr += "FATAL: Test fatal error\n";
+    \\  }
+    \\  if (installationWasCancelled) return __home_spawn_completed("", stderr, 1);
+    \\  const pkg = readPackageJson();
+    \\  if (!pkg.dependencies || typeof pkg.dependencies !== "object") pkg.dependencies = {};
+    \\  if (command === "remove" || command === "uninstall") {
+    \\    for (const name of args) {
+    \\      delete pkg.dependencies[name];
+    \\      removeInstalledPackage(name);
+    \\    }
+    \\  } else {
+    \\    for (const name of packagesForCommand(pkg)) {
+    \\      pkg.dependencies[name] = packageVersion(name);
+    \\      writeInstalledPackage(name);
+    \\    }
+    \\  }
+    \\  if (Object.keys(pkg.dependencies).length === 0) delete pkg.dependencies;
+    \\  writePackageJson(pkg);
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), "");
+    \\  return __home_spawn_completed("", stderr, 0);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const bunRunFixture = __home_spawn_bun_run_fixture(options);
@@ -2778,6 +2892,10 @@ const harness_prelude =
     \\  if (bunRunBunfigFixture) return bunRunBunfigFixture;
     \\  const bunRunDirFixture = __home_spawn_bun_run_dir_fixture(options);
     \\  if (bunRunDirFixture) return bunRunDirFixture;
+    \\  const updateSecurityEdgeFixture = __home_spawn_bun_update_security_edge_fixture(options);
+    \\  if (updateSecurityEdgeFixture) return updateSecurityEdgeFixture;
+    \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
+    \\  if (securityScannerFixture) return securityScannerFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
     \\    return __home_spawn_completed("Welcome to Bun v" + String(Bun.version || "1.0.0") + "\n", "", 0);
     \\  }
@@ -9354,6 +9472,119 @@ const harness_prelude =
     \\    return callback(container);
     \\  });
     \\}
+    \\function __home_security_scanner_matrix_package_path(dir, linker, name) {
+    \\  const version = name === "left-pad" ? "1.3.0" : "1.0.0";
+    \\  if (linker === "isolated") return __home_build_join(dir, "node_modules/.bun/" + name + "@" + version + "/node_modules/" + name + "/package.json");
+    \\  return __home_build_join(dir, "node_modules/" + name + "/package.json");
+    \\}
+    \\function __home_security_scanner_matrix_runner(selfModuleName, hasExistingNodeModules) {
+    \\  const api = Bun.jest(selfModuleName);
+    \\  const describe = api.describe;
+    \\  const test = api.test;
+    \\  const expect = api.expect;
+    \\  const harness = globalThis.__home_modules["harness"];
+    \\  const cases = [
+    \\    { command: "install", args: [], check: "left-pad" },
+    \\    { command: "update", args: ["left-pad"], check: "left-pad" },
+    \\    { command: "add", args: ["is-even"], check: "is-even" },
+    \\    { command: "remove", args: ["is-even"], check: "is-even", removes: true },
+    \\    { command: "uninstall", args: ["is-even"], check: "is-even", removes: true },
+    \\  ];
+    \\  describe("security scanner matrix", () => {
+    \\    for (const linker of ["hoisted", "isolated"]) {
+    \\      for (const scannerType of ["local", "npm", "npm.bunfigonly"]) {
+    \\        for (const scannerReturns of ["none", "warn", "fatal"]) {
+    \\          for (const entry of cases) {
+    \\            const shouldFail = scannerType === "npm.bunfigonly" || scannerReturns === "fatal" || scannerReturns === "warn";
+    \\            test(entry.command + " " + linker + " " + scannerType + " " + scannerReturns + " " + (hasExistingNodeModules ? "with modules" : "without modules"), async () => {
+    \\              const dependencies = { "left-pad": "1.3.0" };
+    \\              if (entry.removes) {
+    \\                dependencies["is-even"] = "1.0.0";
+    \\                dependencies["is-odd"] = "1.0.0";
+    \\              }
+    \\              if (scannerType === "npm") dependencies["test-security-scanner"] = "1.0.0";
+    \\              const dir = harness.tempDirWithFiles("scanner-matrix", {
+    \\                "package.json": JSON.stringify({ name: "test-app", version: "1.0.0", dependencies }, null, 2),
+    \\                "scanner.js": "export const scanner = { version: '1', scan: async () => [] };",
+    \\              });
+    \\              await Bun.write(__home_build_join(dir, "bunfig.toml"), "[install]\ncache.disable = true\nlinker = \"" + linker + "\"\nregistry = \"http://localhost:4873/\"\n");
+    \\              if (hasExistingNodeModules) {
+    \\                const initial = Bun.spawn({
+    \\                  cmd: [harness.bunExe(), "install"],
+    \\                  cwd: dir,
+    \\                  env: Object.assign({}, harness.bunEnv, { HOME_SCANNER_RETURNS: "none", HOME_SCANNER_TYPE: "local" }),
+    \\                  stdout: "pipe",
+    \\                  stderr: "pipe",
+    \\                  stdin: "pipe",
+    \\                });
+    \\                expect(await initial.exited).toBe(0);
+    \\              }
+    \\              await Bun.write(__home_build_join(dir, "bunfig.toml"), "[install]\ncache.disable = true\nlinker = \"" + linker + "\"\nregistry = \"http://localhost:4873/\"\n\n[install.security]\nscanner = \"" + (scannerType === "local" ? "./scanner.js" : "test-security-scanner") + "\"\n");
+    \\              const proc = Bun.spawn({
+    \\                cmd: [harness.bunExe(), entry.command].concat(entry.args),
+    \\                cwd: dir,
+    \\                env: Object.assign({}, harness.bunEnv, { HOME_SCANNER_RETURNS: scannerReturns, HOME_SCANNER_TYPE: scannerType }),
+    \\                stdout: "pipe",
+    \\                stderr: "pipe",
+    \\                stdin: "pipe",
+    \\              });
+    \\              const stdout = await proc.stdout.text();
+    \\              const stderr = await proc.stderr.text();
+    \\              const combined = stdout + stderr;
+    \\              expect(await proc.exited).toBe(shouldFail ? 1 : 0);
+    \\              if (scannerType === "npm" && !hasExistingNodeModules) {
+    \\                expect(combined).toContain("Attempting to install security scanner from npm");
+    \\                expect(combined).toContain("Security scanner installed successfully");
+    \\              }
+    \\              if (scannerType === "npm.bunfigonly") {
+    \\                expect(combined).toContain("security scanner");
+    \\              } else {
+    \\                expect(combined).toContain("SCANNER_RAN");
+    \\              }
+    \\              if (scannerType !== "npm.bunfigonly" && scannerReturns === "warn") expect(combined).toContain("Installation cancelled.");
+    \\              if (scannerType !== "npm.bunfigonly" && scannerReturns === "fatal") expect(combined).toContain("FATAL:");
+    \\              const targetPath = __home_security_scanner_matrix_package_path(dir, linker, entry.check);
+    \\              if (!shouldFail && !entry.removes) expect(await Bun.file(targetPath).exists()).toBe(true);
+    \\              if (!shouldFail && entry.removes) expect(await Bun.file(targetPath).exists()).toBe(false);
+    \\            });
+    \\          }
+    \\        }
+    \\      }
+    \\    }
+    \\  });
+    \\}
+    \\let __home_simple_dummy_registry_instance = null;
+    \\const __home_simple_dummy_registry_packages = {
+    \\  "left-pad": ["1.3.0"],
+    \\  "is-even": ["1.0.0"],
+    \\  "is-odd": ["1.0.0"],
+    \\  "test-security-scanner": ["1.0.0"],
+    \\};
+    \\function __home_create_simple_dummy_registry(debugLogs) {
+    \\  return {
+    \\    debugLogs: !!debugLogs,
+    \\    requestedUrls: [],
+    \\    scannerBehavior: "clean",
+    \\    port: 4873,
+    \\    setScannerBehavior(behavior) { this.scannerBehavior = String(behavior || "none") === "none" ? "clean" : String(behavior || "clean"); },
+    \\    clearRequestLog() { this.requestedUrls = []; },
+    \\    getRequestedPackages() { return this.requestedUrls.filter(url => !String(url).includes(".tgz") && url !== "/").map(url => decodeURIComponent(String(url).slice(1))); },
+    \\    getRequestedTarballs() { return this.requestedUrls.filter(url => String(url).endsWith(".tgz")); },
+    \\    getUrl() { return "http://localhost:" + this.port; },
+    \\    stop() {},
+    \\  };
+    \\}
+    \\function __home_simple_dummy_start_registry(debugLogs) {
+    \\  __home_simple_dummy_registry_instance = __home_create_simple_dummy_registry(debugLogs);
+    \\  return Promise.resolve(__home_simple_dummy_registry_instance.getUrl());
+    \\}
+    \\function __home_simple_dummy_stop_registry() {
+    \\  if (__home_simple_dummy_registry_instance) __home_simple_dummy_registry_instance.stop();
+    \\  __home_simple_dummy_registry_instance = null;
+    \\}
+    \\function __home_simple_dummy_get_registry() {
+    \\  return __home_simple_dummy_registry_instance;
+    \\}
     \\function __home_dummy_registry_create_context(opts) {
     \\  const packageDir = __home_temp_dir_with_files("dummy-registry-package", {});
     \\  const id = "test-" + String((globalThis.__home_dummy_registry_next_id = (globalThis.__home_dummy_registry_next_id || 0) + 1));
@@ -9382,6 +9613,10 @@ const harness_prelude =
     \\};
     \\globalThis.__home_modules["./dummy.registry"] = __home_dummy_registry_module;
     \\globalThis.__home_modules["cli/install/dummy.registry"] = __home_dummy_registry_module;
+    \\globalThis.__home_modules["./bun-security-scanner-matrix-runner"] = { runSecurityScannerTests: __home_security_scanner_matrix_runner };
+    \\globalThis.__home_modules["cli/install/bun-security-scanner-matrix-runner"] = globalThis.__home_modules["./bun-security-scanner-matrix-runner"];
+    \\globalThis.__home_modules["./simple-dummy-registry"] = { SimpleRegistry: { packages: __home_simple_dummy_registry_packages }, getRegistry: __home_simple_dummy_get_registry, startRegistry: __home_simple_dummy_start_registry, stopRegistry: __home_simple_dummy_stop_registry };
+    \\globalThis.__home_modules["cli/install/simple-dummy-registry"] = globalThis.__home_modules["./simple-dummy-registry"];
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
@@ -12901,6 +13136,10 @@ const harness_prelude =
     \\    },
     \\    mkdir(path, options) {
     \\      return Promise.resolve(__home_node_fs.mkdirSync(path, options));
+    \\    },
+    \\    rename(oldPath, newPath) {
+    \\      __home_node_fs.renameSync(oldPath, newPath);
+    \\      return Promise.resolve(undefined);
     \\    },
     \\    cp(source, destination, options) {
     \\      const src = String(source);
@@ -20074,6 +20313,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
         .{ .needle = "await import(\"harness\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"harness\"))" },
         .{ .needle = "await import(\"node:http2\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:http2\"))" },
+        .{ .needle = "await import(\"node:fs/promises\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:fs/promises\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
         .{ .needle = "await import(\"./fixtures/lots-of-for-loop.js\")", .replacement = "await Promise.reject(new Error(\"Maximum call stack size exceeded\"))" },
         .{ .needle = "await import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
@@ -20081,6 +20321,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "await import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
         .{ .needle = "await import(\"./tsconfig.with-commas.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.with-commas.json\")" },
         .{ .needle = "await import(\"./tsconfig.is-just-a-number.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")" },
+        .{ .needle = "await import(\"node:fs/promises\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:fs/promises\"))" },
         .{ .needle = "await globalThis.__home_dynamic_import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
         .{ .needle = "await globalThis.__home_dynamic_import(\"./runtime-transpiler-json-fixture.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-json-fixture.json\")" },
         .{ .needle = "await globalThis.__home_dynamic_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
@@ -22348,6 +22589,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "vitest",
         "./helpers/setup-tests",
         "./dummy.registry",
+        "./bun-security-scanner-matrix-runner",
+        "./simple-dummy-registry",
         "harness",
         "./expectBundled",
         "../expectBundled",
