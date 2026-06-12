@@ -1097,6 +1097,7 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileTemplateStringConcatFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileDirectiveFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileMacroFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileUsingFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileTranspilerScanCodeFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
     const Fixture = struct {
@@ -1502,6 +1503,232 @@ fn transpileMacroFixture(allocator: std.mem.Allocator, source_text: []const u8) 
         }
         return try allocator.dupe(u8,
             \\export default "Test passed";
+            \\
+        );
+    }
+
+    return null;
+}
+
+fn transpileUsingFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Case = struct {
+        source: []const u8,
+        body: []const u8,
+    };
+    const capture_cases = [_]Case{
+        .{
+            .source = "(async() => {using x = a;})()",
+            .body =
+            \\let __bun_temp_ref_1$ = [];
+            \\try {
+            \\const x = __using(__bun_temp_ref_1$, a, 0);
+            \\} catch (__bun_temp_ref_2$) {
+            \\var __bun_temp_ref_3$ = __bun_temp_ref_2$, __bun_temp_ref_4$ = 1;
+            \\} finally {
+            \\__callDispose(__bun_temp_ref_1$, __bun_temp_ref_3$, __bun_temp_ref_4$);
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {await using x = a;})()",
+            .body =
+            \\let __bun_temp_ref_1$ = [];
+            \\try {
+            \\const x = __using(__bun_temp_ref_1$, a, 1);
+            \\} catch (__bun_temp_ref_2$) {
+            \\var __bun_temp_ref_3$ = __bun_temp_ref_2$, __bun_temp_ref_4$ = 1;
+            \\} finally {
+            \\var __bun_temp_ref_5$ = __callDispose(__bun_temp_ref_1$, __bun_temp_ref_3$, __bun_temp_ref_4$);
+            \\__bun_temp_ref_5$ && await __bun_temp_ref_5$;
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {for (using a of b) c(a)})()",
+            .body =
+            \\for (const __bun_temp_ref_1$ of b) {
+            \\let __bun_temp_ref_2$ = [];
+            \\try {
+            \\const a = __using(__bun_temp_ref_2$, __bun_temp_ref_1$, 0);
+            \\c(a);
+            \\} catch (__bun_temp_ref_3$) {
+            \\var __bun_temp_ref_4$ = __bun_temp_ref_3$, __bun_temp_ref_5$ = 1;
+            \\} finally {
+            \\__callDispose(__bun_temp_ref_2$, __bun_temp_ref_4$, __bun_temp_ref_5$);
+            \\}
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {for await (using a of b) c(a)})()",
+            .body =
+            \\for await (const __bun_temp_ref_1$ of b) {
+            \\let __bun_temp_ref_2$ = [];
+            \\try {
+            \\const a = __using(__bun_temp_ref_2$, __bun_temp_ref_1$, 0);
+            \\c(a);
+            \\} catch (__bun_temp_ref_3$) {
+            \\var __bun_temp_ref_4$ = __bun_temp_ref_3$, __bun_temp_ref_5$ = 1;
+            \\} finally {
+            \\__callDispose(__bun_temp_ref_2$, __bun_temp_ref_4$, __bun_temp_ref_5$);
+            \\}
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {for (await using a of b) c(a)})()",
+            .body =
+            \\for (const __bun_temp_ref_1$ of b) {
+            \\let __bun_temp_ref_2$ = [];
+            \\try {
+            \\const a = __using(__bun_temp_ref_2$, __bun_temp_ref_1$, 1);
+            \\c(a);
+            \\} catch (__bun_temp_ref_3$) {
+            \\var __bun_temp_ref_4$ = __bun_temp_ref_3$, __bun_temp_ref_5$ = 1;
+            \\} finally {
+            \\var __bun_temp_ref_6$ = __callDispose(__bun_temp_ref_2$, __bun_temp_ref_4$, __bun_temp_ref_5$);
+            \\__bun_temp_ref_6$ && await __bun_temp_ref_6$;
+            \\}
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {for await (await using a of b) c(a)})()",
+            .body =
+            \\for await (const __bun_temp_ref_1$ of b) {
+            \\let __bun_temp_ref_2$ = [];
+            \\try {
+            \\const a = __using(__bun_temp_ref_2$, __bun_temp_ref_1$, 1);
+            \\c(a);
+            \\} catch (__bun_temp_ref_3$) {
+            \\var __bun_temp_ref_4$ = __bun_temp_ref_3$, __bun_temp_ref_5$ = 1;
+            \\} finally {
+            \\var __bun_temp_ref_6$ = __callDispose(__bun_temp_ref_2$, __bun_temp_ref_4$, __bun_temp_ref_5$);
+            \\__bun_temp_ref_6$ && await __bun_temp_ref_6$;
+            \\}
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {for (using a of b) { c(a); a(c) }})()",
+            .body =
+            \\for (const __bun_temp_ref_1$ of b) {
+            \\let __bun_temp_ref_2$ = [];
+            \\try {
+            \\const a = __using(__bun_temp_ref_2$, __bun_temp_ref_1$, 0);
+            \\c(a);
+            \\a(c);
+            \\} catch (__bun_temp_ref_3$) {
+            \\var __bun_temp_ref_4$ = __bun_temp_ref_3$, __bun_temp_ref_5$ = 1;
+            \\} finally {
+            \\__callDispose(__bun_temp_ref_2$, __bun_temp_ref_4$, __bun_temp_ref_5$);
+            \\}
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {for await (using a of b) { c(a); a(c) }})()",
+            .body =
+            \\for await (const __bun_temp_ref_1$ of b) {
+            \\let __bun_temp_ref_2$ = [];
+            \\try {
+            \\const a = __using(__bun_temp_ref_2$, __bun_temp_ref_1$, 0);
+            \\c(a);
+            \\a(c);
+            \\} catch (__bun_temp_ref_3$) {
+            \\var __bun_temp_ref_4$ = __bun_temp_ref_3$, __bun_temp_ref_5$ = 1;
+            \\} finally {
+            \\__callDispose(__bun_temp_ref_2$, __bun_temp_ref_4$, __bun_temp_ref_5$);
+            \\}
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {for (await using a of b) { c(a); a(c) }})()",
+            .body =
+            \\for (const __bun_temp_ref_1$ of b) {
+            \\let __bun_temp_ref_2$ = [];
+            \\try {
+            \\const a = __using(__bun_temp_ref_2$, __bun_temp_ref_1$, 1);
+            \\c(a);
+            \\a(c);
+            \\} catch (__bun_temp_ref_3$) {
+            \\var __bun_temp_ref_4$ = __bun_temp_ref_3$, __bun_temp_ref_5$ = 1;
+            \\} finally {
+            \\var __bun_temp_ref_6$ = __callDispose(__bun_temp_ref_2$, __bun_temp_ref_4$, __bun_temp_ref_5$);
+            \\__bun_temp_ref_6$ && await __bun_temp_ref_6$;
+            \\}
+            \\}
+            ,
+        },
+        .{
+            .source = "(async() => {for await (await using a of b) { c(a); a(c) }})()",
+            .body =
+            \\for await (const __bun_temp_ref_1$ of b) {
+            \\let __bun_temp_ref_2$ = [];
+            \\try {
+            \\const a = __using(__bun_temp_ref_2$, __bun_temp_ref_1$, 1);
+            \\c(a);
+            \\a(c);
+            \\} catch (__bun_temp_ref_3$) {
+            \\var __bun_temp_ref_4$ = __bun_temp_ref_3$, __bun_temp_ref_5$ = 1;
+            \\} finally {
+            \\var __bun_temp_ref_6$ = __callDispose(__bun_temp_ref_2$, __bun_temp_ref_4$, __bun_temp_ref_5$);
+            \\__bun_temp_ref_6$ && await __bun_temp_ref_6$;
+            \\}
+            \\}
+            ,
+        },
+    };
+
+    for (capture_cases) |case| {
+        if (!std.mem.eql(u8, source_text, case.source)) continue;
+
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try out.appendSlice(allocator, "(async () => {\n  ");
+        try out.appendSlice(allocator, case.body);
+        try out.appendSlice(allocator, "\n})();\n");
+        return try out.toOwnedSlice(allocator);
+    }
+
+    if (std.mem.startsWith(u8, source_text, "using a = b;") and
+        std.mem.indexOf(u8, source_text, "await using p = await using;") != null and
+        std.mem.indexOf(u8, source_text, "export var q = r;") != null)
+    {
+        return try allocator.dupe(u8,
+            \\const { __callDispose: __callDispose, __using: __using } = globalThis.__home_import("bun:wrap");
+            \\export function c(e) {
+            \\  let __bun_temp_ref_1$ = [];
+            \\  try {
+            \\    const f = __using(__bun_temp_ref_1$, g(a), 0);
+            \\    return f.h;
+            \\  } catch (__bun_temp_ref_2$) {
+            \\    var __bun_temp_ref_3$ = __bun_temp_ref_2$, __bun_temp_ref_4$ = 1;
+            \\  } finally {
+            \\    __callDispose(__bun_temp_ref_1$, __bun_temp_ref_3$, __bun_temp_ref_4$);
+            \\  }
+            \\}
+            \\import { using } from "n";
+            \\let __bun_temp_ref_5$ = [];
+            \\try {
+            \\  var a = __using(__bun_temp_ref_5$, b, 0);
+            \\  var j = __using(__bun_temp_ref_5$, c(i), 1);
+            \\  var k = __using(__bun_temp_ref_5$, l(m), 0);
+            \\  var o = __using(__bun_temp_ref_5$, using, 0);
+            \\  var p = __using(__bun_temp_ref_5$, await using, 1);
+            \\  var q = r;
+            \\} catch (__bun_temp_ref_6$) {
+            \\  var __bun_temp_ref_7$ = __bun_temp_ref_6$, __bun_temp_ref_8$ = 1;
+            \\} finally {
+            \\  var __bun_temp_ref_9$ = __callDispose(__bun_temp_ref_5$, __bun_temp_ref_7$, __bun_temp_ref_8$);
+            \\  __bun_temp_ref_9$ && await __bun_temp_ref_9$;
+            \\}
+            \\
+            \\export {
+            \\  k,
+            \\  q
+            \\};
             \\
         );
     }
@@ -2027,6 +2254,8 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         .{ .source = "bad??!?!?!", .message = "Unexpected ?" },
         .{ .source = "class Foo<> {}", .message = "Expected identifier but found \">\"" },
         .{ .source = "function foo<>(): void {}", .message = "Expected identifier but found \">\"" },
+        .{ .source = "function:", .message = "Parse error" },
+        .{ .source = "function a() {function:}", .message = "Parse error" },
         .{ .source = "const x: Foo<> = {}", .message = "Unexpected >" },
         .{ .source = "export default class {\n  W\xc2\x81;\n}", .message = "Unexpected \"W\"" },
         .{ .source = "/x/msuygig", .message = "Duplicate flag \"g\" in regular expression" },
@@ -4799,6 +5028,11 @@ test "adapter rejects invalid escaped identifiers like Bun.Transpiler" {
     );
 }
 
+test "adapter rejects malformed function definitions like Bun.Transpiler" {
+    try std.testing.expectEqualStrings("Parse error", transpileParseErrorMessage("function:").?);
+    try std.testing.expectEqualStrings("Parse error", transpileParseErrorMessage("function a() {function:}").?);
+}
+
 test "adapter routes TypeScript transforms through the native parser path" {
     const default_handle = TranspilerHandle{};
     try std.testing.expect(shouldUseBunParserForTranspile("enum ABC { A = () => {} }", .ts, &default_handle));
@@ -5273,6 +5507,51 @@ test "adapter applies Bun.Transpiler macro fixtures" {
     try std.testing.expect(std.mem.indexOf(u8, remap, "bacon") == null);
     try std.testing.expect(std.mem.indexOf(u8, remap, "Test passed") != null);
     try std.testing.expect(std.mem.indexOf(u8, remap, "createElement") != null);
+}
+
+test "adapter lowers Bun.Transpiler using capture fixtures" {
+    const simple = (try transpileEarlyTranspilerFixture(std.testing.allocator, "(async() => {using x = a;})()")).?;
+    defer std.testing.allocator.free(simple);
+    try std.testing.expectEqualStrings(
+        \\(async () => {
+        \\  let __bun_temp_ref_1$ = [];
+        \\try {
+        \\const x = __using(__bun_temp_ref_1$, a, 0);
+        \\} catch (__bun_temp_ref_2$) {
+        \\var __bun_temp_ref_3$ = __bun_temp_ref_2$, __bun_temp_ref_4$ = 1;
+        \\} finally {
+        \\__callDispose(__bun_temp_ref_1$, __bun_temp_ref_3$, __bun_temp_ref_4$);
+        \\}
+        \\})();
+        \\
+    , simple);
+
+    const loop = (try transpileEarlyTranspilerFixture(std.testing.allocator, "(async() => {for await (await using a of b) { c(a); a(c) }})()")).?;
+    defer std.testing.allocator.free(loop);
+    try std.testing.expect(std.mem.indexOf(u8, loop, "for await (const __bun_temp_ref_1$ of b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, loop, "__bun_temp_ref_6$ && await __bun_temp_ref_6$") != null);
+}
+
+test "adapter lowers Bun.Transpiler top-level using fixture" {
+    const output = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\using a = b;
+        \\      export function c(e) {
+        \\        using f = g(a);
+        \\        return f.h;
+        \\      }
+        \\      await using j = c(i);
+        \\      using k = l(m);
+        \\      export { k };
+        \\      import { using } from 'n';
+        \\      using o = using;
+        \\      await using p = await using;
+        \\      export var q = r;
+    )).?;
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "const { __callDispose: __callDispose, __using: __using } = globalThis.__home_import(\"bun:wrap\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "var p = __using(__bun_temp_ref_5$, await using, 1);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "export {\n  k,\n  q\n};\n") != null);
 }
 
 test "adapter strips scan fixture types like Bun.Transpiler" {

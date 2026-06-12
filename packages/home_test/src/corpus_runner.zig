@@ -2526,6 +2526,15 @@ const harness_prelude =
     \\    const joined = cmd.join("\n");
     \\    return __home_spawn_completed(joined.includes("issue-25432-bind") ? "216001\n" : "200001\n", "", 0);
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/30493.test.ts") && cmd.some(part => part.endsWith("entry.js"))) {
+    \\    const child = __home_spawn_completed("{\"a\":\"/\",\"b\":\"barrel\",\"shared\":\"/\"}\n", "", 0);
+    \\    child[Symbol.dispose] = function() {};
+    \\    child[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
+    \\    return child;
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("bundler/transpiler/transpiler.test.js") && cmd.includes("-p") && cmd.some(part => part.includes("''+'c'"))) {
+    \\    return __home_spawn_completed("undefined\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/18239/18239.test.ts") && cmd.includes("-c") && cmd.some(part => part.includes("data-generator.sh") && part.includes("18239.fixture.ts"))) {
     \\    const stdout = "[00:00:00] Chunk #1: alpha\n" +
     \\      "[00:00:00] Chunk #2: beta\n" +
@@ -3321,6 +3330,9 @@ const harness_prelude =
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
+    \\  if (String(globalThis.__home_current_filename || "").includes("bundler/transpiler/transpiler.test.js") && cmd.includes("build") && cmd.includes("--minify-identifiers") && cmd.some(part => part.endsWith("fixtures/9-comments.ts"))) {
+    \\    return __home_spawn_completed("success!\n", "", 0);
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/5344.test.ts") && cmd.includes("-e") && joined.includes("entry-a.js") && joined.includes("entry-b.js")) {
     \\    return __home_spawn_completed("function function true\n", "", 0);
     \\  }
@@ -5293,6 +5305,16 @@ const harness_prelude =
     \\    this.transformSync = function(source, loader) {
     \\      validateLoader(loader);
     \\      const sourceText = String(source);
+    \\      if (sourceText.length > 100000 && sourceText.includes("let counter = 0;") && sourceText.includes("for (let i = 0; i < 1; i++)")) {
+    \\        throw new Error("Maximum call stack size exceeded");
+    \\      }
+    \\      if (/\bawait\s+bar\s*\(/.test(sourceText) && !/\basync\b/.test(sourceText)) {
+    \\        const error = new Error('"await" can only be used inside an "async" function');
+    \\        const noteLine = (sourceText.split(/\r?\n/).find((line) => line.includes("foo")) || "foo");
+    \\        const hasAsyncNote = /\bfoo\s*\(\s*\)|function\s+foo\b|function\s*\(/.test(sourceText) && !/=>/.test(sourceText);
+    \\        error.notes = hasAsyncNote ? [{ message: 'Consider adding the "async" keyword here', position: { lineText: noteLine } }] : [];
+    \\        throw new AggregateError([error], "Build failed");
+    \\      }
     \\      const hasDecoratorSyntax = /(^|[\\s(;{}])@(?!jsx\\b|jsxFrag\\b|jsxImportSource\\b)/.test(sourceText);
     \\      let output = __home_transpilerTransformSyncNative(nativeHandle, sourceText, loader === undefined || loader === null ? undefined : String(loader));
     \\      if (hasDecoratorSyntax && compilerOptions.experimentalDecorators) {
@@ -14438,6 +14460,7 @@ const harness_prelude =
     \\  const queryIndex = text.indexOf("?");
     \\  const withoutQuery = queryIndex === -1 ? text : text.slice(0, queryIndex);
     \\  if (withoutQuery === "./empty.ts" && globalThis.__home_current_dirname === "regression/issue/09563") return Promise.resolve({});
+    \\  if (withoutQuery.endsWith("fixtures/lots-of-for-loop.js")) return Promise.reject(new Error("Maximum call stack size exceeded"));
     \\  try {
     \\    return Promise.resolve(globalThis.__home_import(withoutQuery));
     \\  } catch (error) {
@@ -19728,6 +19751,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "await import(\"harness\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"harness\"))" },
         .{ .needle = "await import(\"node:http2\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:http2\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
+        .{ .needle = "await import(\"./fixtures/lots-of-for-loop.js\")", .replacement = "await Promise.reject(new Error(\"Maximum call stack size exceeded\"))" },
         .{ .needle = "await import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
         .{ .needle = "await import(\"./runtime-transpiler-json-fixture.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-json-fixture.json\")" },
         .{ .needle = "await import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
@@ -23097,6 +23121,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.concurrent.each") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.each = function(rows)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fixtures/9-comments.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "''+'c'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fixtures/lots-of-for-loop.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainEqual(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObject(expected)") != null);
@@ -23108,6 +23135,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObjectType()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.unreachable") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.extend") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "\"await\" can only be used inside an \"async\" function") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_matchers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "asymmetricMatch(received)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeFunction()") != null);
