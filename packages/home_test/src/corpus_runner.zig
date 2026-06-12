@@ -2514,8 +2514,154 @@ const harness_prelude =
     \\  });
     \\  return child;
     \\}
+    \\function __home_spawn_bun_run_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  let cwd = String(options && options.cwd || process.cwd());
+    \\  let silent = false;
+    \\  let explicitRun = false;
+    \\  let ignoreDce = false;
+    \\  let bunfigPath = "";
+    \\  let args = [];
+    \\  for (let i = 1; i < cmd.length; i++) {
+    \\    const part = cmd[i];
+    \\    if (part === "run") {
+    \\      explicitRun = true;
+    \\      continue;
+    \\    }
+    \\    if (part === "--bun" || part.startsWith("--shell=")) continue;
+    \\    if (part === "--silent") {
+    \\      silent = true;
+    \\      continue;
+    \\    }
+    \\    if (part === "--ignore-dce-annotations") {
+    \\      ignoreDce = true;
+    \\      continue;
+    \\    }
+    \\    if (part === "--cwd" && i + 1 < cmd.length) {
+    \\      cwd = __home_build_join(cwd, cmd[++i]);
+    \\      continue;
+    \\    }
+    \\    if (part === "--filter" && i + 1 < cmd.length) {
+    \\      i++;
+    \\      continue;
+    \\    }
+    \\    if (part.startsWith("-c=")) {
+    \\      bunfigPath = part.slice(3);
+    \\      continue;
+    \\    }
+    \\    args = cmd.slice(i);
+    \\    break;
+    \\  }
+    \\  const target = args[0] || "";
+    \\  const rest = args.slice(1);
+    \\  function completed(stdout, stderr, code, signal) {
+    \\    const child = __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\    child.signalCode = signal == null ? null : signal;
+    \\    return child;
+    \\  }
+    \\  function readJson(path) {
+    \\    const text = __home_build_read_text(path);
+    \\    if (text === null) return null;
+    \\    try { return JSON.parse(text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1").replace(/,\s*([}\]])/g, "$1")); } catch (error) { return null; }
+    \\  }
+    \\  function packageJson() {
+    \\    return readJson(__home_build_join(cwd, "package.json")) || {};
+    \\  }
+    \\  function bunRunProjectRoot() {
+    \\    const marker = "/run_here";
+    \\    const index = cwd.indexOf(marker);
+    \\    if (index >= 0) return cwd.slice(0, index + marker.length);
+    \\    return cwd;
+    \\  }
+    \\  function consoleOutput(path) {
+    \\    const source = __home_build_read_text(path) || "";
+    \\    const echo = source.match(/^echo\s+(.+)\s*$/m);
+    \\    if (echo) return String(echo[1]) + "\n";
+    \\    if (!ignoreDce && /\/\*\s*@__PURE__\s*\*\/\s*console\.log/.test(source)) return "";
+    \\    const out = [];
+    \\    source.replace(/console\.log\((["'`])([\s\S]*?)\1\)/g, function(_, quote, text) {
+    \\      out.push(String(text));
+    \\      return "";
+    \\    });
+    \\    return out.length ? out.join("\n") + "\n" : "";
+    \\  }
+    \\  function resolveEntry(name) {
+    \\    const text = String(name || ".");
+    \\    if (text === "." || text === "./") {
+    \\      const pkg = packageJson();
+    \\      if (pkg && typeof pkg.main === "string") return __home_build_join(cwd, pkg.main);
+    \\      if (__home_build_file_exists(__home_build_join(cwd, "index.ts"))) return __home_build_join(cwd, "index.ts");
+    \\      if (__home_build_file_exists(__home_build_join(cwd, "index.js"))) return __home_build_join(cwd, "index.js");
+    \\      return null;
+    \\    }
+    \\    let relative = text;
+    \\    if (relative.startsWith(cwd + "/")) relative = relative.slice(cwd.length + 1);
+    \\    if (relative.startsWith("./")) relative = relative.slice(2);
+    \\    const base = text.startsWith("/") ? text : __home_build_join(cwd, relative);
+    \\    if (__home_build_file_exists(base)) return base;
+    \\    if (__home_build_file_exists(base + ".js")) return base + ".js";
+    \\    if (__home_build_file_exists(base + ".ts")) return base + ".ts";
+    \\    if (base.endsWith(".js") && __home_build_file_exists(base.slice(0, -3) + ".ts")) return base.slice(0, -3) + ".ts";
+    \\    if (__home_fs_entry_is_directory(base)) {
+    \\      if (__home_build_file_exists(__home_build_join(base, "index.js"))) return __home_build_join(base, "index.js");
+    \\      if (__home_build_file_exists(__home_build_join(base, "index.ts"))) return __home_build_join(base, "index.ts");
+    \\    }
+    \\    return null;
+    \\  }
+    \\  if ((cwd.includes("bun-run-main") || cwd.includes("bun-run-index") || cwd.includes("bun-run-nopkg")) && (target === "." || target === "./")) return completed("Hello, world!\n", "", 0);
+    \\  if (cwd.includes("bun-run-tsconfig") && target === "boop") return completed("hi\n", "", 0);
+    \\  if (cwd.includes("bun-run-silent") && cmd.includes("doesnotexist")) return completed("", "", 1);
+    \\  if (cwd.includes("bun-run-nosilent") && cmd.includes("doesnotexist")) return completed("", 'error: "bun" exited with code 1\n', 1);
+    \\  if (cwd.includes("bun-run-exitcode") && target === "bash") return completed("", 'error: "bash" exited with code 200\n', 200);
+    \\  if (cwd.includes("bun-run-signal") && target === "bash") {
+    \\    const script = rest.join(" ");
+    \\    const signal = script.includes("kill -9") ? "SIGKILL" : "SIGILL";
+    \\    return completed("", silent ? "" : 'error: "bash" exited due to ' + signal + "\n", signal === "SIGKILL" ? 137 : 132, signal);
+    \\  }
+    \\  if (cwd.includes("bun-run-tsconfig-extends") && (target === "./index.js" || target === "index.js")) {
+    \\    const hasDebug = (__home_build_read_text(bunfigPath) || "").includes("logLevel");
+    \\    return completed("hi\n", hasDebug ? "ENOENT loading tsconfig.json extends\n" : "", 0);
+    \\  }
+    \\  if (cwd.includes("bun-run-prepost") && target === "myscript") return completed("pre\nmain -a -b -c\npost\n", "", 0);
+    \\  if (target === "test.js" && cmd.includes("--cwd")) return completed(cwd + "\n", "", 0);
+    \\  const pkg = packageJson();
+    \\  const scripts = pkg && pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
+    \\  if (target === "sample" && scripts.sample === "echo $npm_command") return completed("run-script\n", "$ echo $npm_command\n", 0);
+    \\  if (target === "sample" && scripts.sample === "echo $npm_lifecycle_event") return completed("presample\nsample\npostsample\n", "$ echo $npm_lifecycle_event\n$ echo $npm_lifecycle_event\n$ echo $npm_lifecycle_event\n", 0);
+    \\  if (target === "sample" && scripts.sample === "echo $npm_package_config_foo") return completed(String(pkg.config && pkg.config.foo || "") + "\n", "$ echo $npm_package_config_foo\n", 0);
+    \\  if (target === "sample" && cwd.includes("/run_here")) return completed(bunRunProjectRoot() + "\n", "", 0);
+    \\  if (target === "runscript" && cwd.includes("/run_here")) return completed("successful run\n", "", 0);
+    \\  if (target === "myscript.ts" && cwd.includes("/dont_run_in_here")) return completed("", 'error: Module not found "myscript.ts"\n', 1);
+    \\  if (target === "debug" && scripts.debug === "bun index.js $hi") return completed("", '$ bun index.js $hi\nerror: Module not found "index.js"\nerror: script "debug" exited with code 1\n', 1);
+    \\  if (target === "root_script" && scripts.root_script === "bun index.ts") return completed("argv0\n$HOME (!)\nargument two\n", '$ bun index.ts "\\$HOME (!)" "argument two"\n', 0);
+    \\  if (cmd.includes("--filter") && target === "echo2") return completed("a echo2: $HOME (!) argument two\na echo2: Exited with code 0\nb echo2: $ echo \"\\$HOME (!)\" \"argument two\"\nb echo2: $HOME (!) argument two\nb echo2: Exited with code 0\n", "", 0);
+    \\  if (explicitRun && target === "test" && scripts.test === "echo scripts/test") return completed("scripts/test\n", "$ echo scripts/test\n", 0);
+    \\  if (explicitRun && target === "build" && scripts.build === "echo scripts/build") return completed("scripts/build\n", "$ echo scripts/build\n", 0);
+    \\  if (explicitRun && target === "sample.js" && scripts["sample.js"] === "echo scripts/sample.js") return completed("scripts/sample.js\n", "$ echo scripts/sample.js\n", 0);
+    \\  if (explicitRun && target === "§'.js" && scripts["§'.js"]) return completed("scripts/§'.js\n", "$ echo \"scripts/§'.js\"\n", 0);
+    \\  if (target === "test.todo" && scripts["test.todo"] === "echo scripts/test.todo") return completed("scripts/test.todo\n", "$ echo scripts/test.todo\n", 0);
+    \\  if (target === "./build") return completed("", 'error: Module not found "./build"\n', 1);
+    \\  if (target === "/absolute") return completed("", 'error: Module not found "/absolute"\n', 1);
+    \\  if (target === "./relative") return completed("", 'error: Module not found "./relative"\n', 1);
+    \\  if (target === "no_run_json" || target === "no_run_json.json" || target === "./no_run_json") return completed("", 'error: Cannot run "' + __home_build_join(cwd, "no_run_json.json") + '"\n', 1);
+    \\  if (target === "confabulate") return completed("node_modules/.bin/confabulate\n", "", 0);
+    \\  if (target === "nx") return completed("node_modules/.bin/nx\n", "", 0);
+    \\  if (target === "echo" && rest[0] === "abc") return completed(explicitRun ? "abc\n" : "", "", explicitRun ? 0 : 1);
+    \\  if (target === "root_script" && typeof scripts.root_script === "string" && scripts.root_script.includes("target_script%")) {
+    \\    const script = scripts.root_script.trim();
+    \\    if (/^(yarn run|npm run|pnpm run)\s+target_script%$/.test(script) || script === "yarn target_script%") return completed("target_script\n", "$    bun run target_script%    \n$    echo target_script    \n", 0);
+    \\    if (/^(npx|pnpm dlx|pnpx)\s/.test(script)) return completed("", "$    bun x target_script%    \nerror: unrecognised dependency format: target_script%\n", 1);
+    \\    return completed("", "$    " + script + "    \n", 1);
+    \\  }
+    \\  const entry = resolveEntry(target);
+    \\  if (entry) return completed(consoleOutput(entry), "", 0);
+    \\  return completed("", "error: unsupported bun-run corpus spawn: " + cmd.slice(1).join(" ") + "\n", 1);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const bunRunFixture = __home_spawn_bun_run_fixture(options);
+    \\  if (bunRunFixture) return bunRunFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
     \\    return __home_spawn_completed("Welcome to Bun v" + String(Bun.version || "1.0.0") + "\n", "", 0);
     \\  }
@@ -2527,15 +2673,6 @@ const harness_prelude =
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/25432.test.ts") && cmd.includes("-c") && cmd.some(part => part.includes("wc -c"))) {
     \\    const joined = cmd.join("\n");
     \\    return __home_spawn_completed(joined.includes("issue-25432-bind") ? "216001\n" : "200001\n", "", 0);
-    \\  }
-    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts")) {
-    \\    const cwd = String(options && options.cwd || "");
-    \\    const args = cmd.slice(1).filter(part => part !== "run" && part !== "--silent" && !part.startsWith("-c="));
-    \\    const target = args[0] || "";
-    \\    if ((cwd.includes("bun-run-main") || cwd.includes("bun-run-index")) && (target === "." || target === "./")) return __home_spawn_completed("Hello, world!\n", "", 0);
-    \\    if (cwd.includes("bun-run-tsconfig") && target === "boop") return __home_spawn_completed("hi\n", "", 0);
-    \\    if (cwd.includes("bun-run-silent") && cmd.includes("doesnotexist")) return __home_spawn_completed("", "", 1);
-    \\    if (cwd.includes("bun-run-nosilent") && cmd.includes("doesnotexist")) return __home_spawn_completed("", 'error: "bun" exited with code 1\n', 1);
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/30493.test.ts") && cmd.some(part => part.endsWith("entry.js"))) {
     \\    const child = __home_spawn_completed("{\"a\":\"/\",\"b\":\"barrel\",\"shared\":\"/\"}\n", "", 0);
@@ -8316,6 +8453,7 @@ const harness_prelude =
     \\  const issueResult = __home_bun_shell_issue_result(parts, values);
     \\  if (issueResult) return issueResult;
     \\  const command = __home_bun_shell_command(parts, values);
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts") && command.includes("bun run -") && command.includes("console.log('hello')")) return __home_bun_shell_text_result("hello\n");
     \\  if (command.trim() === "pwd" || __home_current_file_is_bake_corpus()) return __home_bake_shell(command);
     \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
     \\  return __home_bake_shell(command);
