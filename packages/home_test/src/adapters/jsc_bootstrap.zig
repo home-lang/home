@@ -1590,6 +1590,8 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         .{ .source = "const x: Foo<> = {}", .message = "Unexpected >" },
         .{ .source = "export default class {\n  W\xc2\x81;\n}", .message = "Unexpected \"W\"" },
         .{ .source = "/x/msuygig", .message = "Duplicate flag \"g\" in regular expression" },
+        .{ .source = "var var", .message = "Expected identifier but found \"var\"" },
+        .{ .source = "\\u0076\\u0061\\u0072 foo", .message = "Unexpected \\u0076\\u0061\\u0072" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return fixture.message;
@@ -4243,6 +4245,17 @@ test "adapter rejects duplicate regexp flags like Bun.Transpiler" {
     try std.testing.expectEqualStrings(
         "Duplicate flag \"g\" in regular expression",
         transpileParseErrorMessage("/x/msuygig").?,
+    );
+}
+
+test "adapter rejects invalid escaped identifiers like Bun.Transpiler" {
+    try std.testing.expectEqualStrings(
+        "Expected identifier but found \"var\"",
+        transpileParseErrorMessage("var var").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Unexpected \\u0076\\u0061\\u0072",
+        transpileParseErrorMessage("\\u0076\\u0061\\u0072 foo").?,
     );
 }
 
