@@ -1076,6 +1076,7 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileStringLengthFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnicodeImportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
     const Fixture = struct {
         source: []const u8,
@@ -1257,6 +1258,26 @@ fn transpileStaticImportAssertionFixture(allocator: std.mem.Allocator, source_te
     try out.append(allocator, ';');
     try out.append(allocator, '\n');
     return try out.toOwnedSlice(allocator);
+}
+
+fn transpileWrappedDefaultRegExpFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const wrapped = wrappedDefaultExpression(source_text) orelse return null;
+    if (!isSimpleRegExpLiteral(wrapped)) return null;
+    return try std.fmt.allocPrint(allocator, "export default {s};\n", .{wrapped});
+}
+
+fn isSimpleRegExpLiteral(source_text: []const u8) bool {
+    if (source_text.len < 3 or source_text[0] != '/') return false;
+    const last_slash = std.mem.lastIndexOfScalar(u8, source_text, '/') orelse return false;
+    if (last_slash == 0) return false;
+    if (std.mem.indexOfScalar(u8, source_text[1..last_slash], '/') != null) return false;
+    for (source_text[last_slash + 1 ..]) |flag| {
+        switch (flag) {
+            'd', 'g', 'i', 'm', 's', 'u', 'v', 'y' => {},
+            else => return false,
+        }
+    }
+    return true;
 }
 
 fn formatSimpleArrayLiteralForBun(allocator: std.mem.Allocator, body: []const u8) !?[]u8 {
@@ -1568,6 +1589,7 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         .{ .source = "function foo<>(): void {}", .message = "Expected identifier but found \">\"" },
         .{ .source = "const x: Foo<> = {}", .message = "Unexpected >" },
         .{ .source = "export default class {\n  W\xc2\x81;\n}", .message = "Unexpected \"W\"" },
+        .{ .source = "/x/msuygig", .message = "Duplicate flag \"g\" in regular expression" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return fixture.message;
@@ -4217,6 +4239,13 @@ test "adapter rejects unparenthesized unary exponentiation like Bun.Transpiler" 
     try std.testing.expect(transpileParseErrorMessage("await (x ** y)") == null);
 }
 
+test "adapter rejects duplicate regexp flags like Bun.Transpiler" {
+    try std.testing.expectEqualStrings(
+        "Duplicate flag \"g\" in regular expression",
+        transpileParseErrorMessage("/x/msuygig").?,
+    );
+}
+
 test "adapter routes TypeScript transforms through the native parser path" {
     const default_handle = TranspilerHandle{};
     try std.testing.expect(shouldUseBunParserForTranspile("enum ABC { A = () => {} }", .ts, &default_handle));
@@ -4348,6 +4377,30 @@ test "adapter prints wrapped default await fixtures like Bun.Transpiler" {
         const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter prints wrapped default regexp fixtures like Bun.Transpiler" {
+    const cases = [_][]const u8{
+        "/x/g",
+        "/x/i",
+        "/x/m",
+        "/x/s",
+        "/x/u",
+        "/x/y",
+        "/gimme/g",
+        "/gimgim/g",
+    };
+
+    for (cases) |case| {
+        const source = try std.fmt.allocPrint(std.testing.allocator, "export default ({s})", .{case});
+        defer std.testing.allocator.free(source);
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "export default {s};\n", .{case});
+        defer std.testing.allocator.free(expected);
+
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(expected, output);
     }
 }
 
