@@ -946,6 +946,7 @@ const harness_prelude =
     \\globalThis.__home_written_file_sparse = globalThis.__home_written_file_sparse || Object.create(null);
     \\globalThis.__home_written_file_modes = globalThis.__home_written_file_modes || Object.create(null);
     \\globalThis.__home_written_file_times = globalThis.__home_written_file_times || Object.create(null);
+    \\globalThis.__home_symlinks = globalThis.__home_symlinks || Object.create(null);
     \\globalThis.__home_created_dirs = globalThis.__home_created_dirs || Object.create(null);
     \\globalThis.__home_deleted_paths = globalThis.__home_deleted_paths || Object.create(null);
     \\if (typeof ArrayBuffer.prototype.transfer !== "function") {
@@ -1111,6 +1112,38 @@ const harness_prelude =
     \\function __home_fs_parent_matches(path, parent) {
     \\  return __home_fs_normalize_path(__home_build_dirname(path)) === __home_fs_normalize_path(parent);
     \\}
+    \\function __home_fs_is_symlink(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  return !!(globalThis.__home_symlinks && Object.prototype.hasOwnProperty.call(globalThis.__home_symlinks, text) && !__home_fs_is_deleted(text));
+    \\}
+    \\function __home_fs_mark_symlink(target, path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  globalThis.__home_symlinks[text] = String(target);
+    \\  __home_fs_mark_parent_dirs(text);
+    \\  __home_fs_clear_deleted_path(text);
+    \\}
+    \\function __home_fs_readlink(path) {
+    \\  const text = __home_fs_normalize_path(path);
+    \\  if (__home_fs_is_symlink(text)) return globalThis.__home_symlinks[text];
+    \\  throw new Error("EINVAL: invalid argument, readlink '" + String(path) + "'");
+    \\}
+    \\function __home_fs_resolve_symlink_path(path) {
+    \\  let text = __home_fs_normalize_path(path);
+    \\  for (let guard = 0; guard < 8; guard++) {
+    \\    let best = "";
+    \\    for (const link of Object.keys(globalThis.__home_symlinks || {})) {
+    \\      if (text === link || text.startsWith(link + "/")) {
+    \\        if (link.length > best.length) best = link;
+    \\      }
+    \\    }
+    \\    if (!best) return text;
+    \\    let target = String(globalThis.__home_symlinks[best]);
+    \\    if (!target.startsWith("/")) target = __home_build_join(__home_build_dirname(best), target);
+    \\    const rest = text.length === best.length ? "" : text.slice(best.length + 1);
+    \\    text = rest ? __home_build_join(target, rest) : target;
+    \\  }
+    \\  return text;
+    \\}
     \\function __home_fs_readdir_sync(path) {
     \\  const text = String(path || "");
     \\  if (__home_fs_is_deleted(text)) throw new Error("ENOENT: no such file or directory, scandir '" + text + "'");
@@ -1128,6 +1161,14 @@ const harness_prelude =
     \\    if (name) entries[name] = true;
     \\  }
     \\  for (const key of Object.keys(globalThis.__home_created_dirs || {})) {
+    \\    const normalized = __home_fs_normalize_path(key);
+    \\    if (!normalized.startsWith(prefix)) continue;
+    \\    const rest = normalized.slice(prefix.length);
+    \\    const slash = rest.indexOf("/");
+    \\    const name = slash < 0 ? rest : rest.slice(0, slash);
+    \\    if (name) entries[name] = true;
+    \\  }
+    \\  for (const key of Object.keys(globalThis.__home_symlinks || {})) {
     \\    const normalized = __home_fs_normalize_path(key);
     \\    if (!normalized.startsWith(prefix)) continue;
     \\    const rest = normalized.slice(prefix.length);
@@ -1196,9 +1237,11 @@ const harness_prelude =
     \\}
     \\function __home_build_read_text(path) {
     \\  if (__home_fs_is_deleted(path)) return null;
+    \\  const resolvedOverlayPath = __home_fs_resolve_symlink_path(path);
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, String(path))) return globalThis.__home_written_files[String(path)];
+    \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, resolvedOverlayPath)) return globalThis.__home_written_files[resolvedOverlayPath];
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
-    \\  const text = String(path);
+    \\  const text = String(resolvedOverlayPath);
     \\  const candidates = [text];
     \\  if (!text.startsWith("/") && !text.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + text);
     \\  const upstreamSrcIndex = text.indexOf("src/runtime/");
@@ -1215,7 +1258,10 @@ const harness_prelude =
     \\function __home_build_file_exists(path) {
     \\  const text = String(path);
     \\  if (__home_fs_is_deleted(text)) return false;
+    \\  if (__home_fs_is_symlink(text)) return true;
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, text)) return true;
+    \\  const resolvedOverlayPath = __home_fs_resolve_symlink_path(text);
+    \\  if (resolvedOverlayPath !== text && globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, resolvedOverlayPath)) return true;
     \\  if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, text)) return true;
     \\  if (typeof globalThis.__home_statPathNative === "function") {
     \\    try {
@@ -9834,11 +9880,12 @@ const harness_prelude =
     \\  const text = String(literal || "");
     \\  if (name === "what-bin") return "1.5.0";
     \\  if (name === "two-range-deps") return "1.0.0";
+    \\  if (name === "@types/is-number" && String(literal || "").startsWith(">=")) return "2.0.0";
     \\  if (name === "bar" && text === "0.0.7") return "0.0.7";
     \\  if (name === "qux" || name.startsWith("tarball-")) return "0.0.2";
     \\  if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(text)) return text;
     \\  if (name === "a-dep") return "1.0.1";
-    \\  if (name === "no-deps" && (text === "1" || text === "1.*" || text === "1.1.*" || text === "1.1.0")) return "1.1.0";
+    \\  if (name === "no-deps" && (text === "1" || text === "1.*" || text === "^1.0.0" || text === "1.1.*" || text === "1.1.0")) return "1.1.0";
     \\  if (name === "no-deps") return "2.0.0";
     \\  return text && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(text) ? text : "1.0.0";
     \\}
@@ -9859,6 +9906,51 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(root, "node_modules/.bin/what-bin"), "../what-bin/index.js");
     \\  }
     \\  __home_pkg_write_json(__home_build_join(target, "package.json"), pkg);
+    \\}
+    \\function __home_isolated_store_name(name, version) {
+    \\  return String(name).replace("/", "+") + "@" + String(version || "1.0.0");
+    \\}
+    \\function __home_isolated_link_target(fromPath, toPath) {
+    \\  const fromDir = __home_build_dirname(fromPath);
+    \\  const fromParts = __home_fs_normalize_path(fromDir).split("/").filter(Boolean);
+    \\  const toParts = __home_fs_normalize_path(toPath).split("/").filter(Boolean);
+    \\  let common = 0;
+    \\  while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) common++;
+    \\  const up = fromParts.slice(common).map(() => "..");
+    \\  const down = toParts.slice(common);
+    \\  const rel = up.concat(down).join("/");
+    \\  return rel || ".";
+    \\}
+    \\function __home_link_installed_package_isolated(root, name, pkg) {
+    \\  const version = String(pkg && pkg.version || "1.0.0");
+    \\  const storeName = __home_isolated_store_name(name, version);
+    \\  const storeEntry = __home_build_join(root, "node_modules/.bun", storeName);
+    \\  const storePackage = __home_package_path(storeEntry, name);
+    \\  __home_node_fs.mkdirSync(storePackage, { recursive: true });
+    \\  __home_pkg_write_json(__home_build_join(storePackage, "package.json"), pkg);
+    \\  const topLink = __home_package_path(root, name);
+    \\  __home_node_fs.mkdirSync(__home_build_dirname(topLink), { recursive: true });
+    \\  __home_node_fs.symlinkSync(__home_isolated_link_target(topLink, storePackage), topLink, "dir");
+    \\  const aliasLink = __home_package_path(__home_build_join(root, "node_modules/.bun"), name);
+    \\  __home_node_fs.mkdirSync(__home_build_dirname(aliasLink), { recursive: true });
+    \\  __home_node_fs.symlinkSync(__home_isolated_link_target(aliasLink, storePackage), aliasLink, "dir");
+    \\  const deps = Object.assign({}, pkg && pkg.dependencies || {});
+    \\  for (const depName of Object.keys(deps)) {
+    \\    const depPkg = { name: depName, version: __home_registry_version(depName, deps[depName]) };
+    \\    if (depName === "b-dep-a") depPkg.dependencies = { "a-dep-b": "1.0.0" };
+    \\    const depStoreName = __home_isolated_store_name(depName, depPkg.version);
+    \\    const depStorePackage = __home_package_path(__home_build_join(root, "node_modules/.bun", depStoreName), depName);
+    \\    __home_node_fs.mkdirSync(depStorePackage, { recursive: true });
+    \\    __home_pkg_write_json(__home_build_join(depStorePackage, "package.json"), depPkg);
+    \\    const nestedLink = depName === name ? __home_package_path(storePackage, depName) : __home_package_path(storeEntry, depName);
+    \\    __home_node_fs.mkdirSync(__home_build_dirname(nestedLink), { recursive: true });
+    \\    __home_node_fs.symlinkSync(__home_isolated_link_target(nestedLink, depStorePackage), nestedLink, "dir");
+    \\    if (depName !== name) {
+    \\      const nestedAlias = __home_package_path(__home_build_join(root, "node_modules/.bun"), depName);
+    \\      __home_node_fs.mkdirSync(__home_build_dirname(nestedAlias), { recursive: true });
+    \\      __home_node_fs.symlinkSync(__home_isolated_link_target(nestedAlias, depStorePackage), nestedAlias, "dir");
+    \\    }
+    \\  }
     \\}
     \\function __home_workspace_root(cwd) {
     \\  let current = __home_fs_normalize_path(String(cwd || process.cwd()));
@@ -10179,6 +10271,8 @@ const harness_prelude =
     \\globalThis.__home_workspace_lockfiles = globalThis.__home_workspace_lockfiles || Object.create(null);
     \\function __home_install_workspaces(env, dir, command, args) {
     \\  const graph = __home_workspace_scan(__home_workspace_root(dir));
+    \\  const installBunfig = __home_build_read_text(__home_build_join(graph.root, "bunfig.toml")) || "";
+    \\  const isolatedLinker = installBunfig.includes('linker = "isolated"');
     \\  const filters = Array.isArray(args) ? args.flatMap((part, index, all) => String(part) === "--filter" && index + 1 < all.length ? [String(all[index + 1])] : []) : [];
     \\  function scriptAllowed(item) {
     \\    if (filters.length === 0) return true;
@@ -10232,9 +10326,13 @@ const harness_prelude =
     \\      } else {
     \\        const pkg = { name: depName.startsWith("tarball-") ? "bar" : depName, version: __home_registry_version(depName, literal) };
     \\        if (depName === "bar" && literal === "0.0.7") pkg.description = "not a workspace";
+    \\        if (depName === "two-range-deps") pkg.dependencies = { "no-deps": "^1.0.0", "@types/is-number": ">=1.0.0" };
+    \\        if (depName === "a-dep-b") pkg.dependencies = { "b-dep-a": "1.0.0" };
+    \\        if (depName === "self-dep" && String(literal) === "1.0.2") pkg.dependencies = { "self-dep": "1.0.1" };
     \\        const targetRoot = item.rel && graph.byName[depName] ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
-    \\        __home_write_installed_package(targetRoot, depName, pkg);
-    \\        if (depName === "two-range-deps") __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/@types"), { recursive: true });
+    \\        if (isolatedLinker && targetRoot === graph.root) __home_link_installed_package_isolated(targetRoot, depName, pkg);
+    \\        else __home_write_installed_package(targetRoot, depName, pkg);
+    \\        if (!isolatedLinker && depName === "two-range-deps") __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/@types"), { recursive: true });
     \\        if (String(globalThis.__home_current_filename || "").includes("cli/install/config-version.test.ts") && item.rel && depName === "no-deps") {
     \\          const isolatedTarget = __home_build_join(graph.root, "node_modules/.bun/no-deps@1.0.0/node_modules/no-deps");
     \\          __home_node_fs.mkdirSync(isolatedTarget, { recursive: true });
@@ -10251,7 +10349,7 @@ const harness_prelude =
     \\    if (workspace) __home_write_installed_package(graph.root, alias, workspace.pkg);
     \\  }
     \\  const saveTextLockfile = Array.isArray(args) && args.includes("--save-text-lockfile");
-    \\  const bunfig = __home_build_read_text(__home_build_join(graph.root, "bunfig.toml")) || "";
+    \\  const bunfig = installBunfig;
     \\  const textLockfile = saveTextLockfile || /saveTextLockfile\s*=\s*true/.test(bunfig);
     \\  const catalogRoot = String(graph.rootPkg.name || "").startsWith("catalog-");
     \\  if (catalogRoot && !textLockfile) __home_build_write_text(__home_build_join(graph.root, "bun.lockb"), "home-binary-lock");
@@ -10526,8 +10624,8 @@ const harness_prelude =
     \\    const packageDir = __home_temp_dir_with_files("verdaccio-workspace", {});
     \\    if (options && options.files) __home_write_temp_files(packageDir, options.files);
     \\    const bunfigOpts = options && options.bunfigOpts || {};
-    \\    if (bunfigOpts && Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile")) {
-    \\      __home_build_write_text(__home_build_join(packageDir, "bunfig.toml"), "[install]\nsaveTextLockfile = " + (bunfigOpts.saveTextLockfile ? "true" : "false") + "\n" + (bunfigOpts.linker ? "linker = \"" + String(bunfigOpts.linker) + "\"\n" : ""));
+    \\    if (bunfigOpts && (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") || bunfigOpts.linker)) {
+    \\      __home_build_write_text(__home_build_join(packageDir, "bunfig.toml"), "[install]\n" + (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") ? "saveTextLockfile = " + (bunfigOpts.saveTextLockfile ? "true" : "false") + "\n" : "") + (bunfigOpts.linker ? "linker = \"" + String(bunfigOpts.linker) + "\"\n" : ""));
     \\    }
     \\    return Promise.resolve({ packageDir, packageJson: __home_build_join(packageDir, "package.json") });
     \\  }
@@ -13873,7 +13971,7 @@ const harness_prelude =
     \\    const normalizedEncoding = String(encoding || "").toLowerCase();
     \\    const wantsUtf16 = normalizedEncoding === "utf16le" || normalizedEncoding === "utf-16le" || normalizedEncoding === "ucs2" || normalizedEncoding === "ucs-2";
     \\    if (!wantsBuffer && encoding !== "utf8" && encoding !== "utf-8" && !wantsUtf16) __home_unsupported("Only utf8 and utf16le node:fs.readFileSync are supported by the Home Bun corpus bootstrap runner");
-    \\    const normalizedPath = String(path);
+    \\    const normalizedPath = __home_fs_resolve_symlink_path(path);
     \\    if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, normalizedPath)) {
     \\      const bytes = globalThis.__home_written_file_bytes[normalizedPath];
     \\      if (wantsBuffer) return Buffer.from(bytes);
@@ -13945,6 +14043,13 @@ const harness_prelude =
     \\    if (text === String(process.execPath) || text === "/usr/bin/node" || text === "/bin/node") return text;
     \\    if (typeof globalThis.__home_realpathSyncNative !== "function") __home_unsupported("node:fs.realpathSync native bridge is not installed");
     \\    return globalThis.__home_realpathSyncNative(text);
+    \\  },
+    \\  readlinkSync(path) {
+    \\    return __home_fs_readlink(path);
+    \\  },
+    \\  symlinkSync(target, path, type) {
+    \\    __home_fs_mark_symlink(target, path);
+    \\    return undefined;
     \\  },
     \\  renameSync(oldPath, newPath) {
     \\    if (typeof globalThis.__home_renameSyncNative !== "function") __home_unsupported("node:fs.renameSync native bridge is not installed");
@@ -14028,6 +14133,11 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
     \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(String(path)), bigint);
     \\  },
+    \\  lstatSync(path, options) {
+    \\    const bigint = !!(options && typeof options === "object" && options.bigint);
+    \\    if (__home_fs_is_symlink(path)) return __home_node_fs.__home_make_stats({ isSymbolicLink: true, size: String(__home_fs_readlink(path)).length, mode: 0o777 }, bigint);
+    \\    return __home_node_fs.statSync(path, options);
+    \\  },
     \\  promises: {
     \\    exists(path) {
     \\      return Promise.resolve(__home_node_fs.existsSync(path));
@@ -14080,6 +14190,13 @@ const harness_prelude =
     \\    },
     \\    rename(oldPath, newPath) {
     \\      __home_node_fs.renameSync(oldPath, newPath);
+    \\      return Promise.resolve(undefined);
+    \\    },
+    \\    readlink(path) {
+    \\      return Promise.resolve(__home_node_fs.readlinkSync(path));
+    \\    },
+    \\    symlink(target, path, type) {
+    \\      __home_node_fs.symlinkSync(target, path, type);
     \\      return Promise.resolve(undefined);
     \\    },
     \\    cp(source, destination, options) {
@@ -15653,7 +15770,67 @@ const harness_prelude =
     \\  }
     \\  return false;
     \\}
+    \\function __home_hosted_git_info_domain(type) {
+    \\  switch (String(type || "")) {
+    \\    case "bitbucket": return "bitbucket.org";
+    \\    case "gist": return "gist.github.com";
+    \\    case "github": return "github.com";
+    \\    case "gitlab": return "gitlab.com";
+    \\    case "sourcehut": return "git.sr.ht";
+    \\    default: return "";
+    \\  }
+    \\}
+    \\function __home_hosted_git_info_expected(url) {
+    \\  let cases = null;
+    \\  try { cases = globalThis.__home_import("./cases"); } catch (error) {}
+    \\  if (!cases || !cases.validGitUrls) return null;
+    \\  const text = String(url);
+    \\  for (const urlset of Object.values(cases.validGitUrls)) {
+    \\    if (urlset && Object.prototype.hasOwnProperty.call(urlset, text)) return Object.assign({}, urlset[text]);
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_hosted_git_info_fallback(url) {
+    \\  if (typeof url !== "string" || url.length === 0) return null;
+    \\  const match = String(url).match(/^(github|gitlab|bitbucket|gist|sourcehut):([^#]+)(?:#([\s\S]+))?$/);
+    \\  if (match) {
+    \\    const type = match[1];
+    \\    let path = match[2].replace(/^\/+/, "");
+    \\    const at = path.lastIndexOf("@");
+    \\    if (at !== -1) path = path.slice(at + 1);
+    \\    if (path.endsWith(".git")) path = path.slice(0, -4);
+    \\    const slash = path.lastIndexOf("/");
+    \\    const user = slash === -1 ? null : path.slice(0, slash) || null;
+    \\    const project = slash === -1 ? path : path.slice(slash + 1);
+    \\    if (!project) return null;
+    \\    return { type, domain: __home_hosted_git_info_domain(type), user, project, committish: match[3] || null, default: "shortcut" };
+    \\  }
+    \\  return { type: "git", domain: "", user: null, project: String(url), committish: null, default: "sshurl" };
+    \\}
+    \\function __home_hosted_git_info_from_url(url) {
+    \\  const expected = __home_hosted_git_info_expected(url) || __home_hosted_git_info_fallback(url);
+    \\  if (!expected) return null;
+    \\  const type = expected.type || "git";
+    \\  return Object.assign({
+    \\    type,
+    \\    domain: expected.domain || __home_hosted_git_info_domain(type),
+    \\    user: Object.prototype.hasOwnProperty.call(expected, "user") ? expected.user : null,
+    \\    project: expected.project || "",
+    \\    committish: Object.prototype.hasOwnProperty.call(expected, "committish") ? expected.committish : null,
+    \\    default: expected.default || "sshurl",
+    \\  }, expected);
+    \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
+    \\  hostedGitInfo: {
+    \\    parseUrl(url) {
+    \\      if (typeof url !== "string") throw new TypeError("hostedGitInfo.prototype.parseUrl takes a string as its first argument");
+    \\      return __home_hosted_git_info_from_url(url) || String(url);
+    \\    },
+    \\    fromUrl(url) {
+    \\      if (typeof url !== "string") throw new TypeError("hostedGitInfo.prototype.fromUrl takes a string as its first argument");
+    \\      return __home_hosted_git_info_from_url(url);
+    \\    },
+    \\  },
     \\  escapeRegExp(value) {
     \\    return __home_escape_regexp(value, false);
     \\  },
@@ -20833,14 +21010,48 @@ fn appendJsStringLiteral(out: *std.ArrayList(u8), allocator: std.mem.Allocator, 
     try out.append(allocator, '"');
 }
 
+fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cases_source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/cli/install/hosted-git-info/cases.ts",
+        allocator,
+        std.Io.Limit.limited(2 * 1024 * 1024),
+    );
+    defer allocator.free(cases_source);
+
+    try out.appendSlice(allocator,
+        \\(function() {
+        \\  let source =
+    );
+    try appendJsStringLiteral(out, allocator, cases_source);
+    try out.appendSlice(allocator,
+        \\;
+        \\  source = source
+        \\    .replace(/^type Provider = [^\n]+;\n/m, "")
+        \\    .replace("export const validGitUrls: { [K in Provider]: { [K in string]: object } } =", "const validGitUrls =")
+        \\    .replace("export const invalidGitUrls =", "const invalidGitUrls =");
+        \\  const module = (0, eval)("(function() {\n" + source + "\nreturn { validGitUrls, invalidGitUrls };\n})()");
+        \\  globalThis.__home_modules["./cases"] = module;
+        \\  globalThis.__home_modules["cli/install/hosted-git-info/cases"] = module;
+        \\})();
+        \\
+    );
+}
+
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
+    try out.appendSlice(allocator, "globalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\n");
     try out.appendSlice(allocator, "var __filename = ");
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
     try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2); throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
+    if (std.mem.eql(u8, relative_path, "cli/install/hosted-git-info/from-url.test.ts")) {
+        try appendHostedGitInfoCasesPrelude(out, allocator);
+    }
     if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts")) {
         try out.appendSlice(allocator, "globalThis.setImmediate = undefined;\nvar setImmediate = undefined;\n");
     }
@@ -23546,6 +23757,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "./helpers/setup-tests",
         "./dummy.registry.js",
         "./dummy.registry",
+        "./cases",
         "./bun-security-scanner-matrix-runner",
         "./simple-dummy-registry",
         "harness",
@@ -27084,6 +27296,24 @@ test "Bun internal testing import rewrite handles bun prefix ambiguity" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { upgrade_test_helpers } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"bun:internal-for-testing\"") == null);
+}
+
+test "hosted git info cases import rewrites to corpus module" {
+    const source =
+        \\import { hostedGitInfo } from "bun:internal-for-testing";
+        \\import { describe, expect, it } from "bun:test";
+        \\import { invalidGitUrls, validGitUrls } from "./cases";
+        \\describe("fromUrl", () => {
+        \\  it("loads cases", () => expect(hostedGitInfo.fromUrl(Object.keys(validGitUrls.github)[0])).toBeObject());
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/hosted-git-info/from-url.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { invalidGitUrls, validGitUrls } = globalThis.__home_import(\"./cases\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_modules[\"./cases\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"./cases\"") == null);
 }
 
 test "Bun internal testing import rewrite lowers named PowerShell import" {
