@@ -1110,6 +1110,7 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "module.require(1 ? 'foo' : 'bar')", .output = "require(\"foo\");\n" },
         .{ .source = "require(1 ? 'foo' : 'bar')", .output = "require(\"foo\");\n" },
         .{ .source = "module.require(unknown ? 'foo' : 'bar')", .output = "unknown ? require(\"foo\") : require(\"bar\");\n" },
+        .{ .source = "export const foo = require.resolve('my-module')", .output = "export const foo = require.resolve(\"my-module\");\n" },
         .{ .source = "async function f() { await delete x }", .output = "async function f() {\n  await delete x;\n}\n" },
     };
     for (fixtures) |fixture| {
@@ -4233,6 +4234,10 @@ test "adapter preserves Bun.Transpiler JSX key fixture" {
     const require_folded = (try transpileEarlyTranspilerFixture(std.testing.allocator, "module.require(unknown ? 'foo' : 'bar')")).?;
     defer std.testing.allocator.free(require_folded);
     try std.testing.expectEqualStrings("unknown ? require(\"foo\") : require(\"bar\");\n", require_folded);
+
+    const require_resolve_browser = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = require.resolve('my-module')")).?;
+    defer std.testing.allocator.free(require_resolve_browser);
+    try std.testing.expectEqualStrings("export const foo = require.resolve(\"my-module\");\n", require_resolve_browser);
 
     const await_delete = (try transpileEarlyTranspilerFixture(std.testing.allocator, "async function f() { await delete x }")).?;
     defer std.testing.allocator.free(await_delete);
