@@ -1090,6 +1090,16 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "console.log(<div key={() => {}} key={() => {}} a={() => {}}></div>, () => {});", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {\n  key: () => {},\n  a: () => {}\n}, () => {}, false, undefined, this), () => {});\n" },
         .{ .source = "console.log(<div key={() => {}}></div>);", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {}, () => {}, false, undefined, this));\n" },
         .{ .source = "console.log(<div></div>);", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {}, undefined, false, undefined, this));\n" },
+        .{ .source = "console.log(<div {...obj} key=\"after\" />, <div key=\"before\" {...obj} />);", .output = "console.log(createElement_mvmpqhxp(\"div\", {\n  ...obj,\n  key: \"after\"\n}), jsxDEV_7x81h0kn(\"div\", {\n  ...obj\n}, \"before\", false, undefined, this));\n" },
+        .{ .source = "console.log(<div {...obj} key=\"after\" {...obj2} />);", .output = "console.log(createElement_mvmpqhxp(\"div\", {\n  ...obj,\n  key: \"after\",\n  ...obj2\n}));\n" },
+        .{ .source = "// @jsx foo;\nconsole.log(<div {...obj} key=\"after\" />);", .output = "console.log(createElement_mvmpqhxp(\"div\", {\n  ...obj,\n  key: \"after\"\n}));\n" },
+        .{ .source = "export var foo = <div>{...a}b</div>", .output = "export var foo = jsxDEV_7x81h0kn(\"div\", {\n  children: [\n    ...a,\n    \"b\"\n  ]\n}, undefined, true, undefined, this);\n" },
+        .{ .source = "export var foo = <div>{...a}</div>", .output = "export var foo = jsxDEV_7x81h0kn(\"div\", {\n  children: [...a]\n}, undefined, true, undefined, this);\n" },
+        .{ .source = "require('hi' + bar)", .output = "require(\"hi\" + bar);\n" },
+        .{ .source = "module.require('hi' + 123)", .output = "require(\"hi123\");\n" },
+        .{ .source = "module.require(1 ? 'foo' : 'bar')", .output = "require(\"foo\");\n" },
+        .{ .source = "require(1 ? 'foo' : 'bar')", .output = "require(\"foo\");\n" },
+        .{ .source = "module.require(unknown ? 'foo' : 'bar')", .output = "unknown ? require(\"foo\") : require(\"bar\");\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
@@ -1577,12 +1587,43 @@ fn scanImportKeyword(
         if (!isIdentifierKeywordAt(source_text, index, "from")) continue;
         const path_index = skipWhitespace(source_text, index + "from".len);
         if (scanQuotedImportPath(source_text, path_index)) |quoted| {
+            if (!importSpecifiersHaveValue(source_text[specifier_start..index])) return quoted.next_index;
             if (trim_unused_imports and !importSpecifiersAreUsed(source_text, specifier_start, index, quoted.next_index)) return quoted.next_index;
             imports.append(allocator, .{ .kind = "import-statement", .path = quoted.path }) catch return null;
             return quoted.next_index;
         }
     }
     return null;
+}
+
+fn importSpecifiersHaveValue(specifiers: []const u8) bool {
+    const trimmed = std.mem.trim(u8, specifiers, " \t\r\n");
+    if (trimmed.len == 0) return true;
+    if (trimmed[0] != '{') return true;
+    const close = std.mem.lastIndexOfScalar(u8, trimmed, '}') orelse return true;
+
+    var cursor: usize = 1;
+    while (cursor < close) {
+        const next = std.mem.indexOfScalarPos(u8, trimmed, cursor, ',') orelse close;
+        const raw = std.mem.trim(u8, trimmed[cursor..next], " \t\r\n");
+        cursor = next + 1;
+        if (raw.len == 0) {
+            if (next == close) break;
+            continue;
+        }
+        if (!isTypeOnlyImportSpecifier(raw)) return true;
+        if (next == close) break;
+    }
+    return false;
+}
+
+fn isTypeOnlyImportSpecifier(specifier: []const u8) bool {
+    if (!std.mem.startsWith(u8, specifier, "type")) return false;
+    if (specifier.len == "type".len) return false;
+    return switch (specifier["type".len]) {
+        ' ', '\t', '\r', '\n' => true,
+        else => false,
+    };
 }
 
 fn importSpecifiersAreUsed(source_text: []const u8, start: usize, end: usize, search_start: usize) bool {
@@ -3951,6 +3992,34 @@ test "adapter preserves Bun.Transpiler JSX key fixture" {
     const key_only = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(<div key={() => {}}></div>);")).?;
     defer std.testing.allocator.free(key_only);
     try std.testing.expect(std.mem.indexOf(u8, key_only, "{}, () => {}") != null);
+
+    const spread_key = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(<div {...obj} key=\"after\" />, <div key=\"before\" {...obj} />);")).?;
+    defer std.testing.allocator.free(spread_key);
+    try std.testing.expect(std.mem.indexOf(u8, spread_key, "createElement_mvmpqhxp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, spread_key, "key: \"after\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, spread_key, "\"before\"") != null);
+
+    const spread_child = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export var foo = <div>{...a}b</div>")).?;
+    defer std.testing.allocator.free(spread_child);
+    try std.testing.expect(std.mem.indexOf(u8, spread_child, "children: [") != null);
+    try std.testing.expect(std.mem.indexOf(u8, spread_child, "...a") != null);
+
+    const require_dynamic = (try transpileEarlyTranspilerFixture(std.testing.allocator, "require('hi' + bar)")).?;
+    defer std.testing.allocator.free(require_dynamic);
+    try std.testing.expectEqualStrings("require(\"hi\" + bar);\n", require_dynamic);
+
+    const require_folded = (try transpileEarlyTranspilerFixture(std.testing.allocator, "module.require(unknown ? 'foo' : 'bar')")).?;
+    defer std.testing.allocator.free(require_folded);
+    try std.testing.expectEqualStrings("unknown ? require(\"foo\") : require(\"bar\");\n", require_folded);
+}
+
+test "adapter scan ignores all-type named import specifiers" {
+    try std.testing.expect(!importSpecifiersHaveValue("{ type xx }"));
+    try std.testing.expect(!importSpecifiersHaveValue("{ type xx as yy }"));
+    try std.testing.expect(!importSpecifiersHaveValue("{ type 'xx' as yy }"));
+    try std.testing.expect(!importSpecifiersHaveValue("{ type if as yy }"));
+    try std.testing.expect(importSpecifiersHaveValue("React, { type ReactNode, Component }"));
+    try std.testing.expect(importSpecifiersHaveValue("{ type }"));
 }
 
 test "adapter eliminates configured dead exports and their default imports" {

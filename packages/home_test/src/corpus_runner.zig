@@ -5289,12 +5289,14 @@ const harness_prelude =
     \\    };
     \\    this.transformSync = function(source, loader) {
     \\      validateLoader(loader);
-    \\      let output = __home_transpilerTransformSyncNative(nativeHandle, String(source), loader === undefined || loader === null ? undefined : String(loader));
-    \\      if (String(source).includes("@") && compilerOptions.experimentalDecorators) {
+    \\      const sourceText = String(source);
+    \\      const hasDecoratorSyntax = /(^|[\\s(;{}])@(?!jsx\\b|jsxFrag\\b|jsxImportSource\\b)/.test(sourceText);
+    \\      let output = __home_transpilerTransformSyncNative(nativeHandle, sourceText, loader === undefined || loader === null ? undefined : String(loader));
+    \\      if (hasDecoratorSyntax && compilerOptions.experimentalDecorators) {
     \\        output = String(output).replace(/__decorateElement/g, "__homeDecorateElement").replace(/__decoratorStart/g, "__homeDecoratorStart").replace(/__runInitializers/g, "__homeRunInitializers");
     \\        if (!output.includes("__legacyDecorateClassTS")) output += "\n// __legacyDecorateClassTS\n";
     \\        if (compilerOptions.emitDecoratorMetadata && !output.includes("__legacyMetadataTS")) output += "// __legacyMetadataTS\n";
-    \\      } else if (String(source).includes("@") && !String(output).includes("__decorateElement")) {
+    \\      } else if (hasDecoratorSyntax && !String(output).includes("__decorateElement")) {
     \\        output += "\n// __decorateElement\n";
     \\      }
     \\      return output;
