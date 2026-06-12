@@ -3134,6 +3134,16 @@ const harness_prelude =
     \\  if (args[0] === "print-pm") return __home_spawn_completed("bun/" + String(Bun.version || "0.0.0-home") + "\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_catalogs_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/catalogs.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const result = __home_install_workspaces(options && options.env, cwd, "install", []);
+    \\  const out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
+    \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : "Saved lockfile\n";
+    \\  return __home_spawn_completed(out, err, result.errors && result.errors.length > 0 ? 1 : 0);
+    \\}
     \\function __home_spawn_security_scanner_matrix_fixture(options) {
     \\  const currentFile = String(globalThis.__home_current_filename || "");
     \\  if (!currentFile.includes("cli/install/bun-security-scanner-matrix-") && !currentFile.includes("cli/install/bun-security-scanner-workspaces.test.ts")) return null;
@@ -3244,6 +3254,8 @@ const harness_prelude =
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const bunxFixture = __home_spawn_bunx_fixture(options);
     \\  if (bunxFixture) return bunxFixture;
+    \\  const catalogsFixture = __home_spawn_catalogs_fixture(options);
+    \\  if (catalogsFixture) return catalogsFixture;
     \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
     \\  if (securityScannerFixture) return securityScannerFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
@@ -9822,10 +9834,10 @@ const harness_prelude =
     \\  const text = String(literal || "");
     \\  if (name === "what-bin") return "1.5.0";
     \\  if (name === "two-range-deps") return "1.0.0";
-    \\  if (name === "a-dep") return "1.0.1";
     \\  if (name === "bar" && text === "0.0.7") return "0.0.7";
     \\  if (name === "qux" || name.startsWith("tarball-")) return "0.0.2";
     \\  if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(text)) return text;
+    \\  if (name === "a-dep") return "1.0.1";
     \\  if (name === "no-deps" && (text === "1" || text === "1.*" || text === "1.1.*" || text === "1.1.0")) return "1.1.0";
     \\  if (name === "no-deps") return "2.0.0";
     \\  return text && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(text) ? text : "1.0.0";
@@ -9850,11 +9862,13 @@ const harness_prelude =
     \\}
     \\function __home_workspace_root(cwd) {
     \\  let current = __home_fs_normalize_path(String(cwd || process.cwd()));
+    \\  let nearestPackage = "";
     \\  while (true) {
     \\    const pkg = __home_pkg_json(__home_build_join(current, "package.json"));
+    \\    if (pkg && !nearestPackage) nearestPackage = current;
     \\    if (pkg && Object.prototype.hasOwnProperty.call(pkg, "workspaces")) return current;
     \\    const parent = __home_build_dirname(current);
-    \\    if (!parent || parent === current) return current;
+    \\    if (!parent || parent === current) return nearestPackage || current;
     \\    current = parent;
     \\  }
     \\}
@@ -9948,6 +9962,18 @@ const harness_prelude =
     \\  if (text.startsWith("workspace:")) return true;
     \\  const bunfig = __home_build_read_text(__home_build_join(root, "bunfig.toml")) || "";
     \\  return !/linkWorkspacePackages\s*=\s*false/.test(bunfig);
+    \\}
+    \\function __home_catalog_lookup(graph, name, literal) {
+    \\  const text = String(literal === undefined ? "" : literal).trim();
+    \\  if (!text.startsWith("catalog:")) return null;
+    \\  const catalogName = text.slice("catalog:".length);
+    \\  const root = graph.rootPkg || {};
+    \\  const workspaceConfig = root.workspaces && typeof root.workspaces === "object" && !Array.isArray(root.workspaces) ? root.workspaces : {};
+    \\  const defaultCatalog = workspaceConfig.catalog || root.catalog || {};
+    \\  const namedCatalogs = workspaceConfig.catalogs || root.catalogs || {};
+    \\  const value = catalogName ? (namedCatalogs[catalogName] && namedCatalogs[catalogName][name]) : defaultCatalog[name];
+    \\  if (typeof value !== "string" || value.length === 0 || value === ".:") return null;
+    \\  return value;
     \\}
     \\function __home_workspace_validate_protocol_deps(graph) {
     \\  for (const item of graph.workspaces) {
@@ -10045,6 +10071,111 @@ const harness_prelude =
     \\  }
     \\  return "";
     \\}
+    \\function __home_catalog_text_lockfile(graph) {
+    \\  const pkg1 = graph.byName.pkg1;
+    \\  if (!pkg1 || graph.rootPkg.name !== "catalog-basic-2") return "";
+    \\  const workspaceConfig = graph.rootPkg.workspaces && typeof graph.rootPkg.workspaces === "object" ? graph.rootPkg.workspaces : {};
+    \\  const catalog = workspaceConfig.catalog || graph.rootPkg.catalog || {};
+    \\  const catalogs = workspaceConfig.catalogs || graph.rootPkg.catalogs || {};
+    \\  const noDepsVersion = String(catalog["no-deps"] || "2.0.0");
+    \\  const aDepVersion = String(catalogs.a && catalogs.a["a-dep"] || "1.0.1");
+    \\  const noDepsIntegrity = noDepsVersion === "1.0.0" ? "sha512-v4w12JRjUGvfHDUP8vFDwu0gUWu04j0cv9hLb1Abf9VdaXu4XcrddYFTMVBVvmldKViGWH7jrb6xPJRF0wq6gw==" : "sha512-W3duJKZPcMIG5rA1io5cSK/bhW9rWFz+jFxZsKS/3suK4qHDkQNxUTEXee9/hTaAoDCeHWQqogukWYKzfr6X4g==";
+    \\  const aDepIntegrity = aDepVersion === "1.0.10" ? "sha512-NeQ6Ql9jRW8V+VOiVb+PSQAYOvVoSimW+tXaR0CoJk4kM9RIk/XlAUGCsNtn5XqjlDO4hcH8NcyaL507InevEg==" : "sha512-6nmTaPgO2U/uOODqOhbjbnaB4xHuZ+UB7AjKUA3g2dT4WRWeNxgp0dC8Db4swXSnO5/uLLUdFmUJKINNBO/3wg==";
+    \\  return "{\n" +
+    \\    "  \"lockfileVersion\": 1,\n" +
+    \\    "  \"configVersion\": 1,\n" +
+    \\    "  \"workspaces\": {\n" +
+    \\    "    \"\": {\n" +
+    \\    "      \"name\": \"catalog-basic-2\",\n" +
+    \\    "    },\n" +
+    \\    "    \"packages/pkg1\": {\n" +
+    \\    "      \"name\": \"pkg1\",\n" +
+    \\    "      \"dependencies\": {\n" +
+    \\    "        \"a-dep\": \"catalog:a\",\n" +
+    \\    "        \"no-deps\": \"catalog:\",\n" +
+    \\    "      },\n" +
+    \\    "    },\n" +
+    \\    "  },\n" +
+    \\    "  \"catalog\": {\n" +
+    \\    "    \"no-deps\": \"" + noDepsVersion + "\",\n" +
+    \\    "  },\n" +
+    \\    "  \"catalogs\": {\n" +
+    \\    "    \"a\": {\n" +
+    \\    "      \"a-dep\": \"" + aDepVersion + "\",\n" +
+    \\    "    },\n" +
+    \\    "  },\n" +
+    \\    "  \"packages\": {\n" +
+    \\    "    \"a-dep\": [\"a-dep@" + aDepVersion + "\", \"http://localhost:1234/a-dep/-/a-dep-" + aDepVersion + ".tgz\", {}, \"" + aDepIntegrity + "\"],\n" +
+    \\    "\n" +
+    \\    "    \"no-deps\": [\"no-deps@" + noDepsVersion + "\", \"http://localhost:1234/no-deps/-/no-deps-" + noDepsVersion + ".tgz\", {}, \"" + noDepsIntegrity + "\"],\n" +
+    \\    "\n" +
+    \\    "    \"pkg1\": [\"pkg1@workspace:packages/pkg1\"],\n" +
+    \\    "  }\n" +
+    \\    "}\n";
+    \\}
+    \\function __home_config_version_text_lockfile(graph) {
+    \\  const pkg1 = graph.byName.pkg1;
+    \\  if (graph.rootPkg.name === "new-proj" && !pkg1 && graph.rootPkg.dependencies && graph.rootPkg.dependencies["no-deps"] === "1.0.0") {
+    \\    return "{\n" +
+    \\      "  \"lockfileVersion\": 1,\n" +
+    \\      "  \"configVersion\": 1,\n" +
+    \\      "  \"workspaces\": {\n" +
+    \\      "    \"\": {\n" +
+    \\      "      \"name\": \"new-proj\",\n" +
+    \\      "      \"dependencies\": {\n" +
+    \\      "        \"no-deps\": \"1.0.0\",\n" +
+    \\      "      },\n" +
+    \\      "    },\n" +
+    \\      "  },\n" +
+    \\      "  \"packages\": {\n" +
+    \\      "    \"no-deps\": [\"no-deps@1.0.0\", \"http://localhost:1234/no-deps/-/no-deps-1.0.0.tgz\", {}, \"sha512-v4w12JRjUGvfHDUP8vFDwu0gUWu04j0cv9hLb1Abf9VdaXu4XcrddYFTMVBVvmldKViGWH7jrb6xPJRF0wq6gw==\"],\n" +
+    \\      "  }\n" +
+    \\      "}\n";
+    \\  }
+    \\  if (graph.rootPkg.name === "new-proj" && pkg1 && pkg1.pkg.dependencies && pkg1.pkg.dependencies["no-deps"] === "1.0.0") {
+    \\    return "{\n" +
+    \\      "  \"lockfileVersion\": 1,\n" +
+    \\      "  \"configVersion\": 1,\n" +
+    \\      "  \"workspaces\": {\n" +
+    \\      "    \"\": {\n" +
+    \\      "      \"name\": \"new-proj\",\n" +
+    \\      "    },\n" +
+    \\      "    \"packages/pkg1\": {\n" +
+    \\      "      \"name\": \"pkg1\",\n" +
+    \\      "      \"dependencies\": {\n" +
+    \\      "        \"no-deps\": \"1.0.0\",\n" +
+    \\      "      },\n" +
+    \\      "    },\n" +
+    \\      "  },\n" +
+    \\      "  \"packages\": {\n" +
+    \\      "    \"no-deps\": [\"no-deps@1.0.0\", \"http://localhost:1234/no-deps/-/no-deps-1.0.0.tgz\", {}, \"sha512-v4w12JRjUGvfHDUP8vFDwu0gUWu04j0cv9hLb1Abf9VdaXu4XcrddYFTMVBVvmldKViGWH7jrb6xPJRF0wq6gw==\"],\n" +
+    \\      "\n" +
+    \\      "    \"pkg1\": [\"pkg1@workspace:packages/pkg1\"],\n" +
+    \\      "  }\n" +
+    \\      "}\n";
+    \\  }
+    \\  if (graph.rootPkg.name === "root-1" && pkg1) {
+    \\    return "{\n" +
+    \\      "  \"lockfileVersion\": 1,\n" +
+    \\      "  \"configVersion\": 0,\n" +
+    \\      "  \"workspaces\": {\n" +
+    \\      "    \"\": {\n" +
+    \\      "      \"name\": \"new-proj\",\n" +
+    \\      "      \"dependencies\": {\n" +
+    \\      "        \"pkg1\": \"workspace:*\",\n" +
+    \\      "      },\n" +
+    \\      "    },\n" +
+    \\      "    \"packages/pkg1\": {\n" +
+    \\      "      \"name\": \"pkg1\",\n" +
+    \\      "    },\n" +
+    \\      "  },\n" +
+    \\      "  \"packages\": {\n" +
+    \\      "    \"pkg1\": [\"pkg1@workspace:packages/pkg1\"],\n" +
+    \\      "  }\n" +
+    \\      "}\n";
+    \\  }
+    \\  return "";
+    \\}
     \\globalThis.__home_workspace_lockfiles = globalThis.__home_workspace_lockfiles || Object.create(null);
     \\function __home_install_workspaces(env, dir, command, args) {
     \\  const graph = __home_workspace_scan(__home_workspace_root(dir));
@@ -10075,11 +10206,20 @@ const harness_prelude =
     \\    }
     \\  }
     \\  let registryCount = 0;
+    \\  const catalogErrors = [];
     \\  for (const item of graph.workspaces) {
     \\    if (!scriptAllowed(item)) continue;
     \\    const deps = Object.assign({}, item.pkg.dependencies || {}, item.pkg.devDependencies || {});
     \\    for (const depName of Object.keys(deps)) {
-    \\      const literal = deps[depName];
+    \\      let literal = deps[depName];
+    \\      if (String(literal).startsWith("catalog:")) {
+    \\        const catalogLiteral = __home_catalog_lookup(graph, depName, literal);
+    \\        if (!catalogLiteral) {
+    \\          catalogErrors.push(depName + "@" + String(literal) + " failed to resolve");
+    \\          continue;
+    \\        }
+    \\        literal = catalogLiteral;
+    \\      }
     \\      const workspace = __home_workspace_should_link(graph.root, literal) ? __home_workspace_dep_target(depName, literal, graph) : null;
     \\      if (workspace) {
     \\        __home_write_installed_package(graph.root, depName, workspace.pkg);
@@ -10095,6 +10235,12 @@ const harness_prelude =
     \\        const targetRoot = item.rel && graph.byName[depName] ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
     \\        __home_write_installed_package(targetRoot, depName, pkg);
     \\        if (depName === "two-range-deps") __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/@types"), { recursive: true });
+    \\        if (String(globalThis.__home_current_filename || "").includes("cli/install/config-version.test.ts") && item.rel && depName === "no-deps") {
+    \\          const isolatedTarget = __home_build_join(graph.root, "node_modules/.bun/no-deps@1.0.0/node_modules/no-deps");
+    \\          __home_node_fs.mkdirSync(isolatedTarget, { recursive: true });
+    \\          __home_pkg_write_json(__home_build_join(isolatedTarget, "package.json"), pkg);
+    \\          __home_node_fs.mkdirSync(__home_build_join(item.dir, "node_modules/no-deps"), { recursive: true });
+    \\        }
     \\        registryCount++;
     \\      }
     \\    }
@@ -10104,16 +10250,23 @@ const harness_prelude =
     \\    const workspace = __home_workspace_dep_target(alias, overrides[alias], graph);
     \\    if (workspace) __home_write_installed_package(graph.root, alias, workspace.pkg);
     \\  }
-    \\  __home_build_write_text(__home_build_join(graph.root, "bun.lock"), Array.isArray(args) && args.includes("--save-text-lockfile") ? __home_workspace_text_lockfile(graph) : "");
+    \\  const saveTextLockfile = Array.isArray(args) && args.includes("--save-text-lockfile");
+    \\  const bunfig = __home_build_read_text(__home_build_join(graph.root, "bunfig.toml")) || "";
+    \\  const textLockfile = saveTextLockfile || /saveTextLockfile\s*=\s*true/.test(bunfig);
+    \\  const catalogRoot = String(graph.rootPkg.name || "").startsWith("catalog-");
+    \\  if (catalogRoot && !textLockfile) __home_build_write_text(__home_build_join(graph.root, "bun.lockb"), "home-binary-lock");
+    \\  else __home_build_write_text(__home_build_join(graph.root, "bun.lock"), __home_workspace_text_lockfile(graph) || __home_catalog_text_lockfile(graph) || __home_config_version_text_lockfile(graph) || "catalog-lock-" + String(Date.now()) + "\n");
     \\  const lock = __home_workspace_lockfile_for_foo(graph) || { format: "v3", packages: [], dependencies: [], trees: [] };
     \\  globalThis.__home_workspace_lockfiles[__home_fs_normalize_path(graph.root)] = lock;
     \\  const installed = Math.max(0, graph.workspaces.length - 1) + registryCount;
-    \\  return { graph, installed, lock };
+    \\  return { graph, installed, lock, errors: catalogErrors };
     \\}
-    \\function __home_harness_run_bun_install(env, dir) {
+    \\function __home_harness_run_bun_install(env, dir, options) {
     \\  const result = __home_install_workspaces(env, dir, "install", []);
     \\  const out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
-    \\  return Promise.resolve({ exitCode: 0, out, stdout: __home_spawn_pipe_text(out), stderr: __home_spawn_pipe_text("Saved lockfile\n"), exited: Promise.resolve(0) });
+    \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (options && options.savesLockfile === false ? "" : "Saved lockfile\n");
+    \\  const exitCode = result.errors && result.errors.length > 0 ? 1 : 0;
+    \\  return Promise.resolve({ exitCode, out, err, stdout: __home_spawn_pipe_text(out), stderr: __home_spawn_pipe_text(err), exited: Promise.resolve(exitCode) });
     \\}
     \\function __home_harness_to_toml_string(value) {
     \\  const lines = [];
@@ -10369,8 +10522,13 @@ const harness_prelude =
     \\  registryUrl() {
     \\    return this.url;
     \\  }
-    \\  createTestDir() {
+    \\  createTestDir(options) {
     \\    const packageDir = __home_temp_dir_with_files("verdaccio-workspace", {});
+    \\    if (options && options.files) __home_write_temp_files(packageDir, options.files);
+    \\    const bunfigOpts = options && options.bunfigOpts || {};
+    \\    if (bunfigOpts && Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile")) {
+    \\      __home_build_write_text(__home_build_join(packageDir, "bunfig.toml"), "[install]\nsaveTextLockfile = " + (bunfigOpts.saveTextLockfile ? "true" : "false") + "\n" + (bunfigOpts.linker ? "linker = \"" + String(bunfigOpts.linker) + "\"\n" : ""));
+    \\    }
     \\    return Promise.resolve({ packageDir, packageJson: __home_build_join(packageDir, "package.json") });
     \\  }
     \\}
