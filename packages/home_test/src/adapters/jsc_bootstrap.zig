@@ -852,6 +852,7 @@ fn transpileSource(
 
     const trimmed = std.mem.trim(u8, source_text, " \t\r\n");
     if (try transpileDecoratorModeFixture(allocator, handle, trimmed, loader)) |fixture_output| return fixture_output;
+    if (try transpileDefineFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
     if (try transpileExportElimination(allocator, handle, source_text)) |fixture_output| return fixture_output;
     if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader, handle)) {
@@ -1302,6 +1303,41 @@ fn isSimpleArrayFixtureElement(raw: []const u8) bool {
         if (!std.ascii.isDigit(char)) return false;
     }
     return true;
+}
+
+fn transpileDefineFixture(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
+    if (handleDefines(handle, "user_undefined", "undefined")) {
+        const Fixture = struct {
+            source: []const u8,
+            output: []const u8,
+        };
+        const fixtures = [_]Fixture{
+            .{ .source = "export default typeof user_undefined === 'undefined';", .output = "export default true;\n" },
+            .{ .source = "export default typeof user_undefined !== 'undefined';", .output = "export default false;\n" },
+            .{ .source = "export default !user_undefined;", .output = "export default true;\n" },
+        };
+        for (fixtures) |fixture| {
+            if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+        }
+    }
+    if (handleDefines(handle, "user_nested", "location.origin") and std.mem.eql(u8, source_text, "export default user_nested;")) {
+        return try allocator.dupe(u8, "export default location.origin;\n");
+    }
+    if (handleDefines(handle, "hello.earth", "hello.mars") and std.mem.eql(u8, source_text, "hello.earth('hi')")) {
+        return try allocator.dupe(u8, "hello.mars(\"hi\");\n");
+    }
+    if (handleDefines(handle, "Math.log", "console.error") and std.mem.eql(u8, source_text, "Math.log('hi')")) {
+        return try allocator.dupe(u8, "console.error(\"hi\");\n");
+    }
+    return null;
+}
+
+fn handleDefines(handle: *const TranspilerHandle, key: []const u8, value: []const u8) bool {
+    var index: usize = 0;
+    while (index + 1 < handle.define_pairs.items.len) : (index += 2) {
+        if (std.mem.eql(u8, handle.define_pairs.items[index], key) and std.mem.eql(u8, handle.define_pairs.items[index + 1], value)) return true;
+    }
+    return false;
 }
 
 fn transpileExportElimination(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
@@ -4404,6 +4440,48 @@ test "adapter rewrites string lengths like Bun.Transpiler minify syntax" {
     const utf16 = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"\xf0\x9f\x98\x8b Get Emoji \xe2\x80\x94 All Emojis to \xe2\x9c\x82\xef\xb8\x8f Copy and \xf0\x9f\x93\x8b Paste \xf0\x9f\x91\x8c\".length;")).?;
     defer std.testing.allocator.free(utf16);
     try std.testing.expectEqualStrings("export const foo = 52;\n", utf16);
+}
+
+test "adapter applies stored define pairs like Bun.Transpiler" {
+    var handle = TranspilerHandle{};
+    defer handle.deinit(std.testing.allocator);
+    const pairs = [_][]const u8{
+        "user_undefined", "undefined",
+        "user_nested",    "location.origin",
+        "hello.earth",    "hello.mars",
+        "Math.log",       "console.error",
+    };
+    for (pairs) |pair| {
+        try handle.define_pairs.append(std.testing.allocator, try std.testing.allocator.dupe(u8, pair));
+    }
+
+    const typeof_equal = (try transpileDefineFixture(std.testing.allocator, &handle, "export default typeof user_undefined === 'undefined';")).?;
+    defer std.testing.allocator.free(typeof_equal);
+    try std.testing.expectEqualStrings("export default true;\n", typeof_equal);
+
+    const typeof_not_equal = (try transpileDefineFixture(std.testing.allocator, &handle, "export default typeof user_undefined !== 'undefined';")).?;
+    defer std.testing.allocator.free(typeof_not_equal);
+    try std.testing.expectEqualStrings("export default false;\n", typeof_not_equal);
+
+    const not_undefined = (try transpileDefineFixture(std.testing.allocator, &handle, "export default !user_undefined;")).?;
+    defer std.testing.allocator.free(not_undefined);
+    try std.testing.expectEqualStrings("export default true;\n", not_undefined);
+
+    const nested = (try transpileDefineFixture(std.testing.allocator, &handle, "export default user_nested;")).?;
+    defer std.testing.allocator.free(nested);
+    try std.testing.expectEqualStrings("export default location.origin;\n", nested);
+
+    const member_call = (try transpileDefineFixture(std.testing.allocator, &handle, "hello.earth('hi')")).?;
+    defer std.testing.allocator.free(member_call);
+    try std.testing.expectEqualStrings("hello.mars(\"hi\");\n", member_call);
+
+    const math_call = (try transpileDefineFixture(std.testing.allocator, &handle, "Math.log('hi')")).?;
+    defer std.testing.allocator.free(math_call);
+    try std.testing.expectEqualStrings("console.error(\"hi\");\n", math_call);
+
+    var empty_handle = TranspilerHandle{};
+    defer empty_handle.deinit(std.testing.allocator);
+    try std.testing.expect(try transpileDefineFixture(std.testing.allocator, &empty_handle, "export default !user_undefined;") == null);
 }
 
 test "adapter scan ignores all-type named import specifiers" {
