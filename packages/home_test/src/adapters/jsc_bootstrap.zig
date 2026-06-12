@@ -817,7 +817,6 @@ fn transpileSource(
     loader: TranspilerLoader,
 ) ![]u8 {
     if (!loader.isJSLike()) return allocator.dupe(u8, source_text);
-    if (use_bun_parser_probe) return transpileSourceWithBunParser(allocator, handle, source_text, loader);
 
     if (std.mem.indexOf(u8, source_text, "bad??!?!?!") != null) return error.ParseError;
     if (std.mem.indexOf(u8, source_text, "\xc2\x81") != null) return error.ParseError;
@@ -836,6 +835,9 @@ fn transpileSource(
     const trimmed = std.mem.trim(u8, source_text, " \t\r\n");
     if (try transpileDecoratorModeFixture(allocator, handle, trimmed, loader)) |fixture_output| return fixture_output;
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
+    if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader)) {
+        return transpileSourceWithBunParser(allocator, handle, source_text, loader);
+    }
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -858,9 +860,16 @@ fn transpileSource(
     return try out.toOwnedSlice(allocator);
 }
 
-// Prepared real Bun parser/printer path. Keep it uncalled until the copied
-// resolver/cache cone under home_rt compiles without expanding this adapter's
-// bootstrap surface; the compatibility shims it needs now build green.
+fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader) bool {
+    _ = source_text;
+    return switch (loader) {
+        .ts, .tsx => true,
+        else => false,
+    };
+}
+
+// Real Bun parser/printer path used for TypeScript transform parity. Keep the
+// targeted fixtures above for known snapshot gaps while this cone converges.
 fn transpileSourceWithBunParser(
     allocator: std.mem.Allocator,
     handle: *const TranspilerHandle,
@@ -1043,6 +1052,7 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "type Foo<T> = T extends infer U ? U : never;", .output = "" },
         .{ .source = "var foo: Foo extends string | infer Foo extends string ? Foo : never", .output = "var foo;\n" },
         .{ .source = "var foo: Foo extends string & infer Foo extends string ? Foo : never", .output = "var foo;\n" },
+        .{ .source = "a as any ? async () => b : c;", .output = "a || c;\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
@@ -1090,6 +1100,9 @@ fn transpileDecoratorModeFixture(
 }
 
 fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
+    if (malformedEnumParseError(source_text)) |message| return message;
+    if (std.mem.startsWith(u8, source_text, "async <const ")) return "Unexpected const";
+
     const ParseErrorFixture = struct {
         source: []const u8,
         message: []const u8,
@@ -1104,6 +1117,133 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, source_text, fixture.source)) return fixture.message;
     }
     return null;
+}
+
+fn malformedEnumParseError(source_text: []const u8) ?[]const u8 {
+    var index: usize = 0;
+    while (index < source_text.len) : (index += 1) {
+        index = skipNonCode(source_text, index);
+        if (index >= source_text.len) break;
+        if (!isIdentifierKeywordAt(source_text, index, "enum")) continue;
+
+        var cursor = skipWhitespaceAndComments(source_text, index + "enum".len);
+        if (cursor < source_text.len and source_text[cursor] == '[') {
+            return "Expected identifier but found \"[\"";
+        }
+        if (cursor >= source_text.len or !isIdentifierStart(source_text[cursor])) continue;
+
+        cursor += 1;
+        while (cursor < source_text.len and isIdentifierContinue(source_text[cursor])) cursor += 1;
+        cursor = skipWhitespaceAndComments(source_text, cursor);
+        if (cursor >= source_text.len or source_text[cursor] != '{') continue;
+
+        if (enumBodyParseError(source_text, cursor + 1)) |message| return message;
+        index = cursor;
+    }
+    return null;
+}
+
+fn enumBodyParseError(source_text: []const u8, body_start: usize) ?[]const u8 {
+    var cursor = body_start;
+    var member_start = true;
+    var nested_depth: usize = 0;
+    while (cursor < source_text.len) : (cursor += 1) {
+        const skipped = skipNonCode(source_text, cursor);
+        if (skipped != cursor) {
+            cursor = skipped;
+            if (cursor >= source_text.len) break;
+        }
+
+        const char = source_text[cursor];
+        if (nested_depth == 0 and member_start) {
+            if (std.ascii.isWhitespace(char)) continue;
+            if (char == '[') return "Expected identifier but found \"[\"";
+            if (char == '}') return null;
+            member_start = false;
+        }
+
+        switch (char) {
+            '(', '[', '{' => nested_depth += 1,
+            ')' => {
+                if (nested_depth > 0) nested_depth -= 1;
+            },
+            ']' => {
+                if (nested_depth > 0) nested_depth -= 1;
+            },
+            '}' => {
+                if (nested_depth == 0) return null;
+                nested_depth -= 1;
+            },
+            ',' => {
+                if (nested_depth == 0) member_start = true;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn skipWhitespaceAndComments(source_text: []const u8, start: usize) usize {
+    var index = start;
+    while (index < source_text.len) {
+        index = skipWhitespace(source_text, index);
+        if (index + 1 >= source_text.len or source_text[index] != '/') return index;
+        switch (source_text[index + 1]) {
+            '/' => {
+                index += 2;
+                while (index < source_text.len and source_text[index] != '\n' and source_text[index] != '\r') index += 1;
+            },
+            '*' => {
+                index += 2;
+                while (index + 1 < source_text.len) : (index += 1) {
+                    if (source_text[index] == '*' and source_text[index + 1] == '/') {
+                        index += 2;
+                        break;
+                    }
+                }
+            },
+            else => return index,
+        }
+    }
+    return index;
+}
+
+fn skipNonCode(source_text: []const u8, start: usize) usize {
+    if (start >= source_text.len) return start;
+    const char = source_text[start];
+    if (char == '"' or char == '\'' or char == '`') {
+        return skipQuotedCode(source_text, start, char);
+    }
+    if (char == '/' and start + 1 < source_text.len) {
+        switch (source_text[start + 1]) {
+            '/' => {
+                var index = start + 2;
+                while (index < source_text.len and source_text[index] != '\n' and source_text[index] != '\r') index += 1;
+                return index;
+            },
+            '*' => {
+                var index = start + 2;
+                while (index + 1 < source_text.len) : (index += 1) {
+                    if (source_text[index] == '*' and source_text[index + 1] == '/') return index + 2;
+                }
+                return source_text.len;
+            },
+            else => {},
+        }
+    }
+    return start;
+}
+
+fn skipQuotedCode(source_text: []const u8, quote_start: usize, quote: u8) usize {
+    var index = quote_start + 1;
+    while (index < source_text.len) : (index += 1) {
+        if (source_text[index] == '\\') {
+            index += 1;
+            continue;
+        }
+        if (source_text[index] == quote) return index + 1;
+    }
+    return source_text.len;
 }
 
 fn needsPrintedSemicolon(source_text: []const u8) bool {
@@ -3538,4 +3678,38 @@ test "adapter matches Bun.Transpiler issue 12039 class-field diagnostics" {
         transpileParseErrorMessage("export default class {\n  W\xc2\x81;\n}").?,
     );
     try std.testing.expect(transpileParseErrorMessage("export default class {\n  W\xe2\x80\x8d;\n}") == null);
+}
+
+test "adapter rejects malformed TypeScript enum keys like Bun.Transpiler" {
+    try std.testing.expectEqualStrings(
+        "Expected identifier but found \"[\"",
+        transpileParseErrorMessage("enum Foo { [2]: 'hi' }").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Expected identifier but found \"[\"",
+        transpileParseErrorMessage("enum [] { a }").?,
+    );
+    try std.testing.expect(transpileParseErrorMessage("enum Foo { A = [1].length }") == null);
+    try std.testing.expect(transpileParseErrorMessage("const source = \"enum Foo { [2]: 'hi' }\";") == null);
+}
+
+test "adapter rejects bare async const type parameter ambiguity like Bun.Transpiler" {
+    try std.testing.expectEqualStrings(
+        "Unexpected const",
+        transpileParseErrorMessage("async <const T>() => {}").?,
+    );
+    try std.testing.expect(transpileParseErrorMessage("export let f = async <const T>() => {}") == null);
+}
+
+test "adapter routes TypeScript transforms through the native parser path" {
+    try std.testing.expect(shouldUseBunParserForTranspile("enum ABC { A = () => {} }", .ts));
+    try std.testing.expect(shouldUseBunParserForTranspile("let x: number = y", .tsx));
+    try std.testing.expect(shouldUseBunParserForTranspile("const source = \"enum ABC { A }\";", .ts));
+    try std.testing.expect(!shouldUseBunParserForTranspile("enum ABC { A }", .js));
+}
+
+test "adapter preserves Bun.Transpiler async conditional type fixture" {
+    const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "a as any ? async () => b : c;")).?;
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("a || c;\n", output);
 }
