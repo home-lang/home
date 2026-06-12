@@ -5979,13 +5979,28 @@ const harness_prelude =
     \\      if (this.command.trim() === "./app") return __home_bake_shell_result(0, "IT WORKS\n", "");
     \\      const rmMatch = String(this.command).trim().match(/^rm\s+(.+)$/);
     \\      if (rmMatch) {
-    \\        const target = String(rmMatch[1] || "").trim();
-    \\        const targetPath = target.startsWith("/") ? target : __home_build_join(this.cwdPath || process.cwd(), target);
-    \\        if (__home_node_fs.existsSync(targetPath)) {
-    \\          __home_node_fs.rmSync(targetPath, { force: true });
-    \\          return __home_bake_shell_result(0, "", "");
+    \\        const parts = String(rmMatch[1] || "").trim().split(/\s+/).filter(Boolean);
+    \\        let force = false;
+    \\        let recursive = false;
+    \\        const targets = [];
+    \\        for (const part of parts) {
+    \\          if (part.startsWith("-") && part.length > 1) {
+    \\            if (part.includes("f")) force = true;
+    \\            if (part.includes("r") || part.includes("R")) recursive = true;
+    \\            continue;
+    \\          }
+    \\          targets.push(part);
     \\        }
-    \\        return __home_bake_shell_result(1, "", "rm: " + targetPath + ": No such file or directory\n");
+    \\        if (targets.length === 0) return __home_bake_shell_result(1, "", "rm: missing operand\n");
+    \\        for (const target of targets) {
+    \\          const targetPath = target.startsWith("/") ? target : __home_build_join(this.cwdPath || process.cwd(), target);
+    \\          if (__home_node_fs.existsSync(targetPath)) {
+    \\            __home_node_fs.rmSync(targetPath, { force, recursive });
+    \\            continue;
+    \\          }
+    \\          if (!force) return __home_bake_shell_result(1, "", "rm: " + targetPath + ": No such file or directory\n");
+    \\        }
+    \\        return __home_bake_shell_result(0, "", "");
     \\      }
     \\      const bunMatch = this.command.match(/ls\s+(.+\/dist\/_bun)\/\*\.js/);
     \\      if (bunMatch) {
@@ -28241,6 +28256,37 @@ test "bootstrap runner keeps Bake production shell virtual" {
         \\  expect(passed.exitCode).toBe(0);
         \\  expect(await Bun.$`ls -la dist/`.cwd(passingDir).text()).toContain("index.html");
         \\  expect(await Bun.file(passingDir + "/dist/index.html").text()).toContain("Hello World");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/production.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports Bake shell rm flags" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { tempDirWithBakeDeps } from "../bake-harness";
+        \\
+        \\test("rm force ignores absent targets", async () => {
+        \\  const dir = await tempDirWithBakeDeps("bake-rm-flags", {});
+        \\  const result = await Bun.$`rm -rf ${dir + "/dist"}`.cwd(dir).throws(false);
+        \\  expect(result.exitCode).toBe(0);
+        \\  expect(result.stderr.toString()).toBe("");
+        \\
+        \\  const missing = await Bun.$`rm ${dir + "/dist"}`.cwd(dir).throws(false);
+        \\  expect(missing.exitCode).toBe(1);
+        \\  expect(missing.stderr.toString()).toContain("No such file or directory");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/production.test.ts");
