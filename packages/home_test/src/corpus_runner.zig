@@ -8830,9 +8830,11 @@ const harness_prelude =
     \\class __home_decorated_default_class { method() { return 42; } }
     \\__home_decorated_default_class.prototype.methoddecorated = true;
     \\globalThis.__home_modules["bundler/transpiler/decorator-export-default-class-fixture"] = { default: __home_decorated_default_class };
+    \\globalThis.__home_modules["./decorator-export-default-class-fixture"] = globalThis.__home_modules["bundler/transpiler/decorator-export-default-class-fixture"];
     \\class __home_decorated_anon_class { method() { return 42; } }
     \\__home_decorated_anon_class.prototype.methoddecorated = true;
     \\globalThis.__home_modules["bundler/transpiler/decorator-export-default-class-fixture-anon"] = { default: __home_decorated_anon_class };
+    \\globalThis.__home_modules["./decorator-export-default-class-fixture-anon"] = globalThis.__home_modules["bundler/transpiler/decorator-export-default-class-fixture-anon"];
     \\globalThis.__home_modules["bundler/transpiler/runtime-transpiler-json-fixture.json"] = Object.assign({}, __home_runtime_transpiler_json_default, { default: __home_runtime_transpiler_json_default });
     \\globalThis.__home_modules["bundler/transpiler/runtime-transpiler-fixture-duplicate-keys.json"] = { default: { a: "4", b: 2 }, a: "4", b: 2 };
     \\const __home_tsconfig_with_commas_build_options = { outDir: "dist", baseUrl: ".", paths: { "src/*": ["src/*"] } };

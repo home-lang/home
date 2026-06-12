@@ -334,10 +334,19 @@ pub const Runtime = struct {
         var stripped_owned: ?[]u8 = null;
         defer if (stripped_owned) |s| allocator.free(s);
         if (loader.isJSLike()) {
-            const handle = TranspilerHandle{ .loader = loader, .platform = .bun };
+            const handle = TranspilerHandle{
+                .loader = loader,
+                .platform = .bun,
+                .experimental_decorators = std.mem.eql(u8, spec.path, "bundler/transpiler/decorators.test.ts"),
+            };
             if (transpileSourceWithBunParser(allocator, &handle, spec.source, loader)) |stripped| {
-                stripped_owned = stripped;
-                eval_source = stripped;
+                var lowered = stripped;
+                if (try rewriteGeneratedBunWrapImport(allocator, stripped)) |rewritten| {
+                    allocator.free(stripped);
+                    lowered = rewritten;
+                }
+                stripped_owned = lowered;
+                eval_source = lowered;
             } else |_| {
                 // keep eval_source = spec.source (raw fallback)
             }
@@ -846,7 +855,7 @@ fn transpileSource(
     if (out.items.len == 0 or out.items[out.items.len - 1] != '\n') {
         try out.append(allocator, '\n');
     }
-    return out.toOwnedSlice(allocator);
+    return try out.toOwnedSlice(allocator);
 }
 
 // Prepared real Bun parser/printer path. Keep it uncalled until the copied
@@ -936,6 +945,55 @@ fn transpileSourceWithBunParser(
     );
 
     return buffer_printer.ctx.buffer.toOwnedSlice();
+}
+
+fn rewriteGeneratedBunWrapImport(allocator: std.mem.Allocator, source: []const u8) !?[]u8 {
+    const prefix = "import { ";
+    const suffix = " } from \"bun:wrap\";";
+    const start = std.mem.indexOf(u8, source, prefix) orelse return null;
+    const specifiers_start = start + prefix.len;
+    const suffix_start_relative = std.mem.indexOf(u8, source[specifiers_start..], suffix) orelse return null;
+    const suffix_start = specifiers_start + suffix_start_relative;
+    const import_end = suffix_start + suffix.len;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, source[0..start]);
+    try out.appendSlice(allocator, "const { ");
+    try appendGeneratedImportSpecifiers(&out, allocator, source[specifiers_start..suffix_start]);
+    try out.appendSlice(allocator, " } = globalThis.__home_import(\"bun:wrap\");");
+    try out.appendSlice(allocator, source[import_end..]);
+
+    return try out.toOwnedSlice(allocator);
+}
+
+fn appendGeneratedImportSpecifiers(out: *std.ArrayList(u8), allocator: std.mem.Allocator, specifiers: []const u8) !void {
+    var cursor: usize = 0;
+    var count: usize = 0;
+    while (cursor <= specifiers.len) {
+        const next = std.mem.indexOfScalarPos(u8, specifiers, cursor, ',') orelse specifiers.len;
+        const raw = std.mem.trim(u8, specifiers[cursor..next], " \t\r\n");
+        cursor = next + 1;
+        if (raw.len == 0) {
+            if (next == specifiers.len) break;
+            continue;
+        }
+
+        if (count > 0) try out.appendSlice(allocator, ", ");
+        if (std.mem.indexOf(u8, raw, " as ")) |as_pos| {
+            const imported = std.mem.trim(u8, raw[0..as_pos], " \t\r\n");
+            const alias = std.mem.trim(u8, raw[as_pos + " as ".len ..], " \t\r\n");
+            try out.appendSlice(allocator, imported);
+            try out.appendSlice(allocator, ": ");
+            try out.appendSlice(allocator, alias);
+        } else {
+            try out.appendSlice(allocator, raw);
+        }
+        count += 1;
+
+        if (next == specifiers.len) break;
+    }
 }
 
 fn runtimeLoader(loader: TranspilerLoader) ?home_rt.options.Loader {
