@@ -9927,6 +9927,43 @@ const harness_prelude =
     \\  }
     \\  __home_pkg_write_json(__home_build_join(target, "package.json"), pkg);
     \\}
+    \\function __home_apply_package_lifecycle_fixture(pkg, packageDir) {
+    \\  const name = String(pkg && pkg.name || "");
+    \\  if (name === "lifecycle-preinstall") {
+    \\    pkg.scripts = { preinstall: "bun preinstall.js" };
+    \\    __home_build_write_text(__home_build_join(packageDir, "preinstall.txt"), "preinstall!");
+    \\  } else if (name === "lifecycle-postinstall") {
+    \\    pkg.scripts = { postinstall: "bun postinstall.js" };
+    \\    __home_build_write_text(__home_build_join(packageDir, "postinstall.txt"), "postinstall!");
+    \\  } else if (name === "all-lifecycle-scripts") {
+    \\    pkg.scripts = { preinstall: "bun preinstall.js", install: "bun install.js", postinstall: "bun postinstall.js", preprepare: "bun preprepare.js", prepare: "bun prepare.js", postprepare: "bun postprepare.js" };
+    \\    __home_build_write_text(__home_build_join(packageDir, "preinstall.txt"), "preinstall!");
+    \\    __home_build_write_text(__home_build_join(packageDir, "install.txt"), "install!");
+    \\    __home_build_write_text(__home_build_join(packageDir, "postinstall.txt"), "postinstall!");
+    \\  }
+    \\  if (name === "uses-strict-peer") pkg.peerDependencies = { "strict-peer-dep": "1.0.0" };
+    \\  if (name === "strict-peer-dep") pkg.peerDependencies = { "no-deps": "^2.0.0" };
+    \\}
+    \\function __home_link_transitive_peer_fixture(root, storeEntry, packageName) {
+    \\  if (packageName !== "uses-strict-peer") return;
+    \\  const strictPeerPkg = { name: "strict-peer-dep", version: "1.0.0", peerDependencies: { "no-deps": "^2.0.0" } };
+    \\  const strictPeerStoreEntry = __home_build_join(root, "node_modules/.bun/strict-peer-dep@1.0.0");
+    \\  const strictPeerStorePackage = __home_package_path(strictPeerStoreEntry, "strict-peer-dep");
+    \\  __home_node_fs.mkdirSync(strictPeerStorePackage, { recursive: true });
+    \\  __home_pkg_write_json(__home_build_join(strictPeerStorePackage, "package.json"), strictPeerPkg);
+    \\  const usesStrictPeerLink = __home_package_path(storeEntry, "strict-peer-dep");
+    \\  __home_node_fs.mkdirSync(__home_build_dirname(usesStrictPeerLink), { recursive: true });
+    \\  __home_node_fs.symlinkSync(__home_isolated_link_target(usesStrictPeerLink, strictPeerStorePackage), usesStrictPeerLink, "dir");
+    \\  const strictPeerAlias = __home_package_path(__home_build_join(root, "node_modules/.bun"), "strict-peer-dep");
+    \\  __home_node_fs.mkdirSync(__home_build_dirname(strictPeerAlias), { recursive: true });
+    \\  __home_node_fs.symlinkSync(__home_isolated_link_target(strictPeerAlias, strictPeerStorePackage), strictPeerAlias, "dir");
+    \\  const noDepsStorePackage = __home_package_path(__home_build_join(root, "node_modules/.bun/no-deps@2.0.0"), "no-deps");
+    \\  __home_node_fs.mkdirSync(noDepsStorePackage, { recursive: true });
+    \\  __home_pkg_write_json(__home_build_join(noDepsStorePackage, "package.json"), { name: "no-deps", version: "2.0.0" });
+    \\  const noDepsPeerLink = __home_package_path(strictPeerStoreEntry, "no-deps");
+    \\  __home_node_fs.mkdirSync(__home_build_dirname(noDepsPeerLink), { recursive: true });
+    \\  __home_node_fs.symlinkSync(__home_isolated_link_target(noDepsPeerLink, noDepsStorePackage), noDepsPeerLink, "dir");
+    \\}
     \\function __home_isolated_store_name(name, version) {
     \\  return String(name).replace("/", "+") + "@" + String(version || "1.0.0");
     \\}
@@ -9967,6 +10004,7 @@ const harness_prelude =
     \\  const storeEntry = __home_build_join(root, "node_modules/.bun", storeName);
     \\  const storePackage = __home_package_path(storeEntry, packageName);
     \\  __home_node_fs.mkdirSync(storePackage, { recursive: true });
+    \\  __home_apply_package_lifecycle_fixture(pkg, storePackage);
     \\  __home_pkg_write_json(__home_build_join(storePackage, "package.json"), pkg);
     \\  if (sourceDir) __home_copy_local_package_files(sourceDir, storePackage);
     \\  const topLink = __home_package_path(linkRoot || root, linkName);
@@ -9975,6 +10013,7 @@ const harness_prelude =
     \\  const aliasLink = __home_package_path(__home_build_join(root, "node_modules/.bun"), packageName);
     \\  __home_node_fs.mkdirSync(__home_build_dirname(aliasLink), { recursive: true });
     \\  __home_node_fs.symlinkSync(__home_isolated_link_target(aliasLink, storePackage), aliasLink, "dir");
+    \\  __home_link_transitive_peer_fixture(root, storeEntry, packageName);
     \\  const deps = Object.assign({}, pkg && pkg.dependencies || {});
     \\  for (const depName of Object.keys(deps)) {
     \\    const depLiteral = deps[depName];
@@ -9990,6 +10029,7 @@ const harness_prelude =
     \\    const depStoreEntry = __home_build_join(root, "node_modules/.bun", depStoreName);
     \\    const depStorePackage = __home_package_path(depStoreEntry, depPackageName);
     \\    __home_node_fs.mkdirSync(depStorePackage, { recursive: true });
+    \\    __home_apply_package_lifecycle_fixture(depPkg, depStorePackage);
     \\    __home_pkg_write_json(__home_build_join(depStorePackage, "package.json"), depPkg);
     \\    const nestedLink = depName === packageName ? __home_package_path(storePackage, depName) : __home_package_path(storeEntry, depName);
     \\    __home_node_fs.mkdirSync(__home_build_dirname(nestedLink), { recursive: true });
@@ -10006,6 +10046,7 @@ const harness_prelude =
     \\      if (nestedPackageName === "b-dep-a") nestedPkg.dependencies = { "a-dep-b": "1.0.0" };
     \\      if (nestedPackageName === "alias-loop-1") nestedPkg.dependencies = { "alias1": "npm:alias-loop-2@*" };
     \\      if (nestedPackageName === "alias-loop-2") nestedPkg.dependencies = { "alias2": "npm:alias-loop-1@*" };
+    \\      __home_apply_package_lifecycle_fixture(nestedPkg, nestedStorePackage);
     \\      __home_pkg_write_json(__home_build_join(nestedStorePackage, "package.json"), nestedPkg);
     \\      const secondLink = __home_package_path(depStoreEntry, nestedName);
     \\      __home_node_fs.mkdirSync(__home_build_dirname(secondLink), { recursive: true });
