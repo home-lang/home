@@ -5267,9 +5267,10 @@ const harness_prelude =
     \\        }
     \\      }
     \\    }
+    \\    const optionPlatform = options && Object.prototype.hasOwnProperty.call(options, "platform") ? options.platform : options && Object.prototype.hasOwnProperty.call(options, "target") ? options.target : "browser";
     \\    const nativeHandle = __home_transpilerCreateNative(
     \\      optionLoader === undefined ? undefined : String(optionLoader),
-    \\      options && Object.prototype.hasOwnProperty.call(options, "platform") ? String(options.platform) : "browser",
+    \\      String(optionPlatform),
     \\      minifySyntax,
     \\      minifyWhitespace,
     \\      minifyIdentifiers,
@@ -25769,6 +25770,7 @@ test "bootstrap prelude includes transpiler fixture shims" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "property-non-ascii-fixture.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bundler/transpiler/async-transpiler-entry.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jsx-production-entry.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.prototype.hasOwnProperty.call(options, \"target\") ? options.target") != null);
 }
 
 test "Bun jsc import rewrite lowers shallow memory import" {

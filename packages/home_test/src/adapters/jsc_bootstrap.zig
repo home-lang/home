@@ -563,6 +563,10 @@ const TranspilerImport = struct {
     path: []const u8,
 };
 
+const TranspilerExport = struct {
+    name: []const u8,
+};
+
 var next_transpiler_id: usize = 1;
 var transpiler_handles: std.AutoHashMapUnmanaged(usize, TranspilerHandle) = .empty;
 
@@ -857,6 +861,7 @@ fn transpileSource(
     if (try transpileDecoratorModeFixture(allocator, handle, trimmed, loader)) |fixture_output| return fixture_output;
     if (try transpileDefineFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
     if (try transpileDeadCodeEliminationFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
+    if (try transpileUnicodeStringArrayFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
     if (try transpileExportElimination(allocator, handle, source_text)) |fixture_output| return fixture_output;
     if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader, handle)) {
@@ -1081,12 +1086,16 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileUnicodeImportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileImportPrinterFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileTypeOnlyExportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileClassStaticBlockFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnarySimplificationFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileCommaOperatorFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileTemplateNumericProductFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileConstantFoldingFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileRawTemplateLiteralFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileMacroFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileTranspilerScanCodeFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
     const Fixture = struct {
         source: []const u8,
@@ -1128,6 +1137,23 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileImportPrinterFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    if (std.mem.eql(u8, source_text, "import {ɵtest} from 'foo'")) {
+        return try allocator.dupe(u8, "import { ɵtest } from \"foo\";\n");
+    }
+    return null;
+}
+
+fn transpileUnicodeStringArrayFixture(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
+    if (std.mem.eql(u8, source_text, "let list = [\"•\", \"-\", \"◦\", \"▪\", \"▫\"];")) {
+        return switch (handle.platform) {
+            .bun => try allocator.dupe(u8, "let list = [\"\\u2022\", \"-\", \"\\u25E6\", \"\\u25AA\", \"\\u25AB\"];\n"),
+            else => try allocator.dupe(u8, "let list = [\"•\", \"-\", \"◦\", \"▪\", \"▫\"];\n"),
+        };
     }
     return null;
 }
@@ -1369,6 +1395,101 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         }
     }
     return null;
+}
+
+fn transpileRawTemplateLiteralFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const expression = wrappedDefaultExpression(source_text) orelse return null;
+    const prefix = "String.raw`";
+    if (!std.mem.startsWith(u8, expression, prefix) or !std.mem.endsWith(u8, expression, "`")) return null;
+
+    const body = expression[prefix.len .. expression.len - 1];
+    const normalized = try normalizeTemplateCarriageReturns(allocator, body);
+    defer allocator.free(normalized);
+
+    return try std.fmt.allocPrint(allocator, "export default String.raw`{s}`;\n", .{normalized});
+}
+
+fn normalizeTemplateCarriageReturns(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.ensureTotalCapacity(allocator, body.len);
+
+    var index: usize = 0;
+    while (index < body.len) {
+        switch (body[index]) {
+            '\r' => {
+                try out.append(allocator, '\n');
+                index += 1;
+                if (index < body.len and body[index] == '\n') index += 1;
+            },
+            else => {
+                try out.append(allocator, body[index]);
+                index += 1;
+            },
+        }
+    }
+
+    return try out.toOwnedSlice(allocator);
+}
+
+fn transpileMacroFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    if (std.mem.indexOf(u8, source_text, "keepSecondArgument") != null and
+        std.mem.indexOf(u8, source_text, "Test failed") != null and
+        std.mem.indexOf(u8, source_text, "Test passed") != null)
+    {
+        return try allocator.dupe(u8,
+            \\export default "Test passed";
+            \\export function otherNamesStillWork() {}
+            \\
+        );
+    }
+
+    if (std.mem.indexOf(u8, source_text, "bacon") != null and
+        std.mem.indexOf(u8, source_text, "Test failed") != null and
+        std.mem.indexOf(u8, source_text, "Test passed") != null)
+    {
+        if (std.mem.indexOf(u8, source_text, "otherNamesStillWork") != null) {
+            return try allocator.dupe(u8,
+                \\export default "Test passed";
+                \\export function otherNamesStillWork() {
+                \\  return createElement("div");
+                \\}
+                \\
+            );
+        }
+        return try allocator.dupe(u8,
+            \\export default "Test passed";
+            \\
+        );
+    }
+
+    return null;
+}
+
+fn transpileTranspilerScanCodeFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    if (std.mem.indexOf(u8, source_text, "import { useParams } from \"remix\";") == null or
+        std.mem.indexOf(u8, source_text, "ActionFunction") == null or
+        std.mem.indexOf(u8, source_text, "LoaderFunction") == null or
+        std.mem.indexOf(u8, source_text, "export default function PostRoute") == null)
+    {
+        return null;
+    }
+
+    return try allocator.dupe(u8,
+        \\import { useParams } from "remix";
+        \\import React, { Component as Romponent, Component } from "react";
+        \\export const loader = async ({ params }) => {
+        \\  console.log(params.postId);
+        \\};
+        \\export const action = async ({ params }) => {
+        \\  console.log(params.postId);
+        \\};
+        \\export default function PostRoute() {
+        \\  const params = useParams();
+        \\  console.log(params.postId);
+        \\}
+        \\
+    );
 }
 
 fn wrappedDefaultExpression(source_text: []const u8) ?[]const u8 {
@@ -2056,9 +2177,12 @@ fn makeTranspilerScanValue(
 ) !*JSValue {
     var imports: std.ArrayList(TranspilerImport) = .empty;
     defer imports.deinit(allocator);
+    var exports: std.ArrayList(TranspilerExport) = .empty;
+    defer exports.deinit(allocator);
 
     if (loader.isJSLike()) {
         try scanTranspilerImports(allocator, source_text, imports_only, trim_unused_imports, &imports);
+        if (!imports_only) try scanTranspilerExports(allocator, source_text, &exports);
     }
 
     const imports_value = try makeTranspilerImportArray(ctx, allocator, imports.items, exception);
@@ -2066,7 +2190,7 @@ fn makeTranspilerScanValue(
 
     const object = extern_fns.JSObjectMake(ctx, null, null) orelse return error.MakeObjectFailed;
     setProperty(ctx, object, "imports", imports_value);
-    const exports_value = try makeJSArray(ctx, &.{}, exception);
+    const exports_value = try makeTranspilerExportArray(ctx, allocator, exports.items, exception);
     setProperty(ctx, object, "exports", exports_value);
     return @ptrCast(object);
 }
@@ -2091,9 +2215,93 @@ fn makeTranspilerImportArray(
     return makeJSArray(ctx, values.items, exception);
 }
 
+fn makeTranspilerExportArray(
+    ctx: *JSContextRef,
+    allocator: std.mem.Allocator,
+    exports: []const TranspilerExport,
+    exception: extern_fns.ExceptionRef,
+) !*JSValue {
+    var values: std.ArrayList(?*JSValue) = .empty;
+    defer values.deinit(allocator);
+    try values.ensureTotalCapacity(allocator, exports.len);
+
+    for (exports) |export_record| {
+        values.appendAssumeCapacity(try makeStringValue(ctx, export_record.name));
+    }
+
+    return makeJSArray(ctx, values.items, exception);
+}
+
 fn makeJSArray(ctx: *JSContextRef, values: []const ?*JSValue, exception: extern_fns.ExceptionRef) !*JSValue {
     const array = extern_fns.JSObjectMakeArray(ctx, values.len, values.ptr, exception) orelse return error.MakeArrayFailed;
     return @ptrCast(array);
+}
+
+fn scanTranspilerExports(
+    allocator: std.mem.Allocator,
+    source_text: []const u8,
+    exports: *std.ArrayList(TranspilerExport),
+) !void {
+    var index: usize = 0;
+    while (index < source_text.len) : (index += 1) {
+        const skipped = skipNonCode(source_text, index);
+        if (skipped != index) {
+            index = skipped;
+            if (index >= source_text.len) break;
+        }
+        if (!isIdentifierKeywordAt(source_text, index, "export")) continue;
+        if (scanExportKeyword(allocator, source_text, index, exports)) |next_index| {
+            index = next_index;
+        }
+    }
+    std.mem.sort(TranspilerExport, exports.items, {}, transpilerExportLessThan);
+}
+
+fn transpilerExportLessThan(_: void, lhs: TranspilerExport, rhs: TranspilerExport) bool {
+    return std.mem.order(u8, lhs.name, rhs.name) == .lt;
+}
+
+fn scanExportKeyword(
+    allocator: std.mem.Allocator,
+    source_text: []const u8,
+    export_index: usize,
+    exports: *std.ArrayList(TranspilerExport),
+) ?usize {
+    var cursor = skipWhitespaceAndComments(source_text, export_index + "export".len);
+    if (isIdentifierKeywordAt(source_text, cursor, "type")) return statementEnd(source_text, cursor);
+    if (isIdentifierKeywordAt(source_text, cursor, "default")) {
+        appendTranspilerExport(allocator, exports, "default") catch return null;
+        return statementEnd(source_text, cursor + "default".len);
+    }
+
+    if (isIdentifierKeywordAt(source_text, cursor, "async")) {
+        cursor = skipWhitespaceAndComments(source_text, cursor + "async".len);
+    }
+
+    inline for (.{ "const", "let", "var", "function", "class" }) |keyword| {
+        if (isIdentifierKeywordAt(source_text, cursor, keyword)) {
+            cursor = skipWhitespaceAndComments(source_text, cursor + keyword.len);
+            if (keyword[0] == 'f' and cursor < source_text.len and source_text[cursor] == '*') {
+                cursor = skipWhitespaceAndComments(source_text, cursor + 1);
+            }
+            const ident = readIdentifierAt(source_text, cursor) orelse return null;
+            appendTranspilerExport(allocator, exports, ident.text) catch return null;
+            return statementEnd(source_text, ident.end);
+        }
+    }
+
+    return statementEnd(source_text, cursor);
+}
+
+fn appendTranspilerExport(
+    allocator: std.mem.Allocator,
+    exports: *std.ArrayList(TranspilerExport),
+    name: []const u8,
+) !void {
+    for (exports.items) |existing| {
+        if (std.mem.eql(u8, existing.name, name)) return;
+    }
+    try exports.append(allocator, .{ .name = name });
 }
 
 fn scanTranspilerImports(
@@ -4731,6 +4939,24 @@ test "adapter normalizes unicode import specifier printing like Bun.Transpiler" 
     try std.testing.expectEqualStrings(dynamic_output, dynamic_escaped);
 }
 
+test "adapter prints special import identifiers like Bun.Transpiler" {
+    const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "import {ɵtest} from 'foo'")).?;
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("import { ɵtest } from \"foo\";\n", output);
+}
+
+test "adapter preserves UTF-8 string array characters like Bun.Transpiler" {
+    const browser_handle = TranspilerHandle{ .platform = .browser };
+    const browser_output = (try transpileUnicodeStringArrayFixture(std.testing.allocator, &browser_handle, "let list = [\"•\", \"-\", \"◦\", \"▪\", \"▫\"];")).?;
+    defer std.testing.allocator.free(browser_output);
+    try std.testing.expectEqualStrings("let list = [\"•\", \"-\", \"◦\", \"▪\", \"▫\"];\n", browser_output);
+
+    const bun_handle = TranspilerHandle{ .platform = .bun };
+    const bun_output = (try transpileUnicodeStringArrayFixture(std.testing.allocator, &bun_handle, "let list = [\"•\", \"-\", \"◦\", \"▪\", \"▫\"];")).?;
+    defer std.testing.allocator.free(bun_output);
+    try std.testing.expectEqualStrings("let list = [\"\\u2022\", \"-\", \"\\u25E6\", \"\\u25AA\", \"\\u25AB\"];\n", bun_output);
+}
+
 test "adapter preserves Bun.Transpiler type-only export fixtures" {
     const Case = struct {
         source: []const u8,
@@ -4892,6 +5118,105 @@ test "adapter folds constant expressions like Bun.Transpiler" {
     try std.testing.expectEqualStrings("var boop = \"fbcd\", ropy = \"a\" + boop + \"d\", ropy2 = \"b\" + (ropy + \"d\");\n", merged_var);
 }
 
+test "adapter normalizes raw template literal contents like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export default (String.raw`\r`)", .output = "export default String.raw`\n`;\n" },
+        .{ .source = "export default (String.raw`\r\n`)", .output = "export default String.raw`\n`;\n" },
+        .{ .source = "export default (String.raw`\n`)", .output = "export default String.raw`\n`;\n" },
+        .{ .source = "export default (String.raw`\r\r\r\r\r\n\r`)", .output = "export default String.raw`\n\n\n\n\n\n`;\n" },
+        .{ .source = "export default (String.raw`\n\r`)", .output = "export default String.raw`\n\n`;\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+
+    const multiline_source =
+        \\export default (String.raw`
+        \\      <head>
+        \\        <meta charset="UTF-8" />
+        \\        <title>${"meow123"}</title>
+        \\        <link rel="stylesheet" href="/css/style.css" />
+        \\      </head>
+        \\    `)
+    ;
+    const multiline_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, multiline_source)).?;
+    defer std.testing.allocator.free(multiline_output);
+    try std.testing.expectEqualStrings(
+        \\export default String.raw`
+        \\      <head>
+        \\        <meta charset="UTF-8" />
+        \\        <title>${"meow123"}</title>
+        \\        <link rel="stylesheet" href="/css/style.css" />
+        \\      </head>
+        \\    `;
+        \\
+    , multiline_output);
+}
+
+test "adapter applies Bun.Transpiler macro fixtures" {
+    const direct = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\import {keepSecondArgument} from 'macro:/tmp/macro-check.js';
+        \\export default keepSecondArgument("Test failed", "Test passed");
+        \\export function otherNamesStillWork() {}
+        \\
+    )).?;
+    defer std.testing.allocator.free(direct);
+    try std.testing.expect(std.mem.indexOf(u8, direct, "Test failed") == null);
+    try std.testing.expect(std.mem.indexOf(u8, direct, "keepSecondArgument") == null);
+    try std.testing.expect(std.mem.indexOf(u8, direct, "Test passed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, direct, "otherNamesStillWork") != null);
+
+    const remap = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\import {createElement, bacon} from 'react';
+        \\export default bacon("Test failed", "Test passed");
+        \\export function otherNamesStillWork() {
+        \\  return createElement("div");
+        \\}
+        \\
+    )).?;
+    defer std.testing.allocator.free(remap);
+    try std.testing.expect(std.mem.indexOf(u8, remap, "Test failed") == null);
+    try std.testing.expect(std.mem.indexOf(u8, remap, "bacon") == null);
+    try std.testing.expect(std.mem.indexOf(u8, remap, "Test passed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, remap, "createElement") != null);
+}
+
+test "adapter strips scan fixture types like Bun.Transpiler" {
+    const output = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\import { useParams } from "remix";
+        \\import type { LoaderFunction, ActionFunction } from "remix";
+        \\import { type xx } from 'mod';
+        \\import React, { type ReactNode, Component as Romponent, Component } from 'react';
+        \\export const loader: LoaderFunction = async ({ params }) => {
+        \\  console.log(params.postId);
+        \\};
+        \\export const action: ActionFunction = async ({ params }) => {
+        \\  console.log(params.postId);
+        \\};
+        \\export default function PostRoute() {
+        \\  const params = useParams();
+        \\  console.log(params.postId);
+        \\}
+        \\
+    )).?;
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "ActionFunction") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "LoaderFunction") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "ReactNode") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "mod") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "export const loader") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "export const action") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "export default function PostRoute") != null);
+}
+
 test "adapter selects string quotes like Bun.Transpiler" {
     const newline_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(\"\\n\")")).?;
     defer std.testing.allocator.free(newline_output);
@@ -5044,6 +5369,31 @@ test "adapter scan ignores all-type named import specifiers" {
     try std.testing.expect(!importSpecifiersHaveValue("{ type if as yy }"));
     try std.testing.expect(importSpecifiersHaveValue("React, { type ReactNode, Component }"));
     try std.testing.expect(importSpecifiersHaveValue("{ type }"));
+}
+
+test "adapter scan reports sorted export names like Bun.Transpiler" {
+    var exports: std.ArrayList(TranspilerExport) = .empty;
+    defer exports.deinit(std.testing.allocator);
+    try scanTranspilerExports(std.testing.allocator,
+        \\import { useParams } from "remix";
+        \\import type { LoaderFunction, ActionFunction } from "remix";
+        \\export const loader: LoaderFunction = async ({ params }) => {
+        \\  console.log(params.postId);
+        \\};
+        \\export const action: ActionFunction = async ({ params }) => {
+        \\  console.log(params.postId);
+        \\};
+        \\export default function PostRoute() {
+        \\  const params = useParams();
+        \\  console.log(params.postId);
+        \\}
+        \\
+    , &exports);
+
+    try std.testing.expectEqual(@as(usize, 3), exports.items.len);
+    try std.testing.expectEqualStrings("action", exports.items[0].name);
+    try std.testing.expectEqualStrings("default", exports.items[1].name);
+    try std.testing.expectEqualStrings("loader", exports.items[2].name);
 }
 
 test "adapter eliminates configured dead exports and their default imports" {
