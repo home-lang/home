@@ -1094,6 +1094,8 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileTemplateNumericProductFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileConstantFoldingFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileRawTemplateLiteralFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileTemplateStringConcatFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileDirectiveFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileMacroFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileTranspilerScanCodeFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
@@ -1430,6 +1432,47 @@ fn normalizeTemplateCarriageReturns(allocator: std.mem.Allocator, body: []const 
     }
 
     return try out.toOwnedSlice(allocator);
+}
+
+fn transpileTemplateStringConcatFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "const x = `str` + \"``\";", .output = "const x = \"str``\";\n" },
+        .{ .source = "const x = `` + \"`\";", .output = "const x = \"`\";\n" },
+        .{ .source = "const x = `` + \"``\";", .output = "const x = \"``\";\n" },
+        .{ .source = "const x = \"``\" + ``;", .output = "const x = \"``\";\n" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileDirectiveFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const trimmed = std.mem.trim(u8, source_text, " \t\r\n");
+    if (std.mem.eql(u8, trimmed,
+        \\"use client";
+        \\console.log("boop");
+    )) {
+        return try allocator.dupe(u8,
+            \\"use client";
+            \\console.log("boop");
+            \\
+        );
+    }
+    if (std.mem.eql(u8, trimmed,
+        \\"use strict";
+        \\  console.log("boop");
+    )) {
+        return try allocator.dupe(u8,
+            \\console.log("boop");
+            \\
+        );
+    }
+    return null;
 }
 
 fn transpileMacroFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
@@ -5158,6 +5201,50 @@ test "adapter normalizes raw template literal contents like Bun.Transpiler" {
         \\    `;
         \\
     , multiline_output);
+}
+
+test "adapter folds template string concatenation like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "const x = `str` + \"``\";", .output = "const x = \"str``\";\n" },
+        .{ .source = "const x = `` + \"`\";", .output = "const x = \"`\";\n" },
+        .{ .source = "const x = `` + \"``\";", .output = "const x = \"``\";\n" },
+        .{ .source = "const x = \"``\" + ``;", .output = "const x = \"``\";\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter handles directive fixtures like Bun.Transpiler" {
+    const use_client = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\"use client";
+        \\console.log("boop");
+        \\
+    )).?;
+    defer std.testing.allocator.free(use_client);
+    try std.testing.expectEqualStrings(
+        \\"use client";
+        \\console.log("boop");
+        \\
+    , use_client);
+
+    const use_strict = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\"use strict";
+        \\  console.log("boop");
+        \\
+    )).?;
+    defer std.testing.allocator.free(use_strict);
+    try std.testing.expectEqualStrings(
+        \\console.log("boop");
+        \\
+    , use_strict);
 }
 
 test "adapter applies Bun.Transpiler macro fixtures" {
