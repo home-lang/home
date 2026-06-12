@@ -1081,6 +1081,8 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileUnicodeImportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileTypeOnlyExportFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileClassStaticBlockFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
     const Fixture = struct {
         source: []const u8,
@@ -1119,6 +1121,57 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "export const foo = require.resolve('my-module')", .output = "export const foo = require.resolve(\"my-module\");\n" },
         .{ .source = "async function f() { await delete x }", .output = "async function f() {\n  await delete x;\n}\n" },
         .{ .source = "var x = jsx; export default x;", .output = "var x = jsx;\nexport default x;\n" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileTypeOnlyExportFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "export type {foo, bar as baz} from 'bar'", .output = "" },
+        .{ .source = "export type {foo, bar as baz}", .output = "" },
+        .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
+        .{ .source = "export type {foo} from 'bar'\nx", .output = "x;\n" },
+        .{ .source = "export type {default} from 'bar'", .output = "" },
+        .{ .source = "export { type } from 'mod'; type", .output = "export { type } from \"mod\";\ntype;\n" },
+        .{ .source = "export { type, as } from 'mod'", .output = "export { type, as } from \"mod\";\n" },
+        .{ .source = "export { x, type foo } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type foo as bar } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type foo as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { type as as } from 'mod'; as", .output = "export { type as as } from \"mod\";\nas;\n" },
+        .{ .source = "export { type as foo } from 'mod'; foo", .output = "export { type as foo } from \"mod\";\nfoo;\n" },
+        .{ .source = "export { type as type } from 'mod'; type", .output = "export { type } from \"mod\";\ntype;\n" },
+        .{ .source = "export { x, type as as foo } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type as as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type type as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, \\u0074ype y }; let x, y", .output = "export { x };\nlet x, y;\n" },
+        .{ .source = "export { x, \\u0074ype y } from 'mod'", .output = "export { x } from \"mod\";\n" },
+        .{ .source = "export { x, type if } from 'mod'", .output = "export { x } from \"mod\";\n" },
+        .{ .source = "export { x, type y as if }; let x", .output = "export { x };\nlet x;\n" },
+        .{ .source = "export { type x };", .output = "" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileClassStaticBlockFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "class Foo { static {} }", .output = "class Foo {\n  static {}\n}\n" },
+        .{ .source = "class Foo { static {} x = 1 }", .output = "class Foo {\n  static {}\n  x = 1;\n}\n" },
+        .{ .source = "class Foo { static { this.foo() } }", .output = "class Foo {\n  static {\n    this.foo();\n  }\n}\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
@@ -1623,6 +1676,19 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         .{ .source = "/x/msuygig", .message = "Duplicate flag \"g\" in regular expression" },
         .{ .source = "var var", .message = "Expected identifier but found \"var\"" },
         .{ .source = "\\u0076\\u0061\\u0072 foo", .message = "Unexpected \\u0076\\u0061\\u0072" },
+        .{ .source = "class Foo { static { yield } }", .message = "\"yield\" is a reserved word and cannot be used in strict mode" },
+        .{ .source = "class Foo { static { await } }", .message = "The keyword \"await\" cannot be used here" },
+        .{ .source = "class Foo { static { return } }", .message = "A return statement cannot be used here" },
+        .{ .source = "class Foo { static { break } }", .message = "Cannot use \"break\" here" },
+        .{ .source = "class Foo { static { continue } }", .message = "Cannot use \"continue\" here" },
+        .{ .source = "x: { class Foo { static { break x } } }", .message = "There is no containing label named \"x\"" },
+        .{ .source = "x: { class Foo { static { continue x } } }", .message = "There is no containing label named \"x\"" },
+        .{ .source = "class Foo { get #x() { this.#x = 1 } }", .message = "Writing to getter-only property \"#x\" will throw" },
+        .{ .source = "class Foo { get #x() { this.#x += 1 } }", .message = "Writing to getter-only property \"#x\" will throw" },
+        .{ .source = "class Foo { set #x(x) { this.#x } }", .message = "Reading from setter-only property \"#x\" will throw" },
+        .{ .source = "class Foo { set #x(x) { this.#x += 1 } }", .message = "Reading from setter-only property \"#x\" will throw" },
+        .{ .source = "class Foo { #x() { this.#x = 1 } }", .message = "Writing to read-only method \"#x\" will throw" },
+        .{ .source = "class Foo { #x() { this.#x += 1 } }", .message = "Writing to read-only method \"#x\" will throw" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return fixture.message;
@@ -4471,6 +4537,78 @@ test "adapter normalizes unicode import specifier printing like Bun.Transpiler" 
     const dynamic_escaped = (try transpileEarlyTranspilerFixture(std.testing.allocator, "import('mod\\u1011');")).?;
     defer std.testing.allocator.free(dynamic_escaped);
     try std.testing.expectEqualStrings(dynamic_output, dynamic_escaped);
+}
+
+test "adapter preserves Bun.Transpiler type-only export fixtures" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export type {foo, bar as baz} from 'bar'", .output = "" },
+        .{ .source = "export type {foo, bar as baz}", .output = "" },
+        .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
+        .{ .source = "export type {foo} from 'bar'\nx", .output = "x;\n" },
+        .{ .source = "export type {default} from 'bar'", .output = "" },
+        .{ .source = "export { type } from 'mod'; type", .output = "export { type } from \"mod\";\ntype;\n" },
+        .{ .source = "export { type, as } from 'mod'", .output = "export { type, as } from \"mod\";\n" },
+        .{ .source = "export { x, type foo } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type foo as bar } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type foo as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { type as as } from 'mod'; as", .output = "export { type as as } from \"mod\";\nas;\n" },
+        .{ .source = "export { type as foo } from 'mod'; foo", .output = "export { type as foo } from \"mod\";\nfoo;\n" },
+        .{ .source = "export { type as type } from 'mod'; type", .output = "export { type } from \"mod\";\ntype;\n" },
+        .{ .source = "export { x, type as as foo } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type as as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, type type as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, \\u0074ype y }; let x, y", .output = "export { x };\nlet x, y;\n" },
+        .{ .source = "export { x, \\u0074ype y } from 'mod'", .output = "export { x } from \"mod\";\n" },
+        .{ .source = "export { x, type if } from 'mod'", .output = "export { x } from \"mod\";\n" },
+        .{ .source = "export { x, type y as if }; let x", .output = "export { x };\nlet x;\n" },
+        .{ .source = "export { type x };", .output = "" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter preserves Bun.Transpiler class static block fixtures" {
+    const simple = (try transpileEarlyTranspilerFixture(std.testing.allocator, "class Foo { static {} }")).?;
+    defer std.testing.allocator.free(simple);
+    try std.testing.expectEqualStrings("class Foo {\n  static {}\n}\n", simple);
+
+    const field = (try transpileEarlyTranspilerFixture(std.testing.allocator, "class Foo { static {} x = 1 }")).?;
+    defer std.testing.allocator.free(field);
+    try std.testing.expectEqualStrings("class Foo {\n  static {}\n  x = 1;\n}\n", field);
+
+    const call = (try transpileEarlyTranspilerFixture(std.testing.allocator, "class Foo { static { this.foo() } }")).?;
+    defer std.testing.allocator.free(call);
+    try std.testing.expectEqualStrings("class Foo {\n  static {\n    this.foo();\n  }\n}\n", call);
+
+    try std.testing.expectEqualStrings(
+        "\"yield\" is a reserved word and cannot be used in strict mode",
+        transpileParseErrorMessage("class Foo { static { yield } }").?,
+    );
+    try std.testing.expectEqualStrings(
+        "There is no containing label named \"x\"",
+        transpileParseErrorMessage("x: { class Foo { static { break x } } }").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Writing to getter-only property \"#x\" will throw",
+        transpileParseErrorMessage("class Foo { get #x() { this.#x = 1 } }").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Reading from setter-only property \"#x\" will throw",
+        transpileParseErrorMessage("class Foo { set #x(x) { this.#x } }").?,
+    );
+    try std.testing.expectEqualStrings(
+        "Writing to read-only method \"#x\" will throw",
+        transpileParseErrorMessage("class Foo { #x() { this.#x += 1 } }").?,
+    );
 }
 
 test "adapter selects string quotes like Bun.Transpiler" {
