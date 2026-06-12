@@ -5246,11 +5246,24 @@ const harness_prelude =
     \\    const minifySyntax = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.syntax);
     \\    const minifyWhitespace = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.whitespace);
     \\    const minifyIdentifiers = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.identifiers);
+    \\    const treeShaking = !!(options && options.treeShaking);
+    \\    const trimUnusedImports = options && Object.prototype.hasOwnProperty.call(options, "trimUnusedImports") ? !!options.trimUnusedImports : treeShaking;
     \\    const definePairs = [];
     \\    const define = options && options.define;
     \\    if (define && typeof define === "object" && !Array.isArray(define)) {
     \\      for (const key of Object.keys(define)) {
     \\        definePairs.push(String(key), String(define[key]));
+    \\      }
+    \\    }
+    \\    const eliminateExports = [];
+    \\    const exportOptions = options && options.exports;
+    \\    if (exportOptions !== undefined && exportOptions !== null) {
+    \\      if (typeof exportOptions !== "object" || Array.isArray(exportOptions)) throw new TypeError("exports must be an object");
+    \\      if (Object.prototype.hasOwnProperty.call(exportOptions, "eliminate")) {
+    \\        if (!Array.isArray(exportOptions.eliminate)) throw new TypeError("exports.eliminate must be an array");
+    \\        for (const value of exportOptions.eliminate) {
+    \\          if (typeof value === "string" && value.length > 0) eliminateExports.push(value);
+    \\        }
     \\      }
     \\    }
     \\    const nativeHandle = __home_transpilerCreateNative(
@@ -5262,7 +5275,9 @@ const harness_prelude =
     \\      !!compilerOptions.experimentalDecorators,
     \\      !!compilerOptions.emitDecoratorMetadata,
     \\      definePairs,
-    \\      !!(options && options.trimUnusedImports)
+    \\      trimUnusedImports,
+    \\      treeShaking,
+    \\      eliminateExports
     \\    );
     \\    this.scan = function(source, loader) {
     \\      validateLoader(loader);

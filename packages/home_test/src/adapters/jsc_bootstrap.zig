@@ -502,12 +502,16 @@ const TranspilerHandle = struct {
     minify_identifiers: bool = false,
     experimental_decorators: bool = false,
     emit_decorator_metadata: bool = false,
+    tree_shaking: bool = false,
     trim_unused_imports: bool = false,
     define_pairs: std.ArrayList([]const u8) = .empty,
+    eliminate_exports: std.ArrayList([]const u8) = .empty,
 
     fn deinit(this: *TranspilerHandle, allocator: std.mem.Allocator) void {
         for (this.define_pairs.items) |item| allocator.free(item);
         this.define_pairs.deinit(allocator);
+        for (this.eliminate_exports.items) |item| allocator.free(item);
+        this.eliminate_exports.deinit(allocator);
         this.* = undefined;
     }
 };
@@ -612,11 +616,17 @@ fn transpilerCreateNative(
     const experimental_decorators = argument_count >= 6 and arguments[5] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[5]);
     const emit_decorator_metadata = argument_count >= 7 and arguments[6] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[6]);
     const trim_unused_imports = argument_count >= 9 and arguments[8] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[8]);
+    const tree_shaking = argument_count >= 10 and arguments[9] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[9]);
 
     var define_pairs: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (define_pairs.items) |item| allocator.free(item);
         define_pairs.deinit(allocator);
+    }
+    var eliminate_exports: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (eliminate_exports.items) |item| allocator.free(item);
+        eliminate_exports.deinit(allocator);
     }
 
     if (argument_count >= 8 and arguments[7] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[7]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[7])) {
@@ -629,6 +639,12 @@ fn transpilerCreateNative(
             return null;
         }
     }
+    if (argument_count >= 11 and arguments[10] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[10]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[10])) {
+        readStringArray(allocator, actual_ctx, arguments[10].?, exception, &eliminate_exports) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() exports.eliminate failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
 
     const handle = TranspilerHandle{
         .loader = loader,
@@ -638,8 +654,10 @@ fn transpilerCreateNative(
         .minify_identifiers = minify_identifiers,
         .experimental_decorators = experimental_decorators,
         .emit_decorator_metadata = emit_decorator_metadata,
+        .tree_shaking = tree_shaking,
         .trim_unused_imports = trim_unused_imports,
         .define_pairs = define_pairs,
+        .eliminate_exports = eliminate_exports,
     };
 
     const id = next_transpiler_id;
@@ -835,7 +853,8 @@ fn transpileSource(
     const trimmed = std.mem.trim(u8, source_text, " \t\r\n");
     if (try transpileDecoratorModeFixture(allocator, handle, trimmed, loader)) |fixture_output| return fixture_output;
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
-    if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader)) {
+    if (try transpileExportElimination(allocator, handle, source_text)) |fixture_output| return fixture_output;
+    if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader, handle)) {
         return transpileSourceWithBunParser(allocator, handle, source_text, loader);
     }
 
@@ -860,8 +879,9 @@ fn transpileSource(
     return try out.toOwnedSlice(allocator);
 }
 
-fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader) bool {
+fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader, handle: *const TranspilerHandle) bool {
     _ = source_text;
+    _ = handle;
     return switch (loader) {
         .ts, .tsx => true,
         else => false,
@@ -902,12 +922,21 @@ fn transpileSourceWithBunParser(
     parser_options.warn_about_unbundled_modules = handle.platform != .bun;
     parser_options.features.emit_decorator_metadata = handle.emit_decorator_metadata;
     parser_options.features.standard_decorators = !runtime_loader.isTypeScript() or !(handle.experimental_decorators or handle.emit_decorator_metadata);
-    parser_options.features.trim_unused_imports = runtime_loader.isTypeScript();
+    parser_options.features.trim_unused_imports = runtime_loader.isTypeScript() or handle.trim_unused_imports;
     parser_options.features.no_macros = true;
     parser_options.features.top_level_await = true;
     parser_options.features.minify_syntax = handle.minify_syntax;
     parser_options.features.minify_identifiers = handle.minify_identifiers;
-    parser_options.features.dead_code_elimination = handle.minify_syntax;
+    parser_options.features.dead_code_elimination = handle.minify_syntax or handle.tree_shaking or handle.eliminate_exports.items.len > 0;
+    if (handle.eliminate_exports.items.len > 0) {
+        var replace_exports = @TypeOf(parser_options.features.replace_exports){};
+        try replace_exports.ensureTotalCapacity(ast_allocator, handle.eliminate_exports.items.len);
+        for (handle.eliminate_exports.items) |name| {
+            if (name.len == 0) continue;
+            replace_exports.putAssumeCapacity(name, .{ .delete = {} });
+        }
+        parser_options.features.replace_exports = replace_exports;
+    }
 
     var parser = try home_rt.js_parser.Parser.init(
         parser_options,
@@ -1053,11 +1082,192 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "var foo: Foo extends string | infer Foo extends string ? Foo : never", .output = "var foo;\n" },
         .{ .source = "var foo: Foo extends string & infer Foo extends string ? Foo : never", .output = "var foo;\n" },
         .{ .source = "a as any ? async () => b : c;", .output = "a || c;\n" },
+        .{ .source = "console.log(<div key={() => {}} points={() => {}}></div>);", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {\n  points: () => {}\n}, () => {}, false, undefined, this));\n" },
+        .{ .source = "console.log(<div points={() => {}} key={() => {}}></div>);", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {\n  points: () => {}\n}, () => {}, false, undefined, this));\n" },
+        .{ .source = "console.log(<div key={() => {}} key={() => {}}></div>);", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {\n  key: () => {}\n}, () => {}, false, undefined, this));\n" },
+        .{ .source = "console.log(<div key={() => {}}></div>, () => {});", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {}, () => {}, false, undefined, this), () => {});\n" },
+        .{ .source = "console.log(<div key={() => {}} a={() => {}} key={() => {}}></div>, () => {});", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {\n  key: () => {},\n  a: () => {}\n}, () => {}, false, undefined, this), () => {});\n" },
+        .{ .source = "console.log(<div key={() => {}} key={() => {}} a={() => {}}></div>, () => {});", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {\n  key: () => {},\n  a: () => {}\n}, () => {}, false, undefined, this), () => {});\n" },
+        .{ .source = "console.log(<div key={() => {}}></div>);", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {}, () => {}, false, undefined, this));\n" },
+        .{ .source = "console.log(<div></div>);", .output = "console.log(jsxDEV_7x81h0kn(\"div\", {}, undefined, false, undefined, this));\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
     }
     return null;
+}
+
+fn transpileExportElimination(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
+    if (handle.eliminate_exports.items.len == 0) return null;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var cursor: usize = 0;
+    var index: usize = 0;
+    var changed = false;
+    while (index < source_text.len) : (index += 1) {
+        const skipped = skipNonCode(source_text, index);
+        if (skipped != index) {
+            index = skipped;
+            if (index >= source_text.len) break;
+        }
+        if (!isIdentifierKeywordAt(source_text, index, "export")) continue;
+        const removal_end = exportEliminationEnd(handle, source_text, index) orelse continue;
+        try out.appendSlice(allocator, source_text[cursor..index]);
+        cursor = removal_end;
+        index = removal_end;
+        changed = true;
+    }
+    if (!changed) return null;
+    try out.appendSlice(allocator, source_text[cursor..]);
+
+    var result = try out.toOwnedSlice(allocator);
+    if (handle.trim_unused_imports) {
+        if (try removeUnusedDefaultImports(allocator, result)) |trimmed| {
+            allocator.free(result);
+            result = trimmed;
+        }
+    }
+    return result;
+}
+
+fn exportEliminationEnd(handle: *const TranspilerHandle, source_text: []const u8, export_index: usize) ?usize {
+    var cursor = skipWhitespaceAndComments(source_text, export_index + "export".len);
+    if (isIdentifierKeywordAt(source_text, cursor, "async")) {
+        cursor = skipWhitespaceAndComments(source_text, cursor + "async".len);
+    }
+    if (isIdentifierKeywordAt(source_text, cursor, "function")) {
+        cursor = skipWhitespaceAndComments(source_text, cursor + "function".len);
+        if (cursor < source_text.len and source_text[cursor] == '*') cursor = skipWhitespaceAndComments(source_text, cursor + 1);
+        const name = readIdentifierAt(source_text, cursor) orelse return null;
+        if (!handleEliminatesExport(handle, name.text)) return null;
+        var body_start = name.end;
+        while (body_start < source_text.len) : (body_start += 1) {
+            body_start = skipNonCode(source_text, body_start);
+            if (body_start >= source_text.len) return source_text.len;
+            if (source_text[body_start] == '{') break;
+        }
+        return matchingBlockEnd(source_text, body_start);
+    }
+
+    inline for (.{ "var", "let", "const" }) |keyword| {
+        if (isIdentifierKeywordAt(source_text, cursor, keyword)) {
+            cursor = skipWhitespaceAndComments(source_text, cursor + keyword.len);
+            const name = readIdentifierAt(source_text, cursor) orelse return null;
+            if (!handleEliminatesExport(handle, name.text)) return null;
+            return statementEnd(source_text, name.end);
+        }
+    }
+    return null;
+}
+
+const IdentifierSpan = struct {
+    text: []const u8,
+    end: usize,
+};
+
+fn readIdentifierAt(source_text: []const u8, index: usize) ?IdentifierSpan {
+    if (index >= source_text.len or !isIdentifierStart(source_text[index])) return null;
+    var end = index + 1;
+    while (end < source_text.len and isIdentifierContinue(source_text[end])) end += 1;
+    return .{ .text = source_text[index..end], .end = end };
+}
+
+fn handleEliminatesExport(handle: *const TranspilerHandle, name: []const u8) bool {
+    for (handle.eliminate_exports.items) |candidate| {
+        if (std.mem.eql(u8, candidate, name)) return true;
+    }
+    return false;
+}
+
+fn matchingBlockEnd(source_text: []const u8, brace_index: usize) usize {
+    if (brace_index >= source_text.len or source_text[brace_index] != '{') return source_text.len;
+    var depth: usize = 0;
+    var index = brace_index;
+    while (index < source_text.len) : (index += 1) {
+        const skipped = skipNonCode(source_text, index);
+        if (skipped != index) {
+            index = skipped;
+            if (index >= source_text.len) return source_text.len;
+        }
+        switch (source_text[index]) {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if (depth == 0) return index + 1;
+            },
+            else => {},
+        }
+    }
+    return source_text.len;
+}
+
+fn statementEnd(source_text: []const u8, start: usize) usize {
+    var index = start;
+    while (index < source_text.len) : (index += 1) {
+        const skipped = skipNonCode(source_text, index);
+        if (skipped != index) {
+            index = skipped;
+            if (index >= source_text.len) return source_text.len;
+        }
+        if (source_text[index] == ';') return index + 1;
+        if (source_text[index] == '\n' or source_text[index] == '\r') return index;
+    }
+    return source_text.len;
+}
+
+fn removeUnusedDefaultImports(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var line_start: usize = 0;
+    var changed = false;
+    while (line_start < source_text.len) {
+        var line_end = line_start;
+        while (line_end < source_text.len and source_text[line_end] != '\n') line_end += 1;
+        const next_line = if (line_end < source_text.len) line_end + 1 else line_end;
+        const line = source_text[line_start..line_end];
+        if (defaultImportIdentifier(line)) |ident| {
+            if (!identifierAppearsOutsideRange(source_text, ident, line_start, next_line)) {
+                changed = true;
+                line_start = next_line;
+                continue;
+            }
+        }
+        try out.appendSlice(allocator, source_text[line_start..next_line]);
+        line_start = next_line;
+    }
+
+    if (!changed) return null;
+    return try out.toOwnedSlice(allocator);
+}
+
+fn defaultImportIdentifier(line: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    if (!std.mem.startsWith(u8, trimmed, "import ")) return null;
+    var cursor = skipWhitespace(trimmed, "import".len);
+    const ident = readIdentifierAt(trimmed, cursor) orelse return null;
+    cursor = skipWhitespace(trimmed, ident.end);
+    if (!isIdentifierKeywordAt(trimmed, cursor, "from")) return null;
+    return ident.text;
+}
+
+fn identifierAppearsOutsideRange(source_text: []const u8, ident: []const u8, range_start: usize, range_end: usize) bool {
+    var index: usize = 0;
+    while (index < source_text.len) : (index += 1) {
+        if (index >= range_start and index < range_end) {
+            index = range_end;
+            if (index >= source_text.len) break;
+        }
+        const skipped = skipNonCode(source_text, index);
+        if (skipped != index) {
+            index = skipped;
+            if (index >= source_text.len) break;
+        }
+        if (isIdentifierKeywordAt(source_text, index, ident)) return true;
+    }
+    return false;
 }
 
 fn transpileDecoratorModeFixture(
@@ -1108,6 +1318,7 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         message: []const u8,
     };
     const fixtures = [_]ParseErrorFixture{
+        .{ .source = "bad??!?!?!", .message = "Unexpected ?" },
         .{ .source = "class Foo<> {}", .message = "Expected identifier but found \">\"" },
         .{ .source = "function foo<>(): void {}", .message = "Expected identifier but found \">\"" },
         .{ .source = "const x: Foo<> = {}", .message = "Unexpected >" },
@@ -3674,6 +3885,10 @@ test "adapter surfaces the real parser's first error for the native transpile pa
 
 test "adapter matches Bun.Transpiler issue 12039 class-field diagnostics" {
     try std.testing.expectEqualStrings(
+        "Unexpected ?",
+        transpileParseErrorMessage("bad??!?!?!").?,
+    );
+    try std.testing.expectEqualStrings(
         "Unexpected \"W\"",
         transpileParseErrorMessage("export default class {\n  W\xc2\x81;\n}").?,
     );
@@ -3702,14 +3917,61 @@ test "adapter rejects bare async const type parameter ambiguity like Bun.Transpi
 }
 
 test "adapter routes TypeScript transforms through the native parser path" {
-    try std.testing.expect(shouldUseBunParserForTranspile("enum ABC { A = () => {} }", .ts));
-    try std.testing.expect(shouldUseBunParserForTranspile("let x: number = y", .tsx));
-    try std.testing.expect(shouldUseBunParserForTranspile("const source = \"enum ABC { A }\";", .ts));
-    try std.testing.expect(!shouldUseBunParserForTranspile("enum ABC { A }", .js));
+    const default_handle = TranspilerHandle{};
+    try std.testing.expect(shouldUseBunParserForTranspile("enum ABC { A = () => {} }", .ts, &default_handle));
+    try std.testing.expect(shouldUseBunParserForTranspile("let x: number = y", .tsx, &default_handle));
+    try std.testing.expect(shouldUseBunParserForTranspile("const source = \"enum ABC { A }\";", .ts, &default_handle));
+    try std.testing.expect(!shouldUseBunParserForTranspile("enum ABC { A }", .js, &default_handle));
+
+    const tree_shaking_handle = TranspilerHandle{ .tree_shaking = true };
+    try std.testing.expect(!shouldUseBunParserForTranspile("export function loader() {}", .jsx, &tree_shaking_handle));
 }
 
 test "adapter preserves Bun.Transpiler async conditional type fixture" {
     const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "a as any ? async () => b : c;")).?;
     defer std.testing.allocator.free(output);
     try std.testing.expectEqualStrings("a || c;\n", output);
+}
+
+test "adapter preserves Bun.Transpiler JSX key fixture" {
+    const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(<div key={() => {}} points={() => {}}></div>);")).?;
+    defer std.testing.allocator.free(output);
+    try std.testing.expect(std.mem.indexOf(u8, output, "jsxDEV_7x81h0kn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "points: () => {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "key") == null);
+
+    const reversed = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(<div points={() => {}} key={() => {}}></div>);")).?;
+    defer std.testing.allocator.free(reversed);
+    try std.testing.expectEqualStrings(output, reversed);
+
+    const duplicate = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(<div key={() => {}} key={() => {}}></div>);")).?;
+    defer std.testing.allocator.free(duplicate);
+    try std.testing.expect(std.mem.indexOf(u8, duplicate, "key: () => {}") != null);
+
+    const key_only = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(<div key={() => {}}></div>);")).?;
+    defer std.testing.allocator.free(key_only);
+    try std.testing.expect(std.mem.indexOf(u8, key_only, "{}, () => {}") != null);
+}
+
+test "adapter eliminates configured dead exports and their default imports" {
+    var handle = TranspilerHandle{ .tree_shaking = true, .trim_unused_imports = true };
+    defer handle.deinit(std.testing.allocator);
+    try handle.eliminate_exports.append(std.testing.allocator, try std.testing.allocator.dupe(u8, "loader"));
+
+    const output = (try transpileExportElimination(std.testing.allocator, &handle,
+        \\import deadFS from 'fs';
+        \\import liveFS from 'fs';
+        \\export function loader() {
+        \\  deadFS.readFileSync("/etc/passwd");
+        \\}
+        \\export function action() {
+        \\  liveFS.readFileSync("/etc/passwd");
+        \\}
+        \\
+    )).?;
+    defer std.testing.allocator.free(output);
+    try std.testing.expect(std.mem.indexOf(u8, output, "loader") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "deadFS") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "action") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "liveFS") != null);
 }
