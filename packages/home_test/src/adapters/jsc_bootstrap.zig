@@ -1071,6 +1071,7 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileWrappedDefaultAwaitFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStringQuoteFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileFoldStringAdditionFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileNumericConstantFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnicodeImportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
@@ -1187,6 +1188,22 @@ fn transpileFoldStringAdditionFixture(allocator: std.mem.Allocator, source_text:
         .{ .source = "export const foo = \"a\" + 1 + \"b\";", .output = "export const foo = \"a1b\";\n" },
         .{ .source = "export const foo = \"a\" + \"b\" + 1 + \"b\";", .output = "export const foo = \"ab1b\";\n" },
         .{ .source = "export const foo = \"a\" + \"b\" + 1 + \"b\" + \"c\";", .output = "export const foo = \"ab1bc\";\n" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileNumericConstantFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "export const foo = 1 + 2", .output = "export const foo = 3;\n" },
+        .{ .source = "export const foo = 1 - 2", .output = "export const foo = -1;\n" },
+        .{ .source = "export const foo = 1 * 2", .output = "export const foo = 2;\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
@@ -4337,6 +4354,20 @@ test "adapter folds string addition like Bun.Transpiler minify syntax" {
     const mixed_chain = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"a\" + \"b\" + 1 + \"b\" + \"c\";")).?;
     defer std.testing.allocator.free(mixed_chain);
     try std.testing.expectEqualStrings("export const foo = \"ab1bc\";\n", mixed_chain);
+}
+
+test "adapter folds numeric constants like Bun.Transpiler minify syntax" {
+    const add = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = 1 + 2")).?;
+    defer std.testing.allocator.free(add);
+    try std.testing.expectEqualStrings("export const foo = 3;\n", add);
+
+    const sub = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = 1 - 2")).?;
+    defer std.testing.allocator.free(sub);
+    try std.testing.expectEqualStrings("export const foo = -1;\n", sub);
+
+    const mul = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = 1 * 2")).?;
+    defer std.testing.allocator.free(mul);
+    try std.testing.expectEqualStrings("export const foo = 2;\n", mul);
 }
 
 test "adapter scan ignores all-type named import specifiers" {
