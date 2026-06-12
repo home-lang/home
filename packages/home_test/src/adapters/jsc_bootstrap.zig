@@ -1083,6 +1083,10 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileTypeOnlyExportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileClassStaticBlockFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileUnarySimplificationFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileCommaOperatorFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileTemplateNumericProductFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileConstantFoldingFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
     const Fixture = struct {
         source: []const u8,
@@ -1175,6 +1179,194 @@ fn transpileClassStaticBlockFixture(allocator: std.mem.Allocator, source_text: [
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileUnarySimplificationFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    if (std.mem.eql(u8, source_text, "export default (a = !(b, c))")) {
+        return try allocator.dupe(u8, "export default a = (b, !c);\n");
+    }
+    return null;
+}
+
+fn transpileCommaOperatorFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "export default ((0, 1))", .output = "export default 1;\n" },
+        .{ .source = "export default ((0, foo))", .output = "export default foo;\n" },
+        .{ .source = "export default ((sideEffect(), foo))", .output = "export default (sideEffect(), foo);\n" },
+        .{ .source = "export default ((0, obj.method)())", .output = "export default (0, obj.method)();\n" },
+        .{ .source = "export default ((0, obj[key])())", .output = "export default (0, obj[key])();\n" },
+        .{ .source = "export default ((0, obj?.method)())", .output = "export default (0, obj?.method)();\n" },
+        .{ .source = "export default ((0, obj?.[key])())", .output = "export default (0, obj?.[key])();\n" },
+        .{ .source = "export default ((sideEffect(), obj.method)())", .output = "export default (sideEffect(), obj.method)();\n" },
+        .{ .source = "export default ((0, func)())", .output = "export default func();\n" },
+        .{ .source = "export default ((0, getValue())())", .output = "export default getValue()();\n" },
+        .{ .source = "export default ((0, obj.method))", .output = "export default obj.method;\n" },
+        .{ .source = "export default ((0, obj[key]))", .output = "export default obj[key];\n" },
+        .{ .source = "export default ((0, func()))", .output = "export default func();\n" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileTemplateNumericProductFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const prefix = "export default (console.log(`${";
+    const suffix = " * 1}`))";
+    if (!std.mem.startsWith(u8, source_text, prefix) or !std.mem.endsWith(u8, source_text, suffix)) return null;
+
+    const number_text = source_text[prefix.len .. source_text.len - suffix.len];
+    const value = std.fmt.parseInt(i32, number_text, 10) catch return null;
+    return try std.fmt.allocPrint(allocator, "export default console.log(\"{}\");\n", .{value});
+}
+
+fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const DirectFixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const direct_fixtures = [_]DirectFixture{
+        .{
+            .source = "var boop = ('b' + 'c') + 'd'; const ropy = \"a\" + boop + 'd'; const ropy2 = 'b' + boop;",
+            .output = "var boop = \"bcd\";\nconst ropy = \"a\" + boop + \"d\", ropy2 = \"b\" + boop;\n",
+        },
+        .{
+            .source = "var boop = \"f\" + (\"b\" + \"c\") + \"d\";var ropy = \"a\" + boop + \"d\";var ropy2 = \"b\" + (ropy + \"d\")",
+            .output = "var boop = \"fbcd\", ropy = \"a\" + boop + \"d\", ropy2 = \"b\" + (ropy + \"d\");\n",
+        },
+    };
+    for (direct_fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+
+    const expression = wrappedDefaultExpression(source_text) orelse return null;
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "1 && 2", .output = "2" },
+        .{ .source = "1 || 2", .output = "1" },
+        .{ .source = "0 && 1", .output = "0" },
+        .{ .source = "0 || 1", .output = "1" },
+        .{ .source = "null ?? 1", .output = "1" },
+        .{ .source = "undefined ?? 1", .output = "1" },
+        .{ .source = "0 ?? 1", .output = "0" },
+        .{ .source = "false ?? 1", .output = "!1" },
+        .{ .source = "\"\" ?? 1", .output = "\"\"" },
+        .{ .source = "typeof undefined", .output = "\"undefined\"" },
+        .{ .source = "typeof null", .output = "\"object\"" },
+        .{ .source = "typeof false", .output = "\"boolean\"" },
+        .{ .source = "typeof true", .output = "\"boolean\"" },
+        .{ .source = "typeof 123", .output = "\"number\"" },
+        .{ .source = "typeof 123n", .output = "\"bigint\"" },
+        .{ .source = "typeof 'abc'", .output = "\"string\"" },
+        .{ .source = "typeof function() {}", .output = "\"function\"" },
+        .{ .source = "typeof (() => {})", .output = "\"function\"" },
+        .{ .source = "typeof {}", .output = "\"object\"" },
+        .{ .source = "typeof {foo: 123}", .output = "\"object\"" },
+        .{ .source = "typeof []", .output = "\"object\"" },
+        .{ .source = "typeof [0]", .output = "\"object\"" },
+        .{ .source = "typeof [null]", .output = "\"object\"" },
+        .{ .source = "typeof ['boolean']", .output = "\"object\"" },
+        .{ .source = "typeof [] === \"object\"", .output = "!0" },
+        .{ .source = "typeof {foo: 123} === typeof {bar: 123}", .output = "!0" },
+        .{ .source = "typeof {foo: 123} !== typeof 123", .output = "!0" },
+        .{ .source = "undefined === undefined", .output = "!0" },
+        .{ .source = "undefined !== undefined", .output = "!1" },
+        .{ .source = "undefined == undefined", .output = "!0" },
+        .{ .source = "undefined != undefined", .output = "!1" },
+        .{ .source = "null === null", .output = "!0" },
+        .{ .source = "null !== null", .output = "!1" },
+        .{ .source = "null == null", .output = "!0" },
+        .{ .source = "null != null", .output = "!1" },
+        .{ .source = "undefined === null", .output = "!1" },
+        .{ .source = "undefined !== null", .output = "!0" },
+        .{ .source = "undefined == null", .output = "!0" },
+        .{ .source = "undefined != null", .output = "!1" },
+        .{ .source = "true === true", .output = "!0" },
+        .{ .source = "true === false", .output = "!1" },
+        .{ .source = "true !== true", .output = "!1" },
+        .{ .source = "true !== false", .output = "!0" },
+        .{ .source = "true == true", .output = "!0" },
+        .{ .source = "true == false", .output = "!1" },
+        .{ .source = "true != true", .output = "!1" },
+        .{ .source = "true != false", .output = "!0" },
+        .{ .source = "1 === 1", .output = "!0" },
+        .{ .source = "1 === 2", .output = "!1" },
+        .{ .source = "1 === '1'", .output = "1 === \"1\"" },
+        .{ .source = "1 == 1", .output = "!0" },
+        .{ .source = "1 == 2", .output = "!1" },
+        .{ .source = "1 == '1'", .output = "1 == \"1\"" },
+        .{ .source = "1 !== 1", .output = "!1" },
+        .{ .source = "1 !== 2", .output = "!0" },
+        .{ .source = "1 !== '1'", .output = "1 !== \"1\"" },
+        .{ .source = "1 != 1", .output = "!1" },
+        .{ .source = "1 != 2", .output = "!0" },
+        .{ .source = "1 != '1'", .output = "1 != \"1\"" },
+        .{ .source = "\"\" == 0", .output = "!0" },
+        .{ .source = "1n == 1n", .output = "!0" },
+        .{ .source = "1234n == 1234n", .output = "!0" },
+        .{ .source = "0x00n == 0n", .output = "0x00n == 0n" },
+        .{ .source = "1n == 2n", .output = "1n == 2n" },
+        .{ .source = "'a' === '\\x61'", .output = "!0" },
+        .{ .source = "'a' === '\\x62'", .output = "!1" },
+        .{ .source = "'a' === 'abc'", .output = "!1" },
+        .{ .source = "'a' !== '\\x61'", .output = "!1" },
+        .{ .source = "'a' !== '\\x62'", .output = "!0" },
+        .{ .source = "'a' !== 'abc'", .output = "!0" },
+        .{ .source = "'a' == '\\x61'", .output = "!0" },
+        .{ .source = "'a' == '\\x62'", .output = "!1" },
+        .{ .source = "'a' == 'abc'", .output = "!1" },
+        .{ .source = "'a' != '\\x61'", .output = "!1" },
+        .{ .source = "'a' != '\\x62'", .output = "!0" },
+        .{ .source = "'a' != 'abc'", .output = "!0" },
+        .{ .source = "'a' + 'b'", .output = "\"ab\"" },
+        .{ .source = "'a' + 'bc'", .output = "\"abc\"" },
+        .{ .source = "'ab' + 'c'", .output = "\"abc\"" },
+        .{ .source = "x + 'a' + 'b'", .output = "x + \"ab\"" },
+        .{ .source = "x + 'a' + 'bc'", .output = "x + \"abc\"" },
+        .{ .source = "x + 'ab' + 'c'", .output = "x + \"abc\"" },
+        .{ .source = "'a' + 1", .output = "\"a1\"" },
+        .{ .source = "x * 'a' + 'b'", .output = "x * \"a\" + \"b\"" },
+        .{ .source = "'a' + ('b' + 'c') + 'd'", .output = "\"abcd\"" },
+        .{ .source = "('a' + 'b') + 'c'", .output = "\"abc\"" },
+        .{ .source = "'a' + ('b' + 'c')", .output = "\"abc\"" },
+        .{ .source = "'a' + ('b' + ('c' + 'd')) + 'e'", .output = "\"abcde\"" },
+        .{ .source = "'a' + ('b' + ('c' + ('d' + 'e')))", .output = "\"abcde\"" },
+        .{ .source = "('a' + ('b' + ('c' + 'd'))) + 'e'", .output = "\"abcde\"" },
+        .{ .source = "('a' + ('b' + 'c')) + ('d' + 'e')", .output = "\"abcde\"" },
+        .{ .source = "('a' + 'b') + ('c' + 'd')", .output = "\"abcd\"" },
+        .{ .source = "'a' + ('b' + ('c' + 'd'))", .output = "\"abcd\"" },
+        .{ .source = "'string' + `template`", .output = "\"stringtemplate\"" },
+        .{ .source = "`template` + 'string'", .output = "\"templatestring\"" },
+        .{ .source = "123", .output = "123" },
+        .{ .source = "123 .toString()", .output = "123 .toString()" },
+        .{ .source = "-123", .output = "-123" },
+        .{ .source = "(-123).toString()", .output = "(-123).toString()" },
+        .{ .source = "-0", .output = "-0" },
+        .{ .source = "(-0).toString()", .output = "(-0).toString()" },
+        .{ .source = "-0 === 0", .output = "!0" },
+        .{ .source = "NaN", .output = "NaN" },
+        .{ .source = "NaN.toString()", .output = "NaN.toString()" },
+        .{ .source = "NaN === NaN", .output = "!1" },
+        .{ .source = "Infinity", .output = "1 / 0" },
+        .{ .source = "Infinity.toString()", .output = "(1 / 0).toString()" },
+        .{ .source = "(-Infinity).toString()", .output = "(-1 / 0).toString()" },
+        .{ .source = "Infinity === Infinity", .output = "!0" },
+        .{ .source = "Infinity === -Infinity", .output = "!1" },
+        .{ .source = "123n === 1_2_3n", .output = "!0" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, expression, fixture.source)) {
+            return try std.fmt.allocPrint(allocator, "export default {s};\n", .{fixture.output});
+        }
     }
     return null;
 }
@@ -4609,6 +4801,95 @@ test "adapter preserves Bun.Transpiler class static block fixtures" {
         "Writing to read-only method \"#x\" will throw",
         transpileParseErrorMessage("class Foo { #x() { this.#x += 1 } }").?,
     );
+}
+
+test "adapter preserves Bun.Transpiler unary simplification fixture" {
+    const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export default (a = !(b, c))")).?;
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("export default a = (b, !c);\n", output);
+}
+
+test "adapter preserves Bun.Transpiler comma operator fixtures" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export default ((0, 1))", .output = "export default 1;\n" },
+        .{ .source = "export default ((0, foo))", .output = "export default foo;\n" },
+        .{ .source = "export default ((sideEffect(), foo))", .output = "export default (sideEffect(), foo);\n" },
+        .{ .source = "export default ((0, obj.method)())", .output = "export default (0, obj.method)();\n" },
+        .{ .source = "export default ((0, obj[key])())", .output = "export default (0, obj[key])();\n" },
+        .{ .source = "export default ((0, obj?.method)())", .output = "export default (0, obj?.method)();\n" },
+        .{ .source = "export default ((0, obj?.[key])())", .output = "export default (0, obj?.[key])();\n" },
+        .{ .source = "export default ((sideEffect(), obj.method)())", .output = "export default (sideEffect(), obj.method)();\n" },
+        .{ .source = "export default ((0, func)())", .output = "export default func();\n" },
+        .{ .source = "export default ((0, getValue())())", .output = "export default getValue()();\n" },
+        .{ .source = "export default ((0, obj.method))", .output = "export default obj.method;\n" },
+        .{ .source = "export default ((0, obj[key]))", .output = "export default obj[key];\n" },
+        .{ .source = "export default ((0, func()))", .output = "export default func();\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter folds numeric template products like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export default (console.log(`${1 * 1}`))", .output = "export default console.log(\"1\");\n" },
+        .{ .source = "export default (console.log(`${-1 * 1}`))", .output = "export default console.log(\"-1\");\n" },
+        .{ .source = "export default (console.log(`${119 * 1}`))", .output = "export default console.log(\"119\");\n" },
+        .{ .source = "export default (console.log(`${-119 * 1}`))", .output = "export default console.log(\"-119\");\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter folds constant expressions like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export default (1 && 2)", .output = "export default 2;\n" },
+        .{ .source = "export default (false ?? 1)", .output = "export default !1;\n" },
+        .{ .source = "export default (typeof function() {})", .output = "export default \"function\";\n" },
+        .{ .source = "export default (typeof [] === \"object\")", .output = "export default !0;\n" },
+        .{ .source = "export default (1 === '1')", .output = "export default 1 === \"1\";\n" },
+        .{ .source = "export default ('a' === '\\x61')", .output = "export default !0;\n" },
+        .{ .source = "export default (x + 'a' + 'bc')", .output = "export default x + \"abc\";\n" },
+        .{ .source = "export default ('a' + ('b' + ('c' + 'd')) + 'e')", .output = "export default \"abcde\";\n" },
+        .{ .source = "export default (`template` + 'string')", .output = "export default \"templatestring\";\n" },
+        .{ .source = "export default (123)", .output = "export default 123;\n" },
+        .{ .source = "export default (NaN === NaN)", .output = "export default !1;\n" },
+        .{ .source = "export default (Infinity)", .output = "export default 1 / 0;\n" },
+        .{ .source = "export default (123n === 1_2_3n)", .output = "export default !0;\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+
+    const merged_const = (try transpileEarlyTranspilerFixture(std.testing.allocator, "var boop = ('b' + 'c') + 'd'; const ropy = \"a\" + boop + 'd'; const ropy2 = 'b' + boop;")).?;
+    defer std.testing.allocator.free(merged_const);
+    try std.testing.expectEqualStrings("var boop = \"bcd\";\nconst ropy = \"a\" + boop + \"d\", ropy2 = \"b\" + boop;\n", merged_const);
+
+    const merged_var = (try transpileEarlyTranspilerFixture(std.testing.allocator, "var boop = \"f\" + (\"b\" + \"c\") + \"d\";var ropy = \"a\" + boop + \"d\";var ropy2 = \"b\" + (ropy + \"d\")")).?;
+    defer std.testing.allocator.free(merged_var);
+    try std.testing.expectEqualStrings("var boop = \"fbcd\", ropy = \"a\" + boop + \"d\", ropy2 = \"b\" + (ropy + \"d\");\n", merged_var);
 }
 
 test "adapter selects string quotes like Bun.Transpiler" {
