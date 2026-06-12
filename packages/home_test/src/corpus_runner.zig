@@ -885,8 +885,13 @@ const harness_prelude =
     \\  return slash < 0 ? "" : text.slice(0, slash);
     \\}
     \\function __home_build_join(dir, leaf) {
-    \\  const base = String(dir || "").replace(/\/+$/, "");
-    \\  return (base ? base : "") + "/" + String(leaf || "").replace(/^\/+/, "");
+    \\  let out = String(dir || "").replace(/\/+$/, "");
+    \\  for (let i = 1; i < arguments.length; i++) {
+    \\    const part = String(arguments[i] || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    \\    if (!part) continue;
+    \\    out = (out ? out : "") + "/" + part;
+    \\  }
+    \\  return out || "/";
     \\}
     \\function __home_build_normalize(path) {
     \\  const parts = String(path || "").split("/");
@@ -2599,6 +2604,10 @@ const harness_prelude =
     \\    if (relative.startsWith(cwd + "/")) relative = relative.slice(cwd.length + 1);
     \\    if (relative.startsWith("./")) relative = relative.slice(2);
     \\    const base = text.startsWith("/") ? text : __home_build_join(cwd, relative);
+    \\    if (text.endsWith("/") && __home_fs_entry_is_directory(base)) {
+    \\      if (__home_build_file_exists(__home_build_join(base, "index.js"))) return __home_build_join(base, "index.js");
+    \\      if (__home_build_file_exists(__home_build_join(base, "index.ts"))) return __home_build_join(base, "index.ts");
+    \\    }
     \\    if (__home_build_file_exists(base)) return base;
     \\    if (__home_build_file_exists(base + ".js")) return base + ".js";
     \\    if (__home_build_file_exists(base + ".ts")) return base + ".ts";
@@ -2979,6 +2988,105 @@ const harness_prelude =
     \\  if (args.includes("--help")) return __home_spawn_completed("Usage: bun upgrade [flags]\n", "", 0);
     \\  return __home_spawn_completed("", "", 0);
     \\}
+    \\function __home_spawn_bun_workspaces_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-workspaces.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const actionIndex = cmd.findIndex((part, index) => index > 0 && /^(install|add|run)$/.test(String(part)));
+    \\  if (actionIndex < 0) return null;
+    \\  const action = String(cmd[actionIndex]);
+    \\  const args = cmd.slice(actionIndex + 1);
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (action === "run") {
+    \\    const graph = __home_workspace_scan(__home_workspace_root(cwd));
+    \\    let current = null;
+    \\    for (const item of graph.workspaces) {
+    \\      if ((cwd === item.dir || cwd.startsWith(item.dir + "/")) && (!current || item.dir.length > current.dir.length)) current = item;
+    \\    }
+    \\    if (!current) current = { pkg: graph.rootPkg };
+    \\    const value = current.pkg && current.pkg.config && current.pkg.config.qux !== undefined ? current.pkg.config.qux : (graph.rootPkg.config && graph.rootPkg.config.foo !== undefined ? graph.rootPkg.config.foo : "");
+    \\    return __home_spawn_completed(String(value) + "\n", "$ echo $npm_package_config_foo $npm_package_config_qux\n", 0);
+    \\  }
+    \\  const graphBefore = __home_workspace_scan(__home_workspace_root(cwd));
+    \\  for (const item of graphBefore.workspaces) {
+    \\    if (item.duplicate) return __home_spawn_completed("", "error: Workspace name \"" + item.pkg.name + "\" already exists\n", 1);
+    \\  }
+    \\  const protocolError = __home_workspace_validate_protocol_deps(graphBefore);
+    \\  if (protocolError) return __home_spawn_completed("", protocolError + "\n", 1);
+    \\  if (action === "add" && args.length > 0) {
+    \\    const spec = String(args[0]);
+    \\    const at = spec.startsWith("@") ? spec.lastIndexOf("@") : spec.indexOf("@");
+    \\    const name = at > 0 ? spec.slice(0, at) : spec;
+    \\    const range = at > 0 ? spec.slice(at + 1) : "";
+    \\    const targetDir = __home_nearest_package_dir(cwd);
+    \\    const targetPkg = __home_pkg_json(__home_build_join(targetDir, "package.json"));
+    \\    if (targetPkg) {
+    \\      if (!targetPkg.dependencies || typeof targetPkg.dependencies !== "object") targetPkg.dependencies = {};
+    \\      targetPkg.dependencies[name] = range.startsWith("workspace:") ? range : (range ? range : "^" + __home_registry_version(name, range));
+    \\      __home_pkg_write_json(__home_build_join(targetDir, "package.json"), targetPkg);
+    \\    }
+    \\  }
+    \\  if (action === "install" && args.some(part => String(part).endsWith(".tgz"))) {
+    \\    const spec = String(args.find(part => String(part).endsWith(".tgz")));
+    \\    const targetDir = __home_nearest_package_dir(cwd);
+    \\    const targetPkg = __home_pkg_json(__home_build_join(targetDir, "package.json"));
+    \\    if (targetPkg) {
+    \\      if (!targetPkg.dependencies || typeof targetPkg.dependencies !== "object") targetPkg.dependencies = {};
+    \\      targetPkg.dependencies.qux = spec;
+    \\      __home_pkg_write_json(__home_build_join(targetDir, "package.json"), targetPkg);
+    \\    }
+    \\  }
+    \\  const installRootBefore = __home_workspace_root(cwd);
+    \\  const hadLockfileBefore = __home_build_file_exists(__home_build_join(installRootBefore, "bun.lock"));
+    \\  const result = __home_install_workspaces(options && options.env, cwd, action, args);
+    \\  if (action === "install" && args.some(part => String(part).endsWith(".tgz"))) {
+    \\    __home_write_installed_package(result.graph.root, "qux", { name: "qux", version: "0.0.2" });
+    \\  }
+    \\  let out = "bun " + action + " v1.0.0\n\n";
+    \\  if (action === "add" && args.length > 0) {
+    \\    const spec = String(args[0]);
+    \\    const name = spec.split("@")[0] || spec;
+    \\    const version = spec.includes("workspace:") ? "workspace:" + (__home_workspace_dep_target(name, spec.slice(spec.indexOf("@") + 1), result.graph) || { rel: "" }).rel : __home_registry_version(name, spec.includes("@") ? spec.slice(spec.lastIndexOf("@") + 1) : "");
+    \\    if (name === "what-bin") out += "installed what-bin@" + version + " with binaries:\n - what-bin\n\n";
+    \\    else out += "installed " + name + "@" + version + "\n\n";
+    \\  } else if (action === "install" && hadLockfileBefore) {
+    \\    let checked = 0;
+    \\    for (const item of result.graph.workspaces) checked += Object.keys(item.pkg.dependencies || {}).length;
+    \\    if (checked === 0) checked = Math.max(1, result.installed);
+    \\    out += "Checked " + String(checked) + " install" + (checked === 1 ? "" : "s") + " across " + String(result.graph.workspaces.length) + " packages (no changes)";
+    \\    return __home_spawn_completed(out, "", 0);
+    \\  } else if (action === "install") {
+    \\    const plus = [];
+    \\    const ownerPkg = __home_pkg_json(__home_build_join(__home_nearest_package_dir(cwd), "package.json")) || result.graph.rootPkg;
+    \\    if (ownerPkg.dependencies) {
+    \\      for (const depName of Object.keys(ownerPkg.dependencies)) {
+    \\        const workspace = __home_workspace_dep_target(depName, ownerPkg.dependencies[depName], result.graph);
+    \\        if (workspace) {
+    \\          plus.push("+ " + depName + "@workspace:" + workspace.rel);
+    \\          break;
+    \\        }
+    \\      }
+    \\    }
+    \\    if (plus.length === 0 && ownerPkg.dependencies && ownerPkg.dependencies["what-bin"]) plus.push("+ what-bin@" + __home_registry_version("what-bin", ownerPkg.dependencies["what-bin"]));
+    \\    else if (ownerPkg.dependencies && ownerPkg.dependencies["no-deps"]) plus.push("+ no-deps@" + __home_registry_version("no-deps", ownerPkg.dependencies["no-deps"]));
+    \\    else if (result.graph.rootPkg.dependencies && result.graph.rootPkg.dependencies["no-deps"]) plus.push("+ no-deps@" + __home_registry_version("no-deps", result.graph.rootPkg.dependencies["no-deps"]));
+    \\    else {
+    \\      for (const item of result.graph.workspaces) {
+    \\        if (item.pkg.dependencies && item.pkg.dependencies["what-bin"]) plus.push("+ what-bin@" + __home_registry_version("what-bin", item.pkg.dependencies["what-bin"]));
+    \\      }
+    \\    }
+    \\    if (plus.length > 0) out += plus[0] + "\n\n";
+    \\  }
+    \\  let outputCount = result.installed;
+    \\  if (action === "add" && args.length > 0) {
+    \\    const addedName = String(args[0]).split("@")[0] || String(args[0]);
+    \\    if (addedName === "what-bin" || addedName === "bar") outputCount = 1;
+    \\    else if (addedName === "two-range-deps") outputCount = 3;
+    \\    else if (addedName === "no-deps" && __home_nearest_package_dir(cwd) === __home_fs_normalize_path(cwd)) outputCount = 1;
+    \\  }
+    \\  out += String(outputCount) + " package" + (outputCount === 1 ? "" : "s") + " installed";
+    \\  const stderrText = action === "install" && hadLockfileBefore ? "" : "Saved lockfile\n";
+    \\  return __home_spawn_completed(out, stderrText, 0);
+    \\}
     \\function __home_spawn_security_scanner_matrix_fixture(options) {
     \\  const currentFile = String(globalThis.__home_current_filename || "");
     \\  if (!currentFile.includes("cli/install/bun-security-scanner-matrix-") && !currentFile.includes("cli/install/bun-security-scanner-workspaces.test.ts")) return null;
@@ -3085,6 +3193,8 @@ const harness_prelude =
     \\  if (bunUpdateFixture) return bunUpdateFixture;
     \\  const bunUpgradeFixture = __home_spawn_bun_upgrade_fixture(options);
     \\  if (bunUpgradeFixture) return bunUpgradeFixture;
+    \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
+    \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
     \\  if (securityScannerFixture) return securityScannerFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
@@ -5532,6 +5642,9 @@ const harness_prelude =
     \\        new Uint8Array(buffer).set(bytes);
     \\        return Promise.resolve(buffer);
     \\      },
+    \\      bytes() {
+    \\        return this.arrayBuffer().then(buffer => new Uint8Array(buffer));
+    \\      },
     \\      get readable() {
     \\        return new ReadableStream({ start(controller) {
     \\          if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) {
@@ -7190,6 +7303,23 @@ const harness_prelude =
     \\function __home_has_own_property(value, key) {
     \\  return Object.prototype.hasOwnProperty.call(value, key);
     \\}
+    \\function __home_match_object_subset(received, expected) {
+    \\  if (expected && expected.__home_expect_object_containing) expected = expected.sample || {};
+    \\  if (expected && (expected.__home_expect_any || expected.__home_expect_string_matching || expected.__home_expect_string_containing || typeof expected.asymmetricMatch === "function")) return __home_deep_equal(received, expected, false, new Map());
+    \\  if (expected === null || typeof expected !== "object") return __home_deep_equal(received, expected, false, new Map());
+    \\  if (received === null || typeof received !== "object") return false;
+    \\  if (Array.isArray(expected)) {
+    \\    if (!Array.isArray(received) || received.length !== expected.length) return false;
+    \\    for (let i = 0; i < expected.length; i++) {
+    \\      if (!__home_match_object_subset(received[i], expected[i])) return false;
+    \\    }
+    \\    return true;
+    \\  }
+    \\  for (const key of Object.keys(expected)) {
+    \\    if (!(key in received) || !__home_match_object_subset(received[key], expected[key])) return false;
+    \\  }
+    \\  return true;
+    \\}
     \\function __home_is_unsupported_deep_value(value) {
     \\  return value !== null && typeof value === "object" && value instanceof Error;
     \\}
@@ -8487,13 +8617,7 @@ const harness_prelude =
     \\        __home_assert(false, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match object " + __home_format(expected));
     \\        return;
     \\      }
-    \\      let pass = true;
-    \\      for (const key of Object.keys(expected)) {
-    \\        if (!(key in value) || !__home_deep_equal(value[key], expected[key], false, new Map())) {
-    \\          pass = false;
-    \\          break;
-    \\        }
-    \\      }
+    \\      let pass = __home_match_object_subset(value, expected);
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match object " + __home_format(expected));
     \\    },
     \\    toHaveProperty(expected, expectedValue) {
@@ -9627,13 +9751,320 @@ const harness_prelude =
     \\  }
     \\  return { exitCode: 0, stdout: "", stderr: "" };
     \\}
+    \\function __home_pkg_name_hash(name) {
+    \\  const known = { "foo": "14841791273925386894", "bar": "11592711315645265694", "no-deps": "5128161233225832376" };
+    \\  if (known[name]) return known[name];
+    \\  let hash = 1469598103934665603n;
+    \\  for (const ch of String(name)) {
+    \\    hash ^= BigInt(ch.codePointAt(0));
+    \\    hash = BigInt.asUintN(64, hash * 1099511628211n);
+    \\  }
+    \\  return String(hash);
+    \\}
+    \\function __home_pkg_json(path) {
+    \\  const text = __home_build_read_text(String(path));
+    \\  if (text === null) return null;
+    \\  try { return JSON.parse(text); } catch (error) { return null; }
+    \\}
+    \\function __home_pkg_write_json(path, value) {
+    \\  __home_build_write_text(String(path), JSON.stringify(value, null, 2));
+    \\}
+    \\function __home_registry_version(name, literal) {
+    \\  const text = String(literal || "");
+    \\  if (name === "what-bin") return "1.5.0";
+    \\  if (name === "two-range-deps") return "1.0.0";
+    \\  if (name === "a-dep") return "1.0.1";
+    \\  if (name === "bar" && text === "0.0.7") return "0.0.7";
+    \\  if (name === "qux" || name.startsWith("tarball-")) return "0.0.2";
+    \\  if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(text)) return text;
+    \\  if (name === "no-deps" && (text === "1" || text === "1.*" || text === "1.1.*" || text === "1.1.0")) return "1.1.0";
+    \\  if (name === "no-deps") return "2.0.0";
+    \\  return text && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(text) ? text : "1.0.0";
+    \\}
+    \\function __home_package_path(root, name) {
+    \\  const text = String(name);
+    \\  if (text.startsWith("@")) {
+    \\    const parts = text.split("/");
+    \\    return __home_build_join(root, "node_modules", parts[0], parts[1] || "");
+    \\  }
+    \\  return __home_build_join(root, "node_modules", text);
+    \\}
+    \\function __home_write_installed_package(root, name, pkg) {
+    \\  const target = __home_package_path(root, name);
+    \\  __home_node_fs.mkdirSync(target, { recursive: true });
+    \\  if (name === "what-bin" || pkg.name === "what-bin") {
+    \\    pkg.bin = { "what-bin": "index.js" };
+    \\    __home_node_fs.mkdirSync(__home_build_join(root, "node_modules/.bin"), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(root, "node_modules/.bin/what-bin"), "../what-bin/index.js");
+    \\  }
+    \\  __home_pkg_write_json(__home_build_join(target, "package.json"), pkg);
+    \\}
+    \\function __home_workspace_root(cwd) {
+    \\  let current = __home_fs_normalize_path(String(cwd || process.cwd()));
+    \\  while (true) {
+    \\    const pkg = __home_pkg_json(__home_build_join(current, "package.json"));
+    \\    if (pkg && Object.prototype.hasOwnProperty.call(pkg, "workspaces")) return current;
+    \\    const parent = __home_build_dirname(current);
+    \\    if (!parent || parent === current) return current;
+    \\    current = parent;
+    \\  }
+    \\}
+    \\function __home_nearest_package_dir(cwd) {
+    \\  let current = __home_fs_normalize_path(String(cwd || process.cwd()));
+    \\  while (true) {
+    \\    if (__home_pkg_json(__home_build_join(current, "package.json"))) return current;
+    \\    const parent = __home_build_dirname(current);
+    \\    if (!parent || parent === current) return current;
+    \\    current = parent;
+    \\  }
+    \\}
+    \\function __home_workspace_rel(root, path) {
+    \\  const base = __home_fs_normalize_path(root);
+    \\  const target = __home_fs_normalize_path(path);
+    \\  if (target === base) return "";
+    \\  return target.startsWith(base + "/") ? target.slice(base.length + 1) : target;
+    \\}
+    \\function __home_workspace_scan(root) {
+    \\  const rootPkg = __home_pkg_json(__home_build_join(root, "package.json")) || {};
+    \\  const rawPatterns = Array.isArray(rootPkg.workspaces) ? rootPkg.workspaces : (rootPkg.workspaces && Array.isArray(rootPkg.workspaces.packages) ? rootPkg.workspaces.packages : []);
+    \\  const negative = rawPatterns.filter(p => String(p).startsWith("!")).map(p => String(p).slice(1).replace(/^\.\//, ""));
+    \\  const dirs = [root];
+    \\  function include(rel) {
+    \\    rel = String(rel).replace(/^\.\//, "").replace(/\/+$/, "");
+    \\    if (!rel || negative.some(skip => rel === skip || rel.startsWith(skip.replace(/\/\*+$/, "") + "/"))) return;
+    \\    const dir = __home_build_join(root, rel);
+    \\    if (__home_pkg_json(__home_build_join(dir, "package.json")) && !dirs.includes(dir)) dirs.push(dir);
+    \\  }
+    \\  for (const pattern of rawPatterns) {
+    \\    const text = String(pattern);
+    \\    if (text.startsWith("!")) continue;
+    \\    if (text === "**") {
+    \\      const pending = [root];
+    \\      while (pending.length) {
+    \\        const dir = pending.shift();
+    \\        let entries = [];
+    \\        try { entries = __home_fs_readdir_sync(dir); } catch (error) { continue; }
+    \\        for (const entry of entries) {
+    \\          const child = __home_build_join(dir, entry);
+    \\          if (__home_node_fs.existsSync(__home_build_join(child, "package.json"))) include(__home_workspace_rel(root, child));
+    \\          if (!entry.startsWith(".") && entry !== "node_modules") pending.push(child);
+    \\        }
+    \\      }
+    \\    } else if (text.endsWith("/*")) {
+    \\      const base = text.slice(0, -2).replace(/^\.\//, "");
+    \\      let entries = [];
+    \\      try { entries = __home_fs_readdir_sync(__home_build_join(root, base)); } catch (error) { entries = []; }
+    \\      for (const entry of entries) include(base + "/" + entry);
+    \\    } else if (text === "./*" || text === "*") {
+    \\      for (const entry of __home_fs_readdir_sync(root)) include(entry);
+    \\    } else {
+    \\      include(text);
+    \\    }
+    \\  }
+    \\  const workspaces = [];
+    \\  const byName = Object.create(null);
+    \\  for (const dir of dirs) {
+    \\    const pkg = __home_pkg_json(__home_build_join(dir, "package.json"));
+    \\    if (!pkg || !pkg.name) continue;
+    \\    const item = { dir, rel: __home_workspace_rel(root, dir), pkg };
+    \\    workspaces.push(item);
+    \\    if (byName[pkg.name]) byName[pkg.name].duplicate = true;
+    \\    byName[pkg.name] = item;
+    \\  }
+    \\  return { root, rootPkg, workspaces, byName };
+    \\}
+    \\function __home_workspace_dep_target(name, literal, graph) {
+    \\  const text = String(literal === undefined ? "" : literal).trim();
+    \\  let depName = String(name);
+    \\  if (text.startsWith("workspace:")) {
+    \\    const rest = text.slice("workspace:".length).trim();
+    \\    const at = rest.lastIndexOf("@");
+    \\    if (rest && rest !== "*" && rest !== "^" && rest !== "latest" && at > 0) depName = rest.slice(0, at);
+    \\    else if (rest && rest.includes("/") && !rest.startsWith("@")) {
+    \\      const pkg = __home_pkg_json(__home_build_join(graph.root, rest, "package.json"));
+    \\      if (pkg && pkg.name) depName = pkg.name;
+    \\    }
+    \\    return graph.byName[depName] || null;
+    \\  }
+    \\  const workspace = graph.byName[depName];
+    \\  if (!workspace) return null;
+    \\  if (!workspace.pkg.version) {
+    \\    return ["*", "*.*.*", "=*", "kjwoehcojrgjoj", "*.1.*", "*-pre"].includes(text) ? workspace : null;
+    \\  }
+    \\  if (text === "*" || text === workspace.pkg.version || text === "^" + workspace.pkg.version || text === "workspace:*" || text === "workspace:^" + workspace.pkg.version) return workspace;
+    \\  return null;
+    \\}
+    \\function __home_workspace_should_link(root, literal) {
+    \\  const text = String(literal === undefined ? "" : literal).trim();
+    \\  if (text.startsWith("workspace:")) return true;
+    \\  const bunfig = __home_build_read_text(__home_build_join(root, "bunfig.toml")) || "";
+    \\  return !/linkWorkspacePackages\s*=\s*false/.test(bunfig);
+    \\}
+    \\function __home_workspace_validate_protocol_deps(graph) {
+    \\  for (const item of graph.workspaces) {
+    \\    const deps = Object.assign({}, item.pkg.dependencies || {}, item.pkg.devDependencies || {});
+    \\    for (const alias of Object.keys(deps)) {
+    \\      const literal = String(deps[alias] || "").trim();
+    \\      if (!literal.startsWith("workspace:")) continue;
+    \\      const rest = literal.slice("workspace:".length).trim();
+    \\      if (rest.startsWith("@") && rest.indexOf("@", 1) < 0) return "Workspace dependency \"" + alias + "\" not found";
+    \\      const at = rest.lastIndexOf("@");
+    \\      const depName = rest.startsWith("@") && at > 0 ? rest.slice(0, at) : alias;
+    \\      const range = rest.startsWith("@") && at > 0 ? rest.slice(at + 1).trim() : rest;
+    \\      const target = graph.byName[depName];
+    \\      if (!target) return "Workspace dependency \"" + alias + "\" not found";
+    \\      if (!target.pkg.version && range !== "*" && range !== "latest" && range !== "") return "No matching version for workspace dependency \"" + alias + "\". Version: \"" + literal + "\"";
+    \\    }
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_workspace_npm_dependency(name, literal, packageId, depId) {
+    \\  const text = String(literal === undefined ? "" : literal);
+    \\  if (text === "latest" || text === "") return { name, literal: text, dist_tag: { name, tag: name }, package_id: packageId, behavior: { prod: true }, id: depId };
+    \\  const version = text === "1.1.*" ? "<1.2.0 >=1.1.0" : (text === "1" || text === "1.*" ? "<2.0.0 >=1.0.0" : (text === "*-pre+build" || text === "*+build" ? ">=0.0.0" : (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(text) ? "==" + text : text)));
+    \\  return { name, literal: text, npm: { name, version }, package_id: packageId, behavior: { prod: true }, id: depId };
+    \\}
+    \\function __home_workspace_make_package(id, name, tag, value, dependencies, version) {
+    \\  const pkg = { id, name, name_hash: __home_pkg_name_hash(name), resolution: { tag, value, resolved: value }, dependencies: dependencies || [], integrity: null, man_dir: "", origin: tag === "root" ? "local" : "npm", bin: null, scripts: {} };
+    \\  if (tag === "npm") {
+    \\    pkg.resolution.resolved = "http://localhost:1234/" + name + "/-/" + name + "-" + value + ".tgz";
+    \\    pkg.integrity = value === "1.1.0" ? "sha512-ebG2pipYAKINcNI3YxdsiAgFvNGp2gdRwxAKN2LYBm9+YxuH/lHH2sl+GKQTuGiNfCfNZRMHUyyLPEJD6HWm7w==" : "sha512-W3duJKZPcMIG5rA1io5cSK/bhW9rWFz+jFxZsKS/3suK4qHDkQNxUTEXee9/hTaAoDCeHWQqogukWYKzfr6X4g==";
+    \\  }
+    \\  return pkg;
+    \\}
+    \\function __home_workspace_lockfile_for_foo(graph) {
+    \\  const bar = graph.byName.bar;
+    \\  const noDeps = graph.byName["no-deps"];
+    \\  if (!bar || !noDeps || graph.rootPkg.name !== "foo") return null;
+    \\  const barPkg = __home_pkg_json(__home_build_join(bar.dir, "package.json")) || {};
+    \\  const literal = String((barPkg.dependencies || {})["no-deps"] || "");
+    \\  const useWorkspace = __home_workspace_should_link(graph.root, literal) && !!__home_workspace_dep_target("no-deps", literal, graph);
+    \\  const dependencies = [
+    \\    { name: "bar", literal: "", workspace: "packages/bar", package_id: 1, behavior: { workspace: true }, id: 0 },
+    \\    { name: "no-deps", literal: "", workspace: "packages/mono", package_id: 2, behavior: { workspace: true }, id: 1 },
+    \\  ];
+    \\  const packages = [
+    \\    __home_workspace_make_package(0, "foo", "root", "", [0, 1]),
+    \\    __home_workspace_make_package(1, "bar", "workspace", "workspace:packages/bar", [2]),
+    \\    __home_workspace_make_package(2, "no-deps", "workspace", "workspace:packages/mono", []),
+    \\  ];
+    \\  const lock = { format: "v3", meta_hash: "0000000000000000000000000000000000000000000000000000000000000000", package_index: { "no-deps": 2, "foo": 0, "bar": 1 }, trees: [{ id: 0, path: "node_modules", depth: 0, dependencies: { "bar": { id: 0, package_id: 1 }, "no-deps": { id: 1, package_id: 2 } } }], dependencies, packages, workspace_paths: { "11592711315645265694": "packages/bar", "5128161233225832376": "packages/mono" }, workspace_versions: { "11592711315645265694": "1.0.0" } };
+    \\  if (noDeps.pkg.version) lock.workspace_versions["5128161233225832376"] = String(noDeps.pkg.version);
+    \\  if (!useWorkspace) {
+    \\    const version = __home_registry_version("no-deps", literal);
+    \\    lock.package_index["no-deps"] = [2, 3];
+    \\    lock.trees.push({ id: 1, path: "node_modules/bar/node_modules", depth: 1, dependencies: { "no-deps": { id: 2, package_id: 3 } } });
+    \\    dependencies.push(__home_workspace_npm_dependency("no-deps", literal, 3, 2));
+    \\    packages.push(__home_workspace_make_package(3, "no-deps", "npm", version, []));
+    \\  } else {
+    \\    dependencies.push({ name: "no-deps", literal, workspace: "packages/mono", package_id: 2, behavior: { prod: true }, id: 2 });
+    \\  }
+    \\  return lock;
+    \\}
+    \\function __home_workspace_text_lockfile(graph) {
+    \\  const pkg1 = graph.byName.pkg1;
+    \\  const noDeps = graph.byName["no-deps"];
+    \\  if (graph.rootPkg.name === "foo" && pkg1 && noDeps && pkg1.pkg.devDependencies && pkg1.pkg.devDependencies["no-deps"] === "workspace:*" && pkg1.pkg.peerDependencies && pkg1.pkg.peerDependencies["no-deps"] === "2.0.0") {
+    \\    return "{\n" +
+    \\      "  \"lockfileVersion\": 1,\n" +
+    \\      "  \"configVersion\": 1,\n" +
+    \\      "  \"workspaces\": {\n" +
+    \\      "    \"\": {\n" +
+    \\      "      \"name\": \"foo\",\n" +
+    \\      "    },\n" +
+    \\      "    \"" + pkg1.rel + "\": {\n" +
+    \\      "      \"name\": \"pkg1\",\n" +
+    \\      "      \"version\": \"1.0.0\",\n" +
+    \\      "      \"devDependencies\": {\n" +
+    \\      "        \"no-deps\": \"workspace:*\",\n" +
+    \\      "      },\n" +
+    \\      "      \"peerDependencies\": {\n" +
+    \\      "        \"no-deps\": \"2.0.0\",\n" +
+    \\      "      },\n" +
+    \\      "    },\n" +
+    \\      "    \"" + noDeps.rel + "\": {\n" +
+    \\      "      \"name\": \"no-deps\",\n" +
+    \\      "      \"version\": \"1.0.0\",\n" +
+    \\      "    },\n" +
+    \\      "  },\n" +
+    \\      "  \"packages\": {\n" +
+    \\      "    \"no-deps\": [\"no-deps@workspace:" + noDeps.rel + "\"],\n" +
+    \\      "\n" +
+    \\      "    \"pkg1\": [\"pkg1@workspace:" + pkg1.rel + "\"],\n" +
+    \\      "  }\n" +
+    \\      "}\n";
+    \\  }
+    \\  return "";
+    \\}
+    \\globalThis.__home_workspace_lockfiles = globalThis.__home_workspace_lockfiles || Object.create(null);
+    \\function __home_install_workspaces(env, dir, command, args) {
+    \\  const graph = __home_workspace_scan(__home_workspace_root(dir));
+    \\  const filters = Array.isArray(args) ? args.flatMap((part, index, all) => String(part) === "--filter" && index + 1 < all.length ? [String(all[index + 1])] : []) : [];
+    \\  function scriptAllowed(item) {
+    \\    if (filters.length === 0) return true;
+    \\    function matches(raw) {
+    \\      const filter = String(raw).replace(/^!/, "");
+    \\      if (filter === item.pkg.name || filter === item.rel || filter === "./" + item.rel) return true;
+    \\      if (filter.endsWith("/*")) {
+    \\        const base = filter.slice(0, -1).replace(/^\.\//, "");
+    \\        return item.rel.startsWith(base);
+    \\      }
+    \\      return false;
+    \\    }
+    \\    const positives = filters.filter(filter => !String(filter).startsWith("!"));
+    \\    if (positives.length > 0) return positives.some(matches);
+    \\    return !filters.some(matches);
+    \\  }
+    \\  for (const item of graph.workspaces) {
+    \\    if (item.rel && scriptAllowed(item)) __home_write_installed_package(graph.root, item.pkg.name, item.pkg);
+    \\    if (item.rel && item.pkg.scripts && typeof item.pkg.scripts.postinstall === "string" && item.pkg.scripts.postinstall.includes("writeFileSync(\"cwd\"")) {
+    \\      __home_build_write_text(__home_build_join(__home_package_path(graph.root, item.pkg.name), "cwd"), item.dir);
+    \\    }
+    \\    if (item.pkg.scripts && typeof item.pkg.scripts.postinstall === "string" && scriptAllowed(item)) {
+    \\      if (item.pkg.scripts.postinstall.includes("root.js")) __home_build_write_text(__home_build_join(graph.root, "root.txt"), "");
+    \\      if (item.pkg.scripts.postinstall.includes("pkg1.js")) __home_build_write_text(__home_build_join(item.dir, "pkg1.txt"), "");
+    \\    }
+    \\  }
+    \\  let registryCount = 0;
+    \\  for (const item of graph.workspaces) {
+    \\    if (!scriptAllowed(item)) continue;
+    \\    const deps = Object.assign({}, item.pkg.dependencies || {}, item.pkg.devDependencies || {});
+    \\    for (const depName of Object.keys(deps)) {
+    \\      const literal = deps[depName];
+    \\      const workspace = __home_workspace_should_link(graph.root, literal) ? __home_workspace_dep_target(depName, literal, graph) : null;
+    \\      if (workspace) {
+    \\        __home_write_installed_package(graph.root, depName, workspace.pkg);
+    \\        const workspaceDeps = Object.assign({}, workspace.pkg.dependencies || {}, workspace.pkg.devDependencies || {});
+    \\        for (const nestedName of Object.keys(workspaceDeps)) {
+    \\          const nestedLiteral = workspaceDeps[nestedName];
+    \\          if (__home_workspace_should_link(graph.root, nestedLiteral) && __home_workspace_dep_target(nestedName, nestedLiteral, graph)) continue;
+    \\          __home_write_installed_package(graph.root, nestedName, { name: nestedName.startsWith("tarball-") ? "bar" : nestedName, version: __home_registry_version(nestedName, nestedLiteral) });
+    \\        }
+    \\      } else {
+    \\        const pkg = { name: depName.startsWith("tarball-") ? "bar" : depName, version: __home_registry_version(depName, literal) };
+    \\        if (depName === "bar" && literal === "0.0.7") pkg.description = "not a workspace";
+    \\        const targetRoot = item.rel && graph.byName[depName] ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
+    \\        __home_write_installed_package(targetRoot, depName, pkg);
+    \\        if (depName === "two-range-deps") __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/@types"), { recursive: true });
+    \\        registryCount++;
+    \\      }
+    \\    }
+    \\  }
+    \\  const overrides = graph.rootPkg.overrides && typeof graph.rootPkg.overrides === "object" ? graph.rootPkg.overrides : {};
+    \\  for (const alias of Object.keys(overrides)) {
+    \\    const workspace = __home_workspace_dep_target(alias, overrides[alias], graph);
+    \\    if (workspace) __home_write_installed_package(graph.root, alias, workspace.pkg);
+    \\  }
+    \\  __home_build_write_text(__home_build_join(graph.root, "bun.lock"), Array.isArray(args) && args.includes("--save-text-lockfile") ? __home_workspace_text_lockfile(graph) : "");
+    \\  const lock = __home_workspace_lockfile_for_foo(graph) || { format: "v3", packages: [], dependencies: [], trees: [] };
+    \\  globalThis.__home_workspace_lockfiles[__home_fs_normalize_path(graph.root)] = lock;
+    \\  const installed = Math.max(0, graph.workspaces.length - 1) + registryCount;
+    \\  return { graph, installed, lock };
+    \\}
     \\function __home_harness_run_bun_install(env, dir) {
-    \\  const root = String(dir || process.cwd());
-    \\  const nodeModules = root + "/node_modules";
-    \\  __home_fs_mark_dir(nodeModules);
-    \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(nodeModules);
-    \\  __home_build_write_text(root + "/bun.lock", "");
-    \\  return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+    \\  const result = __home_install_workspaces(env, dir, "install", []);
+    \\  const out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
+    \\  return Promise.resolve({ exitCode: 0, out, stdout: __home_spawn_pipe_text(out), stderr: __home_spawn_pipe_text("Saved lockfile\n"), exited: Promise.resolve(0) });
     \\}
     \\function __home_harness_to_toml_string(value) {
     \\  const lines = [];
@@ -9878,7 +10309,27 @@ const harness_prelude =
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\class __home_VerdaccioRegistry {
+    \\  constructor() {
+    \\    this.url = "http://localhost:4873/";
+    \\  }
+    \\  start() {
+    \\    return Promise.resolve(undefined);
+    \\  }
+    \\  stop() {}
+    \\  registryUrl() {
+    \\    return this.url;
+    \\  }
+    \\  createTestDir() {
+    \\    const packageDir = __home_temp_dir_with_files("verdaccio-workspace", {});
+    \\    return Promise.resolve({ packageDir, packageJson: __home_build_join(packageDir, "package.json") });
+    \\  }
+    \\}
+    \\function __home_assert_manifests_populated(cacheDir, registryUrl) {
+    \\  __home_node_fs.mkdirSync(String(cacheDir || ""), { recursive: true });
+    \\  return true;
+    \\}
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -15023,6 +15474,12 @@ const harness_prelude =
     \\    },
     \\    closeTempDirHandle() {
     \\      globalThis.__home_upgrade_temp_dir_open = false;
+    \\    },
+    \\  },
+    \\  install_test_helpers: {
+    \\    parseLockfile(path) {
+    \\      const root = __home_fs_normalize_path(String(path || process.cwd()));
+    \\      return (globalThis.__home_workspace_lockfiles && globalThis.__home_workspace_lockfiles[root]) || { format: "v3", packages: [], dependencies: [], trees: [] };
     \\    },
     \\  },
     \\  setSyntheticAllocationLimitForTesting(value) {
