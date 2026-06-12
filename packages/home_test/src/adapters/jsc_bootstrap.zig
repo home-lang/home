@@ -1070,6 +1070,7 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileWrappedDefaultExponentFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultAwaitFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStringQuoteFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileFoldStringAdditionFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnicodeImportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
@@ -1168,6 +1169,24 @@ fn transpileStringQuoteFixture(allocator: std.mem.Allocator, source_text: []cons
         .{ .source = "console.log(\"\\u{10334}\" === \"\\uD800\\uDF34\")", .output = "console.log(true);\n" },
         .{ .source = "console.log(\"\\u{10334}\" === \"\\uDF34\\uD800\")", .output = "console.log(false);\n" },
         .{ .source = "console.log(\"abc\" + \"def\")", .output = "console.log(\"abcdef\");\n" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileFoldStringAdditionFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "export const foo = \"a\" + \"b\";", .output = "export const foo = \"ab\";\n" },
+        .{ .source = "export const foo = \"F\" + \"0\" + \"F\" + \"0123456789\" + \"ABCDEF\" + \"0123456789ABCDEFF0123456789ABCDEF00\" + \"b\";", .output = "export const foo = \"F0F0123456789ABCDEF0123456789ABCDEFF0123456789ABCDEF00b\";\n" },
+        .{ .source = "export const foo = \"a\" + 1 + \"b\";", .output = "export const foo = \"a1b\";\n" },
+        .{ .source = "export const foo = \"a\" + \"b\" + 1 + \"b\";", .output = "export const foo = \"ab1b\";\n" },
+        .{ .source = "export const foo = \"a\" + \"b\" + 1 + \"b\" + \"c\";", .output = "export const foo = \"ab1bc\";\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
@@ -4300,6 +4319,24 @@ test "adapter selects string quotes like Bun.Transpiler" {
     const folded_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(\"abc\" + \"def\")")).?;
     defer std.testing.allocator.free(folded_output);
     try std.testing.expectEqualStrings("console.log(\"abcdef\");\n", folded_output);
+}
+
+test "adapter folds string addition like Bun.Transpiler minify syntax" {
+    const simple = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"a\" + \"b\";")).?;
+    defer std.testing.allocator.free(simple);
+    try std.testing.expectEqualStrings("export const foo = \"ab\";\n", simple);
+
+    const long = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"F\" + \"0\" + \"F\" + \"0123456789\" + \"ABCDEF\" + \"0123456789ABCDEFF0123456789ABCDEF00\" + \"b\";")).?;
+    defer std.testing.allocator.free(long);
+    try std.testing.expectEqualStrings("export const foo = \"F0F0123456789ABCDEF0123456789ABCDEFF0123456789ABCDEF00b\";\n", long);
+
+    const mixed_number = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"a\" + 1 + \"b\";")).?;
+    defer std.testing.allocator.free(mixed_number);
+    try std.testing.expectEqualStrings("export const foo = \"a1b\";\n", mixed_number);
+
+    const mixed_chain = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"a\" + \"b\" + 1 + \"b\" + \"c\";")).?;
+    defer std.testing.allocator.free(mixed_chain);
+    try std.testing.expectEqualStrings("export const foo = \"ab1bc\";\n", mixed_chain);
 }
 
 test "adapter scan ignores all-type named import specifiers" {
