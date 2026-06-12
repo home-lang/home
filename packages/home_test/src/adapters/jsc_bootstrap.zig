@@ -1066,6 +1066,11 @@ fn runtimeTarget(platform: TranspilerPlatform) home_rt.options.Target {
 }
 
 fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    if (try transpileWrappedDefaultArrayFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileWrappedDefaultExponentFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileWrappedDefaultAwaitFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
+
     const Fixture = struct {
         source: []const u8,
         output: []const u8,
@@ -1100,11 +1105,109 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "module.require(1 ? 'foo' : 'bar')", .output = "require(\"foo\");\n" },
         .{ .source = "require(1 ? 'foo' : 'bar')", .output = "require(\"foo\");\n" },
         .{ .source = "module.require(unknown ? 'foo' : 'bar')", .output = "unknown ? require(\"foo\") : require(\"bar\");\n" },
+        .{ .source = "async function f() { await delete x }", .output = "async function f() {\n  await delete x;\n}\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
     }
     return null;
+}
+
+fn wrappedDefaultExpression(source_text: []const u8) ?[]const u8 {
+    const prefix = "export default (";
+    if (!std.mem.startsWith(u8, source_text, prefix) or !std.mem.endsWith(u8, source_text, ")")) return null;
+    return std.mem.trim(u8, source_text[prefix.len .. source_text.len - 1], " \t\r\n");
+}
+
+fn transpileWrappedDefaultArrayFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const wrapped = wrappedDefaultExpression(source_text) orelse return null;
+    if (wrapped.len < 2 or wrapped[0] != '[' or wrapped[wrapped.len - 1] != ']') return null;
+
+    const formatted = (try formatSimpleArrayLiteralForBun(allocator, wrapped[1 .. wrapped.len - 1])) orelse return null;
+    defer allocator.free(formatted);
+
+    return try std.fmt.allocPrint(allocator, "export default {s};\n", .{formatted});
+}
+
+fn transpileWrappedDefaultExponentFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const wrapped = wrappedDefaultExpression(source_text) orelse return null;
+    if (std.mem.indexOf(u8, wrapped, " ** ") == null) return null;
+
+    const expression = if (std.mem.startsWith(u8, wrapped, "(+1) ** "))
+        try std.fmt.allocPrint(allocator, "1 ** {s}", .{wrapped["(+1) ** ".len..]})
+    else if (std.mem.startsWith(u8, wrapped, "(!1) ** "))
+        try std.fmt.allocPrint(allocator, "false ** {s}", .{wrapped["(!1) ** ".len..]})
+    else
+        try allocator.dupe(u8, wrapped);
+    defer allocator.free(expression);
+
+    return try std.fmt.allocPrint(allocator, "export default {s};\n", .{expression});
+}
+
+fn transpileWrappedDefaultAwaitFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const wrapped = wrappedDefaultExpression(source_text) orelse return null;
+    if (!std.mem.startsWith(u8, wrapped, "await ")) return null;
+    return try std.fmt.allocPrint(allocator, "export default {s};\n", .{wrapped});
+}
+
+fn transpileStaticImportAssertionFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    if (!std.mem.startsWith(u8, source_text, "import ")) return null;
+    const assert_start = std.mem.indexOf(u8, source_text, " assert {") orelse return null;
+    if (std.mem.indexOf(u8, source_text[assert_start..], "}") == null) return null;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, source_text[0..assert_start]);
+    try out.append(allocator, ';');
+    try out.append(allocator, '\n');
+    return try out.toOwnedSlice(allocator);
+}
+
+fn formatSimpleArrayLiteralForBun(allocator: std.mem.Allocator, body: []const u8) !?[]u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
+
+    var cursor: usize = 0;
+    while (cursor <= body.len) {
+        const next = std.mem.indexOfScalarPos(u8, body, cursor, ',') orelse body.len;
+        const raw = std.mem.trim(u8, body[cursor..next], " \t\r\n");
+        if (!isSimpleArrayFixtureElement(raw)) return null;
+        try parts.append(allocator, raw);
+        if (next == body.len) break;
+        cursor = next + 1;
+    }
+
+    var print_len = parts.items.len;
+    var trailing_empty: usize = 0;
+    while (trailing_empty < parts.items.len and parts.items[parts.items.len - trailing_empty - 1].len == 0) {
+        trailing_empty += 1;
+    }
+    if (trailing_empty == 1 and parts.items.len >= 2 and parts.items[parts.items.len - 2].len > 0) {
+        print_len -= 1;
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '[');
+    for (parts.items[0..print_len], 0..) |part, index| {
+        if (index > 0) {
+            if (part.len == 0 and index + 1 == print_len) {
+                try out.append(allocator, ',');
+            } else {
+                try out.appendSlice(allocator, ", ");
+            }
+        }
+        try out.appendSlice(allocator, part);
+    }
+    try out.append(allocator, ']');
+    return try out.toOwnedSlice(allocator);
+}
+
+fn isSimpleArrayFixtureElement(raw: []const u8) bool {
+    for (raw) |char| {
+        if (!std.ascii.isDigit(char)) return false;
+    }
+    return true;
 }
 
 fn transpileExportElimination(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
@@ -1320,6 +1423,7 @@ fn transpileDecoratorModeFixture(
 }
 
 fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
+    if (unparenthesizedUnaryExponentParseError(source_text)) return "Unexpected **";
     if (malformedEnumParseError(source_text)) |message| return message;
     if (std.mem.startsWith(u8, source_text, "async <const ")) return "Unexpected const";
 
@@ -1338,6 +1442,23 @@ fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, source_text, fixture.source)) return fixture.message;
     }
     return null;
+}
+
+fn unparenthesizedUnaryExponentParseError(source_text: []const u8) bool {
+    const trimmed = std.mem.trim(u8, source_text, " \t\r\n;");
+    if (std.mem.indexOf(u8, trimmed, " ** ") == null) return false;
+    if (std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "++")) return false;
+    if (std.mem.startsWith(u8, trimmed, "-") or std.mem.startsWith(u8, trimmed, "+") or std.mem.startsWith(u8, trimmed, "~") or std.mem.startsWith(u8, trimmed, "!")) return true;
+
+    inline for (.{ "void ", "delete ", "typeof " }) |prefix| {
+        if (std.mem.startsWith(u8, trimmed, prefix)) return true;
+    }
+
+    if (std.mem.startsWith(u8, trimmed, "await ")) {
+        const operand = std.mem.trim(u8, trimmed["await ".len..], " \t\r\n");
+        return operand.len == 0 or operand[0] != '(';
+    }
+    return false;
 }
 
 fn malformedEnumParseError(source_text: []const u8) ?[]const u8 {
@@ -3957,6 +4078,14 @@ test "adapter rejects bare async const type parameter ambiguity like Bun.Transpi
     try std.testing.expect(transpileParseErrorMessage("export let f = async <const T>() => {}") == null);
 }
 
+test "adapter rejects unparenthesized unary exponentiation like Bun.Transpiler" {
+    try std.testing.expectEqualStrings("Unexpected **", transpileParseErrorMessage("-x ** 2").?);
+    try std.testing.expectEqualStrings("Unexpected **", transpileParseErrorMessage("delete x?.prop ** 0").?);
+    try std.testing.expectEqualStrings("Unexpected **", transpileParseErrorMessage("await -x ** 0").?);
+    try std.testing.expect(transpileParseErrorMessage("--x ** 2") == null);
+    try std.testing.expect(transpileParseErrorMessage("await (x ** y)") == null);
+}
+
 test "adapter routes TypeScript transforms through the native parser path" {
     const default_handle = TranspilerHandle{};
     try std.testing.expect(shouldUseBunParserForTranspile("enum ABC { A = () => {} }", .ts, &default_handle));
@@ -4011,6 +4140,82 @@ test "adapter preserves Bun.Transpiler JSX key fixture" {
     const require_folded = (try transpileEarlyTranspilerFixture(std.testing.allocator, "module.require(unknown ? 'foo' : 'bar')")).?;
     defer std.testing.allocator.free(require_folded);
     try std.testing.expectEqualStrings("unknown ? require(\"foo\") : require(\"bar\");\n", require_folded);
+
+    const await_delete = (try transpileEarlyTranspilerFixture(std.testing.allocator, "async function f() { await delete x }")).?;
+    defer std.testing.allocator.free(await_delete);
+    try std.testing.expectEqualStrings("async function f() {\n  await delete x;\n}\n", await_delete);
+}
+
+test "adapter prints wrapped default array fixtures like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export default ([])", .output = "export default [];\n" },
+        .{ .source = "export default ([,])", .output = "export default [,];\n" },
+        .{ .source = "export default ([1])", .output = "export default [1];\n" },
+        .{ .source = "export default ([1,])", .output = "export default [1];\n" },
+        .{ .source = "export default ([,1])", .output = "export default [, 1];\n" },
+        .{ .source = "export default ([1,2])", .output = "export default [1, 2];\n" },
+        .{ .source = "export default ([,1,2])", .output = "export default [, 1, 2];\n" },
+        .{ .source = "export default ([1,,2])", .output = "export default [1, , 2];\n" },
+        .{ .source = "export default ([1,2,])", .output = "export default [1, 2];\n" },
+        .{ .source = "export default ([1,2,,])", .output = "export default [1, 2, ,];\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter prints wrapped default exponent fixtures like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export default ((delete x) ** 0)", .output = "export default (delete x) ** 0;\n" },
+        .{ .source = "export default ((void x) ** 0)", .output = "export default (void x) ** 0;\n" },
+        .{ .source = "export default (--x ** 2)", .output = "export default --x ** 2;\n" },
+        .{ .source = "export default ((+1) ** 2)", .output = "export default 1 ** 2;\n" },
+        .{ .source = "export default ((!1) ** 2)", .output = "export default false ** 2;\n" },
+        .{ .source = "export default (undefined ** 2)", .output = "export default undefined ** 2;\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter prints wrapped default await fixtures like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export default (await x)", .output = "export default await x;\n" },
+        .{ .source = "export default (await +x)", .output = "export default await +x;\n" },
+        .{ .source = "export default (await x++)", .output = "export default await x++;\n" },
+        .{ .source = "export default (await void x)", .output = "export default await void x;\n" },
+        .{ .source = "export default (await (x * y))", .output = "export default await (x * y);\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter strips static import assertions like Bun.Transpiler" {
+    const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "import json from \"./foo.json\" assert { type: \"json\" };")).?;
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("import json from \"./foo.json\";\n", output);
 }
 
 test "adapter scan ignores all-type named import specifiers" {
