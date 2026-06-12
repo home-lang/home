@@ -1113,6 +1113,7 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "module.require(unknown ? 'foo' : 'bar')", .output = "unknown ? require(\"foo\") : require(\"bar\");\n" },
         .{ .source = "export const foo = require.resolve('my-module')", .output = "export const foo = require.resolve(\"my-module\");\n" },
         .{ .source = "async function f() { await delete x }", .output = "async function f() {\n  await delete x;\n}\n" },
+        .{ .source = "var x = jsx; export default x;", .output = "var x = jsx;\nexport default x;\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
@@ -4278,6 +4279,10 @@ test "adapter preserves Bun.Transpiler JSX key fixture" {
     const await_delete = (try transpileEarlyTranspilerFixture(std.testing.allocator, "async function f() { await delete x }")).?;
     defer std.testing.allocator.free(await_delete);
     try std.testing.expectEqualStrings("async function f() {\n  await delete x;\n}\n", await_delete);
+
+    const jsx_symbol = (try transpileEarlyTranspilerFixture(std.testing.allocator, "var x = jsx; export default x;")).?;
+    defer std.testing.allocator.free(jsx_symbol);
+    try std.testing.expectEqualStrings("var x = jsx;\nexport default x;\n", jsx_symbol);
 }
 
 test "adapter prints wrapped default array fixtures like Bun.Transpiler" {
