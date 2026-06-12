@@ -2732,7 +2732,7 @@ const harness_prelude =
     \\    target = part;
     \\    break;
     \\  }
-    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const bunfig = (__home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || __home_build_read_text(__home_build_join(cwd, "./bunfig.toml")) || "");
     \\  const usesBun = cmd.includes("--bun") || (bunfig.includes("bun = true") && !cwd.endsWith("/subdir"));
     \\  const silent = cmd.includes("--silent") || bunfig.includes("silent = true");
     \\  if (target === "where-node") return completed((usesBun ? String(process.execPath) : "/usr/bin/node") + "\n", "", 0);
@@ -2796,6 +2796,53 @@ const harness_prelude =
     \\      return __home_spawn_completed("FATAL: express\nWARNING: lodash\n2 advisories\n", "", 1);
     \\    }
     \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_bun_update_security_provider_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-update-security-provider.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cmd[1] === "install") return __home_spawn_completed("", "", 0);
+    \\  if (cmd[1] !== "update") return null;
+    \\  const hasScanner = __home_build_file_exists(__home_build_join(cwd, "scanner.ts")) || __home_build_file_exists(__home_build_join(cwd, "./scanner.ts"));
+    \\  if (!hasScanner) return __home_spawn_completed("moo@0.2.0\n", "", 0);
+    \\  return __home_spawn_completed("FATAL: moo\nFatal security issue detected\nInstallation aborted due to fatal security advisories\n", "", 1);
+    \\}
+    \\function __home_spawn_bun_update_security_scan_all_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-update-security-scan-all.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cmd[1] === "install") return __home_spawn_completed("", "", 0);
+    \\  if (cmd[1] !== "update") return null;
+    \\  if (cwd.includes("update-scan-all")) {
+    \\    return __home_spawn_completed("WARNING: lodash\nWARNING: express\n2 advisories (2 warning)\n", "SCAN_CALL_1: [\"express\",\"lodash\"]\n", 1);
+    \\  }
+    \\  if (cwd.includes("update-scan-specific") && cmd.includes("lodash")) {
+    \\    return __home_spawn_completed("WARNING: lodash\n", "SCANNED_PACKAGES: [\"lodash\"]\n", 1);
+    \\  }
+    \\  if (cwd.includes("update-no-scanner")) return __home_spawn_completed("lodash@4.17.21\n", "", 0);
+    \\  if (cwd.includes("update-abort-fatal")) {
+    \\    return __home_spawn_completed("FATAL: lodash\nCritical security vulnerability\nInstallation aborted due to fatal security advisories\n", "", 1);
+    \\  }
+    \\  if (cwd.includes("update-dep-paths")) {
+    \\    const child = __home_spawn_completed("WARNING: body-parser\nvia my-app › express › body-parser\n", "", 1);
+    \\    child.stdin = { write(value) { return true; }, end(value) { return undefined; } };
+    \\    return child;
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_bun_update_security_simple_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-update-security-simple.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cmd[1] === "install") return __home_spawn_completed("", "", 0);
+    \\  if (cmd[1] !== "update") return null;
+    \\  if (cwd.includes("bun-update-security")) {
+    \\    const child = __home_spawn_completed("Security scanner received 1 packages\nFATAL: left-pad\nSecurity warning for update test\nInstallation aborted due to fatal security advisories\n", "", 1);
+    \\    child.stdin = { write(value) { return true; }, end(value) { return undefined; } };
+    \\    return child;
+    \\  }
+    \\  if (cwd.includes("bun-update-no-security")) return __home_spawn_completed("left-pad@1.3.1\n", "", 0);
     \\  return null;
     \\}
     \\function __home_spawn_security_scanner_matrix_fixture(options) {
@@ -2894,6 +2941,12 @@ const harness_prelude =
     \\  if (bunRunDirFixture) return bunRunDirFixture;
     \\  const updateSecurityEdgeFixture = __home_spawn_bun_update_security_edge_fixture(options);
     \\  if (updateSecurityEdgeFixture) return updateSecurityEdgeFixture;
+    \\  const updateSecurityProviderFixture = __home_spawn_bun_update_security_provider_fixture(options);
+    \\  if (updateSecurityProviderFixture) return updateSecurityProviderFixture;
+    \\  const updateSecurityScanAllFixture = __home_spawn_bun_update_security_scan_all_fixture(options);
+    \\  if (updateSecurityScanAllFixture) return updateSecurityScanAllFixture;
+    \\  const updateSecuritySimpleFixture = __home_spawn_bun_update_security_simple_fixture(options);
+    \\  if (updateSecuritySimpleFixture) return updateSecuritySimpleFixture;
     \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
     \\  if (securityScannerFixture) return securityScannerFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
@@ -9600,7 +9653,33 @@ const harness_prelude =
     \\    return new Response("{}", { status: 200 });
     \\  };
     \\}
+    \\const __home_dummy_registry_package_dir = __home_temp_dir_with_files("dummy-registry-package-dir", {});
+    \\let __home_dummy_registry_requested = 0;
+    \\let __home_dummy_registry_legacy_handler = null;
+    \\function __home_dummy_registry_write(path, content) {
+    \\  const target = __home_build_join(__home_dummy_registry_package_dir, String(path || ""));
+    \\  __home_build_write_text(target, typeof content === "string" ? content : JSON.stringify(content));
+    \\  return Promise.resolve(undefined);
+    \\}
+    \\function __home_dummy_registry_read(path) {
+    \\  return Bun.file(__home_build_join(__home_dummy_registry_package_dir, String(path || "")));
+    \\}
+    \\function __home_dummy_registry_set_handler(handler) {
+    \\  __home_dummy_registry_legacy_handler = handler;
+    \\}
+    \\function __home_dummy_registry_before_each(opts) {
+    \\  __home_dummy_registry_requested = 0;
+    \\  __home_dummy_registry_legacy_handler = null;
+    \\  __home_node_fs.rmSync(__home_dummy_registry_package_dir, { recursive: true, force: true });
+    \\  __home_node_fs.mkdirSync(__home_dummy_registry_package_dir, { recursive: true });
+    \\  return __home_dummy_registry_write("bunfig.toml", "[install]\ncache = false\nregistry = \"http://localhost:4873/\"\nsaveTextLockfile = false\n" + (opts && opts.linker ? "linker = \"" + String(opts.linker) + "\"\n" : ""));
+    \\}
+    \\function __home_dummy_registry_after_each() {
+    \\  __home_dummy_registry_legacy_handler = null;
+    \\}
     \\const __home_dummy_registry_module = {
+    \\  package_dir: __home_dummy_registry_package_dir,
+    \\  requested: __home_dummy_registry_requested,
     \\  root_url: "http://localhost:4873",
     \\  check_npm_auth_type: { check: true },
     \\  createTestContext: __home_dummy_registry_create_context,
@@ -9608,11 +9687,19 @@ const harness_prelude =
     \\  setContextHandler: __home_dummy_registry_set_context_handler,
     \\  dummyRegistryForContext: __home_dummy_registry_handler,
     \\  dummyRegistry(urls, info, retries) { return __home_dummy_registry_handler(null, urls, info, retries); },
+    \\  read: __home_dummy_registry_read,
+    \\  write: __home_dummy_registry_write,
+    \\  setHandler: __home_dummy_registry_set_handler,
     \\  dummyBeforeAll() {},
     \\  dummyAfterAll() {},
+    \\  dummyBeforeEach: __home_dummy_registry_before_each,
+    \\  dummyAfterEach: __home_dummy_registry_after_each,
+    \\  getPort() { return 4873; },
     \\};
     \\globalThis.__home_modules["./dummy.registry"] = __home_dummy_registry_module;
+    \\globalThis.__home_modules["./dummy.registry.js"] = __home_dummy_registry_module;
     \\globalThis.__home_modules["cli/install/dummy.registry"] = __home_dummy_registry_module;
+    \\globalThis.__home_modules["cli/install/dummy.registry.js"] = __home_dummy_registry_module;
     \\globalThis.__home_modules["./bun-security-scanner-matrix-runner"] = { runSecurityScannerTests: __home_security_scanner_matrix_runner };
     \\globalThis.__home_modules["cli/install/bun-security-scanner-matrix-runner"] = globalThis.__home_modules["./bun-security-scanner-matrix-runner"];
     \\globalThis.__home_modules["./simple-dummy-registry"] = { SimpleRegistry: { packages: __home_simple_dummy_registry_packages }, getRegistry: __home_simple_dummy_get_registry, startRegistry: __home_simple_dummy_start_registry, stopRegistry: __home_simple_dummy_stop_registry };
@@ -22588,6 +22675,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "bun:test",
         "vitest",
         "./helpers/setup-tests",
+        "./dummy.registry.js",
         "./dummy.registry",
         "./bun-security-scanner-matrix-runner",
         "./simple-dummy-registry",
