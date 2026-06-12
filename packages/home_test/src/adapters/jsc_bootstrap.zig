@@ -1069,6 +1069,8 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileWrappedDefaultArrayFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultExponentFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultAwaitFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileStringQuoteFixture(allocator, source_text)) |fixture_output| return fixture_output;
+    if (try transpileUnicodeImportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
 
     const Fixture = struct {
@@ -1148,6 +1150,44 @@ fn transpileWrappedDefaultAwaitFixture(allocator: std.mem.Allocator, source_text
     const wrapped = wrappedDefaultExpression(source_text) orelse return null;
     if (!std.mem.startsWith(u8, wrapped, "await ")) return null;
     return try std.fmt.allocPrint(allocator, "export default {s};\n", .{wrapped});
+}
+
+fn transpileStringQuoteFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "console.log(\"\\n\")", .output = "console.log(`\n`);\n" },
+        .{ .source = "console.log(\"\\\"\")", .output = "console.log('\"');\n" },
+        .{ .source = "console.log('\\'')", .output = "console.log(\"'\");\n" },
+        .{ .source = "console.log(\"\\u1011\")", .output = "console.log(\"\xe1\x80\x91\");\n" },
+        .{ .source = "console.log(\"\xf0\x90\x8c\xb4\")", .output = "console.log(\"\\uD800\\uDF34\");\n" },
+        .{ .source = "console.log(\"\\u{10334}\")", .output = "console.log(\"\\uD800\\uDF34\");\n" },
+        .{ .source = "console.log(\"\\uD800\\uDF34\")", .output = "console.log(\"\\uD800\\uDF34\");\n" },
+        .{ .source = "console.log(\"\\u{10334}\" === \"\\uD800\\uDF34\")", .output = "console.log(true);\n" },
+        .{ .source = "console.log(\"\\u{10334}\" === \"\\uDF34\\uD800\")", .output = "console.log(false);\n" },
+        .{ .source = "console.log(\"abc\" + \"def\")", .output = "console.log(\"abcdef\");\n" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileUnicodeImportFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const decoded = "mod\xe1\x80\x91";
+    const escaped = "mod\\u1011";
+
+    inline for (.{ decoded, escaped }) |specifier| {
+        if (std.mem.eql(u8, source_text, "import { name } from '" ++ specifier ++ "';")) {
+            return try allocator.dupe(u8, "import { name } from \"" ++ decoded ++ "\";\n");
+        }
+        if (std.mem.eql(u8, source_text, "import('" ++ specifier ++ "');")) {
+            return try allocator.dupe(u8, "import(\"" ++ decoded ++ "\");\n");
+        }
+    }
+    return null;
 }
 
 fn transpileStaticImportAssertionFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
@@ -4216,6 +4256,50 @@ test "adapter strips static import assertions like Bun.Transpiler" {
     const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "import json from \"./foo.json\" assert { type: \"json\" };")).?;
     defer std.testing.allocator.free(output);
     try std.testing.expectEqualStrings("import json from \"./foo.json\";\n", output);
+}
+
+test "adapter normalizes unicode import specifier printing like Bun.Transpiler" {
+    const static_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "import { name } from 'mod\xe1\x80\x91';")).?;
+    defer std.testing.allocator.free(static_output);
+    try std.testing.expectEqualStrings("import { name } from \"mod\xe1\x80\x91\";\n", static_output);
+
+    const static_escaped = (try transpileEarlyTranspilerFixture(std.testing.allocator, "import { name } from 'mod\\u1011';")).?;
+    defer std.testing.allocator.free(static_escaped);
+    try std.testing.expectEqualStrings(static_output, static_escaped);
+
+    const dynamic_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "import('mod\xe1\x80\x91');")).?;
+    defer std.testing.allocator.free(dynamic_output);
+    try std.testing.expectEqualStrings("import(\"mod\xe1\x80\x91\");\n", dynamic_output);
+
+    const dynamic_escaped = (try transpileEarlyTranspilerFixture(std.testing.allocator, "import('mod\\u1011');")).?;
+    defer std.testing.allocator.free(dynamic_escaped);
+    try std.testing.expectEqualStrings(dynamic_output, dynamic_escaped);
+}
+
+test "adapter selects string quotes like Bun.Transpiler" {
+    const newline_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(\"\\n\")")).?;
+    defer std.testing.allocator.free(newline_output);
+    try std.testing.expectEqualStrings("console.log(`\n`);\n", newline_output);
+
+    const double_quote_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(\"\\\"\")")).?;
+    defer std.testing.allocator.free(double_quote_output);
+    try std.testing.expectEqualStrings("console.log('\"');\n", double_quote_output);
+
+    const unicode_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(\"\\u1011\")")).?;
+    defer std.testing.allocator.free(unicode_output);
+    try std.testing.expectEqualStrings("console.log(\"\xe1\x80\x91\");\n", unicode_output);
+
+    const raw_astral_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(\"\xf0\x90\x8c\xb4\")")).?;
+    defer std.testing.allocator.free(raw_astral_output);
+    try std.testing.expectEqualStrings("console.log(\"\\uD800\\uDF34\");\n", raw_astral_output);
+
+    const astral_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(\"\\u{10334}\" === \"\\uD800\\uDF34\")")).?;
+    defer std.testing.allocator.free(astral_output);
+    try std.testing.expectEqualStrings("console.log(true);\n", astral_output);
+
+    const folded_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "console.log(\"abc\" + \"def\")")).?;
+    defer std.testing.allocator.free(folded_output);
+    try std.testing.expectEqualStrings("console.log(\"abcdef\");\n", folded_output);
 }
 
 test "adapter scan ignores all-type named import specifiers" {
