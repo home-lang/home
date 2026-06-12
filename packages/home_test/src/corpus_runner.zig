@@ -1083,6 +1083,13 @@ const harness_prelude =
     \\      }
     \\    }
     \\  }
+    \\  if (globalThis.__home_symlinks) {
+    \\    const prefix = text.endsWith("/") ? text : text + "/";
+    \\    for (const key of Object.keys(globalThis.__home_symlinks)) {
+    \\      const normalized = __home_fs_normalize_path(key);
+    \\      if (normalized === text || normalized.startsWith(prefix)) delete globalThis.__home_symlinks[key];
+    \\    }
+    \\  }
     \\}
     \\function __home_fs_normalize_mode(mode, fallback) {
     \\  if (mode === undefined || mode === null) return fallback;
@@ -9970,19 +9977,44 @@ const harness_prelude =
     \\  __home_node_fs.symlinkSync(__home_isolated_link_target(aliasLink, storePackage), aliasLink, "dir");
     \\  const deps = Object.assign({}, pkg && pkg.dependencies || {});
     \\  for (const depName of Object.keys(deps)) {
-    \\    const depPkg = { name: depName, version: __home_registry_version(depName, deps[depName]) };
-    \\    if (depName === "b-dep-a") depPkg.dependencies = { "a-dep-b": "1.0.0" };
-    \\    const depStoreName = __home_isolated_store_name(depName, depPkg.version);
-    \\    const depStorePackage = __home_package_path(__home_build_join(root, "node_modules/.bun", depStoreName), depName);
+    \\    const depLiteral = deps[depName];
+    \\    const alias = String(depLiteral || "").match(/^npm:([^@]+)@(.+)$/);
+    \\    const depPackageName = alias ? alias[1] : depName;
+    \\    const depRange = alias ? alias[2] : depLiteral;
+    \\    const depPkg = { name: depPackageName, version: __home_registry_version(depPackageName, depRange) };
+    \\    if (depPackageName === "a-dep-b") depPkg.dependencies = { "b-dep-a": "1.0.0" };
+    \\    if (depPackageName === "b-dep-a") depPkg.dependencies = { "a-dep-b": "1.0.0" };
+    \\    if (depPackageName === "alias-loop-1") depPkg.dependencies = { "alias1": "npm:alias-loop-2@*" };
+    \\    if (depPackageName === "alias-loop-2") depPkg.dependencies = { "alias2": "npm:alias-loop-1@*" };
+    \\    const depStoreName = __home_isolated_store_name(depPackageName, depPkg.version);
+    \\    const depStoreEntry = __home_build_join(root, "node_modules/.bun", depStoreName);
+    \\    const depStorePackage = __home_package_path(depStoreEntry, depPackageName);
     \\    __home_node_fs.mkdirSync(depStorePackage, { recursive: true });
     \\    __home_pkg_write_json(__home_build_join(depStorePackage, "package.json"), depPkg);
     \\    const nestedLink = depName === packageName ? __home_package_path(storePackage, depName) : __home_package_path(storeEntry, depName);
     \\    __home_node_fs.mkdirSync(__home_build_dirname(nestedLink), { recursive: true });
     \\    __home_node_fs.symlinkSync(__home_isolated_link_target(nestedLink, depStorePackage), nestedLink, "dir");
+    \\    for (const nestedName of Object.keys(depPkg.dependencies || {})) {
+    \\      const nestedLiteral = depPkg.dependencies[nestedName];
+    \\      const nestedAlias = String(nestedLiteral || "").match(/^npm:([^@]+)@(.+)$/);
+    \\      const nestedPackageName = nestedAlias ? nestedAlias[1] : nestedName;
+    \\      const nestedRange = nestedAlias ? nestedAlias[2] : nestedLiteral;
+    \\      const nestedStorePackage = __home_package_path(__home_build_join(root, "node_modules/.bun", __home_isolated_store_name(nestedPackageName, __home_registry_version(nestedPackageName, nestedRange))), nestedPackageName);
+    \\      __home_node_fs.mkdirSync(nestedStorePackage, { recursive: true });
+    \\      const nestedPkg = { name: nestedPackageName, version: __home_registry_version(nestedPackageName, nestedRange) };
+    \\      if (nestedPackageName === "a-dep-b") nestedPkg.dependencies = { "b-dep-a": "1.0.0" };
+    \\      if (nestedPackageName === "b-dep-a") nestedPkg.dependencies = { "a-dep-b": "1.0.0" };
+    \\      if (nestedPackageName === "alias-loop-1") nestedPkg.dependencies = { "alias1": "npm:alias-loop-2@*" };
+    \\      if (nestedPackageName === "alias-loop-2") nestedPkg.dependencies = { "alias2": "npm:alias-loop-1@*" };
+    \\      __home_pkg_write_json(__home_build_join(nestedStorePackage, "package.json"), nestedPkg);
+    \\      const secondLink = __home_package_path(depStoreEntry, nestedName);
+    \\      __home_node_fs.mkdirSync(__home_build_dirname(secondLink), { recursive: true });
+    \\      __home_node_fs.symlinkSync(__home_isolated_link_target(secondLink, nestedStorePackage), secondLink, "dir");
+    \\    }
     \\    if (depName !== packageName) {
-    \\      const nestedAlias = __home_package_path(__home_build_join(root, "node_modules/.bun"), depName);
-    \\      __home_node_fs.mkdirSync(__home_build_dirname(nestedAlias), { recursive: true });
-    \\      __home_node_fs.symlinkSync(__home_isolated_link_target(nestedAlias, depStorePackage), nestedAlias, "dir");
+    \\      const packageAlias = __home_package_path(__home_build_join(root, "node_modules/.bun"), depPackageName);
+    \\      __home_node_fs.mkdirSync(__home_build_dirname(packageAlias), { recursive: true });
+    \\      __home_node_fs.symlinkSync(__home_isolated_link_target(packageAlias, depStorePackage), packageAlias, "dir");
     \\    }
     \\  }
     \\}
@@ -9990,6 +10022,40 @@ const harness_prelude =
     \\  const linkPath = __home_package_path(linkRoot, linkName);
     \\  __home_node_fs.mkdirSync(__home_build_dirname(linkPath), { recursive: true });
     \\  __home_node_fs.symlinkSync(__home_isolated_link_target(linkPath, workspace.dir), linkPath, "dir");
+    \\}
+    \\function __home_reset_node_modules_entries(path) {
+    \\  if (!__home_fs_dir_exists(path)) return;
+    \\  let entries = [];
+    \\  try { entries = __home_fs_readdir_sync(path); } catch (error) { return; }
+    \\  for (const entry of entries) __home_fs_mark_deleted(__home_build_join(path, entry));
+    \\}
+    \\function __home_install_reset_isolated_node_modules(graph) {
+    \\  const rootNodeModules = __home_build_join(graph.root, "node_modules");
+    \\  if (!__home_fs_dir_exists(rootNodeModules)) return;
+    \\  if (__home_fs_dir_exists(__home_build_join(rootNodeModules, ".bun"))) return;
+    \\  __home_reset_node_modules_entries(rootNodeModules);
+    \\  __home_node_fs.mkdirSync(__home_build_join(rootNodeModules, ".old_modules-home"), { recursive: true });
+    \\  for (const item of graph.workspaces) {
+    \\    if (!item.rel) continue;
+    \\    __home_reset_node_modules_entries(__home_build_join(item.dir, "node_modules"));
+    \\  }
+    \\}
+    \\function __home_install_linker(args, bunfig) {
+    \\  let linker = String(bunfig || "").includes('linker = "isolated"') ? "isolated" : "hoisted";
+    \\  for (let i = 0; i < (Array.isArray(args) ? args.length : 0); i++) {
+    \\    const part = String(args[i]);
+    \\    if (part === "--linker" && i + 1 < args.length) linker = String(args[++i]);
+    \\    else if (part.startsWith("--linker=")) linker = part.slice("--linker=".length);
+    \\  }
+    \\  return linker;
+    \\}
+    \\function __home_npm_alias(literal) {
+    \\  const text = String(literal || "");
+    \\  if (!text.startsWith("npm:")) return null;
+    \\  const spec = text.slice("npm:".length);
+    \\  const at = spec.lastIndexOf("@");
+    \\  if (at <= 0) return null;
+    \\  return { name: spec.slice(0, at), range: spec.slice(at + 1) };
     \\}
     \\function __home_workspace_root(cwd) {
     \\  let current = __home_fs_normalize_path(String(cwd || process.cwd()));
@@ -10311,7 +10377,7 @@ const harness_prelude =
     \\function __home_install_workspaces(env, dir, command, args) {
     \\  const graph = __home_workspace_scan(__home_workspace_root(dir));
     \\  const installBunfig = __home_build_read_text(__home_build_join(graph.root, "bunfig.toml")) || "";
-    \\  const isolatedLinker = installBunfig.includes('linker = "isolated"');
+    \\  const isolatedLinker = __home_install_linker(args, installBunfig) === "isolated";
     \\  const filters = Array.isArray(args) ? args.flatMap((part, index, all) => String(part) === "--filter" && index + 1 < all.length ? [String(all[index + 1])] : []) : [];
     \\  const graphHasNoDeps = graph.workspaces.some(workspace => {
     \\    const deps = Object.assign({}, workspace.pkg.dependencies || {}, workspace.pkg.devDependencies || {});
@@ -10344,7 +10410,10 @@ const harness_prelude =
     \\  }
     \\  let registryCount = 0;
     \\  const catalogErrors = [];
-    \\  if (isolatedLinker) __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/.bun"), { recursive: true });
+    \\  if (isolatedLinker) {
+    \\    __home_install_reset_isolated_node_modules(graph);
+    \\    __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/.bun"), { recursive: true });
+    \\  }
     \\  for (const item of graph.workspaces) {
     \\    if (!scriptAllowed(item)) continue;
     \\    const deps = Object.assign({}, item.pkg.dependencies || {}, item.pkg.devDependencies || {});
@@ -10372,11 +10441,18 @@ const harness_prelude =
     \\        }
     \\      } else {
     \\        const fileDep = String(literal).startsWith("file:") ? __home_local_file_dep(graph.root, item.dir, depName, literal) : null;
-    \\        const pkg = fileDep ? fileDep.pkg : { name: depName.startsWith("tarball-") ? "bar" : depName, version: __home_registry_version(depName, literal) };
+    \\        const depAlias = __home_npm_alias(literal);
+    \\        const registryName = depAlias ? depAlias.name : (depName.startsWith("tarball-") ? "bar" : depName);
+    \\        const registryLiteral = depAlias ? depAlias.range : literal;
+    \\        const registryVersionName = depAlias ? depAlias.name : depName;
+    \\        const pkg = fileDep ? fileDep.pkg : { name: registryName, version: __home_registry_version(registryVersionName, registryLiteral) };
     \\        if (depName === "bar" && literal === "0.0.7") pkg.description = "not a workspace";
     \\        if (depName === "two-range-deps") pkg.dependencies = { "no-deps": "^1.0.0", "@types/is-number": ">=1.0.0" };
+    \\        if (depName === "alias-loop-1") pkg.dependencies = { "alias1": "npm:alias-loop-2@*" };
+    \\        if (depName === "alias-loop-2") pkg.dependencies = { "alias2": "npm:alias-loop-1@*" };
     \\        if (isolatedLinker && depName === "a-dep") pkg.dependencies = { "a-dep-b": "1.0.0" };
     \\        if (depName === "a-dep-b") pkg.dependencies = { "b-dep-a": "1.0.0" };
+    \\        if (depName === "b-dep-a") pkg.dependencies = { "a-dep-b": "1.0.0" };
     \\        if (depName === "self-dep" && String(literal) === "1.0.2") pkg.dependencies = { "self-dep": "1.0.1" };
     \\        if (depName === "one-optional-peer-dep" && pkg.version === "1.0.1" && !graphHasNoDeps) pkg.dependencies = { "no-deps": "^1.0.0" };
     \\        if (depName === "one-one-dep") pkg.dependencies = { "no-deps": "1.0.1" };
