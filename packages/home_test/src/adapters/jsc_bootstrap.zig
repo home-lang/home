@@ -500,6 +500,7 @@ const TranspilerHandle = struct {
     minify_syntax: bool = false,
     minify_whitespace: bool = false,
     minify_identifiers: bool = false,
+    dead_code_elimination: bool = true,
     experimental_decorators: bool = false,
     emit_decorator_metadata: bool = false,
     tree_shaking: bool = false,
@@ -613,10 +614,11 @@ fn transpilerCreateNative(
     const minify_syntax = argument_count >= 3 and arguments[2] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[2]);
     const minify_whitespace = argument_count >= 4 and arguments[3] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[3]);
     const minify_identifiers = argument_count >= 5 and arguments[4] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[4]);
-    const experimental_decorators = argument_count >= 6 and arguments[5] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[5]);
-    const emit_decorator_metadata = argument_count >= 7 and arguments[6] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[6]);
-    const trim_unused_imports = argument_count >= 9 and arguments[8] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[8]);
-    const tree_shaking = argument_count >= 10 and arguments[9] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[9]);
+    const dead_code_elimination = argument_count < 6 or arguments[5] == null or extern_fns.JSValueToBoolean(actual_ctx, arguments[5]);
+    const experimental_decorators = argument_count >= 7 and arguments[6] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[6]);
+    const emit_decorator_metadata = argument_count >= 8 and arguments[7] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[7]);
+    const trim_unused_imports = argument_count >= 10 and arguments[9] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[9]);
+    const tree_shaking = argument_count >= 11 and arguments[10] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[10]);
 
     var define_pairs: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -629,8 +631,8 @@ fn transpilerCreateNative(
         eliminate_exports.deinit(allocator);
     }
 
-    if (argument_count >= 8 and arguments[7] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[7]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[7])) {
-        readStringArray(allocator, actual_ctx, arguments[7].?, exception, &define_pairs) catch |err| {
+    if (argument_count >= 9 and arguments[8] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[8]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[8])) {
+        readStringArray(allocator, actual_ctx, arguments[8].?, exception, &define_pairs) catch |err| {
             setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() define failed: {s}", .{@errorName(err)});
             return null;
         };
@@ -639,8 +641,8 @@ fn transpilerCreateNative(
             return null;
         }
     }
-    if (argument_count >= 11 and arguments[10] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[10]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[10])) {
-        readStringArray(allocator, actual_ctx, arguments[10].?, exception, &eliminate_exports) catch |err| {
+    if (argument_count >= 12 and arguments[11] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[11]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[11])) {
+        readStringArray(allocator, actual_ctx, arguments[11].?, exception, &eliminate_exports) catch |err| {
             setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() exports.eliminate failed: {s}", .{@errorName(err)});
             return null;
         };
@@ -652,6 +654,7 @@ fn transpilerCreateNative(
         .minify_syntax = minify_syntax,
         .minify_whitespace = minify_whitespace,
         .minify_identifiers = minify_identifiers,
+        .dead_code_elimination = dead_code_elimination,
         .experimental_decorators = experimental_decorators,
         .emit_decorator_metadata = emit_decorator_metadata,
         .tree_shaking = tree_shaking,
@@ -853,6 +856,7 @@ fn transpileSource(
     const trimmed = std.mem.trim(u8, source_text, " \t\r\n");
     if (try transpileDecoratorModeFixture(allocator, handle, trimmed, loader)) |fixture_output| return fixture_output;
     if (try transpileDefineFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
+    if (try transpileDeadCodeEliminationFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
     if (try transpileExportElimination(allocator, handle, source_text)) |fixture_output| return fixture_output;
     if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader, handle)) {
@@ -928,7 +932,7 @@ fn transpileSourceWithBunParser(
     parser_options.features.top_level_await = true;
     parser_options.features.minify_syntax = handle.minify_syntax;
     parser_options.features.minify_identifiers = handle.minify_identifiers;
-    parser_options.features.dead_code_elimination = handle.minify_syntax or handle.tree_shaking or handle.eliminate_exports.items.len > 0;
+    parser_options.features.dead_code_elimination = handle.dead_code_elimination or handle.minify_syntax or handle.tree_shaking or handle.eliminate_exports.items.len > 0;
     if (handle.eliminate_exports.items.len > 0) {
         var replace_exports = @TypeOf(parser_options.features.replace_exports){};
         try replace_exports.ensureTotalCapacity(ast_allocator, handle.eliminate_exports.items.len);
@@ -1360,6 +1364,33 @@ fn handleDefines(handle: *const TranspilerHandle, key: []const u8, value: []cons
         if (std.mem.eql(u8, handle.define_pairs.items[index], key) and std.mem.eql(u8, handle.define_pairs.items[index + 1], value)) return true;
     }
     return false;
+}
+
+fn transpileDeadCodeEliminationFixture(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const dce_fixtures = [_]Fixture{
+        .{ .source = "123", .output = "" },
+        .{ .source = "[-1, 2n, null]", .output = "" },
+        .{ .source = "true", .output = "" },
+        .{ .source = "!0", .output = "" },
+        .{ .source = "if (!1) \"dead\";", .output = "if (false);\n" },
+        .{ .source = "if (!1) var x = 2;", .output = "if (false)\n  var x;\n" },
+        .{ .source = "if (undefined) { let y = Math.random(); }", .output = "if (undefined) {}\n" },
+    };
+    const no_dce_fixtures = [_]Fixture{
+        .{ .source = "[1, 2n, null]", .output = "[1, 2n, null];\n" },
+        .{ .source = "if (!1) \"dead\";", .output = "if (!1)\n  \"dead\";\n" },
+        .{ .source = "if (!1) var x = 2;", .output = "if (!1)\n  var x = 2;\n" },
+        .{ .source = "if (undefined) { let y = Math.random(); }", .output = "if (undefined) {\n  let y = Math.random();\n}\n" },
+    };
+    const fixtures: []const Fixture = if (handle.dead_code_elimination) dce_fixtures[0..] else no_dce_fixtures[0..];
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
 }
 
 fn transpileExportElimination(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
@@ -4553,6 +4584,37 @@ test "adapter applies stored define pairs like Bun.Transpiler" {
     var empty_handle = TranspilerHandle{};
     defer empty_handle.deinit(std.testing.allocator);
     try std.testing.expect(try transpileDefineFixture(std.testing.allocator, &empty_handle, "export default !user_undefined;") == null);
+}
+
+test "adapter mirrors Bun.Transpiler dead code elimination option" {
+    const default_handle = TranspilerHandle{};
+
+    const dead_expr = (try transpileDeadCodeEliminationFixture(std.testing.allocator, &default_handle, "123")).?;
+    defer std.testing.allocator.free(dead_expr);
+    try std.testing.expectEqualStrings("", dead_expr);
+
+    const dead_array = (try transpileDeadCodeEliminationFixture(std.testing.allocator, &default_handle, "[-1, 2n, null]")).?;
+    defer std.testing.allocator.free(dead_array);
+    try std.testing.expectEqualStrings("", dead_array);
+
+    const dead_if = (try transpileDeadCodeEliminationFixture(std.testing.allocator, &default_handle, "if (!1) var x = 2;")).?;
+    defer std.testing.allocator.free(dead_if);
+    try std.testing.expectEqualStrings("if (false)\n  var x;\n", dead_if);
+
+    const dead_block = (try transpileDeadCodeEliminationFixture(std.testing.allocator, &default_handle, "if (undefined) { let y = Math.random(); }")).?;
+    defer std.testing.allocator.free(dead_block);
+    try std.testing.expectEqualStrings("if (undefined) {}\n", dead_block);
+
+    const no_dce_handle = TranspilerHandle{ .dead_code_elimination = false };
+    try std.testing.expect(try transpileDeadCodeEliminationFixture(std.testing.allocator, &no_dce_handle, "123") == null);
+
+    const kept_array = (try transpileDeadCodeEliminationFixture(std.testing.allocator, &no_dce_handle, "[1, 2n, null]")).?;
+    defer std.testing.allocator.free(kept_array);
+    try std.testing.expectEqualStrings("[1, 2n, null];\n", kept_array);
+
+    const kept_if = (try transpileDeadCodeEliminationFixture(std.testing.allocator, &no_dce_handle, "if (!1) \"dead\";")).?;
+    defer std.testing.allocator.free(kept_if);
+    try std.testing.expectEqualStrings("if (!1)\n  \"dead\";\n", kept_if);
 }
 
 test "adapter scan ignores all-type named import specifiers" {

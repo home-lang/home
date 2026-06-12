@@ -5246,6 +5246,7 @@ const harness_prelude =
     \\    const minifySyntax = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.syntax);
     \\    const minifyWhitespace = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.whitespace);
     \\    const minifyIdentifiers = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.identifiers);
+    \\    const deadCodeElimination = options && Object.prototype.hasOwnProperty.call(options, "deadCodeElimination") ? !!options.deadCodeElimination : true;
     \\    const treeShaking = !!(options && options.treeShaking);
     \\    const trimUnusedImports = options && Object.prototype.hasOwnProperty.call(options, "trimUnusedImports") ? !!options.trimUnusedImports : treeShaking;
     \\    const definePairs = [];
@@ -5272,6 +5273,7 @@ const harness_prelude =
     \\      minifySyntax,
     \\      minifyWhitespace,
     \\      minifyIdentifiers,
+    \\      deadCodeElimination,
     \\      !!compilerOptions.experimentalDecorators,
     \\      !!compilerOptions.emitDecoratorMetadata,
     \\      definePairs,
