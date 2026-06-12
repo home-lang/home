@@ -2966,6 +2966,19 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_bun_upgrade_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-upgrade.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "upgrade") return null;
+    \\  const args = cmd.slice(2);
+    \\  const packageNames = args.filter(part => !String(part).startsWith("--"));
+    \\  if (packageNames.length > 0) {
+    \\    const suggested = ["bun", "update"].concat(args).join(" ");
+    \\    return __home_spawn_completed("", "error: This command updates Bun itself, and does not take package names.\nnote: Use `" + suggested + "` instead.\n", 1);
+    \\  }
+    \\  if (args.includes("--help")) return __home_spawn_completed("Usage: bun upgrade [flags]\n", "", 0);
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
     \\function __home_spawn_security_scanner_matrix_fixture(options) {
     \\  const currentFile = String(globalThis.__home_current_filename || "");
     \\  if (!currentFile.includes("cli/install/bun-security-scanner-matrix-") && !currentFile.includes("cli/install/bun-security-scanner-workspaces.test.ts")) return null;
@@ -3070,6 +3083,8 @@ const harness_prelude =
     \\  if (updateSecuritySimpleFixture) return updateSecuritySimpleFixture;
     \\  const bunUpdateFixture = __home_spawn_bun_update_fixture(options);
     \\  if (bunUpdateFixture) return bunUpdateFixture;
+    \\  const bunUpgradeFixture = __home_spawn_bun_upgrade_fixture(options);
+    \\  if (bunUpgradeFixture) return bunUpgradeFixture;
     \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
     \\  if (securityScannerFixture) return securityScannerFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
@@ -7663,6 +7678,10 @@ const harness_prelude =
     \\  __home_bun_tests.todo++;
     \\};
     \\function __home_describe(name, fn, only) {
+    \\  if (typeof name === "function" && fn === undefined) {
+    \\    fn = name;
+    \\    name = "";
+    \\  }
     \\  if (typeof fn !== "function") return;
     \\  const parent = globalThis.__home_current_scope;
     \\  const scope = {
@@ -13362,6 +13381,14 @@ const harness_prelude =
     \\      if (text === null) return Promise.reject(new Error("ENOENT: no such file or directory, open '" + String(path) + "'"));
     \\      return Promise.resolve(typeof Buffer === "function" ? Buffer.from(text) : text);
     \\    },
+    \\    copyFile(source, destination) {
+    \\      const src = String(source);
+    \\      const dest = String(destination);
+    \\      const text = __home_build_read_text(src);
+    \\      __home_node_fs.mkdirSync(__home_build_dirname(dest), { recursive: true });
+    \\      __home_build_write_text(dest, text === null ? "" : text);
+    \\      return Promise.resolve(undefined);
+    \\    },
     \\    writeFile(path, data) {
     \\      __home_node_fs.writeFileSync(path, String(data || ""));
     \\      return Promise.resolve(undefined);
@@ -14989,6 +15016,14 @@ const harness_prelude =
     \\    return {
     \\      entries: contents === undefined ? [] : [{ pathname: "package/package.json", contents }],
     \\    };
+    \\  },
+    \\  upgrade_test_helpers: {
+    \\    openTempDirWithoutSharingDelete() {
+    \\      globalThis.__home_upgrade_temp_dir_open = true;
+    \\    },
+    \\    closeTempDirHandle() {
+    \\      globalThis.__home_upgrade_temp_dir_open = false;
+    \\    },
     \\  },
     \\  setSyntheticAllocationLimitForTesting(value) {
     \\    const previous = globalThis.__home_synthetic_allocation_limit || Infinity;
@@ -22891,7 +22926,11 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "ws",
     };
     for (modules) |name| {
-        if (std.mem.startsWith(u8, source[start..], name)) return .{ .name = name, .end = start + name.len };
+        if (std.mem.startsWith(u8, source[start..], name)) {
+            const end = start + name.len;
+            if (end < source.len and source[end] != '"' and source[end] != '\'') continue;
+            return .{ .name = name, .end = end };
+        }
     }
     return null;
 }
@@ -26361,6 +26400,20 @@ test "Bun internal testing import rewrite lowers default import" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
 }
 
+test "Bun internal testing import rewrite handles bun prefix ambiguity" {
+    const source =
+        \\import { upgrade_test_helpers } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\test("helpers", () => expect(typeof upgrade_test_helpers.openTempDirWithoutSharingDelete).toBe("function"));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-upgrade.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { upgrade_test_helpers } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"bun:internal-for-testing\"") == null);
+}
+
 test "Bun internal testing import rewrite lowers named PowerShell import" {
     const source =
         \\import { escapePowershell } from "bun:internal-for-testing";
@@ -29316,6 +29369,28 @@ test "bootstrap rewrite lowers node buffer named Buffer import" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { Buffer } = globalThis.__home_import(\"node:buffer\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:buffer\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "test.concurrent.each") != null);
+}
+
+test "bootstrap runner registers callback-only describe.concurrent blocks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\describe.concurrent(() => {
+        \\  it("works", () => expect(1).toBe(1));
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-upgrade.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap rewrite lowers deno harness imports" {
