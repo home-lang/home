@@ -4841,6 +4841,10 @@ fn takeNativeParseError() ?[]const u8 {
 }
 
 fn selfExePathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.process.executablePath(std.Options.debug_io, &exe_buf)) |n| {
+        if (n > 0) return allocator.dupe(u8, exe_buf[0..n]);
+    } else |_| {}
     const cwd = try currentWorkingDirectoryAlloc(allocator);
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, "zig-out/bin/home" });

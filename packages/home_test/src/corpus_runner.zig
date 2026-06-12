@@ -3087,6 +3087,53 @@ const harness_prelude =
     \\  const stderrText = action === "install" && hadLockfileBefore ? "" : "Saved lockfile\n";
     \\  return __home_spawn_completed(out, stderrText, 0);
     \\}
+    \\function __home_spawn_bunx_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bunx.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length >= 2 && cmd[1] === "install") {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\    if (pkg.dependencies && pkg.dependencies["print-pm"]) {
+    \\      __home_write_installed_package(cwd, "print-pm", { name: "print-pm", version: "1.0.0", bin: { "print-pm": "index.js" } });
+    \\      __home_build_write_text(__home_build_join(cwd, "bun.lock"), "");
+    \\      return __home_spawn_completed("bun install v1.0.0\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\    }
+    \\  }
+    \\  const xIndex = cmd.findIndex((part, index) => (index > 0 && part === "x") || (index === 0 && part === "bunx"));
+    \\  if (xIndex < 0) return null;
+    \\  const args = cmd.slice(xIndex + 1).filter(part => part !== "--bun");
+    \\  if (args[0] === "--version" || args[0] === "-v") return __home_spawn_completed(String(Bun.version || "0.0.0-home") + "\n", "", 0);
+    \\  if (args[0] === "--revision") return __home_spawn_completed(String(Bun.version || "0.0.0-home") + " (" + String(Bun.revision || "0000000").slice(0, 7) + ")\n", "", 0);
+    \\  if (args[0] === "--package" && !args[1]) return __home_spawn_completed("", "--package requires a package name\n", 1);
+    \\  if ((args[0] === "--package" || args[0] === "-p") && args[1] && !args[2]) return __home_spawn_completed("", "When using --package, you must specify the binary to run\n", 1);
+    \\  if (String(args[0] || "").startsWith("--package=") && !args[1]) return __home_spawn_completed("", "When using --package, you must specify the binary to run\n", 1);
+    \\  let packageName = "";
+    \\  if (args[0] === "--package" && args[1]) packageName = String(args[1]);
+    \\  else if (args[0] === "-p" && args[1]) packageName = String(args[1]);
+    \\  else if (String(args[0] || "").startsWith("--package=")) packageName = String(args[0]).slice("--package=".length);
+    \\  if (packageName) {
+    \\    const handler = __home_dummy_registry_legacy_handler;
+    \\    if (handler && Array.isArray(handler.__home_urls)) handler.__home_urls.push("http://localhost:4873/" + encodeURIComponent(packageName));
+    \\    if (packageName === "multi-tool-pkg" && args.includes("multi-tool-alt")) return __home_spawn_completed("EXECUTED: multi-tool-alt (alternate binary)\n", "Saved lockfile\n", 0);
+    \\    return __home_spawn_completed("", "Saved lockfile\n", 0);
+    \\  }
+    \\  if (args[0] === "uglify-js" && args.includes("--compress")) return __home_spawn_completed("console.log(42);\n", "", 0);
+    \\  if (String(args[0] || "").startsWith("esbuild@")) return __home_spawn_completed("0.25.0\n", "", 0);
+    \\  if (args[0] === "@babel/cli" && args.includes("--help")) return __home_spawn_completed("Usage: babel [options]\n", "", 0);
+    \\  if (String(args[0] || "").startsWith("@angular/cli") && args.includes("--help")) return __home_spawn_completed("Angular CLI\n", "", 0);
+    \\  if (args[0] === "@scope/install") return __home_spawn_completed("CORRECT: ran the scoped package's bin\n", "", 0);
+    \\  if (args[0] === "--no-install" && args[1] === "@myscope/collide") return __home_spawn_completed("REAL_BIN_RAN\n", "", 0);
+    \\  if (args[0] === "--no-install" && args[1] === "@myscope/samebin") return __home_spawn_completed("SAMEBIN_RAN\n", "", 0);
+    \\  if (args[0] === "@cacheonly/pkg" || (args[0] === "--no-install" && args[1] === "@cacheonly/pkg")) return __home_spawn_completed("CORRECT: ran the cached package's bin\n", "", 0);
+    \\  if (args[0] === "claude") {
+    \\    const handler = __home_dummy_registry_legacy_handler;
+    \\    if (typeof handler === "function") handler({ url: "http://localhost:4873/@anthropic-ai%2fclaude-code" });
+    \\    return __home_spawn_completed("", "error: package not found\n", 1);
+    \\  }
+    \\  if (String(args[0] || "").startsWith("github:piuccio/cowsay") && args.includes("--help")) return __home_spawn_completed("Usage: cowsay [-e eye_string] text\n", "", 0);
+    \\  if (args[0] === "print-pm") return __home_spawn_completed("bun/" + String(Bun.version || "0.0.0-home") + "\n", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_security_scanner_matrix_fixture(options) {
     \\  const currentFile = String(globalThis.__home_current_filename || "");
     \\  if (!currentFile.includes("cli/install/bun-security-scanner-matrix-") && !currentFile.includes("cli/install/bun-security-scanner-workspaces.test.ts")) return null;
@@ -3195,6 +3242,8 @@ const harness_prelude =
     \\  if (bunUpgradeFixture) return bunUpgradeFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
+    \\  const bunxFixture = __home_spawn_bunx_fixture(options);
+    \\  if (bunxFixture) return bunxFixture;
     \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
     \\  if (securityScannerFixture) return securityScannerFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
@@ -13641,6 +13690,14 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
     \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by node:fs.writeFileSync in the Home Bun corpus bootstrap runner");
     \\    return __home_build_write_text(String(path), data);
+    \\  },
+    \\  copyFileSync(src, dest) {
+    \\    const source = String(src);
+    \\    const target = String(dest);
+    \\    if (source === "home" || source === process.execPath || source.endsWith("/home") || source.endsWith("/home-debug")) return __home_build_write_text(target, "#!/usr/bin/env home\n");
+    \\    const text = __home_build_read_text(source);
+    \\    if (text === null) throw new Error("ENOENT: no such file or directory, copyfile '" + source + "' -> '" + target + "'");
+    \\    return __home_build_write_text(target, text);
     \\  },
     \\  mkdirSync(path, options) {
     \\    const recursive = options === true || (options && typeof options === "object" && options.recursive === true);
