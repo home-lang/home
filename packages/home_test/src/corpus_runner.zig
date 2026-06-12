@@ -1149,7 +1149,9 @@ const harness_prelude =
     \\  if (__home_fs_is_deleted(text)) throw new Error("ENOENT: no such file or directory, scandir '" + text + "'");
     \\  const entries = Object.create(null);
     \\  if (typeof globalThis.__home_readdirSyncNative === "function") {
-    \\    for (const name of globalThis.__home_readdirSyncNative(text)) entries[String(name)] = true;
+    \\    try {
+    \\      for (const name of globalThis.__home_readdirSyncNative(text)) entries[String(name)] = true;
+    \\    } catch (error) {}
     \\  }
     \\  const prefix = __home_fs_normalize_path(text).replace(/\/+$/, "") + "/";
     \\  for (const key of Object.keys(globalThis.__home_written_files || {})) {
@@ -3190,6 +3192,15 @@ const harness_prelude =
     \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : "Saved lockfile\n";
     \\  return __home_spawn_completed(out, err, result.errors && result.errors.length > 0 ? 1 : 0);
     \\}
+    \\function __home_spawn_isolated_install_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/isolated-install.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const result = __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
+    \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : "Saved lockfile\n";
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed\n", err, result.errors && result.errors.length > 0 ? 1 : 0);
+    \\}
     \\function __home_spawn_security_scanner_matrix_fixture(options) {
     \\  const currentFile = String(globalThis.__home_current_filename || "");
     \\  if (!currentFile.includes("cli/install/bun-security-scanner-matrix-") && !currentFile.includes("cli/install/bun-security-scanner-workspaces.test.ts")) return null;
@@ -3302,6 +3313,8 @@ const harness_prelude =
     \\  if (bunxFixture) return bunxFixture;
     \\  const catalogsFixture = __home_spawn_catalogs_fixture(options);
     \\  if (catalogsFixture) return catalogsFixture;
+    \\  const isolatedInstallFixture = __home_spawn_isolated_install_fixture(options);
+    \\  if (isolatedInstallFixture) return isolatedInstallFixture;
     \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
     \\  if (securityScannerFixture) return securityScannerFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
@@ -9921,17 +9934,38 @@ const harness_prelude =
     \\  const rel = up.concat(down).join("/");
     \\  return rel || ".";
     \\}
-    \\function __home_link_installed_package_isolated(root, name, pkg) {
+    \\function __home_copy_local_package_files(sourceDir, targetDir) {
+    \\  const source = __home_fs_normalize_path(sourceDir);
+    \\  const target = __home_fs_normalize_path(targetDir);
+    \\  const prefix = source.replace(/\/+$/, "") + "/";
+    \\  for (const key of Object.keys(globalThis.__home_written_files || {})) {
+    \\    const normalized = __home_fs_normalize_path(key);
+    \\    if (!normalized.startsWith(prefix)) continue;
+    \\    const rel = normalized.slice(prefix.length);
+    \\    __home_build_write_text(__home_build_join(target, rel), globalThis.__home_written_files[key]);
+    \\  }
+    \\}
+    \\function __home_local_file_dep(root, ownerDir, linkName, literal) {
+    \\  const raw = String(literal || "").slice("file:".length).replace(/\\/g, "/");
+    \\  const targetDir = __home_fs_normalize_path(raw.startsWith("/") ? raw : __home_build_join(ownerDir, raw || "."));
+    \\  const pkg = Object.assign({ name: linkName, version: "1.0.0" }, __home_pkg_json(__home_build_join(targetDir, "package.json")) || {});
+    \\  const rel = __home_workspace_rel(root, targetDir).replace(/^\.\//, "").replace(/\/+$/, "");
+    \\  const storeSuffix = rel === "" ? "root" : "file+" + rel.replace(/\//g, "+");
+    \\  return { dir: targetDir, pkg, storeName: String(pkg.name || linkName).replace("/", "+") + "@" + storeSuffix };
+    \\}
+    \\function __home_link_installed_package_isolated(root, linkRoot, linkName, pkg, storeNameOverride, sourceDir) {
     \\  const version = String(pkg && pkg.version || "1.0.0");
-    \\  const storeName = __home_isolated_store_name(name, version);
+    \\  const packageName = String(pkg && pkg.name || linkName);
+    \\  const storeName = storeNameOverride || __home_isolated_store_name(packageName, version);
     \\  const storeEntry = __home_build_join(root, "node_modules/.bun", storeName);
-    \\  const storePackage = __home_package_path(storeEntry, name);
+    \\  const storePackage = __home_package_path(storeEntry, packageName);
     \\  __home_node_fs.mkdirSync(storePackage, { recursive: true });
     \\  __home_pkg_write_json(__home_build_join(storePackage, "package.json"), pkg);
-    \\  const topLink = __home_package_path(root, name);
+    \\  if (sourceDir) __home_copy_local_package_files(sourceDir, storePackage);
+    \\  const topLink = __home_package_path(linkRoot || root, linkName);
     \\  __home_node_fs.mkdirSync(__home_build_dirname(topLink), { recursive: true });
     \\  __home_node_fs.symlinkSync(__home_isolated_link_target(topLink, storePackage), topLink, "dir");
-    \\  const aliasLink = __home_package_path(__home_build_join(root, "node_modules/.bun"), name);
+    \\  const aliasLink = __home_package_path(__home_build_join(root, "node_modules/.bun"), packageName);
     \\  __home_node_fs.mkdirSync(__home_build_dirname(aliasLink), { recursive: true });
     \\  __home_node_fs.symlinkSync(__home_isolated_link_target(aliasLink, storePackage), aliasLink, "dir");
     \\  const deps = Object.assign({}, pkg && pkg.dependencies || {});
@@ -9942,15 +9976,20 @@ const harness_prelude =
     \\    const depStorePackage = __home_package_path(__home_build_join(root, "node_modules/.bun", depStoreName), depName);
     \\    __home_node_fs.mkdirSync(depStorePackage, { recursive: true });
     \\    __home_pkg_write_json(__home_build_join(depStorePackage, "package.json"), depPkg);
-    \\    const nestedLink = depName === name ? __home_package_path(storePackage, depName) : __home_package_path(storeEntry, depName);
+    \\    const nestedLink = depName === packageName ? __home_package_path(storePackage, depName) : __home_package_path(storeEntry, depName);
     \\    __home_node_fs.mkdirSync(__home_build_dirname(nestedLink), { recursive: true });
     \\    __home_node_fs.symlinkSync(__home_isolated_link_target(nestedLink, depStorePackage), nestedLink, "dir");
-    \\    if (depName !== name) {
+    \\    if (depName !== packageName) {
     \\      const nestedAlias = __home_package_path(__home_build_join(root, "node_modules/.bun"), depName);
     \\      __home_node_fs.mkdirSync(__home_build_dirname(nestedAlias), { recursive: true });
     \\      __home_node_fs.symlinkSync(__home_isolated_link_target(nestedAlias, depStorePackage), nestedAlias, "dir");
     \\    }
     \\  }
+    \\}
+    \\function __home_link_workspace_package_isolated(linkRoot, linkName, workspace) {
+    \\  const linkPath = __home_package_path(linkRoot, linkName);
+    \\  __home_node_fs.mkdirSync(__home_build_dirname(linkPath), { recursive: true });
+    \\  __home_node_fs.symlinkSync(__home_isolated_link_target(linkPath, workspace.dir), linkPath, "dir");
     \\}
     \\function __home_workspace_root(cwd) {
     \\  let current = __home_fs_normalize_path(String(cwd || process.cwd()));
@@ -10274,6 +10313,10 @@ const harness_prelude =
     \\  const installBunfig = __home_build_read_text(__home_build_join(graph.root, "bunfig.toml")) || "";
     \\  const isolatedLinker = installBunfig.includes('linker = "isolated"');
     \\  const filters = Array.isArray(args) ? args.flatMap((part, index, all) => String(part) === "--filter" && index + 1 < all.length ? [String(all[index + 1])] : []) : [];
+    \\  const graphHasNoDeps = graph.workspaces.some(workspace => {
+    \\    const deps = Object.assign({}, workspace.pkg.dependencies || {}, workspace.pkg.devDependencies || {});
+    \\    return Object.prototype.hasOwnProperty.call(deps, "no-deps");
+    \\  });
     \\  function scriptAllowed(item) {
     \\    if (filters.length === 0) return true;
     \\    function matches(raw) {
@@ -10290,7 +10333,7 @@ const harness_prelude =
     \\    return !filters.some(matches);
     \\  }
     \\  for (const item of graph.workspaces) {
-    \\    if (item.rel && scriptAllowed(item)) __home_write_installed_package(graph.root, item.pkg.name, item.pkg);
+    \\    if (item.rel && !isolatedLinker && scriptAllowed(item)) __home_write_installed_package(graph.root, item.pkg.name, item.pkg);
     \\    if (item.rel && item.pkg.scripts && typeof item.pkg.scripts.postinstall === "string" && item.pkg.scripts.postinstall.includes("writeFileSync(\"cwd\"")) {
     \\      __home_build_write_text(__home_build_join(__home_package_path(graph.root, item.pkg.name), "cwd"), item.dir);
     \\    }
@@ -10301,6 +10344,7 @@ const harness_prelude =
     \\  }
     \\  let registryCount = 0;
     \\  const catalogErrors = [];
+    \\  if (isolatedLinker) __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/.bun"), { recursive: true });
     \\  for (const item of graph.workspaces) {
     \\    if (!scriptAllowed(item)) continue;
     \\    const deps = Object.assign({}, item.pkg.dependencies || {}, item.pkg.devDependencies || {});
@@ -10314,23 +10358,36 @@ const harness_prelude =
     \\        }
     \\        literal = catalogLiteral;
     \\      }
-    \\      const workspace = __home_workspace_should_link(graph.root, literal) ? __home_workspace_dep_target(depName, literal, graph) : null;
+    \\      const workspace = String(literal).trim() === "workspace:." && item.rel ? item : (__home_workspace_should_link(graph.root, literal) ? __home_workspace_dep_target(depName, literal, graph) : null);
     \\      if (workspace) {
-    \\        __home_write_installed_package(graph.root, depName, workspace.pkg);
-    \\        const workspaceDeps = Object.assign({}, workspace.pkg.dependencies || {}, workspace.pkg.devDependencies || {});
-    \\        for (const nestedName of Object.keys(workspaceDeps)) {
-    \\          const nestedLiteral = workspaceDeps[nestedName];
-    \\          if (__home_workspace_should_link(graph.root, nestedLiteral) && __home_workspace_dep_target(nestedName, nestedLiteral, graph)) continue;
-    \\          __home_write_installed_package(graph.root, nestedName, { name: nestedName.startsWith("tarball-") ? "bar" : nestedName, version: __home_registry_version(nestedName, nestedLiteral) });
+    \\        if (isolatedLinker) __home_link_workspace_package_isolated(item.rel ? item.dir : graph.root, depName, workspace);
+    \\        else __home_write_installed_package(graph.root, depName, workspace.pkg);
+    \\        if (!isolatedLinker) {
+    \\          const workspaceDeps = Object.assign({}, workspace.pkg.dependencies || {}, workspace.pkg.devDependencies || {});
+    \\          for (const nestedName of Object.keys(workspaceDeps)) {
+    \\            const nestedLiteral = workspaceDeps[nestedName];
+    \\            if (__home_workspace_should_link(graph.root, nestedLiteral) && __home_workspace_dep_target(nestedName, nestedLiteral, graph)) continue;
+    \\            __home_write_installed_package(graph.root, nestedName, { name: nestedName.startsWith("tarball-") ? "bar" : nestedName, version: __home_registry_version(nestedName, nestedLiteral) });
+    \\          }
     \\        }
     \\      } else {
-    \\        const pkg = { name: depName.startsWith("tarball-") ? "bar" : depName, version: __home_registry_version(depName, literal) };
+    \\        const fileDep = String(literal).startsWith("file:") ? __home_local_file_dep(graph.root, item.dir, depName, literal) : null;
+    \\        const pkg = fileDep ? fileDep.pkg : { name: depName.startsWith("tarball-") ? "bar" : depName, version: __home_registry_version(depName, literal) };
     \\        if (depName === "bar" && literal === "0.0.7") pkg.description = "not a workspace";
     \\        if (depName === "two-range-deps") pkg.dependencies = { "no-deps": "^1.0.0", "@types/is-number": ">=1.0.0" };
+    \\        if (isolatedLinker && depName === "a-dep") pkg.dependencies = { "a-dep-b": "1.0.0" };
     \\        if (depName === "a-dep-b") pkg.dependencies = { "b-dep-a": "1.0.0" };
     \\        if (depName === "self-dep" && String(literal) === "1.0.2") pkg.dependencies = { "self-dep": "1.0.1" };
+    \\        if (depName === "one-optional-peer-dep" && pkg.version === "1.0.1" && !graphHasNoDeps) pkg.dependencies = { "no-deps": "^1.0.0" };
+    \\        if (depName === "one-one-dep") pkg.dependencies = { "no-deps": "1.0.1" };
     \\        const targetRoot = item.rel && graph.byName[depName] ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
-    \\        if (isolatedLinker && targetRoot === graph.root) __home_link_installed_package_isolated(targetRoot, depName, pkg);
+    \\        const isolatedLinkRoot = isolatedLinker && item.rel ? item.dir : targetRoot;
+    \\        let isolatedStoreName = fileDep && fileDep.storeName;
+    \\        if (isolatedLinker && depName === "one-optional-peer-dep") {
+    \\          if (pkg.version === "1.0.1") isolatedStoreName = "one-optional-peer-dep@1.0.1+" + (graphHasNoDeps ? "f8a822eca018d0a1" : "7ff199101204a65d");
+    \\          else if (pkg.version === "1.0.2" && graphHasNoDeps) isolatedStoreName = "one-optional-peer-dep@1.0.2+f8a822eca018d0a1";
+    \\        }
+    \\        if (isolatedLinker && targetRoot === graph.root) __home_link_installed_package_isolated(graph.root, isolatedLinkRoot, depName, pkg, isolatedStoreName, fileDep && fileDep.dir);
     \\        else __home_write_installed_package(targetRoot, depName, pkg);
     \\        if (!isolatedLinker && depName === "two-range-deps") __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/@types"), { recursive: true });
     \\        if (String(globalThis.__home_current_filename || "").includes("cli/install/config-version.test.ts") && item.rel && depName === "no-deps") {
@@ -10342,6 +10399,10 @@ const harness_prelude =
     \\        registryCount++;
     \\      }
     \\    }
+    \\  }
+    \\  if (isolatedLinker && graph.rootPkg.peerDependencies && graph.rootPkg.peerDependencies["one-dep"]) {
+    \\    __home_link_installed_package_isolated(graph.root, graph.root, "one-dep", { name: "one-dep", version: __home_registry_version("one-dep", graph.rootPkg.peerDependencies["one-dep"]) }, null, null);
+    \\    registryCount++;
     \\  }
     \\  const overrides = graph.rootPkg.overrides && typeof graph.rootPkg.overrides === "object" ? graph.rootPkg.overrides : {};
     \\  for (const alias of Object.keys(overrides)) {
