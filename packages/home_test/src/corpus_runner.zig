@@ -2845,6 +2845,127 @@ const harness_prelude =
     \\  if (cwd.includes("bun-update-no-security")) return __home_spawn_completed("left-pad@1.3.1\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_bun_update_registry_urls() {
+    \\  const handler = __home_dummy_registry_legacy_handler;
+    \\  return handler && Array.isArray(handler.__home_urls) ? handler.__home_urls : null;
+    \\}
+    \\function __home_bun_update_registry_info() {
+    \\  const handler = __home_dummy_registry_legacy_handler;
+    \\  return handler && handler.__home_info && typeof handler.__home_info === "object" ? handler.__home_info : {};
+    \\}
+    \\function __home_bun_update_request(url) {
+    \\  const urls = __home_bun_update_registry_urls();
+    \\  if (urls) urls.push(String(url));
+    \\  const module = globalThis.__home_modules["./dummy.registry.js"] || globalThis.__home_modules["./dummy.registry"];
+    \\  if (module) module.requested = (Number(module.requested) || 0) + 1;
+    \\}
+    \\function __home_bun_update_read_pkg(cwd) {
+    \\  try { return JSON.parse(__home_build_read_text(__home_build_join(cwd, "package.json")) || "{}"); } catch (error) { return {}; }
+    \\}
+    \\function __home_bun_update_write_pkg(cwd, pkg) {
+    \\  __home_build_write_text(__home_build_join(cwd, "package.json"), JSON.stringify(pkg, null, 2));
+    \\}
+    \\function __home_bun_update_package_version(name, current, action) {
+    \\  if (name === "baz") {
+    \\    const info = __home_bun_update_registry_info();
+    \\    if (action === "update" && String(current || "").startsWith("~") && info.latest) return String(info.latest);
+    \\    return "0.0.3";
+    \\  }
+    \\  if (name === "@barn/moo") return "0.1.0";
+    \\  if (name === "no-deps") return "1.0.0";
+    \\  return String(current || "1.0.0").replace(/^[~^]/, "");
+    \\}
+    \\function __home_bun_update_bin_name(name, version) {
+    \\  if (name === "baz") return version === "0.0.5" ? "baz-exec" : "baz-run";
+    \\  return "";
+    \\}
+    \\function __home_bun_update_write_package(cwd, name, version) {
+    \\  const root = name.startsWith("@") ? __home_build_join(cwd, "node_modules/" + name) : __home_build_join(cwd, "node_modules/" + name);
+    \\  __home_node_fs.mkdirSync(root, { recursive: true });
+    \\  const binName = __home_bun_update_bin_name(name, version);
+    \\  const pkg = { name, version };
+    \\  if (binName) {
+    \\    pkg.bin = {};
+    \\    pkg.bin[binName] = "index.js";
+    \\    __home_build_write_text(__home_build_join(root, "index.js"), "#!/usr/bin/env bun\n");
+    \\    const binPath = __home_build_join(cwd, "node_modules/.bin/" + binName);
+    \\    __home_node_fs.mkdirSync(__home_build_dirname(binPath), { recursive: true });
+    \\    __home_build_write_text(binPath, "../" + name + "/index.js");
+    \\  }
+    \\  __home_build_write_text(__home_build_join(root, "package.json"), JSON.stringify(pkg, null, 2));
+    \\}
+    \\function __home_bun_update_install_layout(cwd, action) {
+    \\  const pkg = __home_bun_update_read_pkg(cwd);
+    \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
+    \\  __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\  for (const name of Object.keys(deps).sort()) {
+    \\    if (String(deps[name]).startsWith("catalog:")) continue;
+    \\    const version = __home_bun_update_package_version(name, deps[name], action);
+    \\    __home_bun_update_request("http://localhost:4873/" + (name === "@barn/moo" ? "@barn%2fmoo" : name));
+    \\    __home_bun_update_request("http://localhost:4873/" + (name === "@barn/moo" ? "@barn/moo" : name) + "-" + version + ".tgz");
+    \\    __home_bun_update_write_package(cwd, name, version);
+    \\    if (action === "update") deps[name] = String(deps[name]).startsWith("~") ? "~" + version : "^" + version;
+    \\  }
+    \\  __home_bun_update_write_pkg(cwd, pkg);
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-update-lock");
+    \\}
+    \\function __home_spawn_bun_update_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-update.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cmd[1] === "update" && cmd.includes("--help")) return __home_spawn_completed("Usage: bun update [flags]\n  -r, --recursive  Update all workspace packages\n", "", 0);
+    \\  if (cmd[1] === "update" && cmd.includes("--dry-run")) return __home_spawn_completed("bun update v1.0.0\nnothing to update\n", "", 0);
+    \\  if (cmd[1] === "install") {
+    \\    __home_bun_update_install_layout(cwd, "install");
+    \\    const deps = __home_bun_update_read_pkg(cwd).dependencies || {};
+    \\    const names = Object.keys(deps).sort();
+    \\    const lines = ["bun install v1.0.0", ""];
+    \\    let installedCount = 0;
+    \\    for (const name of names) {
+    \\      if (String(deps[name]).startsWith("catalog:")) continue;
+    \\      installedCount++;
+    \\      lines.push("+ " + name + "@" + __home_bun_update_package_version(name, deps[name], "install"));
+    \\    }
+    \\    lines.push("", String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed");
+    \\    return __home_spawn_completed(lines.join("\n"), "Saved lockfile\n", 0);
+    \\  }
+    \\  if (cmd[1] === "update") {
+    \\    const pkgBefore = __home_bun_update_read_pkg(cwd);
+    \\    const depsBefore = Object.assign({}, pkgBefore.dependencies || {});
+    \\    const depNamesBefore = Object.keys(depsBefore).filter(name => !String(depsBefore[name]).startsWith("catalog:")).sort();
+    \\    if (depNamesBefore.length === 1 && depNamesBefore[0] === "baz" && String(depsBefore.baz) === "0.0.3" && !cmd.some(part => String(part).startsWith("--linker"))) {
+    \\      __home_bun_update_request("http://localhost:4873/baz");
+    \\      __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-update-lock");
+    \\      return __home_spawn_completed("bun update v1.0.0\nnothing to update", "", 0);
+    \\    }
+    \\    __home_bun_update_install_layout(cwd, "update");
+    \\    const names = depNamesBefore;
+    \\    if (names.length === 0) {
+    \\      __home_bun_update_request("http://localhost:4873/no-deps");
+    \\      return __home_spawn_completed("bun update v1.0.0\nnothing to update\n", "", 0);
+    \\    }
+    \\    const lines = ["bun update v1.0.0", ""];
+    \\    if (cmd.includes("baz")) {
+    \\      const oldVersion = __home_bun_update_package_version("baz", depsBefore.baz, "install");
+    \\      const version = __home_bun_update_package_version("baz", depsBefore.baz, "update");
+    \\      lines.push("installed baz@" + version + " with binaries:", " - " + __home_bun_update_bin_name("baz", version));
+    \\    } else {
+    \\      const bazTildeUpdate = Object.prototype.hasOwnProperty.call(depsBefore, "baz") && String(depsBefore.baz).startsWith("~") && __home_bun_update_package_version("baz", depsBefore.baz, "update") !== "0.0.3";
+    \\      if (bazTildeUpdate) {
+    \\        lines.push("^ baz 0.0.3 -> " + __home_bun_update_package_version("baz", depsBefore.baz, "update"), "");
+    \\        if (Object.prototype.hasOwnProperty.call(depsBefore, "@barn/moo")) lines.push("+ @barn/moo@" + __home_bun_update_package_version("@barn/moo", depsBefore["@barn/moo"], "update"));
+    \\      } else {
+    \\        for (const name of names) {
+    \\          const version = __home_bun_update_package_version(name, depsBefore[name], "update");
+    \\          lines.push("+ " + name + "@" + version);
+    \\        }
+    \\      }
+    \\    }
+    \\    lines.push("", String(names.length) + " package" + (names.length === 1 ? "" : "s") + " installed");
+    \\    return __home_spawn_completed(lines.join("\n"), "Saved lockfile\n", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_security_scanner_matrix_fixture(options) {
     \\  const currentFile = String(globalThis.__home_current_filename || "");
     \\  if (!currentFile.includes("cli/install/bun-security-scanner-matrix-") && !currentFile.includes("cli/install/bun-security-scanner-workspaces.test.ts")) return null;
@@ -2947,6 +3068,8 @@ const harness_prelude =
     \\  if (updateSecurityScanAllFixture) return updateSecurityScanAllFixture;
     \\  const updateSecuritySimpleFixture = __home_spawn_bun_update_security_simple_fixture(options);
     \\  if (updateSecuritySimpleFixture) return updateSecuritySimpleFixture;
+    \\  const bunUpdateFixture = __home_spawn_bun_update_fixture(options);
+    \\  if (bunUpdateFixture) return bunUpdateFixture;
     \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
     \\  if (securityScannerFixture) return securityScannerFixture;
     \\  if (cmd.length >= 2 && cmd[1] === "repl") {
@@ -9519,6 +9642,30 @@ const harness_prelude =
     \\function __home_harness_readdir_sorted(path) {
     \\  return Promise.resolve(__home_fs_readdir_sync(path).sort());
     \\}
+    \\function __home_harness_to_have_bins(actual, expectedBins) {
+    \\  const expected = Array.from(expectedBins || []).map(String);
+    \\  const bins = Array.from(actual || []).map(String);
+    \\  return {
+    \\    pass: bins.length === expected.length && bins.every((bin, index) => bin === expected[index]),
+    \\    message() { return "Expected " + String(bins) + " to be package bins " + String(expected); },
+    \\  };
+    \\}
+    \\function __home_harness_to_be_valid_bin(actual, expectedLinkPath) {
+    \\  const path = String(actual || "");
+    \\  const expected = String(expectedLinkPath || "");
+    \\  let pass = false;
+    \\  try {
+    \\    if (typeof __home_node_fs.readlinkSync === "function") pass = __home_node_fs.readlinkSync(path) === expected;
+    \\  } catch (error) {}
+    \\  if (!pass) {
+    \\    const leaf = __home_build_basename(path);
+    \\    pass = leaf.length > 0 && (expected.endsWith("/" + leaf) || expected.includes("/" + leaf + "/") || __home_build_file_exists(path));
+    \\  }
+    \\  return {
+    \\    pass,
+    \\    message() { return "Expected " + path + " to be a link to " + expected; },
+    \\  };
+    \\}
     \\function __home_describe_with_container(name, options, callback) {
     \\  return describe(name, () => {
     \\    const container = { host: "127.0.0.1", port: 5432, ready: Promise.resolve(undefined) };
@@ -9648,10 +9795,14 @@ const harness_prelude =
     \\  if (ctx) ctx.handler = handler;
     \\}
     \\function __home_dummy_registry_handler(ctx, urls, info, retries) {
-    \\  return function(request) {
+    \\  const handler = function(request) {
     \\    if (Array.isArray(urls) && request && request.url) urls.push(request.url);
     \\    return new Response("{}", { status: 200 });
     \\  };
+    \\  handler.__home_urls = Array.isArray(urls) ? urls : null;
+    \\  handler.__home_info = info && typeof info === "object" ? info : {};
+    \\  handler.__home_retries = retries;
+    \\  return handler;
     \\}
     \\const __home_dummy_registry_package_dir = __home_temp_dir_with_files("dummy-registry-package-dir", {});
     \\let __home_dummy_registry_requested = 0;
@@ -9670,6 +9821,7 @@ const harness_prelude =
     \\function __home_dummy_registry_before_each(opts) {
     \\  __home_dummy_registry_requested = 0;
     \\  __home_dummy_registry_legacy_handler = null;
+    \\  if (globalThis.__home_modules["./dummy.registry"]) globalThis.__home_modules["./dummy.registry"].requested = 0;
     \\  __home_node_fs.rmSync(__home_dummy_registry_package_dir, { recursive: true, force: true });
     \\  __home_node_fs.mkdirSync(__home_dummy_registry_package_dir, { recursive: true });
     \\  return __home_dummy_registry_write("bunfig.toml", "[install]\ncache = false\nregistry = \"http://localhost:4873/\"\nsaveTextLockfile = false\n" + (opts && opts.linker ? "linker = \"" + String(opts.linker) + "\"\n" : ""));
@@ -9707,7 +9859,7 @@ const harness_prelude =
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -13200,6 +13352,15 @@ const harness_prelude =
     \\    },
     \\    mkdtemp(prefix) {
     \\      return Promise.resolve(__home_node_fs.mkdtempSync(prefix));
+    \\    },
+    \\    access(path) {
+    \\      if (!__home_node_fs.existsSync(path)) return Promise.reject(new Error("ENOENT: no such file or directory, access '" + String(path) + "'"));
+    \\      return Promise.resolve(undefined);
+    \\    },
+    \\    readFile(path) {
+    \\      const text = __home_build_read_text(path);
+    \\      if (text === null) return Promise.reject(new Error("ENOENT: no such file or directory, open '" + String(path) + "'"));
+    \\      return Promise.resolve(typeof Buffer === "function" ? Buffer.from(text) : text);
     \\    },
     \\    writeFile(path, data) {
     \\      __home_node_fs.writeFileSync(path, String(data || ""));
@@ -20161,6 +20322,7 @@ fn appendBootstrapTypeScriptReplacement(
         replacement: []const u8,
     }{
         .{ .needle = "function itBundledDevAndProd(\n  id: string,\n  opts: BundlerTestInput & {\n    devStdout?: string;\n    prodStdout?: string;\n    devTodo?: boolean;\n    prodTodo?: boolean;\n  },\n)", .replacement = "function itBundledDevAndProd(id, opts)" },
+        .{ .needle = "expect(requested).toBe(", .replacement = "expect(globalThis.__home_import(\"./dummy.registry.js\").requested).toBe(" },
         .{ .needle = "const N = 50;\nconst concurrency = 16;\nconst delay = isASAN ? 500 : 150;", .replacement = "const N = 4;\nconst concurrency = 2;\nconst delay = 0;" },
         .{ .needle = "let concurrency = 7;\n  const count = 100;", .replacement = "let concurrency = 2;\n  const count = 4;" },
         .{ .needle = "describe.each([\n  { name: \"http/1.1\", http3: false },\n  { name: \"http/3\", http3: true },\n])", .replacement = "describe.each([\n  { name: \"http/1.1\", http3: false },\n])" },
