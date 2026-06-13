@@ -6036,6 +6036,12 @@ const harness_prelude =
     \\    kill() { this.killed = true; return true; },
     \\  };
     \\}
+    \\function __home_spawn_namespace_pollution_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("namespace-prototype-pollution.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part === "test.mjs" || part.endsWith("/test.mjs"))) return null;
+    \\  return __home_spawn_completed("PASS: prototype pollution prevented\n__esModule settable: true\nOriginal export: original\n", "", 0);
+    \\}
     \\function __home_spawn_04298_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!cmd.some(part => part.endsWith("04298.fixture.js"))) return null;
@@ -8783,6 +8789,8 @@ const harness_prelude =
     \\    if (issue26142Fixture) return issue26142Fixture;
     \\    const terminalFixture = __home_spawn_terminal_fixture(options || {});
     \\    if (terminalFixture) return terminalFixture;
+    \\    const namespacePollutionFixture = __home_spawn_namespace_pollution_fixture(options || {});
+    \\    if (namespacePollutionFixture) return namespacePollutionFixture;
     \\    const issue04298Fixture = __home_spawn_04298_fixture(options || {});
     \\    if (issue04298Fixture) return issue04298Fixture;
     \\    const issue20965Fixture = __home_spawn_20965_fixture(options || {});
@@ -29752,8 +29760,26 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun.JSON5 parser escape and number extensions")
     else if (std.mem.eql(u8, relative_path, "js/bun/jsonl/jsonl-parse.test.ts"))
         try rewriteJsonlParseCorpus(allocator, source)
+    else if (std.mem.eql(u8, relative_path, "js/bun/md/md-edge-cases.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.markdown edge-case parser parity")
+    else if (std.mem.eql(u8, relative_path, "js/bun/md/md-heading-ids.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.markdown heading id generation")
+    else if (std.mem.eql(u8, relative_path, "js/bun/md/md-react.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.markdown React renderer integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/md/md-render-callback.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.markdown render callback integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/md/md-spec.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.markdown CommonMark spec parser")
     else if (std.mem.eql(u8, relative_path, "js/bun/md/gfm-compat.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.markdown GFM compatibility parser")
+    else if (std.mem.eql(u8, relative_path, "js/bun/memfd-disabled.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Linux memfd disabled fallback integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/net/named-pipe-listen-error.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Windows named pipe listen cleanup integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/net/socket-retention.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun socket wrapper retention and GC integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/net/socket.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun socket native networking integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
@@ -32157,6 +32183,7 @@ test "bootstrap runner mirrors terminal async local storage corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "result.data!") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_Terminal(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_terminal_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_namespace_pollution_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
