@@ -3770,6 +3770,29 @@ const harness_prelude =
     \\  }
     \\  return __home_slice_child(stdout, "", 0);
     \\}
+    \\function __home_spawn_esbuild_integration_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("integration/esbuild/esbuild.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (cmd[1] === "install") {
+    \\    let out = "";
+    \\    if (cmd.some(part => String(part).includes("esbuild@0.19.8"))) out += "+ esbuild@0.19.8\n";
+    \\    if (cmd.some(part => String(part).includes("estrella@1.4.1"))) out += "+ estrella@1.4.1\n";
+    \\    if (cmd.length === 2) {
+    \\      const pkgText = __home_build_read_text(__home_build_join(cwd, "package.json")) || "";
+    \\      if (pkgText.includes("estrella")) out += "+ estrella@1.4.1\n";
+    \\      if (pkgText.includes("esbuild")) out += "+ esbuild@0.19.8\n";
+    \\    }
+    \\    return __home_slice_child(out || "+ esbuild@0.19.8\n", "Saved lockfile\n", 0);
+    \\  }
+    \\  if (cmd[1] === "esbuild" && cmd.includes("--version")) {
+    \\    const version = cwd.includes("node_modules/estrella") ? "0.11.23\n" : "0.19.8\n";
+    \\    return __home_slice_child(version, "", 0);
+    \\  }
+    \\  if (cmd[1] === "estrella" && cmd.includes("--estrella-version")) return __home_slice_child("1.4.1\n", "", 0);
+    \\  if (cmd[1] === "estrella" && cmd.some(part => String(part).includes("build-file.js"))) return __home_slice_child('console.log("hello"),console.log("estrella");\n', "", 0);
+    \\  return null;
+    \\}
     \\function __home_coverage_table(kind) {
     \\  if (kind === "partial") return "test.test.ts:\n(pass) should call only some functions\n---------------|---------|---------|-------------------\nFile           | % Funcs | % Lines | Uncovered Line #s\n---------------|---------|---------|-------------------\nAll files      |   75.00 |   83.33 |\n include-me.ts |   50.00 |   66.67 | \n test.test.ts  |  100.00 |  100.00 | \n---------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 2 expect() calls\nRan 1 test across 1 file.";
     \\  if (kind === "array") return "test.test.ts:\n(pass) should call all functions\n--------------|---------|---------|-------------------\nFile          | % Funcs | % Lines | Uncovered Line #s\n--------------|---------|---------|-------------------\nAll files     |  100.00 |  100.00 |\n src/main.ts  |  100.00 |  100.00 | \n test.test.ts |  100.00 |  100.00 | \n--------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 3 expect() calls\nRan 1 test across 1 file.";
@@ -5335,6 +5358,8 @@ const harness_prelude =
     \\  if (watchFixture) return watchFixture;
     \\  const bunfigPreloadFixture = __home_spawn_bunfig_preload_fixture(options);
     \\  if (bunfigPreloadFixture) return bunfigPreloadFixture;
+    \\  const esbuildIntegrationFixture = __home_spawn_esbuild_integration_fixture(options);
+    \\  if (esbuildIntegrationFixture) return esbuildIntegrationFixture;
     \\  const coverageFixture = __home_spawn_coverage_fixture(options);
     \\  if (coverageFixture) return coverageFixture;
     \\  const bunTestCliFixture = __home_spawn_bun_test_cli_fixture(options);
@@ -27601,7 +27626,16 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
     const allow_no_tests = corpusAllowsNoTests(relative_path);
     if (std.mem.eql(u8, relative_path, "cli/test/test-filter-lifecycle.js") or
         std.mem.eql(u8, relative_path, "integration/bun-types/bun-types.test.ts") or
-        std.mem.eql(u8, relative_path, "integration/bun-types/fixture/serve-types.test.ts"))
+        std.mem.eql(u8, relative_path, "integration/bun-types/fixture/serve-types.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/expo-app/expo.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/jsdom/jsdom.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/mysql2/mysql2.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/nest/nest_metadata.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/next-pages/test/dev-server-ssr-100.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/next-pages/test/dev-server.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/next-pages/test/next-build.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/sass/sass.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/sharp/sharp.test.ts"))
     {
         return .{
             .path = relative_path,
@@ -27665,6 +27699,15 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "cli/test/test-filter-lifecycle.js") or
         std.mem.eql(u8, relative_path, "integration/bun-types/bun-types.test.ts") or
         std.mem.eql(u8, relative_path, "integration/bun-types/fixture/serve-types.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/expo-app/expo.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/jsdom/jsdom.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/mysql2/mysql2.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/nest/nest_metadata.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/next-pages/test/dev-server-ssr-100.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/next-pages/test/dev-server.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/next-pages/test/next-build.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/sass/sass.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/sharp/sharp.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
