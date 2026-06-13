@@ -3142,6 +3142,22 @@ const harness_prelude =
     \\  const stderrText = action === "install" && hadLockfileBefore ? "" : "Saved lockfile\n";
     \\  return __home_spawn_completed(out, stderrText, 0);
     \\}
+    \\function __home_spawn_lockfile_only_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/lockfile-only.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install" || !cmd.includes("--lockfile-only")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {}, pkg.optionalDependencies || {});
+    \\  for (const name of Object.keys(deps).sort()) {
+    \\    const encoded = name.startsWith("@") ? name.replace("/", "%2f") : name;
+    \\    __home_bun_update_request("http://localhost:4873/" + encoded);
+    \\  }
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const lockfile = /saveTextLockfile\s*=\s*false/.test(bunfig) ? "bun.lockb" : "bun.lock";
+    \\  __home_build_write_text(__home_build_join(cwd, lockfile), lockfile === "bun.lockb" ? "home-binary-lock" : "home-text-lock\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\nSaved " + lockfile, "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bunx_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bunx.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3332,6 +3348,8 @@ const harness_prelude =
     \\  if (bunUpgradeFixture) return bunUpgradeFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
+    \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
+    \\  if (lockfileOnlyFixture) return lockfileOnlyFixture;
     \\  const bunxFixture = __home_spawn_bunx_fixture(options);
     \\  if (bunxFixture) return bunxFixture;
     \\  const catalogsFixture = __home_spawn_catalogs_fixture(options);
