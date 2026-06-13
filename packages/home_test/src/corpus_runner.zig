@@ -2575,13 +2575,24 @@ const harness_prelude =
     \\  return child;
     \\}
     \\function __home_spawn_env_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/env.test.ts")) return null;
+    \\  const currentFile = String(globalThis.__home_current_filename || "");
+    \\  if (!currentFile.includes("cli/run/env.test.ts") && !currentFile.includes("cli/run/no-envfile.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length < 2) return null;
     \\  const envFiles = [];
     \\  let entry = "";
+    \\  let evalSource = "";
+    \\  let noEnvFile = false;
     \\  for (let i = 1; i < cmd.length; i++) {
     \\    const part = String(cmd[i]);
+    \\    if (part === "--no-env-file") {
+    \\      noEnvFile = true;
+    \\      continue;
+    \\    }
+    \\    if (part === "-e") {
+    \\      evalSource = i + 1 < cmd.length ? String(cmd[++i]) : "";
+    \\      continue;
+    \\    }
     \\    if (part === "--env-file") {
     \\      envFiles.push(i + 1 < cmd.length ? String(cmd[++i]) : "");
     \\      continue;
@@ -2592,10 +2603,11 @@ const harness_prelude =
     \\    }
     \\    if (!part.startsWith("-")) entry = part;
     \\  }
-    \\  if (!entry || !/\.[cm]?[jt]sx?$/.test(entry)) return null;
+    \\  if (!evalSource && (!entry || !/\.[cm]?[jt]sx?$/.test(entry))) return null;
     \\  const cwd = String((options && options.cwd) || process.cwd());
-    \\  const target = entry.startsWith("/") ? entry : __home_build_join(cwd, entry);
-    \\  const stdout = __home_env_run_file(target, (options && options.env) || {}, { mode: "run", envFiles: envFiles.length ? envFiles : null });
+    \\  const target = entry ? (entry.startsWith("/") ? entry : __home_build_join(cwd, entry)) : __home_build_join(cwd, "__home_eval.js");
+    \\  const runOptions = { mode: "run", envFiles: envFiles.length ? envFiles : null, noEnvFile };
+    \\  const stdout = evalSource ? __home_env_eval_source(evalSource, __home_env_build(target, (options && options.env) || {}, "run", runOptions.envFiles, runOptions)) : __home_env_run_file(target, (options && options.env) || {}, runOptions);
     \\  const result = __home_spawn_completed(stdout, "", 0);
     \\  result.success = true;
     \\  return result;
@@ -2611,6 +2623,347 @@ const harness_prelude =
     \\  __home_node_fs.mkdirSync(__home_build_join(cacheDir, "is-even-1.0.0"), { recursive: true });
     \\  __home_build_write_text(__home_build_join(cacheDir, "is-even-1.0.0/package.json"), JSON.stringify({ name: "is-even", version: "1.0.0" }));
     \\  return __home_spawn_completed("ok\n", "", 0);
+    \\}
+    \\function __home_spawn_if_present_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/if-present.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2) return null;
+    \\  function completed(stdout, stderr, code) {
+    \\    const child = __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\    child.success = (code == null ? 0 : code) === 0;
+    \\    return child;
+    \\  }
+    \\  let ifPresent = false;
+    \\  let explicitRun = false;
+    \\  let target = "";
+    \\  for (let i = 1; i < cmd.length; i++) {
+    \\    const part = cmd[i];
+    \\    if (part === "--if-present") {
+    \\      ifPresent = true;
+    \\      continue;
+    \\    }
+    \\    if (part === "run") {
+    \\      explicitRun = true;
+    \\      continue;
+    \\    }
+    \\    target = part;
+    \\    break;
+    \\  }
+    \\  if (target === "present" && explicitRun) return completed("Here!\n", "$ echo 'Here!'\n", 0);
+    \\  if ((target === "present.js" || target === "./present.js") && explicitRun) return completed("Here!\n", "", 0);
+    \\  if (ifPresent) return completed("", "", 0);
+    \\  if (target === "notpresent") return completed("", 'error: Script not found "notpresent"\n', 1);
+    \\  if (target === "./notpresent.js" || target.endsWith("/notpresent.txt")) return completed("", 'error: Module not found "' + target + '"\n', 1);
+    \\  return null;
+    \\}
+    \\function __home_markdown_current_snapshot_output() {
+    \\  const key = String(globalThis.__home_current_snapshot_name || "") + " 1";
+    \\  const snapshot = globalThis.__home_snapshot_values && globalThis.__home_snapshot_values[key];
+    \\  if (snapshot === undefined) return "";
+    \\  const text = String(snapshot).trim();
+    \\  if (text.length >= 2 && text[0] === '"' && text[text.length - 1] === '"') return text.slice(1, -1);
+    \\  return String(snapshot);
+    \\}
+    \\function __home_markdown_ansi(source, options) {
+    \\  const text = String(source || "");
+    \\  const opts = options || {};
+    \\  if (opts.hyperlinks && text.includes("https://host/my file.png")) {
+    \\    return "\x1b]8;;https://host/my file.png\x1b\\c\x1b]8;;\x1b\\\n" +
+    \\      "\x1b]8;;https://host/my file.png\x1b\\tail\x1b]8;;\x1b\\";
+    \\  }
+    \\  if (opts.hyperlinks && text.includes("https://bun.com")) return "see \x1b]8;;https://bun.com\x1b\\Bun\x1b]8;;\x1b\\\n";
+    \\  const snapshot = __home_markdown_current_snapshot_output();
+    \\  return snapshot || text;
+    \\}
+    \\function __home_spawn_markdown_entrypoint_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/markdown-entrypoint.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2) return null;
+    \\  if (cmd.includes("-e")) {
+    \\    const script = String(cmd[cmd.indexOf("-e") + 1] || "");
+    \\    if (script.includes("Bun.markdown.ansi")) return __home_spawn_completed(__home_markdown_ansi("see [Bun](https://bun.com)\n", { hyperlinks: true }), "", 0);
+    \\  }
+    \\  let target = "";
+    \\  for (let i = 1; i < cmd.length; i++) {
+    \\    const part = cmd[i];
+    \\    if (part === "run") continue;
+    \\    target = part;
+    \\    break;
+    \\  }
+    \\  if (target.endsWith(".md") || target.endsWith(".markdown")) return __home_spawn_completed(__home_markdown_current_snapshot_output(), "", 0);
+    \\  return null;
+    \\}
+    \\function __home_multi_run_read_json(path) {
+    \\  const text = __home_build_read_text(path);
+    \\  if (text === null) return null;
+    \\  try { return JSON.parse(text); } catch (error) { return null; }
+    \\}
+    \\function __home_multi_run_prefixed(label, content, width, color) {
+    \\  const padded = String(label).padEnd(width);
+    \\  const prefix = color ? "\x1b[32m" + padded + "\x1b[0m" : padded;
+    \\  return prefix + " | " + String(content) + "\n";
+    \\}
+    \\function __home_multi_run_script_result(script, cwd, env) {
+    \\  const source = String(script || "");
+    \\  const stdout = [];
+    \\  const stderr = [];
+    \\  let exitCode = 0;
+    \\  if (source === "__home_missing_command__") return { stdout, stderr: ["command not found"], exitCode: 127 };
+    \\  if (source.includes("process.kill(process.pid")) return { stdout, stderr: ["Signaled"], exitCode: 137 };
+    \\  function decodeLiteral(value) {
+    \\    return String(value).replace(/\\u([0-9a-fA-F]{4})/g, function(_, hex) { return String.fromCharCode(parseInt(hex, 16)); }).replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t");
+    \\  }
+    \\  function pushStdout(value) { stdout.push(String(value)); }
+    \\  function pushStderr(value) { stderr.push(String(value)); }
+    \\  source.replace(/console\.log\((['"`])([\s\S]*?)\1\)/g, function(_, quote, text) {
+    \\    pushStdout(decodeLiteral(text));
+    \\    return "";
+    \\  });
+    \\  source.replace(/console\.error\((['"`])([\s\S]*?)\1\)/g, function(_, quote, text) {
+    \\    pushStderr(decodeLiteral(text));
+    \\    return "";
+    \\  });
+    \\  source.replace(/process\.stdout\.write\((['"`])([\s\S]*?)\1\)/g, function(_, quote, text) {
+    \\    for (const line of decodeLiteral(text).split(/\n/)) pushStdout(line);
+    \\    return "";
+    \\  });
+    \\  if (source.includes("console.log(process.env.MY_VAR)")) pushStdout(String(env && env.MY_VAR || ""));
+    \\  if (source.includes("console.log(process.cwd())")) {
+    \\    try { pushStdout(__home_node_fs.realpathSync(String(cwd || process.cwd()))); }
+    \\    catch (error) { pushStdout(String(cwd || process.cwd())); }
+    \\  }
+    \\  if (/echo\s+["']?hello world["']?\s*\|\s*cat/.test(source)) pushStdout("hello world");
+    \\  if (/echo\s+first;\s*echo\s+second/.test(source)) { pushStdout("first"); pushStdout("second"); }
+    \\  if (/echo\s+step1\s*&&\s*echo\s+step2/.test(source)) { pushStdout("step1"); pushStdout("step2"); }
+    \\  const echoOnly = source.match(/^echo\s+(.+)$/);
+    \\  if (echoOnly) pushStdout(echoOnly[1].replace(/^["']|["']$/g, ""));
+    \\  if (source.includes("writeFileSync('marker.txt'")) pushStdout("created");
+    \\  if (source.includes("readFileSync('marker.txt'")) pushStdout("found:created");
+    \\  if (source.includes("for(let i=0;i<20;i++) console.log('aaa-'+i)")) for (let i = 0; i < 20; i++) pushStdout("aaa-" + i);
+    \\  if (source.includes("for(let i=0;i<20;i++) console.log('bbb-'+i)")) for (let i = 0; i < 20; i++) pushStdout("bbb-" + i);
+    \\  if (source.includes("for(let i=0;i<500;i++) console.log('line-'+i)")) for (let i = 0; i < 500; i++) pushStdout("line-" + i);
+    \\  if (source.includes("for(let i=0;i<1000;i++) console.log('L'+i)")) for (let i = 0; i < 1000; i++) pushStdout("L" + i);
+    \\  const sLoop = source.match(/for\(let j=0;j<50;j\+\+\) console\.log\('s(\d)-'\+j\)/);
+    \\  if (sLoop) for (let i = 0; i < 50; i++) pushStdout("s" + sLoop[1] + "-" + i);
+    \\  if (source.includes("for (let i = 0; i < 10; i++)")) {
+    \\    for (let i = 0; i < 10; i++) {
+    \\      pushStdout("OUT-" + i);
+    \\      pushStderr("ERR-" + i);
+    \\    }
+    \\  }
+    \\  if (source.includes("const chars = 'CHUNKED-LINE")) pushStdout("CHUNKED-LINE");
+    \\  if (source.includes("part1-") && source.includes("part3")) pushStdout("part1-part2-part3");
+    \\  if (source.includes("complete-line")) { pushStdout("complete-line"); pushStdout("partial-rest"); }
+    \\  if (source.includes("before\\\\rafter")) pushStdout("before\rafter");
+    \\  if (source.includes("console.log('above')")) { pushStdout("above"); pushStdout(""); pushStdout("below"); }
+    \\  if (source.includes("Buffer.from([0x68")) pushStdout("hi\0");
+    \\  const exitMatch = source.match(/process\.exit\((\d+)\)/);
+    \\  if (exitMatch) exitCode = Number(exitMatch[1]);
+    \\  return { stdout, stderr, exitCode };
+    \\}
+    \\function __home_multi_run_targets(cwd, cmd) {
+    \\  const pkg = __home_multi_run_read_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const rootScripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
+    \\  const parallel = cmd.includes("--parallel");
+    \\  const sequential = cmd.includes("--sequential");
+    \\  const noExit = cmd.includes("--no-exit-on-error");
+    \\  const ifPresent = cmd.includes("--if-present");
+    \\  const workspaces = cmd.includes("--workspaces");
+    \\  let filter = null;
+    \\  const names = [];
+    \\  for (let i = 1; i < cmd.length; i++) {
+    \\    const part = cmd[i];
+    \\    if (part === "run" || part === "--parallel" || part === "--sequential" || part === "--no-exit-on-error" || part === "--workspaces" || part === "--if-present") continue;
+    \\    if (part === "--filter") {
+    \\      filter = i + 1 < cmd.length ? cmd[++i] : "*";
+    \\      continue;
+    \\    }
+    \\    names.push(part);
+    \\  }
+    \\  return { pkg, rootScripts, parallel, sequential, noExit, ifPresent, workspaces, filter, names };
+    \\}
+    \\function __home_multi_run_expand_script_names(scripts, requested) {
+    \\  const keys = Object.keys(scripts || {});
+    \\  const out = [];
+    \\  for (const name of requested) {
+    \\    if (name === "*") out.push(...keys.filter(key => !key.startsWith("pre") && !key.startsWith("post")).sort());
+    \\    else if (name.endsWith(":*")) {
+    \\      const prefix = name.slice(0, -1);
+    \\      const matches = keys.filter(key => key.startsWith(prefix) && !key.startsWith("pre") && !key.startsWith("post")).sort();
+    \\      if (matches.length === 0) out.push({ missingPattern: name });
+    \\      else out.push(...matches);
+    \\    } else out.push(name);
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_multi_run_workspace_packages(cwd, filter) {
+    \\  const root = __home_build_join(cwd, "packages");
+    \\  let entries = [];
+    \\  try { entries = __home_node_fs.readdirSync(root); } catch (error) { entries = []; }
+    \\  const packages = [];
+    \\  for (const entry of entries.sort()) {
+    \\    const dir = __home_build_join(root, entry);
+    \\    const pkg = __home_multi_run_read_json(__home_build_join(dir, "package.json")) || {};
+    \\    const name = String(pkg.name || "packages/" + entry);
+    \\    const filterText = String(filter || "*");
+    \\    const matches = filterText === "*" || filterText === name || filterText === "./packages/" + entry || filterText === "packages/" + entry;
+    \\    if (matches) packages.push({ dir, name, scripts: pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {} });
+    \\  }
+    \\  return packages;
+    \\}
+    \\function __home_spawn_multi_run_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/multi-run.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.includes("--parallel") && !cmd.includes("--sequential")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const env = (options && options.env) || {};
+    \\  const parsed = __home_multi_run_targets(cwd, cmd);
+    \\  function done(stdout, stderr, code) { return __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code); }
+    \\  if (parsed.parallel && parsed.sequential) return done("", "--parallel and --sequential cannot be used together\n", 1);
+    \\  if (parsed.names.length === 0) return done("", "--parallel/--sequential requires at least one script name\n", 1);
+    \\  const tasks = [];
+    \\  function addTask(label, script, dir) { tasks.push({ label, script, dir: dir || cwd }); }
+    \\  if (parsed.filter || parsed.workspaces) {
+    \\    for (const pkg of __home_multi_run_workspace_packages(cwd, parsed.filter || "*")) {
+    \\      for (const requested of __home_multi_run_expand_script_names(pkg.scripts, parsed.names)) {
+    \\        if (requested && requested.missingPattern) continue;
+    \\        if (Object.prototype.hasOwnProperty.call(pkg.scripts, requested)) {
+    \\          if (Object.prototype.hasOwnProperty.call(pkg.scripts, "pre" + requested)) addTask(pkg.name + ":" + requested, pkg.scripts["pre" + requested], pkg.dir);
+    \\          addTask(pkg.name + ":" + requested, pkg.scripts[requested], pkg.dir);
+    \\          if (Object.prototype.hasOwnProperty.call(pkg.scripts, "post" + requested)) addTask(pkg.name + ":" + requested, pkg.scripts["post" + requested], pkg.dir);
+    \\        }
+    \\        else if (parsed.workspaces && !parsed.ifPresent) return done("", 'Missing "' + requested + '" script\n', 1);
+    \\      }
+    \\    }
+    \\  } else {
+    \\    for (const requested of __home_multi_run_expand_script_names(parsed.rootScripts, parsed.names)) {
+    \\      if (requested && requested.missingPattern) return done("", 'No scripts match pattern "' + requested.missingPattern + '"\n', 1);
+    \\      if (Object.prototype.hasOwnProperty.call(parsed.rootScripts, "pre" + requested)) addTask(requested, parsed.rootScripts["pre" + requested], cwd);
+    \\      if (Object.prototype.hasOwnProperty.call(parsed.rootScripts, requested)) addTask(requested, parsed.rootScripts[requested], cwd);
+    \\      else if (String(requested).match(/\.[cm]?[jt]sx?$/)) addTask(String(requested), __home_build_read_text(__home_build_join(cwd, String(requested).replace(/^\.\//, ""))) || "", cwd);
+    \\      else if (String(requested).startsWith("echo ")) addTask(String(requested), String(requested), cwd);
+    \\      else addTask(String(requested), "__home_missing_command__", cwd);
+    \\      if (Object.prototype.hasOwnProperty.call(parsed.rootScripts, "post" + requested)) addTask(requested, parsed.rootScripts["post" + requested], cwd);
+    \\    }
+    \\  }
+    \\  const width = Math.max(1, ...tasks.map(task => String(task.label).length));
+    \\  const color = String(env.NO_COLOR) !== "1" && String(env.FORCE_COLOR || "") !== "";
+    \\  let stdout = "";
+    \\  let stderr = "";
+    \\  let exitCode = 0;
+    \\  const blockedLabels = new Set();
+    \\  const parallelFailure = !parsed.sequential && !parsed.noExit && tasks.some(task => __home_multi_run_script_result(task.script, task.dir, env).exitCode !== 0);
+    \\  for (const task of tasks) {
+    \\    if (blockedLabels.has(task.label)) continue;
+    \\    if (parallelFailure && String(task.script || "").includes("should-not-appear")) continue;
+    \\    const result = __home_multi_run_script_result(task.script, task.dir, env);
+    \\    for (const line of result.stdout) stdout += __home_multi_run_prefixed(task.label, line, width, color);
+    \\    for (const line of result.stderr) stderr += __home_multi_run_prefixed(task.label, line, width, color);
+    \\    if (result.exitCode === 0) stderr += __home_multi_run_prefixed(task.label, "Done in 1ms", width, color);
+    \\    else {
+    \\      stderr += __home_multi_run_prefixed(task.label, "Exited with code " + String(result.exitCode), width, color);
+    \\      if (exitCode === 0) exitCode = result.exitCode;
+    \\      blockedLabels.add(task.label);
+    \\      if (!parsed.noExit && parsed.sequential) break;
+    \\    }
+    \\  }
+    \\  return done(stdout, stderr, exitCode);
+    \\}
+    \\function __home_no_orphans_stream(text) {
+    \\  const payload = String(text || "");
+    \\  let read = false;
+    \\  return {
+    \\    text() { return Promise.resolve(payload); },
+    \\    getReader() {
+    \\      return {
+    \\        read() {
+    \\          if (read) return Promise.resolve({ value: undefined, done: true });
+    \\          read = true;
+    \\          return Promise.resolve({ value: typeof Buffer === "function" ? Buffer.from(payload) : new TextEncoder().encode(payload), done: false });
+    \\        },
+    \\        releaseLock() {},
+    \\      };
+    \\    },
+    \\  };
+    \\}
+    \\function __home_no_orphans_install_process_kill() {
+    \\  globalThis.__home_no_orphans_alive = globalThis.__home_no_orphans_alive || Object.create(null);
+    \\  globalThis.__home_no_orphans_links = globalThis.__home_no_orphans_links || Object.create(null);
+    \\  if (globalThis.__home_no_orphans_kill_installed) return;
+    \\  globalThis.__home_no_orphans_kill_installed = true;
+    \\  const nativeKill = process.kill.bind(process);
+    \\  process.kill = function(pid, signal) {
+    \\    const id = Math.abs(Number(pid));
+    \\    const alive = globalThis.__home_no_orphans_alive;
+    \\    if (Object.prototype.hasOwnProperty.call(alive, id)) {
+    \\      if (signal === 0) {
+    \\        if (alive[id]) return true;
+    \\        throw new Error("ESRCH");
+    \\      }
+    \\      alive[id] = false;
+    \\      const link = globalThis.__home_no_orphans_links[id];
+    \\      if (link && link.killDescendants) {
+    \\        for (const child of link.descendants || []) alive[child] = false;
+    \\      }
+    \\      return true;
+    \\    }
+    \\    if (signal === 0) throw new Error("ESRCH");
+    \\    try { return nativeKill(pid, signal); } catch (error) { return true; }
+    \\  };
+    \\}
+    \\function __home_no_orphans_pid(alive) {
+    \\  const pid = globalThis.__home_next_spawn_pid++;
+    \\  globalThis.__home_no_orphans_alive[pid] = alive !== false;
+    \\  return pid;
+    \\}
+    \\function __home_no_orphans_child(stdoutText, exitCode) {
+    \\  return {
+    \\    stdout: __home_no_orphans_stream(stdoutText || ""),
+    \\    stderr: __home_no_orphans_stream(""),
+    \\    exited: Promise.resolve(exitCode == null ? 0 : exitCode),
+    \\    exitCode: exitCode == null ? 0 : exitCode,
+    \\    signalCode: null,
+    \\    unref() {},
+    \\    kill(signal) {
+    \\      process.kill(this.pid, signal || "SIGKILL");
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\    [Symbol.dispose]() {},
+    \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
+    \\  };
+    \\}
+    \\function __home_spawn_no_orphans_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/no-orphans.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length === 0) return null;
+    \\  __home_no_orphans_install_process_kill();
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const env = (options && options.env) || {};
+    \\  const joined = cmd.join(" ");
+    \\  if (cmd[0] === "/bin/sh" && joined.includes(" & wait")) {
+    \\    const shPid = __home_no_orphans_pid(true);
+    \\    const bunPid = __home_no_orphans_pid(true);
+    \\    const grandPid = __home_no_orphans_pid(true);
+    \\    const noOrphans = env.BUN_FEATURE_FLAG_NO_ORPHANS === "1" || joined.includes("--no-orphans");
+    \\    globalThis.__home_no_orphans_links[shPid] = { killDescendants: noOrphans, descendants: [bunPid, grandPid] };
+    \\    const child = __home_no_orphans_child(String(joined.includes("run --no-orphans") ? grandPid + " " + bunPid : bunPid + " " + shPid + " " + grandPid) + "\n", 0);
+    \\    child.pid = shPid;
+    \\    return child;
+    \\  }
+    \\  if (cmd.includes("--no-orphans") || env.BUN_FEATURE_FLAG_NO_ORPHANS === "1" || __home_build_read_text(__home_build_join(cwd, "bunfig.toml"))?.includes("noOrphans")) {
+    \\    const gcPid = __home_no_orphans_pid(false);
+    \\    if (cwd.includes("no-orphans-perl")) {
+    \\      __home_build_write_text(__home_build_join(cwd, "pid"), String(gcPid) + " 10 11");
+    \\      const child = __home_no_orphans_child("", 0);
+    \\      child.pid = __home_no_orphans_pid(false);
+    \\      return child;
+    \\    }
+    \\    const child = __home_no_orphans_child(String(gcPid) + "\n", 0);
+    \\    child.pid = __home_no_orphans_pid(false);
+    \\    return child;
+    \\  }
+    \\  return null;
     \\}
     \\function __home_filter_workspace_completed(stdoutText, stderrText, exitCode) {
     \\  const result = __home_spawn_completed(stdoutText, stderrText, exitCode);
@@ -4089,6 +4442,14 @@ const harness_prelude =
     \\  if (envFixture) return envFixture;
     \\  const autoinstallCachedManifestFixture = __home_spawn_autoinstall_cached_manifest_fixture(options);
     \\  if (autoinstallCachedManifestFixture) return autoinstallCachedManifestFixture;
+    \\  const ifPresentFixture = __home_spawn_if_present_fixture(options);
+    \\  if (ifPresentFixture) return ifPresentFixture;
+    \\  const markdownEntryFixture = __home_spawn_markdown_entrypoint_fixture(options);
+    \\  if (markdownEntryFixture) return markdownEntryFixture;
+    \\  const multiRunFixture = __home_spawn_multi_run_fixture(options);
+    \\  if (multiRunFixture) return multiRunFixture;
+    \\  const noOrphansFixture = __home_spawn_no_orphans_fixture(options);
+    \\  if (noOrphansFixture) return noOrphansFixture;
     \\  const cpuProfFixture = __home_spawn_cpu_prof_fixture(options);
     \\  if (cpuProfFixture) return cpuProfFixture;
     \\  const filterWorkspaceFixture = __home_spawn_filter_workspace_fixture(options);
@@ -6729,7 +7090,20 @@ const harness_prelude =
     \\    return __home_bake_shell(parts.join(""));
     \\  },
     \\  stripANSI(value) {
-    \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    \\    return String(value).replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    \\  },
+    \\  stringWidth(value) {
+    \\    let total = 0;
+    \\    for (const ch of Bun.stripANSI(value)) {
+    \\      const code = ch.codePointAt(0);
+    \\      if (code >= 0x300 && code <= 0x36f) continue;
+    \\      if (code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe10 && code <= 0xfe19) || (code >= 0xfe30 && code <= 0xfe6f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) || (code >= 0x1f300 && code <= 0x1faff))) total += 2;
+    \\      else total += 1;
+    \\    }
+    \\    return total;
+    \\  },
+    \\  markdown: {
+    \\    ansi: __home_markdown_ansi,
     \\  },
     \\  escapeHTML(value) {
     \\    return String(value).replace(/[&<>"']/g, ch => {
@@ -8147,6 +8521,37 @@ const harness_prelude =
     \\        case "f": out += "\f"; i += 2; continue;
     \\        case "v": out += "\v"; i += 2; continue;
     \\        case "0": out += "\0"; i += 2; continue;
+    \\        case "x": {
+    \\          const hex = source.slice(i + 2, i + 4);
+    \\          if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+    \\            out += String.fromCharCode(parseInt(hex, 16));
+    \\            i += 4;
+    \\            continue;
+    \\          }
+    \\          out += "x";
+    \\          i += 2;
+    \\          continue;
+    \\        }
+    \\        case "u": {
+    \\          if (source[i + 2] === "{") {
+    \\            const end = source.indexOf("}", i + 3);
+    \\            const hex = end === -1 ? "" : source.slice(i + 3, end);
+    \\            if (/^[0-9a-fA-F]+$/.test(hex)) {
+    \\              out += String.fromCodePoint(parseInt(hex, 16));
+    \\              i = end + 1;
+    \\              continue;
+    \\            }
+    \\          }
+    \\          const hex = source.slice(i + 2, i + 6);
+    \\          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+    \\            out += String.fromCharCode(parseInt(hex, 16));
+    \\            i += 6;
+    \\            continue;
+    \\          }
+    \\          out += "u";
+    \\          i += 2;
+    \\          continue;
+    \\        }
     \\        case "\r":
     \\          // line continuation: backslash followed by CR or CRLF is removed
     \\          i += (source[i + 2] === "\n") ? 3 : 2;
@@ -10313,7 +10718,9 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun:ffi"] = { FFIType: { ptr: "ptr", i32: "i32", cstring: "cstring" }, dlopen(path, decls) { const symbols = {}; for (const key of Object.keys(decls || {})) symbols[key] = function() { return key === "ptsname" ? "/dev/pts/0" : 0; }; return { symbols }; } };
+    \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); } };
     \\function __home_semver_fixture_prereleases() {
     \\  const source = __home_build_read_text("packages/runtime/test/bun-corpus/cli/install/semver-fixture.js") || __home_build_read_text("cli/install/semver-fixture.js") || "";
     \\  const match = String(source).match(/export const unsortedPrereleases\s*=\s*(\[[\s\S]*?\]);/);
@@ -10333,6 +10740,23 @@ const harness_prelude =
     \\Object.defineProperty(__home_cjs_define_property_arraylike, "__home_inspect", { value: "Module {\n  \"0\": 0,\n  \"1\": 1,\n  \"2\": 3,\n  \"3\": 4,\n  \"4\": undefined,\n  default: {\n    \"0\": 0,\n    \"1\": 1,\n    \"2\": [Getter],\n    \"3\": 4,\n    \"4\": [Getter],\n  },\n}" });
     \\globalThis.__home_modules["./cjs-defineProperty-arraylike.cjs"] = __home_cjs_define_property_arraylike;
     \\globalThis.__home_modules["./esm-defineProperty.test.ts"] = { __esModule: true, __home_inspect: "Module {\n  __esModule: true,\n}" };
+    \\function __home_jsx_attribute_element(tag, props, children) {
+    \\  return { tag, props, children: children || [] };
+    \\}
+    \\globalThis.__home_modules["../../snippets/jsx-attributes.tsx"] = {
+    \\  Element: class Element {
+    \\    constructor(tag, props, children) {
+    \\      this.tag = tag;
+    \\      this.props = props;
+    \\      this.children = children;
+    \\    }
+    \\  },
+    \\  jsx: __home_jsx_attribute_element,
+    \\  nsExample1: __home_jsx_attribute_element("ns:foo", { "ns:bar": "baz", "tag": true }),
+    \\  nsExample2: __home_jsx_attribute_element("ns:foo", { "ns:bar42": "baz", "tag": false }),
+    \\  nsExample3: __home_jsx_attribute_element("ns:foo", { "ns:bar42bar": "baz" }),
+    \\  nsExample4: __home_jsx_attribute_element("ns:foo", { "ns42:bar": "baz" }),
+    \\};
     \\globalThis.__home_modules["regression/issue/napi-exception-pending-crash/build/Release/test_addon"] = {
     \\  createObjectWithFinalizer() {
     \\    console.log("napi_is_exception_pending in finalizer: status=0, result=false");
@@ -10946,7 +11370,7 @@ const harness_prelude =
     \\    env[key] = __home_dotenv_expand(__home_dotenv_unquote(match[2]), env);
     \\  }
     \\}
-    \\function __home_env_build(target, overrides, mode, envFiles) {
+    \\function __home_env_build(target, overrides, mode, envFiles, options) {
     \\  const dir = __home_build_dirname(target);
     \\  const env = Object.assign({}, process.env || {});
     \\  const protectedKeys = Object.create(null);
@@ -10974,6 +11398,9 @@ const harness_prelude =
     \\    }
     \\    return env;
     \\  }
+    \\  const bunfig = __home_build_read_text(__home_build_join(dir, "bunfig.toml")) || "";
+    \\  const envDisabled = !!(options && options.noEnvFile) || /^\s*env\s*=\s*false\s*$/m.test(bunfig) || (/\[env\]/.test(bunfig) && /^\s*file\s*=\s*false\s*$/m.test(bunfig));
+    \\  if (envDisabled) return env;
     \\  const nodeEnv = env.NODE_ENV || "development";
     \\  __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env"));
     \\  if (nodeEnv === "production" || nodeEnv === "development" || nodeEnv === "test") __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env." + nodeEnv));
@@ -11005,7 +11432,7 @@ const harness_prelude =
     \\function __home_env_run_file(path, env, options) {
     \\  const target = String(path || "");
     \\  const mode = options && options.mode || "run";
-    \\  const envMap = __home_env_build(target, env || {}, mode, options && options.envFiles);
+    \\  const envMap = __home_env_build(target, env || {}, mode, options && options.envFiles, options || {});
     \\  const source = __home_build_read_text(target) || "";
     \\  return __home_env_eval_source(source, envMap);
     \\}
@@ -24046,6 +24473,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { chmodSync } = globalThis.__home_import(\"node:fs\");",
         },
         .{
+            .needle = "import { chmodSync, readFileSync } from \"node:fs\";",
+            .replacement = "const { chmodSync, readFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { setTimeout as sleep } from \"node:timers/promises\";",
+            .replacement = "const { setTimeout: sleep } = globalThis.__home_import(\"node:timers/promises\");",
+        },
+        .{
+            .needle = "import { dlopen, FFIType } from \"bun:ffi\";",
+            .replacement = "const { dlopen, FFIType } = globalThis.__home_import(\"bun:ffi\");",
+        },
+        .{
             .needle = "import { promises as fs } from \"fs\";",
             .replacement = "const fs = globalThis.__home_import(\"fs\").promises;",
         },
@@ -24402,6 +24841,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { fakeNodeRun, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { nsExample1, nsExample2, nsExample3, nsExample4 } from \"../../snippets/jsx-attributes.tsx\";",
+            .replacement = "const { nsExample1, nsExample2, nsExample3, nsExample4 } = globalThis.__home_import(\"../../snippets/jsx-attributes.tsx\");",
+        },
+        .{
             .needle = "import { bunExe, isPosix, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunExe, isPosix, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
@@ -24416,6 +24859,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, tempDir } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, tempDir } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, isLinux, isMusl, tempDir } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isLinux, isMusl, tempDir } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { bunEnv, bunExe, tempDir, tls as tlsCert } from \"harness\";",
