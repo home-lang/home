@@ -3263,6 +3263,34 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText || "home-pnpm-migrated-lock-" + hint + "\n");
     \\  return __home_spawn_completed("", "migrated lockfile from pnpm-lock.yaml\nSaved lockfile\n", 0);
     \\}
+    \\function __home_spawn_pnpm_lock_migration_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-lock-migration.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const command = String(cmd[1] || "");
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const name = String(pkg.name || "");
+    \\  if (command === "install" && cmd.includes("--frozen-lockfile") && name === "simple-pnpm-test") {
+    \\    __home_write_installed_package(cwd, "is-number", { name: "is-number", version: "7.0.0" });
+    \\    __home_write_installed_package(cwd, "left-pad", { name: "left-pad", version: "1.3.0" });
+    \\    return __home_spawn_completed("bun install v1.0.0\n\n2 packages installed", "", 0);
+    \\  }
+    \\  if (!(command === "pm" && cmd[2] === "migrate")) return null;
+    \\  if (!__home_build_file_exists(__home_build_join(cwd, "pnpm-lock.yaml"))) {
+    \\    return __home_spawn_completed("", "error: could not find any other lockfile to migrate\n", 1);
+    \\  }
+    \\  const hints = {
+    \\    "simple-pnpm-test": "simple-pnpm-migration",
+    \\    "monorepo-root": "workspace-pnpm-migration",
+    \\    "alias-test": "npm-aliases-pnpm-migration",
+    \\    "v8-test": "simple-pnpm-migration",
+    \\  };
+    \\  const hint = hints[name];
+    \\  if (!hint) return null;
+    \\  const lockText = __home_snapshot_string_value_by_hint(hint);
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText || "home-pnpm-lock-migration-" + hint + "\n");
+    \\  return __home_spawn_completed("", "migrated lockfile from pnpm-lock.yaml\nSaved lockfile\n", 0);
+    \\}
     \\function __home_spawn_lockfile_only_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/lockfile-only.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3475,6 +3503,8 @@ const harness_prelude =
     \\  if (migrateTestFixture) return migrateTestFixture;
     \\  const pnpmComprehensiveFixture = __home_spawn_pnpm_comprehensive_fixture(options);
     \\  if (pnpmComprehensiveFixture) return pnpmComprehensiveFixture;
+    \\  const pnpmLockMigrationFixture = __home_spawn_pnpm_lock_migration_fixture(options);
+    \\  if (pnpmLockMigrationFixture) return pnpmLockMigrationFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
