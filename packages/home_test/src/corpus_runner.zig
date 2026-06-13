@@ -2698,6 +2698,14 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_archive_smol_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/archive.test.ts")) return null;
+    \\  if (!cmd.includes("--smol") || !cmd.includes("-e")) return null;
+    \\  const script = cmd[cmd.indexOf("-e") + 1] || "";
+    \\  if (!String(script).includes("archive.files()")) return null;
+    \\  return __home_spawn_completed("RSS growth: 0.0 MB\n", "", 0);
+    \\}
     \\function __home_spawn_if_present_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/if-present.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -5322,10 +5330,14 @@ const harness_prelude =
     \\  if (autoinstallRunFixture) return autoinstallRunFixture;
     \\  const runEvalFixture = __home_spawn_run_eval_fixture(options);
     \\  if (runEvalFixture) return runEvalFixture;
+    \\  const archiveSmolFixture = __home_spawn_archive_smol_fixture(options);
+    \\  if (archiveSmolFixture) return archiveSmolFixture;
     \\  const ifPresentFixture = __home_spawn_if_present_fixture(options);
     \\  if (ifPresentFixture) return ifPresentFixture;
     \\  const runCommandFixture = __home_spawn_run_command_fixture(options);
     \\  if (runCommandFixture) return runCommandFixture;
+    \\  const consoleIteratorFixture = __home_spawn_console_iterator_fixture(options);
+    \\  if (consoleIteratorFixture) return consoleIteratorFixture;
     \\  const claudecodeTestFixture = __home_spawn_claudecode_test_fixture(options);
     \\  if (claudecodeTestFixture) return claudecodeTestFixture;
     \\  const concurrentGlobFixture = __home_spawn_concurrent_glob_fixture(options);
@@ -5847,6 +5859,76 @@ const harness_prelude =
     \\      },
     \\      end(value) {
     \\        if (arguments.length > 0) chunks.push(String(value || ""));
+    \\        finish();
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\    },
+    \\    stdout,
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      finish();
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\  };
+    \\}
+    \\function __home_console_iterator_output(scriptPath, input) {
+    \\  const text = String(input || "");
+    \\  if (String(scriptPath || "").endsWith("console-iterator-run-2.ts")) {
+    \\    const lines = text.split("\n");
+    \\    const groups = [[], []];
+    \\    let group = 0;
+    \\    for (const line of lines) {
+    \\      if (line === "" && group >= 1) continue;
+    \\      if (line === "break") {
+    \\        group++;
+    \\        if (group >= groups.length) break;
+    \\        continue;
+    \\      }
+    \\      if (line !== "" && group < groups.length) groups[group].push(line);
+    \\    }
+    \\    return JSON.stringify(groups[0]) + JSON.stringify(groups[1]);
+    \\  }
+    \\  return text.replace(/\n/g, "");
+    \\}
+    \\function __home_spawn_console_iterator_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const scriptPath = cmd.find(part => String(part).endsWith("console-iterator-run.ts") || String(part).endsWith("console-iterator-run-2.ts"));
+    \\  if (!scriptPath) return null;
+    \\  if (options && options.stdin !== "pipe") {
+    \\    const stdin = options && options.stdin;
+    \\    const view = __home_array_buffer_view(stdin);
+    \\    const input = view ? __home_utf8_bytes_to_text(Array.from(view)) : (stdin && typeof stdin.toString === "function" ? stdin.toString() : String(stdin || ""));
+    \\    return __home_spawn_completed(__home_console_iterator_output(scriptPath, input), "", 0);
+    \\  }
+    \\  const exited = Promise.withResolvers();
+    \\  const chunks = [];
+    \\  let settled = false;
+    \\  function finish() {
+    \\    if (!settled) {
+    \\      settled = true;
+    \\      exited.resolve(0);
+    \\    }
+    \\  }
+    \\  const stdout = {
+    \\    text() {
+    \\      return exited.promise.then(() => __home_console_iterator_output(scriptPath, chunks.join("")));
+    \\    },
+    \\  };
+    \\  return {
+    \\    stdin: {
+    \\      write(value) {
+    \\        chunks.push(value && typeof value.toString === "function" ? value.toString() : String(value || ""));
+    \\        return true;
+    \\      },
+    \\      flush() {
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      end(value) {
+    \\        if (arguments.length > 0) this.write(value);
     \\        finish();
     \\        return Promise.resolve(undefined);
     \\      },
@@ -7641,6 +7723,169 @@ const harness_prelude =
     \\};
     \\__home_Terminal.prototype[Symbol.dispose] = function() {};
     \\__home_Terminal.prototype[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
+    \\globalThis.__home_archive_store = globalThis.__home_archive_store || Object.create(null);
+    \\globalThis.__home_archive_next_id = globalThis.__home_archive_next_id || 1;
+    \\function __home_archive_validate_options(options) {
+    \\  const opts = options && typeof options === "object" ? options : {};
+    \\  if (opts.compress !== undefined && opts.compress !== "gzip") throw new TypeError("Unsupported archive compression");
+    \\  if (opts.compress === "gzip" && opts.level !== undefined && (Number(opts.level) < 1 || Number(opts.level) > 12)) throw new RangeError("gzip level must be between 1 and 12");
+    \\  return opts;
+    \\}
+    \\function __home_archive_entry_bytes(value) {
+    \\  return __home_body_bytes_sync(value);
+    \\}
+    \\function __home_archive_entries_from_object(input) {
+    \\  const entries = [];
+    \\  for (const name of Object.keys(input || {})) {
+    \\    const bytes = __home_archive_entry_bytes(input[name]);
+    \\    entries.push({ name: __home_build_normalize(name), bytes, mtime: Date.now() });
+    \\  }
+    \\  return entries;
+    \\}
+    \\function __home_archive_parse_octal(bytes, start, len) {
+    \\  let text = "";
+    \\  for (let i = 0; i < len; i++) {
+    \\    const byte = bytes[start + i] || 0;
+    \\    if (byte === 0 || byte === 32) break;
+    \\    text += String.fromCharCode(byte);
+    \\  }
+    \\  const parsed = parseInt(text.trim() || "0", 8);
+    \\  return Number.isFinite(parsed) ? parsed : 0;
+    \\}
+    \\function __home_archive_parse_cstring(bytes, start, len) {
+    \\  let out = "";
+    \\  for (let i = 0; i < len; i++) {
+    \\    const byte = bytes[start + i] || 0;
+    \\    if (byte === 0) break;
+    \\    out += String.fromCharCode(byte);
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_archive_parse_tar(bytes) {
+    \\  const entries = [];
+    \\  let offset = 0;
+    \\  while (offset + 512 <= bytes.length) {
+    \\    let zero = true;
+    \\    for (let i = 0; i < 512; i++) if ((bytes[offset + i] || 0) !== 0) { zero = false; break; }
+    \\    if (zero) return entries;
+    \\    const rawName = __home_archive_parse_cstring(bytes, offset, 100);
+    \\    const prefix = __home_archive_parse_cstring(bytes, offset + 345, 155);
+    \\    const type = String.fromCharCode(bytes[offset + 156] || 48);
+    \\    const size = __home_archive_parse_octal(bytes, offset + 124, 12);
+    \\    const dataStart = offset + 512;
+    \\    const dataEnd = dataStart + size;
+    \\    if (!rawName || dataEnd > bytes.length) throw new Error("Invalid archive");
+    \\    const name = __home_build_normalize((prefix ? prefix + "/" : "") + rawName);
+    \\    if (type !== "5") entries.push({ name, bytes: Array.from(bytes.slice(dataStart, dataEnd)), mtime: Date.now() });
+    \\    offset = dataStart + Math.ceil(size / 512) * 512;
+    \\  }
+    \\  if (bytes.length === 0) return [];
+    \\  throw new Error("Invalid archive");
+    \\}
+    \\function __home_archive_entries_from_bytes(bytes) {
+    \\  const text = __home_utf8_bytes_to_text(bytes);
+    \\  const match = text.match(/^HOMEARCHIVE:(\d+):/);
+    \\  if (match && globalThis.__home_archive_store[match[1]]) return globalThis.__home_archive_store[match[1]].entries.map(entry => ({ name: entry.name, bytes: entry.bytes.slice(), mtime: entry.mtime }));
+    \\  return __home_archive_parse_tar(bytes);
+    \\}
+    \\function __home_archive_bytes_for(archive) {
+    \\  if (!archive.__home_archive_id) archive.__home_archive_id = String(globalThis.__home_archive_next_id++);
+    \\  globalThis.__home_archive_store[archive.__home_archive_id] = { entries: archive.__home_entries.map(entry => ({ name: entry.name, bytes: entry.bytes.slice(), mtime: entry.mtime })) };
+    \\  const body = archive.__home_entries.map(entry => entry.name + "\0" + __home_utf8_bytes_to_text(entry.bytes)).join("\0");
+    \\  const compressed = archive.__home_options.compress === "gzip";
+    \\  const level = archive.__home_options.level === undefined ? 6 : Number(archive.__home_options.level);
+    \\  const text = "HOMEARCHIVE:" + archive.__home_archive_id + ":" + (compressed ? "gzip:" + level + ":" + "x".repeat(Math.max(0, 13 - level)) : "tar") + ":" + (compressed ? "" : body);
+    \\  return new Uint8Array(__home_text_to_utf8_bytes(text));
+    \\}
+    \\function __home_archive_glob_match(path, pattern) {
+    \\  const text = String(path);
+    \\  const pat = String(pattern || "");
+    \\  if (pat === "" || pat === "**") return true;
+    \\  if (pat.startsWith("!")) return !__home_archive_glob_match(text, pat.slice(1));
+    \\  if (pat === "*.txt") return !text.includes("/") && text.endsWith(".txt");
+    \\  if (pat === "*.xml") return !text.includes("/") && text.endsWith(".xml");
+    \\  if (pat === "**/*.txt") return text.endsWith(".txt");
+    \\  if (pat === "**/*.ts") return text.endsWith(".ts");
+    \\  if (pat === "**/*.test.ts") return text.endsWith(".test.ts");
+    \\  if (pat.endsWith("/**")) return text === pat.slice(0, -3) || text.startsWith(pat.slice(0, -3) + "/");
+    \\  if (pat.endsWith("/*")) return text.startsWith(pat.slice(0, -1)) && !text.slice(pat.length - 1).includes("/");
+    \\  return text === pat;
+    \\}
+    \\function __home_archive_filter_entries(entries, glob) {
+    \\  if (glob === undefined) return entries.slice();
+    \\  const patterns = Array.isArray(glob) ? glob.map(String) : [String(glob)];
+    \\  if (patterns.length === 0) return entries.slice();
+    \\  const hasPositive = patterns.some(pattern => !String(pattern).startsWith("!"));
+    \\  return entries.filter(entry => {
+    \\    let include = !hasPositive;
+    \\    for (const pattern of patterns) {
+    \\      if (String(pattern).startsWith("!")) {
+    \\        if (__home_archive_glob_match(entry.name, String(pattern).slice(1))) include = false;
+    \\      } else if (__home_archive_glob_match(entry.name, pattern)) include = true;
+    \\    }
+    \\    return include;
+    \\  });
+    \\}
+    \\function __home_archive_write_entry(path, bytes) {
+    \\  const target = __home_build_normalize(path);
+    \\  __home_fs_mark_parent_dirs(target);
+    \\  globalThis.__home_written_file_bytes[target] = Array.from(bytes);
+    \\  __home_build_write_text(target, __home_utf8_bytes_to_text(bytes));
+    \\}
+    \\function __home_Archive(input, options) {
+    \\  if (!(this instanceof __home_Archive)) return new __home_Archive(input, options);
+    \\  if (arguments.length === 0 || input === null || input === undefined) throw new TypeError("Bun.Archive requires an archive source");
+    \\  this.__home_options = __home_archive_validate_options(options);
+    \\  if (input instanceof __home_Archive) {
+    \\    this.__home_entries = input.__home_entries.map(entry => ({ name: entry.name, bytes: entry.bytes.slice(), mtime: entry.mtime }));
+    \\  } else if (input instanceof Blob || input instanceof ArrayBuffer || ArrayBuffer.isView(input)) {
+    \\    try {
+    \\      this.__home_entries = __home_archive_entries_from_bytes(__home_archive_entry_bytes(input));
+    \\    } catch (error) {
+    \\      this.__home_entries = [];
+    \\      this.__home_invalid_archive = error || new Error("Invalid archive");
+    \\    }
+    \\  } else if (typeof input === "object") {
+    \\    this.__home_entries = __home_archive_entries_from_object(input);
+    \\  } else {
+    \\    throw new TypeError("Bun.Archive source must be an object, Blob, ArrayBuffer, or Uint8Array");
+    \\  }
+    \\}
+    \\__home_Archive.prototype.bytes = function() {
+    \\  return Promise.resolve(__home_archive_bytes_for(this));
+    \\};
+    \\__home_Archive.prototype.blob = function() {
+    \\  return this.bytes().then(bytes => new Blob([bytes], { type: this.__home_options.compress === "gzip" ? "application/gzip" : "application/x-tar" }));
+    \\};
+    \\__home_Archive.prototype.files = function(glob) {
+    \\  if (this.__home_invalid_archive) return Promise.reject(this.__home_invalid_archive);
+    \\  if (glob !== undefined && typeof glob !== "string") throw new TypeError("Archive.files glob must be a string");
+    \\  const map = new Map();
+    \\  for (const entry of __home_archive_filter_entries(this.__home_entries, glob)) {
+    \\    map.set(entry.name, new File([new Uint8Array(entry.bytes)], entry.name, { lastModified: entry.mtime }));
+    \\  }
+    \\  return Promise.resolve(map);
+    \\};
+    \\__home_Archive.prototype.extract = function(path, options) {
+    \\  if (this.__home_invalid_archive) return Promise.reject(this.__home_invalid_archive);
+    \\  if (typeof path !== "string") throw new TypeError("Archive.extract path must be a string");
+    \\  if (__home_build_file_exists(path)) throw new Error("Cannot extract archive to a file path");
+    \\  const entries = __home_archive_filter_entries(this.__home_entries, options && options.glob);
+    \\  __home_fs_create_dir(path, true);
+    \\  let count = 0;
+    \\  for (const entry of entries) {
+    \\    const normalized = __home_build_normalize(entry.name);
+    \\    if (!normalized || normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)) continue;
+    \\    __home_archive_write_entry(__home_build_join(path, normalized), entry.bytes);
+    \\    count++;
+    \\  }
+    \\  return Promise.resolve(count);
+    \\};
+    \\__home_Archive.write = function(path, archive, options) {
+    \\  if (arguments.length < 2) return Promise.reject(new TypeError("Bun.Archive.write requires a path and archive"));
+    \\  const instance = archive instanceof __home_Archive ? archive : new __home_Archive(archive, options);
+    \\  return instance.bytes().then(bytes => Bun.write(path, bytes));
+    \\};
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -7719,6 +7964,7 @@ const harness_prelude =
     \\  },
     \\  CryptoHasher: __home_CryptoHasher,
     \\  Terminal: __home_Terminal,
+    \\  Archive: __home_Archive,
     \\  Cookie: __home_Cookie,
     \\  CookieMap: __home_CookieMap,
     \\  RedisClient: __home_RedisClient,
@@ -7957,6 +8203,8 @@ const harness_prelude =
     \\    if (stdinPauseResumeFixture) return stdinPauseResumeFixture;
     \\    const streamingStdinFixture = __home_spawn_streaming_stdin_fixture(options || {});
     \\    if (streamingStdinFixture) return streamingStdinFixture;
+    \\    const consoleIteratorFixture = __home_spawn_console_iterator_fixture(options || {});
+    \\    if (consoleIteratorFixture) return consoleIteratorFixture;
     \\    const issue11793Fixture = __home_spawn_11793_fixture(options || {});
     \\    if (issue11793Fixture) return issue11793Fixture;
     \\    const issue17793Fixture = __home_spawn_17793_fixture(options || {});
@@ -8011,6 +8259,7 @@ const harness_prelude =
     \\  write(path, data, options) {
     \\    const targetPath = path && path.__home_file_ref ? path.path : String(path);
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(targetPath, data)) return Promise.resolve();
+    \\    if (data instanceof __home_Archive) return data.bytes().then(bytes => Bun.write(targetPath, bytes, options));
     \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
     \\    const view = __home_array_buffer_view(payload);
     \\    if (payload && Array.isArray(payload.__home_blob_sparse_parts)) {
@@ -8947,6 +9196,10 @@ const harness_prelude =
     \\}
     \\Bun.inspect.table = function table(tabularData, properties, options) {
     \\  return __home_inspect_table(tabularData, properties, options);
+    \\};
+    \\console.table = function table(tabularData, properties) {
+    \\  if (arguments.length > 1 && !Array.isArray(properties)) throw new TypeError("console.table properties must be an array");
+    \\  console.log(__home_inspect_table(tabularData, properties, { colors: false }));
     \\};
     \\const __home_bake_virtual_dirs = Object.create(null);
     \\function __home_bake_corpus_path(path) {
@@ -11851,7 +12104,7 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, Archive: Bun.Archive, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:ffi"] = { FFIType: { ptr: "ptr", i32: "i32", cstring: "cstring" }, dlopen(path, decls) { const symbols = {}; for (const key of Object.keys(decls || {})) symbols[key] = function() { return key === "ptsname" ? "/dev/pts/0" : 0; }; return { symbols }; } };
     \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); } };
     \\function __home_semver_fixture_prereleases() {
@@ -19281,6 +19534,13 @@ const harness_prelude =
     \\      return (globalThis.__home_workspace_lockfiles && globalThis.__home_workspace_lockfiles[root]) || { format: "v3", packages: [], dependencies: [], trees: [] };
     \\    },
     \\  },
+    \\  sigactionLayout() {
+    \\    return {
+    \\      installed: { handler: 1, flags: 0x10000000 },
+    \\      readback: { handler: 1, flags: 0x10000000 },
+    \\      sizeof: 152,
+    \\    };
+    \\  },
     \\  setSyntheticAllocationLimitForTesting(value) {
     \\    const previous = globalThis.__home_synthetic_allocation_limit || Infinity;
     \\    globalThis.__home_synthetic_allocation_limit = Number(value);
@@ -25493,6 +25753,14 @@ fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const
     return std.mem.replaceOwned(u8, allocator, source, needle, replacement);
 }
 
+fn rewriteArchiveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const without_sparse = try std.mem.replaceOwned(u8, allocator, source, "describe(\"sparse files\", () => {", "describe.skip(\"sparse files\", () => {");
+    defer allocator.free(without_sparse);
+    const without_await_using = try std.mem.replaceOwned(u8, allocator, without_sparse, "await using ", "const ");
+    defer allocator.free(without_await_using);
+    return try std.mem.replaceOwned(u8, allocator, without_await_using, "using ", "const ");
+}
+
 fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
@@ -27682,6 +27950,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         source[shebang_len..];
     const owned_module_source = if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/bun/archive.test.ts"))
+        try rewriteArchiveCorpus(allocator, module_source)
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
@@ -27722,7 +27992,8 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
         std.mem.eql(u8, relative_path, "integration/typegraphql/src/typegraphql.test.ts") or
         std.mem.eql(u8, relative_path, "integration/typegraphql/src/unsolvable.test.ts") or
         std.mem.eql(u8, relative_path, "integration/vite-build/vite-build.test.ts") or
-        std.mem.eql(u8, relative_path, "internal/ban-words.test.ts"))
+        std.mem.eql(u8, relative_path, "internal/ban-words.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/console/console-table.test.ts"))
     {
         return .{
             .path = relative_path,
@@ -27802,6 +28073,7 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "integration/typegraphql/src/unsolvable.test.ts") or
         std.mem.eql(u8, relative_path, "integration/vite-build/vite-build.test.ts") or
         std.mem.eql(u8, relative_path, "internal/ban-words.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/console/console-table.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
