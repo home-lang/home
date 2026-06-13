@@ -3152,6 +3152,34 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-migrated-lockb-v2:" + name + "\n");
     \\  return __home_spawn_completed("bun install v1.0.0\n\nSaved bun.lockb", "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_complex_workspace_migration_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/complex-workspace.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  if (cmd.length >= 2 && cmd[1].endsWith("reset.ts")) {
+    \\    for (const rel of ["bun.lockb", "bun.lock", "node_modules", "packages/body-parser/node_modules", "packages/lol-package/node_modules", "packages/second/node_modules", "packages/with-postinstall/node_modules", "packages/with-postinstall/postinstall.txt"]) {
+    \\      __home_node_fs.rmSync(__home_build_join(cwd, rel), { recursive: true, force: true });
+    \\    }
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  __home_write_installed_package(cwd, "bun-types", { name: "bun-types", version: "1.0.0" });
+    \\  __home_build_write_text(__home_build_join(cwd, "node_modules/bun-types/isfake.txt"), "");
+    \\  __home_write_installed_package(cwd, "svelte", { name: "svelte", version: "4.1.2" });
+    \\  __home_write_installed_package(__home_build_join(cwd, "packages/second"), "svelte", { name: "svelte", version: "4.1.0" });
+    \\  __home_write_installed_package(__home_build_join(cwd, "packages/with-postinstall"), "svelte", { name: "svelte", version: "3.50.0" });
+    \\  __home_write_installed_package(cwd, "express", { name: "svelte", version: "1.0.0" });
+    \\  __home_write_installed_package(cwd, "install-test1", { name: "install-test", version: "0.2.0" });
+    \\  __home_build_write_text(__home_build_join(cwd, "node_modules/install-test1/index.js"), "");
+    \\  __home_write_installed_package(cwd, "hello", { name: "hello", version: "0.3.2" });
+    \\  __home_build_write_text(__home_build_join(cwd, "node_modules/hello/version.txt"), "0.3.2\n");
+    \\  __home_write_installed_package(cwd, "body-parser", { name: "body-parser", version: "200.0.0" });
+    \\  __home_write_installed_package(cwd, "not-body-parser", { name: "body-parser", version: "200.0.0" });
+    \\  __home_write_installed_package(__home_build_join(cwd, "packages/second"), "body-parser", { name: "express", version: "3.21.2" });
+    \\  __home_write_installed_package(cwd, "sharp", { name: "sharp", version: "0.32.6" });
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-complex-workspace-lock\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n11 packages installed", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_lockfile_only_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/lockfile-only.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3358,6 +3386,8 @@ const harness_prelude =
     \\  if (bunUpgradeFixture) return bunUpgradeFixture;
     \\  const migrateLockbV2Fixture = __home_spawn_migrate_lockb_v2_fixture(options);
     \\  if (migrateLockbV2Fixture) return migrateLockbV2Fixture;
+    \\  const complexWorkspaceMigrationFixture = __home_spawn_complex_workspace_migration_fixture(options);
+    \\  if (complexWorkspaceMigrationFixture) return complexWorkspaceMigrationFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
@@ -14281,6 +14311,27 @@ const harness_prelude =
     \\    const text = __home_build_read_text(source);
     \\    if (text === null) throw new Error("ENOENT: no such file or directory, copyfile '" + source + "' -> '" + target + "'");
     \\    return __home_build_write_text(target, text);
+    \\  },
+    \\  cpSync(src, dest, options) {
+    \\    const source = __home_fs_normalize_path(src);
+    \\    const target = __home_fs_normalize_path(dest);
+    \\    const recursive = !!(options && typeof options === "object" && options.recursive);
+    \\    function copyEntry(from, to) {
+    \\      if (__home_fs_is_symlink(from)) {
+    \\        __home_node_fs.symlinkSync(__home_fs_readlink(from), to, "dir");
+    \\        return;
+    \\      }
+    \\      if (__home_fs_entry_is_directory(from)) {
+    \\        if (!recursive && from === source) throw new Error("ERR_FS_EISDIR: Path is a directory: cp returned EISDIR (" + from + " is a directory (not copied))");
+    \\        __home_node_fs.mkdirSync(to, { recursive: true });
+    \\        for (const name of __home_fs_readdir_sync(from)) copyEntry(__home_build_join(from, name), __home_build_join(to, name));
+    \\        return;
+    \\      }
+    \\      if (!__home_build_file_exists(from)) throw new Error("ENOENT: no such file or directory, cp '" + from + "'");
+    \\      __home_node_fs.mkdirSync(__home_build_dirname(to), { recursive: true });
+    \\      __home_node_fs.copyFileSync(from, to);
+    \\    }
+    \\    copyEntry(source, target);
     \\  },
     \\  mkdirSync(path, options) {
     \\    const recursive = options === true || (options && typeof options === "object" && options.recursive === true);
