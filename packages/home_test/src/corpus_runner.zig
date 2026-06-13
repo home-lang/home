@@ -19150,7 +19150,67 @@ const harness_prelude =
     \\    default: expected.default || "sshurl",
     \\  }, expected);
     \\}
+    \\function __home_bindgen_to_i32(value) {
+    \\  if (typeof value === "bigint") throw new TypeError("Conversion from 'BigInt' to 'number' is not allowed");
+    \\  if (typeof value === "symbol") throw new TypeError("Cannot convert a symbol to a number");
+    \\  const number = Number(value);
+    \\  if (!Number.isFinite(number) || number === 0) return 0;
+    \\  return number >> 0;
+    \\}
+    \\class __home_Dequeue {
+    \\  constructor() {
+    \\    this._items = [];
+    \\    this._list = new Array(4);
+    \\    this._capacityMask = 3;
+    \\  }
+    \\  size() {
+    \\    return this._items.length;
+    \\  }
+    \\  isEmpty() {
+    \\    return this._items.length === 0;
+    \\  }
+    \\  isNotEmpty() {
+    \\    return this._items.length > 0;
+    \\  }
+    \\  shift() {
+    \\    return this._items.shift();
+    \\  }
+    \\  peek() {
+    \\    return this._items[0];
+    \\  }
+    \\  push(item) {
+    \\    this._items.push(item);
+    \\    while (this._items.length > this._list.length) this._list.length *= 2;
+    \\    this._capacityMask = this._list.length - 1;
+    \\  }
+    \\  toArray(fullCopy) {
+    \\    return fullCopy === false ? this._items : this._items.slice();
+    \\  }
+    \\  clear() {
+    \\    this._items = [];
+    \\    this._list = new Array(4);
+    \\    this._capacityMask = 3;
+    \\  }
+    \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
+    \\  Dequeue: __home_Dequeue,
+    \\  bindgen: {
+    \\    add(left, right) {
+    \\      const a = __home_bindgen_to_i32(left);
+    \\      const b = __home_bindgen_to_i32(right);
+    \\      const sum = a + b;
+    \\      if (sum > 2147483647 || sum < -2147483648) throw new Error("Integer overflow while adding");
+    \\      return sum;
+    \\    },
+    \\    requiredAndOptionalArg(negative, value, enforced, multiplier) {
+    \\      const rangeValue = arguments.length >= 3 ? __home_bindgen_to_i32(enforced) : 42;
+    \\      if (rangeValue < 0 || rangeValue > 100) throw new Error("Value " + rangeValue + " is outside the range [0, 100]");
+    \\      if (value === null || value === undefined) return 123456 + rangeValue + (arguments.length >= 4 ? __home_bindgen_to_i32(multiplier) : 0);
+    \\      const factor = arguments.length >= 4 ? __home_bindgen_to_i32(multiplier) : 1;
+    \\      const total = (__home_bindgen_to_i32(value) + rangeValue) * factor;
+    \\      return negative ? -total : total;
+    \\    },
+    \\  },
     \\  hostedGitInfo: {
     \\    parseUrl(url) {
     \\      if (typeof url !== "string") throw new TypeError("hostedGitInfo.prototype.parseUrl takes a string as its first argument");
@@ -24781,6 +24841,18 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Error | undefined;", .replacement = ";" },
         .{ .needle = " as Error", .replacement = "" },
         .{ .needle = " as grpc.ServiceClientConstructor", .replacement = "" },
+        .{ .needle = "class DequeueList<T>", .replacement = "class DequeueList" },
+        .{ .needle = "private _list: T[];", .replacement = "_list;" },
+        .{ .needle = "let queue: Dequeue<number>;", .replacement = "let queue;" },
+        .{ .needle = "let expected: DequeueList<number>;", .replacement = "let expected;" },
+        .{ .needle = "shift(): T | undefined", .replacement = "shift()" },
+        .{ .needle = "peek(): T | undefined", .replacement = "peek()" },
+        .{ .needle = "push(item: T): void", .replacement = "push(item)" },
+        .{ .needle = "toArray(fullCopy: boolean): T[]", .replacement = "toArray(fullCopy)" },
+        .{ .needle = "size(): number", .replacement = "size()" },
+        .{ .needle = "isEmpty(): boolean", .replacement = "isEmpty()" },
+        .{ .needle = "isNotEmpty(): boolean", .replacement = "isNotEmpty()" },
+        .{ .needle = "clear(): void", .replacement = "clear()" },
         .{ .needle = ": Record<string, \"no-op\" | \"polyfill\" | \"error\"> =", .replacement = " =" },
         .{ .needle = ": Promise<AnyDTO>", .replacement = "" },
         .{ .needle = ": Promise<any>", .replacement = "" },
@@ -25892,6 +25964,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { escapePowershell } from \"bun:internal-for-testing\";",
             .replacement = "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import { bindgen } from \"bun:internal-for-testing\";",
+            .replacement = "const { bindgen } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import { Dequeue } from \"bun:internal-for-testing\";",
+            .replacement = "const { Dequeue } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
             .needle = "import { readTarball } from \"bun:internal-for-testing\";",
@@ -27635,7 +27715,14 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
         std.mem.eql(u8, relative_path, "integration/next-pages/test/dev-server.test.ts") or
         std.mem.eql(u8, relative_path, "integration/next-pages/test/next-build.test.ts") or
         std.mem.eql(u8, relative_path, "integration/sass/sass.test.ts") or
-        std.mem.eql(u8, relative_path, "integration/sharp/sharp.test.ts"))
+        std.mem.eql(u8, relative_path, "integration/sharp/sharp.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/svelte/client-side.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/svelte/server-side.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/typegraphql/src/ts_example.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/typegraphql/src/typegraphql.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/typegraphql/src/unsolvable.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/vite-build/vite-build.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/ban-words.test.ts"))
     {
         return .{
             .path = relative_path,
@@ -27708,6 +27795,13 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "integration/next-pages/test/next-build.test.ts") or
         std.mem.eql(u8, relative_path, "integration/sass/sass.test.ts") or
         std.mem.eql(u8, relative_path, "integration/sharp/sharp.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/svelte/client-side.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/svelte/server-side.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/typegraphql/src/ts_example.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/typegraphql/src/typegraphql.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/typegraphql/src/unsolvable.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/vite-build/vite-build.test.ts") or
+        std.mem.eql(u8, relative_path, "internal/ban-words.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
