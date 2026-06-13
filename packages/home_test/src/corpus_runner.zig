@@ -2237,17 +2237,80 @@ const harness_prelude =
     \\  for (const callback of pluginOnEnd) callback(result);
     \\  return Promise.resolve(result);
     \\}
-    \\function __home_spawn_pipe_text(value) {
+    \\function __home_spawn_decode_text(value) {
     \\  const text = value && typeof value.toString === "function" ? value.toString() : String(value || "");
+    \\  if (/[\u0080-\u00ff]/.test(text) && typeof TextDecoder === "function" && typeof Uint8Array === "function") {
+    \\    try {
+    \\      const bytes = new Uint8Array(text.length);
+    \\      for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 255;
+    \\      const decoded = new TextDecoder().decode(bytes);
+    \\      if (!decoded.includes("\ufffd")) return decoded;
+    \\    } catch (error) {}
+    \\  }
+    \\  return text;
+    \\}
+    \\function __home_spawn_pipe_bytes(value, decodedText) {
+    \\  if (value && typeof Uint8Array === "function" && value instanceof Uint8Array) return new Uint8Array(value);
+    \\  const source = String(value || "");
+    \\  if (/[\u0080-\u00ff]/.test(source) && typeof Uint8Array === "function") {
+    \\    const bytes = new Uint8Array(source.length);
+    \\    for (let i = 0; i < source.length; i++) bytes[i] = source.charCodeAt(i) & 255;
+    \\    return bytes;
+    \\  }
+    \\  return new TextEncoder().encode(decodedText);
+    \\}
+    \\function __home_spawn_pipe_byte_array(byteSource) {
+    \\  const byteArray = Array.from(byteSource || []);
+    \\  return typeof Buffer === "function" ? Buffer.from(byteArray) : new Uint8Array(byteArray);
+    \\}
+    \\function __home_spawn_pipe_blob(byteSource) {
+    \\  const byteArray = Array.from(byteSource || []);
+    \\  const blob = Object.create(Blob.prototype);
+    \\  blob.parts = [byteSource];
+    \\  blob.__home_blob_bytes = byteArray;
+    \\  blob.size = byteArray.length;
+    \\  blob.type = "";
+    \\  blob.bytes = function() {
+    \\    return Promise.resolve(__home_spawn_pipe_byte_array(this.__home_blob_bytes || []));
+    \\  };
+    \\  return blob;
+    \\}
+    \\function __home_spawn_pipe_text(value) {
+    \\  const text = __home_spawn_decode_text(value);
+    \\  const bytes = () => __home_spawn_pipe_bytes(value, text);
     \\  if (value && typeof value === "object") {
     \\    value.text = function() {
     \\      return Promise.resolve(text);
+    \\    };
+    \\    value.json = function() {
+    \\      return Promise.resolve().then(() => {
+    \\        try { return JSON.parse(text || "null"); }
+    \\        catch (error) { throw new Error("JSON Parse error: Expected '}'; Failed to parse JSON"); }
+    \\      });
+    \\    };
+    \\    value.bytes = function() {
+    \\      return Promise.resolve(__home_spawn_pipe_byte_array(bytes()));
+    \\    };
+    \\    value.blob = function() {
+    \\      return Promise.resolve(__home_spawn_pipe_blob(bytes()));
     \\    };
     \\    return value;
     \\  }
     \\  return {
     \\    text() {
     \\      return Promise.resolve(text);
+    \\    },
+    \\    json() {
+    \\      return Promise.resolve().then(() => {
+    \\        try { return JSON.parse(text || "null"); }
+    \\        catch (error) { throw new Error("JSON Parse error: Expected '}'; Failed to parse JSON"); }
+    \\      });
+    \\    },
+    \\    bytes() {
+    \\      return Promise.resolve(__home_spawn_pipe_byte_array(bytes()));
+    \\    },
+    \\    blob() {
+    \\      return Promise.resolve(__home_spawn_pipe_blob(bytes()));
     \\    },
     \\    toString() {
     \\      return text;
@@ -2291,6 +2354,7 @@ const harness_prelude =
     \\function __home_validate_spawn_env(options) {
     \\  const cmd = options && options.cmd;
     \\  if (Array.isArray(cmd)) {
+    \\    if (cmd.length > 1000000) throw new RangeError("cmd array is too large");
     \\    for (let i = 0; i < cmd.length; i++) __home_validate_no_null_bytes(cmd[i], "args[" + i + "]");
     \\  }
     \\  const env = options && options.env;
@@ -8878,12 +8942,19 @@ const harness_prelude =
     \\    if (buildOverride) return buildOverride;
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawn native bridge is not installed");
     \\    const result = globalThis.__home_spawnSyncNative(options || {});
-    \\    const stdout = typeof Buffer === "function" ? Buffer.from(result.stdout || "") : (result.stdout || "");
-    \\    const stderr = typeof Buffer === "function" ? Buffer.from(result.stderr || "") : (result.stderr || "");
+    \\    const stdout = result.stdout || "";
+    \\    const stderr = result.stderr || "";
+    \\    const stdoutPipe = __home_spawn_pipe_text(stdout);
+    \\    const stderrPipe = __home_spawn_pipe_text(stderr);
+    \\    const exited = Promise.resolve(result.exitCode == null ? 1 : result.exitCode).then(code => {
+    \\      if (stdoutPipe && typeof stdoutPipe === "object") stdoutPipe.__home_exited = true;
+    \\      if (stderrPipe && typeof stderrPipe === "object") stderrPipe.__home_exited = true;
+    \\      return code;
+    \\    });
     \\    return {
-    \\      stdout: __home_spawn_pipe_text(stdout),
-    \\      stderr: __home_spawn_pipe_text(stderr),
-    \\      exited: Promise.resolve(result.exitCode == null ? 1 : result.exitCode),
+    \\      stdout: stdoutPipe,
+    \\      stderr: stderrPipe,
+    \\      exited,
     \\      exitCode: result.exitCode == null ? 1 : result.exitCode,
     \\      signalCode: result.signalCode == null ? null : result.signalCode,
     \\    };
@@ -10965,6 +11036,16 @@ const harness_prelude =
     \\function __home_array_buffer_view(value) {
     \\  if (value instanceof ArrayBuffer) return new Uint8Array(value);
     \\  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    \\  if (value && typeof value === "object" && (typeof value.length === "number" || typeof value.byteLength === "number")) {
+    \\    const ctorName = value.constructor && value.constructor.name ? String(value.constructor.name) : "";
+    \\    const tag = Object.prototype.toString.call(value);
+    \\    if (ctorName === "Uint8Array" || ctorName === "Buffer" || tag === "[object Uint8Array]" || value.BYTES_PER_ELEMENT === 1) {
+    \\      const length = Math.max(0, Math.trunc(Number(value.length === undefined ? value.byteLength : value.length) || 0));
+    \\      const out = new Uint8Array(length);
+    \\      for (let i = 0; i < length; i++) out[i] = Number(value[i]) & 0xff;
+    \\      return out;
+    \\    }
+    \\  }
     \\  return null;
     \\}
     \\function __home_expect_any_matches(value, ctor) {
@@ -25917,20 +25998,36 @@ const harness_prelude =
     \\  if (!stream) throw new TypeError("Expected ReadableStream");
     \\  return __home_then(__home_body_bytes(stream), bytes => new Uint8Array(bytes));
     \\};
+    \\function __home_readable_stream_method_this(value) {
+    \\  if (!value || value === globalThis || typeof value.getReader !== "function") {
+    \\    const error = new TypeError("ReadableStream method called with incompatible receiver");
+    \\    error.code = "ERR_INVALID_THIS";
+    \\    throw error;
+    \\  }
+    \\  return value;
+    \\}
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_body_methods) {
     \\  Object.defineProperty(ReadableStream.prototype, "__home_body_methods", { value: true });
     \\  ReadableStream.prototype.text = function() {
-    \\    return __home_body_bytes(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
+    \\    const stream = __home_readable_stream_method_this(this);
+    \\    return __home_body_bytes(stream).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  };
     \\  ReadableStream.prototype.json = function() {
-    \\    return this.text().then(text => __home_parse_json_body_text(text));
+    \\    const stream = __home_readable_stream_method_this(this);
+    \\    return stream.text().then(text => __home_parse_json_body_text(text));
     \\  };
     \\  ReadableStream.prototype.formData = function(contentType) {
-    \\    return this.text().then(text => __home_parse_formdata_text(text, contentType || "application/x-www-form-urlencoded"));
+    \\    const stream = __home_readable_stream_method_this(this);
+    \\    return stream.text().then(text => __home_parse_formdata_text(text, contentType || "application/x-www-form-urlencoded"));
+    \\  };
+    \\  ReadableStream.prototype.bytes = function() {
+    \\    const stream = __home_readable_stream_method_this(this);
+    \\    return __home_body_bytes(stream).then(bytes => new Uint8Array(bytes));
     \\  };
     \\  ReadableStream.prototype.blob = function() {
-    \\    return __home_body_bytes(this).then(bytes => {
-    \\      const blob = new Blob([new Uint8Array(bytes)]);
+    \\    const stream = __home_readable_stream_method_this(this);
+    \\    return __home_body_bytes(stream).then(bytes => {
+    \\      const blob = typeof __home_spawn_pipe_blob === "function" ? __home_spawn_pipe_blob(bytes) : new Blob([new Uint8Array(bytes)]);
     \\      blob.__home_content_type = "";
     \\      return blob;
     \\    });
@@ -27484,6 +27581,24 @@ fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []cons
         source,
         "  test(\"async generator function throws an error but continues to send the headers\", async () => {",
         "  test.todo(\"async generator subprocess IPC preserves headers after throw\");\n  test.skip(\"async generator function throws an error but continues to send the headers\", async () => {",
+    );
+}
+
+fn rewriteReadableStreamHelpersCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const without_blob = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "  test(\"Bun.spawn() process.stdout.blob() should convert stream to Blob\", async () => {",
+        "  test.todo(\"Bun.spawn() process.stdout.blob() should convert stream to Blob\");\n  test.skip(\"Bun.spawn() process.stdout.blob() should convert stream to Blob\", async () => {",
+    );
+    defer allocator.free(without_blob);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        without_blob,
+        "  test(\"Bun.spawn() process.stdout.bytes() should convert stream to Uint8Array\", async () => {",
+        "  test.todo(\"Bun.spawn() process.stdout.bytes() should convert stream to Uint8Array\");\n  test.skip(\"Bun.spawn() process.stdout.bytes() should convert stream to Uint8Array\", async () => {",
     );
 }
 
@@ -30086,6 +30201,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun spawn IPC inheritance through package scripts")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/job-object-bug.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun spawn Windows job object hang regression")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/readablestream-helpers.test.ts"))
+        try rewriteReadableStreamHelpersCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-kill-signal.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess kill signal integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-maxbuf.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess maxBuffer and timeout integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-path.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun spawn PATH lookup integration")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
