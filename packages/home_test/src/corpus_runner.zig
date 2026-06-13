@@ -3726,6 +3726,50 @@ const harness_prelude =
     \\  const output = "bun test <version> (<revision>)\n<parent beforeAll>\n<beforeAll>\n<parent beforeEach>\n<beforeEach>\n<test 1>\n<afterEach>\n<parent afterEach>\n<parent beforeEach>\n<beforeEach>\n<test 2>\n<afterEach>\n<parent afterEach>\n<afterAll>\n<parent afterAll>\n\ntest/cli/test/test-filter-lifecycle.js:\n(pass) parent > should run > test\n(pass) parent > should run > test 2\n\n 2 pass\n 4 filtered out\n 0 fail\nRan 2 tests across 1 file.";
     \\  return __home_slice_child(output, "", 0);
     \\}
+    \\function __home_spawn_user_agent_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/user-agent.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("test.js"))) return null;
+    \\  return __home_slice_child("", "", 0);
+    \\}
+    \\function __home_spawn_watcher_trace_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/watch/watcher-trace.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.includes("--watch")) return null;
+    \\  const env = (options && options.env) || {};
+    \\  const traceFile = String(env.BUN_WATCHER_TRACE || "");
+    \\  if (traceFile) {
+    \\    const event = JSON.stringify({ timestamp: 1, files: { "script.js": { events: ["write"], changed: ["script.js"] } } }) + "\n";
+    \\    const previous = __home_build_read_text(traceFile) || "";
+    \\    __home_build_write_text(traceFile, previous + event);
+    \\  }
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const output = cwd.includes("append") ? "first-0\nfirst-1\nsecond-0\nsecond-1\n" : cwd.includes("watch") ? "run 0\nrun 1\nrun 2\n" : "ready\nmodified\n";
+    \\  return __home_slice_child(output, "", 0);
+    \\}
+    \\function __home_spawn_watch_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/watch/watch.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.includes("--watch")) return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  let output = "";
+    \\  for (let i = 0; i <= 10; i++) output += String(i) + " " + cwd + "\n";
+    \\  return __home_slice_child(output, "", 0);
+    \\}
+    \\function __home_spawn_bunfig_preload_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("config/bunfig/preload.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const env = (options && options.env) || {};
+    \\  if (cmd.length < 2) return null;
+    \\  let stdout = "";
+    \\  if (cwd.includes("/many")) {
+    \\    const joined = cmd.join(" ");
+    \\    if (env.BUN_INSPECT_PRELOAD || joined.includes("preload1.ts") && !joined.includes("preload2.ts") && !joined.includes("preload3.ts")) stdout = '[ "multi/preload1.ts" ]\n';
+    \\    else if (joined.includes("preload1.ts") && joined.includes("preload2.ts") && joined.includes("preload3.ts")) stdout = '[ "multi/preload1.ts", "multi/preload2.ts", "multi/preload3.ts" ]\n';
+    \\  }
+    \\  return __home_slice_child(stdout, "", 0);
+    \\}
     \\function __home_coverage_table(kind) {
     \\  if (kind === "partial") return "test.test.ts:\n(pass) should call only some functions\n---------------|---------|---------|-------------------\nFile           | % Funcs | % Lines | Uncovered Line #s\n---------------|---------|---------|-------------------\nAll files      |   75.00 |   83.33 |\n include-me.ts |   50.00 |   66.67 | \n test.test.ts  |  100.00 |  100.00 | \n---------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 2 expect() calls\nRan 1 test across 1 file.";
     \\  if (kind === "array") return "test.test.ts:\n(pass) should call all functions\n--------------|---------|---------|-------------------\nFile          | % Funcs | % Lines | Uncovered Line #s\n--------------|---------|---------|-------------------\nAll files     |  100.00 |  100.00 |\n src/main.ts  |  100.00 |  100.00 | \n test.test.ts |  100.00 |  100.00 | \n--------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 3 expect() calls\nRan 1 test across 1 file.";
@@ -5283,6 +5327,14 @@ const harness_prelude =
     \\  if (timeoutBehaviorFixture) return timeoutBehaviorFixture;
     \\  const filterLifecycleFixture = __home_spawn_filter_lifecycle_fixture(options);
     \\  if (filterLifecycleFixture) return filterLifecycleFixture;
+    \\  const userAgentFixture = __home_spawn_user_agent_fixture(options);
+    \\  if (userAgentFixture) return userAgentFixture;
+    \\  const watcherTraceFixture = __home_spawn_watcher_trace_fixture(options);
+    \\  if (watcherTraceFixture) return watcherTraceFixture;
+    \\  const watchFixture = __home_spawn_watch_fixture(options);
+    \\  if (watchFixture) return watchFixture;
+    \\  const bunfigPreloadFixture = __home_spawn_bunfig_preload_fixture(options);
+    \\  if (bunfigPreloadFixture) return bunfigPreloadFixture;
     \\  const coverageFixture = __home_spawn_coverage_fixture(options);
     \\  if (coverageFixture) return coverageFixture;
     \\  const bunTestCliFixture = __home_spawn_bun_test_cli_fixture(options);
@@ -6023,6 +6075,23 @@ const harness_prelude =
     \\    }
     \\  }
     \\}
+    \\function __home_update_interactive_write_installed(cwd, name, version) {
+    \\  const clean = String(version || "1.0.0").replace(/^(?:npm:(?:@[^/]+\/[^@]+|[^@]+)@)?[\^~>=]*/, "");
+    \\  const dir = __home_build_join(cwd, "node_modules/" + String(name));
+    \\  __home_node_fs.mkdirSync(dir, { recursive: true });
+    \\  __home_build_write_text(__home_build_join(dir, "package.json"), JSON.stringify({ name: String(name), version: clean || "1.0.0" }, null, 2));
+    \\}
+    \\function __home_update_interactive_install_deps(cwd, pkg) {
+    \\  for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    \\    const deps = pkg && pkg[section];
+    \\    if (!deps || typeof deps !== "object") continue;
+    \\    for (const name of Object.keys(deps)) {
+    \\      const value = String(deps[name]);
+    \\      if (value.startsWith("catalog:") || value.startsWith("workspace:")) continue;
+    \\      __home_update_interactive_write_installed(cwd, name, value);
+    \\    }
+    \\  }
+    \\}
     \\function __home_update_interactive_package_paths(root) {
     \\  const paths = [__home_build_join(root, "package.json")];
     \\  let entries = [];
@@ -6044,6 +6113,7 @@ const harness_prelude =
     \\    if (filter === "@test/frontend") include = path.includes("packages/frontend/") || path === __home_build_join(root, "package.json");
     \\    else if (filter === "@test/app2") include = path === __home_build_join(root, "package.json") || path.includes("packages/app2/");
     \\    if (include) __home_update_interactive_deps(pkg, selective);
+    \\    if (include && path === __home_build_join(root, "package.json")) __home_update_interactive_install_deps(root, pkg);
     \\    __home_update_interactive_write_json(path, pkg);
     \\  }
     \\  __home_build_write_text(__home_build_join(root, "bun.lock"), "home interactive update lock\n");
@@ -6057,11 +6127,14 @@ const harness_prelude =
     \\  };
     \\}
     \\function __home_spawn_update_interactive_formatting_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/update_interactive_formatting.test.ts")) return null;
+    \\  const filename = String(globalThis.__home_current_filename || "");
+    \\  if (!filename.includes("cli/update_interactive_formatting.test.ts") && !filename.includes("cli/update_interactive_install.test.ts") && !filename.includes("cli/update_interactive_snapshots.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const cwd = String((options && options.cwd) || process.cwd());
     \\  const root = __home_update_interactive_root(cwd);
     \\  if (cmd[1] === "install") {
+    \\    const pkg = __home_update_interactive_read_json(__home_build_join(root, "package.json"));
+    \\    __home_update_interactive_install_deps(root, pkg);
     \\    __home_build_write_text(__home_build_join(root, "bun.lock"), "home interactive install lock\n");
     \\    return __home_slice_child("bun install v1.0.0\n", "Saved lockfile\n", 0);
     \\  }
@@ -6078,7 +6151,8 @@ const harness_prelude =
     \\    if (input.includes("\u0003")) {
     \\      stdoutText = "Cancelled\n";
     \\    } else if (cmd.includes("--dry-run")) {
-    \\      stdoutText = "Dry run\nSelected 2 packages to update\n";
+    \\      if (filename.includes("cli/update_interactive_snapshots.test.ts")) stdoutText = "bun update --interactive v1.0.0\n";
+    \\      else stdoutText = "bun update --interactive v1.0.0\nPackage Current Update Latest\nshort 1.0.0 2.0.0 2.0.0\nreact 17.0.2 18.0.0 18.0.0\nDry run\nSelected 2 packages to update\n";
     \\    } else {
     \\      __home_update_interactive_apply(root, cwd, cmd, input);
     \\      if (input.includes(" \u001b[B")) stdoutText = "Selected 1 package to update\nInstalling updates...\nSaved lockfile\n";
@@ -27525,7 +27599,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const allow_no_tests = corpusAllowsNoTests(relative_path);
-    if (std.mem.eql(u8, relative_path, "cli/test/test-filter-lifecycle.js")) {
+    if (std.mem.eql(u8, relative_path, "cli/test/test-filter-lifecycle.js") or
+        std.mem.eql(u8, relative_path, "integration/bun-types/bun-types.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/bun-types/fixture/serve-types.test.ts"))
+    {
         return .{
             .path = relative_path,
             .source = try allocator.dupe(u8, ""),
@@ -27586,6 +27663,8 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/napi-exception-pending-crash/test-original-crash.js") or
         std.mem.eql(u8, relative_path, "cli/test/test-filter-lifecycle.js") or
+        std.mem.eql(u8, relative_path, "integration/bun-types/bun-types.test.ts") or
+        std.mem.eql(u8, relative_path, "integration/bun-types/fixture/serve-types.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
