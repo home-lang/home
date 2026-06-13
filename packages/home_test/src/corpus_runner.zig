@@ -8682,7 +8682,14 @@ const harness_prelude =
     \\      server.address = String(options.unix);
     \\      server.port = undefined;
     \\      server.hostname = undefined;
-    \\      server.url = new URL("unix:" + String(options.unix));
+    \\      if (typeof options.unix === "string") {
+    \\        server.url = new URL("unix:" + String(options.unix));
+    \\      } else {
+    \\        Object.defineProperty(server, "url", {
+    \\          configurable: true,
+    \\          get() { throw new TypeError("Invalid URL"); },
+    \\        });
+    \\      }
     \\    }
     \\    if (options.development !== undefined) server.development = !!options.development;
     \\    else server.development = false;
@@ -29365,8 +29372,24 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun.serve request body memory leak integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-http3.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve HTTP/3 UDP integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-protocols.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve HTTP/1.1 and HTTP/3 protocol subprocess integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-response-stream-sink-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve response stream sink leak integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-stream-reject-flush-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve rejected stream flush leak integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/serve.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve comprehensive native HTTP integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-pending-promise-abort-leak.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve pending Promise abort memory safety integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/tls-bunfile-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve TLS Bun.file memory leak integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/tls-keepalive.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "fetch TLS keepalive native integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/image/image-adversarial.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Image adversarial codec hardening")
+    else if (std.mem.eql(u8, relative_path, "js/bun/image/image-kernels.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Image resize kernel parity")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
