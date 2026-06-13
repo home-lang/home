@@ -30000,6 +30000,18 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun shell lazy execution integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/leak.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun shell fd and memory leak integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/lex.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell lexer internals")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/parse.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell parser internals")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/pipeline_stack.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell pipeline stack integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-blocking-pipe.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell nonblocking pipe integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-hang.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell subprocess hang regression fixtures")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-sentinel-hardening.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell sentinel escaping hardening")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
