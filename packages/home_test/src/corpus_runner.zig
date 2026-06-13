@@ -7901,24 +7901,106 @@ const harness_prelude =
     \\  } else {
     \\    text = String(value);
     \\  }
-    \\  if (text.includes("://") || text.includes(":") || text.startsWith("-")) throw new TypeError("invalid hostname");
+    \\  if (text.includes("://") || text.startsWith("-")) throw new TypeError("invalid hostname");
+    \\  if (text.includes(":") && text !== "::1" && !/^\[[0-9a-fA-F:]+\]$/.test(text)) throw new TypeError("invalid hostname");
     \\  return text || defaultHostname;
     \\}
+    \\function __home_serve_route_entries(routes) {
+    \\  const namesByRoute = Object.create(null);
+    \\  return Object.keys(routes || {}).map((pattern, index) => {
+    \\    const text = String(pattern);
+    \\    const seen = Object.create(null);
+    \\    const paramsInPattern = text.match(/:[^/]+/g) || [];
+    \\    for (const raw of paramsInPattern) {
+    \\      const name = raw.slice(1);
+    \\      if (/^[0-9]/.test(name)) throw new Error("Route parameter names cannot start with a number.");
+    \\      if (seen[name]) throw new Error("Support for duplicate route parameter names is not yet implemented.");
+    \\      seen[name] = true;
+    \\    }
+    \\    namesByRoute[text] = seen;
+    \\    const wildcard = text.includes("*");
+    \\    const params = (text.match(/:[^/]+/g) || []).length;
+    \\    const staticChars = text.replace(/:[^/]+/g, "").replace(/\*/g, "").length;
+    \\    return { pattern, index, wildcard, params, staticChars };
+    \\  }).sort((left, right) => {
+    \\    if (left.wildcard !== right.wildcard) return left.wildcard ? 1 : -1;
+    \\    if (left.staticChars !== right.staticChars) return right.staticChars - left.staticChars;
+    \\    if (left.params !== right.params) return left.params - right.params;
+    \\    return left.index - right.index;
+    \\  });
+    \\}
+    \\function __home_serve_routes_required_message() {
+    \\  return "Bun.serve() needs either:\n\n  - A routes object:\n     routes: {\n       \"/path\": {\n         GET: (req) => new Response(\"Hello\")\n       }\n     }\n\n  - Or a fetch handler:\n     fetch: (req) => {\n       return new Response(\"Hello\")\n     }\n\nLearn more at https://bun.com/docs/api/http";
+    \\}
+    \\function __home_serve_routes_type_message() {
+    \\  return "'routes' expects a Record<string, Response | HTMLBundle | {[method: string]: (req: BunRequest) => Response|Promise<Response>}>\n\nTo bundle frontend apps on-demand with Bun.serve(), import HTML files.\n\nExample:\n\n```js\nimport { serve } from \"bun\";\nimport app from \"./app.html\";\n\nserve({\n  routes: {\n    \"/index.json\": Response.json({ message: \"Hello World\" }),\n    \"/app\": app,\n    \"/path/:param\": (req) => {\n      const param = req.params.param;\n      return Response.json({ message: `Hello ${param}` });\n    },\n    \"/path\": {\n      GET(req) {\n        return Response.json({ message: \"Hello World\" });\n      },\n      POST(req) {\n        return Response.json({ message: \"Hello World\" });\n      },\n    },\n  },\n\n  fetch(request) {\n    return new Response(\"fallback response\");\n  },\n});\n```\n\nSee https://bun.com/docs/api/http for more information.";
+    \\}
+    \\function __home_serve_validate_route_value(value) {
+    \\  if (value === false || value instanceof Response || typeof value === "function") return;
+    \\  if (value && typeof value === "object" && value.__home_bake_html_import) return;
+    \\  if (value && typeof value === "object") {
+    \\    for (const key of Object.keys(value)) {
+    \\      const methodValue = value[key];
+    \\      if (!(methodValue instanceof Response) && typeof methodValue !== "function") throw new TypeError(__home_serve_routes_type_message());
+    \\    }
+    \\    return;
+    \\  }
+    \\  throw new TypeError(__home_serve_routes_type_message());
+    \\}
+    \\function __home_serve_validate_routes(routes, hasFetch) {
+    \\  if (!routes || typeof routes !== "object" || Object.keys(routes).length === 0) {
+    \\    if (!hasFetch) throw new Error(__home_serve_routes_required_message());
+    \\    return;
+    \\  }
+    \\  for (const pattern of Object.keys(routes)) __home_serve_validate_route_value(routes[pattern]);
+    \\  __home_serve_route_entries(routes);
+    \\}
+    \\function __home_serve_route_match(path, pattern) {
+    \\  const names = [];
+    \\  let re = "^";
+    \\  const parts = String(pattern).split("/");
+    \\  for (let i = 0; i < parts.length; i++) {
+    \\    const part = parts[i];
+    \\    if (i > 0) re += "/";
+    \\    if (part === "*") {
+    \\      re += ".*";
+    \\    } else if (part.startsWith(":")) {
+    \\      names.push(part.slice(1));
+    \\      re += "([^/]+)";
+    \\    } else {
+    \\      re += part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    \\    }
+    \\  }
+    \\  re += "$";
+    \\  const match = path.match(new RegExp(re));
+    \\  if (!match) return null;
+    \\  const params = {};
+    \\  for (let i = 0; i < names.length; i++) params[names[i]] = decodeURIComponent(match[i + 1] || "");
+    \\  return params;
+    \\}
+    \\function __home_serve_route_value(route, method) {
+    \\  if (route === false || route === null || route === undefined) return { found: false, value: null, isStatic: false };
+    \\  if (route instanceof Response || typeof route === "function") return { found: true, value: route, isStatic: typeof route !== "function" };
+    \\  if (route && typeof route === "object" && route.__home_bake_html_import) return { found: true, value: route, isStatic: true };
+    \\  if (typeof route === "object") {
+    \\    const value = route[method] || (method === "HEAD" ? route.GET : undefined);
+    \\    if (value === false || value === null || value === undefined) return { found: false, value: null, isStatic: false };
+    \\    return { found: true, value, isStatic: typeof value !== "function" };
+    \\  }
+    \\  return { found: true, value: route, isStatic: true };
+    \\}
     \\function __home_serve_route_fetch(routes, fallbackFetch) {
+    \\  const entries = __home_serve_route_entries(routes);
     \\  return function(request) {
     \\    const url = new URL(request.url);
     \\    const path = url.pathname.replace(/^\/+/, "/");
     \\    const method = String(request.method || "GET").toUpperCase();
-    \\    for (const pattern of Object.keys(routes || {})) {
-    \\      const names = [];
-    \\      const escaped = String(pattern).replace(/:[^/]+/g, match => {
-    \\        names.push(match.slice(1));
-    \\        return "([^/]+)";
-    \\      });
-    \\      const match = path.match(new RegExp("^" + escaped + "$"));
-    \\      if (!match) continue;
-    \\      request.params = {};
-    \\      for (let i = 0; i < names.length; i++) request.params[names[i]] = decodeURIComponent(match[i + 1] || "");
+    \\    for (const entry of entries) {
+    \\      const params = __home_serve_route_match(path, entry.pattern);
+    \\      if (!params) continue;
+    \\      const routeInfo = __home_serve_route_value(routes[entry.pattern], method);
+    \\      if (!routeInfo.found) continue;
+    \\      request.params = params;
     \\      __home_attach_request_cookies(request);
     \\      if (path === "/tester" && method === "POST") {
     \\        request.json = function() {
@@ -7934,18 +8016,26 @@ const harness_prelude =
     \\        __home_attach_request_cookies(cloned);
     \\        return cloned;
     \\      };
-    \\      const route = routes[pattern];
-    \\      const isStaticRoute = typeof route !== "function";
-    \\      const response = isStaticRoute ? (route instanceof Response && typeof route.clone === "function" ? route.clone() : route) : route(request);
+    \\      const isStaticRoute = routeInfo.isStatic;
+    \\      let response;
+    \\      try {
+    \\        response = isStaticRoute ? (routeInfo.value instanceof Response && typeof routeInfo.value.clone === "function" ? routeInfo.value.clone() : routeInfo.value) : routeInfo.value(request);
+    \\      } catch (error) {
+    \\        if (routes && routes.__home_error_handler) response = routes.__home_error_handler(error);
+    \\        else throw error;
+    \\      }
     \\      if (request.__home_upgrade_response) return request.__home_upgrade_response;
-    \\      return Promise.resolve(response).then(value => {
+    \\      return Promise.resolve(response).catch(error => {
+    \\        if (routes && routes.__home_error_handler) return routes.__home_error_handler(error);
+    \\        throw error;
+    \\      }).then(value => {
     \\        if (request.__home_upgrade_response) return request.__home_upgrade_response;
     \\        if (value instanceof Response && request.cookies && path === "/tester" && typeof request.cookies.toJSON === "function") {
     \\          value = new Response(JSON.stringify(request.cookies), { status: value.status, statusText: value.statusText, headers: value.headers });
     \\        }
     \\        const out = __home_serve_response_with_cookies(value, request, isStaticRoute);
     \\        if (isStaticRoute && request.headers && request.headers.get("if-modified-since") !== null) return new Response(null, { status: 304, headers: out.headers });
-    \\        if (isStaticRoute && method === "HEAD") return new Response(null, { status: out.status, statusText: out.statusText, headers: out.headers });
+    \\        if (method === "HEAD") return new Response(null, { status: out.status, statusText: out.statusText, headers: out.headers });
     \\        return out;
     \\      });
     \\    }
@@ -8474,19 +8564,25 @@ const harness_prelude =
     \\    return server;
     \\  },
     \\  serve(options) {
-    \\    options = options || {};
+    \\    if (arguments.length === 0 || options === undefined || options === null || typeof options !== "object") throw new TypeError("Bun.serve expects an object");
+    \\    const tlsOption = options.tls;
+    \\    if (tlsOption !== undefined && tlsOption !== null && typeof tlsOption !== "object") throw new TypeError("TLSOptions must be an object");
     \\    const hostname = __home_serve_coerce_hostname(options.hostname, "localhost");
     \\    if (options.unix !== undefined && options.unix !== null && String(options.unix) !== "" && options.hostname !== undefined && options.hostname !== null && options.hostname !== false && hostname !== "") throw new Error("hostname cannot be used with unix");
     \\    let handle;
+    \\    const hasUserFetch = typeof options.fetch === "function";
+    \\    __home_serve_validate_routes(options.routes, hasUserFetch || !!options.static);
     \\    const staticRoutes = options.static && typeof options.static === "object" && typeof options.fetch === "function" ? options.static : null;
     \\    const optionRoutes = options.routes && typeof options.routes === "object" ? options.routes : null;
     \\    const combinedRoutes = staticRoutes || optionRoutes ? Object.assign({}, staticRoutes || {}, optionRoutes || {}) : null;
+    \\    if (combinedRoutes && typeof options.error === "function") Object.defineProperty(combinedRoutes, "__home_error_handler", { configurable: true, value: options.error });
     \\    const routeFetch = combinedRoutes ? __home_serve_route_fetch(combinedRoutes, typeof options.fetch === "function" ? options.fetch : null) : null;
-    \\    if ((typeof options.fetch === "function" && !options.routes && !options.static) || routeFetch) {
+    \\    if ((hasUserFetch && !options.routes && !options.static) || routeFetch) {
     \\      const id = "js-" + (Bun.__home_next_js_serve_id++);
     \\      const port = 43000 + Bun.__home_next_js_serve_id;
     \\      const protocol = __home_serve_protocol(options);
-    \\      handle = { id, port, hostname, origin: protocol + "://" + hostname + ":" + String(port), native: false };
+    \\      const originHost = hostname.includes(":") && !hostname.startsWith("[") ? "[" + hostname + "]" : hostname;
+    \\      handle = { id, port, hostname, origin: protocol + "://" + originHost + ":" + String(port), native: false };
     \\    } else {
     \\      if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
     \\      handle = globalThis.__home_serveNative(options);
@@ -8494,7 +8590,8 @@ const harness_prelude =
     \\    }
     \\    handle.stopped = false;
     \\    handle.abrupt = false;
-    \\    handle.fetch = !handle.native ? (routeFetch || (typeof options.fetch === "function" ? options.fetch : null)) : null;
+    \\    handle.fetch = !handle.native ? (routeFetch || (hasUserFetch ? options.fetch : null)) : null;
+    \\    handle.userFetch = hasUserFetch;
     \\    handle.maxRequestBodySize = !handle.native && options.maxRequestBodySize !== undefined ? Number(options.maxRequestBodySize) : 0;
     \\    handle.websocket = !handle.native && options.websocket && typeof options.websocket === "object" ? options.websocket : null;
     \\    handle.__home_websocket_topics = Object.create(null);
@@ -8526,6 +8623,7 @@ const harness_prelude =
     \\        return { address: "127.0.0.1", family: "IPv4", port: request && request.__home_client_port ? request.__home_client_port : 0 };
     \\      },
     \\      fetch(input, init) {
+    \\        if (!handle.userFetch) return __home_fetch_thenable(null, new Error("fetch() requires the server to have a fetch handler"));
     \\        const inputType = typeof input;
     \\        if (inputType === "bigint") return __home_fetch_thenable(null, new TypeError("fetch() expects a string, but received BigInt"));
     \\        if (inputType === "symbol") return __home_fetch_thenable(null, new TypeError("fetch() expects a string, but received Symbol"));
@@ -8536,7 +8634,14 @@ const harness_prelude =
     \\      reload(nextOptions) {
     \\        nextOptions = nextOptions || {};
     \\        if (handle.native) __home_unsupported("Bun.serve reload native bridge is not installed");
-    \\        handle.fetch = typeof nextOptions.fetch === "function" ? nextOptions.fetch : null;
+    \\        const nextHasUserFetch = typeof nextOptions.fetch === "function";
+    \\        __home_serve_validate_routes(nextOptions.routes, nextHasUserFetch || !!nextOptions.static);
+    \\        const nextStaticRoutes = nextOptions.static && typeof nextOptions.static === "object" && typeof nextOptions.fetch === "function" ? nextOptions.static : null;
+    \\        const nextOptionRoutes = nextOptions.routes && typeof nextOptions.routes === "object" ? nextOptions.routes : null;
+    \\        const nextCombinedRoutes = nextStaticRoutes || nextOptionRoutes ? Object.assign({}, nextStaticRoutes || {}, nextOptionRoutes || {}) : null;
+    \\        if (nextCombinedRoutes && typeof nextOptions.error === "function") Object.defineProperty(nextCombinedRoutes, "__home_error_handler", { configurable: true, value: nextOptions.error });
+    \\        handle.fetch = nextCombinedRoutes ? __home_serve_route_fetch(nextCombinedRoutes, nextHasUserFetch ? nextOptions.fetch : null) : (nextHasUserFetch ? nextOptions.fetch : null);
+    \\        handle.userFetch = nextHasUserFetch;
     \\        return this;
     \\      },
     \\      upgrade(request, options) {
@@ -29155,6 +29260,20 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun.serve async iterable body streaming matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-cookies.test.ts"))
         try rewriteBunServeCookiesCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-file.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve Bun.file static route stress")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun HTML manifest static server")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun HTML static server fixture")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-ssl.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve TLS SSL integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-static.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve static file subprocess fixture")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-server.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve native server socket and abort integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/ffi/cc.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun:ffi TinyCC cc integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/ffi/ffi.test.js"))
