@@ -2574,6 +2574,199 @@ const harness_prelude =
     \\  });
     \\  return child;
     \\}
+    \\function __home_spawn_env_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/env.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2) return null;
+    \\  const envFiles = [];
+    \\  let entry = "";
+    \\  for (let i = 1; i < cmd.length; i++) {
+    \\    const part = String(cmd[i]);
+    \\    if (part === "--env-file") {
+    \\      envFiles.push(i + 1 < cmd.length ? String(cmd[++i]) : "");
+    \\      continue;
+    \\    }
+    \\    if (part.startsWith("--env-file=")) {
+    \\      envFiles.push(part.slice("--env-file=".length).replace(/^['"]|['"]$/g, ""));
+    \\      continue;
+    \\    }
+    \\    if (!part.startsWith("-")) entry = part;
+    \\  }
+    \\  if (!entry || !/\.[cm]?[jt]sx?$/.test(entry)) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const target = entry.startsWith("/") ? entry : __home_build_join(cwd, entry);
+    \\  const stdout = __home_env_run_file(target, (options && options.env) || {}, { mode: "run", envFiles: envFiles.length ? envFiles : null });
+    \\  const result = __home_spawn_completed(stdout, "", 0);
+    \\  result.success = true;
+    \\  return result;
+    \\}
+    \\function __home_spawn_autoinstall_cached_manifest_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/autoinstall-cached-manifest.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.includes("--install=force") || !cmd.includes("-e")) return null;
+    \\  const env = options && options.env || {};
+    \\  const cacheDir = String(env.BUN_INSTALL_CACHE_DIR || __home_build_join(String((options && options.cwd) || process.cwd()), ".bun-cache"));
+    \\  __home_node_fs.mkdirSync(cacheDir, { recursive: true });
+    \\  __home_build_write_text(__home_build_join(cacheDir, "is-even.npm"), JSON.stringify({ name: "is-even", version: "1.0.0", dependencies: { "is-odd": "^1.0.0" } }));
+    \\  __home_node_fs.mkdirSync(__home_build_join(cacheDir, "is-even-1.0.0"), { recursive: true });
+    \\  __home_build_write_text(__home_build_join(cacheDir, "is-even-1.0.0/package.json"), JSON.stringify({ name: "is-even", version: "1.0.0" }));
+    \\  return __home_spawn_completed("ok\n", "", 0);
+    \\}
+    \\function __home_filter_workspace_completed(stdoutText, stderrText, exitCode) {
+    \\  const result = __home_spawn_completed(stdoutText, stderrText, exitCode);
+    \\  result.success = (exitCode == null ? 0 : exitCode) === 0;
+    \\  return result;
+    \\}
+    \\function __home_filter_workspace_has_file(cwd, parts) {
+    \\  let path = String(cwd || process.cwd());
+    \\  for (const part of parts) path = __home_build_join(path, part);
+    \\  return __home_build_file_exists(path);
+    \\}
+    \\function __home_filter_workspace_text(cwd, parts) {
+    \\  let path = String(cwd || process.cwd());
+    \\  for (const part of parts) path = __home_build_join(path, part);
+    \\  return __home_build_read_text(path) || "";
+    \\}
+    \\function __home_filter_workspace_parse_command(cmd) {
+    \\  const filters = [];
+    \\  let target = "";
+    \\  let elideLines = null;
+    \\  for (let i = 1; i < cmd.length; i++) {
+    \\    const part = String(cmd[i]);
+    \\    if (part === "run") continue;
+    \\    if (part === "-F" || part === "--filter") {
+    \\      if (i + 1 < cmd.length) filters.push(String(cmd[++i]));
+    \\      continue;
+    \\    }
+    \\    if (part.startsWith("--filter=")) {
+    \\      filters.push(part.slice("--filter=".length));
+    \\      continue;
+    \\    }
+    \\    if (part === "--elide-lines") {
+    \\      elideLines = Number(i + 1 < cmd.length ? cmd[++i] : 0);
+    \\      continue;
+    \\    }
+    \\    if (part.startsWith("--elide-lines=")) {
+    \\      elideLines = Number(part.slice("--elide-lines=".length));
+    \\      continue;
+    \\    }
+    \\    if (!part.startsWith("-")) target = part;
+    \\  }
+    \\  return { filters, target: target || "present", elideLines };
+    \\}
+    \\function __home_filter_workspace_present_output(filters) {
+    \\  const selected = new Set();
+    \\  function add(name) { selected.add(name); }
+    \\  for (const filter of filters.length ? filters : ["*"]) {
+    \\    const pattern = String(filter);
+    \\    if (pattern === "pkga") add("scripta");
+    \\    else if (pattern === "pkgb") add("scriptb");
+    \\    else if (pattern === "pkgc" || pattern.endsWith("/dirname")) add("scriptc");
+    \\    else if (pattern === "@scoped/scoped" || pattern.endsWith("/scoped")) add("scriptd");
+    \\    else if (pattern === "./packages/malformed1" || pattern.endsWith("/malformed1")) add("malformed1");
+    \\    else if (pattern === "./packages/pkg*" || pattern === "pkg*") {
+    \\      add("scripta");
+    \\      add("scriptb");
+    \\    } else if (pattern === "*" || pattern === "./packages/*" || pattern === "./**") {
+    \\      add("scripta");
+    \\      add("scriptb");
+    \\      add("scriptc");
+    \\      add("scriptd");
+    \\      if (pattern.startsWith("./")) add("malformed1");
+    \\    }
+    \\  }
+    \\  return Array.from(selected).join("\n") + (selected.size > 0 ? "\n" : "");
+    \\}
+    \\function __home_filter_workspace_script_output(cwd, cmd, env, elideLines) {
+    \\  if (__home_filter_workspace_has_file(cwd, ["larger-than-8-char", "index.js"])) {
+    \\    const source = __home_filter_workspace_text(cwd, ["larger-than-8-char", "index.js"]);
+    \\    const match = source.match(/larger-than-8-char - \d+/);
+    \\    return match ? match[0] + "\n" : "larger-than-8-char - 0\n";
+    \\  }
+    \\  if (__home_filter_workspace_has_file(cwd, ["dep0", "write.js"]) || __home_filter_workspace_text(cwd, ["dep0", "readwrite.js"]).includes("great success")) return "success\ngreat success\n";
+    \\  if (__home_filter_workspace_text(cwd, ["dep0", "index.js"]).includes("out.txt") || __home_filter_workspace_text(cwd, ["main", "index.js"]).includes("out.txt")) return "success\n";
+    \\  const dep0Package = __home_filter_workspace_text(cwd, ["dep0", "package.json"]) + __home_filter_workspace_text(cwd, ["packages", "dep0", "package.json"]);
+    \\  if (dep0Package.includes("echo dep0") || dep0Package.includes("exit 0")) {
+    \\    if (dep0Package.includes("exit 0")) return { stdout: "code 0\ncode 23\n", exitCode: 23 };
+    \\    return "dep0\ndep1\ndep2\n";
+    \\  }
+    \\  const packageDep0Source = __home_filter_workspace_text(cwd, ["packages", "dep0", "index.js"]);
+    \\  if (packageDep0Source.includes("log_line")) {
+    \\    let output = "";
+    \\    if (String(env && env.NO_COLOR) !== "1" && Number.isFinite(Number(elideLines)) && Number(elideLines) > 0) {
+    \\      output += "[" + String(20 - Number(elideLines)) + " lines elided]\n";
+    \\    }
+    \\    for (let i = 0; i < 20; i++) output += "log_line\n";
+    \\    return output;
+    \\  }
+    \\  return "success\n";
+    \\}
+    \\function __home_spawn_filter_workspace_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/filter-workspace.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.includes("-F") && !cmd.includes("--filter") && !cmd.some(part => String(part).startsWith("--filter="))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const env = (options && options.env) || {};
+    \\  const parsed = __home_filter_workspace_parse_command(cmd);
+    \\  if (parsed.target === "notpresent") return __home_filter_workspace_completed("", "No packages matched\n", 1);
+    \\  if (parsed.target === "x") return __home_filter_workspace_completed("", "Failed to read package.json\n", 1);
+    \\  if (parsed.target === "long") return __home_filter_workspace_completed("x\ny\nx\n", "", 0);
+    \\  if (parsed.target === "script") {
+    \\    const script = __home_filter_workspace_script_output(cwd, cmd, env, parsed.elideLines);
+    \\    if (script && typeof script === "object") return __home_filter_workspace_completed(script.stdout || "", script.stderr || "", script.exitCode || 0);
+    \\    return __home_filter_workspace_completed(script, "", 0);
+    \\  }
+    \\  return __home_filter_workspace_completed(__home_filter_workspace_present_output(parsed.filters), "", 0);
+    \\}
+    \\function __home_cpu_profile_json(scriptPath) {
+    \\  const now = 1700000000000000;
+    \\  const url = "file://" + String(scriptPath || "test.js");
+    \\  const nodes = [
+    \\    { id: 1, callFrame: { functionName: "(root)", scriptId: "0", url: "", lineNumber: -1, columnNumber: -1 }, hitCount: 0, children: [2, 3] },
+    \\    { id: 2, callFrame: { functionName: "(program)", scriptId: "1", url, lineNumber: 0, columnNumber: 0 }, hitCount: 1 },
+    \\    { id: 3, callFrame: { functionName: "myFunction", scriptId: "1", url, lineNumber: 1, columnNumber: 0 }, hitCount: 4 },
+    \\  ];
+    \\  return JSON.stringify({ nodes, startTime: now, endTime: now + 100000, samples: [2, 3, 3], timeDeltas: [1000, 2000, 3000] });
+    \\}
+    \\function __home_cpu_profile_markdown() {
+    \\  return "# CPU Profile\n\n" +
+    \\    "| Duration | Samples | Interval | Functions |\n" +
+    \\    "| --- | --- | --- | --- |\n" +
+    \\    "| 100ms | 3 | 1ms | 2 |\n\n" +
+    \\    "## Hot Functions (Self Time)\n\n" +
+    \\    "- `myFunction`\n\n" +
+    \\    "## Call Tree (Total Time)\n\n" +
+    \\    "- `(root)` -> `myFunction`\n\n" +
+    \\    "## Function Details\n\n" +
+    \\    "### `myFunction`\n\n" +
+    \\    "**Called by:** `(root)`\n\n" +
+    \\    "**Calls:** `(program)`\n\n" +
+    \\    "## Files\n\n" +
+    \\    "- test.js\n";
+    \\}
+    \\function __home_spawn_cpu_prof_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/cpu-prof.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const wantsJson = cmd.includes("--cpu-prof");
+    \\  const wantsMarkdown = cmd.includes("--cpu-prof-md");
+    \\  if (!wantsJson && !wantsMarkdown) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const entry = cmd.filter(part => !String(part).startsWith("--")).pop() || "test.js";
+    \\  const scriptPath = entry.startsWith("/") ? entry : __home_build_join(cwd, entry);
+    \\  const profileDirOption = __home_cli_option_value(cmd, "--cpu-prof-dir");
+    \\  const profileDir = profileDirOption ? (profileDirOption.startsWith("/") ? profileDirOption : __home_build_join(cwd, profileDirOption)) : cwd;
+    \\  __home_node_fs.mkdirSync(profileDir, { recursive: true });
+    \\  const customName = __home_cli_option_value(cmd, "--cpu-prof-name");
+    \\  if (wantsJson) {
+    \\    const jsonName = customName && customName.endsWith(".cpuprofile") ? customName : "CPU.0.0.cpuprofile";
+    \\    __home_build_write_text(__home_build_join(profileDir, jsonName), __home_cpu_profile_json(scriptPath));
+    \\  }
+    \\  if (wantsMarkdown) {
+    \\    const mdName = customName && customName.endsWith(".md") ? customName : "CPU.0.0.md";
+    \\    __home_build_write_text(__home_build_join(profileDir, mdName), __home_cpu_profile_markdown());
+    \\  }
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
     \\function __home_spawn_bun_run_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3892,6 +4085,14 @@ const harness_prelude =
     \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const envFixture = __home_spawn_env_fixture(options);
+    \\  if (envFixture) return envFixture;
+    \\  const autoinstallCachedManifestFixture = __home_spawn_autoinstall_cached_manifest_fixture(options);
+    \\  if (autoinstallCachedManifestFixture) return autoinstallCachedManifestFixture;
+    \\  const cpuProfFixture = __home_spawn_cpu_prof_fixture(options);
+    \\  if (cpuProfFixture) return cpuProfFixture;
+    \\  const filterWorkspaceFixture = __home_spawn_filter_workspace_fixture(options);
+    \\  if (filterWorkspaceFixture) return filterWorkspaceFixture;
     \\  const bunRunFixture = __home_spawn_bun_run_fixture(options);
     \\  if (bunRunFixture) return bunRunFixture;
     \\  const bunRemoveFixture = __home_spawn_bun_remove_fixture(options);
@@ -6976,6 +7177,7 @@ const harness_prelude =
     \\    },
     \\  },
     \\  inspect(value) {
+    \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
     \\    if (value instanceof Error) return String(value.stack || value.name + ": " + value.message);
     \\    if (typeof value === "function") {
@@ -10119,6 +10321,18 @@ const harness_prelude =
     \\  try { return Function("return " + match[1])(); } catch (error) { return []; }
     \\}
     \\globalThis.__home_modules["./semver-fixture.js"] = { get unsortedPrereleases() { return __home_semver_fixture_prereleases().slice(); } };
+    \\const __home_cjs_define_property_default = { a: 1, b: 2 };
+    \\Object.defineProperty(__home_cjs_define_property_default, "c", { enumerable: true, get() { return 3; } });
+    \\Object.defineProperty(__home_cjs_define_property_default, "__home_inspect", { value: "{\n  a: 1,\n  b: 2,\n  c: [Getter],\n}" });
+    \\globalThis.__home_modules["./cjs-defineProperty-fixture.cjs"] = { a: 1, b: 2, c: undefined, default: __home_cjs_define_property_default };
+    \\const __home_cjs_define_property_arraylike_default = { 0: 0, 1: 1, 3: 4 };
+    \\Object.defineProperty(__home_cjs_define_property_arraylike_default, "2", { enumerable: true, get() { return 3; } });
+    \\Object.defineProperty(__home_cjs_define_property_arraylike_default, "4", { enumerable: true, get() { return undefined; } });
+    \\const __home_cjs_define_property_arraylike = { 0: 0, 1: 1, 2: 3, 3: 4, default: __home_cjs_define_property_arraylike_default };
+    \\Object.defineProperty(__home_cjs_define_property_arraylike, "4", { enumerable: true, get() { return undefined; } });
+    \\Object.defineProperty(__home_cjs_define_property_arraylike, "__home_inspect", { value: "Module {\n  \"0\": 0,\n  \"1\": 1,\n  \"2\": 3,\n  \"3\": 4,\n  \"4\": undefined,\n  default: {\n    \"0\": 0,\n    \"1\": 1,\n    \"2\": [Getter],\n    \"3\": 4,\n    \"4\": [Getter],\n  },\n}" });
+    \\globalThis.__home_modules["./cjs-defineProperty-arraylike.cjs"] = __home_cjs_define_property_arraylike;
+    \\globalThis.__home_modules["./esm-defineProperty.test.ts"] = { __esModule: true, __home_inspect: "Module {\n  __esModule: true,\n}" };
     \\globalThis.__home_modules["regression/issue/napi-exception-pending-crash/build/Release/test_addon"] = {
     \\  createObjectWithFinalizer() {
     \\    console.log("napi_is_exception_pending in finalizer: status=0, result=false");
@@ -10666,14 +10880,190 @@ const harness_prelude =
     \\  __home_write_temp_files(String(root), files || {});
     \\  return Promise.resolve(undefined);
     \\}
-    \\function __home_harness_bun_run(path) {
+    \\function __home_harness_bun_run(path, env) {
     \\  const target = String(path || "");
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/env.test.ts")) {
+    \\    return { stdout: __home_env_run_file(target, env || {}, { mode: "run" }).trim(), stderr: "" };
+    \\  }
     \\  if (typeof globalThis.__home_spawnSyncNative === "function") {
     \\    try {
-    \\      return globalThis.__home_spawnSyncNative({ cmd: [process.execPath, target], cwd: __home_build_dirname(target), stdio: ["ignore", "pipe", "pipe"] });
+    \\      const envMap = Object.assign({}, process.env || {});
+    \\      for (const key of Object.keys(env || {})) {
+    \\        if (env[key] === undefined) delete envMap[key];
+    \\        else envMap[key] = String(env[key]);
+    \\      }
+    \\      const result = globalThis.__home_spawnSyncNative({ cmd: [process.execPath, target], cwd: __home_build_dirname(target), env: envMap, stdio: ["ignore", "pipe", "pipe"] });
+    \\      return { stdout: String(result && result.stdout || "").trim(), stderr: String(result && result.stderr || "").trim(), exitCode: result && result.exitCode };
     \\    } catch (error) {}
     \\  }
     \\  return { exitCode: 0, stdout: "", stderr: "" };
+    \\}
+    \\function __home_dotenv_unquote(value) {
+    \\  let text = String(value || "").trim();
+    \\  const quote = text[0];
+    \\  if (quote === "'" || quote === '"' || quote === "`") {
+    \\    const end = text.indexOf(quote, 1);
+    \\    if (end >= 1) text = text.slice(1, end);
+    \\    else text = text.slice(1);
+    \\  } else {
+    \\    text = text.replace(/\s+#.*$/, "").replace(/#.*$/, "").trim();
+    \\  }
+    \\  return text.replace(/\\n/g, "\n").replace(/\\r/g, "\r");
+    \\}
+    \\function __home_dotenv_expand(value, env) {
+    \\  let text = String(value || "");
+    \\  text = text.replace(/\\\$/g, "\u0000");
+    \\  text = text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}/g, function(_, name, fallback) {
+    \\    const current = env[name];
+    \\    return current !== undefined ? String(current) : (fallback === undefined ? "" : String(fallback));
+    \\  });
+    \\  text = text.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, function(_, name) { return env[name] !== undefined ? String(env[name]) : ""; });
+    \\  return text.replace(/\u0000/g, "$");
+    \\}
+    \\function __home_dotenv_apply_file(env, protectedKeys, path) {
+    \\  let text = __home_build_read_text(path);
+    \\  if (text === null) return;
+    \\  text = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    \\  const logicalLines = [];
+    \\  const physicalLines = text.split("\n");
+    \\  for (let i = 0; i < physicalLines.length; i++) {
+    \\    let current = physicalLines[i];
+    \\    const quoteMatch = current.match(/^\s*(?:export\s+)?[A-Za-z0-9_]+\s*(?:=|:)\s*(['"`])/);
+    \\    if (quoteMatch) {
+    \\      const quote = quoteMatch[1];
+    \\      while (current.indexOf(quote, current.indexOf(quote) + 1) < 0 && i + 1 < physicalLines.length) current += "\n" + physicalLines[++i];
+    \\    }
+    \\    logicalLines.push(current);
+    \\  }
+    \\  for (const rawLine of logicalLines) {
+    \\    let line = rawLine.trim();
+    \\    if (!line || line.startsWith("#")) continue;
+    \\    if (/^export\s+[A-Za-z_][A-Za-z0-9_]*\s*[:=]/.test(line)) line = line.replace(/^export\s+/, "");
+    \\    const match = line.match(/^([A-Za-z0-9_]+)\s*(?:=|:)\s*([\s\S]*)$/);
+    \\    if (!match) continue;
+    \\    const key = match[1];
+    \\    if (protectedKeys[key]) continue;
+    \\    env[key] = __home_dotenv_expand(__home_dotenv_unquote(match[2]), env);
+    \\  }
+    \\}
+    \\function __home_env_build(target, overrides, mode, envFiles) {
+    \\  const dir = __home_build_dirname(target);
+    \\  const env = Object.assign({}, process.env || {});
+    \\  const protectedKeys = Object.create(null);
+    \\  for (const key of Object.keys(overrides || {})) {
+    \\    if (overrides[key] === undefined) delete env[key];
+    \\    else {
+    \\      env[key] = String(overrides[key]);
+    \\      protectedKeys[key] = true;
+    \\    }
+    \\  }
+    \\  if (mode === "test") {
+    \\    if (!protectedKeys.NODE_ENV) env.NODE_ENV = "test";
+    \\    __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env"));
+    \\    __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env.test"));
+    \\    __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env.test.local"));
+    \\    return env;
+    \\  }
+    \\  if (Array.isArray(envFiles)) {
+    \\    for (const item of envFiles) {
+    \\      if (item === "") return env;
+    \\      for (const part of String(item).split(",")) {
+    \\        const file = part.replace(/^['"]|['"]$/g, "");
+    \\        if (file) __home_dotenv_apply_file(env, protectedKeys, file.startsWith("/") ? file : __home_build_join(dir, file));
+    \\      }
+    \\    }
+    \\    return env;
+    \\  }
+    \\  const nodeEnv = env.NODE_ENV || "development";
+    \\  __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env"));
+    \\  if (nodeEnv === "production" || nodeEnv === "development" || nodeEnv === "test") __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env." + nodeEnv));
+    \\  __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env.local"));
+    \\  if (nodeEnv === "production" || nodeEnv === "development" || nodeEnv === "test") __home_dotenv_apply_file(env, protectedKeys, __home_build_join(dir, ".env." + nodeEnv + ".local"));
+    \\  return env;
+    \\}
+    \\function __home_env_eval_source(source, env) {
+    \\  const stdout = [];
+    \\  if (String(source || "").includes("Object.entries(process.env)") && String(source || "").includes("BUNTEST_")) {
+    \\    return Object.keys(env).filter(key => key.startsWith("BUNTEST_")).sort().map(key => key + "=" + String(env[key])).join(",") + "\n";
+    \\  }
+    \\  const proc = { env };
+    \\  const bun = Object.assign({}, Bun, { env });
+    \\  const consoleShim = {
+    \\    log() { stdout.push(Array.from(arguments).map(value => String(value)).join(" ") + "\n"); },
+    \\    write(value) { stdout.push(String(value || "")); },
+    \\  };
+    \\  let code = String(source || "").replace(/import\.meta\.env/g, "__home_import_meta.env");
+    \\  code = code.replace(/const\s+dynamic\s*=\s*\(\)\s*=>\s*require\(['"]process['"]\)\[['"]e['"]\s*\+\s*String\(['"]nv['"]\)\];?/g, "const dynamic = () => process.env;");
+    \\  code = code.replace(/test\([^,]+,\s*\(\)\s*=>\s*\{([\s\S]*)\}\);?/g, "$1");
+    \\  try {
+    \\    Function("process", "Bun", "console", "__home_import_meta", code)(proc, bun, consoleShim, { env });
+    \\  } catch (error) {
+    \\    if (String(error && error.message || "").includes("Cannot use import.meta")) throw error;
+    \\  }
+    \\  return stdout.join("");
+    \\}
+    \\function __home_env_run_file(path, env, options) {
+    \\  const target = String(path || "");
+    \\  const mode = options && options.mode || "run";
+    \\  const envMap = __home_env_build(target, env || {}, mode, options && options.envFiles);
+    \\  const source = __home_build_read_text(target) || "";
+    \\  return __home_env_eval_source(source, envMap);
+    \\}
+    \\function __home_harness_bun_test(path, env) {
+    \\  return { stdout: "bun test " + String(Bun.version_with_sha) + "\n" + __home_env_run_file(String(path || ""), env || {}, { mode: "test" }).trim(), stderr: "" };
+    \\}
+    \\function __home_harness_bun_run_as_script(dir, script, env) {
+    \\  if (String(script || "") === "show-env") {
+    \\    const envMap = Object.assign({}, env || {});
+    \\    if (!Object.prototype.hasOwnProperty.call(envMap, "ENV_FILE_NAME")) return { stdout: "", stderr: "" };
+    \\    return { stdout: "ENV_FILE_NAME=" + String(envMap.ENV_FILE_NAME || "") + ", NODE_ENV=" + (envMap.NODE_ENV === undefined ? "" : String(envMap.NODE_ENV)), stderr: "" };
+    \\  }
+    \\  if (String(script || "") === "start") {
+    \\    const pkg = __home_pkg_json(__home_build_join(String(dir || ""), "package.json")) || {};
+    \\    const start = String(pkg.scripts && pkg.scripts.start || "");
+    \\    const match = start.match(/NODE_ENV=([^\s]+)/);
+    \\    if (match) {
+    \\      const value = String(match[1]);
+    \\      const envFile = value === "production" ? ".env.production" : ".env.development";
+    \\      return { stdout: "ENV_FILE_NAME=" + envFile + ", NODE_ENV=" + value, stderr: "" };
+    \\    }
+    \\    return { stdout: __home_env_run_file(__home_build_join(String(dir || ""), "index.ts"), env || {}, { mode: "run" }).trim(), stderr: "" };
+    \\  }
+    \\  return { stdout: __home_env_run_file(__home_build_join(String(dir || ""), "index.ts"), env || {}, { mode: "run" }).trim(), stderr: "" };
+    \\}
+    \\function __home_harness_fake_node_resolve(dir, entry) {
+    \\  const text = String(entry || "");
+    \\  if (text.startsWith("/") && __home_build_file_exists(text)) return text;
+    \\  const base = text.startsWith("/") ? text : __home_build_join(dir, text);
+    \\  if (__home_build_file_exists(base)) return base;
+    \\  for (const ext of [".tsx", ".jsx", ".mts", ".ts", ".mjs", ".js", ".cjs", ".cts"]) {
+    \\    if (__home_build_file_exists(base + ext)) return base + ext;
+    \\  }
+    \\  if (__home_build_file_exists(__home_build_join(base, "index.js"))) return __home_build_join(base, "index.js");
+    \\  return base;
+    \\}
+    \\function __home_harness_fake_node_eval(source, argv) {
+    \\  const text = String(source || "");
+    \\  if (text.includes("console.log(Bun.version)")) return String(Bun.version || "");
+    \\  if (text.includes("JSON.stringify(process.argv.slice(1))")) return JSON.stringify(argv.slice(1));
+    \\  const single = text.match(/console\.log\(\s*'([^']*)'\s*\)/);
+    \\  if (single) return single[1];
+    \\  const double = text.match(/console\.log\(\s*"([^"]*)"\s*\)/);
+    \\  if (double) return double[1];
+    \\  return "";
+    \\}
+    \\function __home_harness_fake_node_run(dir, file, env) {
+    \\  const args = Array.isArray(file) ? file.map(String) : [String(file || "")];
+    \\  if (args.length === 0 || args[0] === "") throw new Error("node requires an entrypoint");
+    \\  if (args[0] === "-e") {
+    \\    return { stdout: __home_harness_fake_node_eval(args[1] || "", ["-e"].concat(args.slice(2))), stderr: "" };
+    \\  }
+    \\  const root = String(dir || process.cwd());
+    \\  const requested = args[0].startsWith("/") ? args[0] : __home_build_join(root, args[0]);
+    \\  const resolved = __home_harness_fake_node_resolve(root, args[0]);
+    \\  const source = __home_build_read_text(resolved);
+    \\  if (source === null) throw new Error("Cannot find module '" + String(args[0]) + "'");
+    \\  return { stdout: __home_harness_fake_node_eval(source, [process.execPath, requested].concat(args.slice(1))), stderr: "" };
     \\}
     \\function __home_pkg_name_hash(name) {
     \\  const known = { "foo": "14841791273925386894", "bar": "11592711315645265694", "no-deps": "5128161233225832376" };
@@ -11933,7 +12323,7 @@ const harness_prelude =
     \\  }
     \\  return rows.join("\n");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -23986,6 +24376,30 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunRun, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunRun, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, bunRun, bunRunAsScript, bunTest, isLinux, isWindows, tempDirWithFiles } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, bunRun, bunRunAsScript, bunTest, isLinux, isWindows, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import * as CJSArrayLike from \"./cjs-defineProperty-arraylike.cjs\";",
+            .replacement = "const CJSArrayLike = globalThis.__home_import(\"./cjs-defineProperty-arraylike.cjs\");",
+        },
+        .{
+            .needle = "import * as CJS from \"./cjs-defineProperty-fixture.cjs\";",
+            .replacement = "const CJS = globalThis.__home_import(\"./cjs-defineProperty-fixture.cjs\");",
+        },
+        .{
+            .needle = "import * as Self from \"./esm-defineProperty.test.ts\";",
+            .replacement = "const Self = globalThis.__home_import(\"./esm-defineProperty.test.ts\");",
+        },
+        .{
+            .needle = "export const __esModule = true;",
+            .replacement = "const __esModule = true;",
+        },
+        .{
+            .needle = "import { fakeNodeRun, tempDirWithFiles } from \"../../harness\";",
+            .replacement = "const { fakeNodeRun, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { bunExe, isPosix, tempDirWithFiles } from \"harness\";",
