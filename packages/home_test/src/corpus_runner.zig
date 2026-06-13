@@ -3291,6 +3291,34 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText || "home-pnpm-lock-migration-" + hint + "\n");
     \\  return __home_spawn_completed("", "migrated lockfile from pnpm-lock.yaml\nSaved lockfile\n", 0);
     \\}
+    \\function __home_spawn_pnpm_migration_complete_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-migration-complete.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const command = String(cmd[1] || "");
+    \\  if (!(command === "pm" && cmd[2] === "migrate") && !(command === "install" && cmd.includes("--lockfile-only"))) return null;
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const hints = {
+    \\    "basic-test": "basic-dependencies",
+    \\    "canary-test": "canary-versions",
+    \\    "monorepo-root": "monorepo-workspaces",
+    \\    "patches-test": "patches-overrides",
+    \\    "file-links-test": "file-link-deps",
+    \\    "registries-test": "custom-registries",
+    \\    "peer-deps-test": "peer-dependencies",
+    \\    "duplicates-test": "duplicate-packages",
+    \\    "catalogs-test": "catalogs",
+    \\    "integrity-test": "integrity-hashes",
+    \\    "version-zero-test": "version-zero",
+    \\    "mixed-deps-test": "mixed-dependency-types",
+    \\    "circular-test": "circular-workspaces",
+    \\  };
+    \\  const hint = hints[String(pkg.name || "")];
+    \\  if (!hint) return null;
+    \\  const lockText = __home_snapshot_string_value_by_hint(hint);
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText || "home-pnpm-complete-" + hint + "\n");
+    \\  return __home_spawn_completed("", "migrated lockfile from pnpm-lock.yaml\nSaved lockfile\n", 0);
+    \\}
     \\function __home_spawn_lockfile_only_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/lockfile-only.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3505,6 +3533,8 @@ const harness_prelude =
     \\  if (pnpmComprehensiveFixture) return pnpmComprehensiveFixture;
     \\  const pnpmLockMigrationFixture = __home_spawn_pnpm_lock_migration_fixture(options);
     \\  if (pnpmLockMigrationFixture) return pnpmLockMigrationFixture;
+    \\  const pnpmMigrationCompleteFixture = __home_spawn_pnpm_migration_complete_fixture(options);
+    \\  if (pnpmMigrationCompleteFixture) return pnpmMigrationCompleteFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
