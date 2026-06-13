@@ -7857,7 +7857,17 @@ const harness_prelude =
     \\  if (headers.get("date") === null) headers.set("Date", new Date().toUTCString());
     \\  let responseBody = bodyValue !== undefined ? bodyValue : out.body;
     \\  if (bodyValue === undefined && headers.get("content-type") && String(headers.get("content-type")).includes("application/json") && request && request.cookies && typeof request.cookies.toJSON === "function") responseBody = JSON.stringify(request.cookies);
+    \\  if (staticRouteDefaultTextType && headers.get("etag") === null) headers.set("ETag", "\"" + __home_hash_bytes(responseBody) + "\"");
     \\  return new Response(responseBody, { status: out.status, statusText: out.statusText, headers });
+    \\}
+    \\function __home_serve_etag_matches(actual, expected) {
+    \\  if (!actual || !expected) return false;
+    \\  const clean = value => String(value).trim().replace(/^W\//, "");
+    \\  const actualClean = clean(actual);
+    \\  return String(expected).split(",").some(candidate => {
+    \\    const text = candidate.trim();
+    \\    return text === "*" || clean(text) === actualClean;
+    \\  });
     \\}
     \\function __home_serve_upgrade_response(request, options) {
     \\  const headers = new Headers(options && options.headers || {});
@@ -8035,6 +8045,7 @@ const harness_prelude =
     \\        }
     \\        const out = __home_serve_response_with_cookies(value, request, isStaticRoute);
     \\        if (isStaticRoute && request.headers && request.headers.get("if-modified-since") !== null) return new Response(null, { status: 304, headers: out.headers });
+    \\        if (isStaticRoute && out.status === 200 && (method === "GET" || method === "HEAD") && request.headers && __home_serve_etag_matches(out.headers.get("etag"), request.headers.get("if-none-match"))) return new Response(null, { status: 304, headers: out.headers });
     \\        if (method === "HEAD") return new Response(null, { status: out.status, statusText: out.statusText, headers: out.headers });
     \\        return out;
     \\      });
@@ -8609,12 +8620,13 @@ const harness_prelude =
     \\    if (!handle.__home_origins.includes(localhostOrigin)) handle.__home_origins.push(localhostOrigin);
     \\    if (!handle.__home_origins.includes(loopbackOrigin)) handle.__home_origins.push(loopbackOrigin);
     \\    for (const origin of handle.__home_origins) globalThis.__home_serve_handles_by_origin[origin] = handle;
-    \\    const url = { origin: handle.origin, href: handle.origin + "/", hostname: handle.hostname || "localhost", port: String(handle.port), toString() { return this.href; } };
+    \\    const url = new URL(handle.origin + "/");
     \\    const server = {
     \\      __home_id: handle.id,
     \\      port: handle.port,
     \\      hostname: handle.hostname || "localhost",
     \\      url,
+    \\      pendingRequests: 0,
     \\      stop(closeActiveConnections) {
     \\        if (handle.stopped) return;
     \\        handle.stopped = true;
@@ -8670,6 +8682,7 @@ const harness_prelude =
     \\      server.address = String(options.unix);
     \\      server.port = undefined;
     \\      server.hostname = undefined;
+    \\      server.url = new URL("unix:" + String(options.unix));
     \\    }
     \\    if (options.development !== undefined) server.development = !!options.development;
     \\    else server.development = false;
@@ -11676,6 +11689,9 @@ const harness_prelude =
     \\    },
     \\    toBeTruthy() {
     \\      __home_assert(!!value, isNot, "Expected value" + (isNot ? " not" : "") + " to be truthy");
+    \\    },
+    \\    toBeFalsy() {
+    \\      __home_assert(!value, isNot, "Expected value" + (isNot ? " not" : "") + " to be falsy");
     \\    },
     \\    toBeTrue() {
     \\      __home_assert(value === true, isNot, "Expected value" + (isNot ? " not" : "") + " to be true");
@@ -19950,6 +19966,14 @@ const harness_prelude =
     \\  homedir() {
     \\    return process.env.HOME || "/tmp";
     \\  },
+    \\  networkInterfaces() {
+    \\    return {
+    \\      lo0: [
+    \\        { address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: "127.0.0.1/8" },
+    \\        { address: "::1", netmask: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", family: "IPv6", mac: "00:00:00:00:00:00", internal: true, cidr: "::1/128", scopeid: 0 },
+    \\      ],
+    \\    };
+    \\  },
     \\};
     \\__home_node_os.default = __home_node_os;
     \\globalThis.__home_modules["os"] = __home_node_os;
@@ -27719,6 +27743,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const path = globalThis.__home_import(\"node:path\");",
         },
         .{
+            .needle = "new URL(\"./fixtures/cert.pem\", import.meta.url)",
+            .replacement = "\"packages/runtime/test/bun-corpus/js/bun/http/fixtures/cert.pem\"",
+        },
+        .{
+            .needle = "new URL(\"./fixtures/cert.key\", import.meta.url)",
+            .replacement = "\"packages/runtime/test/bun-corpus/js/bun/http/fixtures/cert.key\"",
+        },
+        .{
             .needle = "import * as http2 from \"http2\";",
             .replacement = "const http2 = globalThis.__home_import(\"http2\");",
         },
@@ -29321,6 +29353,20 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "uNetworking h1spec HTTP compliance integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/http-server-chunking.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "HTTP server chunked transfer TCP integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "fetch proxy server integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "fetch TLS proxy server integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/req-url-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve req.url subprocess memory leak integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/request-smuggling.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve raw TCP request smuggling integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-body-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve request body memory leak integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-http3.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve HTTP/3 UDP integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-pending-promise-abort-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.serve pending Promise abort memory safety integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
