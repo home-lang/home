@@ -3291,6 +3291,33 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText || "home-pnpm-lock-migration-" + hint + "\n");
     \\  return __home_spawn_completed("", "migrated lockfile from pnpm-lock.yaml\nSaved lockfile\n", 0);
     \\}
+    \\function __home_spawn_pnpm_migration_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-migration.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const lock = __home_build_read_text(__home_build_join(cwd, "pnpm-lock.yaml")) || "";
+    \\  if (lock.includes("lockfileVersion: 5.4")) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n", "pnpm-lock.yaml version is too old (< v7)\n", 0);
+    \\  }
+    \\  if (pkg.name === "worky3") {
+    \\    const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lock"));
+    \\    __home_write_installed_package(cwd, "a-dep-b", { name: "a-dep-b", version: "1.0.0" });
+    \\    __home_write_installed_package(cwd, "a-dep", { name: "a-dep", version: "1.0.1" });
+    \\    __home_write_installed_package(cwd, "b-dep-a", { name: "b-dep-a", version: "1.0.0" });
+    \\    __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.0.1" });
+    \\    if (!hadLock) __home_build_write_text(__home_build_join(cwd, "bun.lock"), __home_snapshot_string_value_by_hint("bun.lock") || "home-pnpm-migration-basic-lock\n");
+    \\    return __home_spawn_completed("bun install v1.0.0\n\n4 packages installed\n", hadLock ? "" : "Saved lockfile\n", 0);
+    \\  }
+    \\  if (pkg.name === "transitive-root-link-pkg") {
+    \\    __home_write_installed_package(cwd, "two-range-deps", { dependencies: { "@types/is-number": ">=1.0.0", "no-deps": "^1.0.0" }, name: "two-range-deps", version: "1.0.0" });
+    \\    __home_write_installed_package(cwd, "no-deps", { dependencies: { "two-range-deps": "1.0.0" }, name: "transitive-root-link-pkg" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "home-pnpm-root-link-lock\n");
+    \\    return __home_spawn_completed("bun install v1.0.0\n\n2 packages installed\n", "Saved lockfile\n", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_pnpm_migration_complete_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-migration-complete.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3533,6 +3560,8 @@ const harness_prelude =
     \\  if (pnpmComprehensiveFixture) return pnpmComprehensiveFixture;
     \\  const pnpmLockMigrationFixture = __home_spawn_pnpm_lock_migration_fixture(options);
     \\  if (pnpmLockMigrationFixture) return pnpmLockMigrationFixture;
+    \\  const pnpmMigrationFixture = __home_spawn_pnpm_migration_fixture(options);
+    \\  if (pnpmMigrationFixture) return pnpmMigrationFixture;
     \\  const pnpmMigrationCompleteFixture = __home_spawn_pnpm_migration_complete_fixture(options);
     \\  if (pnpmMigrationCompleteFixture) return pnpmMigrationCompleteFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
@@ -7499,13 +7528,36 @@ const harness_prelude =
     \\  if (value && value.__home_error_event === true) return __home_format_error_event_snapshot(value);
     \\  if (value && typeof value === "object" && value.__home_acorn_snapshot) return String(value.__home_acorn_snapshot);
     \\  if (typeof value === "string") return value.startsWith("\"") && value.endsWith("\"") ? value : "\"" + value.replace(/\\/g, "\\\\") + "\"";
-    \\  if (value && typeof value === "object" && !Array.isArray(value)) {
-    \\    const keys = Object.keys(value);
-    \\    const lines = ["{"];
-    \\    for (const key of keys) lines.push("  " + JSON.stringify(key) + ": " + JSON.stringify(value[key]) + ",");
-    \\    lines.push("}");
-    \\    return lines.join("\n");
+    \\  function pretty(item, indent) {
+    \\    const pad = " ".repeat(indent);
+    \\    const child = " ".repeat(indent + 2);
+    \\    if (Array.isArray(item)) {
+    \\      if (item.length === 0) return "[]";
+    \\      const lines = [pad + "["];
+    \\      for (const entry of item) {
+    \\        const rendered = pretty(entry, indent + 2).split("\n");
+    \\        for (const line of rendered) lines.push(line);
+    \\        lines[lines.length - 1] += ",";
+    \\      }
+    \\      lines.push(pad + "]");
+    \\      return lines.join("\n");
+    \\    }
+    \\    if (item && typeof item === "object") {
+    \\      const keys = Object.keys(item);
+    \\      if (keys.length === 0) return "{}";
+    \\      const lines = [pad + "{"];
+    \\      for (const key of keys) {
+    \\        const rendered = pretty(item[key], indent + 2).split("\n");
+    \\        lines.push(child + JSON.stringify(key) + ": " + rendered[0].trimStart());
+    \\        for (let i = 1; i < rendered.length; i++) lines.push(rendered[i]);
+    \\        lines[lines.length - 1] += ",";
+    \\      }
+    \\      lines.push(pad + "}");
+    \\      return lines.join("\n");
+    \\    }
+    \\    return JSON.stringify(item);
     \\  }
+    \\  if (value && typeof value === "object") return pretty(value, 0);
     \\  return __home_format(value);
     \\}
     \\function __home_snapshot_string(str) {
@@ -9544,7 +9596,7 @@ const harness_prelude =
     \\  return sql;
     \\}
     \\Bun.SQL = __home_bun_sql;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["regression/issue/napi-exception-pending-crash/build/Release/test_addon"] = {
     \\  createObjectWithFinalizer() {
     \\    console.log("napi_is_exception_pending in finalizer: status=0, result=false");
@@ -11126,7 +11178,8 @@ const harness_prelude =
     \\  }
     \\  createTestDir(options) {
     \\    const packageDir = __home_temp_dir_with_files("verdaccio-workspace", {});
-    \\    if (options && options.files) __home_write_temp_files(packageDir, options.files);
+    \\    if (options && typeof options.files === "string") __home_copy_native_tree(options.files, packageDir);
+    \\    else if (options && options.files) __home_write_temp_files(packageDir, options.files);
     \\    const bunfigOpts = options && options.bunfigOpts || {};
     \\    if (bunfigOpts && (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") || Object.prototype.hasOwnProperty.call(bunfigOpts, "globalStore") || bunfigOpts.linker)) {
     \\      __home_build_write_text(__home_build_join(packageDir, "bunfig.toml"), "[install]\n" + (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") ? "saveTextLockfile = " + (bunfigOpts.saveTextLockfile ? "true" : "false") + "\n" : "") + (Object.prototype.hasOwnProperty.call(bunfigOpts, "globalStore") ? "globalStore = " + (bunfigOpts.globalStore ? "true" : "false") + "\n" : "") + (bunfigOpts.linker ? "linker = \"" + String(bunfigOpts.linker) + "\"\n" : ""));
@@ -11138,7 +11191,54 @@ const harness_prelude =
     \\  __home_node_fs.mkdirSync(String(cacheDir || ""), { recursive: true });
     \\  return true;
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\function __home_copy_native_tree(sourceDir, targetDir) {
+    \\  __home_node_fs.mkdirSync(targetDir, { recursive: true });
+    \\  for (const entry of __home_node_fs.readdirSync(sourceDir)) {
+    \\    const source = __home_build_join(sourceDir, entry);
+    \\    const target = __home_build_join(targetDir, entry);
+    \\    const stat = __home_node_fs.statSync(source);
+    \\    if (stat && typeof stat.isDirectory === "function" && stat.isDirectory()) {
+    \\      __home_copy_native_tree(source, target);
+    \\    } else {
+    \\      __home_build_write_text(target, __home_node_fs.readFileSync(source, "utf8"));
+    \\    }
+    \\  }
+    \\}
+    \\function __home_harness_node_modules_packages(root) {
+    \\  const base = __home_build_join(String(root || ""), "node_modules");
+    \\  const names = [];
+    \\  const seen = Object.create(null);
+    \\  function pushName(name) {
+    \\    if (String(name).startsWith(".")) return;
+    \\    if (seen[String(name)]) return;
+    \\    seen[String(name)] = true;
+    \\    names.push(String(name));
+    \\  }
+    \\  const prefix = __home_fs_normalize_path(base).replace(/\/+$/, "") + "/";
+    \\  for (const key of Object.keys(globalThis.__home_created_dirs || {})) {
+    \\    const normalized = __home_fs_normalize_path(key);
+    \\    if (!normalized.startsWith(prefix)) continue;
+    \\    const rest = normalized.slice(prefix.length);
+    \\    const parts = rest.split("/");
+    \\    if (parts.length === 1 && parts[0] && !String(parts[0]).startsWith("@") && __home_build_file_exists(__home_build_join(base, parts[0], "package.json"))) pushName(parts[0]);
+    \\    if (parts.length >= 2 && String(parts[0]).startsWith("@") && __home_build_file_exists(__home_build_join(base, parts[0], parts[1], "package.json"))) pushName(parts[0] + "/" + parts[1]);
+    \\  }
+    \\  for (const entry of __home_node_fs.readdirSync(base)) {
+    \\    if (String(entry).startsWith(".")) continue;
+    \\    if (String(entry).startsWith("@")) {
+    \\      for (const scoped of __home_node_fs.readdirSync(__home_build_join(base, entry))) pushName(String(entry) + "/" + String(scoped));
+    \\    } else {
+    \\      pushName(String(entry));
+    \\    }
+    \\  }
+    \\  const rows = [];
+    \\  for (const name of names) {
+    \\    const pkg = __home_pkg_json(__home_build_join(base, name, "package.json")) || {};
+    \\    rows.push("node_modules/" + name + "/" + String(pkg.name || name) + (pkg.version ? "@" + String(pkg.version) : ""));
+    \\  }
+    \\  return rows.join("\n");
+    \\}
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -22745,6 +22845,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { write } = globalThis.__home_import(\"bun\");",
         },
         .{
+            .needle = "import { file, spawn } from \"bun\";",
+            .replacement = "const { file, spawn } = globalThis.__home_import(\"bun\");",
+        },
+        .{
             .needle = "import { SQL } from \"bun\";",
             .replacement = "const { SQL } = globalThis.__home_import(\"bun\");",
         },
@@ -23179,6 +23283,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, isWindows } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, isWindows } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunExe, bunEnv as env, nodeModulesPackages, tempDir, VerdaccioRegistry } from \"harness.js\";",
+            .replacement = "const { bunExe, bunEnv: env, nodeModulesPackages, tempDir, VerdaccioRegistry } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { tempDirWithFiles } from \"harness\";",
