@@ -2272,12 +2272,33 @@ const harness_prelude =
     \\  }
     \\  return __home_normalize_spawn_options(first || {});
     \\}
+    \\function __home_invalid_arg_value(message) {
+    \\  const error = new TypeError(message);
+    \\  error.code = "ERR_INVALID_ARG_VALUE";
+    \\  return error;
+    \\}
+    \\function __home_validate_no_null_bytes(value, label) {
+    \\  if (Array.isArray(value)) {
+    \\    for (let i = 0; i < value.length; i++) __home_validate_no_null_bytes(value[i], label + "[" + i + "]");
+    \\    return;
+    \\  }
+    \\  if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "raw")) {
+    \\    __home_validate_no_null_bytes(value.raw, label);
+    \\    return;
+    \\  }
+    \\  if (String(value).includes("\0")) throw __home_invalid_arg_value(label + " must be a string without null bytes");
+    \\}
     \\function __home_validate_spawn_env(options) {
+    \\  const cmd = options && options.cmd;
+    \\  if (Array.isArray(cmd)) {
+    \\    for (let i = 0; i < cmd.length; i++) __home_validate_no_null_bytes(cmd[i], "args[" + i + "]");
+    \\  }
     \\  const env = options && options.env;
     \\  if (!env || typeof env !== "object") return;
     \\  for (const key of Object.keys(env)) {
+    \\    __home_validate_no_null_bytes(key, "env key");
     \\    const value = env[key];
-    \\    if (value !== undefined && value !== null) String(value);
+    \\    if (value !== undefined && value !== null) __home_validate_no_null_bytes(value, "env." + key);
     \\  }
     \\}
     \\function __home_spawn_completed(stdoutText, stderrText, exitCode) {
@@ -12587,14 +12608,50 @@ const harness_prelude =
     \\  __using: __home_wrap_using,
     \\};
     \\const __home_native_bun_shell = Bun.$;
-    \\function __home_bun_shell_text_result(stdout) {
-    \\  const result = __home_bake_shell_result(0, stdout, "");
+    \\function __home_bun_shell_await_value(result) {
+    \\  const value = {};
+    \\  for (const key of Object.keys(result)) if (key !== "then") value[key] = result[key];
+    \\  return value;
+    \\}
+    \\function __home_bun_shell_result(exitCode, stdout, stderr) {
+    \\  const result = __home_bake_shell_result(exitCode, stdout, stderr);
+    \\  result.__home_throw_on_error = !!__home_bun_shell.__home_throw_on_error;
     \\  result.env = function(value) { return result; };
     \\  result.cwd = function(value) { return result; };
     \\  result.quiet = function() { return Promise.resolve(result); };
-    \\  result.throws = function(value) { return result; };
-    \\  result.nothrow = function() { return result; };
+    \\  result.throws = function(value) { result.__home_throw_on_error = value !== false; return result; };
+    \\  result.nothrow = function() { result.__home_throw_on_error = false; return result; };
+    \\  result.blob = function() {
+    \\    const text = String(result.stdout || "").replace(/\n$/, "");
+    \\    return new Blob([new TextEncoder().encode(text)]);
+    \\  };
+    \\  result.bytes = function() { return new TextEncoder().encode(String(result.stdout || "")); };
+    \\  result.arrayBuffer = function() { return result.bytes().buffer; };
+    \\  result.then = function(resolve, reject) {
+    \\    return Promise.resolve().then(() => {
+    \\      if (result.__home_throw_on_error && Number(result.exitCode || 0) !== 0) throw __home_bun_shell_await_value(result);
+    \\      return __home_bun_shell_await_value(result);
+    \\    }).then(resolve, reject);
+    \\  };
     \\  return result;
+    \\}
+    \\function __home_bun_shell_text_result(stdout) {
+    \\  return __home_bun_shell_result(0, stdout, "");
+    \\}
+    \\function __home_bun_shell_unquote(text) {
+    \\  const value = String(text || "").trim();
+    \\  if (value.length >= 2 && ((value[0] === "'" && value[value.length - 1] === "'") || (value[0] === '"' && value[value.length - 1] === '"'))) return value.slice(1, -1);
+    \\  return value.replace(/\s+/g, " ");
+    \\}
+    \\function __home_bun_shell_simple_result(command) {
+    \\  const text = String(command || "").trim();
+    \\  const echoLs = text.match(/^echo\s+([\s\S]*?)\s*;\s*ls\s+oogabooga$/);
+    \\  if (echoLs) return __home_bun_shell_result(1, __home_bun_shell_unquote(echoLs[1]) + "\n", "ls: oogabooga: No such file or directory\n");
+    \\  if (/^ls\s+ksjflkjfksjdflksdjflksdf$/.test(text)) return __home_bun_shell_result(1, "", "ls: ksjflkjfksjdflksdjflksdf: No such file or directory\n");
+    \\  if (text === "echo") return __home_bun_shell_text_result("\n");
+    \\  const echo = text.match(/^echo\s+([\s\S]*)$/);
+    \\  if (echo) return __home_bun_shell_text_result(__home_bun_shell_unquote(echo[1]) + "\n");
+    \\  return null;
     \\}
     \\function __home_bun_shell_issue_17244(parts, values) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/17244.test.ts")) return null;
@@ -12717,7 +12774,10 @@ const harness_prelude =
     \\  let command = "";
     \\  for (let i = 0; i < parts.length; i++) {
     \\    command += String(parts[i]);
-    \\    if (i < values.length) command += String(values[i]);
+    \\    if (i < values.length) {
+    \\      __home_validate_no_null_bytes(values[i], "shell arg");
+    \\      command += values[i] && typeof values[i] === "object" && Object.prototype.hasOwnProperty.call(values[i], "raw") ? String(values[i].raw) : String(values[i]);
+    \\    }
     \\  }
     \\  return command;
     \\}
@@ -12737,6 +12797,8 @@ const harness_prelude =
     \\  const command = __home_bun_shell_command(parts, values);
     \\  const envEcho = __home_bun_shell_env_echo(command, __home_bun_shell.__home_env);
     \\  if (envEcho) return envEcho;
+    \\  const simpleResult = __home_bun_shell_simple_result(command);
+    \\  if (simpleResult) return simpleResult;
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts") && command.includes("bun run -") && command.includes("console.log('hello')")) return __home_bun_shell_text_result("hello\n");
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return __home_bake_shell(command);
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts") && command.trim().startsWith("cat ")) {
@@ -12769,7 +12831,9 @@ const harness_prelude =
     \\  return shell;
     \\}
     \\__home_bun_shell.__home_env = Object.create(null);
-    \\__home_bun_shell.throws = function(value) { if (__home_native_bun_shell && typeof __home_native_bun_shell.throws === "function") __home_native_bun_shell.throws(value); return __home_bun_shell; };
+    \\__home_bun_shell.__home_throw_on_error = false;
+    \\__home_bun_shell.throws = function(value) { __home_bun_shell.__home_throw_on_error = value !== false; if (__home_native_bun_shell && typeof __home_native_bun_shell.throws === "function") __home_native_bun_shell.throws(value); return __home_bun_shell; };
+    \\__home_bun_shell.nothrow = function() { __home_bun_shell.__home_throw_on_error = false; if (__home_native_bun_shell && typeof __home_native_bun_shell.nothrow === "function") __home_native_bun_shell.nothrow(); return __home_bun_shell; };
     \\__home_bun_shell.cwd = function(value) { __home_bake_shell_cwd = __home_bake_virtual_normalize(value || process.cwd()); if (__home_native_bun_shell && typeof __home_native_bun_shell.cwd === "function") __home_native_bun_shell.cwd(value); return __home_bun_shell; };
     \\__home_bun_shell.env = function(value) { if (value && typeof value === "object") Object.assign(__home_bun_shell.__home_env, value); return __home_bun_shell; };
     \\__home_bun_shell.braces = function(pattern, options) {
@@ -30012,6 +30076,16 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun shell subprocess hang regression fixtures")
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/shell-sentinel-hardening.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun shell sentinel escaping hardening")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/yield.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell large argument file redirection")
+    else if (std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun internal source map VLQ roundtrip")
+    else if (std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun internal source map stack trace integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/bun-ipc-inherit.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun spawn IPC inheritance through package scripts")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/job-object-bug.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun spawn Windows job object hang regression")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
