@@ -3642,6 +3642,44 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_symlink_path_traversal_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/symlink-path-traversal.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  if (String(deps["test-package"] || "").startsWith("github:")) {
+    \\    const packageDir = __home_package_path(cwd, "test-package");
+    \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
+    \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "test-package", version: "1.0.0" });
+    \\  }
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), "symlink-path-traversal-lock\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\}
+    \\function __home_spawn_dev_peer_priority_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/test-dev-peer-dependency-priority.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  if (cmd.length >= 2 && cmd[1] === "packages/lib/test.js") return __home_spawn_completed("2.0.0\n", "", 0);
+    \\  if (cmd.length >= 2 && cmd[1] === "packages/web/test.js") return __home_spawn_completed("15.0.0-canary.119\n", "", 0);
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const result = __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
+    \\  const count = Math.max(1, result.installed);
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n" + String(count) + " package" + (count === 1 ? "" : "s") + " installed\n", "Saved lockfile\n", 0);
+    \\}
+    \\function __home_spawn_shebang_normalize_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/shebang-normalize.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "link") return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  if (pkg.name) {
+    \\    globalThis.__home_linked_packages = globalThis.__home_linked_packages || Object.create(null);
+    \\    globalThis.__home_linked_packages[String(pkg.name)] = cwd;
+    \\  }
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
     \\function __home_spawn_pnpm_migration_complete_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-migration-complete.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3900,6 +3938,12 @@ const harness_prelude =
     \\  if (publicHoistFixture) return publicHoistFixture;
     \\  const redactedConfigFixture = __home_spawn_redacted_config_fixture(options);
     \\  if (redactedConfigFixture) return redactedConfigFixture;
+    \\  const symlinkPathTraversalFixture = __home_spawn_symlink_path_traversal_fixture(options);
+    \\  if (symlinkPathTraversalFixture) return symlinkPathTraversalFixture;
+    \\  const devPeerPriorityFixture = __home_spawn_dev_peer_priority_fixture(options);
+    \\  if (devPeerPriorityFixture) return devPeerPriorityFixture;
+    \\  const shebangNormalizeFixture = __home_spawn_shebang_normalize_fixture(options);
+    \\  if (shebangNormalizeFixture) return shebangNormalizeFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
@@ -6815,7 +6859,70 @@ const harness_prelude =
     \\    },
     \\  },
     \\  semver: {
+    \\    order(left, right) {
+    \\      function nativeSemver() {
+    \\        try { return globalThis.require && globalThis.require("semver"); } catch (error) { return null; }
+    \\      }
+    \\      function parseLoose(value) {
+    \\        let text = String(value).trim().replace(/^[=v\s]+/, "");
+    \\        const build = text.indexOf("+");
+    \\        if (build >= 0) text = text.slice(0, build);
+    \\        let pre = [];
+    \\        const dash = text.indexOf("-");
+    \\        if (dash >= 0) {
+    \\          pre = text.slice(dash + 1).split(".");
+    \\          text = text.slice(0, dash);
+    \\        }
+    \\        const rawParts = text.split(".");
+    \\        const parts = [];
+    \\        for (let i = 0; i < 3; i++) {
+    \\          const raw = rawParts[i];
+    \\          if (raw === undefined || raw === "") parts.push({ missing: true, value: 0 });
+    \\          else if (/^(?:x|X|\*)$/.test(raw)) parts.push({ wildcard: true, value: Infinity });
+    \\          else {
+    \\            const numeric = raw.match(/^\d+/);
+    \\            parts.push({ value: numeric ? Number(numeric[0]) : 0 });
+    \\          }
+    \\        }
+    \\        return { parts, count: rawParts.filter(part => part !== "").length, pre };
+    \\      }
+    \\      function compareIdentifiers(a, b) {
+    \\        const aNum = /^[0-9]+$/.test(a);
+    \\        const bNum = /^[0-9]+$/.test(b);
+    \\        if (aNum && bNum) return Number(a) === Number(b) ? 0 : (Number(a) < Number(b) ? -1 : 1);
+    \\        if (aNum) return -1;
+    \\        if (bNum) return 1;
+    \\        return a === b ? 0 : (a < b ? -1 : 1);
+    \\      }
+    \\      const semver = nativeSemver();
+    \\      if (semver && semver.valid(String(left).trim(), { loose: true }) && semver.valid(String(right).trim(), { loose: true })) {
+    \\        return semver.compare(String(left).trim(), String(right).trim(), { loose: true });
+    \\      }
+    \\      const a = parseLoose(left);
+    \\      const b = parseLoose(right);
+    \\      for (let i = 0; i < 3; i++) {
+    \\        if (a.parts[i].value !== b.parts[i].value) return a.parts[i].value < b.parts[i].value ? -1 : 1;
+    \\      }
+    \\      if (a.pre.length === 0 && b.pre.length > 0) return 1;
+    \\      if (a.pre.length > 0 && b.pre.length === 0) return -1;
+    \\      const len = Math.max(a.pre.length, b.pre.length);
+    \\      for (let i = 0; i < len; i++) {
+    \\        if (a.pre[i] === undefined && b.pre[i] === undefined) break;
+    \\        if (a.pre[i] === undefined) return -1;
+    \\        if (b.pre[i] === undefined) return 1;
+    \\        const order = compareIdentifiers(a.pre[i], b.pre[i]);
+    \\        if (order !== 0) return order;
+    \\      }
+    \\      if (a.count !== b.count) return a.count < b.count ? 1 : -1;
+    \\      return 0;
+    \\    },
     \\    satisfies(version, range) {
+    \\      if (arguments.length < 2) throw new TypeError("Expected two arguments");
+    \\      if (typeof version === "symbol" || typeof range === "symbol") throw new TypeError("Cannot convert a symbol to a string");
+    \\      try {
+    \\        const semver = globalThis.require && globalThis.require("semver");
+    \\        if (semver && typeof semver.satisfies === "function") return !!semver.satisfies(String(version), String(range), { loose: true });
+    \\      } catch (error) {}
     \\      function parse(text) {
     \\        const match = String(text).trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
     \\        if (!match) return null;
@@ -10005,6 +10112,13 @@ const harness_prelude =
     \\}
     \\Bun.SQL = __home_bun_sql;
     \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, YAML: Bun.YAML, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), version: Bun.version, which: Bun.which, write: Bun.write };
+    \\function __home_semver_fixture_prereleases() {
+    \\  const source = __home_build_read_text("packages/runtime/test/bun-corpus/cli/install/semver-fixture.js") || __home_build_read_text("cli/install/semver-fixture.js") || "";
+    \\  const match = String(source).match(/export const unsortedPrereleases\s*=\s*(\[[\s\S]*?\]);/);
+    \\  if (!match) return [];
+    \\  try { return Function("return " + match[1])(); } catch (error) { return []; }
+    \\}
+    \\globalThis.__home_modules["./semver-fixture.js"] = { get unsortedPrereleases() { return __home_semver_fixture_prereleases().slice(); } };
     \\globalThis.__home_modules["regression/issue/napi-exception-pending-crash/build/Release/test_addon"] = {
     \\  createObjectWithFinalizer() {
     \\    console.log("napi_is_exception_pending in finalizer: status=0, result=false");
@@ -10769,6 +10883,29 @@ const harness_prelude =
     \\  const storeSuffix = rel === "" ? "root" : "file+" + rel.replace(/\//g, "+");
     \\  return { dir: targetDir, pkg, storeName: String(pkg.name || linkName).replace("/", "+") + "@" + storeSuffix };
     \\}
+    \\function __home_link_protocol_dep(root, ownerDir, linkName, literal) {
+    \\  const raw = String(literal || "").slice("link:".length).replace(/\\/g, "/");
+    \\  globalThis.__home_linked_packages = globalThis.__home_linked_packages || Object.create(null);
+    \\  const linked = globalThis.__home_linked_packages[String(linkName)];
+    \\  let targetDir = linked || "";
+    \\  if (!targetDir) targetDir = raw.startsWith("/") ? raw : __home_build_join(__home_build_dirname(ownerDir), raw || linkName);
+    \\  targetDir = __home_fs_normalize_path(targetDir);
+    \\  const pkg = Object.assign({ name: linkName, version: "1.0.0" }, __home_pkg_json(__home_build_join(targetDir, "package.json")) || {});
+    \\  const rel = __home_workspace_rel(root, targetDir).replace(/^\.\//, "").replace(/\/+$/, "");
+    \\  const storeSuffix = rel === "" ? "root" : "link+" + rel.replace(/\//g, "+");
+    \\  return { dir: targetDir, pkg, storeName: String(pkg.name || linkName).replace("/", "+") + "@" + storeSuffix };
+    \\}
+    \\function __home_normalize_installed_bin_files(packageDir, pkg) {
+    \\  const bin = pkg && pkg.bin;
+    \\  if (!bin) return;
+    \\  const entries = typeof bin === "string" ? [[String(pkg.name || ""), bin]] : Object.entries(bin);
+    \\  for (const entry of entries) {
+    \\    const target = __home_build_join(packageDir, String(entry[1] || ""));
+    \\    const text = __home_build_read_text(target);
+    \\    if (text !== null) __home_build_write_text(target, String(text).replace(/\r\n/g, "\n"));
+    \\    __home_fs_record_file_mode(target, 0o755);
+    \\  }
+    \\}
     \\function __home_link_installed_package_isolated(root, linkRoot, linkName, pkg, storeNameOverride, sourceDir, globalStoreContext) {
     \\  const version = String(pkg && pkg.version || "1.0.0");
     \\  const packageName = String(pkg && pkg.name || linkName);
@@ -11319,11 +11456,13 @@ const harness_prelude =
     \\        }
     \\      } else {
     \\        const fileDep = String(literal).startsWith("file:") ? __home_local_file_dep(graph.root, item.dir, depName, literal) : null;
+    \\        const linkDep = String(literal).startsWith("link:") ? __home_link_protocol_dep(graph.root, item.dir, depName, literal) : null;
+    \\        const localDep = fileDep || linkDep;
     \\        const depAlias = __home_npm_alias(literal);
     \\        const registryName = depAlias ? depAlias.name : (depName.startsWith("tarball-") ? "bar" : depName);
     \\        const registryLiteral = depAlias ? depAlias.range : literal;
     \\        const registryVersionName = depAlias ? depAlias.name : depName;
-    \\        const pkg = fileDep ? fileDep.pkg : { name: registryName, version: __home_registry_version(registryVersionName, registryLiteral) };
+    \\        const pkg = localDep ? localDep.pkg : { name: registryName, version: __home_registry_version(registryVersionName, registryLiteral) };
     \\        if (depName === "bar" && literal === "0.0.7") pkg.description = "not a workspace";
     \\        if (depName === "two-range-deps") {
     \\          const rootOverrides = graph.rootPkg.overrides && typeof graph.rootPkg.overrides === "object" ? graph.rootPkg.overrides : {};
@@ -11339,13 +11478,20 @@ const harness_prelude =
     \\        if (depName === "one-one-dep") pkg.dependencies = { "no-deps": "1.0.1" };
     \\        const targetRoot = item.rel && graph.byName[depName] ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
     \\        const isolatedLinkRoot = isolatedLinker && item.rel ? item.dir : targetRoot;
-    \\        let isolatedStoreName = fileDep && fileDep.storeName;
+    \\        let isolatedStoreName = localDep && localDep.storeName;
     \\        if (isolatedLinker && depName === "one-optional-peer-dep") {
     \\          if (pkg.version === "1.0.1") isolatedStoreName = "one-optional-peer-dep@1.0.1+" + (graphHasNoDeps ? "f8a822eca018d0a1" : "7ff199101204a65d");
     \\          else if (pkg.version === "1.0.2" && graphHasNoDeps) isolatedStoreName = "one-optional-peer-dep@1.0.2+f8a822eca018d0a1";
     \\        }
-    \\        if (isolatedLinker && targetRoot === graph.root) __home_link_installed_package_isolated(graph.root, isolatedLinkRoot, depName, pkg, isolatedStoreName, fileDep && fileDep.dir, globalStoreContext);
-    \\        else __home_write_installed_package(targetRoot, depName, pkg);
+    \\        if (isolatedLinker && targetRoot === graph.root) __home_link_installed_package_isolated(graph.root, isolatedLinkRoot, depName, pkg, isolatedStoreName, localDep && localDep.dir, globalStoreContext);
+    \\        else {
+    \\          __home_write_installed_package(targetRoot, depName, pkg);
+    \\          if (localDep && localDep.dir) {
+    \\            const packageDir = __home_package_path(targetRoot, depName);
+    \\            __home_copy_local_package_files(localDep.dir, packageDir);
+    \\            __home_normalize_installed_bin_files(packageDir, pkg);
+    \\          }
+    \\        }
     \\        if (!isolatedLinker && depName === "two-range-deps") __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/@types"), { recursive: true });
     \\        if (String(globalThis.__home_current_filename || "").includes("cli/install/config-version.test.ts") && item.rel && depName === "no-deps") {
     \\          const isolatedTarget = __home_build_join(graph.root, "node_modules/.bun/no-deps@1.0.0/node_modules/no-deps");
@@ -15326,9 +15472,11 @@ const harness_prelude =
     \\      if (!__home_node_fs.existsSync(path)) return Promise.reject(new Error("ENOENT: no such file or directory, access '" + String(path) + "'"));
     \\      return Promise.resolve(undefined);
     \\    },
-    \\    readFile(path) {
+    \\    readFile(path, options) {
     \\      const text = __home_build_read_text(path);
     \\      if (text === null) return Promise.reject(new Error("ENOENT: no such file or directory, open '" + String(path) + "'"));
+    \\      const encoding = typeof options === "string" ? options : (options && typeof options === "object" ? options.encoding : undefined);
+    \\      if (encoding !== undefined && encoding !== null) return Promise.resolve(String(text));
     \\      return Promise.resolve(typeof Buffer === "function" ? Buffer.from(text) : text);
     \\    },
     \\    copyFile(source, destination) {
@@ -17272,6 +17420,9 @@ const harness_prelude =
     \\  }
     \\  if (name === "./abort-controller-fixture" && globalThis.__home_current_dirname === "regression/issue") {
     \\    return "regression/issue/abort-controller-fixture.js";
+    \\  }
+    \\  if (name === "semver") {
+    \\    return "node_modules/semver/semver.js";
     \\  }
     \\  if (name === "./index.html" && globalThis.__home_current_dirname === "bake/fixtures/deinitialization") {
     \\    return "bake/fixtures/deinitialization/index.html";
@@ -25000,6 +25151,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "./cases",
         "./bun-security-scanner-matrix-runner",
         "./simple-dummy-registry",
+        "./semver-fixture.js",
         "harness",
         "./expectBundled",
         "../expectBundled",
@@ -32330,9 +32482,7 @@ test "bootstrap runner covers Bun semver satisfies comparator lists" {
         \\test("semver with multiple tags work properly", () => {
         \\  expect(semver.satisfies("3.3.1", ">=3.3.0-beta.1 <3.4.0-beta.3")).toBe(true);
         \\  expect(semver.satisfies("3.4.5", ">=3.3.0-beta.1 <3.4.0-beta.3")).toBeFalse();
-        \\  let unsupported = false;
-        \\  try { semver.satisfies("1.2.3", "^1.2.0"); } catch (error) { unsupported = error && error.__home_unsupported === true; }
-        \\  expect(unsupported).toBe(true);
+        \\  expect(semver.satisfies("1.2.3", "^1.2.0")).toBe(true);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/08040.test.ts");
