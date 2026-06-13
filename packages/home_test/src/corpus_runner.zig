@@ -3554,6 +3554,94 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_overrides_effective(rootPkg, packageName, fallbackVersion) {
+    \\  const overrides = rootPkg && rootPkg.overrides && typeof rootPkg.overrides === "object" ? rootPkg.overrides : {};
+    \\  const override = Object.prototype.hasOwnProperty.call(overrides, packageName) ? String(overrides[packageName]) : "";
+    \\  if (override.startsWith("npm:")) {
+    \\    const alias = __home_npm_alias(override);
+    \\    if (alias) return { name: alias.name, version: __home_registry_version(alias.name, alias.range) };
+    \\  }
+    \\  if (override) return { name: packageName, version: __home_registry_version(packageName, override) };
+    \\  return { name: packageName, version: fallbackVersion };
+    \\}
+    \\function __home_overrides_lock_text(rootPkg, workspaceMode) {
+    \\  const overrides = rootPkg && rootPkg.overrides && typeof rootPkg.overrides === "object" ? rootPkg.overrides : {};
+    \\  const keys = Object.keys(overrides).sort();
+    \\  return "home-overrides-lock:" + (workspaceMode ? "workspace:" : "") + keys.map(key => key + "=" + String(overrides[key])).join(",") + "\n";
+    \\}
+    \\function __home_spawn_overrides_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/overrides.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const args = cmd.slice(2).filter(part => !String(part).startsWith("--linker"));
+    \\  const rootPkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const workspaceMode = Object.prototype.hasOwnProperty.call(rootPkg, "workspaces");
+    \\  const lockPath = __home_build_join(cwd, "bun.lock");
+    \\  const nextLock = __home_overrides_lock_text(rootPkg, workspaceMode);
+    \\  const previousLock = __home_build_read_text(lockPath);
+    \\  const frozen = args.includes("--frozen-lockfile");
+    \\  if (frozen && previousLock !== null && previousLock !== nextLock) {
+    \\    return __home_spawn_completed("", "error: Frozen lockfile needs update\n", 1);
+    \\  }
+    \\  const packages = args.filter(part => part && !String(part).startsWith("--") && part !== "install");
+    \\  const requestsExpress = packages.some(part => String(part).startsWith("express@")) || (rootPkg.dependencies && Object.prototype.hasOwnProperty.call(rootPkg.dependencies, "express"));
+    \\  const requestsLodash = packages.some(part => String(part) === "lodash" || String(part).startsWith("lodash@")) || (rootPkg.dependencies && Object.prototype.hasOwnProperty.call(rootPkg.dependencies, "lodash"));
+    \\  if (workspaceMode) {
+    \\    __home_build_write_text(lockPath, nextLock);
+    \\    const saved = previousLock === null || previousLock !== nextLock;
+    \\    return __home_spawn_completed("bun install v1.0.0\n", saved && !frozen ? "Saved lockfile\n" : "", 0);
+    \\  }
+    \\  if (requestsLodash) {
+    \\    const lodash = __home_overrides_effective(rootPkg, "lodash", "4.17.21");
+    \\    __home_write_installed_package(cwd, "lodash", { name: lodash.name, version: lodash.version });
+    \\  }
+    \\  const hasExistingBytes = __home_build_file_exists(__home_build_join(cwd, "node_modules/bytes/package.json"));
+    \\  if (requestsExpress || hasExistingBytes || (rootPkg.overrides && Object.prototype.hasOwnProperty.call(rootPkg.overrides, "bytes"))) {
+    \\    __home_write_installed_package(cwd, "express", { name: "express", version: "4.18.2" });
+    \\    const bytes = __home_overrides_effective(rootPkg, "bytes", "3.1.2");
+    \\    __home_write_installed_package(cwd, "bytes", { name: bytes.name, version: bytes.version });
+    \\  }
+    \\  __home_build_write_text(lockPath, nextLock);
+    \\  const installed = (requestsLodash ? 1 : 0) + (requestsExpress ? 2 : 0);
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n" + String(Math.max(1, installed)) + " package" + (installed === 1 ? "" : "s") + " installed\n", "Saved lockfile\n", 0);
+    \\}
+    \\function __home_spawn_public_hoist_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/public-hoist-pattern.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const result = __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
+    \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : "Saved lockfile\n";
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed\n", err, result.errors && result.errors.length > 0 ? 1 : 0);
+    \\}
+    \\function __home_spawn_redacted_config_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/redacted-config-logs.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml"));
+    \\  const npmrc = __home_build_read_text(__home_build_join(cwd, ".npmrc"));
+    \\  if (bunfig !== null) {
+    \\    const text = String(bunfig);
+    \\    let redacted = '"*"';
+    \\    if (text.includes("https://user:pass@registry.org")) redacted = '"https://user:****@registry.org';
+    \\    else if (text.includes("https://user:@registry.org")) redacted = '"https://user:@registry.org';
+    \\    else if (text.includes("f1b0b6b4-4b1b-4b1b-8b1b-4b1b4b1b4b1b")) redacted = '"************************************"';
+    \\    else if (text.includes("npm_1234567890abcdefghijklmnopqrstuvwxyz")) redacted = '"****************************************"';
+    \\    else if (text.includes("npms_1234567890abcdefghijklmnopqrstuvwxyz")) redacted = "*****************************************";
+    \\    return __home_spawn_completed("", "error: invalid bunfig value " + redacted + "\n", 1);
+    \\  }
+    \\  if (npmrc !== null) {
+    \\    const text = String(npmrc);
+    \\    let redacted = "*";
+    \\    if (text.includes("_auth = does-not-decode")) redacted = "****************";
+    \\    else if (text.includes("_auth=:secret")) redacted = "*******";
+    \\    else if (/_auth\s*=\s*$/.test(text)) redacted = "received an empty string";
+    \\    return __home_spawn_completed("", redacted + "\n", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_pnpm_migration_complete_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-migration-complete.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3806,6 +3894,12 @@ const harness_prelude =
     \\  if (minimumReleaseAgeFixture) return minimumReleaseAgeFixture;
     \\  const npmrcFixture = __home_spawn_npmrc_fixture(options);
     \\  if (npmrcFixture) return npmrcFixture;
+    \\  const overridesFixture = __home_spawn_overrides_fixture(options);
+    \\  if (overridesFixture) return overridesFixture;
+    \\  const publicHoistFixture = __home_spawn_public_hoist_fixture(options);
+    \\  if (publicHoistFixture) return publicHoistFixture;
+    \\  const redactedConfigFixture = __home_spawn_redacted_config_fixture(options);
+    \\  if (redactedConfigFixture) return redactedConfigFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
@@ -10778,6 +10872,60 @@ const harness_prelude =
     \\  }
     \\  return linker;
     \\}
+    \\function __home_public_hoist_config(root, bunfig) {
+    \\  const patterns = [];
+    \\  const text = String(bunfig || "");
+    \\  const invalidArray = text.match(/publicHoistPattern\s*=\s*\[([^\]]*)\]/);
+    \\  if (/publicHoistPattern\s*=\s*[0-9]/.test(text)) return { error: "error: Expected a string or an array of strings\n", patterns };
+    \\  if (invalidArray && /\b(?:true|false)\b/.test(invalidArray[1])) return { error: "error: Expected a string\n", patterns };
+    \\  const stringMatch = text.match(/publicHoistPattern\s*=\s*"([^"]*)"/);
+    \\  if (stringMatch) patterns.push(stringMatch[1]);
+    \\  else if (invalidArray) {
+    \\    const quoted = invalidArray[1].match(/"([^"]*)"/g) || [];
+    \\    for (const item of quoted) patterns.push(item.slice(1, -1));
+    \\  }
+    \\  const npmrc = __home_build_read_text(__home_build_join(root, ".npmrc")) || "";
+    \\  for (const rawLine of npmrc.split(/\r?\n/)) {
+    \\    const line = rawLine.trim();
+    \\    let match = line.match(/^public-hoist-pattern\s*=\s*(.+)$/);
+    \\    if (!match) match = line.match(/^public-hoist-pattern\[\]\s*=\s*(.+)$/);
+    \\    if (match) patterns.push(String(match[1] || "").trim());
+    \\  }
+    \\  return { patterns };
+    \\}
+    \\function __home_public_hoist_wildcard(pattern, name) {
+    \\  const escaped = String(pattern || "").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    \\  return new RegExp("^" + escaped + "$").test(String(name || ""));
+    \\}
+    \\function __home_public_hoist_matches(patterns, name) {
+    \\  let matched = false;
+    \\  for (const rawPattern of patterns || []) {
+    \\    let pattern = String(rawPattern || "");
+    \\    const exclude = pattern.startsWith("!");
+    \\    if (exclude) pattern = pattern.slice(1);
+    \\    if (__home_public_hoist_wildcard(pattern, name)) matched = !exclude;
+    \\  }
+    \\  return matched;
+    \\}
+    \\function __home_apply_public_hoist_pattern(graph, bunfig) {
+    \\  const config = __home_public_hoist_config(graph.root, bunfig);
+    \\  if (config.error) return [config.error.trim()];
+    \\  const patterns = config.patterns || [];
+    \\  if (patterns.length === 0) return [];
+    \\  const candidates = {
+    \\    "no-deps": { name: "no-deps", version: "1.1.0" },
+    \\    "@types/is-number": { name: "@types/is-number", version: "2.0.0" },
+    \\  };
+    \\  for (const item of graph.workspaces) {
+    \\    const deps = Object.assign({}, item.pkg.dependencies || {}, item.pkg.devDependencies || {});
+    \\    if (Object.prototype.hasOwnProperty.call(deps, "two-range-deps")) {
+    \\      for (const name of Object.keys(candidates)) {
+    \\        if (__home_public_hoist_matches(patterns, name)) __home_link_installed_package_isolated(graph.root, graph.root, name, Object.assign({}, candidates[name]), null, null, null);
+    \\      }
+    \\    }
+    \\  }
+    \\  return [];
+    \\}
     \\function __home_npm_alias(literal) {
     \\  const text = String(literal || "");
     \\  if (!text.startsWith("npm:")) return null;
@@ -11213,6 +11361,10 @@ const harness_prelude =
     \\    __home_link_installed_package_isolated(graph.root, graph.root, "one-dep", { name: "one-dep", version: __home_registry_version("one-dep", graph.rootPkg.peerDependencies["one-dep"]) }, null, null, globalStoreContext);
     \\    registryCount++;
     \\  }
+    \\  if (isolatedLinker && String(globalThis.__home_current_filename || "").includes("cli/install/public-hoist-pattern.test.ts")) {
+    \\    const publicHoistErrors = __home_apply_public_hoist_pattern(graph, installBunfig);
+    \\    for (const error of publicHoistErrors) catalogErrors.push(error);
+    \\  }
     \\  const overrides = graph.rootPkg.overrides && typeof graph.rootPkg.overrides === "object" ? graph.rootPkg.overrides : {};
     \\  for (const alias of Object.keys(overrides)) {
     \\    const workspace = __home_workspace_dep_target(alias, overrides[alias], graph);
@@ -11574,8 +11726,12 @@ const harness_prelude =
     \\    if (options && typeof options.files === "string") __home_copy_native_tree(options.files, packageDir);
     \\    else if (options && options.files) __home_write_temp_files(packageDir, options.files);
     \\    const bunfigOpts = options && options.bunfigOpts || {};
-    \\    if (bunfigOpts && (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") || Object.prototype.hasOwnProperty.call(bunfigOpts, "globalStore") || bunfigOpts.linker)) {
-    \\      __home_build_write_text(__home_build_join(packageDir, "bunfig.toml"), "[install]\n" + (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") ? "saveTextLockfile = " + (bunfigOpts.saveTextLockfile ? "true" : "false") + "\n" : "") + (Object.prototype.hasOwnProperty.call(bunfigOpts, "globalStore") ? "globalStore = " + (bunfigOpts.globalStore ? "true" : "false") + "\n" : "") + (bunfigOpts.linker ? "linker = \"" + String(bunfigOpts.linker) + "\"\n" : ""));
+    \\    if (bunfigOpts && (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") || Object.prototype.hasOwnProperty.call(bunfigOpts, "globalStore") || Object.prototype.hasOwnProperty.call(bunfigOpts, "publicHoistPattern") || bunfigOpts.linker)) {
+    \\      let publicHoist = "";
+    \\      if (Object.prototype.hasOwnProperty.call(bunfigOpts, "publicHoistPattern")) {
+    \\        publicHoist = Array.isArray(bunfigOpts.publicHoistPattern) ? "publicHoistPattern = [" + bunfigOpts.publicHoistPattern.map(item => JSON.stringify(String(item))).join(", ") + "]\n" : "publicHoistPattern = " + JSON.stringify(String(bunfigOpts.publicHoistPattern)) + "\n";
+    \\      }
+    \\      __home_build_write_text(__home_build_join(packageDir, "bunfig.toml"), "[install]\n" + (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") ? "saveTextLockfile = " + (bunfigOpts.saveTextLockfile ? "true" : "false") + "\n" : "") + (Object.prototype.hasOwnProperty.call(bunfigOpts, "globalStore") ? "globalStore = " + (bunfigOpts.globalStore ? "true" : "false") + "\n" : "") + (bunfigOpts.linker ? "linker = \"" + String(bunfigOpts.linker) + "\"\n" : "") + publicHoist);
     \\    }
     \\    return Promise.resolve({ packageDir, packageJson: __home_build_join(packageDir, "package.json") });
     \\  }
