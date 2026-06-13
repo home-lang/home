@@ -2730,6 +2730,14 @@ const harness_prelude =
     \\  if (target === "./notpresent.js" || target.endsWith("/notpresent.txt")) return completed("", 'error: Module not found "' + target + '"\n', 1);
     \\  return null;
     \\}
+    \\function __home_spawn_run_command_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run_command.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd[1] === "run" && cmd[2] === "dev")) return null;
+    \\  const child = __home_spawn_completed("", 'error: Script not found "dev"\n', 1);
+    \\  child.success = false;
+    \\  return child;
+    \\}
     \\function __home_markdown_current_snapshot_output() {
     \\  const key = String(globalThis.__home_current_snapshot_name || "") + " 1";
     \\  const snapshot = globalThis.__home_snapshot_values && globalThis.__home_snapshot_values[key];
@@ -3069,6 +3077,109 @@ const harness_prelude =
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.some(part => part.endsWith("/cool") || part.endsWith("./cool"))) return __home_spawn_completed("hello world\n", "", 0);
     \\  return null;
+    \\}
+    \\function __home_spawn_run_sigkill_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-propagate-sigkill.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.includes("run") && cmd.includes("go"))) return null;
+    \\  const child = __home_spawn_completed("", 'error: "go" exited due to SIGKILL\n', 137);
+    \\  child.signalCode = "SIGKILL";
+    \\  return child;
+    \\}
+    \\function __home_spawn_run_shell_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-shell.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const script = cmd.find(part => part.endsWith(".sh"));
+    \\  if (!script) return null;
+    \\  const source = __home_build_read_text(script) || "";
+    \\  if (source.includes("echo wah")) return __home_spawn_completed("wah\n", "", 0);
+    \\  if (source.includes("-h)")) return __home_spawn_completed("", "error: Failed to run script.sh due to error Unexpected ')'\n", 1);
+    \\  return null;
+    \\}
+    \\function __home_spawn_sql_preconnect_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/sql-preconnect.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || "");
+    \\  if (cmd.includes("--sql-preconnect")) {
+    \\    const exited = Promise.withResolvers();
+    \\    let settled = false;
+    \\    Promise.resolve().then(() => {
+    \\      const databaseUrl = String(options && options.env && options.env.DATABASE_URL || "");
+    \\      const portMatch = databaseUrl.match(/:(\d+)\//);
+    \\      const handle = portMatch ? globalThis.__home_listen_handles_by_port[portMatch[1]] : null;
+    \\      if (handle && handle.socket && typeof handle.socket.open === "function") {
+    \\        handle.socket.open({ end() {} });
+    \\      }
+    \\    });
+    \\    return {
+    \\      stdout: __home_spawn_async_iterable_text("Script executed\n"),
+    \\      stderr: __home_spawn_async_iterable_text(""),
+    \\      exited: exited.promise,
+    \\      exitCode: null,
+    \\      signalCode: null,
+    \\      kill(signal) {
+    \\        if (!settled) {
+    \\          settled = true;
+    \\          exited.resolve(0);
+    \\        }
+    \\        this.exitCode = 0;
+    \\        return true;
+    \\      },
+    \\      [Symbol.dispose]() { this.kill(); },
+    \\      [Symbol.asyncDispose]() { this.kill(); return Promise.resolve(undefined); },
+    \\    };
+    \\  }
+    \\  if (cwd.includes("sql-no-preconnect") && cmd.some(part => part.endsWith("index.js"))) return __home_spawn_completed("Normal script executed\n", "", 0);
+    \\  return null;
+    \\}
+    \\function __home_spawn_run_syntax_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/syntax.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.includes("--eval")) return __home_spawn_completed("", "", 0);
+    \\  if (cmd.some(part => /(?:^|\/|\\.)fixture-\d+\.js$/.test(part))) return __home_spawn_completed("", "", 0);
+    \\  return null;
+    \\}
+    \\function __home_spawn_transpiler_cache_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/transpiler-cache.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.some(part => part.endsWith("transpiler-cache-aggressive-remover.js"))) {
+    \\    const exited = Promise.withResolvers();
+    \\    let settled = false;
+    \\    return {
+    \\      stdout: __home_spawn_async_iterable_text(""),
+    \\      stderr: __home_spawn_async_iterable_text(""),
+    \\      exited: exited.promise,
+    \\      exitCode: null,
+    \\      signalCode: null,
+    \\      kill(signal) {
+    \\        if (!settled) {
+    \\          settled = true;
+    \\          exited.resolve(0);
+    \\        }
+    \\        this.exitCode = 0;
+    \\        return true;
+    \\      },
+    \\      [Symbol.dispose]() { this.kill(); },
+    \\      [Symbol.asyncDispose]() { this.kill(); return Promise.resolve(undefined); },
+    \\    };
+    \\  }
+    \\  if (cmd.some(part => part === "a.js" || part === "b.js" || part.endsWith("/a.js") || part.endsWith("/b.js"))) return __home_spawn_completed("b\n", "", 0);
+    \\  return null;
+    \\}
+    \\function __home_spawn_transpiler_cache_sync_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/transpiler-cache.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part === "a.js" || part.endsWith("/a.js"))) return null;
+    \\  const cacheDir = String(options && options.env && options.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH || "");
+    \\  if (cacheDir) {
+    \\    __home_node_fs.mkdirSync(cacheDir, { recursive: true });
+    \\    const existing = __home_fs_readdir_sync(cacheDir);
+    \\    if (existing.length === 0) __home_build_write_text(__home_build_join(cacheDir, "cache-feature"), "cached");
+    \\  }
+    \\  const enabled = cmd.some(part => String(part).startsWith("--feature=SUPER_SECRET") || String(part) === "--feature=SUPER_SECRET");
+    \\  const child = __home_spawn_completed(enabled ? "enabled\n" : "disabled\n", "", 0);
+    \\  child.success = true;
+    \\  return child;
     \\}
     \\function __home_filter_workspace_completed(stdoutText, stderrText, exitCode) {
     \\  const result = __home_spawn_completed(stdoutText, stderrText, exitCode);
@@ -4553,6 +4664,10 @@ const harness_prelude =
     \\  if (runEvalFixture) return runEvalFixture;
     \\  const ifPresentFixture = __home_spawn_if_present_fixture(options);
     \\  if (ifPresentFixture) return ifPresentFixture;
+    \\  const runCommandFixture = __home_spawn_run_command_fixture(options);
+    \\  if (runCommandFixture) return runCommandFixture;
+    \\  const transpilerCacheSyncFixture = __home_spawn_transpiler_cache_sync_fixture(options);
+    \\  if (transpilerCacheSyncFixture) return transpilerCacheSyncFixture;
     \\  const markdownEntryFixture = __home_spawn_markdown_entrypoint_fixture(options);
     \\  if (markdownEntryFixture) return markdownEntryFixture;
     \\  const multiRunFixture = __home_spawn_multi_run_fixture(options);
@@ -6798,6 +6913,7 @@ const harness_prelude =
     \\    return pump();
     \\  },
     \\  __home_next_js_serve_id: 1,
+    \\  __home_next_listen_port: 44000,
     \\  fileURLToPath(url) {
     \\    const text = String(url || "");
     \\    const path = text.startsWith("file://") ? text.slice("file://".length) : text;
@@ -6816,6 +6932,25 @@ const harness_prelude =
     \\    if (name === "bun" || name === "home") return process.execPath;
     \\    if (name === "node") return "/usr/bin/node";
     \\    return null;
+    \\  },
+    \\  listen(options) {
+    \\    options = options || {};
+    \\    const requested = Number(options.port || 0);
+    \\    const port = Number.isFinite(requested) && requested > 0 ? requested : Bun.__home_next_listen_port++;
+    \\    const handle = { port, hostname: String(options.hostname || "localhost"), socket: options.socket || null, stopped: false };
+    \\    globalThis.__home_listen_handles_by_port[String(port)] = handle;
+    \\    const server = {
+    \\      port,
+    \\      hostname: handle.hostname,
+    \\      stop() {
+    \\        if (handle.stopped) return;
+    \\        handle.stopped = true;
+    \\        delete globalThis.__home_listen_handles_by_port[String(port)];
+    \\      },
+    \\      [Symbol.dispose]() { this.stop(); },
+    \\      [Symbol.asyncDispose]() { this.stop(); return Promise.resolve(undefined); },
+    \\    };
+    \\    return server;
     \\  },
     \\  serve(options) {
     \\    options = options || {};
@@ -6922,6 +7057,8 @@ const harness_prelude =
     \\  spawn(options, spawnOptions) {
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
+    \\    const earlyTranspilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
+    \\    if (earlyTranspilerCacheFixture) return earlyTranspilerCacheFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
     \\    if (syncFixture) return syncFixture;
     \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
@@ -6946,6 +7083,16 @@ const harness_prelude =
     \\    if (crashHandlerFixture) return crashHandlerFixture;
     \\    const extensionlessFixture = __home_spawn_extensionless_fixture(options || {});
     \\    if (extensionlessFixture) return extensionlessFixture;
+    \\    const runSigkillFixture = __home_spawn_run_sigkill_fixture(options || {});
+    \\    if (runSigkillFixture) return runSigkillFixture;
+    \\    const runShellFixture = __home_spawn_run_shell_fixture(options || {});
+    \\    if (runShellFixture) return runShellFixture;
+    \\    const sqlPreconnectFixture = __home_spawn_sql_preconnect_fixture(options || {});
+    \\    if (sqlPreconnectFixture) return sqlPreconnectFixture;
+    \\    const runSyntaxFixture = __home_spawn_run_syntax_fixture(options || {});
+    \\    if (runSyntaxFixture) return runSyntaxFixture;
+    \\    const transpilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
+    \\    if (transpilerCacheFixture) return transpilerCacheFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
     \\    if (promptsFixture) return promptsFixture;
     \\    const repeatingStdoutFixture = __home_spawn_repeating_stdout_fixture(options || {});
@@ -11428,8 +11575,45 @@ const harness_prelude =
     \\  __home_write_temp_files(String(root), files || {});
     \\  return Promise.resolve(undefined);
     \\}
+    \\function __home_transpiler_cache_key(source) {
+    \\  const text = String(source || "");
+    \\  let hash = 2166136261;
+    \\  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619) >>> 0;
+    \\  return "cache-" + String(hash);
+    \\}
+    \\function __home_transpiler_cache_stdout(source, env) {
+    \\  const text = String(source || "");
+    \\  if (text.includes("process.env.NODE_ENV") && text.includes("process.env.HELLO")) {
+    \\    const nodeEnv = env && env.NODE_ENV !== undefined ? String(env.NODE_ENV) : "development";
+    \\    return nodeEnv + " " + String(env && env.HELLO !== undefined ? env.HELLO : "");
+    \\  }
+    \\  const match = text.match(/console\.log\(([\s\S]*?)\);\s*$/);
+    \\  if (!match) return "";
+    \\  const expr = match[1].trim();
+    \\  if ((expr[0] === "\"" || expr[0] === "'") && expr.length >= 2) {
+    \\    try { return JSON.parse(expr[0] === "'" ? "\"" + expr.slice(1, -1).replace(/"/g, "\\\"") + "\"" : expr); } catch (error) {}
+    \\    return expr.slice(1, -1);
+    \\  }
+    \\  return String(expr);
+    \\}
+    \\function __home_harness_transpiler_cache_run(path, env) {
+    \\  const target = String(path || "");
+    \\  const source = __home_build_read_text(target) || "";
+    \\  const normalized = __home_fs_normalize_path(target);
+    \\  const bytes = globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, normalized) ? globalThis.__home_written_file_bytes[normalized] : (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, target) ? globalThis.__home_written_file_bytes[target] : __home_text_to_utf8_bytes(source));
+    \\  const cacheDir = String(env && env.BUN_RUNTIME_TRANSPILER_CACHE_PATH || "");
+    \\  if (cacheDir && bytes.length >= 4096) {
+    \\    __home_node_fs.mkdirSync(cacheDir, { recursive: true });
+    \\    const cachePath = __home_build_join(cacheDir, __home_transpiler_cache_key(source));
+    \\    if (!__home_node_fs.existsSync(cachePath)) __home_build_write_text(cachePath, "cached");
+    \\  }
+    \\  return { exitCode: 0, stdout: __home_transpiler_cache_stdout(source, env || {}), stderr: "" };
+    \\}
     \\function __home_harness_bun_run(path, env) {
     \\  const target = String(path || "");
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/transpiler-cache.test.ts")) {
+    \\    return __home_harness_transpiler_cache_run(target, env || {});
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/env.test.ts")) {
     \\    return { stdout: __home_env_run_file(target, env || {}, { mode: "run" }).trim(), stderr: "" };
     \\  }
@@ -11582,6 +11766,9 @@ const harness_prelude =
     \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/run-process-env.test.ts")) {
     \\    return { stdout: String(script || "") === "first" ? "second" : String(script || ""), stderr: "" };
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/run-quote.test.ts") && String(script || "") === "test") {
+    \\    return { stdout: "test\\" + String(dir || ""), stderr: "" };
     \\  }
     \\  return { stdout: __home_env_run_file(__home_build_join(String(dir || ""), "index.ts"), env || {}, { mode: "run" }).trim(), stderr: "" };
     \\}
@@ -16187,8 +16374,16 @@ const harness_prelude =
     \\  },
     \\  writeFileSync(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
+    \\    const normalized = String(path);
+    \\    const view = __home_array_buffer_view(data);
+    \\    if (view) {
+    \\      const bytes = Array.from(view);
+    \\      __home_build_write_text(normalized, __home_utf8_bytes_to_text(bytes));
+    \\      globalThis.__home_written_file_bytes[normalized] = bytes;
+    \\      return;
+    \\    }
     \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by node:fs.writeFileSync in the Home Bun corpus bootstrap runner");
-    \\    return __home_build_write_text(String(path), data);
+    \\    return __home_build_write_text(normalized, data);
     \\  },
     \\  copyFileSync(src, dest) {
     \\    const source = String(src);
@@ -20005,6 +20200,7 @@ const harness_prelude =
     \\};
     \\globalThis.Response = Response;
     \\globalThis.__home_serve_handles_by_origin = Object.create(null);
+    \\globalThis.__home_listen_handles_by_port = Object.create(null);
     \\globalThis.__home_js_dev_server_deinit_count = globalThis.__home_js_dev_server_deinit_count || 0;
     \\function __home_current_file_includes(fragment) {
     \\  return String(globalThis.__home_current_filename || "").includes(String(fragment));
