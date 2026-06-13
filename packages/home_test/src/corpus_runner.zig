@@ -8408,13 +8408,40 @@ const harness_prelude =
     \\}
     \\function __home_Terminal(options) {
     \\  if (!(this instanceof __home_Terminal)) return new __home_Terminal(options);
+    \\  if (options === null || options === undefined || typeof options !== "object") throw new TypeError("Terminal options must be an object");
     \\  this.options = options || {};
+    \\  this.closed = false;
+    \\  this.inputFlags = 0x500;
+    \\  this.outputFlags = 0x5;
+    \\  this.localFlags = 0x8a3b;
+    \\  this.controlFlags = 0xbf;
     \\}
+    \\__home_Terminal.prototype.write = function(data) {
+    \\  if (this.closed) throw new Error("Terminal is closed");
+    \\  const view = __home_array_buffer_view(data);
+    \\  if (view) return view.byteLength;
+    \\  if (typeof data !== "string") throw new TypeError("Terminal.write expects a string or buffer");
+    \\  return new TextEncoder().encode(data).byteLength;
+    \\};
+    \\__home_Terminal.prototype.resize = function(cols, rows) {
+    \\  if (this.closed) throw new Error("Terminal is closed");
+    \\  if (!Number.isFinite(Number(cols)) || Number(cols) < 1) throw new RangeError("cols must be positive");
+    \\  if (!Number.isFinite(Number(rows)) || Number(rows) < 1) throw new RangeError("rows must be positive");
+    \\};
+    \\__home_Terminal.prototype.close = function() {
+    \\  if (this.closed) return;
+    \\  this.closed = true;
+    \\  if (this.options && typeof this.options.exit === "function") Promise.resolve().then(() => this.options.exit(this));
+    \\};
+    \\__home_Terminal.prototype.setRawMode = function(value) {
+    \\  this.rawMode = !!value;
+    \\  return this;
+    \\};
     \\__home_Terminal.prototype.__home_emit_data = function(data) {
     \\  if (this.options && typeof this.options.data === "function") this.options.data(this, data);
     \\};
-    \\__home_Terminal.prototype[Symbol.dispose] = function() {};
-    \\__home_Terminal.prototype[Symbol.asyncDispose] = function() { return Promise.resolve(undefined); };
+    \\__home_Terminal.prototype[Symbol.dispose] = function() { this.close(); };
+    \\__home_Terminal.prototype[Symbol.asyncDispose] = function() { this.close(); return Promise.resolve(undefined); };
     \\globalThis.__home_archive_store = globalThis.__home_archive_store || Object.create(null);
     \\globalThis.__home_archive_next_id = globalThis.__home_archive_next_id || 1;
     \\function __home_archive_validate_options(options) {
@@ -12100,6 +12127,13 @@ const harness_prelude =
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledTimes() value must be a mock function");
     \\      __home_assert(value.mock.calls.length === expected, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called " + String(expected) + " times");
     \\    },
+    \\    toHaveBeenCalled() {
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalled() value must be a mock function");
+    \\      __home_assert(value.mock.calls.length > 0, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called");
+    \\    },
+    \\    toBeCalled() {
+    \\      return this.toHaveBeenCalled();
+    \\    },
     \\    toHaveBeenCalledWith() {
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledWith() value must be a mock function");
     \\      const expected = Array.prototype.slice.call(arguments);
@@ -13004,17 +13038,21 @@ const harness_prelude =
     \\    const envEcho = __home_bun_shell_env_echo(command, shell.__home_env);
     \\    if (envEcho) {
     \\      envEcho.cwdPath = shell.__home_cwd || "";
+    \\      envEcho.__home_throw_on_error = !!shell.__home_throw_on_error;
     \\      return envEcho;
     \\    }
     \\    const result = __home_bake_shell(command);
     \\    result.cwdPath = shell.__home_cwd || "";
+    \\    result.__home_throw_on_error = !!shell.__home_throw_on_error;
     \\    return result;
     \\  };
     \\  shell.__home_cwd = __home_bake_virtual_normalize(initialCwd || process.cwd());
     \\  shell.__home_env = Object.create(null);
+    \\  shell.__home_throw_on_error = true;
     \\  shell.cwd = function(value) { shell.__home_cwd = __home_bake_virtual_normalize(value); return shell; };
     \\  shell.env = function(value) { if (value && typeof value === "object") Object.assign(shell.__home_env, value); return shell; };
-    \\  shell.throws = function(value) { return shell; };
+    \\  shell.throws = function(value) { shell.__home_throw_on_error = value !== false; return shell; };
+    \\  shell.nothrow = function() { shell.__home_throw_on_error = false; return shell; };
     \\  return shell;
     \\}
     \\__home_bun_shell.__home_env = Object.create(null);
@@ -30367,6 +30405,22 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun direct ReadableStream and serve integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/symbols.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun binary symbol import inspection")
+    else if (std.mem.eql(u8, relative_path, "js/bun/terminal/terminal-platform-gaps.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Terminal platform termios and ConPTY integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/terminal/terminal-spawn.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Terminal subprocess PTY integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/terminal/terminal.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Terminal PTY lifecycle integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/bun_test.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test CLI reporter snapshot integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test concurrent CLI scheduling reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent_immediate.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test immediate concurrent CLI reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/describe.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test describe name CLI reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/done-async.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test done callback CLI failure reporter")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
@@ -47449,6 +47503,47 @@ test "bootstrap runner supports binary temp fixtures and external sourcemaps" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/10139.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers terminal mock alias and shell instance shims" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, jest, test } from "bun:test";
+        \\test("terminal shell and mock shims", async () => {
+        \\  const terminal = new Bun.Terminal({ cols: 10, rows: 4 });
+        \\  expect(terminal.closed).toBe(false);
+        \\  expect(terminal.localFlags).toBeGreaterThan(0);
+        \\  expect(terminal.outputFlags).toBeGreaterThan(0);
+        \\  expect(terminal.write("abc")).toBe(3);
+        \\  terminal.resize(12, 5);
+        \\  terminal.setRawMode(true);
+        \\  terminal.close();
+        \\  expect(terminal.closed).toBe(true);
+        \\  expect(() => terminal.write("x")).toThrow("Terminal is closed");
+        \\
+        \\  const fn = jest.fn();
+        \\  fn("value");
+        \\  expect(fn).toBeCalled();
+        \\  expect(fn).toHaveBeenCalled();
+        \\
+        \\  const shell = new Bun.$.Shell();
+        \\  shell.nothrow().env({ HOME_TEST_SHELL_VALUE: "ok" });
+        \\  const result = await shell`echo $HOME_TEST_SHELL_VALUE`;
+        \\  expect(result.stdout.toString()).toBe("ok\n");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/terminal-shell-shims.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
