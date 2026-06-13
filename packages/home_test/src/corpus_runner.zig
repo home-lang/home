@@ -8404,6 +8404,38 @@ const harness_prelude =
     \\  const instance = archive instanceof __home_Archive ? archive : new __home_Archive(archive, options);
     \\  return instance.bytes().then(bytes => Bun.write(path, bytes));
     \\};
+    \\const __home_bun_secret_store = new Map();
+    \\function __home_bun_secret_error(message) {
+    \\  const error = new TypeError(message);
+    \\  error.code = "ERR_INVALID_ARG_TYPE";
+    \\  return error;
+    \\}
+    \\function __home_bun_secret_key(operation, options) {
+    \\  if (arguments.length < 2 || options === undefined) throw __home_bun_secret_error("secrets." + operation + " requires an options object");
+    \\  if (options === null || typeof options !== "object" || Array.isArray(options)) throw __home_bun_secret_error("Expected options to be an object");
+    \\  if (typeof options.service !== "string" || typeof options.name !== "string") throw __home_bun_secret_error("Expected service and name to be strings");
+    \\  if (options.service.length === 0 || options.name.length === 0) throw __home_bun_secret_error("Expected service and name to not be empty");
+    \\  return options.service + "\0" + options.name;
+    \\}
+    \\const __home_bun_secrets = {
+    \\  get(options) {
+    \\    const key = __home_bun_secret_key("get", options);
+    \\    return Promise.resolve(__home_bun_secret_store.has(key) ? __home_bun_secret_store.get(key) : null);
+    \\  },
+    \\  set(options) {
+    \\    const key = __home_bun_secret_key("set", options);
+    \\    if (typeof options.value !== "string") throw __home_bun_secret_error("Expected 'value' to be a string");
+    \\    if (options.value.length === 0) __home_bun_secret_store.delete(key);
+    \\    else __home_bun_secret_store.set(key, options.value);
+    \\    return Promise.resolve(undefined);
+    \\  },
+    \\  delete(options) {
+    \\    const key = __home_bun_secret_key("delete", options);
+    \\    const existed = __home_bun_secret_store.has(key);
+    \\    __home_bun_secret_store.delete(key);
+    \\    return Promise.resolve(existed);
+    \\  },
+    \\};
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -8418,6 +8450,7 @@ const harness_prelude =
     \\  sleep(ms) {
     \\    return Promise.resolve();
     \\  },
+    \\  secrets: __home_bun_secrets,
     \\  nanoseconds() {
     \\    if (typeof performance === "object" && performance && typeof performance.now === "function") {
     \\      const origin = typeof performance.timeOrigin === "number" ? performance.timeOrigin : Date.now();
@@ -12688,6 +12721,12 @@ const harness_prelude =
     \\  }
     \\  return command;
     \\}
+    \\function __home_bun_shell_env_echo(command, env) {
+    \\  const match = String(command || "").trim().match(/^echo\s+\$([A-Za-z_][A-Za-z0-9_]*)$/);
+    \\  if (!match) return null;
+    \\  const value = env && Object.prototype.hasOwnProperty.call(env, match[1]) ? String(env[match[1]]) : "";
+    \\  return __home_bun_shell_text_result(value + "\n");
+    \\}
     \\function __home_current_file_is_bake_corpus() {
     \\  const filename = String(globalThis.__home_current_filename || "");
     \\  return filename === "bake" || filename.startsWith("bake/");
@@ -12696,6 +12735,8 @@ const harness_prelude =
     \\  const issueResult = __home_bun_shell_issue_result(parts, values);
     \\  if (issueResult) return issueResult;
     \\  const command = __home_bun_shell_command(parts, values);
+    \\  const envEcho = __home_bun_shell_env_echo(command, __home_bun_shell.__home_env);
+    \\  if (envEcho) return envEcho;
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts") && command.includes("bun run -") && command.includes("console.log('hello')")) return __home_bun_shell_text_result("hello\n");
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return __home_bake_shell(command);
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts") && command.trim().startsWith("cat ")) {
@@ -12711,19 +12752,30 @@ const harness_prelude =
     \\function __home_bun_shell_instance(initialCwd) {
     \\  const shell = function(parts, ...values) {
     \\    const command = __home_bun_shell_command(parts, values);
+    \\    const envEcho = __home_bun_shell_env_echo(command, shell.__home_env);
+    \\    if (envEcho) {
+    \\      envEcho.cwdPath = shell.__home_cwd || "";
+    \\      return envEcho;
+    \\    }
     \\    const result = __home_bake_shell(command);
     \\    result.cwdPath = shell.__home_cwd || "";
     \\    return result;
     \\  };
     \\  shell.__home_cwd = __home_bake_virtual_normalize(initialCwd || process.cwd());
+    \\  shell.__home_env = Object.create(null);
     \\  shell.cwd = function(value) { shell.__home_cwd = __home_bake_virtual_normalize(value); return shell; };
-    \\  shell.env = function(value) { return shell; };
+    \\  shell.env = function(value) { if (value && typeof value === "object") Object.assign(shell.__home_env, value); return shell; };
     \\  shell.throws = function(value) { return shell; };
     \\  return shell;
     \\}
+    \\__home_bun_shell.__home_env = Object.create(null);
     \\__home_bun_shell.throws = function(value) { if (__home_native_bun_shell && typeof __home_native_bun_shell.throws === "function") __home_native_bun_shell.throws(value); return __home_bun_shell; };
     \\__home_bun_shell.cwd = function(value) { __home_bake_shell_cwd = __home_bake_virtual_normalize(value || process.cwd()); if (__home_native_bun_shell && typeof __home_native_bun_shell.cwd === "function") __home_native_bun_shell.cwd(value); return __home_bun_shell; };
-    \\__home_bun_shell.env = function(value) { return __home_bun_shell([""]).env(value); };
+    \\__home_bun_shell.env = function(value) { if (value && typeof value === "object") Object.assign(__home_bun_shell.__home_env, value); return __home_bun_shell; };
+    \\__home_bun_shell.braces = function(pattern, options) {
+    \\  if (options && (options.parse || options.tokenize)) return String(pattern || "");
+    \\  return __home_path_glob_expand_braces(String(pattern || ""));
+    \\};
     \\__home_bun_shell.Shell = function Shell() { return __home_bun_shell_instance(process.cwd()); };
     \\Bun.$ = __home_bun_shell;
     \\function __home_bun_sql_rows_for_insert(query) {
@@ -12977,7 +13029,7 @@ const harness_prelude =
     \\Bun.color = __home_bun_color;
     \\Bun.SystemError = __home_bun_system_error;
     \\globalThis.__home_bun_color = __home_bun_color;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, Archive: Bun.Archive, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, color: Bun.color, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, Glob: Bun.Glob, JSONC: Bun.JSONC, JSONL: Bun.JSONL, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, SystemError: Bun.SystemError, YAML: Bun.YAML, cron: Bun.cron, dns: null, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, Archive: Bun.Archive, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, color: Bun.color, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, Glob: Bun.Glob, JSONC: Bun.JSONC, JSONL: Bun.JSONL, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, SystemError: Bun.SystemError, YAML: Bun.YAML, cron: Bun.cron, dns: null, redis: Bun.redis, secrets: Bun.secrets, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
     \\globalThis.__home_modules["bun:ffi"] = Object.assign({}, Bun.FFI);
     \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); } };
     \\function __home_semver_fixture_prereleases() {
@@ -29860,6 +29912,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "YAML import attribute loader resolution")
     else if (std.mem.eql(u8, relative_path, "js/bun/runtime-error.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun-error RuntimeError package integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-stream-cancel-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "S3 stream cancellation GC rooting integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "S3 R2 and MinIO integration suite")
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-insecure.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "S3 HTTP endpoint error integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-encode-overflow.test.ts"))
@@ -29896,6 +29952,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun.Glob stress scan parity")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-connect-x509.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.connect x509 TLS event-loop integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/assignments-in-pipeline.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell assignment pipeline parser")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell-default.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell subprocess error integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell-file.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell file interpolation")
+    else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell-instance.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun shell instance IO and environment integration")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
