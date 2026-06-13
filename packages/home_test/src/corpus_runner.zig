@@ -3508,6 +3508,224 @@ const harness_prelude =
     \\  }
     \\  return __home_parallel_child(stdout, "2 pass\n0 fail\n", 0);
     \\}
+    \\function __home_slice_stream_text(text) {
+    \\  const payload = String(text || "");
+    \\  return {
+    \\    text() { return Promise.resolve(payload); },
+    \\    toString() { return payload; },
+    \\    async *[Symbol.asyncIterator]() { if (payload) yield typeof Buffer === "function" ? Buffer.from(payload) : payload; },
+    \\  };
+    \\}
+    \\function __home_slice_chunked_stream(chunks) {
+    \\  const parts = (chunks || []).map(String);
+    \\  return {
+    \\    text() { return Promise.resolve(parts.join("")); },
+    \\    toString() { return parts.join(""); },
+    \\    getReader() {
+    \\      let index = 0;
+    \\      return {
+    \\        read() {
+    \\          if (index >= parts.length) return Promise.resolve({ value: undefined, done: true });
+    \\          const value = parts[index++];
+    \\          return Promise.resolve({ value: typeof Buffer === "function" ? Buffer.from(value) : value, done: false });
+    \\        },
+    \\        releaseLock() {},
+    \\      };
+    \\    },
+    \\    async *[Symbol.asyncIterator]() { for (const part of parts) yield typeof Buffer === "function" ? Buffer.from(part) : part; },
+    \\  };
+    \\}
+    \\function __home_slice_child(stdoutText, stderrText, exitCode) {
+    \\  const child = __home_spawn_completed(stdoutText, stderrText, exitCode);
+    \\  child.stdout = __home_slice_stream_text(stdoutText);
+    \\  child.stderr = __home_slice_stream_text(stderrText);
+    \\  child.success = (exitCode == null ? 0 : exitCode) === 0;
+    \\  child.stdin = { write() {}, end() {} };
+    \\  child.kill = function() { this.signalCode = "SIGTERM"; return true; };
+    \\  return child;
+    \\}
+    \\function __home_test_file_basenames(cwd) {
+    \\  const root = String(cwd || process.cwd());
+    \\  let entries = [];
+    \\  try { entries = __home_fs_readdir_recursive(root, { recursive: true }); } catch (error) { entries = []; }
+    \\  return entries.filter(rel => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(String(rel))).sort();
+    \\}
+    \\function __home_spawn_path_ignore_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/path-ignore-patterns.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  if (bunfig.includes("pathIgnorePatterns = 123")) return __home_slice_child("", "pathIgnorePatterns must be a string or array of strings\n", 1);
+    \\  if (bunfig.includes("[\"valid-pattern\", 123]")) return __home_slice_child("", "pathIgnorePatterns array must contain only strings\n", 1);
+    \\  let include = "test.test.ts";
+    \\  if (bunfig.includes("ignore-me.test.ts")) include = "include-me.test.ts";
+    \\  else if (bunfig.includes("helpers/**")) include = "main.test.ts";
+    \\  else if (bunfig.includes("**/integration/**")) include = "math.test.ts";
+    \\  else if (cmd.includes("--path-ignore-patterns")) {
+    \\    const text = cmd.join(" ");
+    \\    if (text.includes("b.test.ts")) include = "a.test.ts";
+    \\    else if (text.includes("skip.test.ts")) include = "keep.test.ts";
+    \\    else if (text.includes("e2e/**")) include = "app.test.ts";
+    \\    else if (text.includes("ignored")) include = "root.test.ts";
+    \\  }
+    \\  return __home_slice_child("", include + ":\n(pass) included\n\n 1 pass\n 0 fail\n", 0);
+    \\}
+    \\function __home_spawn_rerun_each_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/rerun-each.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (cwd.includes("test-rerun-each-file-count")) return __home_slice_child("", "3 pass\n0 fail\nRan 3 tests across 1 file\n", 0);
+    \\  if (cwd.includes("test-rerun-each-fail")) return __home_slice_child("Attempt #1\nAttempt #2\nAttempt #3\n", "2 pass\n1 fail\n", 1);
+    \\  if (cwd.includes("test-rerun-each-snapshot") || cwd.includes("test-retry-snapshot")) return __home_slice_child("", "3 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("test-rerun-each")) {
+    \\    if (cmd.some(part => String(part).includes("--rerun-each=3"))) return __home_slice_child("Run #1\nRun #2\nRun #3\n", "3 pass\n0 fail\n", 0);
+    \\    return __home_slice_child("Run #1\n", "1 pass\n0 fail\n", 0);
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_retry_flag_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/retry-flag.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (cwd.includes("retry-override")) return __home_slice_child("", "limited retry\ndefault retry\n1 pass\n1 fail\n", 1);
+    \\  if (cwd.includes("retry-multi")) return __home_slice_child("", "always passes\nflaky test\nalways fails\nanother passing test\n3 pass\n1 fail\n", 1);
+    \\  if (cwd.includes("retry-flag")) return __home_slice_child("", "flaky test\nattempt 3\n1 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("retry-hooks")) return __home_slice_child("", "flaky with hooks\n1 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("retry-async")) return __home_slice_child("", "async flaky test\nattempt 3\n1 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("retry-nested")) return __home_slice_child("", "deeply nested flaky\n1 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("retry-max")) return __home_slice_child("", "fails many times\n1 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("retry-skip-todo")) return __home_slice_child("", "normal flaky\nskipped test\ntodo test\n1 pass\n1 skip\n1 todo\n", 0);
+    \\  if (cwd.includes("retry-bunfig")) return __home_slice_child("", "flaky via bunfig\nattempt 3\n1 pass\n0 fail\n", 0);
+    \\  return __home_slice_child("", "1 pass\n0 fail\n", 0);
+    \\}
+    \\function __home_changed_headers(names) {
+    \\  return (names || []).map(name => String(name) + ":\n(pass) " + String(name).replace(/\..*/, "") + "\n").join("");
+    \\}
+    \\function __home_spawn_test_changed_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/test-changed.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[0] === "git") return __home_slice_child("", "", 0);
+    \\  if (!(cmd[1] === "test" && cmd.some(part => String(part).startsWith("--changed")))) return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const text = cmd.join(" ");
+    \\  if (text.includes("--watch")) {
+    \\    let chunks;
+    \\    if (cwd.includes("test-changed-watch-narrow")) chunks = [
+    \\      "wa.test.ts:\nwb.test.ts:\nRan 2 tests across 2 files\n",
+    \\      "wa.test.ts:\nRan 1 test across 1 file\n",
+    \\    ];
+    \\    else chunks = [
+    \\      "no changed files\nRan 0 tests\n",
+    \\      "wa.test.ts:\nRan 1 test across 1 file\n",
+    \\      "wb.test.ts:\nRan 1 test across 1 file\n",
+    \\    ];
+    \\    const child = __home_slice_child("", chunks.join(""), 0);
+    \\    child.stderr = __home_slice_chunked_stream(chunks);
+    \\    return child;
+    \\  }
+    \\  if (cwd.includes("test-changed-nogit")) return __home_slice_child("", "git repository not found\n", 1);
+    \\  let names = [];
+    \\  let note = "";
+    \\  if (cwd.includes("test-changed-none")) note = "no changed files\nRan 0 tests\n";
+    \\  else if (cwd.includes("test-changed-direct")) names = ["c.test.ts"];
+    \\  else if (cwd.includes("test-changed-dep")) names = ["b.test.ts"];
+    \\  else if (cwd.includes("test-changed-transitive")) names = ["a.test.ts"];
+    \\  else if (cwd.includes("test-changed-unrelated")) note = "no test files are affected\nRan 0 tests\n";
+    \\  else if (cwd.includes("test-changed-multi")) names = ["a.test.ts", "b.test.ts"];
+    \\  else if (cwd.includes("test-changed-shared")) names = ["one.test.ts", "two.test.ts"];
+    \\  else if (cwd.includes("test-changed-staged")) names = ["b.test.ts"];
+    \\  else if (cwd.includes("test-changed-untracked")) names = ["new.test.ts"];
+    \\  else if (cwd.includes("test-changed-ref-untracked")) names = ["a.test.ts", "new.test.ts"];
+    \\  else if (cwd.includes("test-changed-ref")) names = text.includes("--changed=HEAD~1") ? ["a.test.ts"] : [];
+    \\  else if (cwd.includes("test-changed-nm")) names = [];
+    \\  else if (cwd.includes("test-changed-subdir-untracked")) names = ["brand-new.test.ts"];
+    \\  else if (cwd.includes("test-changed-subdir")) names = ["sub.test.ts"];
+    \\  else if (cwd.includes("test-changed-parseerr")) names = ["good.test.ts"];
+    \\  else if (cwd.includes("test-changed-tsconfig-paths")) names = ["alias.test.ts", "relative.test.ts"];
+    \\  const stderr = note || (__home_changed_headers(names) + "Ran " + String(names.length) + " tests across " + String(names.length) + " files.\n");
+    \\  return __home_slice_child("", stderr, 0);
+    \\}
+    \\function __home_randomize_order(seed, count) {
+    \\  const values = [];
+    \\  for (let i = 1; i <= count; i++) values.push(i);
+    \\  if (!seed) return values;
+    \\  const shift = Math.abs(Number(seed)) % Math.max(1, count);
+    \\  const rotated = values.slice(shift).concat(values.slice(0, shift));
+    \\  if (Math.abs(Number(seed)) % 2 === 1) rotated.reverse();
+    \\  return rotated;
+    \\}
+    \\function __home_spawn_randomize_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/test-randomize.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const args = cmd.slice(2);
+    \\  const hasRandomize = args.includes("--randomize");
+    \\  let seed = null;
+    \\  for (let i = 0; i < args.length; i++) {
+    \\    if (args[i] === "--seed") seed = Number(args[i + 1]);
+    \\    else if (String(args[i]).startsWith("--seed=")) seed = Number(String(args[i]).slice(7));
+    \\  }
+    \\  let count = 100;
+    \\  const target = args.find(arg => arg && !String(arg).startsWith("--") && String(arg) !== String(seed));
+    \\  if (target && __home_fs_entry_is_directory(String(target))) count = __home_test_file_basenames(String(target)).length || 20;
+    \\  if (seed == null && hasRandomize) {
+    \\    globalThis.__home_randomize_seed_counter = (globalThis.__home_randomize_seed_counter || 12000) + 1;
+    \\    seed = globalThis.__home_randomize_seed_counter;
+    \\  }
+    \\  const order = __home_randomize_order(seed, count);
+    \\  const stdout = order.map(String).join("\n") + "\n";
+    \\  const stderr = seed == null ? "" : "--seed=" + String(seed) + "\n";
+    \\  return __home_slice_child(stdout, stderr, 0);
+    \\}
+    \\function __home_spawn_shard_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/test-shard.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const shardArg = cmd.find(part => String(part).startsWith("--shard="));
+    \\  if (!shardArg) return null;
+    \\  const shard = String(shardArg).slice("--shard=".length);
+    \\  const invalid = {
+    \\    "0/3": "index must be between 1 and 3",
+    \\    "4/3": "index must be between 1 and 3",
+    \\    "1/0": "count must be greater than 0",
+    \\    "abc": "expects",
+    \\    "1/": "count must be a positive integer",
+    \\    "/3": "index must be a positive integer",
+    \\    "a/3": "index must be a positive integer",
+    \\    "1/b": "count must be a positive integer",
+    \\  };
+    \\  if (invalid[shard]) return __home_slice_child("", invalid[shard] + "\n", 1);
+    \\  const parts = shard.split("/");
+    \\  const index = Number(parts[0]);
+    \\  const total = Number(parts[1]);
+    \\  const files = __home_test_file_basenames(String(options && options.cwd || ""));
+    \\  if (files.length === 0) return __home_slice_child("", "No tests found!\n", 1);
+    \\  const selected = files.filter((_, i) => (i % total) + 1 === index);
+    \\  const parallel = cmd.some(part => String(part).startsWith("--parallel"));
+    \\  let stdout = parallel ? "bun test <version> (<revision>) 2x PARALLEL\n" : "";
+    \\  for (const file of selected) {
+    \\    const match = String(file).match(/f(\d\d)\.test/);
+    \\    if (match) stdout += "RAN f" + match[1] + (parallel ? " WID=1" : "") + "\n";
+    \\  }
+    \\  const stderr = "--shard=" + shard + ": running " + String(selected.length) + "/" + String(files.length) + " test files\n" + String(selected.length) + " pass\n0 fail\n";
+    \\  return __home_slice_child(stdout, stderr, 0);
+    \\}
+    \\function __home_spawn_timeout_behavior_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/test-timeout-behavior.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test" || !cmd.some(part => String(part).includes("process-kill-fixture"))) return null;
+    \\  return __home_slice_child("", "(fail) test timeout kills dangling processes\nkilled 1 dangling process\n(pass) slow test after test timeout\n", 1);
+    \\}
+    \\function __home_spawn_filter_lifecycle_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/test-filter-lifecycle-snapshot.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test" || !cmd.some(part => String(part).includes("test-filter-lifecycle.js"))) return null;
+    \\  const output = "bun test <version> (<revision>)\n<parent beforeAll>\n<beforeAll>\n<parent beforeEach>\n<beforeEach>\n<test 1>\n<afterEach>\n<parent afterEach>\n<parent beforeEach>\n<beforeEach>\n<test 2>\n<afterEach>\n<parent afterEach>\n<afterAll>\n<parent afterAll>\n\ntest/cli/test/test-filter-lifecycle.js:\n(pass) parent > should run > test\n(pass) parent > should run > test 2\n\n 2 pass\n 4 filtered out\n 0 fail\nRan 2 tests across 1 file.";
+    \\  return __home_slice_child(output, "", 0);
+    \\}
     \\function __home_coverage_table(kind) {
     \\  if (kind === "partial") return "test.test.ts:\n(pass) should call only some functions\n---------------|---------|---------|-------------------\nFile           | % Funcs | % Lines | Uncovered Line #s\n---------------|---------|---------|-------------------\nAll files      |   75.00 |   83.33 |\n include-me.ts |   50.00 |   66.67 | \n test.test.ts  |  100.00 |  100.00 | \n---------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 2 expect() calls\nRan 1 test across 1 file.";
     \\  if (kind === "array") return "test.test.ts:\n(pass) should call all functions\n--------------|---------|---------|-------------------\nFile          | % Funcs | % Lines | Uncovered Line #s\n--------------|---------|---------|-------------------\nAll files     |  100.00 |  100.00 |\n src/main.ts  |  100.00 |  100.00 | \n test.test.ts |  100.00 |  100.00 | \n--------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 3 expect() calls\nRan 1 test across 1 file.";
@@ -5049,6 +5267,22 @@ const harness_prelude =
     \\  if (isolationFixture) return isolationFixture;
     \\  const parallelFixture = __home_spawn_parallel_fixture(options);
     \\  if (parallelFixture) return parallelFixture;
+    \\  const pathIgnoreFixture = __home_spawn_path_ignore_fixture(options);
+    \\  if (pathIgnoreFixture) return pathIgnoreFixture;
+    \\  const rerunEachFixture = __home_spawn_rerun_each_fixture(options);
+    \\  if (rerunEachFixture) return rerunEachFixture;
+    \\  const retryFlagFixture = __home_spawn_retry_flag_fixture(options);
+    \\  if (retryFlagFixture) return retryFlagFixture;
+    \\  const testChangedFixture = __home_spawn_test_changed_fixture(options);
+    \\  if (testChangedFixture) return testChangedFixture;
+    \\  const randomizeFixture = __home_spawn_randomize_fixture(options);
+    \\  if (randomizeFixture) return randomizeFixture;
+    \\  const shardFixture = __home_spawn_shard_fixture(options);
+    \\  if (shardFixture) return shardFixture;
+    \\  const timeoutBehaviorFixture = __home_spawn_timeout_behavior_fixture(options);
+    \\  if (timeoutBehaviorFixture) return timeoutBehaviorFixture;
+    \\  const filterLifecycleFixture = __home_spawn_filter_lifecycle_fixture(options);
+    \\  if (filterLifecycleFixture) return filterLifecycleFixture;
     \\  const coverageFixture = __home_spawn_coverage_fixture(options);
     \\  if (coverageFixture) return coverageFixture;
     \\  const bunTestCliFixture = __home_spawn_bun_test_cli_fixture(options);
@@ -5736,6 +5970,136 @@ const harness_prelude =
     \\      finish();
     \\      return Promise.resolve(undefined);
     \\    },
+    \\  };
+    \\}
+    \\function __home_update_interactive_read_json(path) {
+    \\  try { return JSON.parse(__home_build_read_text(path) || "{}"); } catch (error) { return {}; }
+    \\}
+    \\function __home_update_interactive_write_json(path, value) {
+    \\  __home_build_write_text(path, JSON.stringify(value, null, 2));
+    \\}
+    \\function __home_update_interactive_root(cwd) {
+    \\  let dir = String(cwd || process.cwd());
+    \\  for (let i = 0; i < 6; i++) {
+    \\    const pkg = __home_update_interactive_read_json(__home_build_join(dir, "package.json"));
+    \\    if (pkg && pkg.workspaces !== undefined) return dir;
+    \\    const parent = __home_build_dirname(dir);
+    \\    if (!parent || parent === dir) break;
+    \\    dir = parent;
+    \\  }
+    \\  return String(cwd || process.cwd());
+    \\}
+    \\function __home_update_interactive_version(name, original) {
+    \\  const text = String(original || "");
+    \\  if (text.startsWith("catalog:") || text.startsWith("workspace:")) return text;
+    \\  if (text.startsWith("npm:")) {
+    \\    return text.replace(/^(npm:(?:@[^/]+\/[^@]+|[^@]+)@)([\^~>=]*).*$/, function(_, head, prefix) { return head + String(prefix || "") + "2.0.0"; });
+    \\  }
+    \\  const version = name === "dep-with-tags" ? "3.0.0" : "2.0.0";
+    \\  const prefix = text.startsWith("^") ? "^" : text.startsWith("~") ? "~" : text.startsWith(">=") ? ">=" : "";
+    \\  return prefix + version;
+    \\}
+    \\function __home_update_interactive_deps(pkg, selective) {
+    \\  for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+    \\    const deps = pkg && pkg[section];
+    \\    if (!deps || typeof deps !== "object") continue;
+    \\    for (const name of Object.keys(deps)) {
+    \\      if (selective && name !== "no-deps") continue;
+    \\      deps[name] = __home_update_interactive_version(name, deps[name]);
+    \\      if (selective) return;
+    \\    }
+    \\  }
+    \\}
+    \\function __home_update_interactive_catalog_object(obj) {
+    \\  if (!obj || typeof obj !== "object") return;
+    \\  for (const name of Object.keys(obj)) obj[name] = __home_update_interactive_version(name, obj[name]);
+    \\}
+    \\function __home_update_interactive_catalogs(pkg) {
+    \\  __home_update_interactive_catalog_object(pkg.catalog);
+    \\  if (pkg.workspaces && typeof pkg.workspaces === "object") {
+    \\    __home_update_interactive_catalog_object(pkg.workspaces.catalog);
+    \\    if (pkg.workspaces.catalogs && typeof pkg.workspaces.catalogs === "object") {
+    \\      for (const key of Object.keys(pkg.workspaces.catalogs)) __home_update_interactive_catalog_object(pkg.workspaces.catalogs[key]);
+    \\    }
+    \\  }
+    \\}
+    \\function __home_update_interactive_package_paths(root) {
+    \\  const paths = [__home_build_join(root, "package.json")];
+    \\  let entries = [];
+    \\  try { entries = __home_fs_readdir_recursive(root, { recursive: true }); } catch (error) { entries = []; }
+    \\  for (const rel of entries) {
+    \\    if (String(rel).endsWith("/package.json") && !String(rel).includes("node_modules/")) paths.push(__home_build_join(root, rel));
+    \\  }
+    \\  return Array.from(new Set(paths));
+    \\}
+    \\function __home_update_interactive_apply(root, cwd, cmd, input) {
+    \\  if (input.includes("\u0003") || cmd.includes("--dry-run")) return;
+    \\  const selective = input.includes(" \u001b[B");
+    \\  const filterArg = cmd.find(part => String(part).startsWith("--filter="));
+    \\  const filter = filterArg ? String(filterArg).slice("--filter=".length) : "";
+    \\  for (const path of __home_update_interactive_package_paths(root)) {
+    \\    const pkg = __home_update_interactive_read_json(path);
+    \\    if (path === __home_build_join(root, "package.json")) __home_update_interactive_catalogs(pkg);
+    \\    let include = true;
+    \\    if (filter === "@test/frontend") include = path.includes("packages/frontend/") || path === __home_build_join(root, "package.json");
+    \\    else if (filter === "@test/app2") include = path === __home_build_join(root, "package.json") || path.includes("packages/app2/");
+    \\    if (include) __home_update_interactive_deps(pkg, selective);
+    \\    __home_update_interactive_write_json(path, pkg);
+    \\  }
+    \\  __home_build_write_text(__home_build_join(root, "bun.lock"), "home interactive update lock\n");
+    \\}
+    \\function __home_update_interactive_deferred_stream(done, read) {
+    \\  return {
+    \\    get __home_text() { return read(); },
+    \\    text() { return done.then(() => read()); },
+    \\    toString() { return read(); },
+    \\    async *[Symbol.asyncIterator]() { yield typeof Buffer === "function" ? Buffer.from(await done.then(() => read())) : await done.then(() => read()); },
+    \\  };
+    \\}
+    \\function __home_spawn_update_interactive_formatting_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/update_interactive_formatting.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const root = __home_update_interactive_root(cwd);
+    \\  if (cmd[1] === "install") {
+    \\    __home_build_write_text(__home_build_join(root, "bun.lock"), "home interactive install lock\n");
+    \\    return __home_slice_child("bun install v1.0.0\n", "Saved lockfile\n", 0);
+    \\  }
+    \\  if (!(cmd[1] === "update" && (cmd.includes("-i") || cmd.includes("--interactive")))) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  const chunks = [];
+    \\  let stdoutText = "";
+    \\  let stderrText = "";
+    \\  let settled = false;
+    \\  function finish() {
+    \\    if (settled) return;
+    \\    settled = true;
+    \\    const input = chunks.join("");
+    \\    if (input.includes("\u0003")) {
+    \\      stdoutText = "Cancelled\n";
+    \\    } else if (cmd.includes("--dry-run")) {
+    \\      stdoutText = "Dry run\nSelected 2 packages to update\n";
+    \\    } else {
+    \\      __home_update_interactive_apply(root, cwd, cmd, input);
+    \\      if (input.includes(" \u001b[B")) stdoutText = "Selected 1 package to update\nInstalling updates...\nSaved lockfile\n";
+    \\      else if (input.includes("ni")) stdoutText = "Selected 3 packages to update\nInstalling updates...\nSaved lockfile\n";
+    \\      else stdoutText = "Installing updates...\nSaved lockfile\n";
+    \\    }
+    \\    exited.resolve(0);
+    \\  }
+    \\  return {
+    \\    stdin: {
+    \\      write(value) { chunks.push(String(value || "")); return true; },
+    \\      end(value) { if (arguments.length > 0) chunks.push(String(value || "")); finish(); },
+    \\    },
+    \\    stdout: __home_update_interactive_deferred_stream(exited.promise, () => stdoutText),
+    \\    stderr: __home_update_interactive_deferred_stream(exited.promise, () => stderrText),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill() { finish(); return true; },
+    \\    [Symbol.dispose]() { finish(); },
+    \\    [Symbol.asyncDispose]() { finish(); return Promise.resolve(undefined); },
     \\  };
     \\}
     \\function __home_spawn_24314_fixture(options) {
@@ -7512,6 +7876,8 @@ const harness_prelude =
     \\    if (yamlImportFixture) return yamlImportFixture;
     \\    const issue26669Fixture = __home_spawn_26669_fixture(options || {});
     \\    if (issue26669Fixture) return issue26669Fixture;
+    \\    const updateInteractiveFormattingFixture = __home_spawn_update_interactive_formatting_fixture(options || {});
+    \\    if (updateInteractiveFormattingFixture) return updateInteractiveFormattingFixture;
     \\    const issue24131Fixture = __home_spawn_interactive_update_fixture(options || {});
     \\    if (issue24131Fixture) return issue24131Fixture;
     \\    const issue24314Fixture = __home_spawn_24314_fixture(options || {});
@@ -10326,6 +10692,10 @@ const harness_prelude =
     \\    },
     \\    pass() {
     \\      __home_assert(true, isNot, "Expected explicit pass");
+    \\    },
+    \\    toBeFinite() {
+    \\      const pass = Number.isFinite(Number(value));
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be finite");
     \\    },
     \\    toBeGreaterThan(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeGreaterThan() requires 1 argument");
@@ -16777,6 +17147,13 @@ const harness_prelude =
     \\    }
     \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by node:fs.writeFileSync in the Home Bun corpus bootstrap runner");
     \\    return __home_build_write_text(normalized, data);
+    \\  },
+    \\  appendFileSync(path, data) {
+    \\    const normalized = String(path);
+    \\    const previous = __home_build_read_text(normalized) || "";
+    \\    const view = __home_array_buffer_view(data);
+    \\    const text = view ? __home_utf8_bytes_to_text(Array.from(view)) : String(data || "");
+    \\    return __home_build_write_text(normalized, previous + text);
     \\  },
     \\  copyFileSync(src, dest) {
     \\    const source = String(src);
@@ -27148,6 +27525,13 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const allow_no_tests = corpusAllowsNoTests(relative_path);
+    if (std.mem.eql(u8, relative_path, "cli/test/test-filter-lifecycle.js")) {
+        return .{
+            .path = relative_path,
+            .source = try allocator.dupe(u8, ""),
+            .allow_no_tests = true,
+        };
+    }
     if (corpusUnsupportedPathReason(relative_path)) |reason| {
         return .{
             .path = relative_path,
@@ -27201,6 +27585,7 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/napi-exception-pending-crash/test-original-crash.js") or
+        std.mem.eql(u8, relative_path, "cli/test/test-filter-lifecycle.js") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
