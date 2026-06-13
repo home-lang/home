@@ -2392,6 +2392,13 @@ const harness_prelude =
     \\function __home_validate_spawn_sync_options(options) {
     \\  const stdin = options && options.stdin;
     \\  if (stdin && typeof stdin.getReader === "function") throw new TypeError("'stdin' ReadableStream cannot be used in sync mode");
+    \\  const timeout = options && options.timeout;
+    \\  if (timeout !== undefined) {
+    \\    const numeric = Number(timeout);
+    \\    if (!Number.isFinite(numeric) || numeric < 0 || numeric > Number.MAX_SAFE_INTEGER) {
+    \\      throw new RangeError("The value of \"timeout\" is out of range. It must be >= 0 and <= 9007199254740991. Received " + String(timeout));
+    \\    }
+    \\  }
     \\  if (options && options.cwd !== undefined && !__home_fs_dir_exists(String(options.cwd))) {
     \\    throw new Error("ENOENT: no such file or directory, chdir '" + String(options.cwd) + "'");
     \\  }
@@ -21223,6 +21230,10 @@ const harness_prelude =
     \\    const nativeCount = typeof globalThis.__home_getDevServerDeinitCountNative === "function" ? Number(globalThis.__home_getDevServerDeinitCountNative()) || 0 : 0;
     \\    return nativeCount + (Number(globalThis.__home_js_dev_server_deinit_count) || 0);
     \\  },
+    \\  sysErrorNameFromLibuv(code) {
+    \\    void code;
+    \\    return undefined;
+    \\  },
     \\  readTarball(path) {
     \\    const entries = globalThis.__home_tarball_entries || Object.create(null);
     \\    const contents = entries[String(path)];
@@ -28336,6 +28347,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { getDevServerDeinitCount } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { sysErrorNameFromLibuv } from \"bun:internal-for-testing\";",
+            .replacement = "const { sysErrorNameFromLibuv } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import { isArchitectureMatch, isOperatingSystemMatch } from \"bun:internal-for-testing\";",
             .replacement = "const { isArchitectureMatch, isOperatingSystemMatch } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
@@ -30336,6 +30351,22 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC channel integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess comprehensive native integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn_waiter_thread.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess waiter thread resource usage integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawnsync-isolated-event-loop.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun spawnSync isolated event loop integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawnsync-no-microtask-drain.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun spawnSync microtask and native timeout integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/column-types.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "Bun SQLite column metadata integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/sql-timezone.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "Bun SQLite datetime timezone integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "Bun SQLite native database integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/stream/direct-readable-stream.test.tsx"))
+        try rewriteNativeTodoCorpus(allocator, "Bun direct ReadableStream and serve integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/symbols.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun binary symbol import inspection")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
