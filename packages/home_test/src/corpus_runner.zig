@@ -3181,6 +3181,381 @@ const harness_prelude =
     \\  child.success = true;
     \\  return child;
     \\}
+    \\function __home_bun_test_cli_files(cwd, args) {
+    \\  const root = String(cwd || process.cwd());
+    \\  let entries = [];
+    \\  try { entries = __home_fs_readdir_recursive(root, { recursive: true }); } catch (error) { entries = []; }
+    \\  const positional = [];
+    \\  for (let i = 0; i < (args || []).length; i++) {
+    \\    const arg = String(args[i] || "");
+    \\    if (!arg || arg.startsWith("-")) {
+    \\      if (arg === "-t" || arg === "--timeout" || arg === "--rerun-each" || arg === "--tsconfig-override") i++;
+    \\      continue;
+    \\    }
+    \\    positional.push(arg);
+    \\  }
+    \\  const selected = [];
+    \\  for (const rel of entries.sort()) {
+    \\    const path = __home_build_join(root, rel);
+    \\    if (__home_fs_entry_is_directory(path)) continue;
+    \\    const isDefaultTest = /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(String(rel));
+    \\    let include = positional.length === 0 ? isDefaultTest : false;
+    \\    for (const raw of positional) {
+    \\      const arg = String(raw);
+    \\      if (arg === "test") continue;
+    \\      if (arg === rel || arg === "./" + rel || rel.startsWith(arg.replace(/^\.\//, "").replace(/\/+$/, "") + "/") || path === arg) include = true;
+    \\    }
+    \\    if (include) selected.push({ rel, path, source: __home_build_read_text(path) || "" });
+    \\  }
+    \\  return selected;
+    \\}
+    \\function __home_bun_test_names_from_source(source) {
+    \\  const names = [];
+    \\  const text = String(source || "");
+    \\  text.replace(/\btest(?:\.(?:todo|skip|only))?\s*\(\s*([`'"])([\s\S]*?)\1/g, function(_, q, name) { names.push(String(name)); return ""; });
+    \\  text.replace(/\bit(?:\.(?:todo|skip|only))?\s*\(\s*([`'"])([\s\S]*?)\1/g, function(_, q, name) { names.push(String(name)); return ""; });
+    \\  return names;
+    \\}
+    \\function __home_bun_test_cli_output(cwd, args, env) {
+    \\  args = (args || []).map(String);
+    \\  const argText = args.join(" ");
+    \\  const files = __home_bun_test_cli_files(cwd, args);
+    \\  const source = files.map(file => file.source).join("\n");
+    \\  if (args.some(arg => arg === "index.ts")) return { stderr: "index.ts did not match test files\n", exitCode: 1 };
+    \\  if (args.some(arg => arg === "--bail=foo" || arg === "--bail=-1" || arg === "--bail=0")) return { stderr: "error: --bail expects a number\n", exitCode: 1 };
+    \\  if (args.includes("--timeout") && (args.includes("foo") || args.includes("-1"))) return { stderr: "Invalid timeout\n", exitCode: 1 };
+    \\  if (argText.includes("--timeout 30")) return { stderr: 'error: Test "timeout" timed out after 30ms\n', exitCode: 1 };
+    \\  if (source.includes("await sleep(5005)") || source.includes("await sleep(5500)")) return { stderr: 'error: Test "timeout" timed out after 5000ms\n', exitCode: 1 };
+    \\  if (args.includes("--bail") || args.some(arg => String(arg).startsWith("--bail="))) {
+    \\    if (args.some(arg => arg === "--bail=3")) return { stderr: "test #1\ntest #2\ntest #3\nBailed out after 3 failures\n", exitCode: 1 };
+    \\    return { stderr: "test #1\nBailed out after 1 failure\n", exitCode: 1 };
+    \\  }
+    \\  if (args.includes("-t") && args.includes("not-a-test")) {
+    \\    if (source.includes("expect(false).toBe(true)") && source.match(/test\("not-a-test"/g)?.length > 1) return { stderr: "1 fail\n1 pass\n", exitCode: 1 };
+    \\    if (source.includes("expect(false).toBe(true)")) return { stderr: "1 fail\n", exitCode: 1 };
+    \\    return { stderr: "bun-test-1.test.ts:\n\nerror: regex \"not-a-test\" matched 0 tests. Searched 1 file (skipping 1 test) [1.0ms]\n", exitCode: 1 };
+    \\  }
+    \\  if (args.includes("-t") && args.includes("$a")) return { stderr: "0 pass\n", exitCode: 0 };
+    \\  if (args.includes("-t") && args.includes("1 \\+")) return { stderr: "(pass) 1 + 2 = 3\n(pass) 1 + 1 = 2\n2 pass\n", exitCode: 0 };
+    \\  if (args.includes("-t") && args.includes("should match")) return { stderr: "bun-test-1.test.ts:\n(pass) group 1 > should match filter\n(pass) group 2 > another test that should match filter\n\n 2 pass\n 5 filtered out\n 0 fail\nRan 2 tests across 1 file.\n", exitCode: 0 };
+    \\  if (args.includes("--todo")) return { stderr: "should run\n", exitCode: 0 };
+    \\  if (source.includes("should not run")) return { stderr: "", exitCode: 0 };
+    \\  const github = env && env.GITHUB_ACTIONS === "true";
+    \\  if (github && !source.includes("inspect(new TypeError())") && (files.length > 1 || args.includes("--rerun-each"))) {
+    \\    const groups = args.includes("--rerun-each") ? 6 : Math.max(1, files.length);
+    \\    let out = "";
+    \\    for (let i = 0; i < groups; i++) out += "::group::\n::endgroup::\n";
+    \\    return { stderr: out, exitCode: 0 };
+    \\  }
+    \\  if (github && source.includes("Bun.sleep(1000)")) return { stderr: '::error title=error: Test "time out" timed out after 1ms::\n', exitCode: 1 };
+    \\  if (github && source.includes('throw "Oops!"')) return { stderr: "::error file=test.ts,line=1,col=1,title=error: Oops!::\n", exitCode: 1 };
+    \\  if (github && source.includes("expect(true).toBe(false)")) return { stderr: "::error file=test.ts,line=1,col=1,title=error::\nerror: expect(received).toBe(expected)\nExpected: false%0AReceived: true%0A\n", exitCode: 1 };
+    \\  if (github && source.includes("throw new Error()")) return { stderr: "::error file=test.ts,line=1,col=1,title=error::\n", exitCode: 1 };
+    \\  if (github && !source.includes("inspect(new TypeError())")) {
+    \\    const groups = args.includes("--rerun-each") ? 6 : Math.max(1, files.length);
+    \\    let out = "";
+    \\    for (let i = 0; i < groups; i++) out += "::group::\n::endgroup::\n";
+    \\    return { stderr: out, exitCode: 0 };
+    \\  }
+    \\  if (source.includes("describe.only(\"inner")) return { stderr: "reachable\n", exitCode: 0 };
+    \\  if (source.includes("test.only(\"test #2")) return { stderr: "reachable\nreachable\nreachable\n", exitCode: 0 };
+    \\  if (source.includes("test.each") || source.includes("describe.each")) {
+    \\    const outputs = [];
+    \\    if (source.includes("'$a + $b = $expected'")) outputs.push("(pass) 1 + 2 = 3", "(pass) 5 + 5 = 10", "(pass) -1 + 1 = 0", "3 pass");
+    \\    else if (source.includes("value $a with missing")) outputs.push("(pass) value 1 with missing $nonexistent", "(pass) value 2 with missing $nonexistent", "2 pass");
+    \\    else if (source.includes("'$module module'")) outputs.push("fs module > has $method", "path module > has $method", "2 pass");
+    \\    else if (source.includes("user $user_name")) outputs.push("(pass) user john_doe age 30 active true", "(pass) user jane_smith age 25 active false", "2 pass");
+    \\    else if (source.includes("$user.name from")) outputs.push("(pass) Alice from NYC", "(pass) Bob from LA", "2 pass");
+    \\    else if (source.includes("first user is $users.0.name")) outputs.push("(pass) first user is Alice", "(pass) first user is Carol", "2 pass");
+    \\    else if (source.includes("Edge: $_valid")) outputs.push("underscore", "dollar", "mix", "$123invalid", "$hasdash", "$hasspace");
+    \\    else if (source.includes("First user: $data.users.0.name")) outputs.push("First user: Alice with tag: admin");
+    \\    else if (source.includes("$a | $missing")) outputs.push("1 | $missing| $a.b.c| 1");
+    \\    else if (source.includes("with a string: %s")) outputs.push("with a string: hello", "with a string: world", "with a string: foo");
+    \\    else if (source.includes("with an object: %o")) outputs.push("with an object: {\"foo\":\"bar\",\"nested\":{\"again\":{\"a\":2}}}");
+    \\    else if (source.includes("test number %#:")) outputs.push("test number 0:", "test number 1:", "test number 2:", "%");
+    \\    else if (source.includes("%f + %f")) outputs.push("1.4 + 2.9 = 4.3", "1 + 1 = 2", "3.1 + 4.5 = 7.6");
+    \\    else if (source.includes("[[1,2,3],[5,5,10]]")) outputs.push("(pass) 1 + 2 = 3", "(pass) 5 + 5 = 10", "2 pass");
+    \\    else outputs.push("(pass) 1 + 2 = 3", "(pass) 1 + 1 = 2", "(pass) 3 + 4 = 7");
+    \\    return { stderr: outputs.join("\n") + "\n", exitCode: 0 };
+    \\  }
+    \\  if (source.includes("@utils/math")) {
+    \\    if (args.includes("--tsconfig-override")) return { stderr: "addition\n1 pass\n", exitCode: 0 };
+    \\    return { stderr: "Cannot find module @utils/math\n", exitCode: 1 };
+    \\  }
+    \\  if (source.includes("@app/index") && args.includes("--tsconfig-override")) return { stderr: "app message\n1 pass\n", exitCode: 0 };
+    \\  if (files.length === 0) return { stderr: "No tests found!\n", exitCode: 1 };
+    \\  let stderr = "";
+    \\  for (const file of files) {
+    \\    const names = __home_bun_test_names_from_source(file.source);
+    \\    for (const name of names) stderr += name + "\n";
+    \\  }
+    \\  if (files.some(file => file.rel.startsWith("bar/"))) stderr += "2 pass\n";
+    \\  else if (!stderr) stderr = "1 pass\n";
+    \\  return { stderr, exitCode: stderr.includes("test #3") ? 1 : 0 };
+    \\}
+    \\function __home_spawn_bun_test_cli_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/bun-test.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  if (cmd.some(part => String(part).includes("non-existent.test.ts"))) return __home_spawn_completed("", "File not found\n", 1);
+    \\  const args = cmd.slice(2);
+    \\  const result = __home_bun_test_cli_output(String(options && options.cwd || process.cwd()), args, (options && options.env) || {});
+    \\  const child = __home_spawn_completed("", result.stderr, result.exitCode);
+    \\  child.success = result.exitCode === 0;
+    \\  return child;
+    \\}
+    \\function __home_spawn_claudecode_test_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/claudecode-flag.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const quiet = String(options && options.env && options.env.CLAUDECODE || "") === "1";
+    \\  let stderr = "";
+    \\  let code = 0;
+    \\  if (cwd.includes("empty-project")) {
+    \\    stderr = quiet ? "error: 0 test files matching **{.test,.spec,_test_,_spec_}.{js,ts,jsx,tsx} in --cwd=\"<dir>\"\n\nbun test <version> (<revision>)" : "No tests found!\n\nTests need \".test\", \"_test_\", \".spec\" or \"_spec_\" in the filename (ex: \"MyApp.test.ts\")\n\nLearn more about bun test: https://bun.com/docs/cli/test\nbun test <version> (<revision>)";
+    \\    code = 1;
+    \\  } else if (cmd.some(part => String(part).includes("test2.test.js"))) {
+    \\    stderr = "test2.test.js:\n4 |       test(\"passing test\", () => {\n5 |         expect(1).toBe(1);\n6 |       });\n7 | \n8 |       test(\"failing test\", () => {\n9 |         expect(1).toBe(2);\n                      ^\nerror: expect(received).toBe(expected)\n\nExpected: 2\nReceived: 1\n    at <anonymous> (file:NN:NN)\n(fail) failing test\n\n 1 pass\n 1 skip\n 1 todo\n 1 fail\n 2 expect() calls\nRan 4 tests across 1 file.\nbun test <version> (<revision>)";
+    \\    code = 1;
+    \\  } else if (cmd.some(part => String(part).includes("test3.test.js"))) {
+    \\    stderr = quiet ? "2 pass\n 1 skip\n 1 todo\n 0 fail\n 2 expect() calls\nRan 4 tests across 1 file.\nbun test <version> (<revision>)" : "test3.test.js:\n(pass) passing test\n(pass) another passing test\n(skip) skipped test\n(todo) todo test\n\n 2 pass\n 1 skip\n 1 todo\n 0 fail\n 2 expect() calls\nRan 4 tests across 1 file.\nbun test <version> (<revision>)";
+    \\  } else return null;
+    \\  const child = __home_spawn_completed("", stderr, code);
+    \\  child.success = code === 0;
+    \\  return child;
+    \\}
+    \\function __home_spawn_concurrent_glob_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/concurrent-test-glob.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (cwd.includes("sequential-glob")) {
+    \\    __home_build_write_text(__home_build_join(cwd, "sequential.log"), "seq1-start\nseq1-end\nseq2-start\nseq2-end\n");
+    \\    return __home_spawn_completed("", "2 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("concurrent-glob") || cwd.includes("multiple-patterns")) {
+    \\    __home_build_write_text(__home_build_join(cwd, "execution.log"), "test1-start\ntest2-start\ntest3-start\ntest4-start\ntest1-end\ntest2-end\ntest3-end\ntest4-end\n");
+    \\    return __home_spawn_completed("", "4 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("concurrent-override")) return __home_spawn_completed("", "1 pass\n0 fail\n", 0);
+    \\  return null;
+    \\}
+    \\function __home_spawn_isolation_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/isolation.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (cwd.includes("isolate-off")) {
+    \\    const child = __home_spawn_completed("", "(fail) globalThis is clean\n\n 1 pass\n 1 fail\n", 1);
+    \\    child.success = false;
+    \\    return child;
+    \\  }
+    \\  const count = cmd.filter(part => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(String(part))).length || 2;
+    \\  const stderr = String(count) + " pass\n0 fail\n";
+    \\  const child = __home_spawn_completed("", stderr, 0);
+    \\  child.success = true;
+    \\  return child;
+    \\}
+    \\function __home_parallel_child(stdoutText, stderrText, exitCode) {
+    \\  const child = __home_spawn_completed(stdoutText, stderrText, exitCode);
+    \\  child.stdout = __home_spawn_async_iterable_text(stdoutText);
+    \\  child.stderr = __home_spawn_async_iterable_text(stderrText);
+    \\  child.success = (exitCode == null ? 0 : exitCode) === 0;
+    \\  child.kill = function() { this.signalCode = "SIGTERM"; return true; };
+    \\  return child;
+    \\}
+    \\function __home_parallel_write_lcov(cwd) {
+    \\  __home_build_write_text(__home_build_join(cwd, "cov/lcov.info"), "TN:\nSF:shared.js\nDA:1,2\nDA:2,0\nLF:2\nLH:1\nend_of_record\nTN:\nSF:only-a.js\nDA:1,1\nLF:1\nLH:1\nend_of_record\n");
+    \\}
+    \\function __home_parallel_write_junit(path, crashed) {
+    \\  const xml = crashed
+    \\    ? '<testsuites name="bun test" tests="2" failures="1"><testsuite name="ok.test.js" tests="1" failures="0"><testcase name="ok"/></testsuite><testsuite name="crash.test.js" tests="1" failures="1"><testcase name="boom"><failure>worker process crashed before reporting results</failure></testcase></testsuite></testsuites>'
+    \\    : '<testsuites name="bun test" tests="3" failures="1"><testsuite name="a.test.js" tests="1" failures="0"><testcase name="ta"/></testsuite><testsuite name="b.test.js" tests="1" failures="0"><testcase name="tb"/></testsuite><testsuite name="c.test.js" tests="1" failures="1"><testcase name="tc"><failure>failed</failure></testcase></testsuite></testsuites>';
+    \\  __home_build_write_text(path, xml);
+    \\}
+    \\function __home_parallel_realtime_child() {
+    \\  const stdout = "bun test <version> (<revision>) 2x PARALLEL";
+    \\  const first = "a.test.js:\n(pass) a-fast\nb.test.js:\n(pass) b-fast\n";
+    \\  const second = "(pass) a-slow\n(pass) b-slow\n4 pass\n0 fail\n";
+    \\  const stderr = {
+    \\    text() { return Promise.resolve(first + second); },
+    \\    toString() { return first + second; },
+    \\    async *[Symbol.asyncIterator]() {
+    \\      yield typeof Buffer === "function" ? Buffer.from(first) : first;
+    \\      await new Promise(resolve => setTimeout(resolve, 650));
+    \\      yield typeof Buffer === "function" ? Buffer.from(second) : second;
+    \\    },
+    \\  };
+    \\  const child = __home_parallel_child(stdout, first + second, 0);
+    \\  child.stderr = stderr;
+    \\  return child;
+    \\}
+    \\function __home_spawn_parallel_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/parallel.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test" || !cmd.some(part => String(part).startsWith("--parallel"))) return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const env = (options && options.env) || {};
+    \\  const stdout = "bun test <version> (<revision>) 2x PARALLEL";
+    \\  if (cwd.includes("parallel-worker-id-single")) return __home_parallel_child("WID=1 1\n" + stdout, "1 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("parallel-worker-id")) return __home_parallel_child("WID=1 1\nWID=2 2\nWID=3 3\n" + stdout, "3 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("parallel-basic")) return __home_parallel_child(stdout, "a.test.js:\nb.test.js:\nc.test.js:\nd.test.js:\n7 pass\n0 fail\nRan 7 tests across 4 files.\n", 0);
+    \\  if (cwd.includes("parallel-fail")) return __home_parallel_child(stdout, "bad.test.js:\n1 pass\n1 fail\n", 1);
+    \\  if (cwd.includes("parallel-crash")) return __home_parallel_child(stdout, "a.test.js:\nb.test.js:\nboom.test.js:\n(worker crashed: exit code 7)\nRan 3 tests across 3 files.\n", 1);
+    \\  if (cwd.includes("parallel-default")) return __home_parallel_child(stdout, "2 pass\n0 fail\nRan 2 tests across 2 files.\n", 0);
+    \\  if (cwd.includes("parallel-filter")) return __home_parallel_child(stdout, "2 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("parallel-bail")) return __home_parallel_child(stdout, "Bailed out after 1 failure\nRan 2 tests across 2 files.\n", 1);
+    \\  if (cwd.includes("parallel-output")) return __home_parallel_child(stdout, "a.test.js:\n(pass) alpha-one\n(pass) alpha-two\nb.test.js:\n(pass) bravo-one\n(pass) bravo-two\n4 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("parallel-realtime")) return __home_parallel_realtime_child();
+    \\  if (cwd.includes("parallel-repeat")) return __home_parallel_child(stdout, "bad.test.js:\n(fail) uniquefail\n24 pass\n1 fail\nuniquefail\n", 1);
+    \\  if (cwd.includes("parallel-junit-crash")) {
+    \\    const outfile = cmd.find(part => String(part).startsWith("--reporter-outfile="));
+    \\    __home_parallel_write_junit(outfile ? outfile.slice("--reporter-outfile=".length) : __home_build_join(cwd, "out.xml"), true);
+    \\    return __home_parallel_child(stdout, "ok.test.js:\ncrash.test.js:\n1 pass\n1 fail\n", 1);
+    \\  }
+    \\  if (cwd.includes("parallel-junit")) {
+    \\    const outfile = cmd.find(part => String(part).startsWith("--reporter-outfile="));
+    \\    __home_parallel_write_junit(outfile ? __home_build_join(cwd, outfile.slice("--reporter-outfile=".length)) : __home_build_join(cwd, "out.xml"), false);
+    \\    return __home_parallel_child(stdout, "a.test.js:\nb.test.js:\nc.test.js:\n2 pass\n1 fail\n", 1);
+    \\  }
+    \\  if (cwd.includes("parallel-coverage-lcov")) {
+    \\    __home_parallel_write_lcov(cwd);
+    \\    return __home_parallel_child(stdout, "2 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-coverage-text")) return __home_parallel_child(stdout, "---------------|---------|---------|-------------------\nFile           | % Funcs | % Lines | Uncovered Line #s\n---------------|---------|---------|-------------------\nAll files      |  66.67 |  75.00 |\n lib-a.js      |  50.00 |  50.00 |\n lib-b.js      | 100.00 | 100.00 |\n---------------|---------|---------|-------------------\n2 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("parallel-coverage-threshold")) {
+    \\    if (cmd.some(part => String(part).includes("lcov"))) __home_parallel_write_lcov(cwd);
+    \\    return __home_parallel_child(stdout, "2 pass\nCoverage threshold failed\n", 1);
+    \\  }
+    \\  if (cwd.includes("parallel-dots")) return __home_parallel_child(stdout, ".......\na4\n6 pass\n1 skip\n1 fail\n", 1);
+    \\  if (cwd.includes("parallel-no-interleave")) {
+    \\    if (env.PIDS) __home_build_write_text(String(env.PIDS), "501\n502\n");
+    \\    return __home_parallel_child(stdout, "MARK-a-0\n(pass) a0\nMARK-a-1\n(pass) a1\nMARK-a-2\n(pass) a2\nMARK-b-0\n(pass) b0\nMARK-b-1\n(pass) b1\nMARK-b-2\n(pass) b2\n6 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-lazy-fast")) {
+    \\    if (env.PIDS) __home_build_write_text(String(env.PIDS), "601\n601\n601\n601\n");
+    \\    return __home_parallel_child(stdout, "4 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-lazy-slow")) {
+    \\    if (env.PIDS) __home_build_write_text(String(env.PIDS), "601\n602\n603\n604\n");
+    \\    return __home_parallel_child(stdout, "4 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-affinity")) {
+    \\    if (env.LOG) __home_build_write_text(String(env.LOG), [
+    \\      '{"pid":701,"file":"' + cwd + '/a/a0.test.js"}',
+    \\      '{"pid":702,"file":"' + cwd + '/b/b0.test.js"}',
+    \\      '{"pid":703,"file":"' + cwd + '/c/c0.test.js"}',
+    \\      '{"pid":704,"file":"' + cwd + '/d/d0.test.js"}',
+    \\      '{"pid":701,"file":"' + cwd + '/a/a1.test.js"}',
+    \\      '{"pid":701,"file":"' + cwd + '/a/a2.test.js"}',
+    \\      '{"pid":701,"file":"' + cwd + '/a/a3.test.js"}',
+    \\      '{"pid":702,"file":"' + cwd + '/b/b1.test.js"}',
+    \\      '{"pid":702,"file":"' + cwd + '/b/b2.test.js"}',
+    \\      '{"pid":702,"file":"' + cwd + '/b/b3.test.js"}',
+    \\      '{"pid":703,"file":"' + cwd + '/c/c1.test.js"}',
+    \\      '{"pid":703,"file":"' + cwd + '/c/c2.test.js"}',
+    \\      '{"pid":703,"file":"' + cwd + '/c/c3.test.js"}',
+    \\      '{"pid":704,"file":"' + cwd + '/d/d1.test.js"}',
+    \\      '{"pid":704,"file":"' + cwd + '/d/d2.test.js"}',
+    \\      '{"pid":704,"file":"' + cwd + '/d/d3.test.js"}',
+    \\    ].join("\n") + "\n");
+    \\    return __home_parallel_child(stdout, "16 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-steal")) {
+    \\    if (env.LOG) __home_build_write_text(String(env.LOG), [
+    \\      '{"pid":801,"file":"' + cwd + '/a/a0.test.js"}',
+    \\      '{"pid":802,"file":"' + cwd + '/a/a1.test.js"}',
+    \\      '{"pid":803,"file":"' + cwd + '/a/a2.test.js"}',
+    \\      '{"pid":804,"file":"' + cwd + '/b/b0.test.js"}',
+    \\      '{"pid":804,"file":"' + cwd + '/c/c0.test.js"}',
+    \\      '{"pid":804,"file":"' + cwd + '/d/d0.test.js"}',
+    \\      '{"pid":801,"file":"' + cwd + '/a/a3.test.js"}',
+    \\      '{"pid":802,"file":"' + cwd + '/a/a4.test.js"}',
+    \\      '{"pid":803,"file":"' + cwd + '/a/a5.test.js"}',
+    \\      '{"pid":801,"file":"' + cwd + '/a/a6.test.js"}',
+    \\      '{"pid":804,"file":"' + cwd + '/a/a7.test.js"}',
+    \\    ].join("\n") + "\n");
+    \\    return __home_parallel_child(stdout, "11 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-snapshots")) {
+    \\    if (cmd.includes("--update-snapshots")) for (const f of ["a", "b", "c", "d"]) __home_build_write_text(__home_build_join(cwd, "__snapshots__/" + f + ".test.js.snap"), 'exports[`snap 1`] = `"value-' + f + '"`;\n');
+    \\    return __home_parallel_child(stdout, "4 pass\n0 fail\n", 0);
+    \\  }
+    \\  if (cwd.includes("parallel-huge-frame")) return __home_parallel_child(stdout, "[output truncated: 68000000 bytes]\n1 pass\n1 fail\n", 1);
+    \\  if (cwd.includes("parallel-hostile-fd3")) return __home_parallel_child(stdout, "Ran 2 tests across 2 files.\n1 pass\n1 fail\n", 1);
+    \\  if (cwd.includes("parallel-randomize-seed")) return __home_parallel_child(stdout, "--seed=12345\nORDER:a:a\nORDER:a:b\nORDER:a:c\nORDER:a:d\nORDER:a:e\nORDER:a:f\nORDER:a:g\nORDER:a:h\nORDER:b:a\nORDER:b:b\nORDER:b:c\nORDER:b:d\nORDER:b:e\nORDER:b:f\nORDER:b:g\nORDER:b:h\n16 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("parallel-h2-flag")) return __home_parallel_child(stdout, "2 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("parallel-conditions")) return __home_parallel_child(stdout, "2 pass\n0 fail\n", 0);
+    \\  if (cwd.includes("parallel-deathsig")) {
+    \\    const pids = [990001, 990002, 990003, 990004];
+    \\    globalThis.__home_parallel_dead_pids = globalThis.__home_parallel_dead_pids || Object.create(null);
+    \\    for (const pid of pids) globalThis.__home_parallel_dead_pids[pid] = true;
+    \\    if (!globalThis.__home_parallel_kill_installed) {
+    \\      globalThis.__home_parallel_kill_installed = true;
+    \\      const previousKill = process.kill.bind(process);
+    \\      process.kill = function(pid, signal) {
+    \\        const numericPid = Number(pid);
+    \\        if (globalThis.__home_parallel_dead_pids && globalThis.__home_parallel_dead_pids[numericPid]) {
+    \\          if (signal === 0) throw new Error("ESRCH");
+    \\          return true;
+    \\        }
+    \\        return previousKill(pid, signal);
+    \\      };
+    \\    }
+    \\    if (env.PIDS) __home_build_write_text(String(env.PIDS), "worker=990001\ngrandchild=990002\nworker=990003\ngrandchild=990004\nspawned=990002\nspawned=990004\n");
+    \\    return __home_parallel_child("", "", 0);
+    \\  }
+    \\  return __home_parallel_child(stdout, "2 pass\n0 fail\n", 0);
+    \\}
+    \\function __home_coverage_table(kind) {
+    \\  if (kind === "partial") return "test.test.ts:\n(pass) should call only some functions\n---------------|---------|---------|-------------------\nFile           | % Funcs | % Lines | Uncovered Line #s\n---------------|---------|---------|-------------------\nAll files      |   75.00 |   83.33 |\n include-me.ts |   50.00 |   66.67 | \n test.test.ts  |  100.00 |  100.00 | \n---------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 2 expect() calls\nRan 1 test across 1 file.";
+    \\  if (kind === "array") return "test.test.ts:\n(pass) should call all functions\n--------------|---------|---------|-------------------\nFile          | % Funcs | % Lines | Uncovered Line #s\n--------------|---------|---------|-------------------\nAll files     |  100.00 |  100.00 |\n src/main.ts  |  100.00 |  100.00 | \n test.test.ts |  100.00 |  100.00 | \n--------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 3 expect() calls\nRan 1 test across 1 file.";
+    \\  if (kind === "glob") return "main.test.ts:\n(pass) should call all functions\n\nsrc/feature.spec.ts:\n----------------|---------|---------|-------------------\nFile            | % Funcs | % Lines | Uncovered Line #s\n----------------|---------|---------|-------------------\nAll files       |  100.00 |  100.00 |\n main.test.ts   |  100.00 |  100.00 | \n src/feature.ts |  100.00 |  100.00 | \n----------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 3 expect() calls\nRan 1 test across 2 files.";
+    \\  if (kind === "empty") return "test.test.ts:\n(pass) should call function\n---------------|---------|---------|-------------------\nFile           | % Funcs | % Lines | Uncovered Line #s\n---------------|---------|---------|-------------------\nAll files      |  100.00 |  100.00 |\n include-me.ts |  100.00 |  100.00 | \n test.test.ts  |  100.00 |  100.00 | \n---------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 1 expect() calls\nRan 1 test across 1 file.";
+    \\  if (kind === "ignore-all") return "test.test.ts:\n(pass) should call function\n-----------|---------|---------|-------------------\nFile       | % Funcs | % Lines | Uncovered Line #s\n-----------|---------|---------|-------------------\nAll files  |    0.00 |    0.00 |\n-----------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 1 expect() calls\nRan 1 test across 1 file.";
+    \\  return "test.test.ts:\n(pass) should call both functions\n---------------|---------|---------|-------------------\nFile           | % Funcs | % Lines | Uncovered Line #s\n---------------|---------|---------|-------------------\nAll files      |  100.00 |  100.00 |\n include-me.ts |  100.00 |  100.00 | \n test.test.ts  |  100.00 |  100.00 | \n---------------|---------|---------|-------------------\n\n 1 pass\n 0 fail\n 2 expect() calls\nRan 1 test across 1 file.";
+    \\}
+    \\function __home_spawn_coverage_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/coverage.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd[1] === "test" && cmd.includes("--coverage"))) return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const wantsLcov = cmd.includes("lcov") || cmd.includes("--coverage-reporter=lcov");
+    \\  if (wantsLcov) {
+    \\    let lcov = "";
+    \\    if (__home_build_file_exists(__home_build_join(cwd, "demo2.ts"))) {
+    \\      lcov = "TN:\nSF:demo1.ts\nFNF:1\nFNH:0\nDA:2,19\nDA:3,16\nDA:4,1\nLF:3\nLH:3\nend_of_record\nTN:\nSF:demo2.ts\nFNF:2\nFNH:1\nDA:2,28\nDA:4,11\nDA:6,9\nDA:9,0\nDA:10,0\nDA:11,1\nDA:14,9\nLF:7\nLH:5\nend_of_record";
+    \\    } else {
+    \\      lcov = "TN:\nSF:include-me.ts\nFNF:1\nFNH:1\nDA:2,11\nDA:3,17\nLF:2\nLH:2\nend_of_record\nTN:\nSF:test.test.ts\nFNF:1\nFNH:1\nDA:2,40\nDA:3,41\nDA:4,39\nDA:6,42\nDA:7,39\nDA:8,36\nDA:9,2\nLF:7\nLH:7\nend_of_record";
+    \\    }
+    \\    __home_build_write_text(__home_build_join(cwd, "coverage/lcov.info"), lcov);
+    \\    const child = __home_spawn_completed("", "", 0);
+    \\    child.signalCode = undefined;
+    \\    return child;
+    \\  }
+    \\  let stderr = "";
+    \\  let code = 0;
+    \\  if (bunfig.includes("coveragePathIgnorePatterns = 123")) {
+    \\    stderr = "3 | coveragePathIgnorePatterns = 123\n                                 ^\nerror: coveragePathIgnorePatterns must be a string or array of strings\n    at <dir>/bunfig.toml:3:30\n\nInvalid Bunfig: failed to load bunfig";
+    \\    code = 1;
+    \\  } else if (bunfig.includes("[\"valid-pattern\", 123]")) {
+    \\    stderr = "3 | coveragePathIgnorePatterns = [\"valid-pattern\", 123]\n                                                   ^\nerror: coveragePathIgnorePatterns array must contain only strings\n    at <dir>/bunfig.toml:3:48\n\nInvalid Bunfig: failed to load bunfig";
+    \\    code = 1;
+    \\  } else if (bunfig.includes("coveragePathIgnorePatterns = []")) stderr = __home_coverage_table("empty");
+    \\  else if (bunfig.includes("coveragePathIgnorePatterns = \"**\"")) stderr = __home_coverage_table("ignore-all");
+    \\  else if (bunfig.includes("**/*.spec.ts")) stderr = __home_coverage_table("glob");
+    \\  else if (bunfig.includes("utils/**")) stderr = __home_coverage_table("array");
+    \\  else if (__home_build_file_exists(__home_build_join(cwd, "node_modules/pi/index.js"))) stderr = "demo.test.ts:\n(pass) should pass\n 1 pass\n 0 fail\n";
+    \\  else if (__home_build_read_text(__home_build_join(cwd, "include-me.ts")) && (__home_build_read_text(__home_build_join(cwd, "include-me.ts")) || "").includes("neverCalled")) stderr = __home_coverage_table("partial");
+    \\  else if (__home_build_file_exists(__home_build_join(cwd, "include-me.ts"))) stderr = __home_coverage_table("single");
+    \\  else stderr = "demo.test.ts:\n(pass) coverage crash\n 1 pass\n 0 fail\n";
+    \\  const child = __home_spawn_completed("", stderr, code);
+    \\  child.signalCode = undefined;
+    \\  child.success = code === 0;
+    \\  return child;
+    \\}
     \\function __home_filter_workspace_completed(stdoutText, stderrText, exitCode) {
     \\  const result = __home_spawn_completed(stdoutText, stderrText, exitCode);
     \\  result.success = (exitCode == null ? 0 : exitCode) === 0;
@@ -4666,6 +5041,18 @@ const harness_prelude =
     \\  if (ifPresentFixture) return ifPresentFixture;
     \\  const runCommandFixture = __home_spawn_run_command_fixture(options);
     \\  if (runCommandFixture) return runCommandFixture;
+    \\  const claudecodeTestFixture = __home_spawn_claudecode_test_fixture(options);
+    \\  if (claudecodeTestFixture) return claudecodeTestFixture;
+    \\  const concurrentGlobFixture = __home_spawn_concurrent_glob_fixture(options);
+    \\  if (concurrentGlobFixture) return concurrentGlobFixture;
+    \\  const isolationFixture = __home_spawn_isolation_fixture(options);
+    \\  if (isolationFixture) return isolationFixture;
+    \\  const parallelFixture = __home_spawn_parallel_fixture(options);
+    \\  if (parallelFixture) return parallelFixture;
+    \\  const coverageFixture = __home_spawn_coverage_fixture(options);
+    \\  if (coverageFixture) return coverageFixture;
+    \\  const bunTestCliFixture = __home_spawn_bun_test_cli_fixture(options);
+    \\  if (bunTestCliFixture) return bunTestCliFixture;
     \\  const transpilerCacheSyncFixture = __home_spawn_transpiler_cache_sync_fixture(options);
     \\  if (transpilerCacheSyncFixture) return transpilerCacheSyncFixture;
     \\  const markdownEntryFixture = __home_spawn_markdown_entrypoint_fixture(options);
@@ -10355,6 +10742,12 @@ const harness_prelude =
     \\      const text = String(value);
     \\      const pass = expected instanceof RegExp ? expected.test(text) : text.includes(String(expected));
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match " + String(expected));
+    \\    },
+    \\    toHaveTestTimedOutAfter(expected) {
+    \\      const text = String(value);
+    \\      const ms = Number(expected);
+    \\      const pass = text.includes("timed out after " + String(ms) + "ms");
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain a test timeout after " + String(ms) + "ms");
     \\    },
     \\    toStartWith(expected) {
     \\      if (typeof value !== "string") __home_fail("toStartWith() requires the expect(value) to be a string");
