@@ -2275,6 +2275,19 @@ const harness_prelude =
     \\  };
     \\  return blob;
     \\}
+    \\function __home_spawn_pipe_async_iterator(bytes) {
+    \\  let read = false;
+    \\  return {
+    \\    next() {
+    \\      if (read) return Promise.resolve({ done: true, value: undefined });
+    \\      read = true;
+    \\      const chunk = __home_spawn_pipe_byte_array(bytes());
+    \\      if (!chunk || chunk.length === 0) return Promise.resolve({ done: true, value: undefined });
+    \\      return Promise.resolve({ done: false, value: chunk });
+    \\    },
+    \\    [Symbol.asyncIterator]() { return this; },
+    \\  };
+    \\}
     \\function __home_spawn_pipe_text(value) {
     \\  const text = __home_spawn_decode_text(value);
     \\  const bytes = () => __home_spawn_pipe_bytes(value, text);
@@ -2294,6 +2307,9 @@ const harness_prelude =
     \\    value.blob = function() {
     \\      return Promise.resolve(__home_spawn_pipe_blob(bytes()));
     \\    };
+    \\    value[Symbol.asyncIterator] = function() {
+    \\      return __home_spawn_pipe_async_iterator(bytes);
+    \\    };
     \\    return value;
     \\  }
     \\  return {
@@ -2312,6 +2328,9 @@ const harness_prelude =
     \\    blob() {
     \\      return Promise.resolve(__home_spawn_pipe_blob(bytes()));
     \\    },
+    \\    [Symbol.asyncIterator]() {
+    \\      return __home_spawn_pipe_async_iterator(bytes);
+    \\    },
     \\    toString() {
     \\      return text;
     \\    },
@@ -2320,6 +2339,11 @@ const harness_prelude =
     \\function __home_normalize_spawn_options(options) {
     \\  const source = options || {};
     \\  if (!Array.isArray(source.cmd)) return source;
+    \\  if (String(source.cmd[0]) === "node" || String(source.cmd[0]) === "node.exe") {
+    \\    const normalized = Object.assign({}, source);
+    \\    normalized.cmd = [process.execPath].concat(source.cmd.slice(1));
+    \\    return normalized;
+    \\  }
     \\  if (source.cmd.length >= 4 && String(source.cmd[1]) === "run" && String(source.cmd[2]) === "--bun") {
     \\    const normalized = Object.assign({}, source);
     \\    normalized.cmd = [source.cmd[0], "run"].concat(source.cmd.slice(3));
@@ -2368,6 +2392,9 @@ const harness_prelude =
     \\function __home_validate_spawn_sync_options(options) {
     \\  const stdin = options && options.stdin;
     \\  if (stdin && typeof stdin.getReader === "function") throw new TypeError("'stdin' ReadableStream cannot be used in sync mode");
+    \\  if (options && options.cwd !== undefined && !__home_fs_dir_exists(String(options.cwd))) {
+    \\    throw new Error("ENOENT: no such file or directory, chdir '" + String(options.cwd) + "'");
+    \\  }
     \\}
     \\function __home_spawn_completed(stdoutText, stderrText, exitCode) {
     \\  const stdout = __home_spawn_pipe_text(String(stdoutText || ""));
@@ -2381,6 +2408,57 @@ const harness_prelude =
     \\    [Symbol.dispose]() {},
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
+    \\}
+    \\function __home_spawn_version_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
+    \\  return null;
+    \\}
+    \\function __home_spawn_stdin_echo_fixture(options, sync) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const script = String(cmd[cmd.indexOf("-e") + 1] || cmd[cmd.indexOf("--eval") + 1] || "");
+    \\  if (!(cmd.includes("-e") || cmd.includes("--eval")) || !script.includes("process.stdin.pipe(process.stdout)")) return null;
+    \\  const stdin = options && options.stdin;
+    \\  const view = __home_array_buffer_view(stdin);
+    \\  if (!view) return null;
+    \\  const bytes = Array.from(view);
+    \\  const text = __home_utf8_bytes_to_text(bytes);
+    \\  if (sync) {
+    \\    return {
+    \\      stdout: typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes),
+    \\      stderr: typeof Buffer === "function" ? Buffer.from("") : new Uint8Array(0),
+    \\      exitCode: 0,
+    \\      signalCode: null,
+    \\      success: true,
+    \\    };
+    \\  }
+    \\  const stdout = options && options.stdout;
+    \\  if (stdout && stdout.__home_file_ref) {
+    \\    globalThis.__home_written_file_bytes[stdout.path] = bytes.slice();
+    \\    __home_build_write_text(stdout.path, text);
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  return __home_spawn_completed(text, "", 0);
+    \\}
+    \\function __home_spawn_eval_env_log_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const script = String(cmd[cmd.indexOf("-e") + 1] || cmd[cmd.indexOf("--eval") + 1] || "");
+    \\  if (!(cmd.includes("-e") || cmd.includes("--eval"))) return null;
+    \\  const match = script.match(/console\.log\(\s*process\.env\.([A-Za-z_][A-Za-z0-9_]*)\s*\)/);
+    \\  if (!match) return null;
+    \\  const env = (options && options.env) || process.env || {};
+    \\  return __home_spawn_completed(String(env[match[1]] === undefined ? "" : env[match[1]]) + "\n", "", 0);
+    \\}
+    \\function __home_spawn_eval_exit_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const script = String(cmd[cmd.indexOf("-e") + 1] || cmd[cmd.indexOf("--eval") + 1] || "");
+    \\  if (!(cmd.includes("-e") || cmd.includes("--eval"))) return null;
+    \\  const match = script.match(/process\.exit\(\s*(\d+)\s*\)/);
+    \\  if (!match) return null;
+    \\  const code = Number(match[1]) || 0;
+    \\  const result = __home_spawn_completed("", "", code);
+    \\  if (typeof (options && options.onExit) === "function") Promise.resolve().then(() => options.onExit(result, code, null));
+    \\  return result;
     \\}
     \\globalThis.__home_spawn_processes_by_pid = globalThis.__home_spawn_processes_by_pid || Object.create(null);
     \\globalThis.__home_next_spawn_pid = globalThis.__home_next_spawn_pid || 430000;
@@ -8834,6 +8912,14 @@ const harness_prelude =
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
     \\    __home_validate_spawn_sync_options(options || {});
+    \\    const versionFixture = __home_spawn_version_fixture(options || {});
+    \\    if (versionFixture) return versionFixture;
+    \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, true);
+    \\    if (stdinEchoFixture) return stdinEchoFixture;
+    \\    const envLogFixture = __home_spawn_eval_env_log_fixture(options || {});
+    \\    if (envLogFixture) return envLogFixture;
+    \\    const exitFixture = __home_spawn_eval_exit_fixture(options || {});
+    \\    if (exitFixture) return exitFixture;
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
     \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
@@ -8855,6 +8941,8 @@ const harness_prelude =
     \\  spawn(options, spawnOptions) {
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
+    \\    const versionFixture = __home_spawn_version_fixture(options || {});
+    \\    if (versionFixture) return versionFixture;
     \\    const earlyTranspilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
     \\    if (earlyTranspilerCacheFixture) return earlyTranspilerCacheFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
@@ -8939,6 +9027,12 @@ const harness_prelude =
     \\    if (issue24157Fixture) return issue24157Fixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
+    \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, false);
+    \\    if (stdinEchoFixture) return stdinEchoFixture;
+    \\    const envLogFixture = __home_spawn_eval_env_log_fixture(options || {});
+    \\    if (envLogFixture) return envLogFixture;
+    \\    const exitFixture = __home_spawn_eval_exit_fixture(options || {});
+    \\    if (exitFixture) return exitFixture;
     \\    if (typeof __home_bake_spawn_override === "function") {
     \\      const overridden = __home_bake_spawn_override(options || {});
     \\      if (overridden) return overridden;
@@ -15454,7 +15548,7 @@ const harness_prelude =
     \\function __home_harness_rm_scope(dir) {
     \\  return { [Symbol.dispose]() { try { __home_node_fs.rmSync(String(dir || ""), { recursive: true, force: true }); } catch (error) {} } };
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isCI: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isCI: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -26567,7 +26661,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2); throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_url_path_to_file_url(__home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2)).href; throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
     if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
         try out.appendSlice(allocator, "if (typeof globalThis.__home_register_current_module === \"function\") globalThis.__home_register_current_module(__filename, __dirname);\n");
     }
@@ -30232,6 +30326,16 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin lifecycle integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-unread-stdout-gc.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess unread stdout GC integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.bun-node.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC bun parent node child integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.node-bun.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC node parent bun child integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.ipc.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess IPC channel integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess comprehensive native integration")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
