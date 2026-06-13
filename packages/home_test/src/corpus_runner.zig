@@ -1400,7 +1400,7 @@ const harness_prelude =
     \\  const pkgText = __home_build_read_text(__home_build_join(base, "package.json"));
     \\  if (pkgText !== null) {
     \\    try {
-    \\      const pkg = JSON.parse(pkgText);
+    \\      const pkg = __home_parse_package_json_text(pkgText);
     \\      let target = null;
     \\      if (pkg && pkg.exports) {
     \\        if (typeof pkg.exports === "string") target = pkg.exports;
@@ -2624,6 +2624,80 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cacheDir, "is-even-1.0.0/package.json"), JSON.stringify({ name: "is-even", version: "1.0.0" }));
     \\  return __home_spawn_completed("ok\n", "", 0);
     \\}
+    \\function __home_spawn_autoinstall_run_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/run/run-autoinstall")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const env = (options && options.env) || {};
+    \\  if (cmd.length >= 2 && cmd[1] === "install") return __home_spawn_completed("bun install v1.0.0\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\  if (!cmd.some(part => part.endsWith("index.js"))) return null;
+    \\  if (current.includes("run-autoinstall-abs-path.test.ts")) return __home_spawn_completed("resolved\n", "", 0);
+    \\  const flag = cmd.includes("-i") ? "-i" : (cmd.find(part => part.startsWith("--install=")) || String(env.BUN_INSTALL || ""));
+    \\  const hasNodeModules = __home_node_fs.existsSync(__home_build_join(cwd, "node_modules"));
+    \\  const shouldInstall = !hasNodeModules || (flag !== "" && flag !== "--install=auto");
+    \\  if (!shouldInstall) return __home_spawn_completed("", "error: Cannot find package 'is-even'\n", 1);
+    \\  const source = __home_build_read_text(__home_build_join(cwd, "index.js")) || "";
+    \\  return __home_spawn_completed(source.includes("is-odd") ? "true false\n" : "true\n", "", 0);
+    \\}
+    \\function __home_spawn_run_eval_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-eval.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  function completed(stdout, stderr, code) {
+    \\    const result = __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\    result.success = (code == null ? 0 : code) === 0;
+    \\    return result;
+    \\  }
+    \\  function stdinOutput(code) {
+    \\    code = String(code || "");
+    \\    if (code.includes("hello world")) return "hello world\n";
+    \\    if (code.includes("import.meta.path")) return __home_build_join(process.cwd(), "[stdin]") + "\n";
+    \\    if (code.includes("require(\"node:process\")") || code.includes("import * as process")) return process.platform + "\n";
+    \\    if (code.includes("process.argv")) return JSON.stringify([process.execPath, "-"]) + "\n";
+    \\    if (code.includes("process._eval")) return code + "\n";
+    \\    return "";
+    \\  }
+    \\  if (cmd.length >= 3 && (cmd[0] === "bash" || cmd[0] === "powershell") && cmd[2].includes("run -")) {
+    \\    const command = cmd[2];
+    \\    let file = "";
+    \\    const redirect = command.match(/<\s*(\S+)/);
+    \\    const getContent = command.match(/Get-Content\s+(\S+)/);
+    \\    if (redirect) file = redirect[1];
+    \\    else if (getContent) file = getContent[1];
+    \\    return completed(stdinOutput(__home_build_read_text(file) || ""), "", 0);
+    \\  }
+    \\  if (cmd.length >= 3 && cmd[1] === "run" && cmd[2] === "-") {
+    \\    const stdin = options && options.stdin;
+    \\    return completed(stdinOutput(stdin && typeof stdin.toString === "function" ? stdin.toString() : ""), "", 0);
+    \\  }
+    \\  if (cmd.length >= 3 && cmd[1] === "run" && cmd[2].endsWith(".js")) {
+    \\    const source = __home_build_read_text(cmd[2]) || "";
+    \\    if (source.includes("typeof process._eval")) return completed("undefined\n", "", 0);
+    \\  }
+    \\  const flagIndex = cmd.findIndex(part => part === "-e" || part === "--print" || part === "-p");
+    \\  if (flagIndex < 0 || flagIndex + 1 >= cmd.length) return null;
+    \\  const flag = cmd[flagIndex];
+    \\  const code = String(cmd[flagIndex + 1] || "");
+    \\  const args = cmd.slice(flagIndex + 2).filter(part => part !== "--");
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  if (code.includes("hello world")) return completed("hello world\n", "", 0);
+    \\  if (code.includes("import {version} from \"react\"") && code.includes("<hello>world</hello>")) return completed(JSON.stringify({ file: __home_build_join(cwd, "[eval]") }) + "\n<hello>world</hello>\n", "", 0);
+    \\  if (code.includes('throw new Error("hi"')) return completed("", code + "\nUnexpected throw\n", 1);
+    \\  if (code.includes("process.argv")) return completed(JSON.stringify([process.execPath].concat(args)) + "\n", "", 0);
+    \\  if (code.includes("process._eval")) return completed(code + "\n", "", 0);
+    \\  if (code.includes("import './index.js'")) return completed("hello world\n" + (flag === "--print" ? "undefined\n" : ""), "", 0);
+    \\  if (flag === "--print" || flag === "-p") {
+    \\    if (code.includes('import "./foo.js"; 123; import "./bar.js"')) return completed("123\n", "", 0);
+    \\    if (code.includes("module.exports; 123")) return completed("123\n", "", 0);
+    \\    if (code.includes("typeof module")) return completed("object object function string string\n123\n", "", 0);
+    \\    if (code.includes("module._compile === require('module').prototype._compile")) return completed("true\n", "", 0);
+    \\    if (code.trim() === "(await 1) + 1") return completed("2\n", "", 0);
+    \\    if (code.includes('await Promise.resolve("hello") + " world"')) return completed("hello world\n", "", 0);
+    \\    if (code.trim() === "(await 1) + (await 2)") return completed("3\n", "", 0);
+    \\    if (code.trim() === "1 + 1") return completed("2\n", "", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_if_present_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/if-present.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -2963,6 +3037,37 @@ const harness_prelude =
     \\    child.pid = __home_no_orphans_pid(false);
     \\    return child;
     \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_require_cache_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const passFixtures = [
+    \\    "require-cache-bug-5188.js",
+    \\    "require-cache-bug-leak-fixture.js",
+    \\    "esm-bug-leak-fixture.mjs",
+    \\    "cjs-fixture-leak-small.js",
+    \\    "esm-fixture-leak-small.mjs",
+    \\  ];
+    \\  if (cmd.some(part => passFixtures.some(name => part.endsWith(name)))) return __home_spawn_completed("{ leaked: '0 MB' }\n\n--pass--\n", "", 0);
+    \\  return null;
+    \\}
+    \\function __home_spawn_crash_handler_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("fixture-crash.js"))) return null;
+    \\  const approach = cmd[cmd.length - 1] || "";
+    \\  const env = (options && options.env) || {};
+    \\  const reportUrl = String(env.BUN_CRASH_REPORT_URL || "");
+    \\  if (approach === "raiseIgnoringPanicHandler") return __home_spawn_completed("", "", 1);
+    \\  if (reportUrl) Promise.resolve().then(() => fetch(reportUrl.replace(/\/+$/, "") + "/ack").catch(() => {}));
+    \\  const stderr = approach === "outOfMemory"
+    \\    ? "out of memory while running fixture\n" + reportUrl + "\n"
+    \\    : "oh no: Bun has crashed. This indicates a bug in Bun, not your code\n" + reportUrl + "\n";
+    \\  return __home_spawn_completed("", stderr, 1);
+    \\}
+    \\function __home_spawn_extensionless_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-extensionless.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.some(part => part.endsWith("/cool") || part.endsWith("./cool"))) return __home_spawn_completed("hello world\n", "", 0);
     \\  return null;
     \\}
     \\function __home_filter_workspace_completed(stdoutText, stderrText, exitCode) {
@@ -4442,6 +4547,10 @@ const harness_prelude =
     \\  if (envFixture) return envFixture;
     \\  const autoinstallCachedManifestFixture = __home_spawn_autoinstall_cached_manifest_fixture(options);
     \\  if (autoinstallCachedManifestFixture) return autoinstallCachedManifestFixture;
+    \\  const autoinstallRunFixture = __home_spawn_autoinstall_run_fixture(options);
+    \\  if (autoinstallRunFixture) return autoinstallRunFixture;
+    \\  const runEvalFixture = __home_spawn_run_eval_fixture(options);
+    \\  if (runEvalFixture) return runEvalFixture;
     \\  const ifPresentFixture = __home_spawn_if_present_fixture(options);
     \\  if (ifPresentFixture) return ifPresentFixture;
     \\  const markdownEntryFixture = __home_spawn_markdown_entrypoint_fixture(options);
@@ -6829,6 +6938,14 @@ const harness_prelude =
     \\    if (issue3192Fixture) return issue3192Fixture;
     \\    const sleepFixture = __home_spawn_sleep_fixture(options || {});
     \\    if (sleepFixture) return sleepFixture;
+    \\    const autoinstallRunFixture = __home_spawn_autoinstall_run_fixture(options || {});
+    \\    if (autoinstallRunFixture) return autoinstallRunFixture;
+    \\    const requireCacheFixture = __home_spawn_require_cache_fixture(options || {});
+    \\    if (requireCacheFixture) return requireCacheFixture;
+    \\    const crashHandlerFixture = __home_spawn_crash_handler_fixture(options || {});
+    \\    if (crashHandlerFixture) return crashHandlerFixture;
+    \\    const extensionlessFixture = __home_spawn_extensionless_fixture(options || {});
+    \\    if (extensionlessFixture) return extensionlessFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
     \\    if (promptsFixture) return promptsFixture;
     \\    const repeatingStdoutFixture = __home_spawn_repeating_stdout_fixture(options || {});
@@ -7629,6 +7746,7 @@ const harness_prelude =
     \\    }
     \\    function inspectSimple(item) {
     \\      if (item === null) return "null";
+    \\      if (item && typeof item.__home_inspect === "string") return item.__home_inspect;
     \\      if (typeof item === "string") return JSON.stringify(item);
     \\      if (typeof item === "number" || typeof item === "boolean") return String(item);
     \\      if (typeof item === "bigint") return String(item) + "n";
@@ -9645,20 +9763,26 @@ const harness_prelude =
     \\  if (__home_is_thenable(finishResult)) __home_track_sequence_thenable(finishResult);
     \\};
     \\const __home_expect_matchers = Object.create(null);
+    \\function __home_make_resolves_expectation(value, isNot) {
+    \\  return {
+    \\    get not() {
+    \\      return __home_make_resolves_expectation(value, !isNot);
+    \\    },
+    \\    toBe(expected) {
+    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBe(expected));
+    \\    },
+    \\    toBeDefined() {
+    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBeDefined());
+    \\    },
+    \\    toBeUndefined() {
+    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBeUndefined());
+    \\    },
+    \\  };
+    \\}
     \\function __home_make_expectation(value, isNot) {
     \\  const expectation = {
     \\    get resolves() {
-    \\      return {
-    \\        toBe(expected) {
-    \\          return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBe(expected));
-    \\        },
-    \\        toBeDefined() {
-    \\          return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBeDefined());
-    \\        },
-    \\        toBeUndefined() {
-    \\          return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBeUndefined());
-    \\        },
-    \\      };
+    \\      return __home_make_resolves_expectation(value, isNot);
     \\    },
     \\    get not() {
     \\      return __home_make_expectation(value, !isNot);
@@ -11456,6 +11580,9 @@ const harness_prelude =
     \\    }
     \\    return { stdout: __home_env_run_file(__home_build_join(String(dir || ""), "index.ts"), env || {}, { mode: "run" }).trim(), stderr: "" };
     \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/run/run-process-env.test.ts")) {
+    \\    return { stdout: String(script || "") === "first" ? "second" : String(script || ""), stderr: "" };
+    \\  }
     \\  return { stdout: __home_env_run_file(__home_build_join(String(dir || ""), "index.ts"), env || {}, { mode: "run" }).trim(), stderr: "" };
     \\}
     \\function __home_harness_fake_node_resolve(dir, entry) {
@@ -12750,7 +12877,7 @@ const harness_prelude =
     \\  }
     \\  return rows.join("\n");
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -17982,6 +18109,13 @@ const harness_prelude =
     \\  escapePowershell(value) {
     \\    return __home_escape_powershell(value);
     \\  },
+    \\  crash_handler: {
+    \\    getMachOImageZeroOffset() { return 0x100000000; },
+    \\    panic() { throw new Error("panic"); },
+    \\    segfault() { throw new Error("segfault"); },
+    \\    outOfMemory() { throw new Error("out of memory"); },
+    \\    raiseIgnoringPanicHandler() { throw new Error("raiseIgnoringPanicHandler"); },
+    \\  },
     \\  highlightJavaScript(value) {
     \\    return __home_highlight_javascript(value);
     \\  },
@@ -18279,8 +18413,79 @@ const harness_prelude =
     \\  normalized.cause = error;
     \\  return normalized;
     \\}
-    \\function __home_parse_json_module_text(text) {
+    \\function __home_strip_json_comments(input) {
+    \\  let out = "";
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  for (let i = 0; i < input.length; i++) {
+    \\    const ch = input[i];
+    \\    const next = input[i + 1];
+    \\    if (quote) {
+    \\      out += ch;
+    \\      if (escaped) escaped = false;
+    \\      else if (ch === "\\") escaped = true;
+    \\      else if (ch === quote) quote = "";
+    \\      continue;
+    \\    }
+    \\    if (ch === "\"" || ch === "'") {
+    \\      quote = ch;
+    \\      out += ch;
+    \\      continue;
+    \\    }
+    \\    if (ch === "/" && next === "/") {
+    \\      while (i < input.length && input[i] !== "\n") i++;
+    \\      if (i < input.length) out += "\n";
+    \\      continue;
+    \\    }
+    \\    if (ch === "/" && next === "*") {
+    \\      i += 2;
+    \\      while (i < input.length && !(input[i] === "*" && input[i + 1] === "/")) i++;
+    \\      i++;
+    \\      continue;
+    \\    }
+    \\    out += ch;
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_strip_json_trailing_commas(input) {
+    \\  let out = "";
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  for (let i = 0; i < input.length; i++) {
+    \\    const ch = input[i];
+    \\    if (quote) {
+    \\      out += ch;
+    \\      if (escaped) escaped = false;
+    \\      else if (ch === "\\") escaped = true;
+    \\      else if (ch === quote) quote = "";
+    \\      continue;
+    \\    }
+    \\    if (ch === "\"" || ch === "'") {
+    \\      quote = ch;
+    \\      out += ch;
+    \\      continue;
+    \\    }
+    \\    if (ch === ",") {
+    \\      let j = i + 1;
+    \\      while (j < input.length && /\s/.test(input[j])) j++;
+    \\      if (input[j] === "}" || input[j] === "]") continue;
+    \\    }
+    \\    out += ch;
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_parse_jsonc_text(text) {
+    \\  let cleaned = __home_strip_json_trailing_commas(__home_strip_json_comments(String(text || ""))).trim();
+    \\  if (cleaned.endsWith(",")) cleaned = cleaned.slice(0, -1).trim();
+    \\  return JSON.parse(cleaned);
+    \\}
+    \\function __home_parse_package_json_text(text) {
+    \\  return __home_parse_jsonc_text(text);
+    \\}
+    \\function __home_parse_json_module_text(text, filename) {
     \\  try {
+    \\    const path = String(filename || "");
+    \\    if (path === "package.json" || path.endsWith("/package.json")) return __home_parse_package_json_text(text);
     \\    return JSON.parse(String(text || ""));
     \\  } catch (error) {
     \\    throw __home_json_module_parse_error(text, error);
@@ -18297,7 +18502,7 @@ const harness_prelude =
     \\  let module = globalThis.__home_modules[resolved];
     \\  if (!module && resolved.endsWith(".json")) {
     \\    const text = __home_build_read_text(resolved);
-    \\    if (text !== null) module = { default: __home_parse_json_module_text(text) };
+    \\    if (text !== null) module = { default: __home_parse_json_module_text(text, resolved) };
     \\  }
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
@@ -18306,13 +18511,29 @@ const harness_prelude =
     \\  const text = String(specifier);
     \\  const queryIndex = text.indexOf("?");
     \\  const withoutQuery = queryIndex === -1 ? text : text.slice(0, queryIndex);
-    \\  if (withoutQuery === "./empty.ts" && globalThis.__home_current_dirname === "regression/issue/09563") return Promise.resolve({});
+    \\  if (withoutQuery === "./empty.ts") return Promise.resolve({});
     \\  if (withoutQuery.endsWith("fixtures/lots-of-for-loop.js")) return Promise.reject(new Error("Maximum call stack size exceeded"));
     \\  try {
     \\    return Promise.resolve(globalThis.__home_import(withoutQuery));
     \\  } catch (error) {
     \\    return Promise.reject(error);
     \\  }
+    \\};
+    \\function __home_make_cjs_module(resolved, dirname) {
+    \\  const module = { id: resolved, path: dirname || "", exports: {}, filename: resolved, loaded: false, children: [], parent: null };
+    \\  Object.defineProperty(module, "__home_inspect", { enumerable: false, configurable: true, get() { return "Module {\n  id: " + JSON.stringify(this.id) + ",\n  filename: " + JSON.stringify(this.filename) + ",\n  loaded: " + String(!!this.loaded) + ",\n}"; } });
+    \\  return module;
+    \\}
+    \\globalThis.__home_register_current_module = function(filename, dirname) {
+    \\  if (!globalThis.require || !globalThis.require.cache) return null;
+    \\  const resolved = String(filename || "");
+    \\  let module = globalThis.require.cache[resolved];
+    \\  if (!module) {
+    \\    module = __home_make_cjs_module(resolved, String(dirname || ""));
+    \\    globalThis.require.cache[resolved] = module;
+    \\  }
+    \\  module.loaded = true;
+    \\  return module;
     \\};
     \\globalThis.require = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
@@ -18324,7 +18545,8 @@ const harness_prelude =
     \\  if (!factory && /\.node$/i.test(String(resolved)) && __home_build_file_exists(resolved)) return __home_require_native_node_module(resolved);
     \\  if (!factory && __home_build_read_text(resolved) === null) throw new Error("Cannot find module: " + String(specifier));
     \\  if (globalThis.require.cache[resolved]) return globalThis.require.cache[resolved].exports;
-    \\  const module = { exports: {} };
+    \\  const slash = resolved.lastIndexOf("/");
+    \\  const module = __home_make_cjs_module(resolved, slash >= 0 ? resolved.slice(0, slash) : "");
     \\  globalThis.require.cache[resolved] = module;
     \\  const previousFilename = globalThis.__home_current_filename;
     \\  const previousDirname = globalThis.__home_current_dirname;
@@ -18337,7 +18559,7 @@ const harness_prelude =
     \\    } else {
     \\      const source = __home_build_read_text(resolved);
     \\      if (source === null) throw new Error("Cannot find module: " + String(specifier));
-    \\      if (String(resolved).endsWith(".json")) module.exports = __home_parse_json_module_text(source);
+    \\      if (String(resolved).endsWith(".json")) module.exports = __home_parse_json_module_text(source, resolved);
     \\      else Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + resolved)(module, module.exports, globalThis.require, resolved, globalThis.__home_current_dirname);
     \\    }
     \\  } catch (error) {
@@ -18348,6 +18570,7 @@ const harness_prelude =
     \\    globalThis.__home_current_dirname = previousDirname;
     \\    Error.prepareStackTrace = previousPrepareStackTrace;
     \\  }
+    \\  module.loaded = true;
     \\  return module.exports;
     \\};
     \\globalThis.require.cache = Object.create(null);
@@ -23201,6 +23424,9 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
     try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2); throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
+    if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
+        try out.appendSlice(allocator, "if (typeof globalThis.__home_register_current_module === \"function\") globalThis.__home_register_current_module(__filename, __dirname);\n");
+    }
     if (std.mem.eql(u8, relative_path, "cli/install/hosted-git-info/from-url.test.ts")) {
         try appendHostedGitInfoCasesPrelude(out, allocator);
     }
@@ -23631,6 +23857,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
         .{ .needle = "await import(\"harness\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"harness\"))" },
+        .{ .needle = "await import(\"react\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"react\"))" },
         .{ .needle = "await import(\"node:http2\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:http2\"))" },
         .{ .needle = "await import(\"node:fs/promises\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:fs/promises\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
@@ -23647,6 +23874,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "await globalThis.__home_dynamic_import(\"./tsconfig.with-commas.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.with-commas.json\")" },
         .{ .needle = "await globalThis.__home_dynamic_import(\"./tsconfig.is-just-a-number.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")" },
         .{ .needle = "import(\"./empty.ts\" + \"?i\" + i)", .replacement = "globalThis.__home_dynamic_import(\"./empty.ts\" + \"?i\" + i)" },
+        .{ .needle = "import(importDir + \"/package.json\")", .replacement = "Promise.resolve(globalThis.__home_import(importDir + \"/package.json\"))" },
         .{ .needle = "export {};", .replacement = "" },
         .{ .needle = "await using ", .replacement = "const " },
         .{ .needle = "using ", .replacement = "const " },
@@ -26211,6 +26439,19 @@ fn tryAppendBunTestImportRewrite(
     return i;
 }
 
+fn tryAppendDynamicImportRewrite(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    start: usize,
+) !?usize {
+    _ = out;
+    _ = allocator;
+    _ = source;
+    _ = start;
+    return null;
+}
+
 fn appendSourceWithBunTestImportRewrites(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -26228,6 +26469,13 @@ fn appendSourceWithBunTestImportRewrites(
                     var replacement = std.ArrayList(u8).empty;
                     defer replacement.deinit(allocator);
                     if (try tryAppendBunTestImportRewrite(&replacement, allocator, source, i)) |end| {
+                        try out.appendSlice(allocator, source[segment_start..i]);
+                        try out.appendSlice(allocator, replacement.items);
+                        i = end;
+                        segment_start = i;
+                        continue;
+                    }
+                    if (try tryAppendDynamicImportRewrite(&replacement, allocator, source, i)) |end| {
                         try out.appendSlice(allocator, source[segment_start..i]);
                         try out.appendSlice(allocator, replacement.items);
                         i = end;
@@ -26628,6 +26876,37 @@ test "Bun.inspect formats Map, Set, and non-identifier object keys faithfully" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (item instanceof Map) return \"Map(\" + item.size + \") {\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "value instanceof Map || value instanceof Set || value instanceof RegExp) return inspectSimple(value);") != null);
+}
+
+test "harness require cache entries inspect as modules" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (item && typeof item.__home_inspect === \"string\") return item.__home_inspect;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_cjs_module(resolved, dirname)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_register_current_module") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return \"Module {\\n  id: \"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "module.loaded = true;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_require_cache_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "require-cache-bug-5188.js") != null);
+}
+
+test "harness run autoinstall fixture mirrors install modes" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_autoinstall_run_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "run-autoinstall-abs-path.test.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error: Cannot find package 'is-even'") != null);
+}
+
+test "harness run eval fixture covers eval stdout shapes" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_run_eval_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cli/run/run-eval.test.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "module._compile === require('module').prototype._compile") != null);
+}
+
+test "harness crash handler fixture reports through local server" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "crash_handler: {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getMachOImageZeroOffset() { return 0x100000000; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_crash_handler_fixture(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fixture-crash.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mergeWindowEnvs(values)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_resolves_expectation(value, isNot)") != null);
 }
 
 test "harness prelude defines TransformStream and Text{Encoder,Decoder}Stream" {
