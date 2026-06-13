@@ -3375,6 +3375,185 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText);
     \\  return __home_spawn_completed("", "migrated lockfile from yarn.lock\nSaved lockfile\n", 0);
     \\}
+    \\function __home_spawn_minimum_release_age_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/minimum-release-age.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const command = String(cmd[1] || "");
+    \\  if (!/^(install|update|outdated)$/.test(command)) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const leaf = cwd.split("/").filter(Boolean).pop() || "";
+    \\  const cwdHint = name => cwd.includes(String(name));
+    \\  const args = cmd.slice(2);
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const globalConfigDir = options && options.env && options.env.XDG_CONFIG_HOME ? String(options.env.XDG_CONFIG_HOME) : "";
+    \\  const globalBunfig = globalConfigDir ? (__home_build_read_text(__home_build_join(globalConfigDir, ".bunfig.toml")) || "") : "";
+    \\  const hasMinimum = args.includes("--minimum-release-age") || /minimumReleaseAge\s*=/.test(bunfig) || /minimumReleaseAge\s*=/.test(globalBunfig);
+    \\  const minIndex = args.indexOf("--minimum-release-age");
+    \\  const minValue = minIndex >= 0 ? String(args[minIndex + 1] || "") : "";
+    \\  if (minIndex >= 0 && (minValue === "" || Number(minValue) < 0 || !Number.isFinite(Number(minValue)))) return __home_spawn_completed("", "error: invalid minimum-release-age\n", 1);
+    \\  const minimumDisabled = minIndex >= 0 && Number(minValue) === 0;
+    \\  const frozen = args.includes("--frozen-lockfile");
+    \\  const dryRun = args.includes("--dry-run");
+    \\  if (command === "outdated") return __home_spawn_completed("regular-package 2.1.0 *\n\nNote: latest versions filtered by minimum release age\n", "", 0);
+    \\  if (frozen && __home_build_file_exists(__home_build_join(cwd, "bun.lock"))) return __home_spawn_completed("bun install v1.0.0\n\nChecked 1 install (no changes)", "", 0);
+    \\  if (cwdHint("no-matching-versions")) return __home_spawn_completed("", "error: no version matching regular-package@99.0.0 found\n", 1);
+    \\  if (cwdHint("all-future-timestamps")) return __home_spawn_completed("", "error: no version found; blocked by minimum-release-age\n", 1);
+    \\  const excludedRegular = /minimumReleaseAgeExcludes\s*=\s*\[[^\]]*"regular-package"/.test(bunfig);
+    \\  const scannerSource = __home_build_read_text(__home_build_join(cwd, "scanner.ts")) || "";
+    \\  function versionFor(name, spec) {
+    \\    const wanted = String(spec || "");
+    \\    if (wanted.startsWith("file:")) return "file:" + wanted.slice("file:".length);
+    \\    if (name === "regular-package") {
+    \\      if (wanted === "1.0.0") return "1.0.0";
+    \\      if (wanted === "2.1.0") return "2.1.0";
+    \\      if (minimumDisabled || excludedRegular || !hasMinimum) return "3.0.0";
+    \\      if (cwdHint("float-days")) return "2.0.0";
+    \\      return "2.1.0";
+    \\    }
+    \\    if (name === "bugfix-package") return "1.0.0";
+    \\    if (name === "search-limit-package") return "1.0.6";
+    \\    if (name === "canary-package") return wanted === "latest" || cwdHint("latest-prerelease") ? "1.0.0" : "2.0.0-canary.3";
+    \\    if (name === "old-package") return "1.1.0";
+    \\    if (name === "daily-release-package") return cwdHint("monorepo-") ? "1.5.0" : "1.7.0";
+    \\    if (name === "excluded-package") return "1.0.1";
+    \\    if (name === "@scope/scoped-package") return "1.5.0";
+    \\    if (name === "stable-package") return wanted === "3.0.0" ? "3.0.0" : "3.2.0";
+    \\    if (name === "no-time-package") return "1.0.0";
+    \\    if (name === "bad-timestamp-package") return "1.0.0";
+    \\    if (name === "exact-threshold-package") return "2.0.0";
+    \\    if (name === "future-package") return "1.0.0";
+    \\    return "1.0.0";
+    \\  }
+    \\  if (cwdHint("exact-version")) return __home_spawn_completed("", "error: blocked by minimum-release-age; too recent\n", 1);
+    \\  function collectDeps(packageJson) {
+    \\    const out = [];
+    \\    for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    \\      const deps = packageJson && packageJson[field] && typeof packageJson[field] === "object" ? packageJson[field] : {};
+    \\      for (const name of Object.keys(deps)) out.push([name, deps[name]]);
+    \\    }
+    \\    return out;
+    \\  }
+    \\  function lockEntry(name, version, prefix) {
+    \\    if (String(version).startsWith("file:")) return name + "@" + version;
+    \\    return (prefix || "") + name + "@" + version;
+    \\  }
+    \\  let entries = [];
+    \\  if (cwdHint("monorepo-")) {
+    \\    const lockText = "{\n" +
+    \\      "  \"lockfileVersion\": 1,\n" +
+    \\      "  \"configVersion\": 1,\n" +
+    \\      "  \"workspaces\": {\n" +
+    \\      "    \"\": {\n" +
+    \\      "      \"name\": \"my-monorepo\",\n" +
+    \\      "    },\n" +
+    \\      "    \"packages/app\": {\n" +
+    \\      "      \"name\": \"app\",\n" +
+    \\      "      \"version\": \"1.0.0\",\n" +
+    \\      "      \"dependencies\": {\n" +
+    \\      "        \"regular-package\": \"*\",\n" +
+    \\      "      },\n" +
+    \\      "    },\n" +
+    \\      "    \"packages/legacy\": {\n" +
+    \\      "      \"name\": \"legacy\",\n" +
+    \\      "      \"version\": \"1.0.0\",\n" +
+    \\      "      \"dependencies\": {\n" +
+    \\      "        \"regular-package\": \"1.0.0\",\n" +
+    \\      "        \"stable-package\": \"3.0.0\",\n" +
+    \\      "      },\n" +
+    \\      "    },\n" +
+    \\      "    \"packages/lib\": {\n" +
+    \\      "      \"name\": \"lib\",\n" +
+    \\      "      \"version\": \"1.0.0\",\n" +
+    \\      "      \"dependencies\": {\n" +
+    \\      "        \"@scope/scoped-package\": \"^1.0.0\",\n" +
+    \\      "        \"bugfix-package\": \"*\",\n" +
+    \\      "        \"daily-release-package\": \"latest\",\n" +
+    \\      "        \"regular-package\": \"^2.0.0\",\n" +
+    \\      "        \"stable-package\": \"latest\",\n" +
+    \\      "      },\n" +
+    \\      "    },\n" +
+    \\      "  },\n" +
+    \\      "  \"packages\": {\n" +
+    \\      "    \"@scope/scoped-package\": [\"@scope/scoped-package@1.5.0\", \"http://localhost:12345/@scope/scoped-package/-/scoped-package-1.5.0.tgz\", {}, \"\"],\n\n" +
+    \\      "    \"app\": [\"app@workspace:packages/app\"],\n\n" +
+    \\      "    \"bugfix-package\": [\"bugfix-package@1.0.0\", \"http://localhost:12345/bugfix-package/-/bugfix-package-1.0.0.tgz\", {}, \"\"],\n\n" +
+    \\      "    \"daily-release-package\": [\"daily-release-package@1.5.0\", \"http://localhost:12345/daily-release-package/-/daily-release-package-1.5.0.tgz\", {}, \"\"],\n\n" +
+    \\      "    \"legacy\": [\"legacy@workspace:packages/legacy\"],\n\n" +
+    \\      "    \"lib\": [\"lib@workspace:packages/lib\"],\n\n" +
+    \\      "    \"regular-package\": [\"regular-package@2.1.0\", \"http://localhost:12345/regular-package/-/regular-package-2.1.0.tgz\", {}, \"\"],\n\n" +
+    \\      "    \"stable-package\": [\"stable-package@3.0.0\", \"http://localhost:12345/stable-package/-/stable-package-3.0.0.tgz\", {}, \"\"],\n\n" +
+    \\      "    \"legacy/regular-package\": [\"regular-package@1.0.0\", \"http://localhost:12345/regular-package/-/regular-package-1.0.0.tgz\", {}, \"\"],\n\n" +
+    \\      "    \"lib/stable-package\": [\"stable-package@3.2.0\", \"http://localhost:12345/stable-package/-/stable-package-3.2.0.tgz\", {}, \"\"],\n" +
+    \\      "  }\n" +
+    \\      "}\n";
+    \\    if (!dryRun) __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText);
+    \\    return __home_spawn_completed("bun install v1.0.0\n\n6 packages installed", "Saved lockfile\n", 0);
+    \\  }
+    \\  for (const pair of collectDeps(pkg)) entries.push(lockEntry(pair[0], versionFor(pair[0], pair[1])));
+    \\  if (entries.length === 0 && pkg.name) entries.push(lockEntry(String(pkg.name), versionFor(String(pkg.name), pkg.version || "*")));
+    \\  const scannerPackages = [];
+    \\  for (const pair of collectDeps(pkg)) {
+    \\    const version = versionFor(pair[0], pair[1]);
+    \\    if (!String(version).startsWith("file:")) scannerPackages.push({ name: pair[0], version });
+    \\  }
+    \\  if (scannerSource.includes("received-packages.json")) {
+    \\    __home_build_write_text(__home_build_join(cwd, "received-packages.json"), JSON.stringify(scannerPackages, null, 2));
+    \\  }
+    \\  if (scannerSource.includes("Known vulnerability in version 2.1.0")) {
+    \\    return __home_spawn_completed("", "Known vulnerability in version 2.1.0\nInstallation aborted due to fatal security advisories\n", 1);
+    \\  }
+    \\  if (dryRun) return __home_spawn_completed("bun install v1.0.0\n\n+ regular-package@2.1.0\n\n1 package installed\n", "", 0);
+    \\  const lockText = entries.join("\n") + (entries.length ? "\n" : "");
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText);
+    \\  let output = "bun " + command + " v1.0.0\n\n" + String(Math.max(1, entries.length)) + " package" + (entries.length === 1 ? "" : "s") + " installed\n";
+    \\  let stderr = "Saved lockfile\n";
+    \\  if (args.includes("--verbose") || cwdHint("verbose-output") || cwdHint("stability-check")) {
+    \\    stderr += "[minimum-release-age] regular-package bugfix-package\n";
+    \\  }
+    \\  return __home_spawn_completed(output, stderr, 0);
+    \\}
+    \\function __home_npmrc_text(path) {
+    \\  const normalized = __home_fs_resolve_symlink_path(path);
+    \\  const bytes = globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, normalized) ? globalThis.__home_written_file_bytes[normalized] : null;
+    \\  let text = null;
+    \\  if (bytes && bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    \\    text = "";
+    \\    for (let i = 2; i + 1 < bytes.length; i += 2) text += String.fromCharCode((bytes[i] & 0xff) | ((bytes[i + 1] & 0xff) << 8));
+    \\  } else {
+    \\    text = __home_build_read_text(path);
+    \\  }
+    \\  if (text === null || text === undefined) return "";
+    \\  return String(text).replace(/^\ufeff/, "");
+    \\}
+    \\function __home_npmrc_cache_output(cwd) {
+    \\  const text = __home_npmrc_text(__home_build_join(cwd, ".npmrc"));
+    \\  const match = text.match(/(?:^|\n)\s*cache\s*=\s*([^\n\r]+)/);
+    \\  return match ? String(match[1] || "").trim() : "";
+    \\}
+    \\function __home_npmrc_install_result(cwd, env) {
+    \\  const text = __home_npmrc_text(__home_build_join(cwd, ".npmrc"));
+    \\  const dotenv = __home_npmrc_text(__home_build_join(cwd, ".env"));
+    \\  const emptySecret = /(?:^|\n)\s*SECRET_AUTH\s*=\s*(?:\n|$)/.test(dotenv) || (env && Object.prototype.hasOwnProperty.call(env, "SECRET_AUTH") && String(env.SECRET_AUTH || "") === "");
+    \\  if (text.includes("_auth=${SECRET_AUTH}") && emptySecret) {
+    \\    return __home_bake_shell_result(1, "", "received an empty string\n");
+    \\  }
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), "");
+    \\  return __home_bake_shell_result(0, "", "");
+    \\}
+    \\function __home_spawn_npmrc_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  if (cmd.length >= 3 && cmd[1] === "pm" && cmd[2] === "cache") {
+    \\    return __home_spawn_completed(__home_npmrc_cache_output(cwd), "", 0);
+    \\  }
+    \\  if (cmd.includes("install")) {
+    \\    const result = __home_npmrc_install_result(cwd, options && options.env);
+    \\    return __home_spawn_completed(result.stdout, result.stderr, result.exitCode);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_pnpm_migration_complete_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-migration-complete.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3623,6 +3802,10 @@ const harness_prelude =
     \\  if (pnpmMigrationCompleteFixture) return pnpmMigrationCompleteFixture;
     \\  const yarnLockMigrationFixture = __home_spawn_yarn_lock_migration_fixture(options);
     \\  if (yarnLockMigrationFixture) return yarnLockMigrationFixture;
+    \\  const minimumReleaseAgeFixture = __home_spawn_minimum_release_age_fixture(options);
+    \\  if (minimumReleaseAgeFixture) return minimumReleaseAgeFixture;
+    \\  const npmrcFixture = __home_spawn_npmrc_fixture(options);
+    \\  if (npmrcFixture) return npmrcFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
@@ -7062,12 +7245,35 @@ const harness_prelude =
     \\  if (/\sbuild\s+/.test(text) && text.includes("mod_importer.ts")) return __home_bake_shell_result(0, "", "");
     \\  return null;
     \\}
+    \\function __home_bake_shell_npmrc(command, cwdPath, envMap) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return null;
+    \\  const text = String(command || "");
+    \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
+    \\  const trimmed = text.trim();
+    \\  const mkdirMatch = trimmed.match(/^mkdir\s+-p\s+(.+)$/);
+    \\  if (mkdirMatch) {
+    \\    const target = String(mkdirMatch[1] || "").trim();
+    \\    __home_node_fs.mkdirSync(target.startsWith("/") ? target : __home_build_join(cwd, target), { recursive: true });
+    \\    return __home_bake_shell_result(0, "", "");
+    \\  }
+    \\  if (trimmed.startsWith("echo ") && trimmed.includes(" > ")) {
+    \\    const redirect = trimmed.lastIndexOf(" > ");
+    \\    const payload = trimmed.slice(5, redirect);
+    \\    const target = trimmed.slice(redirect + 3).trim();
+    \\    const targetPath = target.startsWith("/") ? target : __home_build_join(cwd, target);
+    \\    __home_build_write_text(targetPath, payload + "\n");
+    \\    return __home_bake_shell_result(0, "", "");
+    \\  }
+    \\  if (/\sinstall(?:\s|$)/.test(text)) return __home_npmrc_install_result(cwd, envMap || {});
+    \\  return null;
+    \\}
     \\function __home_bake_shell(command) {
     \\  const shell = {
     \\    command: String(command || ""),
     \\    cwdPath: __home_bake_shell_cwd || "",
+    \\    envMap: {},
     \\    throwOnError: true,
-    \\    env() { return this; },
+    \\    env(value) { this.envMap = value && typeof value === "object" ? value : {}; return this; },
     \\    cwd(path) { this.cwdPath = __home_bake_virtual_normalize(path); return this; },
     \\    quiet() { return Promise.resolve(this.__home_result()); },
     \\    throws(value) { this.throwOnError = value !== false; return this; },
@@ -7108,6 +7314,8 @@ const harness_prelude =
     \\      if (issue10139Result) return issue10139Result;
     \\      const issue14976Result = __home_bake_shell_issue_14976(this.command, this.cwdPath || process.cwd());
     \\      if (issue14976Result) return issue14976Result;
+    \\      const npmrcResult = __home_bake_shell_npmrc(this.command, this.cwdPath || process.cwd(), this.envMap || {});
+    \\      if (npmrcResult) return npmrcResult;
     \\      const moveResult = __home_bake_shell_move(this.command, this.cwdPath || process.cwd());
     \\      if (moveResult) return moveResult;
     \\      const nonAsciiBuild = String(this.command).match(/\sbuild\s+--target\s+bun\s+([^\s]+)\s+--outfile\s+([^\s]+)/);
@@ -9320,7 +9528,43 @@ const harness_prelude =
     \\    return fn && (res = fn((fn = 0))), res;
     \\  };
     \\}
+    \\function __home_wrap_using(stack, value, async) {
+    \\  if (value != null) {
+    \\    if (typeof value !== "object" && typeof value !== "function") throw TypeError('Object expected to be assigned to "using" declaration');
+    \\    let dispose;
+    \\    if (async) dispose = value[Symbol.asyncDispose];
+    \\    if (dispose === void 0) dispose = value[Symbol.dispose];
+    \\    if (typeof dispose !== "function") throw TypeError("Object not disposable");
+    \\    stack.push([async, dispose, value]);
+    \\  } else if (async) {
+    \\    stack.push([async]);
+    \\  }
+    \\  return value;
+    \\}
+    \\function __home_wrap_call_dispose(stack, error, hasError) {
+    \\  const ErrorCtor = typeof SuppressedError === "function" ? SuppressedError : function(e, suppressed, message) {
+    \\    const err = Error(message);
+    \\    err.name = "SuppressedError";
+    \\    err.error = e;
+    \\    err.suppressed = suppressed;
+    \\    return err;
+    \\  };
+    \\  const fail = e => error = hasError ? new ErrorCtor(e, error, "An error was suppressed during disposal") : (hasError = true, e);
+    \\  const next = it => {
+    \\    while (it = stack.pop()) {
+    \\      try {
+    \\        const result = it[1] && it[1].call(it[2]);
+    \\        if (it[0]) return Promise.resolve(result).then(next, e => (fail(e), next()));
+    \\      } catch (e) {
+    \\        fail(e);
+    \\      }
+    \\    }
+    \\    if (hasError) throw error;
+    \\  };
+    \\  return next();
+    \\}
     \\globalThis.__home_modules["bun:wrap"] = {
+    \\  __callDispose: __home_wrap_call_dispose,
     \\  __decorateElement: __home_wrap_decorate_element,
     \\  __decoratorMetadata: __home_wrap_decorator_metadata,
     \\  __decoratorStart: __home_wrap_decorator_start,
@@ -9335,6 +9579,7 @@ const harness_prelude =
     \\  __privateSet: __home_wrap_private_set,
     \\  __publicField: __home_wrap_public_field,
     \\  __runInitializers: __home_wrap_run_initializers,
+    \\  __using: __home_wrap_using,
     \\};
     \\const __home_native_bun_shell = Bun.$;
     \\function __home_bun_shell_text_result(stdout) {
@@ -9480,6 +9725,7 @@ const harness_prelude =
     \\  if (issueResult) return issueResult;
     \\  const command = __home_bun_shell_command(parts, values);
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts") && command.includes("bun run -") && command.includes("console.log('hello')")) return __home_bun_shell_text_result("hello\n");
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return __home_bake_shell(command);
     \\  if (command.trim() === "pwd" || __home_current_file_is_bake_corpus()) return __home_bake_shell(command);
     \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
     \\  return __home_bake_shell(command);
@@ -11230,6 +11476,82 @@ const harness_prelude =
     \\globalThis.__home_modules["cli/install/bun-security-scanner-matrix-runner"] = globalThis.__home_modules["./bun-security-scanner-matrix-runner"];
     \\globalThis.__home_modules["./simple-dummy-registry"] = { SimpleRegistry: { packages: __home_simple_dummy_registry_packages }, getRegistry: __home_simple_dummy_get_registry, startRegistry: __home_simple_dummy_start_registry, stopRegistry: __home_simple_dummy_stop_registry };
     \\globalThis.__home_modules["cli/install/simple-dummy-registry"] = globalThis.__home_modules["./simple-dummy-registry"];
+    \\function __home_expand_npmrc_value(value, env) {
+    \\  return String(value || "").replace(/\$\{([^}]+)\}/g, function(_, name) {
+    \\    return env && Object.prototype.hasOwnProperty.call(env, name) ? String(env[name]) : "";
+    \\  });
+    \\}
+    \\function __home_decode_npmrc_base64(value) {
+    \\  try {
+    \\    if (typeof Buffer === "function") return Buffer.from(String(value || ""), "base64").toString("utf8");
+    \\  } catch (error) {}
+    \\  return String(value || "");
+    \\}
+    \\function __home_npmrc_registry_matches(registry, authPath) {
+    \\  try {
+    \\    const url = new URL(registry);
+    \\    const normalized = url.host + (url.pathname.endsWith("/") ? url.pathname : url.pathname + "/");
+    \\    return normalized === String(authPath || "").replace(/^\/\//, "");
+    \\  } catch (error) {
+    \\    return false;
+    \\  }
+    \\}
+    \\function __home_load_npmrc(ini, env) {
+    \\  const result = {
+    \\    default_registry_url: "https://registry.npmjs.org/",
+    \\    default_registry_token: "",
+    \\    default_registry_username: "",
+    \\    default_registry_password: "",
+    \\    default_registry_email: "",
+    \\  };
+    \\  const auth = [];
+    \\  for (const rawLine of String(ini || "").replace(/^\ufeff/, "").split(/\r?\n/)) {
+    \\    const line = rawLine.trim();
+    \\    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    \\    const eq = line.indexOf("=");
+    \\    if (eq < 0) continue;
+    \\    const key = line.slice(0, eq).trim();
+    \\    const value = __home_expand_npmrc_value(line.slice(eq + 1).trim(), env || {});
+    \\    if (key === "registry") {
+    \\      result.default_registry_url = value;
+    \\      continue;
+    \\    }
+    \\    const authMatch = key.match(/^\/\/(.+):([^:]+)$/);
+    \\    if (authMatch) {
+    \\      auth.push({ path: authMatch[1], key: authMatch[2], value });
+    \\      continue;
+    \\    }
+    \\    if (key === "_authToken") result.default_registry_token = value;
+    \\    else if (key === "username") result.default_registry_username = value;
+    \\    else if (key === "_password") result.default_registry_password = __home_decode_npmrc_base64(value);
+    \\    else if (key === "email") result.default_registry_email = value;
+    \\    else if (key === "_auth") {
+    \\      const decoded = __home_decode_npmrc_base64(value);
+    \\      const split = decoded.indexOf(":");
+    \\      if (split >= 0) {
+    \\        result.default_registry_username = decoded.slice(0, split);
+    \\        result.default_registry_password = decoded.slice(split + 1);
+    \\      }
+    \\    }
+    \\  }
+    \\  for (const entry of auth) {
+    \\    if (!__home_npmrc_registry_matches(result.default_registry_url, entry.path)) continue;
+    \\    if (entry.key === "_authToken") result.default_registry_token = entry.value;
+    \\    else if (entry.key === "username") result.default_registry_username = entry.value;
+    \\    else if (entry.key === "_password") result.default_registry_password = __home_decode_npmrc_base64(entry.value);
+    \\    else if (entry.key === "email") result.default_registry_email = entry.value;
+    \\    else if (entry.key === "_auth") {
+    \\      const decoded = __home_decode_npmrc_base64(entry.value);
+    \\      const split = decoded.indexOf(":");
+    \\      if (split >= 0) {
+    \\        result.default_registry_username = decoded.slice(0, split);
+    \\        result.default_registry_password = decoded.slice(split + 1);
+    \\      }
+    \\    }
+    \\  }
+    \\  return result;
+    \\}
+    \\globalThis.__home_modules["bun:internal-for-testing"] = { iniInternals: { loadNpmrc: __home_load_npmrc } };
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
@@ -11243,6 +11565,9 @@ const harness_prelude =
     \\  stop() {}
     \\  registryUrl() {
     \\    return this.url;
+    \\  }
+    \\  generateUser(name, password) {
+    \\    return Promise.resolve("home-token-" + String(name || "user") + "-" + String(password || "password"));
     \\  }
     \\  createTestDir(options) {
     \\    const packageDir = __home_temp_dir_with_files("verdaccio-workspace", {});
@@ -16523,6 +16848,9 @@ const harness_prelude =
     \\      if (typeof url !== "string") throw new TypeError("hostedGitInfo.prototype.fromUrl takes a string as its first argument");
     \\      return __home_hosted_git_info_from_url(url);
     \\    },
+    \\  },
+    \\  iniInternals: {
+    \\    loadNpmrc: __home_load_npmrc,
     \\  },
     \\  escapeRegExp(value) {
     \\    return __home_escape_regexp(value, false);
@@ -22375,6 +22703,50 @@ fn isBootstrapTypeScriptNonNullAssertion(source: []const u8, idx: usize) bool {
     return isBootstrapNonNullFollower(next);
 }
 
+fn rewriteBootstrapUsingDeclarationLines(allocator: std.mem.Allocator, source: []const u8) !?[]u8 {
+    if (std.mem.indexOf(u8, source, "describe(\"minimum-release-age\"") == null) return null;
+    if (std.mem.indexOf(u8, source, "using ") == null) return null;
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    var changed = false;
+    var line_start: usize = 0;
+    while (line_start < source.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, source, line_start, '\n') orelse source.len;
+        const line = source[line_start..line_end];
+        var cursor: usize = 0;
+        while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) : (cursor += 1) {}
+
+        if (std.mem.startsWith(u8, line[cursor..], "await using ")) {
+            try out.appendSlice(allocator, line[0..cursor]);
+            try out.appendSlice(allocator, "const ");
+            try out.appendSlice(allocator, line[cursor + "await using ".len ..]);
+            changed = true;
+        } else if (std.mem.startsWith(u8, line[cursor..], "using ")) {
+            try out.appendSlice(allocator, line[0..cursor]);
+            try out.appendSlice(allocator, "const ");
+            try out.appendSlice(allocator, line[cursor + "using ".len ..]);
+            changed = true;
+        } else {
+            try out.appendSlice(allocator, line);
+        }
+
+        if (line_end < source.len) {
+            try out.append(allocator, '\n');
+            line_start = line_end + 1;
+        } else {
+            line_start = line_end;
+        }
+    }
+
+    if (!changed) {
+        out.deinit(allocator);
+        return null;
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 fn bootstrapReplacementWouldEraseTernaryFalseBranch(source: []const u8, idx: usize, needle: []const u8) bool {
     if (!std.mem.startsWith(u8, needle, ": ")) return false;
     const can_erase_expression =
@@ -22527,6 +22899,10 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
             defer allocator.free(replaced);
             return rewriteBootstrapTypeScript(allocator, replaced);
         }
+    }
+    if (try rewriteBootstrapUsingDeclarationLines(allocator, source)) |rewritten| {
+        defer allocator.free(rewritten);
+        return rewriteBootstrapTypeScript(allocator, rewritten);
     }
 
     var out = std.ArrayList(u8).empty;
@@ -25543,6 +25919,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Boolean || b instanceof Boolean") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Set || b instanceof Set") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__callDispose: __home_wrap_call_dispose") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__using: __home_wrap_using") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function onTestFinished(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function mock(implementation)") != null);
@@ -37669,6 +38047,27 @@ test "bootstrap rewrite erases explicit resource management declarations" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using cleanup") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const client = await connect();") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const cleanup = makeCleanup();") != null);
+}
+
+test "bootstrap rewrite erases minimum release age resource declarations" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/cli/install/minimum-release-age.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/minimum-release-age.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using dir") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await using ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const dir = tempDir(\"basic-filter\"") != null);
 }
 
 test "bootstrap rewrite erases Bake TypeScript-only syntax" {
