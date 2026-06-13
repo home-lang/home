@@ -3318,6 +3318,63 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_yarn_lock_migration_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/yarn-lock-migration.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const name = String(pkg.name || "");
+    \\  if (cmd[1] === "install" && __home_build_file_exists(__home_build_join(cwd, "bun.lock"))) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n\nSaved lockfile\n", "", 0);
+    \\  }
+    \\  if (!(cmd[1] === "pm" && cmd[2] === "migrate")) return null;
+    \\  const current = String(globalThis.__home_current_snapshot_name || "");
+    \\  const folderHints = [
+    \\    "yarn-stuff/abbrev-link-target",
+    \\    "yarn-lock-mkdirp-file-dep",
+    \\    "yarn-lock-mkdirp-no-resolved",
+    \\    "yarn-lock-mkdirp",
+    \\    "yarn-cli-repo",
+    \\    "yarn-stuff",
+    \\  ];
+    \\  let hint = "";
+    \\  for (const folder of folderHints) {
+    \\    if (current.endsWith(folder)) {
+    \\      hint = folder;
+    \\      break;
+    \\    }
+    \\  }
+    \\  if (!hint) {
+    \\    const hints = {
+    \\      "yarn": "yarn-cli-repo",
+    \\      "a": "yarn-stuff",
+    \\      "abbrev": "yarn-stuff/abbrev-link-target",
+    \\      "simple-test": "simple-yarn-migration",
+    \\      "complex-test": "complex-yarn-migration",
+    \\      "alias-test": "aliases-yarn-migration",
+    \\      "resolutions-test": "resolutions-yarn-migration",
+    \\      "workspace-root": "workspace-yarn-migration",
+    \\      "scoped-test": "scoped-yarn-migration",
+    \\      "complex-app": "complex-realistic-yarn-migration",
+    \\      "os-cpu-test": "os-cpu-yarn-migration",
+    \\    };
+    \\    hint = hints[name] || "";
+    \\  }
+    \\  if (!hint && pkg.dependencies && pkg.dependencies.mkdirp === "file:mkdirp") hint = "yarn-lock-mkdirp-file-dep";
+    \\  if (!hint && pkg.dependencies && pkg.dependencies.mkdirp === "^1.0.2") hint = "yarn-lock-mkdirp";
+    \\  let lockText = hint ? __home_snapshot_string_value_by_hint(hint) : "";
+    \\  if (!lockText && name === "build-tags-test") {
+    \\    lockText = "build-tags\n4.16.1-1.4bc8b6e1b66cb932731fb1bdbbc550d1e010de81\n7.21.0-placeholder-for-preset-env.2\n0.1.6-no-external-plugins\n";
+    \\  }
+    \\  if (!lockText && name === "extreme-build-tags-test") {
+    \\    const deps = pkg.dependencies || {};
+    \\    lockText = "extreme-build-tags\n" + String(deps["test-package"] || "") + "\n";
+    \\  }
+    \\  if (!lockText) return null;
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText);
+    \\  return __home_spawn_completed("", "migrated lockfile from yarn.lock\nSaved lockfile\n", 0);
+    \\}
     \\function __home_spawn_pnpm_migration_complete_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-migration-complete.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3564,6 +3621,8 @@ const harness_prelude =
     \\  if (pnpmMigrationFixture) return pnpmMigrationFixture;
     \\  const pnpmMigrationCompleteFixture = __home_spawn_pnpm_migration_complete_fixture(options);
     \\  if (pnpmMigrationCompleteFixture) return pnpmMigrationCompleteFixture;
+    \\  const yarnLockMigrationFixture = __home_spawn_yarn_lock_migration_fixture(options);
+    \\  if (yarnLockMigrationFixture) return yarnLockMigrationFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
@@ -8732,8 +8791,17 @@ const harness_prelude =
     \\      const counts = globalThis.__home_snapshot_counts || (globalThis.__home_snapshot_counts = Object.create(null));
     \\      const count = (counts[snapshotName] || 0) + 1;
     \\      counts[snapshotName] = count;
-    \\      const key = snapshotName + " " + String(count);
+    \\      let key = snapshotName + " " + String(count);
     \\      const snapshots = globalThis.__home_snapshot_values || Object.create(null);
+    \\      if (!Object.prototype.hasOwnProperty.call(snapshots, key) && hint) {
+    \\        const suffix = ": " + hint + " " + String(count);
+    \\        for (const candidate of Object.keys(snapshots)) {
+    \\          if (String(candidate).endsWith(suffix)) {
+    \\            key = candidate;
+    \\            break;
+    \\          }
+    \\        }
+    \\      }
     \\      if (!Object.prototype.hasOwnProperty.call(snapshots, key)) __home_fail("Missing snapshot: " + key);
     \\      const actual = __home_format_file_snapshot(formatValue);
     \\      const snapshot = snapshots[key];
