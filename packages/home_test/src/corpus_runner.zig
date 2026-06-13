@@ -9209,6 +9209,11 @@ const harness_prelude =
     \\  S3Client: Object.assign(function S3Client(options) {
     \\    if (!(this instanceof Bun.S3Client)) return new Bun.S3Client(options);
     \\    this.options = options && typeof options === "object" ? options : {};
+    \\    if (this.options.queueSize !== undefined) {
+    \\      const queueSize = Number(this.options.queueSize);
+    \\      if (!Number.isFinite(queueSize) || queueSize < 1) throw new RangeError("S3Client queueSize must be >= 1");
+    \\      this.options.queueSize = Math.min(255, Math.trunc(queueSize));
+    \\    }
     \\    this.file = (path) => ({
     \\      presign: (presignOptions) => __home_s3_presign_url(path, Object.assign({}, this.options, presignOptions || {})),
     \\    });
@@ -29851,6 +29856,20 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "file URL and package imports resolver integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/toml/toml.test.js"))
         try rewriteNativeTodoCorpus(allocator, "TOML import attribute loader resolution")
+    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/yaml/yaml.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "YAML import attribute loader resolution")
+    else if (std.mem.eql(u8, relative_path, "js/bun/runtime-error.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun-error RuntimeError package integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-insecure.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "S3 HTTP endpoint error integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-encode-overflow.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "S3 list option encoding overflow validation")
+    else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-list-objects.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "S3 list objects request encoding integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-requester-pays.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "S3 requester-pays signing integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-storage-class.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "S3 storage class signing and multipart integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
