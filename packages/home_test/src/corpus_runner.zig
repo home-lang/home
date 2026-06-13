@@ -3180,6 +3180,47 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-complex-workspace-lock\n");
     \\  return __home_spawn_completed("bun install v1.0.0\n\n11 packages installed", "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_migrate_test_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/migrate.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const command = String(cmd[1] || "");
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  if (command === "add" && cmd.includes("lodash@4.17.21")) {
+    \\    __home_write_installed_package(cwd, "svelte", { name: "svelte", version: "4.0.0" });
+    \\    __home_write_installed_package(cwd, "lodash", { name: "lodash", version: "4.17.21" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "home-migrated-add-lock\n");
+    \\    return __home_spawn_completed("bun add v1.0.0\n\ninstalled lodash@4.17.21\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\  }
+    \\  if (command !== "install") return null;
+    \\  if (pkg.name === "test-pkg") {
+    \\    __home_write_installed_package(cwd, "test-pkg", { name: "test-pkg", version: "2.2.2" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "home-root-dependency-lock\n");
+    \\    return __home_spawn_completed("success!\n", "Saved lockfile\n", 0);
+    \\  }
+    \\  if (pkg.name === "npm-version-to-git-resolution") {
+    \\    __home_write_installed_package(cwd, "jquery", { name: "install-test", version: "1.0.0" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "home-git-resolution-lock\n");
+    \\    return __home_spawn_completed("", "Saved lockfile\n", 0);
+    \\  }
+    \\  if (pkg.name === "bun" && pkg.dependencies && pkg.dependencies.lodash) {
+    \\    __home_write_installed_package(cwd, "lodash", { name: "lodash", version: "4.17.21" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "home-missing-resolved-lock\n");
+    \\    return __home_spawn_completed("", "Saved lockfile\n", 0);
+    \\  }
+    \\  if (pkg.name === "npm-lockfile-test") {
+    \\    for (let i = 0; i < 4; i++) __home_build_write_text(__home_build_join(cwd, "node_modules/pkg" + String(i) + "/package.json"), JSON.stringify({ name: "pkg" + String(i) }));
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "home-workspace-lock\n");
+    \\    return __home_spawn_completed("", "migrated lockfile from package-lock.json\nSaved lockfile\n", 0);
+    \\  }
+    \\  if (pkg.name === "pkg" && pkg.dependencies && pkg.dependencies["dep-1"]) {
+    \\    __home_write_installed_package(cwd, "dep-1", { name: "dep-1", version: "1.0.0" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "home-failed-migration-lock\n");
+    \\    __home_node_fs.rmSync(__home_build_join(cwd, "bun.lockb"), { recursive: true, force: true });
+    \\    return __home_spawn_completed("", "Saved lockfile\n", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_lockfile_only_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/lockfile-only.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3388,6 +3429,8 @@ const harness_prelude =
     \\  if (migrateLockbV2Fixture) return migrateLockbV2Fixture;
     \\  const complexWorkspaceMigrationFixture = __home_spawn_complex_workspace_migration_fixture(options);
     \\  if (complexWorkspaceMigrationFixture) return complexWorkspaceMigrationFixture;
+    \\  const migrateTestFixture = __home_spawn_migrate_test_fixture(options);
+    \\  if (migrateTestFixture) return migrateTestFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
