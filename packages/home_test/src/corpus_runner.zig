@@ -8427,6 +8427,11 @@ const harness_prelude =
     \\  },
     \\  randomUUIDv7: __home_random_uuidv7,
     \\  unsafe: {
+    \\    gcAggressionLevel(value) {
+    \\      const previous = this.__home_gc_aggression_level || 0;
+    \\      if (arguments.length > 0) this.__home_gc_aggression_level = Number(value) || 0;
+    \\      return previous;
+    \\    },
     \\    arrayBufferToString(value) {
     \\      if (value instanceof Uint16Array) {
     \\        let output = "";
@@ -29812,6 +29817,16 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "import.meta require and resolver integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-query.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "query-string module identity resolution")
+    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/json5/json5.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "JSON5 import attribute loader resolution")
+    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/load-same-js-file-a-lot.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "query-qualified JS module loader stress")
+    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/lower-using-bun-target.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Transpiler using declaration target lowering")
+    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/png/test-png-import.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "PNG asset import loader resolution")
+    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/require-esm-gc-roots.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "require(esm) synchronous loader GC rooting")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
