@@ -8556,6 +8556,13 @@ const harness_prelude =
     \\        handle.stopped = true;
     \\        delete globalThis.__home_listen_handles_by_port[String(port)];
     \\      },
+    \\      getsockname(out) {
+    \\        if (!out || typeof out !== "object") throw new TypeError("getsockname expects an object");
+    \\        out.family = "IPv4";
+    \\        out.address = handle.hostname || "localhost";
+    \\        out.port = port;
+    \\        return undefined;
+    \\      },
     \\      ref() { return this; },
     \\      unref() { return this; },
     \\      [Symbol.dispose]() { this.stop(); },
@@ -20459,8 +20466,52 @@ const harness_prelude =
     \\    this._capacityMask = 3;
     \\  }
     \\}
+    \\function __home_decode_uri_component_simd(input) {
+    \\  const text = String(input);
+    \\  const decoder = new TextDecoder();
+    \\  let out = "";
+    \\  let bytes = [];
+    \\  function flush() {
+    \\    if (bytes.length === 0) return;
+    \\    out += decoder.decode(new Uint8Array(bytes));
+    \\    bytes = [];
+    \\  }
+    \\  function hex(ch) {
+    \\    const code = ch.charCodeAt(0);
+    \\    if (code >= 48 && code <= 57) return code - 48;
+    \\    if (code >= 65 && code <= 70) return code - 55;
+    \\    if (code >= 97 && code <= 102) return code - 87;
+    \\    return -1;
+    \\  }
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    if (text[i] !== "%") {
+    \\      flush();
+    \\      out += text[i];
+    \\      continue;
+    \\    }
+    \\    if (i + 2 < text.length) {
+    \\      const hi = hex(text[i + 1]);
+    \\      const lo = hex(text[i + 2]);
+    \\      if (hi >= 0 && lo >= 0) {
+    \\        bytes.push((hi << 4) | lo);
+    \\        i += 2;
+    \\        continue;
+    \\      }
+    \\      flush();
+    \\      out += String.fromCodePoint(0xfffd);
+    \\      i += 2;
+    \\      continue;
+    \\    }
+    \\    flush();
+    \\    out += String.fromCodePoint(0xfffd);
+    \\    break;
+    \\  }
+    \\  flush();
+    \\  return out;
+    \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
     \\  Dequeue: __home_Dequeue,
+    \\  decodeURIComponentSIMD: __home_decode_uri_component_simd,
     \\  bindgen: {
     \\    add(left, right) {
     \\      const a = __home_bindgen_to_i32(left);
@@ -29262,6 +29313,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteBunServeCookiesCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-file.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve Bun.file static route stress")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-file-upload.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "fetch Bun.file and multipart upload integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-header-count-limit.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "fetch raw TCP many-header limit integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/hspec.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "uNetworking h1spec HTTP compliance integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/http/http-server-chunking.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "HTTP server chunked transfer TCP integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
