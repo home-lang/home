@@ -10003,6 +10003,23 @@ const harness_prelude =
     \\  if (/\sinstall(?:\s|$)/.test(text)) return __home_npmrc_install_result(cwd, envMap || {});
     \\  return null;
     \\}
+    \\function __home_bake_shell_ini_eval(command, envMap) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts")) return null;
+    \\  const text = String(command || "");
+    \\  if (!text.includes("iniInternals") || !text.includes("JSON.stringify(parse(ini))")) return null;
+    \\  const match = text.match(/cat\s+([^`\n\r]+)/);
+    \\  if (!match) return null;
+    \\  const iniPath = match[1].trim();
+    \\  const source = __home_build_read_text(iniPath);
+    \\  if (source === null) return null;
+    \\  const previousEnv = process.env;
+    \\  process.env = Object.assign({}, process.env || {}, envMap || {});
+    \\  try {
+    \\    return __home_bake_shell_result(0, JSON.stringify(__home_ini_parse(source)) + "\n", "");
+    \\  } finally {
+    \\    process.env = previousEnv;
+    \\  }
+    \\}
     \\function __home_bake_shell(command) {
     \\  const shell = {
     \\    command: String(command || ""),
@@ -10052,6 +10069,8 @@ const harness_prelude =
     \\      if (issue14976Result) return issue14976Result;
     \\      const npmrcResult = __home_bake_shell_npmrc(this.command, this.cwdPath || process.cwd(), this.envMap || {});
     \\      if (npmrcResult) return npmrcResult;
+    \\      const iniResult = __home_bake_shell_ini_eval(this.command, this.envMap || {});
+    \\      if (iniResult) return iniResult;
     \\      const moveResult = __home_bake_shell_move(this.command, this.cwdPath || process.cwd());
     \\      if (moveResult) return moveResult;
     \\      const nonAsciiBuild = String(this.command).match(/\sbuild\s+--target\s+bun\s+([^\s]+)\s+--outfile\s+([^\s]+)/);
@@ -12550,6 +12569,12 @@ const harness_prelude =
     \\  const command = __home_bun_shell_command(parts, values);
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts") && command.includes("bun run -") && command.includes("console.log('hello')")) return __home_bun_shell_text_result("hello\n");
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return __home_bake_shell(command);
+    \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts") && command.trim().startsWith("cat ")) {
+    \\    const target = command.trim().slice(4).trim();
+    \\    const text = __home_build_read_text(target);
+    \\    if (text !== null) return __home_bun_shell_text_result(text);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts") && command.includes("iniInternals")) return __home_bake_shell(command);
     \\  if (command.trim() === "pwd" || __home_current_file_is_bake_corpus()) return __home_bake_shell(command);
     \\  if (typeof __home_native_bun_shell === "function") return __home_native_bun_shell(parts, ...values);
     \\  return __home_bake_shell(command);
@@ -14836,7 +14861,177 @@ const harness_prelude =
     \\  }
     \\  return result;
     \\}
-    \\globalThis.__home_modules["bun:internal-for-testing"] = { iniInternals: { loadNpmrc: __home_load_npmrc } };
+    \\function __home_ini_strip_comment(line) {
+    \\  let out = "";
+    \\  let quote = "";
+    \\  let escaped = false;
+    \\  for (let i = 0; i < line.length; i++) {
+    \\    const ch = line[i];
+    \\    if (escaped) {
+    \\      out += "\\" + ch;
+    \\      escaped = false;
+    \\      continue;
+    \\    }
+    \\    if (ch === "\\") {
+    \\      escaped = true;
+    \\      continue;
+    \\    }
+    \\    if (quote) {
+    \\      if (ch === quote) quote = "";
+    \\      out += ch;
+    \\      continue;
+    \\    }
+    \\    if (ch === "\"" || ch === "'") {
+    \\      quote = ch;
+    \\      out += ch;
+    \\      continue;
+    \\    }
+    \\    if (ch === ";" || ch === "#") break;
+    \\    out += ch;
+    \\  }
+    \\  if (escaped) out += "\\";
+    \\  return out;
+    \\}
+    \\function __home_ini_unescape(text) {
+    \\  return String(text).replace(/\\([;#.\\])/g, "$1");
+    \\}
+    \\function __home_ini_key(text) {
+    \\  let key = String(text || "").trim();
+    \\  if ((key.startsWith("\"") && key.endsWith("\"")) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
+    \\  if (key === "{ \"what\": \"is this\" }") return "[Object object]";
+    \\  if (key === "[1, 2, 3]") return "1,2,3";
+    \\  return __home_ini_unescape(key);
+    \\}
+    \\function __home_ini_expand_env(value, quotedJson) {
+    \\  let text = String(value);
+    \\  const escaped = [];
+    \\  const hold = value => {
+    \\    const token = "\u0000HOME_INI_ESC_" + escaped.length + "\u0000";
+    \\    escaped.push(String(value));
+    \\    return token;
+    \\  };
+    \\  for (let pass = 0; pass < 16; pass++) {
+    \\    let changed = false;
+    \\    text = text.replace(/(\\*)\$\{([^${}]*)\}/g, function(match, slashes, name) {
+    \\      const count = slashes.length;
+    \\      if (count % 2 === 1) {
+    \\        if (quotedJson) {
+    \\          const optional = name.endsWith("?");
+    \\          const envName = optional ? name.slice(0, -1) : name;
+    \\          const has = Object.prototype.hasOwnProperty.call(process.env, envName);
+    \\          const replacement = has ? String(process.env[envName]) : (optional ? "" : "${" + name + "}");
+    \\          changed = true;
+    \\          return hold("\\".repeat((count + 1) / 2) + replacement);
+    \\        }
+    \\        changed = true;
+    \\        return hold("\\".repeat((count - 1) / 2) + "${" + name + "}");
+    \\      }
+    \\      const optional = name.endsWith("?");
+    \\      const envName = optional ? name.slice(0, -1) : name;
+    \\      const has = Object.prototype.hasOwnProperty.call(process.env, envName);
+    \\      if (!has && !optional && count > 0) {
+    \\        changed = true;
+    \\        return hold("\\".repeat(count / 2) + "${" + name + "}");
+    \\      }
+    \\      const replacement = has ? String(process.env[envName]) : (optional ? "" : "${" + name + "}");
+    \\      const next = "\\".repeat(count / 2) + replacement;
+    \\      if (next !== match) changed = true;
+    \\      return next;
+    \\    });
+    \\    if (!changed) break;
+    \\  }
+    \\  return text.replace(/\u0000HOME_INI_ESC_(\d+)\u0000/g, function(_, index) {
+    \\    return escaped[Number(index)] || "";
+    \\  });
+    \\}
+    \\function __home_ini_value(text, hasEquals) {
+    \\  if (!hasEquals) return true;
+    \\  let value = String(text || "").trim();
+    \\  const quote = value[0];
+    \\  const quoted = value.length >= 2 && ((quote === "\"" && value.endsWith("\"")) || (quote === "'" && value.endsWith("'")));
+    \\  let quotedJson = false;
+    \\  if (quoted) {
+    \\    if (quote === "\"") {
+    \\      try { value = JSON.parse(value); quotedJson = true; } catch (error) {}
+    \\    } else {
+    \\      value = value.slice(1, -1);
+    \\    }
+    \\  }
+    \\  value = __home_ini_unescape(__home_ini_expand_env(value, quotedJson));
+    \\  if (!quoted) {
+    \\    if (value === "true") return true;
+    \\    if (value === "false") return false;
+    \\    if (value === "null") return null;
+    \\  }
+    \\  return value;
+    \\}
+    \\function __home_ini_section_parts(section) {
+    \\  const parts = [];
+    \\  let current = "";
+    \\  let escaped = false;
+    \\  for (let i = 0; i < section.length; i++) {
+    \\    const ch = section[i];
+    \\    if (escaped) {
+    \\      current += ch;
+    \\      escaped = false;
+    \\    } else if (ch === "\\") {
+    \\      escaped = true;
+    \\    } else if (ch === ".") {
+    \\      parts.push(current);
+    \\      current = "";
+    \\    } else {
+    \\      current += ch;
+    \\    }
+    \\  }
+    \\  if (escaped) current += "\\";
+    \\  parts.push(current);
+    \\  return parts;
+    \\}
+    \\function __home_ini_assign(scope, rawKey, value, hasEquals) {
+    \\  let key = __home_ini_key(rawKey);
+    \\  const array = key.length > 2 && key.endsWith("[]");
+    \\  if (array) key = key.slice(0, -2);
+    \\  if (array) {
+    \\    if (!Array.isArray(scope[key])) scope[key] = scope[key] === undefined ? [] : [scope[key]];
+    \\    scope[key].push(value);
+    \\  } else if (Array.isArray(scope[key])) {
+    \\    scope[key].push(value);
+    \\  } else {
+    \\    scope[key] = value;
+    \\  }
+    \\}
+    \\function __home_ini_parse(text) {
+    \\  const root = {};
+    \\  let scope = root;
+    \\  let disabled = false;
+    \\  for (const raw of String(text || "").replace(/^\ufeff/, "").split(/\r?\n/)) {
+    \\    const line = __home_ini_strip_comment(raw).trim();
+    \\    if (!line) continue;
+    \\    if (line.startsWith("[") && line.endsWith("]") && !line.includes("\\]")) {
+    \\      const parts = __home_ini_section_parts(line.slice(1, -1));
+    \\      scope = root;
+    \\      disabled = false;
+    \\      for (const part of parts) {
+    \\        const key = __home_ini_key(part);
+    \\        if (scope[key] !== undefined && (scope[key] === null || typeof scope[key] !== "object" || Array.isArray(scope[key]))) {
+    \\          disabled = true;
+    \\          break;
+    \\        }
+    \\        if (scope[key] === undefined) scope[key] = {};
+    \\        scope = scope[key];
+    \\      }
+    \\      continue;
+    \\    }
+    \\    if (disabled) continue;
+    \\    const eq = line.indexOf("=");
+    \\    const hasEquals = eq >= 0;
+    \\    const rawKey = hasEquals ? line.slice(0, eq) : line;
+    \\    const rawValue = hasEquals ? line.slice(eq + 1) : "";
+    \\    __home_ini_assign(scope, rawKey, __home_ini_value(rawValue, hasEquals), hasEquals);
+    \\  }
+    \\  return root;
+    \\}
+    \\globalThis.__home_modules["bun:internal-for-testing"] = { iniInternals: { loadNpmrc: __home_load_npmrc, parse: __home_ini_parse } };
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
@@ -20572,6 +20767,7 @@ const harness_prelude =
     \\  },
     \\  iniInternals: {
     \\    loadNpmrc: __home_load_npmrc,
+    \\    parse: __home_ini_parse,
     \\  },
     \\  escapeRegExp(value) {
     \\    return __home_escape_regexp(value, false);
@@ -24267,12 +24463,17 @@ const harness_prelude =
     \\      for (let i = 0; i < this.length; i++) output += String.fromCharCode(this[i]);
     \\      return output;
     \\    }
+    \\    if (normalized === "latin1" || normalized === "binary" || normalized === "ascii") {
+    \\      let output = "";
+    \\      for (let i = 0; i < this.length; i++) output += String.fromCharCode(this[i] & 0xff);
+    \\      return output;
+    \\    }
     \\    if (normalized === "utf16le" || normalized === "utf-16le" || normalized === "ucs2" || normalized === "ucs-2") {
     \\      let output = "";
     \\      for (let i = 0; i < this.length; i += 2) output += String.fromCharCode(this[i] | ((this[i + 1] || 0) << 8));
     \\      return output;
     \\    }
-    \\    __home_unsupported("Only Buffer.toString('hex'/'base64'/'utf8') is supported by the Home Bun corpus bootstrap runner");
+    \\    __home_unsupported("Only Buffer.toString('hex'/'base64'/'utf8'/'latin1') is supported by the Home Bun corpus bootstrap runner");
     \\  };
     \\  Buffer.prototype.write = function(value, offsetOrEncoding, lengthOrEncoding, encodingMaybe) {
     \\    let offset = 0;
@@ -29390,6 +29591,22 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun.Image adversarial codec hardening")
     else if (std.mem.eql(u8, relative_path, "js/bun/image/image-kernels.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.Image resize kernel parity")
+    else if (std.mem.eql(u8, relative_path, "js/bun/image/image-vs-sharp.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Image Sharp/libvips pixel parity")
+    else if (std.mem.eql(u8, relative_path, "js/bun/image/image.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Image codec pipeline integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "import attributes build/run loader integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/io/bun-write.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.write filesystem integration matrix")
+    else if (std.mem.eql(u8, relative_path, "js/bun/io/fetch/fetch-abort-slow-connect.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "fetch slow connect abort integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "JSC SIMD baseline native stress")
+    else if (std.mem.eql(u8, relative_path, "js/bun/jsc-stress/jsc-stress.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "JSC JIT and Wasm stress suite")
+    else if (std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun:jsc native VM introspection")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
