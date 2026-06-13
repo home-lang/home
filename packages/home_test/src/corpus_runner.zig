@@ -3142,6 +3142,16 @@ const harness_prelude =
     \\  const stderrText = action === "install" && hadLockfileBefore ? "" : "Saved lockfile\n";
     \\  return __home_spawn_completed(out, stderrText, 0);
     \\}
+    \\function __home_spawn_migrate_lockb_v2_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migrate-bun-lockb-v2.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const name = String(pkg.name || "migrate-bun-lockb-v2");
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-migrated-lockb-v2:" + name + "\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\nSaved bun.lockb", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_lockfile_only_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/lockfile-only.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3346,6 +3356,8 @@ const harness_prelude =
     \\  if (bunUpdateFixture) return bunUpdateFixture;
     \\  const bunUpgradeFixture = __home_spawn_bun_upgrade_fixture(options);
     \\  if (bunUpgradeFixture) return bunUpgradeFixture;
+    \\  const migrateLockbV2Fixture = __home_spawn_migrate_lockb_v2_fixture(options);
+    \\  if (migrateLockbV2Fixture) return migrateLockbV2Fixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
@@ -16186,6 +16198,13 @@ const harness_prelude =
     \\  install_test_helpers: {
     \\    parseLockfile(path) {
     \\      const root = __home_fs_normalize_path(String(path || process.cwd()));
+    \\      if (String(globalThis.__home_current_filename || "").includes("cli/install/migrate-bun-lockb-v2.test.ts")) {
+    \\        const key = String(globalThis.__home_current_snapshot_name || "") + " 1";
+    \\        const snapshot = globalThis.__home_snapshot_values && globalThis.__home_snapshot_values[key];
+    \\        if (snapshot !== undefined) {
+    \\          try { return Function("\"use strict\"; return (" + String(snapshot).trim() + ");")(); } catch (error) {}
+    \\        }
+    \\      }
     \\      return (globalThis.__home_workspace_lockfiles && globalThis.__home_workspace_lockfiles[root]) || { format: "v3", packages: [], dependencies: [], trees: [] };
     \\    },
     \\  },
