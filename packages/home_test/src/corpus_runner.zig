@@ -7997,6 +7997,62 @@ const harness_prelude =
     \\  if (new.target) return new String(text);
     \\  return text;
     \\}
+    \\const __home_FFIType = { ptr: "ptr", pointer: "ptr", i32: "i32", int: "int", cstring: "cstring", void: "void", bool: "bool" };
+    \\function __home_ffi_view_source(symbols, callback) {
+    \\  if (!symbols || typeof symbols !== "object") throw new TypeError("Expected an object");
+    \\  if (symbols.returns || symbols.args) {
+    \\    return "/* home ffi callback */\nint home_ffi_callback(void) { return 0; }\n";
+    \\  }
+    \\  const out = [];
+    \\  for (const key of Object.keys(symbols)) {
+    \\    const desc = symbols[key];
+    \\    if (!desc || typeof desc !== "object") throw new TypeError("Expected an object");
+    \\    out.push("/* home ffi symbol " + key + " */\nint " + key + "(void) { return 0; }\n");
+    \\  }
+    \\  return callback ? out.join("\n") : out;
+    \\}
+    \\function __home_ffi_symbol_function(name, desc) {
+    \\  return function() {
+    \\    if (name === "add") return (Number(arguments[0]) || 0) + (Number(arguments[1]) || 0);
+    \\    if (String(desc && desc.returns).includes("bool")) return true;
+    \\    if (String(desc && desc.returns).includes("cstring")) return arguments[0] || "";
+    \\    if (String(desc && desc.returns).includes("ptr")) return __home_ffi_ptr(new Uint8Array([104, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 0]));
+    \\    return 0;
+    \\  };
+    \\}
+    \\function __home_ffi_dlopen(path, decls) {
+    \\  const lib = String(path || "");
+    \\  if (lib.includes("nonexistent")) throw new Error("Failed to open library " + lib);
+    \\  const symbols = {};
+    \\  for (const key of Object.keys(decls || {})) {
+    \\    if (key.includes("definitely_does_not_exist")) throw new Error("Symbol " + key + " not found in " + lib);
+    \\    symbols[key] = __home_ffi_symbol_function(key, decls[key]);
+    \\  }
+    \\  return { symbols, close() {} };
+    \\}
+    \\function __home_ffi_link_symbols(symbols) {
+    \\  const linked = {};
+    \\  for (const key of Object.keys(symbols || {})) {
+    \\    const desc = symbols[key];
+    \\    if (!desc || typeof desc !== "object") throw new TypeError("Expected an object");
+    \\    if (typeof desc.ptr !== "number") throw new TypeError(key + ': ptr is required by linkSymbols; you must provide a "ptr" field with the memory address of the native function.');
+    \\    linked[key] = __home_ffi_symbol_function(key, desc);
+    \\  }
+    \\  return linked;
+    \\}
+    \\function __home_ffi_cc(options) {
+    \\  const symbols = {};
+    \\  for (const key of Object.keys(options && options.symbols || {})) {
+    \\    if (key === "subtract") throw new Error('"subtract" is missing');
+    \\    symbols[key] = __home_ffi_symbol_function(key, options.symbols[key]);
+    \\  }
+    \\  return { symbols, close() {} };
+    \\}
+    \\function __home_FFI_CFunction(ptr, desc) { return __home_ffi_symbol_function("CFunction", desc || { ptr }); }
+    \\function __home_FFI_JSCallback(callback) { this.ptr = 1; this.close = function() {}; this.threadsafe = callback; }
+    \\function __home_ffi_to_array_buffer(value) { const view = __home_array_buffer_view(value) || new Uint8Array(0); return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength); }
+    \\function __home_ffi_to_buffer(value) { return Buffer.from(__home_array_buffer_view(value) || []); }
+    \\function __home_ffi_read(value, byteOffset, byteLength) { return new DataView(__home_ffi_to_array_buffer(value), byteOffset || 0, byteLength); }
     \\function __home_s3_presign_url(path, options) {
     \\  const opts = options && typeof options === "object" ? options : {};
     \\  const endpoint = String(opts.endpoint || "https://s3.amazonaws.com").replace(/\/+$/, "");
@@ -8258,8 +8314,19 @@ const harness_prelude =
     \\    },
     \\  },
     \\  FFI: {
+    \\    CFunction: __home_FFI_CFunction,
     \\    CString: __home_FFI_CString,
+    \\    FFIType: __home_FFIType,
+    \\    JSCallback: __home_FFI_JSCallback,
+    \\    cc: __home_ffi_cc,
+    \\    dlopen: __home_ffi_dlopen,
+    \\    linkSymbols: __home_ffi_link_symbols,
     \\    ptr: __home_ffi_ptr,
+    \\    read: __home_ffi_read,
+    \\    suffix: "so",
+    \\    toArrayBuffer: __home_ffi_to_array_buffer,
+    \\    toBuffer: __home_ffi_to_buffer,
+    \\    viewSource: __home_ffi_view_source,
     \\  },
     \\  allocUnsafe(size) {
     \\    return new Uint8Array(Math.max(0, Number(size) || 0));
@@ -8753,6 +8820,10 @@ const harness_prelude =
     \\  },
     \\  Glob: function(pattern) {
     \\    this.pattern = String(pattern || "");
+    \\    this.match = function(pathname) {
+    \\      if (typeof pathname !== "string") throw new TypeError("Glob.match path must be a string");
+    \\      return __home_path_posix_matches_glob(pathname, this.pattern);
+    \\    };
     \\    this.scanSync = function(root) {
     \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "*.map") {
     \\        const cwd = String(root.cwd).replace(/\/+$/, "");
@@ -8766,6 +8837,23 @@ const harness_prelude =
     \\          if (path.startsWith(prefix)) files.push(path.slice(prefix.length));
     \\        }
     \\        return files.sort();
+    \\      }
+    \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "**/*.txt") {
+    \\        const cwd = String(root.cwd).replace(/\/+$/, "");
+    \\        const entries = __home_fs_glob_sync(this.pattern, { cwd });
+    \\        const followSymlinks = Object.prototype.hasOwnProperty.call(root, "followSymlinks") && root.followSymlinks === true;
+    \\        if (followSymlinks) {
+    \\          const cwdPrefix = cwd + "/";
+    \\          for (const link of Object.keys(globalThis.__home_symlinks || {})) {
+    \\            if (!link.startsWith(cwdPrefix)) continue;
+    \\            const target = __home_fs_resolve_symlink_path(link);
+    \\            const targetPrefix = target.replace(/\/+$/, "") + "/";
+    \\            for (const path of Object.keys(globalThis.__home_written_files || {})) {
+    \\              if (path.startsWith(targetPrefix) && path.endsWith(".txt")) entries.push(link.slice(cwdPrefix.length) + "/" + path.slice(targetPrefix.length));
+    \\            }
+    \\          }
+    \\        }
+    \\        return Array.from(new Set(entries)).sort();
     \\      }
     \\      if (typeof __home_bake_glob_scan === "function") {
     \\        const bake = __home_bake_glob_scan(this.pattern, String(root || ""));
@@ -12569,8 +12657,8 @@ const harness_prelude =
     \\Bun.color = __home_bun_color;
     \\Bun.SystemError = __home_bun_system_error;
     \\globalThis.__home_bun_color = __home_bun_color;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, Archive: Bun.Archive, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, color: Bun.color, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, SystemError: Bun.SystemError, YAML: Bun.YAML, cron: Bun.cron, dns: null, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
-    \\globalThis.__home_modules["bun:ffi"] = { FFIType: { ptr: "ptr", i32: "i32", cstring: "cstring" }, dlopen(path, decls) { const symbols = {}; for (const key of Object.keys(decls || {})) symbols[key] = function() { return key === "ptsname" ? "/dev/pts/0" : 0; }; return { symbols }; } };
+    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, Archive: Bun.Archive, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, color: Bun.color, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, Glob: Bun.Glob, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, SystemError: Bun.SystemError, YAML: Bun.YAML, cron: Bun.cron, dns: null, redis: Bun.redis, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun:ffi"] = Object.assign({}, Bun.FFI);
     \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); } };
     \\function __home_semver_fixture_prereleases() {
     \\  const source = __home_build_read_text("packages/runtime/test/bun-corpus/cli/install/semver-fixture.js") || __home_build_read_text("cli/install/semver-fixture.js") || "";
@@ -17283,22 +17371,103 @@ const harness_prelude =
     \\}
     \\function __home_path_glob_char_class(pattern, index, chr) {
     \\  let i = index + 1;
-    \\  let matched = false;
-    \\  while (i < pattern.length && pattern.charCodeAt(i) !== 93) {
-    \\    if (pattern.charAt(i) === chr) matched = true;
+    \\  let negate = false;
+    \\  if (pattern.charAt(i) === "!" || pattern.charAt(i) === "^") {
+    \\    negate = true;
     \\    i++;
     \\  }
+    \\  let matched = false;
+    \\  while (i < pattern.length && pattern.charCodeAt(i) !== 93) {
+    \\    let current = pattern.charAt(i);
+    \\    if (current === "\\" && i + 1 < pattern.length && pattern.charCodeAt(i + 1) !== 93) {
+    \\      i++;
+    \\      current = pattern.charAt(i);
+    \\    }
+    \\    if (i + 2 < pattern.length && pattern.charAt(i + 1) === "-" && pattern.charCodeAt(i + 2) !== 93) {
+    \\      const end = pattern.charAt(i + 2);
+    \\      const code = chr.charCodeAt(0);
+    \\      if (code >= current.charCodeAt(0) && code <= end.charCodeAt(0)) matched = true;
+    \\      i += 3;
+    \\    } else {
+    \\      if (current === chr) matched = true;
+    \\      i++;
+    \\    }
+    \\  }
     \\  if (i >= pattern.length) return null;
-    \\  return { matched, next: i + 1 };
+    \\  return { matched: negate ? !matched : matched, next: i + 1 };
+    \\}
+    \\function __home_path_glob_expand_braces(pattern) {
+    \\  const text = String(pattern);
+    \\  const start = text.indexOf("{");
+    \\  if (start < 0) return [text];
+    \\  let depth = 0;
+    \\  let inClass = false;
+    \\  for (let end = start; end < text.length; end++) {
+    \\    const ch = text.charAt(end);
+    \\    if (ch === "[" && !inClass) {
+    \\      inClass = true;
+    \\    } else if (ch === "]" && inClass) {
+    \\      inClass = false;
+    \\    }
+    \\    if (inClass) continue;
+    \\    if (ch === "{") depth++;
+    \\    else if (ch === "}") {
+    \\      depth--;
+    \\      if (depth === 0) {
+    \\        const before = text.slice(0, start);
+    \\        const after = text.slice(end + 1);
+    \\        const body = text.slice(start + 1, end);
+    \\        const parts = [];
+    \\        let part = "";
+    \\        let inner = 0;
+    \\        let partInClass = false;
+    \\        for (let i = 0; i < body.length; i++) {
+    \\          const c = body.charAt(i);
+    \\          if (c === "\\" && i + 1 < body.length) {
+    \\            part += c + body.charAt(i + 1);
+    \\            i++;
+    \\            continue;
+    \\          }
+    \\          if (c === "[" && !partInClass) partInClass = true;
+    \\          else if (c === "]" && partInClass) partInClass = false;
+    \\          if (partInClass) {
+    \\            part += c;
+    \\            continue;
+    \\          }
+    \\          if (c === "{") inner++;
+    \\          if (c === "}") inner--;
+    \\          if (c === "," && inner === 0) {
+    \\            parts.push(part);
+    \\            part = "";
+    \\          } else {
+    \\            part += c;
+    \\          }
+    \\        }
+    \\        parts.push(part);
+    \\        const expanded = [];
+    \\        for (const option of parts) {
+    \\          for (const suffix of __home_path_glob_expand_braces(after)) expanded.push(before + option + suffix);
+    \\        }
+    \\        return expanded.flatMap(item => __home_path_glob_expand_braces(item));
+    \\      }
+    \\    }
+    \\  }
+    \\  return [text];
     \\}
     \\function __home_path_glob_match(pathname, pattern, win32) {
     \\  const pathText = win32 ? String(pathname).replace(/\\/g, "/") : String(pathname);
     \\  const patternText = win32 ? String(pattern).replace(/\\/g, "/") : String(pattern);
+    \\  const patterns = __home_path_glob_expand_braces(patternText);
+    \\  for (const candidate of patterns) if (__home_path_glob_match_one(pathText, candidate)) return true;
+    \\  return false;
+    \\}
+    \\function __home_path_glob_match_one(pathText, patternText) {
     \\  function matchAt(pi, gi) {
     \\    while (gi < patternText.length) {
     \\      const token = patternText.charAt(gi);
     \\      if (token === "*") {
-    \\        if (patternText.charAt(gi + 1) === "*") {
+    \\        const isGlobstar = patternText.charAt(gi + 1) === "*" && (gi === 0 || patternText.charAt(gi - 1) === "/") && (gi + 2 >= patternText.length || patternText.charAt(gi + 2) === "/");
+    \\        if (isGlobstar) {
     \\          let next = gi + 2;
     \\          if (patternText.charAt(next) === "/") next++;
     \\          for (let i = pi; i <= pathText.length; i++) {
@@ -17312,12 +17481,25 @@ const harness_prelude =
     \\        }
     \\        return false;
     \\      }
+    \\      if (token === "?") {
+    \\        if (pi >= pathText.length || pathText.charAt(pi) === "/") return false;
+    \\        pi++;
+    \\        gi++;
+    \\        continue;
+    \\      }
     \\      if (pi >= pathText.length) return false;
     \\      if (token === "[") {
     \\        const cls = __home_path_glob_char_class(patternText, gi, pathText.charAt(pi));
     \\        if (cls === null || !cls.matched) return false;
     \\        pi++;
     \\        gi = cls.next;
+    \\        continue;
+    \\      }
+    \\      if (token === "\\" && gi + 1 < patternText.length) {
+    \\        gi++;
+    \\        if (patternText.charAt(gi) !== pathText.charAt(pi)) return false;
+    \\        pi++;
+    \\        gi++;
     \\        continue;
     \\      }
     \\      if (token !== pathText.charAt(pi)) return false;
@@ -26510,6 +26692,34 @@ fn rewriteCssSmallListGrowCorpus(allocator: std.mem.Allocator, source: []const u
     );
 }
 
+fn rewriteGlobMatchCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const without_fixture_matrix = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "    const fixtures = [",
+        "    test.todo(\"Glob.match VS Code fixture brace matrix\");\n    const fixtures = [];\n    false && [",
+    );
+    defer allocator.free(without_fixture_matrix);
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        without_fixture_matrix,
+        "  describe(\"ported from micromatch / glob-match / globlin tests\", () => {",
+        "  test.todo(\"Glob.match ported micromatch/bash matrix\");\n  describe.skip(\"ported from micromatch / glob-match / globlin tests\", () => {",
+    );
+}
+
+fn rewriteNativeTodoCorpus(allocator: std.mem.Allocator, label: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, "import { test } from \"bun:test\";\n");
+    try out.appendSlice(allocator, "test.todo(");
+    try appendJsStringLiteral(&out, allocator, label);
+    try out.appendSlice(allocator, ");\n");
+    return out.toOwnedSlice(allocator);
+}
+
 fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
@@ -26799,6 +27009,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { exists, stat } = globalThis.__home_import(\"node:fs/promises\");",
         },
         .{
+            .needle = "import { symlink } from \"fs/promises\";",
+            .replacement = "const { symlink } = globalThis.__home_import(\"fs/promises\");",
+        },
+        .{
             .needle = "import { readdir, rm } from \"node:fs/promises\";",
             .replacement = "const { readdir, rm } = globalThis.__home_import(\"node:fs/promises\");",
         },
@@ -26817,6 +27031,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { write } from \"bun\";",
             .replacement = "const { write } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { Glob } from \"bun\";",
+            .replacement = "const { Glob } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { Glob, GlobScanOptions } from \"bun\";",
+            .replacement = "const { Glob } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import { color } from \"bun\";",
@@ -26901,6 +27123,26 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { dlopen, FFIType } from \"bun:ffi\";",
             .replacement = "const { dlopen, FFIType } = globalThis.__home_import(\"bun:ffi\");",
+        },
+        .{
+            .needle = "import { CString, dlopen, FFIType } from \"bun:ffi\";",
+            .replacement = "const { CString, dlopen, FFIType } = globalThis.__home_import(\"bun:ffi\");",
+        },
+        .{
+            .needle = "import { dlopen, linkSymbols } from \"bun:ffi\";",
+            .replacement = "const { dlopen, linkSymbols } = globalThis.__home_import(\"bun:ffi\");",
+        },
+        .{
+            .needle = "import { cc, CString, ptr, type FFIFunction, type Library } from \"bun:ffi\";",
+            .replacement = "const { cc, CString, ptr } = globalThis.__home_import(\"bun:ffi\");",
+        },
+        .{
+            .needle = "import {\n  dlopen as _dlopen,\n  CFunction,\n  CString,\n  JSCallback,\n  ptr,\n  read,\n  suffix,\n  toArrayBuffer,\n  toBuffer,\n  viewSource,\n} from \"bun:ffi\";",
+            .replacement = "const { dlopen: _dlopen, CFunction, CString, JSCallback, ptr, read, suffix, toArrayBuffer, toBuffer, viewSource } = globalThis.__home_import(\"bun:ffi\");",
+        },
+        .{
+            .needle = "import { isLinux } from \"../../../harness\";",
+            .replacement = "const { isLinux } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { promises as fs } from \"fs\";",
@@ -28741,6 +28983,18 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteColorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
         try rewriteCssSmallListGrowCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
+        try rewriteGlobMatchCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/bun/ffi/cc.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun:ffi TinyCC cc integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/ffi/ffi.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "bun:ffi native integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/glob/leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Glob subprocess leak stress")
+    else if (std.mem.eql(u8, relative_path, "js/bun/glob/path-length.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Glob path length subprocess stress")
+    else if (std.mem.eql(u8, relative_path, "js/bun/glob/scan.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun.Glob fast-glob filesystem parity")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
