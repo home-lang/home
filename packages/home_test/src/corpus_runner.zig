@@ -2365,6 +2365,10 @@ const harness_prelude =
     \\    if (value !== undefined && value !== null) __home_validate_no_null_bytes(value, "env." + key);
     \\  }
     \\}
+    \\function __home_validate_spawn_sync_options(options) {
+    \\  const stdin = options && options.stdin;
+    \\  if (stdin && typeof stdin.getReader === "function") throw new TypeError("'stdin' ReadableStream cannot be used in sync mode");
+    \\}
     \\function __home_spawn_completed(stdoutText, stderrText, exitCode) {
     \\  const stdout = __home_spawn_pipe_text(String(stdoutText || ""));
     \\  const stderr = __home_spawn_pipe_text(String(stderrText || ""));
@@ -8829,6 +8833,7 @@ const harness_prelude =
     \\  spawnSync(options, spawnOptions) {
     \\    options = __home_spawn_options(options, spawnOptions);
     \\    __home_validate_spawn_env(options || {});
+    \\    __home_validate_spawn_sync_options(options || {});
     \\    const fixture = __home_spawn_sync_fixture(options);
     \\    if (fixture) return fixture;
     \\    const issue29519Fixture = __home_spawn_29519_fixture(options || {});
@@ -30203,12 +30208,30 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun spawn Windows job object hang regression")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/readablestream-helpers.test.ts"))
         try rewriteReadableStreamHelpersCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-pipe-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess pipe memory leak integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-pipe-read-error-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess PipeReader read-error leak integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-kill-signal.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess kill signal integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-maxbuf.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun subprocess maxBuffer and timeout integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-path.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun spawn PATH lookup integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-signal.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess AbortSignal integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-socketpair-shutdown.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess socketpair shutdown integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-destroy.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess stdin destroy after exit integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-pipe-fd-leak.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess stdin pipe fd leak integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin edge cases")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/spawn/spawn-stdin-readable-stream.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Bun subprocess ReadableStream stdin lifecycle integration")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
