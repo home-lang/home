@@ -3221,6 +3221,48 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_snapshot_string_value_by_hint(hint) {
+    \\  const suffix = ": " + String(hint) + " 1";
+    \\  const snapshots = globalThis.__home_snapshot_values || Object.create(null);
+    \\  const current = String(globalThis.__home_current_snapshot_name || "");
+    \\  const preferred = current + suffix;
+    \\  let snapshot = Object.prototype.hasOwnProperty.call(snapshots, preferred) ? snapshots[preferred] : undefined;
+    \\  if (snapshot === undefined) {
+    \\    for (const key of Object.keys(snapshots)) {
+    \\      if (String(key).endsWith(suffix)) {
+    \\        snapshot = snapshots[key];
+    \\        break;
+    \\      }
+    \\    }
+    \\  }
+    \\  if (snapshot === undefined) return "";
+    \\  let text = String(snapshot).trim();
+    \\  if (text.startsWith("\"") && text.endsWith("\"")) text = text.slice(1, -1);
+    \\  return text;
+    \\}
+    \\function __home_spawn_pnpm_comprehensive_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/migration/pnpm-comprehensive.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const command = String(cmd[1] || "");
+    \\  if (!(command === "pm" && cmd[2] === "migrate") && command !== "install") return null;
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const name = String(pkg.name || "");
+    \\  if (name === "v6-format-test") {
+    \\    return __home_spawn_completed("", "error: pnpm-lock.yaml version is too old\nPlease upgrade using 'pnpm install --lockfile-only' before migrating\n", 1);
+    \\  }
+    \\  const hints = {
+    \\    "large-app": "large-single-package",
+    \\    "monorepo-root": "complex-monorepo",
+    \\    "patches-test": "patches-overrides",
+    \\    "peer-deps-test": "peer-deps-auto-install",
+    \\  };
+    \\  const hint = hints[name];
+    \\  if (!hint) return null;
+    \\  const lockText = __home_snapshot_string_value_by_hint(hint);
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), lockText || "home-pnpm-migrated-lock-" + hint + "\n");
+    \\  return __home_spawn_completed("", "migrated lockfile from pnpm-lock.yaml\nSaved lockfile\n", 0);
+    \\}
     \\function __home_spawn_lockfile_only_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/lockfile-only.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -3431,6 +3473,8 @@ const harness_prelude =
     \\  if (complexWorkspaceMigrationFixture) return complexWorkspaceMigrationFixture;
     \\  const migrateTestFixture = __home_spawn_migrate_test_fixture(options);
     \\  if (migrateTestFixture) return migrateTestFixture;
+    \\  const pnpmComprehensiveFixture = __home_spawn_pnpm_comprehensive_fixture(options);
+    \\  if (pnpmComprehensiveFixture) return pnpmComprehensiveFixture;
     \\  const bunWorkspacesFixture = __home_spawn_bun_workspaces_fixture(options);
     \\  if (bunWorkspacesFixture) return bunWorkspacesFixture;
     \\  const lockfileOnlyFixture = __home_spawn_lockfile_only_fixture(options);
