@@ -10836,6 +10836,18 @@ const harness_prelude =
     \\function __home_fail(message) {
     \\  throw new Error(message);
     \\}
+    \\function __home_expect_label_message(label, message) {
+    \\  let text = String(message);
+    \\  text = text.replace(/\s+to be\s+/g, "\n").replace(/\s+to equal\s+/g, "\n");
+    \\  return String(label) + "\n\n" + text;
+    \\}
+    \\function __home_rethrow_with_expect_label(label, error) {
+    \\  if (typeof label !== "string") throw error;
+    \\  try {
+    \\    error.message = __home_expect_label_message(label, error && error.message !== undefined ? error.message : error);
+    \\  } catch (ignored) {}
+    \\  throw error;
+    \\}
     \\function __home_unsupported(message) {
     \\  const error = new Error("__home_unsupported__:" + message);
     \\  error.name = "HomeUnsupportedError";
@@ -12021,29 +12033,48 @@ const harness_prelude =
     \\  if (__home_is_thenable(finishResult)) __home_track_sequence_thenable(finishResult);
     \\};
     \\const __home_expect_matchers = Object.create(null);
-    \\function __home_make_resolves_expectation(value, isNot) {
+    \\function __home_make_resolves_expectation(value, isNot, label) {
     \\  return {
     \\    get not() {
-    \\      return __home_make_resolves_expectation(value, !isNot);
+    \\      return __home_make_resolves_expectation(value, !isNot, label);
     \\    },
     \\    toBe(expected) {
-    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBe(expected));
+    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot, label).toBe(expected));
     \\    },
     \\    toBeDefined() {
-    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBeDefined());
+    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot, label).toBeDefined());
     \\    },
     \\    toBeUndefined() {
-    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBeUndefined());
+    \\      return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot, label).toBeUndefined());
     \\    },
     \\  };
     \\}
-    \\function __home_make_expectation(value, isNot) {
+    \\function __home_expect_matcher_context(isNot) {
+    \\  return {
+    \\    isNot,
+    \\    promise: "",
+    \\    equals: __home_deep_equal,
+    \\    utils: {
+    \\      printReceived(value) { return __home_format(value); },
+    \\      printExpected(value) { return __home_format(value); },
+    \\    },
+    \\  };
+    \\}
+    \\function __home_expect_validate_matcher_result(name, result) {
+    \\  if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "pass")) return result;
+    \\  let formatted = String(result);
+    \\  if (result && typeof result === "object") {
+    \\    try { formatted = JSON.stringify(result); } catch (error) {}
+    \\  }
+    \\  throw new Error("Unexpected return from matcher function `" + name + "`.\nMatcher functions should return an object in the following format:\n  {message?: string | function, pass: boolean}\n'" + formatted + "' was returned");
+    \\}
+    \\function __home_make_expectation(value, isNot, label) {
     \\  const expectation = {
     \\    get resolves() {
-    \\      return __home_make_resolves_expectation(value, isNot);
+    \\      return __home_make_resolves_expectation(value, isNot, label);
     \\    },
     \\    get not() {
-    \\      return __home_make_expectation(value, !isNot);
+    \\      return __home_make_expectation(value, !isNot, label);
     \\    },
     \\    toBe(expected) {
     \\      __home_assert(Object.is(value, expected), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be " + __home_format(expected));
@@ -12603,17 +12634,37 @@ const harness_prelude =
     \\    expectation[name] = function() {
     \\      const matcher = __home_expect_matchers[name];
     \\      const args = Array.prototype.slice.call(arguments);
-    \\      const result = matcher.apply({ isNot, promise: "", equals: __home_deep_equal }, [value].concat(args));
-    \\      const pass = result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "pass") ? !!result.pass : !!result;
-    \\      let message = "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match " + name;
-    \\      if (result && typeof result === "object" && typeof result.message === "function") message = result.message();
-    \\      __home_assert(pass, isNot, message);
+    \\      const assertResult = result => {
+    \\        result = __home_expect_validate_matcher_result(name, result);
+    \\        const pass = !!result.pass;
+    \\        let message = "No message was specified for this matcher.";
+    \\        if (typeof result.message === "function") message = result.message();
+    \\        else if (typeof result.message === "string") message = result.message;
+    \\        __home_assert(pass, isNot, message);
+    \\      };
+    \\      const raw = matcher.apply(__home_expect_matcher_context(isNot), [value].concat(args));
+    \\      if (__home_is_thenable(raw)) return Promise.resolve(raw).then(assertResult);
+    \\      return assertResult(raw);
     \\    };
+    \\  }
+    \\  if (typeof label === "string") {
+    \\    for (const name of Object.keys(expectation)) {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(expectation, name);
+    \\      if (!descriptor || typeof descriptor.value !== "function") continue;
+    \\      const original = descriptor.value;
+    \\      expectation[name] = function() {
+    \\        try {
+    \\          return original.apply(this, arguments);
+    \\        } catch (error) {
+    \\          __home_rethrow_with_expect_label(label, error);
+    \\        }
+    \\      };
+    \\    }
     \\  }
     \\  return expectation;
     \\}
-    \\function expect(value) {
-    \\  return __home_make_expectation(value, false);
+    \\function expect(value, label) {
+    \\  return __home_make_expectation(value, false, label);
     \\}
     \\function expectTypeOf(value) {
     \\  const chain = {
@@ -12641,17 +12692,36 @@ const harness_prelude =
     \\  if (matchers === null || typeof matchers !== "object" || matchers.__home_is_jest_object === true) throw new TypeError("expect.extend() expected an object containing matchers");
     \\  for (const name of Object.keys(matchers)) {
     \\    const matcher = matchers[name];
-    \\    if (typeof matcher !== "function") throw new TypeError("expect.extend: `" + name + "` is not a valid matcher");
+    \\    if (typeof matcher !== "function") {
+    \\      const type = matcher === null ? "null" : typeof matcher;
+    \\      throw new TypeError("expect.extend: `" + name + "` is not a valid matcher. Must be a function, is \"" + type + "\"");
+    \\    }
     \\    __home_expect_matchers[name] = matcher;
     \\    expect[name] = function() {
     \\      const captured = Array.prototype.slice.call(arguments);
     \\      return {
     \\        asymmetricMatch(received) {
-    \\          const result = matcher.apply({ isNot: false, promise: "", equals: __home_deep_equal }, [received].concat(captured));
-    \\          return result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "pass") ? !!result.pass : !!result;
+    \\          const raw = matcher.apply(__home_expect_matcher_context(false), [received].concat(captured));
+    \\          if (__home_is_thenable(raw)) return Promise.resolve(raw).then(result => !!__home_expect_validate_matcher_result(name, result).pass);
+    \\          return !!__home_expect_validate_matcher_result(name, raw).pass;
     \\        },
     \\        toString() {
     \\          return name;
+    \\        },
+    \\      };
+    \\    };
+    \\    expect.not[name] = function() {
+    \\      const captured = Array.prototype.slice.call(arguments);
+    \\      return {
+    \\        asymmetricMatch(received) {
+    \\          const raw = matcher.apply(__home_expect_matcher_context(true), [received].concat(captured));
+    \\          if (__home_is_thenable(raw)) return Promise.resolve(raw).then(result => !__home_expect_validate_matcher_result(name, result).pass);
+    \\          const result = __home_expect_validate_matcher_result(name, raw);
+    \\          const pass = !!result.pass;
+    \\          return !pass;
+    \\        },
+    \\        toString() {
+    \\          return "not." + name;
     \\        },
     \\      };
     \\    };
@@ -13319,6 +13389,12 @@ const harness_prelude =
     \\Bun.SystemError = __home_bun_system_error;
     \\globalThis.__home_bun_color = __home_bun_color;
     \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, Archive: Bun.Archive, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, color: Bun.color, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, Glob: Bun.Glob, JSONC: Bun.JSONC, JSONL: Bun.JSONL, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, SystemError: Bun.SystemError, YAML: Bun.YAML, cron: Bun.cron, dns: null, redis: Bun.redis, secrets: Bun.secrets, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["strip-ansi"] = { default: value => Bun.stripANSI(value) };
+    \\globalThis.__home_modules["./test-interop.js"] = {
+    \\  default() {
+    \\    return Object.assign({ isBun: true, bunTest: globalThis.__home_bun_test }, globalThis.__home_bun_test);
+    \\  },
+    \\};
     \\globalThis.__home_modules["bun:ffi"] = Object.assign({}, Bun.FFI);
     \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); } };
     \\function __home_semver_fixture_prereleases() {
@@ -28325,6 +28401,22 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { BasicSourceMapConsumer, IndexedSourceMapConsumer, SourceMapConsumer } = globalThis.__home_import(\"source-map\");",
         },
         .{
+            .needle = "import stripAnsiColors from \"strip-ansi\";",
+            .replacement = "const stripAnsiColors = globalThis.__home_import(\"strip-ansi\").default;",
+        },
+        .{
+            .needle = "import stripAnsi from \"strip-ansi\";",
+            .replacement = "const stripAnsi = globalThis.__home_import(\"strip-ansi\").default;",
+        },
+        .{
+            .needle = "import test_interop from \"./test-interop.js\";",
+            .replacement = "const test_interop = globalThis.__home_import(\"./test-interop.js\").default;",
+        },
+        .{
+            .needle = "var { isBun, expect, describe, test, it } = await test_interop();",
+            .replacement = "var { isBun, expect, describe, test, it } = test_interop();",
+        },
+        .{
             .needle = "import { tempDirWithBakeDeps } from \"../bake-harness\";",
             .replacement = "const { tempDirWithBakeDeps } = globalThis.__home_import(\"bake-harness\");",
         },
@@ -30421,6 +30513,12 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test describe name CLI reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/done-async.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test done callback CLI failure reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/dots.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test dots CLI reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-assertions.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test expect.assertions failure reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-extend.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "bun test expect.extend cross-runner matcher matrix")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
@@ -30837,7 +30935,7 @@ test "harness crash handler fixture reports through local server" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_crash_handler_fixture(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fixture-crash.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mergeWindowEnvs(values)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_resolves_expectation(value, isNot)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_resolves_expectation(value, isNot, label)") != null);
 }
 
 test "harness prelude defines TransformStream and Text{Encoder,Decoder}Stream" {
@@ -47519,6 +47617,7 @@ test "bootstrap runner covers terminal mock alias and shell instance shims" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
+        \\import stripAnsi from "strip-ansi";
         \\import { expect, jest, test } from "bun:test";
         \\test("terminal shell and mock shims", async () => {
         \\  const terminal = new Bun.Terminal({ cols: 10, rows: 4 });
@@ -47536,6 +47635,27 @@ test "bootstrap runner covers terminal mock alias and shell instance shims" {
         \\  fn("value");
         \\  expect(fn).toBeCalled();
         \\  expect(fn).toHaveBeenCalled();
+        \\
+        \\  try {
+        \\    expect("a", "label").toBe("b");
+        \\    expect.unreachable();
+        \\  } catch (error) {
+        \\    const message = stripAnsi(error.message);
+        \\    expect(message).toContain("label\n\nExpected");
+        \\    expect(message).not.toContain("to be");
+        \\  }
+        \\
+        \\  expect.extend({
+        \\    _toAsyncOne(value) {
+        \\      return Promise.resolve({ pass: value === 1, message: () => "not one" });
+        \\    },
+        \\    _toNoMessage() {
+        \\      return { pass: false };
+        \\    },
+        \\  });
+        \\  await expect(1)._toAsyncOne();
+        \\  expect(() => expect(0)._toNoMessage()).toThrow("No message was specified for this matcher.");
+        \\  expect(() => expect.extend({ _bad: undefined })).toThrow("Must be a function");
         \\
         \\  const shell = new Bun.$.Shell();
         \\  shell.nothrow().env({ HOME_TEST_SHELL_VALUE: "ok" });
