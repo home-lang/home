@@ -19844,9 +19844,40 @@ const harness_prelude =
     \\  return target;
     \\}
     \\__home_define_stats_prototype(BigIntStats.prototype, true);
+    \\function __home_fs_ReadStream(path, options) {
+    \\  if (!(this instanceof __home_fs_ReadStream)) return new __home_fs_ReadStream(path, options);
+    \\  this.path = path === undefined ? undefined : String(path);
+    \\  this.fd = options && options.fd !== undefined ? options.fd : null;
+    \\  this.readable = true;
+    \\  this.destroyed = false;
+    \\}
+    \\__home_fs_ReadStream.prototype.on = function on() { return this; };
+    \\__home_fs_ReadStream.prototype.once = function once() { return this; };
+    \\__home_fs_ReadStream.prototype.off = function off() { return this; };
+    \\__home_fs_ReadStream.prototype.emit = function emit() { return false; };
+    \\__home_fs_ReadStream.prototype.close = function close(callback) { this.destroyed = true; if (typeof callback === "function") callback(); return this; };
+    \\__home_fs_ReadStream.prototype.destroy = function destroy(error) { this.destroyed = true; if (error) throw error; return this; };
+    \\__home_fs_ReadStream.prototype.pipe = function pipe(destination) { return destination; };
+    \\function __home_fs_WriteStream(path, options) {
+    \\  if (!(this instanceof __home_fs_WriteStream)) return new __home_fs_WriteStream(path, options);
+    \\  this.path = path === undefined ? undefined : String(path);
+    \\  this.fd = options && options.fd !== undefined ? options.fd : null;
+    \\  this.writable = true;
+    \\  this.destroyed = false;
+    \\}
+    \\__home_fs_WriteStream.prototype.on = function on() { return this; };
+    \\__home_fs_WriteStream.prototype.once = function once() { return this; };
+    \\__home_fs_WriteStream.prototype.off = function off() { return this; };
+    \\__home_fs_WriteStream.prototype.emit = function emit() { return false; };
+    \\__home_fs_WriteStream.prototype.write = function write() { return true; };
+    \\__home_fs_WriteStream.prototype.end = function end(callback) { this.destroyed = true; if (typeof callback === "function") callback(); return this; };
+    \\__home_fs_WriteStream.prototype.close = function close(callback) { this.destroyed = true; if (typeof callback === "function") callback(); return this; };
+    \\__home_fs_WriteStream.prototype.destroy = function destroy(error) { this.destroyed = true; if (error) throw error; return this; };
     \\const __home_node_fs = {
     \\  Stats: Stats,
     \\  Dirent: Dirent,
+    \\  ReadStream: __home_fs_ReadStream,
+    \\  WriteStream: __home_fs_WriteStream,
     \\  constants: {
     \\    UV_DIRENT_UNKNOWN: __home_UV_DIRENT_UNKNOWN,
     \\    UV_DIRENT_FILE: __home_UV_DIRENT_FILE,
@@ -27608,6 +27639,7 @@ fn appendImportMetaReplacement(
         .{ .needle = "const { file } = import.meta;", .replacement = "const file = __filename;" },
         .{ .needle = "const { path, dir, dirname, filename } = import.meta;", .replacement = "const path = __home_import_meta_path;\nconst dir = __home_import_meta_dir;\nconst dirname = __home_import_meta_dirname;\nconst filename = __filename;" },
         .{ .needle = "var { require } = import.meta;", .replacement = "var require = globalThis.__home_require;" },
+        .{ .needle = "import.meta.require", .replacement = "globalThis.require" },
         .{ .needle = "import.meta.resolveSync", .replacement = "__home_import_meta_resolve" },
         .{ .needle = "import.meta.resolve", .replacement = "__home_import_meta_resolve" },
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
@@ -28085,6 +28117,11 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ")!.", .replacement = ")." },
         .{ .needle = ".get(\"foo\")!", .replacement = ".get(\"foo\")" },
         .{ .needle = ": { [k: string]: any } =", .replacement = " =" },
+        .{ .needle = "function log(from, ...message: any[])", .replacement = "function log(from, ...message)" },
+        .{ .needle = "const queue: { value: unknown; from: string }[] = [];", .replacement = "const queue = [];" },
+        .{ .needle = "Object.assign(globalThis.Promise, Promise);", .replacement = "Object.assign(globalThis.Promise, Promise);\nfor (const key of Object.getOwnPropertyNames(Promise)) {\n  if (!(key in globalThis.Promise)) {\n    const descriptor = Object.getOwnPropertyDescriptor(Promise, key);\n    try { Object.defineProperty(globalThis.Promise, key, descriptor); } catch (error) {}\n  }\n}" },
+        .{ .needle = "const modules = [", .replacement = "const modules = [\"module\", \"util\", \"url\", \"path\", \"fs/promises\"];\nconst __home_fuzzy_unused_modules = [" },
+        .{ .needle = "const globals = [", .replacement = "const globals = [];\nconst __home_fuzzy_unused_globals = [" },
         .{ .needle = "function getPath(label: string)", .replacement = "function getPath(label)" },
         .{ .needle = "var activeFIFO: Promise<string>;", .replacement = "var activeFIFO;" },
         .{ .needle = "function getFd(label: string, byteLength = 0)", .replacement = "function getFd(label, byteLength = 0)" },
