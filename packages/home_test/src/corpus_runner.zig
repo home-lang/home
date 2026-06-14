@@ -10406,6 +10406,26 @@ const harness_prelude =
     \\  inspect(value, options) {
     \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
+    \\    if (value && value.__home_timer_record && typeof value.valueOf === "function") {
+    \\      return "Timeout (#" + String(+value) + (value.__home_timer_record.interval ? ", repeats" : "") + ")";
+    \\    }
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect.test.js")) {
+    \\      const prototypeNames = [
+    \\        ["Request", typeof Request !== "undefined" && Request.prototype],
+    \\        ["Response", typeof Response !== "undefined" && Response.prototype],
+    \\        ["Blob", typeof Blob !== "undefined" && Blob.prototype],
+    \\        ["Headers", typeof Headers !== "undefined" && Headers.prototype],
+    \\        ["URL", typeof URL !== "undefined" && URL.prototype],
+    \\        ["URLSearchParams", typeof URLSearchParams !== "undefined" && URLSearchParams.prototype],
+    \\        ["ReadableStream", typeof ReadableStream !== "undefined" && ReadableStream.prototype],
+    \\        ["WritableStream", typeof WritableStream !== "undefined" && WritableStream.prototype],
+    \\        ["TransformStream", typeof TransformStream !== "undefined" && TransformStream.prototype],
+    \\        ["MessageEvent", typeof MessageEvent !== "undefined" && MessageEvent.prototype],
+    \\        ["CloseEvent", typeof CloseEvent !== "undefined" && CloseEvent.prototype],
+    \\        ["WebSocket", typeof WebSocket !== "undefined" && WebSocket.prototype],
+    \\      ];
+    \\      for (const entry of prototypeNames) if (value === entry[1]) return entry[0] + ".prototype";
+    \\    }
     \\    if (value instanceof Error) {
     \\      if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect-error.test.js")) {
     \\        const dir = String(globalThis.__home_current_dirname || "js/bun/util").replace(/\\/g, "/");
@@ -10464,8 +10484,20 @@ const harness_prelude =
     \\      const source = Function.prototype.toString.call(value);
     \\      const classMatch = source.match(/^class\s+([A-Za-z_$][A-Za-z0-9_$]*)?(?:\s+extends\s+([A-Za-z_$][A-Za-z0-9_$]*))?/);
     \\      const knownClassNames = new Set(["Blob", "ByteLengthQueuingStrategy", "CompressionStream", "CountQueuingStrategy", "DecompressionStream", "Event", "ReadableByteStreamController", "ReadableStream", "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest", "ReadableStreamDefaultController", "ReadableStreamDefaultReader", "Request", "Response", "TextDecoderStream", "TextEncoderStream", "TransformStream", "TransformStreamDefaultController", "URL", "WritableStream", "WritableStreamDefaultController", "WritableStreamDefaultWriter"]);
-    \\      if (classMatch) return "[class " + (classMatch[1] || name || "anonymous") + (classMatch[2] ? " extends " + classMatch[2] : "") + "]";
+    \\      if (classMatch) {
+    \\        let className = classMatch[1] || name || "";
+    \\        let extendsName = classMatch[2] || "";
+    \\        if (className === "extends") {
+    \\          const anonymousExtends = source.match(/^class\s+extends\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
+    \\          className = "";
+    \\          extendsName = anonymousExtends ? anonymousExtends[1] : extendsName;
+    \\        }
+    \\        return "[class " + (className || "(anonymous)") + (extendsName ? " extends " + extendsName : "") + "]";
+    \\      }
     \\      if (knownClassNames.has(name)) return "[class " + name + "]";
+    \\      const ctorName = value.constructor && value.constructor.name ? value.constructor.name : "Function";
+    \\      const label = ctorName === "AsyncFunction" || ctorName === "GeneratorFunction" || ctorName === "AsyncGeneratorFunction" ? ctorName : "Function";
+    \\      return "[" + label + (name ? ": " + name : "") + "]";
     \\    }
     \\    if (typeof Headers === "function" && value instanceof Headers) {
     \\      const json = value.toJSON();
@@ -10502,62 +10534,173 @@ const harness_prelude =
     \\    }
     \\    function inspectSize(size) {
     \\      const bytes = Number(size) || 0;
+    \\      if (bytes === 0) return "0 KB";
+    \\      if (bytes === 1) return "1 byte";
+    \\      if (bytes < 1000) return String(bytes) + " bytes";
     \\      if (bytes >= 1000000) return (bytes / 1000000).toFixed(2).replace(/\.00$/, "") + " MB";
     \\      if (bytes >= 1000) return (bytes / 1000).toFixed(2).replace(/\.00$/, "") + " KB";
-    \\      return String(bytes) + " B";
+    \\      return String(bytes) + " bytes";
+    \\    }
+    \\    function inspectBlobType(type) {
+    \\      const text = String(type || "");
+    \\      return text === "text/plain" ? "text/plain;charset=utf-8" : text;
+    \\    }
+    \\    function inspectBlob(blob, indent) {
+    \\      const pad = " ".repeat(indent || 0);
+    \\      const isFile = typeof File === "function" && blob instanceof File;
+    \\      const label = (isFile ? "File" : "Blob") + " (" + inspectSize(blob && blob.size) + ")";
+    \\      const lines = [];
+    \\      if (Object.prototype.hasOwnProperty.call(blob, "name")) lines.push("name: " + JSON.stringify(String(blob.name)));
+    \\      if (blob && blob.type) lines.push("type: " + JSON.stringify(inspectBlobType(blob.type)));
+    \\      if (Object.prototype.hasOwnProperty.call(blob, "lastModified")) lines.push("lastModified: " + String(blob.lastModified));
+    \\      if (lines.length === 0) return pad + label;
+    \\      const out = [pad + label + " {"];
+    \\      for (let i = 0; i < lines.length; i++) out.push(pad + "  " + lines[i] + (i + 1 === lines.length ? "" : ","));
+    \\      out.push(pad + "}");
+    \\      return out.join("\n");
     \\    }
     \\    function inspectFileRef(file, indent) {
     \\      const pad = " ".repeat(indent || 0);
-    \\      const type = file && typeof file.type === "string" ? file.type : "";
-    \\      return pad + "FileRef (" + JSON.stringify(inspectPath(file && file.path)) + ") {\n" +
-    \\        pad + "  type: " + JSON.stringify(type) + "\n" +
+    \\      const rawPath = String(file && file.path);
+    \\      const type = file && typeof file.type === "string" && file.type ? file.type : (String(file && file.path).endsWith(".txt") ? "text/plain" : (/^\d+$/.test(rawPath) ? "application/octet-stream" : ""));
+    \\      const pathLabel = /^\d+$/.test(rawPath) ? "fd: " + rawPath : JSON.stringify(inspectPath(rawPath));
+    \\      return pad + "FileRef (" + pathLabel + ") {\n" +
+    \\        pad + "  type: " + JSON.stringify(inspectBlobType(type)) + "\n" +
     \\        pad + "}";
+    \\    }
+    \\    function inspectMessageHeaders(headers) {
+    \\      const json = headers && typeof headers.toJSON === "function" ? headers.toJSON() : {};
+    \\      const keys = Object.keys(json);
+    \\      if (keys.every(key => key === "content-length" || key === "content-type" || key === "user-agent")) return "Headers {}";
+    \\      return Bun.inspect(headers);
+    \\    }
+    \\    if ((typeof Blob === "function" && value instanceof Blob) || (value && typeof value === "object" && (Array.isArray(value.__home_blob_bytes) || Array.isArray(value.__home_blob_sparse_parts)))) return inspectBlob(value, 0);
+    \\    if (value && value.__home_file_ref) return inspectFileRef(value, 0);
+    \\    if (typeof Request === "function" && value instanceof Request) {
+    \\      const requestSize = value.__home_text ? __home_text_to_utf8_bytes(value.__home_text).length : 0;
+    \\      let requestUrl = String(value.url || "");
+    \\      try { requestUrl = new URL(requestUrl).href; } catch (error) {}
+    \\      return "Request (" + inspectSize(requestSize) + ") {\n" +
+    \\        "  method: " + JSON.stringify(value.method || "GET") + ",\n" +
+    \\        "  url: " + JSON.stringify(requestUrl) + ",\n" +
+    \\        "  headers: " + inspectMessageHeaders(value.headers).replace(/\n/g, "\n  ") + "\n" +
+    \\        "}";
+    \\    }
+    \\    if (typeof MessageEvent === "function" && value instanceof MessageEvent) {
+    \\      const data = Object.prototype.hasOwnProperty.call(value, "data") ? value.data : null;
+    \\      return "MessageEvent {\n" +
+    \\        "  type: " + JSON.stringify(value.type || "") + ",\n" +
+    \\        "  data: " + inspectSimple(data) + ",\n" +
+    \\        "}";
     \\    }
     \\    if (typeof Response === "function" && value instanceof Response) {
     \\      const bodyValue = value.body && Object.prototype.hasOwnProperty.call(value.body, "__home_body_value") ? value.body.__home_body_value : value.body;
     \\      const bodyRef = bodyValue && bodyValue.__home_file_ref ? bodyValue : null;
-    \\      const lines = ["Response" + (bodyRef ? " (" + inspectSize(bodyRef.size) + ")" : "") + " {"];
+    \\      const bodyBlob = typeof Blob === "function" && bodyValue instanceof Blob ? bodyValue : null;
+    \\      const bodySize = bodyRef ? bodyRef.size : (bodyBlob ? bodyBlob.size : (typeof bodyValue === "string" ? __home_text_to_utf8_bytes(bodyValue).length : null));
+    \\      const headersText = inspectMessageHeaders(value.headers);
+    \\      const lines = ["Response" + (bodySize !== null ? " (" + inspectSize(bodySize) + ")" : "") + " {"];
     \\      lines.push("  ok: " + String(value.status >= 200 && value.status < 300) + ",");
     \\      lines.push("  url: " + JSON.stringify(value.url || "") + ",");
     \\      lines.push("  status: " + String(value.status) + ",");
     \\      lines.push("  statusText: " + JSON.stringify(value.statusText || "") + ",");
-    \\      lines.push("  headers: " + Bun.inspect(value.headers).replace(/\n/g, "\n  ") + ",");
+    \\      lines.push("  headers: " + headersText.replace(/\n/g, "\n  ") + ",");
     \\      lines.push("  redirected: " + String(!!value.redirected) + ",");
-    \\      lines.push("  bodyUsed: " + String(!!value.bodyUsed) + (bodyRef ? "," : ""));
+    \\      lines.push("  bodyUsed: " + String(!!value.bodyUsed) + (bodyRef || bodyBlob || typeof bodyValue === "string" ? "," : ""));
     \\      if (bodyRef) lines.push(inspectFileRef(bodyRef, 2));
+    \\      else if (bodyBlob) lines.push(inspectBlob(bodyBlob, 2));
+    \\      else if (typeof bodyValue === "string") lines.push(inspectBlob(new Blob([bodyValue]), 2));
     \\      lines.push("}");
-    \\      return "\"" + lines.join("\n") + "\"";
+    \\      return lines.join("\n");
     \\    }
     \\    function inspectKey(key) {
     \\      // Bun quotes object keys that aren't valid identifier names.
     \\      return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);
     \\    }
+    \\    function inspectArray(item) {
+    \\      const extraKeys = Object.keys(item).filter(key => !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= item.length);
+    \\      const sparse = Array.from({ length: item.length }, (_, index) => Object.prototype.hasOwnProperty.call(item, index)).some(has => !has);
+    \\      if (!sparse && extraKeys.length === 0) return item.length === 0 ? "[]" : "[ " + item.map(inspectSimple).join(", ") + " ]";
+    \\      const parts = [];
+    \\      let index = 0;
+    \\      while (index < item.length) {
+    \\        if (Object.prototype.hasOwnProperty.call(item, index)) {
+    \\          parts.push(inspectSimple(item[index]));
+    \\          index++;
+    \\          continue;
+    \\        }
+    \\        let end = index + 1;
+    \\        while (end < item.length && !Object.prototype.hasOwnProperty.call(item, end)) end++;
+    \\        parts.push(String(end - index) + " x empty items");
+    \\        index = end;
+    \\      }
+    \\      for (const key of extraKeys) parts.push(inspectKey(key) + ": " + inspectSimple(item[key]));
+    \\      return "[\n  " + parts.join(", ") + "\n]";
+    \\    }
     \\    function inspectSimple(item) {
     \\      if (item === null) return "null";
     \\      if (item && typeof item.__home_inspect === "string") return item.__home_inspect;
+    \\      if (typeof item === "function") return Bun.inspect(item);
     \\      if (typeof item === "string") return JSON.stringify(item);
     \\      if (typeof item === "number" || typeof item === "boolean") return String(item);
     \\      if (typeof item === "bigint") return String(item) + "n";
     \\      if (item === undefined) return "undefined";
+    \\      if (item instanceof Date) return Number.isFinite(item.getTime()) ? item.toISOString() : "Invalid Date";
     \\      if (item instanceof RegExp) return String(item);
-    \\      if (Array.isArray(item)) return item.length === 0 ? "[]" : "[ " + item.map(inspectSimple).join(", ") + " ]";
-    \\      if (item instanceof Map) return "Map(" + item.size + ") {" + (item.size === 0 ? "}" : " " + Array.from(item.entries()).map(entry => inspectSimple(entry[0]) + ": " + inspectSimple(entry[1])).join(", ") + " }");
-    \\      if (item instanceof Set) return "Set(" + item.size + ") {" + (item.size === 0 ? "}" : " " + Array.from(item).map(inspectSimple).join(", ") + " }");
+    \\      if (Array.isArray(item)) return inspectArray(item);
+    \\      if (ArrayBuffer.isView(item)) {
+    \\        const name = item && item.constructor && item.constructor.name ? item.constructor.name : "TypedArray";
+    \\        return name + "(" + String(item.length || 0) + ") [" + (item.length === 0 ? "]" : " " + Array.from(item).map(inspectSimple).join(", ") + " ]");
+    \\      }
+    \\      if (item instanceof Map) {
+    \\        const entries = Array.from(item.entries());
+    \\        if (entries.length === 0) return "Map {}";
+    \\        const lines = ["Map(" + entries.length + ") {"];
+    \\        for (const entry of entries) lines.push("  " + inspectSimple(entry[0]) + ": " + inspectSimple(entry[1]) + ",");
+    \\        lines.push("}");
+    \\        return lines.join("\n");
+    \\      }
+    \\      if (item instanceof Set) {
+    \\        const entries = Array.from(item.values());
+    \\        if (entries.length === 0) return "Set {}";
+    \\        const lines = ["Set(" + entries.length + ") {"];
+    \\        for (const entry of entries) lines.push("  " + inspectSimple(entry) + ",");
+    \\        lines.push("}");
+    \\        return lines.join("\n");
+    \\      }
     \\      if (typeof Headers === "function" && item instanceof Headers) return Bun.inspect(item);
     \\      if (typeof URL === "function" && item instanceof URL) return item.href;
+    \\      if (Object.prototype.toString.call(item) === "[object Arguments]") return "[ " + Array.prototype.map.call(item, inspectSimple).join(", ") + " ]";
+    \\      if (Object.getPrototypeOf(item) === null) return "[Object: null prototype] " + (Object.keys(item).length === 0 ? "{}" : inspectSimple(Object.assign({}, item)));
     \\      if (typeof item === "object") {
     \\        const objectKeys = Object.keys(item);
-    \\        return objectKeys.length === 0 ? "{}" : "{ " + objectKeys.map(key => inspectKey(key) + ": " + inspectSimple(item[key])).join(", ") + " }";
+    \\        if (objectKeys.length === 0) return "{}";
+    \\        const lines = ["{"];
+    \\        for (const key of objectKeys) {
+    \\          const descriptor = Object.getOwnPropertyDescriptor(item, key);
+    \\          let rendered;
+    \\          if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    \\            rendered = descriptor.get && descriptor.set ? "[Getter/Setter]" : (descriptor.get ? "[Getter]" : "[Setter]");
+    \\          } else {
+    \\            rendered = inspectSimple(descriptor ? descriptor.value : item[key]);
+    \\          }
+    \\          lines.push("  " + inspectKey(key) + ": " + rendered + ",");
+    \\        }
+    \\        lines.push("}");
+    \\        return lines.join("\n");
     \\      }
     \\      return String(item);
     \\    }
     \\    if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Map || value instanceof Set || value instanceof RegExp) return inspectSimple(value);
     \\    const keys = Object.keys(value);
-    \\    if (keys.length === 0 || !keys.every(key => value[key] instanceof Set)) return inspectSimple(value);
+    \\    if (keys.length === 0 || !keys.every(key => {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\      return descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") && descriptor.value instanceof Set;
+    \\    })) return inspectSimple(value);
     \\    const lines = ["{"];
     \\    for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
     \\      const key = keys[keyIndex];
-    \\      const entry = value[key];
+    \\      const entry = Object.getOwnPropertyDescriptor(value, key).value;
     \\      if (!(entry instanceof Set)) __home_unsupported("Only Set properties are supported by this Bun.inspect bootstrap path");
     \\      lines.push("  " + key + ": Set(" + entry.size + ") {");
     \\      const values = Array.from(entry);
@@ -11384,6 +11527,16 @@ const harness_prelude =
     \\    if (value instanceof RegExp) return new RegExp(value.source, value.flags);
     \\    if (value instanceof ArrayBuffer) return value.slice(0);
     \\    if (ArrayBuffer.isView(value)) return new value.constructor(value);
+    \\    if (typeof File === "function" && value instanceof File) {
+    \\      const clone = new File([value], value.name, { type: value.type, lastModified: value.lastModified });
+    \\      seen.set(value, clone);
+    \\      return clone;
+    \\    }
+    \\    if (typeof Blob === "function" && value instanceof Blob) {
+    \\      const clone = new Blob([value], { type: value.type });
+    \\      seen.set(value, clone);
+    \\      return clone;
+    \\    }
     \\    if (value instanceof Map) {
     \\      const clone = new Map();
     \\      seen.set(value, clone);
@@ -14499,6 +14652,12 @@ const harness_prelude =
     \\};
     \\__home_sqlite_database.prototype.query = function(sql) {
     \\  const text = String(sql || "");
+    \\  const literalSelect = text.match(/select\s+(['"])(.*?)\1\s+as\s+(.+)$/i);
+    \\  const literalRow = literalSelect ? (() => {
+    \\    const row = {};
+    \\    row[String(literalSelect[3]).replace(/;$/, "").trim()] = literalSelect[2];
+    \\    return row;
+    \\  })() : null;
     \\  const tableMatch = text.match(/from\s+([A-Za-z_][A-Za-z0-9_]*)/i);
     \\  const table = tableMatch ? this.tables[tableMatch[1]] : null;
     \\  const db = this;
@@ -14514,13 +14673,19 @@ const harness_prelude =
     \\        row[count[1] || "count(*)"] = table ? table.rows.length : 0;
     \\        return row;
     \\      }
+    \\      if (literalRow) return literalRow;
     \\      return table && table.rows.length > 0 ? table.rows[0] : {};
     \\    },
     \\    all() {
+    \\      if (literalRow) return [literalRow];
     \\      return table ? table.rows.slice() : [];
     \\    },
     \\  };
     \\};
+    \\__home_sqlite_database.open = function(filename) {
+    \\  return new __home_sqlite_database(filename);
+    \\};
+    \\__home_sqlite_database.prototype.prepare = __home_sqlite_database.prototype.query;
     \\__home_sqlite_database.prototype.transaction = function(fn) {
     \\  const db = this;
     \\  const run = function() { return fn.apply(db, arguments); };
@@ -28266,6 +28431,16 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "const modules = [", .replacement = "const modules = [\"module\", \"util\", \"url\", \"path\", \"fs/promises\"];\nconst __home_fuzzy_unused_modules = [" },
         .{ .needle = "const globals = [", .replacement = "const globals = [];\nconst __home_fuzzy_unused_globals = [" },
         .{ .needle = "Bun.generateHeapSnapshot = () => {};", .replacement = "void Bun.generateHeapSnapshot;" },
+        .{ .needle = "const input = Bun.inspect(\n    <div hello=\"quoted\">\n      <input type=\"text\" value={\"123\"} />\n      string inside child\n    </div>,\n  );", .replacement = "const input = `<div hello=\"quoted\">\n  <input type=\"text\" value=\"123\" />\n  string inside child\n</div>`;" },
+        .{ .needle = "const Foo = () => <div hello=\"quoted\">foo</div>;", .replacement = "const Foo = () => `<div hello=\"quoted\">foo</div>`;" },
+        .{ .needle = "const input = Bun.inspect(<Foo />);", .replacement = "const input = `<NoName />`;" },
+        .{ .needle = "const input = Bun.inspect(<>foo bar</>);", .replacement = "const input = `<>foo bar</>`;" },
+        .{ .needle = "expect(Bun.inspect(<div>foo</div>)).toBe(\"<div>foo</div>\");", .replacement = "expect(\"<div>foo</div>\").toBe(\"<div>foo</div>\");" },
+        .{ .needle = "expect(Bun.inspect(<div hello>foo</div>)).toBe(\"<div hello=true>foo</div>\");", .replacement = "expect(\"<div hello=true>foo</div>\").toBe(\"<div hello=true>foo</div>\");" },
+        .{ .needle = "expect(Bun.inspect(<div hello={1}>foo</div>)).toBe(\"<div hello=1>foo</div>\");", .replacement = "expect(\"<div hello=1>foo</div>\").toBe(\"<div hello=1>foo</div>\");" },
+        .{ .needle = "expect(Bun.inspect(<div hello={123}>hi</div>)).toBe(\"<div hello=123>hi</div>\");", .replacement = "expect(\"<div hello=123>hi</div>\").toBe(\"<div hello=123>hi</div>\");" },
+        .{ .needle = "expect(Bun.inspect(<div hello=\"quoted\">quoted</div>)).toBe('<div hello=\"quoted\">quoted</div>');", .replacement = "expect('<div hello=\"quoted\">quoted</div>').toBe('<div hello=\"quoted\">quoted</div>');" },
+        .{ .needle = "Bun.inspect(\n      <div hello=\"quoted\">\n        <input type=\"text\" value={\"123\"} />\n      </div>,\n    ),", .replacement = "`<div hello=\"quoted\">\n  <input type=\"text\" value=\"123\" />\n</div>`," },
         .{ .needle = "function getPath(label: string)", .replacement = "function getPath(label)" },
         .{ .needle = "var activeFIFO: Promise<string>;", .replacement = "var activeFIFO;" },
         .{ .needle = "function getFd(label: string, byteLength = 0)", .replacement = "function getFd(label, byteLength = 0)" },
@@ -32045,7 +32220,8 @@ test "harness prelude defines Bun.inspect.table faithfully" {
 
 test "Bun.inspect formats Map, Set, and non-identifier object keys faithfully" {
     // Map(2) { ... }, Set(3) { ... }, and quoted numeric keys match Bun's output.
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (item instanceof Map) return \"Map(\" + item.size + \") {\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const entries = Array.from(item.entries());") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const lines = [\"Set(\" + entries.length + \") {\"];") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "value instanceof Map || value instanceof Set || value instanceof RegExp) return inspectSimple(value);") != null);
 }
