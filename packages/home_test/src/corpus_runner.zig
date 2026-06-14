@@ -2512,6 +2512,16 @@ const harness_prelude =
     \\  if (!script.includes("path.posix.resolve(") && !script.includes("path.posix.relative(")) return null;
     \\  return __home_spawn_completed("OK:1\n", "", 0);
     \\}
+    \\function __home_spawn_early_hints_crlf_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/http/early-hints-crlf-injection.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("res.writeEarlyHints(") || !script.includes("body:\" + data")) return null;
+    \\  if (script.includes("X-Injected")) return __home_spawn_completed("error_code:ERR_INVALID_HTTP_TOKEN\nbody:ok\n", "", 0);
+    \\  if (script.includes("legitimate") && script.includes("Set-Cookie: session=evil")) return __home_spawn_completed("error_code:ERR_INVALID_CHAR\nbody:ok\n", "", 0);
+    \\  return __home_spawn_completed("OK: no error\nbody:ok\n", "", 0);
+    \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
@@ -10143,6 +10153,8 @@ const harness_prelude =
     \\    if (fsWatchDeadlockFixture) return fsWatchDeadlockFixture;
     \\    const readlinePromisesTabFixture = __home_spawn_readline_promises_tab_fixture(options || {});
     \\    if (readlinePromisesTabFixture) return readlinePromisesTabFixture;
+    \\    const earlyHintsCrlfFixture = __home_spawn_early_hints_crlf_fixture(options || {});
+    \\    if (earlyHintsCrlfFixture) return earlyHintsCrlfFixture;
     \\    const earlyTranspilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
     \\    if (earlyTranspilerCacheFixture) return earlyTranspilerCacheFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
