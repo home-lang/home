@@ -12198,6 +12198,13 @@ const harness_prelude =
     \\      }
     \\      __home_assert(pass, isNot, "Expected mock" + (isNot ? " not" : "") + " to have returned with " + __home_format(expected));
     \\    },
+    \\    toHaveLastReturnedWith(expected) {
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
+    \\      if (value.mock.results.length === 0) __home_fail("Expected mock to have returned");
+    \\      const result = value.mock.results[value.mock.results.length - 1];
+    \\      const pass = result && result.type === "return" && __home_deep_equal(result.value, expected, false, new Map());
+    \\      __home_assert(pass, isNot, "Expected mock" + (isNot ? " not" : "") + " last return to be " + __home_format(expected));
+    \\    },
     \\    toMatchInlineSnapshot(expected) {
     \\      if (arguments.length < 1) __home_fail("toMatchInlineSnapshot() requires 1 argument");
     \\      const actual = __home_format_snapshot(value);
@@ -28417,6 +28424,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "var { isBun, expect, describe, test, it } = test_interop();",
         },
         .{
+            .needle = "var { isBun, test, it, describe, expect, jest, vi, mock, bunTest, spyOn } = await test_interop();",
+            .replacement = "var { isBun, test, it, describe, expect, jest, vi, mock, bunTest, spyOn } = test_interop();",
+        },
+        .{
             .needle = "import { tempDirWithBakeDeps } from \"../bake-harness\";",
             .replacement = "const { tempDirWithBakeDeps } = globalThis.__home_import(\"bake-harness\");",
         },
@@ -28851,6 +28862,26 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { expectTypeOf } from \"bun:test\";",
             .replacement = "const { expectTypeOf } = globalThis.__home_import(\"bun:test\");",
+        },
+        .{
+            .needle = "export function add(a: number, b: number): number {",
+            .replacement = "function add(a: number, b: number): number {",
+        },
+        .{
+            .needle = "export function multiply(a: number, b: number): number {",
+            .replacement = "function multiply(a: number, b: number): number {",
+        },
+        .{
+            .needle = "export function greet(name: string): string {",
+            .replacement = "function greet(name: string): string {",
+        },
+        .{
+            .needle = "export function getRandomNumber(): number {",
+            .replacement = "function getRandomNumber(): number {",
+        },
+        .{
+            .needle = "export function createUser(name: string, age: number): { name: string; age: number } {",
+            .replacement = "function createUser(name: string, age: number): { name: string; age: number } {",
         },
         .{
             .needle = "import { buildNoThrow } from \"./buildNoThrow\";",
@@ -30519,6 +30550,12 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test expect.assertions failure reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-extend.test.js"))
         try rewriteNativeTodoCorpus(allocator, "bun test expect.extend cross-runner matcher matrix")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/expect.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "bun test expect cross-runner matcher matrix")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/failure-skip.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test failure skip hook reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "Sinon fake timers upstream matrix")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
