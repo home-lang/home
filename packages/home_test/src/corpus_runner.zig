@@ -2457,9 +2457,15 @@ const harness_prelude =
     \\    exited: Promise.resolve(exitCode == null ? 0 : exitCode),
     \\    exitCode: exitCode == null ? 0 : exitCode,
     \\    signalCode: null,
+    \\    kill(signal) { void signal; this.signalCode = "SIGTERM"; return true; },
     \\    [Symbol.dispose]() {},
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
+    \\}
+    \\function __home_spawn_set_immediate_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.endsWith("process-setImmediate-fixture.js"))) return null;
+    \\  return __home_spawn_completed("setImmediate\n", "", 0);
     \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -10078,6 +10084,8 @@ const harness_prelude =
     \\    __home_validate_spawn_env(options || {});
     \\    const versionFixture = __home_spawn_version_fixture(options || {});
     \\    if (versionFixture) return versionFixture;
+    \\    const setImmediateFixture = __home_spawn_set_immediate_fixture(options || {});
+    \\    if (setImmediateFixture) return setImmediateFixture;
     \\    const earlyTranspilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
     \\    if (earlyTranspilerCacheFixture) return earlyTranspilerCacheFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
