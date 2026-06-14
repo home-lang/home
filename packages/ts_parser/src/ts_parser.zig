@@ -192,6 +192,7 @@ pub const Parser = struct {
     target_es2015_or_later: bool,
     suppress_strict_param_names: bool,
     allow_parameter_list_arrow_recovery: bool,
+    allow_numeric_arrow_param_recovery: bool,
     parameter_list_arrow_is_comma: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
@@ -311,6 +312,7 @@ pub const Parser = struct {
             .target_es2015_or_later = false,
             .suppress_strict_param_names = false,
             .allow_parameter_list_arrow_recovery = false,
+            .allow_numeric_arrow_param_recovery = false,
             .parameter_list_arrow_is_comma = false,
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
@@ -878,9 +880,13 @@ pub const Parser = struct {
     /// only when we're inside a string-named ambient module
     /// (`in_string_named_module`) and the specifier starts with
     /// `./` / `../` (or is the bare `.` / `..`). Anchored at the
-    /// string-literal specifier token. Silently no-ops on synthesized
-    /// recovery tokens (zero-length span).
+    /// declaration keyword. Silently no-ops on synthesized recovery
+    /// tokens (zero-length span).
     fn reportAmbientRelativeModuleIfNeeded(self: *Parser, mod_tok: Token) ParseError!void {
+        try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, mod_tok.span.start, mod_tok.line);
+    }
+
+    fn reportAmbientRelativeModuleIfNeededAt(self: *Parser, mod_tok: Token, pos: u32, line: u32) ParseError!void {
         if (!self.in_string_named_module) return;
         if (mod_tok.kind != .string_literal) return;
         if (mod_tok.span.end <= mod_tok.span.start) return;
@@ -888,7 +894,7 @@ pub const Parser = struct {
         if (lit.len < 3) return;
         const inner = lit[1 .. lit.len - 1];
         if (moduleNameTextIsRelative(inner)) {
-            try self.reportCodeAt(mod_tok.span.start, mod_tok.line, 2439, "Import or export declaration in an ambient module declaration cannot reference module through relative module name.");
+            try self.reportCodeAt(pos, line, 2439, "Import or export declaration in an ambient module declaration cannot reference module through relative module name.");
         }
     }
 
@@ -4217,6 +4223,9 @@ pub const Parser = struct {
                     _ = self.advance();
                     if (self.peek().kind == .close_paren) break;
                     continue;
+                } else if (self.allow_numeric_arrow_param_recovery and self.peek().kind == .number_literal) blk: {
+                    const bad = self.advance();
+                    break :blk try self.missingIdentifierAt(bad.span.start);
                 } else if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                     const pat = try self.parseBindingPattern();
                     // TS1187 — a parameter property (carrying `public`,
@@ -6825,7 +6834,11 @@ pub const Parser = struct {
                 try self.reportCodeAt(extends_tok.span.end, extends_tok.line, 1097, "'extends' list cannot be empty.");
             } else {
                 while (true) {
-                    const ref = try self.parseTypeReference();
+                    const ref = try self.parseTypeReferenceWithOptionalChainDiagnostic(
+                        2499,
+                        "An interface can only extend an identifier/qualified-name with optional type arguments.",
+                        true,
+                    );
                     try extends_list.append(self.gpa, ref);
                     if (self.peek().kind == .kw_extends) {
                         const duplicate = self.advance();
@@ -7339,7 +7352,7 @@ pub const Parser = struct {
                         "Import declarations in a namespace cannot reference a module.",
                     );
                 }
-                try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
+                try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, start.span.start, start.line);
                 _ = try self.expectClosingMatch(.close_paren, "')' after require module specifier", require_open.span.start, "(", ")");
                 try self.consumeStatementTerminator();
             } else if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren) {
@@ -7374,7 +7387,7 @@ pub const Parser = struct {
         if (self.peek().kind == .string_literal) {
             // bare side-effect import: `import "module";`
             const mod_tok = self.advance();
-            try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
+            try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, start.span.start, start.line);
             // Optional import attributes: `with { type: "json" }` (TS 5.3+)
             // or legacy `assert { type: "json" }` — parsed and discarded.
             try self.skipImportAttributesClause();
@@ -7617,7 +7630,7 @@ pub const Parser = struct {
         // or legacy `assert { type: "json" }` — parsed and discarded.
         try self.skipImportAttributesClause();
         if (!recovered_comma_from_tail) try self.consumeStatementTerminator();
-        try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
+        try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, start.span.start, start.line);
         const mod_id = if (mod_tok.span.start == mod_tok.span.end)
             (self.interner.intern("") catch return error.OutOfMemory)
         else
@@ -8161,7 +8174,7 @@ pub const Parser = struct {
                 module_tok_start = mod_tok.span.start;
                 module_tok_line = mod_tok.line;
                 has_module_specifier = true;
-                try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
+                try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, start.span.start, start.line);
                 try self.skipImportAttributesClause();
             }
             try self.consumeStatementTerminator();
@@ -8216,7 +8229,7 @@ pub const Parser = struct {
             }
             _ = try self.expect(.kw_from, "'from' after 'export *'");
             const mod_tok = try self.expect(.string_literal, "module specifier");
-            try self.reportAmbientRelativeModuleIfNeeded(mod_tok);
+            try self.reportAmbientRelativeModuleIfNeededAt(mod_tok, start.span.start, start.line);
             try self.skipImportAttributesClause();
             try self.consumeStatementTerminator();
             const mod_id = try self.internStringLiteral(mod_tok);
@@ -8551,9 +8564,26 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
         }
+        var recovered_initializer_arrow_tail = false;
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         try self.reportVariableDefiniteAssignment(definite_assignment_token, type_annotation, init_node, is_ambient_decl);
         try self.recoverRegexVariableDeclarationTail(init_node);
+        if (init_node != hir_mod.none_node_id and self.peek().kind == .colon) {
+            const colon_tok = self.advance();
+            try self.reportCodeAt(colon_tok.span.start, colon_tok.line, 1005, "',' expected.");
+            while (self.peek().kind != .arrow and
+                self.peek().kind != .semicolon and
+                self.peek().kind != .comma and
+                self.peek().kind != .eof)
+            {
+                _ = self.advance();
+            }
+            if (self.peek().kind == .arrow) {
+                const arrow_tok = self.advance();
+                try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "';' expected.");
+                recovered_initializer_arrow_tail = true;
+            }
+        }
         if (self.peek().kind == .number_literal and
             self.cursor > 0 and
             self.tokens[self.cursor - 1].kind == .number_literal and
@@ -8653,7 +8683,7 @@ pub const Parser = struct {
             try self.reportCodeAt(bad_unary.span.start, bad_unary.line, 1005, "',' expected.");
             _ = try self.parseUnaryExpression();
         }
-        try self.consumeStatementTerminator();
+        if (!recovered_initializer_arrow_tail) try self.consumeStatementTerminator();
 
         const stmt_span: Span = .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end };
         return try self.builder.addVarDeclEx(
@@ -12016,6 +12046,7 @@ pub const Parser = struct {
         return try self.parseTypeReferenceWithOptionalChainDiagnostic(
             2499,
             "An interface can only extend an identifier/qualified-name with optional type arguments.",
+            false,
         );
     }
 
@@ -12023,6 +12054,7 @@ pub const Parser = struct {
         return try self.parseTypeReferenceWithOptionalChainDiagnostic(
             2500,
             "A class can only implement an identifier/qualified-name with optional type arguments.",
+            true,
         );
     }
 
@@ -12030,6 +12062,7 @@ pub const Parser = struct {
         self: *Parser,
         optional_chain_code: u32,
         optional_chain_message: []const u8,
+        recover_call_heritage: bool,
     ) ParseError!NodeId {
         const start = self.peek();
         const name_tok = if (self.peek().kind == .identifier or self.peek().kind.isPrimitiveTypeKeyword())
@@ -12123,7 +12156,22 @@ pub const Parser = struct {
             }
         }
 
-        const end_pos = self.tokens[self.cursor - 1].span.end;
+        var end_pos = self.tokens[self.cursor - 1].span.end;
+        if (recover_call_heritage and self.peek().kind == .open_paren and !self.peek().flags.preceded_by_newline) {
+            const open = self.advance();
+            var depth: usize = 1;
+            while (depth > 0 and self.peek().kind != .eof) {
+                const tok = self.advance();
+                switch (tok.kind) {
+                    .open_paren => depth += 1,
+                    .close_paren => depth -= 1,
+                    else => {},
+                }
+            }
+            end_pos = self.tokens[self.cursor - 1].span.end;
+            _ = open;
+            try self.reportCodeAt(start.span.start, start.line, optional_chain_code, optional_chain_message);
+        }
         if (saw_question_dot) {
             try self.reportCodeAt(start.span.start, start.line, optional_chain_code, optional_chain_message);
         }
@@ -12347,10 +12395,15 @@ pub const Parser = struct {
         const diag_checkpoint_at_paren = self.diagnostics.items.len;
         // Find the matching `)`.
         const after_paren_idx = self.findMatchingParenEnd(self.cursor) orelse return null;
-        // After `)`, we expect either `=>` (untyped return) or `:` then `=>`.
+        // After `)`, we expect either `=>` (untyped return), `:` then
+        // `=>`, or a block body in recovery for `(a: T) {}` /
+        // `(...a: T[]) {}` where the arrow is missing.
         if (after_paren_idx >= self.tokens.len) return null;
         const after_kind = self.tokens[after_paren_idx].kind;
-        if (after_kind != .arrow and after_kind != .colon) return null;
+        const recover_missing_arrow_before_block = after_kind == .open_brace and
+            self.parenContentsLookLikeTypedOrRestParams(self.cursor, after_paren_idx);
+        if (after_kind != .arrow and after_kind != .colon and !recover_missing_arrow_before_block) return null;
+        const recover_numeric_param = after_kind == .arrow and self.parenArrowStartsWithExpressionOnlyToken(self.cursor);
         if (after_kind == .colon) {
             // `(expr): =>` is not a typed arrow in TypeScript. It recovers as
             // a parenthesized expression followed by a stray `:` and `=>`.
@@ -12370,6 +12423,9 @@ pub const Parser = struct {
         // list (e.g. `async (await) => …`) is correctly diagnosed as
         // reserved (TS1359). Decrement before the permanent
         // re-increment that wraps the arrow body further below.
+        const saved_numeric_recovery = self.allow_numeric_arrow_param_recovery;
+        self.allow_numeric_arrow_param_recovery = recover_numeric_param;
+        defer self.allow_numeric_arrow_param_recovery = saved_numeric_recovery;
         if (is_async) self.async_function_depth += 1;
         const params = self.parseParameterList() catch |err| {
             if (is_async) self.async_function_depth -= 1;
@@ -12389,6 +12445,10 @@ pub const Parser = struct {
             const arrow_tok = self.peek();
             try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1200, "Line terminator not permitted before arrow.");
         }
+        if (recover_numeric_param and self.peek().kind == .arrow) {
+            const arrow_tok = self.peek();
+            try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "',' expected.");
+        }
         if (self.peek().kind == .open_brace) {
             const body_tok = self.peek();
             try self.reportCodeAt(body_tok.span.start, body_tok.line, 1005, "'=>' expected.");
@@ -12405,6 +12465,7 @@ pub const Parser = struct {
             if (is_async) self.async_function_depth -= 1;
         }
         const body = try self.parseArrowBody();
+        if (recover_numeric_param) try self.reportNumericArrowRecoveryBodyDiagnostics(body);
         // TS parity (parserArrowFunctionExpression8/9/10/11/12): when
         // we're inside the `true` branch of a conditional expression
         // and the speculative arrow has a `:` return-type colon, the
@@ -12423,6 +12484,48 @@ pub const Parser = struct {
             .is_async = is_async,
         };
         return try self.builder.addFnDeclGeneric(sp, hir_mod.none_node_id, type_params, params, return_type, body, flags);
+    }
+
+    fn parenArrowStartsWithExpressionOnlyToken(self: *Parser, open_paren_idx: u32) bool {
+        if (open_paren_idx + 1 >= self.tokens.len) return false;
+        return switch (self.tokens[open_paren_idx + 1].kind) {
+            .number_literal, .bigint_literal, .string_literal, .regex_literal, .no_substitution_template, .template_head => true,
+            else => false,
+        };
+    }
+
+    fn parenContentsLookLikeTypedOrRestParams(self: *Parser, open_paren_idx: u32, after_paren_idx: u32) bool {
+        var i = open_paren_idx + 1;
+        while (i < after_paren_idx and i < self.tokens.len) : (i += 1) {
+            switch (self.tokens[i].kind) {
+                .colon, .dot_dot_dot => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn reportNumericArrowRecoveryBodyDiagnostics(self: *Parser, body: NodeId) ParseError!void {
+        if (body == hir_mod.none_node_id or self.hir.kindOf(body) != .block_stmt) return;
+        const body_span = self.hir.spanOf(body);
+        if (body_span.start >= body_span.end or body_span.end > self.source.len) return;
+        const text = self.source[body_span.start..body_span.end];
+        if (std.mem.indexOfScalar(u8, text, ';')) |semi_rel| {
+            const pos = body_span.start + @as(u32, @intCast(semi_rel));
+            if (pos > 0) {
+                try self.reportCodeAt(pos - 1, self.lineAt(pos), 1005, "':' expected.");
+            } else {
+                try self.reportCodeAt(pos, self.lineAt(pos), 1005, "':' expected.");
+            }
+        }
+        if (std.mem.lastIndexOfScalar(u8, text, '}')) |brace_rel| {
+            const pos = body_span.start + @as(u32, @intCast(brace_rel));
+            if (pos > 0) {
+                try self.reportCodeAt(pos - 1, self.lineAt(pos), 1005, "',' expected.");
+            } else {
+                try self.reportCodeAt(pos, self.lineAt(pos), 1005, "',' expected.");
+            }
+        }
     }
 
     fn tryParseArrowWithMissingCloseParen(

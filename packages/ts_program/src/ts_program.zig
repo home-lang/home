@@ -346,6 +346,9 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
+        const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len);
+        defer self.gpa.free(known_reference_paths);
+        for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             if (f.compilation != null) continue;
@@ -355,6 +358,7 @@ pub const Program = struct {
             per_file.script_object_expandos = script_object_expandos;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
+            per_file.known_reference_paths = known_reference_paths;
             per_file.suppress_import_helper_diagnostics = true;
             // Per-file declaration-file flag. Multi-file fixtures
             // (e.g. `react.d.ts` + `app.tsx` in one conformance case)
@@ -540,6 +544,7 @@ pub const Program = struct {
         source: []const u8,
         out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClass),
     ) ProgramError!void {
+        try collectAmbientModuleClassesFromSource(gpa, path, source, out);
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, source, search_start, "export")) |export_pos| {
             search_start = export_pos + "export".len;
@@ -570,6 +575,72 @@ pub const Program = struct {
                 .class_name = source[cursor..name_end],
                 .members = members,
                 .static_members = static_members,
+            });
+            search_start = name_end;
+        }
+    }
+
+    fn collectAmbientModuleClassesFromSource(
+        gpa: std.mem.Allocator,
+        path: []const u8,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClass),
+    ) ProgramError!void {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "declare")) |declare_pos| {
+            search_start = declare_pos + "declare".len;
+            if (!identifierKeywordAt(source, declare_pos, "declare")) continue;
+            var module_pos = declare_pos + "declare".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (!identifierKeywordAt(source, module_pos, "module")) continue;
+            module_pos += "module".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (module_pos >= source.len or (source[module_pos] != '"' and source[module_pos] != '\'')) continue;
+            const quote = source[module_pos];
+            const spec_start = module_pos + 1;
+            const spec_end = std.mem.indexOfScalarPos(u8, source, spec_start, quote) orelse continue;
+            const spec = source[spec_start..spec_end];
+            if (std.mem.startsWith(u8, spec, ".")) continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, spec_end + 1, '{') orelse continue;
+            const body_close = findMatchingBrace(source, body_open) orelse continue;
+            try collectAmbientModuleClassesFromBody(gpa, path, spec, source, body_open + 1, body_close, out);
+            search_start = body_close + 1;
+        }
+    }
+
+    fn collectAmbientModuleClassesFromBody(
+        gpa: std.mem.Allocator,
+        path: []const u8,
+        spec: []const u8,
+        source: []const u8,
+        body_start: usize,
+        body_end: usize,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramExportedClass),
+    ) ProgramError!void {
+        var search_start = body_start;
+        while (search_start < body_end) {
+            const class_pos = std.mem.indexOfPos(u8, source, search_start, "class") orelse break;
+            if (class_pos >= body_end) break;
+            search_start = class_pos + "class".len;
+            if (!identifierKeywordAt(source, class_pos, "class")) continue;
+            var name_start = class_pos + "class".len;
+            while (name_start < body_end and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
+            const name_end = parseIdentifierEnd(source, name_start, body_end) orelse continue;
+            var members: []const ts_driver.ProgramExportedClassMember = &.{};
+            if (std.mem.indexOfScalarPos(u8, source, name_end, '{')) |class_open| {
+                if (class_open < body_end) {
+                    if (findMatchingBrace(source, class_open)) |class_close| {
+                        if (class_close <= body_end) {
+                            members = try collectExportedClassMembers(gpa, source, class_open + 1, class_close);
+                        }
+                    }
+                }
+            }
+            try out.append(gpa, .{
+                .target_path = path,
+                .ambient_module_name = spec,
+                .class_name = source[name_start..name_end],
+                .members = members,
             });
             search_start = name_end;
         }
@@ -2499,6 +2570,139 @@ pub fn moduleExportsTypeSpaceName(
     return sym.flags.is_type and sym.flags.is_export;
 }
 
+/// True when `module_source` declares `name` as an exported value-space
+/// symbol at module scope. Used alongside `moduleExportsTypeSpaceName`
+/// to distinguish classes/enums (type+value) from interfaces/type
+/// aliases (type-only declarations) for verbatim-module import checks.
+pub fn moduleExportsValueSpaceName(
+    gpa: std.mem.Allocator,
+    module_source: []const u8,
+    name: []const u8,
+    is_tsx: bool,
+) bool {
+    var compilation = ts_driver.compileSource(gpa, module_source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return false;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    const id = compilation.interner.lookup(name) orelse return false;
+    const sym = compilation.module.root.values.get(id) orelse return false;
+    if (sym.flags.is_type or !sym.flags.is_export) return false;
+    return moduleRootHasExportedRuntimeValue(&compilation.hir, compilation.root, id);
+}
+
+/// True when `module_source` declares `name` as an exported namespace whose
+/// body contributes no runtime values. TypeScript treats these as type-only
+/// declarations for verbatim-module named-import checks.
+pub fn moduleExportsTypeOnlyNamespaceName(
+    gpa: std.mem.Allocator,
+    module_source: []const u8,
+    name: []const u8,
+    is_tsx: bool,
+) bool {
+    var compilation = ts_driver.compileSource(gpa, module_source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return false;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    const id = compilation.interner.lookup(name) orelse return false;
+    if (compilation.hir.kindOf(compilation.root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+        if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+        const decl = hir_mod_ns.exportOf(&compilation.hir, stmt).decl;
+        if (decl == hir_mod_ns.none_node_id or
+            (compilation.hir.kindOf(decl) != .namespace_decl and compilation.hir.kindOf(decl) != .module_decl)) continue;
+        if (declarationName(&compilation.hir, decl) != id) continue;
+        return !declCreatesRuntimeValue(&compilation.hir, decl);
+    }
+    return false;
+}
+
+fn moduleRootHasExportedRuntimeValue(hir: *const hir_mod_ns.Hir, root: hir_mod_ns.NodeId, name: hir_mod_ns.StringId) bool {
+    if (hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod_ns.blockStmts(hir, root)) |stmt| {
+        if (hir.kindOf(stmt) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(hir, stmt);
+        const decl = ex.decl;
+        if (decl != hir_mod_ns.none_node_id) {
+            if (declarationName(hir, decl) == name and declCreatesRuntimeValue(hir, decl)) return true;
+        }
+        for (hir_mod_ns.exportNamed(hir, stmt)) |spec_node| {
+            if (hir.kindOf(spec_node) != .import_specifier) continue;
+            const sp = hir_mod_ns.importSpecifierOf(hir, spec_node);
+            if (sp.local == name or sp.imported == name) return true;
+        }
+    }
+    return false;
+}
+
+fn declarationName(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) hir_mod_ns.StringId {
+    return switch (hir.kindOf(node)) {
+        .var_decl, .let_decl, .const_decl => blk: {
+            const v = hir_mod_ns.varDeclOf(hir, node);
+            break :blk if (v.name != hir_mod_ns.none_node_id and hir.kindOf(v.name) == .identifier)
+                hir_mod_ns.identifierOf(hir, v.name).name
+            else
+                0;
+        },
+        .fn_decl, .fn_expr => blk: {
+            const f = hir_mod_ns.fnDeclOf(hir, node);
+            break :blk if (f.name != hir_mod_ns.none_node_id and hir.kindOf(f.name) == .identifier)
+                hir_mod_ns.identifierOf(hir, f.name).name
+            else
+                0;
+        },
+        .class_decl, .class_expr => blk: {
+            const c = hir_mod_ns.classOf(hir, node);
+            break :blk if (c.name != hir_mod_ns.none_node_id and hir.kindOf(c.name) == .identifier)
+                hir_mod_ns.identifierOf(hir, c.name).name
+            else
+                0;
+        },
+        .enum_decl => blk: {
+            const e = hir_mod_ns.enumOf(hir, node);
+            break :blk if (e.name != hir_mod_ns.none_node_id and hir.kindOf(e.name) == .identifier)
+                hir_mod_ns.identifierOf(hir, e.name).name
+            else
+                0;
+        },
+        .namespace_decl, .module_decl => blk: {
+            const ns = hir_mod_ns.namespaceOf(hir, node);
+            break :blk if (ns.name != hir_mod_ns.none_node_id and hir.kindOf(ns.name) == .identifier)
+                hir_mod_ns.identifierOf(hir, ns.name).name
+            else
+                0;
+        },
+        else => 0,
+    };
+}
+
+fn declCreatesRuntimeValue(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) bool {
+    return switch (hir.kindOf(node)) {
+        .var_decl, .let_decl, .const_decl, .fn_decl, .fn_expr, .class_decl, .class_expr, .enum_decl => true,
+        .namespace_decl, .module_decl => namespaceBodyHasRuntimeValue(hir, node),
+        else => false,
+    };
+}
+
+fn namespaceBodyHasRuntimeValue(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) bool {
+    if (hir.kindOf(node) != .namespace_decl and hir.kindOf(node) != .module_decl) return false;
+    for (hir_mod_ns.namespaceBody(hir, node)) |raw| {
+        const stmt = if (hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(hir, raw).decl else raw;
+        if (stmt == hir_mod_ns.none_node_id) continue;
+        if (declCreatesRuntimeValue(hir, stmt)) return true;
+    }
+    return false;
+}
+
 /// True when `name` is exported from `module_source` via a TYPE-ONLY
 /// export — `export type { name }` (or `export { type name }`), or a
 /// blanket `export type * from "…"` (which re-exports every name
@@ -3408,6 +3612,27 @@ test "Program: loadImportClosure follows /// <reference path> (TS1400 reason)" {
     try T.expectEqualStrings("./dep.ts", main_source[ref_pos .. ref_pos + dep.include_reason.?.specifierSpanLen()]);
 }
 
+test "Program: compileAll satisfies split-file triple-slash reference path" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/c.d.ts", "declare module \"C\" { export class Cls {} }\n");
+    try vfs.addFile("/d.ts", "/// <reference path=\"c.d.ts\" />\nimport { Cls } from \"C\";\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .classic });
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/c.d.ts", "declare module \"C\" { export class Cls {} }\n");
+    const d_id = try p.add("/d.ts", "/// <reference path=\"c.d.ts\" />\nimport { Cls } from \"C\";\n");
+
+    try p.compileAll(.{ .no_emit = true });
+
+    const d = p.fileById(d_id);
+    const c = d.compilation orelse return error.TestUnexpectedResult;
+    for (c.diagnostics.items) |diag| {
+        try T.expect(diag.code != 6053);
+    }
+}
+
 test "Program: loadImportClosure follows /// <reference types> (TS1402/TS1403 reason)" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -4128,6 +4353,24 @@ test "moduleExportsTypeSpaceName: non-exported or value-only names are not type-
     try T.expect(!moduleExportsTypeSpaceName(T.allocator, "export function f() {}", "f", false));
     // Absent name.
     try T.expect(!moduleExportsTypeSpaceName(T.allocator, "export interface I {}", "Missing", false));
+}
+
+test "moduleExportsValueSpaceName: exported value-space names exclude interfaces and aliases" {
+    try T.expect(moduleExportsValueSpaceName(T.allocator, "export class C {}", "C", false));
+    try T.expect(moduleExportsValueSpaceName(T.allocator, "export enum E { A }", "E", false));
+    try T.expect(moduleExportsValueSpaceName(T.allocator, "export const v = 1;", "v", false));
+    try T.expect(moduleExportsValueSpaceName(T.allocator, "export function f() {}", "f", false));
+    try T.expect(moduleExportsValueSpaceName(T.allocator, "export namespace N { export const v = 1; }", "N", false));
+    try T.expect(!moduleExportsValueSpaceName(T.allocator, "export interface I {}", "I", false));
+    try T.expect(!moduleExportsValueSpaceName(T.allocator, "export type A = number;", "A", false));
+    try T.expect(!moduleExportsValueSpaceName(T.allocator, "export namespace N { export type T = any; }", "N", false));
+}
+
+test "moduleExportsTypeOnlyNamespaceName: exported type-only namespaces are declarations" {
+    try T.expect(moduleExportsTypeOnlyNamespaceName(T.allocator, "export namespace Event { export type T = any; }", "Event", false));
+    try T.expect(!moduleExportsTypeOnlyNamespaceName(T.allocator, "export namespace N { export const v = 1; }", "N", false));
+    try T.expect(!moduleExportsTypeOnlyNamespaceName(T.allocator, "namespace N { export type T = any; }", "N", false));
+    try T.expect(!moduleExportsTypeOnlyNamespaceName(T.allocator, "export interface I {}", "I", false));
 }
 
 test "moduleExportsTypeSpaceName: nested declarations do not leak as top-level exports" {

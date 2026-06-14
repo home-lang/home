@@ -605,6 +605,12 @@ pub const Resolver = struct {
         const resolution_mode = if (self.hasCondition("import")) "ESM" else "CJS";
         self.traceMsg(6402, "Resolving in {s} mode with conditions {s}.", .{ resolution_mode, self.conditionsText() });
         if (try self.tryPathsMapping(specifier)) |r| return r;
+        if (self.config.strategy == .classic) {
+            const dir = dirname(containing_file);
+            const joined = try self.joinPath(dir, specifier);
+            if (try self.tryFileWithExtensions(joined)) |r| return r;
+            if (try self.tryDirectoryIndex(joined)) |r| return r;
+        }
         // The modern resolvers (node16/nodenext/bundler) honor a few
         // package.json-scope-relative lookups BEFORE walking node_modules,
         // matching tsc's `resolveModuleName` order (`loadModuleFromImports`
@@ -3719,6 +3725,18 @@ test "Resolver: packageJsonMain_isNonRecursive — nested package.json under `ma
     var r = Resolver.init(T.allocator, vfs.fs(), .{});
     defer r.deinit();
     try T.expectError(error.NotFound, r.resolve("foo", "/a.ts"));
+}
+
+test "Resolver: classic bare module probes sibling virtual file" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/main.ts", "import \"d\";");
+    try vfs.addFile("/d.ts", "export {};");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .classic });
+    defer r.deinit();
+    const res = try r.resolve("d", "/main.ts");
+    try T.expectEqualStrings("/d.ts", res.path);
 }
 
 test "Resolver: package exports — root '.' resolves via conditional chain" {

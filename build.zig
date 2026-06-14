@@ -186,6 +186,11 @@ pub fn build(b: *std.Build) void {
         "filter",
         "Only run umbrella test artifacts whose package name contains this substring",
     );
+    const ts_conformance_test_filter = b.option(
+        []const u8,
+        "ts-conformance-test-filter",
+        "Only compile/run ts_conformance tests whose name contains this substring",
+    );
 
     const zig_test_framework: ?*std.Build.Module = if (test_framework_path) |path|
         b.createModule(.{
@@ -1325,7 +1330,11 @@ pub fn build(b: *std.Build) void {
     const run_ts_cli_tests = b.addRunArtifact(ts_cli_tests);
     dependOnTest(test_step, &run_ts_cli_tests.step, test_filter, "ts_cli");
 
-    const ts_conformance_tests = b.addTest(.{ .root_module = ts_conformance_pkg });
+    const ts_conformance_test_filters: []const []const u8 = if (ts_conformance_test_filter) |needle| &.{needle} else &.{};
+    const ts_conformance_tests = b.addTest(.{
+        .root_module = ts_conformance_pkg,
+        .filters = ts_conformance_test_filters,
+    });
     const run_ts_conformance_tests = b.addRunArtifact(ts_conformance_tests);
     dependOnTest(test_step, &run_ts_conformance_tests.step, test_filter, "ts_conformance");
 

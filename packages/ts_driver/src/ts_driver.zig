@@ -311,6 +311,9 @@ pub const CompileOptions = struct {
     ///   - `module` — selects the import/export form (Phase 4
     ///     follow-up; today emits ES modules)
     pub_tsconfig: ?*const tsconfig_mod.TsConfig = null,
+    /// Effective `--module` value when the caller already resolved it
+    /// from conformance directives or matrix baseline selection.
+    module_kind: []const u8 = "",
     /// Optional `ts_resolver`-backed module-resolution hook. When
     /// set, the driver installs it on the checker via
     /// `Checker.setExternalResolver` so bare-module lookups
@@ -338,6 +341,10 @@ pub const CompileOptions = struct {
     module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
     /// Program-level exported classes discovered in sibling files.
     program_exported_classes: []const ProgramExportedClass = &.{},
+    /// Program-level virtual file paths that are known to exist. Used
+    /// to satisfy per-file triple-slash path diagnostics after a
+    /// multi-file fixture has been split into individual sources.
+    known_reference_paths: []const []const u8 = &.{},
     /// Effective `--moduleResolution` value as a normalized
     /// lower-case label (`"classic"`, `"node10"`, `"node16"`,
     /// `"nodenext"`, `"bundler"`). The conformance harness derives
@@ -629,6 +636,7 @@ fn reportMissingReferencePathDiagnostics(
     gpa: std.mem.Allocator,
     c: *Compilation,
     source: []const u8,
+    options: CompileOptions,
 ) CompileError!void {
     if (std.mem.indexOf(u8, source, "<reference") == null or
         std.mem.indexOf(u8, source, "path") == null)
@@ -665,6 +673,7 @@ fn reportMissingReferencePathDiagnostics(
         const path = line[path_start..idx];
         if (path.len == 0) continue;
         if (isHarnessProvidedReferencePath(path) or virtualReferencePathExists(source, path)) continue;
+        if (try knownReferencePathExists(gpa, options, path)) continue;
 
         if (!referencePathHasExtension(path)) {
             if (try referencePathExistsWithSupportedExtension(gpa, io, path)) continue;
@@ -705,6 +714,28 @@ fn reportMissingReferencePathDiagnostics(
             );
         };
     }
+}
+
+fn knownReferencePathExists(
+    gpa: std.mem.Allocator,
+    options: CompileOptions,
+    path: []const u8,
+) CompileError!bool {
+    if (options.known_reference_paths.len == 0) return false;
+    const candidate = blk: {
+        if (path.len > 0 and path[0] == '/') {
+            break :blk std.fs.path.resolvePosix(gpa, &.{path}) catch return error.OutOfMemory;
+        }
+        if (std.fs.path.dirname(options.importer_path)) |dir| {
+            break :blk std.fs.path.resolvePosix(gpa, &.{ dir, path }) catch return error.OutOfMemory;
+        }
+        break :blk std.fs.path.resolvePosix(gpa, &.{path}) catch return error.OutOfMemory;
+    };
+    defer gpa.free(candidate);
+    for (options.known_reference_paths) |known| {
+        if (std.mem.eql(u8, known, candidate)) return true;
+    }
+    return false;
 }
 
 fn reportMissingReferenceTypesDiagnostics(
@@ -1632,7 +1663,7 @@ pub fn compileSource(
 
     try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
     try reportSelfReferencePathDiagnostics(gpa, c, source, options);
-    try reportMissingReferencePathDiagnostics(gpa, c, source);
+    try reportMissingReferencePathDiagnostics(gpa, c, source, options);
     try reportMissingReferenceTypesDiagnostics(gpa, c, source);
     try extractReferenceDirectives(gpa, c, source);
     try appendJsonModuleValidationDiagnostics(gpa, c, source, options.importer_path);
@@ -1867,6 +1898,7 @@ pub fn compileSource(
     }
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
+    if (options.module_kind.len > 0) checker.setModuleKind(options.module_kind);
     if (options.pub_tsconfig) |cfg| {
         if (cfg.compiler_options.module) |m| checker.setModuleKind(@tagName(m));
     }

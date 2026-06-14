@@ -972,12 +972,7 @@ pub const Interner = struct {
     /// type id, or `null` if the type isn't an object or the
     /// property doesn't exist.
     pub fn objectMember(self: *const Interner, id: TypeId, name: StringId) ?TypeId {
-        if (!self.pool.flagsOf(id).is_object_type) return null;
-        const payload_idx = self.pool.payloadOf(id);
-        if (payload_idx >= self.pool.object_type_payloads.items.len) return null;
-        const payload = self.pool.object_type_payloads.items[payload_idx];
-        const members = self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
-        for (members) |m| {
+        for (self.objectMembers(id)) |m| {
             if (m.name == name) return m.type;
         }
         return null;
@@ -987,12 +982,7 @@ pub const Interner = struct {
     /// record, or `null` if the type isn't an object or the
     /// property doesn't exist.
     pub fn objectMemberInfo(self: *const Interner, id: TypeId, name: StringId) ?types.ObjectMember {
-        if (!self.pool.flagsOf(id).is_object_type) return null;
-        const payload_idx = self.pool.payloadOf(id);
-        if (payload_idx >= self.pool.object_type_payloads.items.len) return null;
-        const payload = self.pool.object_type_payloads.items[payload_idx];
-        const members = self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
-        for (members) |m| {
+        for (self.objectMembers(id)) |m| {
             if (m.name == name) return m;
         }
         return null;
@@ -1005,7 +995,12 @@ pub const Interner = struct {
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.object_type_payloads.items.len) return &.{};
         const payload = self.pool.object_type_payloads.items[payload_idx];
-        return self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
+        const members = self.pool.object_member_pool.items;
+        const start: usize = payload.members_start;
+        const len: usize = payload.members_len;
+        if (start > members.len) return &.{};
+        if (len > members.len - start) return &.{};
+        return members[start .. start + len];
     }
 
     /// Sharded intern entry point. Hashes the key once, picks the

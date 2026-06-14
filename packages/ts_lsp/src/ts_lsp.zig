@@ -8755,15 +8755,22 @@ test "Service: codeActions sorts top-level imports" {
     const actions = try svc.codeActions(T.allocator, "/main.ts");
     defer {
         for (actions) |a| {
+            if (a.kind == .quick_fix) T.allocator.free(a.title);
             for (a.edits) |e| T.allocator.free(e.new_text);
             T.allocator.free(a.edits);
         }
         T.allocator.free(actions);
     }
-    try T.expect(actions.len == 1);
-    try T.expectEqualStrings("Organize Imports", actions[0].title);
+    var organize: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.title, "Organize Imports")) {
+            organize = a;
+            break;
+        }
+    }
+    try T.expect(organize != null);
     // The new text should mention `"a"` before `"z"`.
-    const nt = actions[0].edits[0].new_text;
+    const nt = organize.?.edits[0].new_text;
     const a_pos = std.mem.indexOf(u8, nt, "\"./a\"") orelse return error.NotFound;
     const z_pos = std.mem.indexOf(u8, nt, "\"./z\"") orelse return error.NotFound;
     try T.expect(a_pos < z_pos);

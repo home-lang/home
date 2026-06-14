@@ -1475,8 +1475,10 @@ pub const Engine = struct {
             return false;
         }
 
-        const sp_raw = self.interner.signatureParams(source);
-        const tp_raw = self.interner.signatureParams(target);
+        const sp_raw = try self.gpa.dupe(TypeId, self.interner.signatureParams(source));
+        defer self.gpa.free(sp_raw);
+        const tp_raw = try self.gpa.dupe(TypeId, self.interner.signatureParams(target));
+        defer self.gpa.free(tp_raw);
         // §4.A.X TS 4.0 — when either signature is a rest signature
         // whose rest type is a known tuple, expand the tuple into
         // positional params so a variadic `(...args: [number, string]) => R`
