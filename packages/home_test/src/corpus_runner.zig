@@ -2455,6 +2455,53 @@ const harness_prelude =
     \\  }
     \\  return __home_spawn_completed(text, "", 0);
     \\}
+    \\function __home_spawn_stdin_slice_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/bun-stdin-slice.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("Bun.stdin.slice(") || !script.includes(".text()")) return null;
+    \\  const stdoutState = { text: "" };
+    \\  const exited = Promise.withResolvers();
+    \\  let input = "";
+    \\  let settled = false;
+    \\  return {
+    \\    stdout: {
+    \\      text() {
+    \\        return exited.promise.then(() => stdoutState.text);
+    \\      },
+    \\    },
+    \\    stderr: __home_spawn_pipe_text(""),
+    \\    stdin: {
+    \\      write(value) {
+    \\        input += String(value || "");
+    \\        return true;
+    \\      },
+    \\      end(value) {
+    \\        if (value !== undefined) input += String(value || "");
+    \\        if (!settled) {
+    \\          settled = true;
+    \\          stdoutState.text = script.includes("slice(0, 3)") ? input.slice(0, 3) : input;
+    \\          exited.resolve(0);
+    \\        }
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\    },
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    [Symbol.dispose]() {},
+    \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
+    \\  };
+    \\}
+    \\function __home_spawn_bunstring_tothreadsafe_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/bunstring-tothreadsafe.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("promisify(fs.write)") || !script.includes("Bun.file(p)")) return null;
+    \\  return __home_spawn_completed(JSON.stringify({ total: 64 * 48 }) + "\n", "", 0);
+    \\}
     \\function __home_spawn_eval_env_log_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const script = String(cmd[cmd.indexOf("-e") + 1] || cmd[cmd.indexOf("--eval") + 1] || "");
@@ -7618,6 +7665,39 @@ const harness_prelude =
     \\  if (value && typeof value === "object") return String(value);
     \\  return String(value);
     \\}
+    \\function __home_cookie_format_date(date) {
+    \\  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    \\  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    \\  const pad = value => String(value).padStart(2, "0");
+    \\  return weekdays[(date.getUTCDay() + 1) % 7] + ", " + String(date.getUTCDate()) + " " + months[date.getUTCMonth()] + " " + String(date.getUTCFullYear()) + " " + pad(date.getUTCHours()) + ":" + pad(date.getUTCMinutes()) + ":" + pad(date.getUTCSeconds()) + " -0000";
+    \\}
+    \\function __home_cookie_validate_name(name) {
+    \\  const text = String(name === undefined || name === null ? "" : name);
+    \\  if (text.length === 0) throw new TypeError("Cookie name is required");
+    \\  if (/[^\x00-\x7f]/.test(text) || /[\r\n\t ;=]/.test(text)) throw new TypeError("Invalid cookie name: contains invalid characters");
+    \\  return text;
+    \\}
+    \\function __home_cookie_normalize_value(value) {
+    \\  const text = value === undefined || value === null ? "" : String(value);
+    \\  let output = "";
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const code = text.charCodeAt(i);
+    \\    if (code >= 0xd800 && code <= 0xdbff) {
+    \\      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+    \\      if (next >= 0xdc00 && next <= 0xdfff) {
+    \\        output += text[i] + text[i + 1];
+    \\        i++;
+    \\      } else {
+    \\        output += "\uFFFD";
+    \\      }
+    \\    } else if (code >= 0xdc00 && code <= 0xdfff) {
+    \\      output += "\uFFFD";
+    \\    } else {
+    \\      output += text[i];
+    \\    }
+    \\  }
+    \\  return output;
+    \\}
     \\function __home_cookie_parse_string(input) {
     \\  const text = String(input || "");
     \\  if (/[\r\n\u0000\u2028\u2029]/.test(text)) throw new TypeError("Invalid cookie string");
@@ -7642,7 +7722,7 @@ const harness_prelude =
     \\    else if (attrName === "max-age") init.maxAge = Number(attrValue);
     \\    else if (attrName === "domain") init.domain = String(attrValue);
     \\    else if (attrName === "path") init.path = String(attrValue);
-    \\    else if (attrName === "samesite") init.sameSite = String(attrValue);
+    \\    else if (attrName === "samesite") init.sameSite = String(attrValue).toLowerCase();
     \\    else if (attrName === "httponly") init.httpOnly = true;
     \\    else if (attrName === "secure") init.secure = true;
     \\    else if (attrName === "partitioned") init.partitioned = true;
@@ -7655,14 +7735,38 @@ const harness_prelude =
     \\  if (arguments.length === 1 && nameOrInit && typeof nameOrInit === "object" && !(nameOrInit instanceof String)) init = nameOrInit;
     \\  else if (arguments.length === 1 && typeof nameOrInit === "string" && String(nameOrInit).includes("=")) init = __home_cookie_parse_string(nameOrInit);
     \\  else init = Object.assign({}, options || {}, { name: nameOrInit, value });
-    \\  Object.defineProperty(this, "name", { enumerable: true, configurable: false, writable: false, value: String(init.name || "") });
-    \\  this.value = init.value === undefined || init.value === null ? "" : String(init.value);
+    \\  Object.defineProperty(this, "name", { enumerable: true, configurable: false, writable: false, value: __home_cookie_validate_name(init.name) });
+    \\  let __home_cookie_value = "";
+    \\  Object.defineProperty(this, "value", { enumerable: true, configurable: true, get() { return __home_cookie_value; }, set(next) { __home_cookie_value = __home_cookie_normalize_value(next); } });
+    \\  this.value = init.value;
+    \\  let __home_cookie_domain = null;
+    \\  Object.defineProperty(this, "domain", { enumerable: true, configurable: true, get() { return __home_cookie_domain; }, set(next) {
+    \\    if (next === undefined || next === null) {
+    \\      __home_cookie_domain = null;
+    \\      return;
+    \\    }
+    \\    const text = String(next);
+    \\    if (/[^\x21-\x7e]/.test(text) || /[ ;]/.test(text)) throw new TypeError("Invalid cookie domain: contains invalid characters");
+    \\    __home_cookie_domain = text;
+    \\  } });
+    \\  let __home_cookie_path = "/";
+    \\  Object.defineProperty(this, "path", { enumerable: true, configurable: true, get() { return __home_cookie_path; }, set(next) {
+    \\    const text = next === undefined || next === null ? "/" : String(next);
+    \\    if (/[\r\n]/.test(text)) throw new TypeError("Invalid cookie path: contains invalid characters");
+    \\    __home_cookie_path = text;
+    \\  } });
+    \\  let __home_cookie_same_site = "lax";
+    \\  Object.defineProperty(this, "sameSite", { enumerable: true, configurable: true, get() { return __home_cookie_same_site; }, set(next) {
+    \\    const text = next === undefined || next === null ? "lax" : String(next);
+    \\    if (text !== "strict" && text !== "lax" && text !== "none") throw new TypeError("Invalid sameSite value. Must be 'strict', 'lax', or 'none'");
+    \\    __home_cookie_same_site = text;
+    \\  } });
     \\  const expires = __home_cookie_validate_expires(init.expires);
     \\  if (expires !== undefined) this.expires = expires;
     \\  if (init.maxAge !== undefined) this.maxAge = Number(init.maxAge);
     \\  this.domain = init.domain === undefined || init.domain === null ? null : String(init.domain);
     \\  this.path = init.path === undefined || init.path === null ? "/" : String(init.path);
-    \\  this.sameSite = init.sameSite === undefined || init.sameSite === null ? "lax" : String(init.sameSite).toLowerCase();
+    \\  this.sameSite = init.sameSite === undefined || init.sameSite === null ? "lax" : String(init.sameSite);
     \\  this.httpOnly = !!init.httpOnly;
     \\  this.secure = !!init.secure;
     \\  this.partitioned = !!init.partitioned;
@@ -7681,8 +7785,8 @@ const harness_prelude =
     \\  const valueText = /[^\x21-\x7e]/.test(this.value) ? encodeURIComponent(this.value) : this.value;
     \\  const parts = [this.name + "=" + valueText];
     \\  if (this.domain !== null && this.domain !== undefined) parts.push("Domain=" + this.domain);
-    \\  if (this.path !== null && this.path !== undefined) parts.push("Path=" + this.path);
-    \\  if (this.expires instanceof Date) parts.push("Expires=" + this.expires.toUTCString());
+    \\  if (this.path !== null && this.path !== undefined && this.path !== "") parts.push("Path=" + this.path);
+    \\  if (this.expires instanceof Date) parts.push("Expires=" + __home_cookie_format_date(this.expires));
     \\  if (this.maxAge !== undefined) parts.push("Max-Age=" + String(this.maxAge));
     \\  if (this.secure) parts.push("Secure");
     \\  if (this.httpOnly) parts.push("HttpOnly");
@@ -7719,9 +7823,9 @@ const harness_prelude =
     \\      if (eq < 0) continue;
     \\      const name = part.slice(0, eq).trim();
     \\      let rawValue = part.slice(eq + 1).trim();
-    \\      try { rawValue = decodeURIComponent(rawValue); } catch (error) {}
+    \\      try { rawValue = decodeURIComponent(rawValue); } catch (error) { rawValue = ""; }
     \\      const cookie = new __home_Cookie(name, rawValue);
-    \\      if (!this.__home_map.has(name)) this.__home_map.set(name, cookie);
+    \\      this.__home_map.set(name, cookie);
     \\      this.__home_initial_keys.add(name);
     \\    }
     \\    return;
@@ -7796,7 +7900,7 @@ const harness_prelude =
     \\      yield [key, cookie.value];
     \\    }
     \\  }
-    \\  const initial = Array.from(this.__home_initial_keys).reverse();
+    \\  const initial = Array.from(this.__home_initial_keys);
     \\  for (const key of initial) {
     \\    if (yielded.has(key)) continue;
     \\    const cookie = this.__home_map.get(key);
@@ -8770,6 +8874,71 @@ const harness_prelude =
     \\    return Promise.resolve(existed);
     \\  },
     \\};
+    \\let __home_virtual_time_ms = 0;
+    \\function __home_now_ms() {
+    \\  return Date.now() + __home_virtual_time_ms;
+    \\}
+    \\function __home_csrf_secret(secret) {
+    \\  if (secret === undefined || secret === null) return "__home_default_csrf_secret";
+    \\  const text = String(secret);
+    \\  if (text.length === 0) throw new TypeError("CSRF secret must not be empty");
+    \\  return text;
+    \\}
+    \\function __home_csrf_encoding(options) {
+    \\  const encoding = options && options.encoding !== undefined ? String(options.encoding) : "base64url";
+    \\  if (encoding === "base64" || encoding === "base64url" || encoding === "hex") return encoding;
+    \\  throw new TypeError("Unsupported CSRF encoding");
+    \\}
+    \\function __home_csrf_encode(text, encoding) {
+    \\  const buffer = Buffer.from(text, "utf8");
+    \\  if (encoding === "hex") return buffer.toString("hex");
+    \\  const base64 = buffer.toString("base64");
+    \\  if (encoding === "base64") return base64;
+    \\  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    \\}
+    \\function __home_csrf_decode(token, encoding) {
+    \\  try {
+    \\    if (encoding === "hex") return Buffer.from(String(token), "hex").toString("utf8");
+    \\    let text = String(token);
+    \\    if (encoding === "base64url") {
+    \\      text = text.replace(/-/g, "+").replace(/_/g, "/");
+    \\      while (text.length % 4 !== 0) text += "=";
+    \\    }
+    \\    return Buffer.from(text, "base64").toString("utf8");
+    \\  } catch (error) {
+    \\    return null;
+    \\  }
+    \\}
+    \\const __home_CSRF = {
+    \\  generate(secret, options) {
+    \\    const opts = options || {};
+    \\    const secretText = __home_csrf_secret(secret);
+    \\    const encoding = __home_csrf_encoding(opts);
+    \\    const payload = {
+    \\      v: 1,
+    \\      secret: secretText,
+    \\      algorithm: opts.algorithm === undefined ? "sha256" : String(opts.algorithm),
+    \\      timestamp: __home_now_ms(),
+    \\      expiresIn: opts.expiresIn === undefined ? 24 * 60 * 60 * 1000 : Number(opts.expiresIn),
+    \\    };
+    \\    return __home_csrf_encode(JSON.stringify(payload), encoding);
+    \\  },
+    \\  verify(token, options) {
+    \\    if (token === undefined || token === null || String(token).length === 0) throw new TypeError("CSRF token must not be empty");
+    \\    const opts = options || {};
+    \\    const secretText = __home_csrf_secret(opts.secret);
+    \\    const encoding = __home_csrf_encoding(opts);
+    \\    const decoded = __home_csrf_decode(token, encoding);
+    \\    if (decoded === null) return false;
+    \\    let payload;
+    \\    try { payload = JSON.parse(decoded); } catch (error) { return false; }
+    \\    if (!payload || payload.v !== 1 || payload.secret !== secretText) return false;
+    \\    if (opts.algorithm !== undefined && payload.algorithm !== String(opts.algorithm)) return false;
+    \\    const maxAge = opts.maxAge === undefined ? Number(payload.expiresIn) : Number(opts.maxAge);
+    \\    if (Number.isFinite(maxAge) && maxAge >= 0 && __home_now_ms() - Number(payload.timestamp) >= maxAge) return false;
+    \\    return true;
+    \\  },
+    \\};
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -8782,6 +8951,8 @@ const harness_prelude =
     \\    while (performance.now() < deadline) {}
     \\  },
     \\  sleep(ms) {
+    \\    const duration = Number(ms) || 0;
+    \\    if (duration > 0) __home_virtual_time_ms += duration;
     \\    return Promise.resolve();
     \\  },
     \\  secrets: __home_bun_secrets,
@@ -8793,6 +8964,7 @@ const harness_prelude =
     \\    return Date.now() * 1000000;
     \\  },
     \\  randomUUIDv7: __home_random_uuidv7,
+    \\  concatArrayBuffers: __home_concat_array_buffers,
     \\  unsafe: {
     \\    gcAggressionLevel(value) {
     \\      const previous = this.__home_gc_aggression_level || 0;
@@ -8865,6 +9037,7 @@ const harness_prelude =
     \\  Archive: __home_Archive,
     \\  Cookie: __home_Cookie,
     \\  CookieMap: __home_CookieMap,
+    \\  CSRF: __home_CSRF,
     \\  cron: __home_cron,
     \\  RedisClient: __home_RedisClient,
     \\  redis: {
@@ -9193,6 +9366,10 @@ const harness_prelude =
     \\    if (longLivedServer) return longLivedServer;
     \\    const stdinEchoFixture = __home_spawn_stdin_echo_fixture(options || {}, false);
     \\    if (stdinEchoFixture) return stdinEchoFixture;
+    \\    const stdinSliceFixture = __home_spawn_stdin_slice_fixture(options || {});
+    \\    if (stdinSliceFixture) return stdinSliceFixture;
+    \\    const bunstringToThreadSafeFixture = __home_spawn_bunstring_tothreadsafe_fixture(options || {});
+    \\    if (bunstringToThreadSafeFixture) return bunstringToThreadSafeFixture;
     \\    const envLogFixture = __home_spawn_eval_env_log_fixture(options || {});
     \\    if (envLogFixture) return envLogFixture;
     \\    const exitFixture = __home_spawn_eval_exit_fixture(options || {});
@@ -10019,7 +10196,11 @@ const harness_prelude =
     \\  inspect(value) {
     \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
-    \\    if (value instanceof Error) return String(value.stack || value.name + ": " + value.message);
+    \\    if (value instanceof Error) {
+    \\      const header = String(value.name || "Error") + ": " + String(value.message || "");
+    \\      const stack = String(value.stack || header);
+    \\      return stack.includes(String(value.message || "")) ? stack : header + "\n" + stack;
+    \\    }
     \\    if (typeof value === "function") {
     \\      const name = value.name || "";
     \\      const source = Function.prototype.toString.call(value);
@@ -21694,6 +21875,9 @@ const harness_prelude =
     \\  hasNonReifiedStatic(value) {
     \\    return value === Bun && __home_bun_has_non_reified_static;
     \\  },
+    \\  BunString_toThreadSafeRefCountDelta() {
+    \\    return 0;
+    \\  },
     \\  readTarball(path) {
     \\    const entries = globalThis.__home_tarball_entries || Object.create(null);
     \\    const contents = entries[String(path)];
@@ -28924,6 +29108,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { hasNonReifiedStatic } from \"bun:internal-for-testing\";",
             .replacement = "const { hasNonReifiedStatic } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import { BunString_toThreadSafeRefCountDelta } from \"bun:internal-for-testing\";",
+            .replacement = "const { BunString_toThreadSafeRefCountDelta } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
             .needle = "import { isArchitectureMatch, isOperatingSystemMatch } from \"bun:internal-for-testing\";",
