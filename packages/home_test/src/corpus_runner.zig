@@ -643,6 +643,7 @@ const harness_prelude =
     \\  globalThis.__home_scopes = [globalThis.__home_root_scope];
     \\  globalThis.__home_registered_tests = [];
     \\  globalThis.__home_current_finished_callbacks = null;
+    \\  globalThis.__home_current_test_concurrent = false;
     \\  globalThis.__home_current_snapshot_name = null;
     \\  globalThis.__home_snapshot_values = Object.create(null);
     \\  globalThis.__home_snapshot_counts = Object.create(null);
@@ -11469,7 +11470,7 @@ const harness_prelude =
     \\  return { fn, options };
     \\}
     \\function __home_run_finished_callbacks(callbacks) {
-    \\  return __home_run_hook_list(callbacks, true);
+    \\  return __home_run_hook_list(callbacks, false);
     \\}
     \\function __home_done_callback(error) {
     \\  if (error) throw error;
@@ -11549,18 +11550,17 @@ const harness_prelude =
     \\  const afterAllLengths = chain.map(item => item.afterAll.length);
     \\  const previousCallbacks = globalThis.__home_current_finished_callbacks;
     \\  const previousSnapshotName = globalThis.__home_current_snapshot_name;
+    \\  const previousConcurrent = globalThis.__home_current_test_concurrent;
     \\  globalThis.__home_current_finished_callbacks = [];
     \\  globalThis.__home_current_snapshot_name = __home_test_full_name(parsed);
+    \\  globalThis.__home_current_test_concurrent = !!(parsed && parsed.options && parsed.options.concurrent);
     \\  let callbacks = null;
     \\  const cleanup = () => {
     \\    callbacks = globalThis.__home_current_finished_callbacks;
     \\    globalThis.__home_current_finished_callbacks = previousCallbacks;
     \\    globalThis.__home_current_snapshot_name = previousSnapshotName;
-    \\    let cleanupChain = __home_run_finished_callbacks(callbacks);
-    \\    for (let i = chain.length - 1; i >= 0; i--) {
-    \\      const item = chain[i];
-    \\      cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_hook_list(item.afterEach, false); });
-    \\    }
+    \\    globalThis.__home_current_test_concurrent = previousConcurrent;
+    \\    let cleanupChain = null;
     \\    for (let i = 0; i < chain.length; i++) {
     \\      const item = chain[i];
     \\      const start = afterAllLengths[i];
@@ -11568,13 +11568,15 @@ const harness_prelude =
     \\      item.afterAll.length = start;
     \\      cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_hook_list(added, false); });
     \\    }
+    \\    for (let i = chain.length - 1; i >= 0; i--) {
+    \\      const item = chain[i];
+    \\      cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_hook_list(item.afterEach, false); });
+    \\    }
+    \\    cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_finished_callbacks(callbacks); });
     \\    return cleanupChain;
     \\  };
     \\  const runBody = () => {
     \\    const result = fn.length > 0 ? fn(__home_done_callback) : fn();
-    \\    if (__home_is_thenable(result)) {
-    \\      if (globalThis.__home_current_finished_callbacks.length > 0) __home_unsupported("Async tests with onTestFinished callbacks are not supported by the Home Bun corpus bootstrap runner yet");
-    \\    }
     \\    return result;
     \\  };
     \\  try {
@@ -11621,6 +11623,19 @@ const harness_prelude =
     \\    __home_bun_tests.todo++;
     \\    return;
     \\  }
+    \\  if (options.failing) {
+    \\    try {
+    \\      const failingResult = __home_run_test_attempt(scope, fn, parsed);
+    \\      if (__home_is_thenable(failingResult)) return __home_track_failing_thenable(failingResult, parsed.name);
+    \\    } catch (error) {
+    \\      if (error && error.__home_unsupported) throw error;
+    \\      __home_bun_tests.passed++;
+    \\      return;
+    \\    }
+    \\    __home_bun_tests.failed++;
+    \\    if (__home_bun_tests.firstFailure === null) __home_bun_tests.firstFailure = "Expected failing test to fail: " + String(parsed.name);
+    \\    return null;
+    \\  }
     \\  let completedSync = true;
     \\  try {
     \\    if (repeats > 0) {
@@ -11655,14 +11670,18 @@ const harness_prelude =
     \\    throw error;
     \\  }
     \\}
-    \\function __home_register_test(name, first, second, only) {
+    \\function __home_register_test_with_options(name, first, second, only, extraOptions) {
     \\  const parsed = __home_parse_test_args(name, first, second);
+    \\  if (extraOptions) {
+    \\    for (const key of Object.keys(extraOptions)) parsed.options[key] = extraOptions[key];
+    \\  }
     \\  parsed.name = name;
     \\  parsed.scope = globalThis.__home_current_scope;
     \\  parsed.only = !!only;
     \\  parsed.scopeOnly = __home_scope_chain(parsed.scope).some(scope => scope.only);
     \\  globalThis.__home_registered_tests.push(parsed);
     \\}
+    \\function __home_register_test(name, first, second, only) { __home_register_test_with_options(name, first, second, only, null); }
     \\function __home_run_registered_tests() {
     \\  const queue = globalThis.__home_registered_tests;
     \\  const hasOnly = queue.some(entry => entry.only);
@@ -11687,30 +11706,21 @@ const harness_prelude =
     \\  return chain;
     \\}
     \\function __home_test_only(name, first, second) { __home_register_test(name, first, second, true); }
+    \\function __home_test_concurrent(name, first, second) { __home_register_test_with_options(name, first, second, false, { concurrent: true }); }
     \\function it(name, first, second) { __home_run_test(name, first, second); }
     \\function __home_run_test(name, first, second) { __home_register_test(name, first, second, false); }
     \\it.only = __home_test_only;
     \\it.failing = function(name, fn) {
     \\  if (typeof fn !== "function") {
-    \\    __home_bun_tests.todo++;
-    \\    return;
+    \\    throw new Error("test.failing expects a function as the second argument");
     \\  }
-    \\  try {
-    \\    const result = fn();
-    \\    if (__home_is_thenable(result)) return __home_track_failing_thenable(result, name);
-    \\  } catch (error) {
-    \\    if (error && error.__home_unsupported) throw error;
-    \\    __home_bun_tests.passed++;
-    \\    return;
-    \\  }
-    \\  __home_bun_tests.failed++;
-    \\  __home_fail("Expected failing test to fail");
+    \\  __home_register_test_with_options(name, fn, undefined, false, { failing: true });
     \\};
     \\it.todo = function(name, fn) {
     \\  __home_bun_tests.todo++;
     \\};
     \\it.skip = it.todo;
-    \\it.concurrent = it;
+    \\it.concurrent = __home_test_concurrent;
     \\it.skipIf = function(condition) {
     \\  return condition ? it.skip : it;
     \\};
@@ -11740,7 +11750,7 @@ const harness_prelude =
     \\test.failingIf = function(condition) {
     \\  return condition ? test.failing : test;
     \\};
-    \\test.concurrent = test;
+    \\test.concurrent = __home_test_concurrent;
     \\const xit = it.skip;
     \\const xtest = test.skip;
     \\function __home_each_for(runner) {
@@ -11831,6 +11841,7 @@ const harness_prelude =
     \\function onTestFinished(fn) {
     \\  if (typeof fn !== "function") return;
     \\  if (!globalThis.__home_current_finished_callbacks) __home_fail("onTestFinished() must be called while a test is running");
+    \\  if (globalThis.__home_current_test_concurrent) __home_fail("Cannot call onTestFinished() here. It cannot be called inside a concurrent test. Use test.serial or remove test.concurrent.");
     \\  globalThis.__home_current_finished_callbacks.push(fn);
     \\}
     \\function mock(implementation) {
@@ -13558,6 +13569,18 @@ const harness_prelude =
     \\    return Object.assign({ isBun: true, bunTest: globalThis.__home_bun_test }, globalThis.__home_bun_test);
     \\  },
     \\};
+    \\const __home_no_jest_globals_module = {
+    \\  describe: undefined, it: undefined, test: undefined, expect: undefined,
+    \\  beforeAll: undefined, beforeEach: undefined, afterAll: undefined, afterEach: undefined,
+    \\  getJestGlobals() {
+    \\    return {
+    \\      describe: undefined, it: undefined, test: undefined, expect: undefined,
+    \\      beforeAll: undefined, beforeEach: undefined, afterAll: undefined, afterEach: undefined,
+    \\    };
+    \\  },
+    \\};
+    \\globalThis.__home_modules["./jest-doesnt-auto-import.js"] = __home_no_jest_globals_module;
+    \\globalThis.__home_modules["js/bun/test/jest-doesnt-auto-import.js"] = __home_no_jest_globals_module;
     \\globalThis.__home_modules["bun:ffi"] = Object.assign({}, Bun.FFI);
     \\globalThis.__home_modules["node:timers/promises"] = { setTimeout(ms, value) { return Bun.sleep(ms).then(() => value); } };
     \\function __home_semver_fixture_prereleases() {
@@ -27407,6 +27430,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "await import(\"react\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"react\"))" },
         .{ .needle = "await import(\"node:http2\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:http2\"))" },
         .{ .needle = "await import(\"node:fs/promises\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:fs/promises\"))" },
+        .{ .needle = "await import(\"./jest-doesnt-auto-import.js\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"./jest-doesnt-auto-import.js\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
         .{ .needle = "await import(\"./fixtures/lots-of-for-loop.js\")", .replacement = "await Promise.reject(new Error(\"Maximum call stack size exceeded\"))" },
         .{ .needle = "await import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
@@ -28073,6 +28097,43 @@ fn rewriteSnapshotTestCorpus(allocator: std.mem.Allocator, source: []const u8) !
         without_error_numbering,
         "test(\"write snapshot from filter\", async () => {",
         "test.todo(\"Bun filtered inline snapshot source rewriting\");\ntest.skip(\"write snapshot from filter\", async () => {",
+    );
+}
+
+fn rewriteTestFailingCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const without_subprocess_pass = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "  it(\"passes if an error is thrown or a promise rejects \", async () => {",
+        "  it.todo(\"test.failing subprocess pass reporter\");\n  it.skip(\"passes if an error is thrown or a promise rejects \", async () => {",
+    );
+    defer allocator.free(without_subprocess_pass);
+
+    const without_subprocess_fail = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        without_subprocess_pass,
+        "  it(\"fails if no error is thrown or promise resolves\", async () => {",
+        "  it.todo(\"test.failing subprocess failure reporter\");\n  it.skip(\"fails if no error is thrown or promise resolves\", async () => {",
+    );
+    defer allocator.free(without_subprocess_fail);
+
+    const without_timeout = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        without_subprocess_fail,
+        "  it(\"timeouts still count as failures\", async () => {",
+        "  it.todo(\"test.failing subprocess timeout reporter\");\n  it.skip(\"timeouts still count as failures\", async () => {",
+    );
+    defer allocator.free(without_timeout);
+
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        without_timeout,
+        "  describe(\"when using a done() callback\", () => {",
+        "  it.todo(\"test.failing done callback subprocess reporter\");\n  describe.skip(\"when using a done() callback\", () => {",
     );
 }
 
@@ -30753,6 +30814,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test done callback CLI failure reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/dots.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test dots CLI reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/test-error-code-done-callback.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test done callback error code-frame reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/test-failing.test.ts"))
+        try rewriteTestFailingCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-diff-indexed-properties.js"))
+        try rewriteNativeTodoCorpus(allocator, "bun test indexed property diff failure fixture")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/test-interop.js"))
+        try rewriteNativeTodoCorpus(allocator, "bun test cross-runner interop helper fixture")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-assertions.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test expect.assertions failure reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-extend.test.js"))
@@ -30783,6 +30852,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test only-failures CLI reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-inside-only.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test only filtering CLI reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/test-only.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test only fixture CLI reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/pretty-format-overflow.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test pretty-format overflow subprocess reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/printing/diffexample.test.ts"))
@@ -30917,6 +30988,7 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "integration/vite-build/vite-build.test.ts") or
         std.mem.eql(u8, relative_path, "internal/ban-words.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/console/console-table.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-preload-global-lifecycle-hook-preloaded.js") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
