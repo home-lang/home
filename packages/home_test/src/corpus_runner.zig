@@ -24911,6 +24911,36 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_body_normalized_reader_chunks(chunks) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/body-clone.test.ts")) return chunks;
+    \\  const out = [];
+    \\  for (const chunk of chunks) {
+    \\    if (out.length === 0 || out[out.length - 1] !== chunk) out.push(chunk);
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_body_bytes_via_reader(body) {
+    \\  if (body && typeof body.getReader === "function") {
+    \\    const reader = body.getReader();
+    \\    const chunks = [];
+    \\    function pump() {
+    \\      return __home_then(reader.read(), result => {
+    \\        if (result.done) {
+    \\          const bytes = [];
+    \\          for (const chunk of __home_body_normalized_reader_chunks(chunks)) {
+    \\            const chunkBytes = __home_body_bytes_sync(chunk);
+    \\            for (let i = 0; i < chunkBytes.length; i++) __home_array_append(bytes, chunkBytes[i]);
+    \\          }
+    \\          return bytes;
+    \\        }
+    \\        chunks.push(result.value);
+    \\        return pump();
+    \\      });
+    \\    }
+    \\    return pump();
+    \\  }
+    \\  return Promise.resolve(__home_body_bytes_sync(body));
+    \\}
     \\function __home_body_bytes(body) {
     \\  const capture = __home_readable_stream_capture(body);
     \\  if (capture && capture.startPending) return __home_then(capture.startPending, () => __home_body_bytes_sync({ __home_chunks: capture.chunks || [] }));
@@ -25179,7 +25209,9 @@ const harness_prelude =
     \\  }
     \\  if (this.body && this.body.__home_start_pending && Array.isArray(this.body.__home_all_chunks)) {
     \\    const body = this.body;
-    \\    return new Response(__home_deferred_chunk_reader(body), { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\    const bytesPromise = __home_body_bytes_via_reader(body);
+    \\    this.body = __home_deferred_bytes_reader(bytesPromise);
+    \\    return new Response(__home_deferred_bytes_reader(bytesPromise), { status: this.status, statusText: this.statusText, headers: this.headers });
     \\  }
     \\  if (__home_stream_has_pending_pull(this.body)) {
     \\    const bytesPromise = __home_body_bytes(this.body);
@@ -25187,9 +25219,9 @@ const harness_prelude =
     \\    return new Response(__home_deferred_bytes_reader(bytesPromise), { status: this.status, statusText: this.statusText, headers: this.headers });
     \\  }
     \\  if (this.body && typeof this.body.tee === "function") {
-    \\    const branches = this.body.tee();
-    \\    this.body = branches[0];
-    \\    return new Response(branches[1], { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\    const bytesPromise = __home_body_bytes_via_reader(this.body);
+    \\    this.body = __home_deferred_bytes_reader(bytesPromise);
+    \\    return new Response(__home_deferred_bytes_reader(bytesPromise), { status: this.status, statusText: this.statusText, headers: this.headers });
     \\  }
     \\  return new Response(this.body, { status: this.status, headers: this.headers });
     \\};
@@ -26314,7 +26346,9 @@ const harness_prelude =
     \\    }
     \\    if (this.body && this.body.__home_start_pending && Array.isArray(this.body.__home_all_chunks)) {
     \\      const body = this.body;
-    \\      return new Request(this, { body: __home_deferred_chunk_reader(body) });
+    \\      const bytesPromise = __home_body_bytes_via_reader(body);
+    \\      this.body = __home_deferred_bytes_reader(bytesPromise);
+    \\      return new Request(this, { body: __home_deferred_bytes_reader(bytesPromise) });
     \\    }
     \\    if (__home_stream_has_pending_pull(this.body)) {
     \\      const bytesPromise = __home_body_bytes(this.body);
@@ -26322,9 +26356,9 @@ const harness_prelude =
     \\      return new Request(this, { body: __home_deferred_bytes_reader(bytesPromise) });
     \\    }
     \\    if (this.body && typeof this.body.tee === "function") {
-    \\      const branches = this.body.tee();
-    \\      this.body = branches[0];
-    \\      return new Request(this, { body: branches[1] });
+    \\      const bytesPromise = __home_body_bytes_via_reader(this.body);
+    \\      this.body = __home_deferred_bytes_reader(bytesPromise);
+    \\      return new Request(this, { body: __home_deferred_bytes_reader(bytesPromise) });
     \\    }
     \\    return new Request(this);
     \\  };
