@@ -24056,8 +24056,10 @@ const harness_prelude =
     \\function __home_url_path_to_file_url(path) {
     \\  if (typeof path !== "string") throw new TypeError('The "path" argument must be of type string');
     \\  let text = path;
+    \\  const trailingSlash = text.endsWith("/");
     \\  if (!text.startsWith("/") && text !== process.cwd() && text !== globalThis.__home_current_filename) text = __home_build_join(process.cwd(), text);
     \\  text = __home_path_posix_normalize(text);
+    \\  if (trailingSlash && !text.endsWith("/")) text += "/";
     \\  const encoded = text.split("/").map(__home_url_path_encode_segment).join("/");
     \\  return new URL("file://" + (encoded.startsWith("/") ? "" : "/") + encoded);
     \\}
