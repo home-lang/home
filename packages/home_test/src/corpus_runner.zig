@@ -11171,15 +11171,23 @@ const harness_prelude =
     \\  }
     \\  return String(value);
     \\}
+    \\function __home_error_event_message(error) {
+    \\  if (error === null || error === undefined) return null;
+    \\  if (error && error.message !== undefined && String(error.message).length > 0 && String(error.message).indexOf("\n") === -1) return String(error.message);
+    \\  const text = String(error);
+    \\  const match = text.match(/(?:^|\n)error: ([^\n]+)/);
+    \\  return match ? match[1] : text;
+    \\}
     \\function __home_error_event_error_text(error) {
-    \\  return error === null || error === undefined ? "null" : "[Error: " + String(error.message || error) + "]";
+    \\  const message = __home_error_event_message(error);
+    \\  return message === null ? "null" : (message.length === 0 ? "[Error]" : "[Error: " + message + "]");
     \\}
     \\function __home_format_error_event_snapshot(event) {
     \\  return "ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ", \n  error: " + __home_error_event_error_text(event.error) + "\n}";
     \\}
     \\function __home_inspect_error_event(event) {
     \\  if (event.error === null || event.error === undefined) return "\"ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ",\n  error: null,\n}\"";
-    \\  return "\"ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ",\n  error: error: " + String(event.error.message || event.error) + "\n,\n}\"";
+    \\  return "\"ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ",\n  error: error: " + __home_error_event_message(event.error) + "\n,\n}\"";
     \\}
     \\function __home_escape_regexp(value, packageNameMode) {
     \\  let output = "";
@@ -12354,7 +12362,7 @@ const harness_prelude =
     \\        if (!__home_snapshot_matcher_validate(value, propertyMatchers)) __home_fail("Expected propertyMatchers to match properties from received object");
     \\        formatValue = __home_snapshot_apply_matchers(value, propertyMatchers);
     \\      }
-    \\      let actual = __home_format_file_snapshot(formatValue);
+    \\      let actual = typeof formatValue === "string" ? __home_format_snapshot(formatValue) : __home_format_file_snapshot(formatValue);
     \\      if (actual.length >= 2 && actual[0] === "\n" && actual[actual.length - 1] === "\n") actual = actual.slice(1, -1);
     \\      const snapshot = __home_dedent_snapshot(expected);
     \\      __home_assert(actual === snapshot, isNot, "Expected inline snapshot" + (isNot ? " not" : "") + " to match\nactual:\n" + actual + "\nexpected:\n" + snapshot);
