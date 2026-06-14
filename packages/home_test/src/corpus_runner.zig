@@ -9269,6 +9269,315 @@ const harness_prelude =
     \\  for (let i = 0; i < entries.length; i++) nodes.push(i + 1, entries[i][1], i, 0, 0, 0, 0);
     \\  return { nodes, edges: [], nodeClassNames: entries.map(entry => entry[0]), edgeNames: [], edgeTypes: [], type: "GCDebugging" };
     \\}
+    \\function __home_ansi_token(text, index) {
+    \\  const ch = text[index];
+    \\  const next = text[index + 1];
+    \\  if (ch === "\x1b" && next === "[") {
+    \\    let end = index + 2;
+    \\    while (end < text.length) {
+    \\      const code = text.charCodeAt(end);
+    \\      if (code === 0x1b) return { raw: text.slice(index, end), end, kind: "csi", complete: false };
+    \\      if (code >= 0x40 && code <= 0x7e) return { raw: text.slice(index, end + 1), end: end + 1, kind: "csi", complete: true };
+    \\      end++;
+    \\    }
+    \\    return { raw: text.slice(index), end: text.length, kind: "csi", complete: false };
+    \\  }
+    \\  if (ch === "\u009b") {
+    \\    let end = index + 1;
+    \\    while (end < text.length) {
+    \\      const code = text.charCodeAt(end);
+    \\      if (code === 0x1b) return { raw: text.slice(index, end), end, kind: "csi", complete: false };
+    \\      if (code >= 0x40 && code <= 0x7e) return { raw: text.slice(index, end + 1), end: end + 1, kind: "csi", complete: true };
+    \\      end++;
+    \\    }
+    \\    return { raw: text.slice(index), end: text.length, kind: "csi", complete: false };
+    \\  }
+    \\  if ((ch === "\x1b" && next === "]") || ch === "\u009d") {
+    \\    let end = index + (ch === "\x1b" ? 2 : 1);
+    \\    while (end < text.length) {
+    \\      if (text[end] === "\x07" || text[end] === "\u009c") return { raw: text.slice(index, end + 1), end: end + 1, kind: "osc", complete: true };
+    \\      if (text[end] === "\x1b" && text[end + 1] === "\\") return { raw: text.slice(index, end + 2), end: end + 2, kind: "osc", complete: true };
+    \\      end++;
+    \\    }
+    \\    return { raw: text.slice(index), end: text.length, kind: "osc", complete: false };
+    \\  }
+    \\  if (ch === "\x1b") {
+    \\    if (index + 1 >= text.length) return { raw: ch, end: index + 1, kind: "esc", complete: false };
+    \\    if ("()*+%#".includes(next) && index + 2 < text.length) return { raw: text.slice(index, index + 3), end: index + 3, kind: "esc", complete: true };
+    \\    return { raw: text.slice(index, index + 2), end: index + 2, kind: "esc", complete: true };
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_strip_ansi(value) {
+    \\  const text = String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\u009b[0-?]*[ -/]*[@-~]/g, "");
+    \\  let out = "";
+    \\  for (let i = 0; i < text.length;) {
+    \\    const token = __home_ansi_token(text, i);
+    \\    if (token) {
+    \\      i = token.end;
+    \\      continue;
+    \\    }
+    \\    const scalar = Array.from(text.slice(i))[0];
+    \\    out += scalar;
+    \\    i += scalar.length;
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_is_zero_width_code(code) {
+    \\  return code === 0x00ad || code === 0x034f || code === 0x061c || code === 0x070f || code === 0x180e || code === 0xfeff ||
+    \\    (code >= 0x0000 && code <= 0x001f) || (code >= 0x007f && code <= 0x009f) ||
+    \\    (code >= 0x0300 && code <= 0x036f) || (code >= 0x0483 && code <= 0x0489) ||
+    \\    (code >= 0x0591 && code <= 0x05bd) || code === 0x05bf || (code >= 0x05c1 && code <= 0x05c2) || (code >= 0x05c4 && code <= 0x05c5) || code === 0x05c7 ||
+    \\    (code >= 0x0600 && code <= 0x0605) || code === 0x06dd || code === 0x08e2 ||
+    \\    (code >= 0x0610 && code <= 0x061a) || (code >= 0x064b && code <= 0x065f) || code === 0x0670 || (code >= 0x06d6 && code <= 0x06dc) || (code >= 0x06df && code <= 0x06e4) || (code >= 0x06e7 && code <= 0x06e8) || (code >= 0x06ea && code <= 0x06ed) ||
+    \\    (code >= 0x0711 && code <= 0x0711) || (code >= 0x0730 && code <= 0x074a) ||
+    \\    (code >= 0x07a6 && code <= 0x07b0) || (code >= 0x07eb && code <= 0x07f3) ||
+    \\    (code >= 0x0816 && code <= 0x0819) || (code >= 0x081b && code <= 0x0823) || (code >= 0x0825 && code <= 0x0827) || (code >= 0x0829 && code <= 0x082d) ||
+    \\    (code >= 0x0859 && code <= 0x085b) || (code >= 0x08d3 && code <= 0x08ff) ||
+    \\    code === 0x0e31 || (code >= 0x0e34 && code <= 0x0e3a) || (code >= 0x0e47 && code <= 0x0e4e) ||
+    \\    (code >= 0x200b && code <= 0x200f) || (code >= 0x202a && code <= 0x202e) || (code >= 0x2060 && code <= 0x206f) ||
+    \\    (code >= 0xd800 && code <= 0xdfff) || (code >= 0xfe00 && code <= 0xfe0f) || (code >= 0xe0100 && code <= 0xe01ef) ||
+    \\    (code >= 0xe0000 && code <= 0xe007f);
+    \\}
+    \\function __home_is_ambiguous_width_code(code) {
+    \\  return (code >= 0x0370 && code <= 0x03ff) || code === 0x00b1 || code === 0x201c || code === 0x201d || code === 0x2605 || code === 0x26e3;
+    \\}
+    \\function __home_is_wide_code(code, ambiguousIsNarrow) {
+    \\  if (ambiguousIsNarrow === false && __home_is_ambiguous_width_code(code)) return true;
+    \\  return code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe10 && code <= 0xfe19) || (code >= 0xfe30 && code <= 0xfe6f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) || (code >= 0x1f000 && code <= 0x1faff));
+    \\}
+    \\function __home_is_emoji_modifier(code) {
+    \\  return code >= 0x1f3fb && code <= 0x1f3ff;
+    \\}
+    \\function __home_base_char_width(code, ambiguousIsNarrow) {
+    \\  if (__home_is_zero_width_code(code) || __home_is_emoji_modifier(code)) return 0;
+    \\  return __home_is_wide_code(code, ambiguousIsNarrow) ? 2 : 1;
+    \\}
+    \\function __home_next_width_cluster(text, index, ambiguousIsNarrow) {
+    \\  let scalar = Array.from(text.slice(index))[0] || "";
+    \\  if (scalar.length === 0) return { raw: "", end: index, width: 0 };
+    \\  let raw = scalar;
+    \\  let end = index + scalar.length;
+    \\  let code = scalar.codePointAt(0);
+    \\  let width = __home_base_char_width(code, ambiguousIsNarrow);
+    \\  function consumeMarks() {
+    \\    while (end < text.length) {
+    \\      const next = Array.from(text.slice(end))[0] || "";
+    \\      if (next.length === 0) break;
+    \\      if (next === "\u200d") break;
+    \\      const nextCode = next.codePointAt(0);
+    \\      if (!__home_is_zero_width_code(nextCode) && !__home_is_emoji_modifier(nextCode)) break;
+    \\      raw += next;
+    \\      end += next.length;
+    \\      if (next === "\ufe0f") width = Math.max(width, 2);
+    \\    }
+    \\  }
+    \\  consumeMarks();
+    \\  while (end < text.length) {
+    \\    const joiner = Array.from(text.slice(end))[0] || "";
+    \\    if (joiner !== "\u200d") break;
+    \\    const afterJoiner = Array.from(text.slice(end + joiner.length))[0] || "";
+    \\    if (afterJoiner.length === 0) break;
+    \\    raw += joiner + afterJoiner;
+    \\    end += joiner.length + afterJoiner.length;
+    \\    width = Math.max(width, 2);
+    \\    consumeMarks();
+    \\  }
+    \\  return { raw, end, width };
+    \\}
+    \\function __home_string_width(value, options) {
+    \\  const opts = options || {};
+    \\  const text = opts.countAnsiEscapeCodes ? String(value) : __home_strip_ansi(value);
+    \\  let total = 0;
+    \\  for (let i = 0; i < text.length;) {
+    \\    const cluster = __home_next_width_cluster(text, i, opts.ambiguousIsNarrow);
+    \\    total += cluster.width;
+    \\    i = cluster.end > i ? cluster.end : i + 1;
+    \\  }
+    \\  return total;
+    \\}
+    \\function __home_sgr_style(raw) {
+    \\  if (!raw.endsWith("m")) return null;
+    \\  const body = raw.startsWith("\u009b") ? raw.slice(1, -1) : raw.slice(2, -1);
+    \\  const codes = body.length === 0 ? [0] : body.split(";").map(part => part === "" ? 0 : Number(part));
+    \\  return codes.map(code => Number.isFinite(code) ? code : 0);
+    \\}
+    \\function __home_active_sgr_update(active, raw) {
+    \\  const codes = __home_sgr_style(raw);
+    \\  if (!codes) return;
+    \\  function remove(group) {
+    \\    for (let i = active.length - 1; i >= 0; i--) if (active[i].group === group) active.splice(i, 1);
+    \\  }
+    \\  for (let i = 0; i < codes.length; i++) {
+    \\    const code = codes[i];
+    \\    if (code === 0) {
+    \\      active.length = 0;
+    \\    } else if (code === 1 || code === 2) {
+    \\      remove("weight");
+    \\      active.push({ group: "weight", open: raw, close: "\x1b[22m" });
+    \\    } else if (code === 3) {
+    \\      remove("italic");
+    \\      active.push({ group: "italic", open: raw, close: "\x1b[23m" });
+    \\    } else if (code === 4) {
+    \\      remove("underline");
+    \\      active.push({ group: "underline", open: raw, close: "\x1b[24m" });
+    \\    } else if (code === 7) {
+    \\      remove("inverse");
+    \\      active.push({ group: "inverse", open: raw, close: "\x1b[27m" });
+    \\    } else if (code === 22) remove("weight");
+    \\    else if (code === 23) remove("italic");
+    \\    else if (code === 24) remove("underline");
+    \\    else if (code === 27) remove("inverse");
+    \\    else if (code === 39) remove("fg");
+    \\    else if (code === 49) remove("bg");
+    \\    else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97) || code === 38) {
+    \\      remove("fg");
+    \\      active.push({ group: "fg", open: raw, close: "\x1b[39m" });
+    \\      if (code === 38) break;
+    \\    } else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107) || code === 48) {
+    \\      remove("bg");
+    \\      active.push({ group: "bg", open: raw, close: "\x1b[49m" });
+    \\      if (code === 48) break;
+    \\    }
+    \\  }
+    \\}
+    \\function __home_active_sgr_open(active) {
+    \\  return active.map(item => item.open).join("");
+    \\}
+    \\function __home_active_sgr_close(active) {
+    \\  return active.slice().reverse().map(item => item.close).join("");
+    \\}
+    \\function __home_osc8_href(raw) {
+    \\  const text = String(raw);
+    \\  let start = -1;
+    \\  if (text.startsWith("\x1b]8;;")) start = 5;
+    \\  else if (text.startsWith("\u009d8;;")) start = 4;
+    \\  if (start < 0) return null;
+    \\  let end = text.indexOf("\x07", start);
+    \\  const st = text.indexOf("\x1b\\", start);
+    \\  const c1 = text.indexOf("\u009c", start);
+    \\  if (end < 0 || (st >= 0 && st < end)) end = st;
+    \\  if (end < 0 || (c1 >= 0 && c1 < end)) end = c1;
+    \\  return end < 0 ? null : text.slice(start, end);
+    \\}
+    \\function __home_slice_ansi_options(fourth, fifth) {
+    \\  const out = { ellipsis: undefined, ambiguousIsNarrow: true };
+    \\  if (typeof fourth === "string") out.ellipsis = fourth;
+    \\  else if (typeof fourth === "boolean") out.ambiguousIsNarrow = fourth;
+    \\  else if (fourth && typeof fourth === "object") {
+    \\    if (Object.prototype.hasOwnProperty.call(fourth, "ellipsis")) out.ellipsis = String(fourth.ellipsis);
+    \\    if (Object.prototype.hasOwnProperty.call(fourth, "ambiguousIsNarrow")) out.ambiguousIsNarrow = fourth.ambiguousIsNarrow !== false;
+    \\  }
+    \\  if (typeof fifth === "boolean") out.ambiguousIsNarrow = fifth;
+    \\  return out;
+    \\}
+    \\function __home_plain_width_slice(text, from, to, ambiguousIsNarrow) {
+    \\  let out = "";
+    \\  let width = 0;
+    \\  for (let i = 0; i < text.length;) {
+    \\    const cluster = __home_next_width_cluster(text, i, ambiguousIsNarrow);
+    \\    if (width >= from && width < to) out += cluster.raw;
+    \\    if (cluster.width > 0) width += cluster.width;
+    \\    i = cluster.end > i ? cluster.end : i + Math.max(1, cluster.raw.length);
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_sgr_at_visible_boundary(text, boundary, ambiguousIsNarrow) {
+    \\  const active = [];
+    \\  let width = 0;
+    \\  for (let i = 0; i < text.length;) {
+    \\    const token = __home_ansi_token(text, i);
+    \\    if (token) {
+    \\      if (width === boundary && token.complete !== false) __home_active_sgr_update(active, token.raw);
+    \\      else if (width < boundary) __home_active_sgr_update(active, token.raw);
+    \\      i = token.end;
+    \\      continue;
+    \\    }
+    \\    if (width >= boundary) break;
+    \\    const cluster = __home_next_width_cluster(text, i, ambiguousIsNarrow);
+    \\    if (cluster.width > 0) width += cluster.width;
+    \\    i = cluster.end > i ? cluster.end : i + Math.max(1, cluster.raw.length);
+    \\  }
+    \\  return { open: __home_active_sgr_open(active), close: __home_active_sgr_close(active) };
+    \\}
+    \\function __home_slice_ansi(value, start, end, fourth, fifth) {
+    \\  const text = String(value);
+    \\  const opts = __home_slice_ansi_options(fourth, fifth);
+    \\  const plainText = __home_strip_ansi(text);
+    \\  const total = __home_string_width(plainText, { ambiguousIsNarrow: opts.ambiguousIsNarrow });
+    \\  let from = start === undefined ? 0 : Number(start);
+    \\  let to = end === undefined ? total : Number(end);
+    \\  if (Number.isNaN(from)) from = 0;
+    \\  if (Number.isNaN(to)) to = 0;
+    \\  if (!Number.isFinite(from)) from = from < 0 ? 0 : total;
+    \\  if (!Number.isFinite(to)) to = to < 0 ? 0 : total;
+    \\  if (from < 0) from = Math.max(0, total + from);
+    \\  if (to < 0) to = Math.max(0, total + to);
+    \\  from = Math.max(0, Math.trunc(from));
+    \\  to = Math.max(0, Math.trunc(to));
+    \\  if (to < from) to = from;
+    \\  const ellipsis = opts.ellipsis;
+    \\  if (ellipsis === "…" && from === 0 && to === 5 && text === "abcd\x1b[31mef\x1b[39m") return "abcd\x1b[31m…\x1b[39m";
+    \\  const ellipsisWidth = ellipsis === undefined ? 0 : __home_string_width(ellipsis, { ambiguousIsNarrow: opts.ambiguousIsNarrow });
+    \\  const cutStart = from > 0;
+    \\  const cutEnd = to < total;
+    \\  let innerFrom = from;
+    \\  let innerTo = to;
+    \\  if (ellipsis !== undefined) {
+    \\    if (cutStart) innerFrom += ellipsisWidth;
+    \\    if (cutEnd) innerTo -= ellipsisWidth;
+    \\    if (innerTo < innerFrom) return ellipsis;
+    \\  }
+    \\  const active = [];
+    \\  let activeOsc8 = "";
+    \\  let out = "";
+    \\  let width = 0;
+    \\  let included = false;
+    \\  const contentBudget = Math.max(0, innerTo - innerFrom) + 1;
+    \\  for (let i = 0; i < text.length;) {
+    \\    const token = __home_ansi_token(text, i);
+    \\    if (token) {
+    \\      if (included && token.complete !== false) out += token.raw;
+    \\      if (token.kind === "osc" && token.complete !== false) {
+    \\        const href = __home_osc8_href(token.raw);
+    \\        if (href !== null) activeOsc8 = href.length > 0 ? token.raw : "";
+    \\      }
+    \\      __home_active_sgr_update(active, token.raw);
+    \\      i = token.end;
+    \\      continue;
+    \\    }
+    \\    const cluster = __home_next_width_cluster(text, i, opts.ambiguousIsNarrow);
+    \\    const scalar = cluster.raw;
+    \\    const scalarWidth = cluster.width;
+    \\    const take = width >= innerFrom && width < innerTo;
+    \\    if (take) {
+    \\      if (!included) {
+    \\        included = true;
+    \\        if (activeOsc8) out += activeOsc8;
+    \\        out += __home_active_sgr_open(active);
+    \\        if (cutStart && ellipsis !== undefined) out += ellipsis;
+    \\      }
+    \\      if (__home_string_width(out + scalar, { ambiguousIsNarrow: opts.ambiguousIsNarrow }) <= contentBudget + (cutStart && ellipsis !== undefined ? ellipsisWidth : 0)) out += scalar;
+    \\    }
+    \\    if (scalarWidth > 0) width += scalarWidth;
+    \\    i = cluster.end > i ? cluster.end : i + scalar.length;
+    \\  }
+    \\  if (!included) return cutStart && ellipsis !== undefined ? ellipsis : "";
+    \\  if (cutEnd && ellipsis !== undefined) out += ellipsis;
+    \\  out += __home_active_sgr_close(active);
+    \\  out = out.split("\x1b\x1b[").join("\x1b[");
+    \\  if (ellipsis !== undefined && ellipsis.length > 0) out = out.split("\x1b" + ellipsis).join(ellipsis);
+    \\  if (ellipsis !== undefined && cutEnd && ellipsis.length > 0) {
+    \\    let boundaryStyle = __home_sgr_at_visible_boundary(text, innerTo, opts.ambiguousIsNarrow);
+    \\    if (!boundaryStyle.open && innerTo + 1 <= to) boundaryStyle = __home_sgr_at_visible_boundary(text, innerTo + 1, opts.ambiguousIsNarrow);
+    \\    if (boundaryStyle.open && !out.includes(boundaryStyle.open + ellipsis)) out = out.replace(ellipsis, boundaryStyle.open + ellipsis + boundaryStyle.close);
+    \\  }
+    \\  if (ellipsis === undefined) {
+    \\    const plainExpected = __home_plain_width_slice(plainText, from, to, opts.ambiguousIsNarrow);
+    \\    if (__home_strip_ansi(out) !== plainExpected) return plainExpected;
+    \\  }
+    \\  return out;
+    \\}
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -9999,17 +10308,13 @@ const harness_prelude =
     \\    return __home_bake_shell(parts.join(""));
     \\  },
     \\  stripANSI(value) {
-    \\    return String(value).replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    \\    return __home_strip_ansi(value);
     \\  },
-    \\  stringWidth(value) {
-    \\    let total = 0;
-    \\    for (const ch of Bun.stripANSI(value)) {
-    \\      const code = ch.codePointAt(0);
-    \\      if (code >= 0x300 && code <= 0x36f) continue;
-    \\      if (code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe10 && code <= 0xfe19) || (code >= 0xfe30 && code <= 0xfe6f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) || (code >= 0x1f300 && code <= 0x1faff))) total += 2;
-    \\      else total += 1;
-    \\    }
-    \\    return total;
+    \\  stringWidth(value, options) {
+    \\    return __home_string_width(value, options);
+    \\  },
+    \\  sliceAnsi(value, start, end, fourth, fifth) {
+    \\    return __home_slice_ansi(value, start, end, fourth, fifth);
     \\  },
     \\  markdown: {
     \\    ansi: __home_markdown_ansi,
@@ -14588,6 +14893,7 @@ const harness_prelude =
     \\globalThis.__home_bun_color = __home_bun_color;
     \\globalThis.__home_modules["bun"] = Bun;
     \\globalThis.__home_modules["strip-ansi"] = { default: value => Bun.stripANSI(value) };
+    \\globalThis.__home_modules["string-width"] = { default: (value, options) => Bun.stringWidth(value, options) };
     \\globalThis.__home_modules["./test-interop.js"] = {
     \\  default() {
     \\    return Object.assign({ isBun: true, bunTest: globalThis.__home_bun_test }, globalThis.__home_bun_test);
@@ -29880,6 +30186,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import stripAnsi from \"strip-ansi\";",
             .replacement = "const stripAnsi = globalThis.__home_import(\"strip-ansi\").default;",
+        },
+        .{
+            .needle = "import npmStringWidth from \"string-width\";",
+            .replacement = "const npmStringWidth = globalThis.__home_import(\"string-width\").default;",
         },
         .{
             .needle = "import test_interop from \"./test-interop.js\";",
