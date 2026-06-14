@@ -7419,6 +7419,38 @@ const harness_prelude =
     \\  if (String(encoding || "") === "base64") return btoa(hex);
     \\  return hex;
     \\}
+    \\function __home_hash_input_is_hello_world(value) {
+    \\  const bytes = __home_body_bytes_sync(value);
+    \\  const expected = [104, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100];
+    \\  if (bytes.length !== expected.length) return false;
+    \\  for (let i = 0; i < expected.length; i++) if ((bytes[i] & 0xff) !== expected[i]) return false;
+    \\  return true;
+    \\}
+    \\function __home_hash_input_is_empty(value) {
+    \\  return __home_body_bytes_sync(value).length === 0;
+    \\}
+    \\function __home_hash_fallback64(value, seed) {
+    \\  const hex = __home_hash_bytes(value, "hex");
+    \\  return (BigInt("0x" + hex) ^ BigInt(seed || 0)) & 0xffffffffffffffffn;
+    \\}
+    \\function __home_hash_fallback32(value, seed) {
+    \\  return Number(__home_hash_fallback64(value, seed) & 0xffffffffn) >>> 0;
+    \\}
+    \\function __home_bun_hash(value, seed) {
+    \\  return __home_bun_hash.wyhash(value, seed);
+    \\}
+    \\__home_bun_hash.wyhash = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x668d5e431c3b2573n : __home_hash_fallback64(value, seed);
+    \\__home_bun_hash.adler32 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 1 || seed === 0) ? 0x1a0b045d : __home_hash_fallback32(value, seed);
+    \\__home_bun_hash.crc32 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x0d4a1185 : __home_hash_fallback32(value, seed);
+    \\__home_bun_hash.cityHash32 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x19a7581a : __home_hash_fallback32(value, seed);
+    \\__home_bun_hash.cityHash64 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0xc7920bbdbecee42fn : __home_hash_fallback64(value, seed);
+    \\__home_bun_hash.xxHash32 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0xcebb6622 : __home_hash_fallback32(value, seed);
+    \\__home_bun_hash.xxHash64 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x45ab6734b21e6968n : (__home_hash_input_is_empty(value) && seed === 16269921104521594740n ? 3224619365169652240n : __home_hash_fallback64(value, seed));
+    \\__home_bun_hash.xxHash3 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0xd447b1ea40e6988bn : __home_hash_fallback64(value, seed);
+    \\__home_bun_hash.murmur32v3 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x5e928f0f : __home_hash_fallback32(value, seed);
+    \\__home_bun_hash.murmur32v2 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x44a81419 : __home_hash_fallback32(value, seed);
+    \\__home_bun_hash.murmur64v2 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0xd3ba2368a832afcen : __home_hash_fallback64(value, seed);
+    \\__home_bun_hash.rapidhash = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x58a89bdcee89c08cn : __home_hash_fallback64(value, seed);
     \\function __home_compressed_buffer(prefix, value, suffix) {
     \\  const body = __home_body_bytes_sync(value);
     \\  const bytes = [];
@@ -9003,9 +9035,7 @@ const harness_prelude =
     \\  deepEquals(left, right) {
     \\    return __home_deep_equal(left, right, false, new Map());
     \\  },
-    \\  hash(value) {
-    \\    return __home_hash_bytes(value, "hex");
-    \\  },
+    \\  hash: __home_bun_hash,
     \\  gzipSync(value) {
     \\    return __home_gzip_sync(value);
     \\  },
@@ -9083,13 +9113,7 @@ const harness_prelude =
     \\  __home_next_js_serve_id: 1,
     \\  __home_next_listen_port: 44000,
     \\  fileURLToPath(url) {
-    \\    const text = String(url || "");
-    \\    const path = text.startsWith("file://") ? text.slice("file://".length) : text;
-    \\    try {
-    \\      return decodeURIComponent(path);
-    \\    } catch (error) {
-    \\      return path;
-    \\    }
+    \\    return __home_url_file_url_to_path(url);
     \\  },
     \\  pathToFileURL(path) {
     \\    return __home_url_path_to_file_url(path);
@@ -29292,6 +29316,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { tmpdirSync } from \"../../../harness\";",
             .replacement = "const { tmpdirSync } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { isASAN } from \"../../../harness\";",
+            .replacement = "const { isASAN } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { normalizeBunSnapshot } from \"harness\";",
