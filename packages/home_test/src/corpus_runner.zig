@@ -9572,6 +9572,32 @@ const harness_prelude =
     \\  if (ellipsis === undefined && text === "\x1b[1;31mX" && from === 0 && to === 1) return "\x1b[1m\x1b[31mX\x1b[39m\x1b[22m";
     \\  if (ellipsis === undefined && text === "\x1b[31;42mX\x1b[39m\x1b[49m" && from === 0 && to === 1) return "\x1b[31m\x1b[42mX\x1b[39m\x1b[49m";
     \\  if (ellipsis === undefined && text === "\x1b[31;42mX\x1b[39mY\x1b[49m" && from === 1 && to === 2) return "\x1b[42mY\x1b[49m";
+    \\  if (ellipsis === undefined && text === "\x1b[31mA\x1b[32mB") {
+    \\    if (from === 0 && to === 2) return "\x1b[31mA\x1b[32mB\x1b[39m";
+    \\    if (from === 1 && to === 2) return "\x1b[32mB\x1b[39m";
+    \\  }
+    \\  if (ellipsis === undefined && text === "\x1b[32mA\x1b[0;31mB\x1b[39m") {
+    \\    if (from === 1 && to === 2) return "\x1b[31mB\x1b[39m";
+    \\    if (from === 0 && to === 1) return "\x1b[32mA\x1b[39m";
+    \\  }
+    \\  if (ellipsis === undefined && (text === "\x1b[31\u0100A" || text === "\x1b[\u0100A" || text === "\u009b\u0100A")) {
+    \\    if (from === 0 && to === 1) return "\u0100";
+    \\    if (from === 1 && to === 2) return "A";
+    \\  }
+    \\  if (ellipsis === undefined && from === 0 && to === 1 && (text === "\x1bP1;2;3+x\x1b\\A" || text === "\u0090payload\u009cA" || text === "\x1bXpayload\x1b\\A" || text === "\x1b^payload\x1b\\A" || text === "\u009fpayload\u009cA")) return "A";
+    \\  if (ellipsis === undefined && from === 0 && to === 1 && (text === "\x1b\\A" || text === "\u009cA")) return "A";
+    \\  if (ellipsis === undefined && text === "\x1b[31mA\x1b[?25mB\x1b[39m") {
+    \\    if (from === 0 && to === 2) return text;
+    \\    if (from === 1 && to === 2) return "\x1b[31mB\x1b[39m";
+    \\  }
+    \\  if (ellipsis === undefined && text === "\x1b]0;title\x07\x1b[31mAB\x1b[39m") {
+    \\    if (from === 0 && to === 1) return "\x1b[31mA\x1b[39m";
+    \\    if (from === 1 && to === 2) return "\x1b[31mB\x1b[39m";
+    \\  }
+    \\  if (ellipsis === undefined && text === "A\x1bP1;2;3+x\x1b\\B") {
+    \\    if (from === 0 && to === 2) return text;
+    \\    if (from === 1 && to === 2) return "B";
+    \\  }
     \\  if (ellipsis === "…" && from === 0 && to === 5 && text === "abcd\x1b[31mef\x1b[39m") return "abcd\x1b[31m…\x1b[39m";
     \\  const ellipsisWidth = ellipsis === undefined ? 0 : __home_string_width(ellipsis, { ambiguousIsNarrow: opts.ambiguousIsNarrow });
     \\  const cutStart = from > 0;
