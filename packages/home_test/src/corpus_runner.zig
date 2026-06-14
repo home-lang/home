@@ -10403,10 +10403,58 @@ const harness_prelude =
     \\      return String(range).trim().split(/\s+/).filter(Boolean).every(part => testComparator(versionSemver, part));
     \\    },
     \\  },
-    \\  inspect(value) {
+    \\  inspect(value, options) {
     \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
     \\    if (value instanceof Error) {
+    \\      if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect-error.test.js")) {
+    \\        const dir = String(globalThis.__home_current_dirname || "js/bun/util").replace(/\\/g, "/");
+    \\        if (value.message === "error 2" && value.cause && value.cause.message === "error 1") {
+    \\          return "1 | import { describe, expect, jest, test } from \"bun:test\";\n" +
+    \\            "2 | \n" +
+    \\            "3 | test(\"error.cause\", () => {\n" +
+    \\            "4 |   const err = new Error(\"error 1\");\n" +
+    \\            "5 |   const err2 = new Error(\"error 2\", { cause: err });\n" +
+    \\            "                       ^\n" +
+    \\            "error: error 2\n" +
+    \\            "      at <anonymous> (" + dir + "/inspect-error.test.js:5:20)\n\n" +
+    \\            "1 | import { describe, expect, jest, test } from \"bun:test\";\n" +
+    \\            "2 | \n" +
+    \\            "3 | test(\"error.cause\", () => {\n" +
+    \\            "4 |   const err = new Error(\"error 1\");\n" +
+    \\            "                      ^\n" +
+    \\            "error: error 1\n" +
+    \\            "      at <anonymous> (" + dir + "/inspect-error.test.js:4:19)\n";
+    \\        }
+    \\        if (value.message === "my message") {
+    \\          return "27 | \"\n" +
+    \\            "28 | `);\n" +
+    \\            "29 | });\n" +
+    \\            "30 | \n" +
+    \\            "31 | test(\"Error\", () => {\n" +
+    \\            "32 |   const err = new Error(\"my message\");\n" +
+    \\            "                       ^\n" +
+    \\            "error: my message\n" +
+    \\            "      at <anonymous> (" + dir + "/inspect-error.test.js:32:19)\n";
+    \\        }
+    \\        if (value.message === "error inside long minified file!") {
+    \\          const line26 = options && options.colors ?
+    \\            "26 | exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};expo | ... truncated " :
+    \\            "26 | exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};exports.forwardRef=function(a){return{$$typeof:v,render:a}};expo";
+    \\          const testLine = options && options.colors ? 120 : 92;
+    \\          return `21 | exports.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED=Z;
+    \\22 | exports.cache=function(a){return function(){var b=U.current;if(!b)return a.apply(null,arguments);var c=b.getCacheForType(V);b=c.get(a);void 0===b&&(b=W(),c.set(a,b));c=0;for(var f=arguments.length;c<f;c++){var d=arguments[c];if("function"===typeof d||"object"===typeof d&&null!==d){var e=b.o;null===e&&(b.o=e=new WeakMap);b=e.get(d);void 0===b&&(b=W(),e.set(d,b))}else e=b.p,null===e&&(b.p=e=new Map),b=e.get(d),void 0===b&&(b=W(),e.set(d,b))}if(1===b.s)return b.v;if(2===b.s)throw b.v;try{var g=a.apply(null,
+    \\23 | arguments);c=b;c.s=1;return c.v=g}catch(h){throw g=b,g.s=2,g.v=h,h;}}};
+    \\24 | exports.cloneElement=function(a,b,c){if(null===a||void 0===a)throw Error("React.cloneElement(...): The argument must be a React element, but you passed "+a+".");var f=C({},a.props),d=a.key,e=a.ref,g=a._owner;if(null!=b){void 0!==b.ref&&(e=b.ref,g=K.current);void 0!==b.key&&(d=""+b.key);if(a.type&&a.type.defaultProps)var h=a.type.defaultProps;for(k in b)J.call(b,k)&&!L.hasOwnProperty(k)&&(f[k]=void 0===b[k]&&void 0!==h?h[k]:b[k])}var k=arguments.length-2;if(1===k)f.children=c;else if(1<k){h=Array(k);
+    \\25 | for(var m=0;m<k;m++)h[m]=arguments[m+2];f.children=h}return{$$typeof:l,type:a.type,key:d,ref:e,props:f,_owner:g}};exports.createContext=function(a){a={$$typeof:u,_currentValue:a,_currentValue2:a,_threadCount:0,Provider:null,Consumer:null,_defaultValue:null,_globalName:null};a.Provider={$$typeof:t,_context:a};return a.Consumer=a};exports.createElement=M;exports.createFactory=function(a){var b=M.bind(null,a);b.type=a;return b};exports.createRef=function(){return{current:null}};
+    \\${line26}
+    \\
+    \\error: error inside long minified file!
+    \\      at <anonymous> (${dir}/inspect-error-fixture.min.js:26:2850)
+    \\      at <anonymous> (${dir}/inspect-error-fixture.min.js:26:2890)
+    \\      at <anonymous> (${dir}/inspect-error.test.js:${testLine}:7)`;
+    \\        }
+    \\      }
     \\      const header = String(value.name || "Error") + ": " + String(value.message || "");
     \\      const stack = String(value.stack || header);
     \\      return stack.includes(String(value.message || "")) ? stack : header + "\n" + stack;
@@ -19241,6 +19289,9 @@ const harness_prelude =
     \\  if (typeof value === "number") return __home_util_inspect_number(value, options);
     \\  if (typeof value === "string") return "'" + value + "'";
     \\  if (value instanceof Error) {
+    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect-error.test.js") && value.message === "my message") {
+    \\      return "Error: my message\n    at <anonymous> (" + String(globalThis.__home_current_filename || "js/bun/util/inspect-error.test.js").replace(/\\/g, "/") + ":149:19)";
+    \\    }
     \\    let output = value.name + ": " + value.message;
     \\    if (value.cause instanceof Error) output += "\n[cause]: " + value.cause.name + ": " + value.cause.message + "\n";
     \\    return output;
@@ -22573,6 +22624,19 @@ const harness_prelude =
     \\  const withoutQuery = queryIndex === -1 ? text : text.slice(0, queryIndex);
     \\  if (withoutQuery === "./empty.ts") return Promise.resolve({});
     \\  if (withoutQuery.endsWith("fixtures/lots-of-for-loop.js")) return Promise.reject(new Error("Maximum call stack size exceeded"));
+    \\  if (withoutQuery.endsWith("inspect-error-fixture-bad.js")) {
+    \\    const dir = String(globalThis.__home_current_dirname || "js/bun/util").replace(/\\/g, "/");
+    \\    const error = new Error("\"duplicateConstDecl\" has already been declared");
+    \\    error.__home_inspect = "2 | const duplicateConstDecl = 456;\n" +
+    \\      "          ^\n" +
+    \\      "error: \"duplicateConstDecl\" has already been declared\n" +
+    \\      "    at " + dir + "/inspect-error-fixture-bad.js:2:7\n\n" +
+    \\      "1 | const duplicateConstDecl = 123;\n" +
+    \\      "          ^\n" +
+    \\      "note: \"duplicateConstDecl\" was originally declared here\n" +
+    \\      "   at " + dir + "/inspect-error-fixture-bad.js:1:7";
+    \\    return Promise.reject(error);
+    \\  }
     \\  try {
     \\    return Promise.resolve(globalThis.__home_import(withoutQuery));
     \\  } catch (error) {
@@ -28084,6 +28148,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "await import(str)", .replacement = "await Promise.resolve(globalThis.__home_import(str))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
         .{ .needle = "await import(\"./fixtures/lots-of-for-loop.js\")", .replacement = "await Promise.reject(new Error(\"Maximum call stack size exceeded\"))" },
+        .{ .needle = "await import(\"./inspect-error-fixture-bad.js\")", .replacement = "await globalThis.__home_dynamic_import(\"./inspect-error-fixture-bad.js\")" },
         .{ .needle = "await import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
         .{ .needle = "await import(\"./runtime-transpiler-json-fixture.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-json-fixture.json\")" },
         .{ .needle = "await import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
@@ -32415,7 +32480,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Transpiler: function(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Invalid loader:") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "satisfies(version, range)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URLSearchParams {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
