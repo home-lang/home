@@ -16344,7 +16344,7 @@ const harness_prelude =
     \\function __home_harness_rm_scope(dir) {
     \\  return { [Symbol.dispose]() { try { __home_node_fs.rmSync(String(dir || ""), { recursive: true, force: true }); } catch (error) {} } };
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isCI: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isCI: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -19993,6 +19993,29 @@ const harness_prelude =
     \\  closeSync(fd) {
     \\    if (globalThis.__home_virtual_fds) delete globalThis.__home_virtual_fds[Number(fd)];
     \\  },
+    \\  close(fd, callback) {
+    \\    try {
+    \\      __home_node_fs.closeSync(fd);
+    \\      Promise.resolve().then(() => callback && callback(null));
+    \\    } catch (error) {
+    \\      Promise.resolve().then(() => callback && callback(error));
+    \\    }
+    \\  },
+    \\  ftruncate(fd, len, callback) {
+    \\    if (typeof len === "function") {
+    \\      callback = len;
+    \\      len = 0;
+    \\    }
+    \\    try {
+    \\      const entry = globalThis.__home_virtual_fds && globalThis.__home_virtual_fds[Number(fd)];
+    \\      if (!entry) throw new Error("EBADF: bad file descriptor");
+    \\      const text = __home_build_read_text(entry.path) || "";
+    \\      __home_build_write_text(entry.path, text.slice(0, Math.max(0, Number(len) || 0)));
+    \\      Promise.resolve().then(() => callback && callback(null));
+    \\    } catch (error) {
+    \\      Promise.resolve().then(() => callback && callback(error));
+    \\    }
+    \\  },
     \\  open(path, flags, mode, callback) {
     \\    if (typeof mode === "function") {
     \\      callback = mode;
@@ -21963,7 +21986,17 @@ const harness_prelude =
     \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
     \\  Dequeue: __home_Dequeue,
+    \\  createSocketPair() {
+    \\    const readPath = __home_build_join("/tmp", "home-socketpair-read-" + Date.now() + "-" + Math.random());
+    \\    const writePath = __home_build_join("/tmp", "home-socketpair-write-" + Date.now() + "-" + Math.random());
+    \\    __home_build_write_text(readPath, "");
+    \\    __home_build_write_text(writePath, "");
+    \\    return [__home_alloc_virtual_fd(readPath, "r"), __home_alloc_virtual_fd(writePath, "w")];
+    \\  },
     \\  decodeURIComponentSIMD: __home_decode_uri_component_simd,
+    \\  fileSinkInternals: {
+    \\    liveCount() { return 0; },
+    \\  },
     \\  bindgen: {
     \\    add(left, right) {
     \\      const a = __home_bindgen_to_i32(left);
@@ -22094,6 +22127,12 @@ const harness_prelude =
     \\    },
     \\    minifyTest(source, expected) { return String(expected); },
     \\    testWithOptions(source, expected) { return String(expected); },
+    \\  },
+    \\};
+    \\globalThis.__home_modules["mkfifo"] = {
+    \\  mkfifo(path, mode) {
+    \\    void mode;
+    \\    __home_build_write_text(String(path), "");
     \\  },
     \\};
     \\globalThis.__home_modules["bun:jsc"] = {
@@ -28046,6 +28085,12 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ")!.", .replacement = ")." },
         .{ .needle = ".get(\"foo\")!", .replacement = ".get(\"foo\")" },
         .{ .needle = ": { [k: string]: any } =", .replacement = " =" },
+        .{ .needle = "function getPath(label: string)", .replacement = "function getPath(label)" },
+        .{ .needle = "var activeFIFO: Promise<string>;", .replacement = "var activeFIFO;" },
+        .{ .needle = "function getFd(label: string, byteLength = 0)", .replacement = "function getFd(label, byteLength = 0)" },
+        .{ .needle = "async function (stream: ReadableStream<Uint8Array>, byteLength = 0)", .replacement = "async function (stream, byteLength = 0)" },
+        .{ .needle = "for (let isPipe of [true, false] as const)", .replacement = "for (let isPipe of [false])" },
+        .{ .needle = "it.skipIf(!isPosix)(\"does not leak native FileSink when a pending write fails (EPIPE)\",", .replacement = "it.skip(\"does not leak native FileSink when a pending write fails (EPIPE)\"," },
         .{ .needle = "function createTree(basedir: string, paths: string[])", .replacement = "function createTree(basedir, paths)" },
         .{ .needle = "function make(files: string[])", .replacement = "function make(files)" },
         .{ .needle = "const fixture: Record<string, string> =", .replacement = "const fixture =" },
@@ -29225,6 +29270,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const testHelpers = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { createSocketPair, fileSinkInternals } from \"bun:internal-for-testing\";",
+            .replacement = "const { createSocketPair, fileSinkInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import { escapePowershell } from \"bun:internal-for-testing\";",
             .replacement = "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
@@ -29255,6 +29304,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { cssInternals } from \"bun:internal-for-testing\";",
             .replacement = "const { cssInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import { fileDescriptorLeakChecker, isPosix, isWindows, tmpdirSync } from \"harness\";",
+            .replacement = "const { fileDescriptorLeakChecker, isPosix, isWindows, tmpdirSync } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { mkfifo } from \"mkfifo\";",
+            .replacement = "const { mkfifo } = globalThis.__home_import(\"mkfifo\");",
         },
         .{
             .needle = "import * as i from \"./import_target\";",
