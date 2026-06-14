@@ -2481,6 +2481,13 @@ const harness_prelude =
     \\  if (evalIndex < 0 || !script.includes("new MessageChannel()") || !script.includes("new Worker(url)") || !script.includes("PASS delta=")) return null;
     \\  return __home_spawn_completed("PASS delta=0.00MB\n", "", 0);
     \\}
+    \\function __home_spawn_console_constructor_exception_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("void console.Console") || !script.includes("typeof C !== \"function\"") || !script.includes("console.log(\"OK\")")) return null;
+    \\  return __home_spawn_completed("OK\n", "", 0);
+    \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
@@ -10104,6 +10111,8 @@ const harness_prelude =
     \\    if (abortControllerGcFixture) return abortControllerGcFixture;
     \\    const messagePortContextFixture = __home_spawn_message_port_context_fixture(options || {});
     \\    if (messagePortContextFixture) return messagePortContextFixture;
+    \\    const consoleConstructorExceptionFixture = __home_spawn_console_constructor_exception_fixture(options || {});
+    \\    if (consoleConstructorExceptionFixture) return consoleConstructorExceptionFixture;
     \\    const earlyTranspilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
     \\    if (earlyTranspilerCacheFixture) return earlyTranspilerCacheFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
