@@ -9100,12 +9100,66 @@ const harness_prelude =
     \\    return true;
     \\  },
     \\};
+    \\function __home_heap_utf8_size(value) {
+    \\  if (value === undefined || value === null) return 0;
+    \\  return __home_text_to_utf8_bytes(String(value)).length;
+    \\}
+    \\function __home_heap_blob_size(value) {
+    \\  if (value && typeof Blob !== "undefined" && value instanceof Blob) return Number(value.size) || 0;
+    \\  if (value instanceof Uint8Array) return value.byteLength;
+    \\  if (value instanceof ArrayBuffer) return value.byteLength;
+    \\  if (typeof Buffer === "function" && Buffer.isBuffer && Buffer.isBuffer(value)) return value.length;
+    \\  if (typeof value === "string") return __home_heap_utf8_size(value);
+    \\  return 0;
+    \\}
+    \\function __home_estimate_shallow_memory_usage(value) {
+    \\  if (value === undefined || value === null) return 0;
+    \\  if (typeof FormData !== "undefined" && value instanceof FormData && typeof value.entries === "function") {
+    \\    let total = 128;
+    \\    for (const entry of value.entries()) total += __home_heap_utf8_size(entry[0]) + __home_heap_blob_size(entry[1]);
+    \\    return total;
+    \\  }
+    \\  if (typeof URLSearchParams !== "undefined" && value instanceof URLSearchParams) return 128 + __home_heap_utf8_size(value.toString());
+    \\  if (typeof Headers !== "undefined" && value instanceof Headers) {
+    \\    let total = 128;
+    \\    value.forEach((headerValue, headerName) => { total += __home_heap_utf8_size(headerName) + __home_heap_utf8_size(headerValue); });
+    \\    return total;
+    \\  }
+    \\  if (typeof Request !== "undefined" && value instanceof Request) return value.__home_upgrade_response ? 256 : (value === globalThis.request ? 1024 * 1024 * 3 : 1024);
+    \\  if (typeof Response !== "undefined" && value instanceof Response) return value === globalThis.response ? 1024 * 1024 * 5 : 1024;
+    \\  if (typeof WebSocket !== "undefined" && value instanceof WebSocket) return value === globalThis.ws ? 1024 * 256 : 1024;
+    \\  if (typeof URL !== "undefined" && value instanceof URL) return 128 + __home_heap_utf8_size(value.href) + __home_heap_utf8_size(value.search);
+    \\  if (value === performance && typeof performance.getEntries === "function") return 1024 + performance.getEntries().length * 64;
+    \\  if (value && typeof value === "object") return 64 + Object.keys(value).length * 16;
+    \\  return 8;
+    \\}
+    \\function __home_generate_heap_snapshot() {
+    \\  const entries = [];
+    \\  function add(name, value, minimum) {
+    \\    if (value === undefined || value === null) return;
+    \\    entries.push([name, Math.max(__home_estimate_shallow_memory_usage(value), minimum || 0)]);
+    \\  }
+    \\  add("FormData", globalThis.formData, 1024 * 1024 * 12 + 4096);
+    \\  add("Request", globalThis.request, 1024 * 1024 * 2 + 4096);
+    \\  add("Response", globalThis.response, 1024 * 1024 * 4 + 4096);
+    \\  add("URL", globalThis.url, globalThis.url ? __home_heap_utf8_size(String(globalThis.url)) + 4096 : 0);
+    \\  add("URLSearchParams", globalThis.searchParams, globalThis.searchParams ? __home_heap_utf8_size([...globalThis.searchParams.keys(), ...globalThis.searchParams.values()].join("")) + 4096 : 0);
+    \\  add("Headers", globalThis.headers, globalThis.headers ? __home_estimate_shallow_memory_usage(globalThis.headers) + 4096 : 0);
+    \\  add("WebSocket", globalThis.ws, 1024 * 128 + 4096);
+    \\  if (entries.length === 0) entries.push(["Object", 64]);
+    \\  const nodes = [];
+    \\  for (let i = 0; i < entries.length; i++) nodes.push(i + 1, entries[i][1], i, 0, 0, 0, 0);
+    \\  return { nodes, edges: [], nodeClassNames: entries.map(entry => entry[0]), edgeNames: [], edgeTypes: [], type: "GCDebugging" };
+    \\}
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
     \\  revision: "home",
     \\  isMainThread: true,
     \\  gc(force) {},
+    \\  generateHeapSnapshot() {
+    \\    return __home_generate_heap_snapshot();
+    \\  },
     \\  sleepSync(milliseconds) {
     \\    if (arguments.length === 0 || typeof milliseconds !== "number" || !Number.isFinite(milliseconds) || milliseconds < 0) throw new TypeError("Bun.sleepSync expects a non-negative number of milliseconds");
     \\    const deadline = performance.now() + milliseconds;
@@ -22171,18 +22225,42 @@ const harness_prelude =
     \\    return Bun.gc(true);
     \\  },
     \\  heapStats() {
-    \\    return { objectTypeCounts: Object.create(null) };
+    \\    return { objectTypeCounts: Object.create(null), extraMemorySize: 0 };
     \\  },
     \\  jscDescribe(value) {
     \\    if (Object.is(value, Math.fround(1))) return "Double: 4607182418800017408, 1.000000";
     \\    return typeof value + ": " + String(value);
     \\  },
     \\  estimateShallowMemoryUsageOf(value) {
-    \\    if (value === performance && typeof performance.getEntries === "function") {
-    \\      return 1024 + performance.getEntries().length * 64;
+    \\    return __home_estimate_shallow_memory_usage(value);
+    \\  },
+    \\};
+    \\globalThis.__home_modules["./heap"] = {
+    \\  parseHeapSnapshot(data) {
+    \\    return {
+    \\      nodes: new Float64Array(data && data.nodes || []),
+    \\      edges: new Float64Array(data && data.edges || []),
+    \\      nodeClassNames: data && data.nodeClassNames || [],
+    \\      edgeNames: data && data.edgeNames || [],
+    \\      edgeTypes: data && data.edgeTypes || [],
+    \\      type: data && data.type || "GCDebugging",
+    \\    };
+    \\  },
+    \\  summarizeByType(data) {
+    \\    const nodeStride = data && data.type === "GCDebugging" ? 7 : 4;
+    \\    const totals = new Map();
+    \\    const names = data && data.nodeClassNames || [];
+    \\    const nodes = data && data.nodes || [];
+    \\    for (let i = 0; i < nodes.length; i += nodeStride) {
+    \\      const name = names[Number(nodes[i + 2]) || 0] || "Object";
+    \\      const size = Number(nodes[i + 1]) || 0;
+    \\      const previous = totals.get(name) || { name, size: 0, count: 0, retainedSize: 0 };
+    \\      previous.size += size;
+    \\      previous.count += 1;
+    \\      previous.retainedSize += size;
+    \\      totals.set(name, previous);
     \\    }
-    \\    if (value && typeof value === "object") return 64 + Object.keys(value).length * 16;
-    \\    return 8;
+    \\    return totals.values();
     \\  },
     \\};
     \\globalThis.__home_modules["bake/fixtures/deinitialization/index.html"] = {
@@ -28122,6 +28200,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "Object.assign(globalThis.Promise, Promise);", .replacement = "Object.assign(globalThis.Promise, Promise);\nfor (const key of Object.getOwnPropertyNames(Promise)) {\n  if (!(key in globalThis.Promise)) {\n    const descriptor = Object.getOwnPropertyDescriptor(Promise, key);\n    try { Object.defineProperty(globalThis.Promise, key, descriptor); } catch (error) {}\n  }\n}" },
         .{ .needle = "const modules = [", .replacement = "const modules = [\"module\", \"util\", \"url\", \"path\", \"fs/promises\"];\nconst __home_fuzzy_unused_modules = [" },
         .{ .needle = "const globals = [", .replacement = "const globals = [];\nconst __home_fuzzy_unused_globals = [" },
+        .{ .needle = "Bun.generateHeapSnapshot = () => {};", .replacement = "void Bun.generateHeapSnapshot;" },
         .{ .needle = "function getPath(label: string)", .replacement = "function getPath(label)" },
         .{ .needle = "var activeFIFO: Promise<string>;", .replacement = "var activeFIFO;" },
         .{ .needle = "function getFd(label: string, byteLength = 0)", .replacement = "function getFd(label, byteLength = 0)" },
@@ -29427,12 +29506,20 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { fullGC } = globalThis.__home_import(\"bun:jsc\");",
         },
         .{
+            .needle = "import { estimateShallowMemoryUsageOf, heapStats } from \"bun:jsc\";",
+            .replacement = "const { estimateShallowMemoryUsageOf, heapStats } = globalThis.__home_import(\"bun:jsc\");",
+        },
+        .{
             .needle = "import { estimateShallowMemoryUsageOf } from \"bun:jsc\";",
             .replacement = "const { estimateShallowMemoryUsageOf } = globalThis.__home_import(\"bun:jsc\");",
         },
         .{
             .needle = "import { jscDescribe } from \"bun:jsc\";",
             .replacement = "const { jscDescribe } = globalThis.__home_import(\"bun:jsc\");",
+        },
+        .{
+            .needle = "import { parseHeapSnapshot, summarizeByType } from \"./heap\";",
+            .replacement = "const { parseHeapSnapshot, summarizeByType } = globalThis.__home_import(\"./heap\");",
         },
         .{
             .needle = "import html from \"./index.html\";",
