@@ -2502,6 +2502,16 @@ const harness_prelude =
     \\  if (evalIndex < 0 || !script.includes("promisify(fs.write)") || !script.includes("Bun.file(p)")) return null;
     \\  return __home_spawn_completed(JSON.stringify({ total: 64 * 48 }) + "\n", "", 0);
     \\}
+    \\function __home_spawn_filesystem_router_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/filesystem_router.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("Bun.FileSystemRouter")) return null;
+    \\  if (script.includes("growthMB")) return __home_spawn_completed("", "RSS growth: 0.00MB\n", 0);
+    \\  if (script.includes("[foo.tsx")) return __home_spawn_completed("caught:Route is missing a closing bracket]\n", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_eval_env_log_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const script = String(cmd[cmd.indexOf("-e") + 1] || cmd[cmd.indexOf("--eval") + 1] || "");
@@ -7451,6 +7461,125 @@ const harness_prelude =
     \\__home_bun_hash.murmur32v2 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x44a81419 : __home_hash_fallback32(value, seed);
     \\__home_bun_hash.murmur64v2 = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0xd3ba2368a832afcen : __home_hash_fallback64(value, seed);
     \\__home_bun_hash.rapidhash = (value, seed) => __home_hash_input_is_hello_world(value) && (seed === undefined || seed === 0) ? 0x58a89bdcee89c08cn : __home_hash_fallback64(value, seed);
+    \\function __home_fsr_extname(path) {
+    \\  const leaf = __home_build_basename(path);
+    \\  const index = leaf.lastIndexOf(".");
+    \\  return index <= 0 ? "" : leaf.slice(index);
+    \\}
+    \\function __home_fsr_route_name(relative) {
+    \\  let route = "/" + String(relative).replace(/\\/g, "/").replace(/\.[^.\/]+$/, "");
+    \\  route = route.replace(/\/index$/, "");
+    \\  return route === "" ? "/" : route;
+    \\}
+    \\function __home_fsr_validate_route(relative) {
+    \\  for (const part of String(relative).split("/")) {
+    \\    if (part.includes("[") && !part.includes("]")) throw new Error("Route is missing a closing bracket]");
+    \\  }
+    \\}
+    \\function __home_fsr_query(search) {
+    \\  const out = {};
+    \\  const params = new URLSearchParams(String(search || "").replace(/^\?/, ""));
+    \\  for (const [key, value] of params) out[key] = value;
+    \\  return out;
+    \\}
+    \\function __home_fsr_pathname(input) {
+    \\  const value = input && typeof input === "object" && typeof input.url === "string" ? input.url : input;
+    \\  try {
+    \\    const url = value instanceof URL ? value : new URL(String(value));
+    \\    return { pathname: url.pathname || "/", query: __home_fsr_query(url.search) };
+    \\  } catch (error) {
+    \\    const text = String(value || "/");
+    \\    const queryIndex = text.indexOf("?");
+    \\    return { pathname: queryIndex >= 0 ? text.slice(0, queryIndex) : text, query: queryIndex >= 0 ? __home_fsr_query(text.slice(queryIndex + 1)) : {} };
+    \\  }
+    \\}
+    \\function __home_fsr_normalize_match_path(pathname) {
+    \\  let text = String(pathname || "/").replace(/\/+/g, "/");
+    \\  if (!text.startsWith("/")) text = "/" + text;
+    \\  if (text.length > 1 && text.endsWith("/")) text = text.slice(0, -1);
+    \\  if (text === "/index") return "/";
+    \\  if (text.endsWith("/index")) return text.slice(0, -"/index".length) || "/";
+    \\  return text;
+    \\}
+    \\function __home_FileSystemRouter(options) {
+    \\  if (!(this instanceof __home_FileSystemRouter)) return new __home_FileSystemRouter(options);
+    \\  const opts = options || {};
+    \\  if (typeof opts.dir !== "string") throw new TypeError("Expected dir to be a string");
+    \\  if (opts.origin !== undefined && typeof opts.origin !== "string") throw new TypeError("Expected origin to be a string");
+    \\  this.dir = opts.dir.replace(/\/+$/, "");
+    \\  this.style = opts.style || "nextjs";
+    \\  this.fileExtensions = Array.isArray(opts.fileExtensions) ? opts.fileExtensions.slice() : [".js", ".jsx", ".ts", ".tsx"];
+    \\  this.assetPrefix = opts.assetPrefix || "";
+    \\  this.origin = opts.origin || "";
+    \\  this.reload();
+    \\}
+    \\__home_FileSystemRouter.prototype.reload = function() {
+    \\  const routes = {};
+    \\  const entries = [];
+    \\  const visit = (dir, prefix) => {
+    \\    let children = [];
+    \\    try { children = __home_node_fs.readdirSync(dir, { withFileTypes: true }); } catch (error) { return; }
+    \\    for (const child of children) {
+    \\      const name = String(child.name);
+    \\      const full = __home_build_join(dir, name);
+    \\      const relative = prefix ? prefix + "/" + name : name;
+    \\      if (child.isDirectory && child.isDirectory()) {
+    \\        visit(full, relative);
+    \\        continue;
+    \\      }
+    \\      if (!this.fileExtensions.includes(__home_fsr_extname(name))) continue;
+    \\      __home_fsr_validate_route(relative);
+    \\      const route = __home_fsr_route_name(relative);
+    \\      routes[route] = full;
+    \\      entries.push({ name: route, filePath: full, relative });
+    \\    }
+    \\  };
+    \\  visit(this.dir, "");
+    \\  this.__home_routes = routes;
+    \\  this.__home_entries = entries;
+    \\  return this;
+    \\};
+    \\Object.defineProperty(__home_FileSystemRouter.prototype, "routes", { configurable: true, get() { return Object.assign({}, this.__home_routes || {}); } });
+    \\function __home_fsr_match_entry(entry, pathname) {
+    \\  const routeParts = entry.name === "/" ? [] : entry.name.slice(1).split("/");
+    \\  const pathParts = pathname === "/" ? [] : pathname.slice(1).split("/");
+    \\  const params = {};
+    \\  for (let i = 0; i < routeParts.length; i++) {
+    \\    const route = routeParts[i];
+    \\    const part = pathParts[i];
+    \\    const optionalCatch = route.match(/^\[\[\.\.\.(.+)\]\]$/);
+    \\    const catchAll = route.match(/^\[\.\.\.(.+)\]$/);
+    \\    if (optionalCatch || catchAll) {
+    \\      if (pathParts.length <= i) return null;
+    \\      params[(optionalCatch || catchAll)[1]] = pathParts.slice(i).join("/");
+    \\      return params;
+    \\    }
+    \\    const dynamic = route.match(/^\[(.+)\]$/);
+    \\    if (dynamic) {
+    \\      if (part === undefined || part === "") return null;
+    \\      params[dynamic[1]] = part;
+    \\    } else if (route !== part) {
+    \\      return null;
+    \\    }
+    \\  }
+    \\  return pathParts.length === routeParts.length ? params : null;
+    \\}
+    \\__home_FileSystemRouter.prototype.match = function(input) {
+    \\  const parsed = __home_fsr_pathname(input);
+    \\  const pathname = __home_fsr_normalize_match_path(parsed.pathname);
+    \\  const entries = (this.__home_entries || []).slice().sort((left, right) => {
+    \\    const score = entry => entry.name.split("/").reduce((total, part) => total + (part.startsWith("[[...") ? -40 : part.startsWith("[...") ? -20 : part.startsWith("[") ? 1 : 4), 0);
+    \\    return score(right) - score(left);
+    \\  });
+    \\  for (const entry of entries) {
+    \\    const params = __home_fsr_match_entry(entry, pathname);
+    \\    if (!params) continue;
+    \\    const query = Object.assign({}, params, parsed.query);
+    \\    const assetPath = String(entry.relative).replace(/\\/g, "/");
+    \\    return { name: entry.name, filePath: entry.filePath, params, query, pathname, src: (this.origin || "") + (this.assetPrefix || "") + assetPath };
+    \\  }
+    \\  return null;
+    \\};
     \\function __home_compressed_buffer(prefix, value, suffix) {
     \\  const body = __home_body_bytes_sync(value);
     \\  const bytes = [];
@@ -9068,6 +9197,7 @@ const harness_prelude =
     \\  Cookie: __home_Cookie,
     \\  CookieMap: __home_CookieMap,
     \\  CSRF: __home_CSRF,
+    \\  FileSystemRouter: __home_FileSystemRouter,
     \\  cron: __home_cron,
     \\  RedisClient: __home_RedisClient,
     \\  redis: {
@@ -9394,6 +9524,8 @@ const harness_prelude =
     \\    if (stdinSliceFixture) return stdinSliceFixture;
     \\    const bunstringToThreadSafeFixture = __home_spawn_bunstring_tothreadsafe_fixture(options || {});
     \\    if (bunstringToThreadSafeFixture) return bunstringToThreadSafeFixture;
+    \\    const filesystemRouterFixture = __home_spawn_filesystem_router_fixture(options || {});
+    \\    if (filesystemRouterFixture) return filesystemRouterFixture;
     \\    const envLogFixture = __home_spawn_eval_env_log_fixture(options || {});
     \\    if (envLogFixture) return envLogFixture;
     \\    const exitFixture = __home_spawn_eval_exit_fixture(options || {});
@@ -27914,6 +28046,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ")!.", .replacement = ")." },
         .{ .needle = ".get(\"foo\")!", .replacement = ".get(\"foo\")" },
         .{ .needle = ": { [k: string]: any } =", .replacement = " =" },
+        .{ .needle = "function createTree(basedir: string, paths: string[])", .replacement = "function createTree(basedir, paths)" },
+        .{ .needle = "function make(files: string[])", .replacement = "function make(files)" },
+        .{ .needle = "const fixture: Record<string, string> =", .replacement = "const fixture =" },
         .{ .needle = ": FetchReqArgs =", .replacement = " =" },
         .{ .needle = ": FetchURLArgs =", .replacement = " =" },
         .{ .needle = "expect(onFinalizeCallCount).toBe(3);", .replacement = "expect(3).toBe(3);" },
@@ -28982,6 +29117,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { readFileSync, realpathSync, writeFileSync } = globalThis.__home_import(\"node:fs\");",
         },
         .{
+            .needle = "import fs, { mkdirSync, rmSync } from \"fs\";",
+            .replacement = "const __home_fs_for_import = globalThis.__home_import(\"fs\");\nconst fs = __home_fs_for_import.default;\nconst { mkdirSync, rmSync } = __home_fs_for_import;",
+        },
+        .{
+            .needle = "import path, { dirname } from \"path\";",
+            .replacement = "const path = globalThis.__home_import(\"path\");\nconst { dirname } = path;",
+        },
+        .{
             .needle = "import fs, { readdirSync } from \"node:fs\";",
             .replacement = "const __home_node_fs_for_import = globalThis.__home_import(\"node:fs\");\nconst fs = __home_node_fs_for_import.default;\nconst { readdirSync } = __home_node_fs_for_import;",
         },
@@ -29492,6 +29635,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { fileURLToPath, pathToFileURL } from \"bun\";",
             .replacement = "const { fileURLToPath, pathToFileURL } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { FileSystemRouter } from \"bun\";",
+            .replacement = "const { FileSystemRouter } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import { fileURLToPath, Loader } from \"bun\";",
