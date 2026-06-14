@@ -12694,6 +12694,7 @@ const harness_prelude =
     \\}
     \\function __home_match_object_subset(received, expected) {
     \\  if (expected && expected.__home_expect_object_containing) expected = expected.sample || {};
+    \\  if (Object.is(received, expected)) return true;
     \\  if (expected && (expected.__home_expect_any || expected.__home_expect_string_matching || expected.__home_expect_string_containing || typeof expected.asymmetricMatch === "function")) return __home_deep_equal(received, expected, false, new Map());
     \\  if (expected === null || typeof expected !== "object") return __home_deep_equal(received, expected, false, new Map());
     \\  if (received === null || typeof received !== "object") return false;
