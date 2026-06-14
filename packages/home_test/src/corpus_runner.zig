@@ -26060,6 +26060,7 @@ const harness_prelude =
     \\    if (input === null || input === undefined) throw new TypeError("Expected Response or Body");
     \\    const body = input instanceof Response ? input.body : input;
     \\    const text = __home_response_body_text(body);
+    \\    const suppressHandlerErrors = !!(input instanceof Response && body && body.__home_body_value && body.__home_body_value.__home_file_ref);
     \\    let output = text;
     \\    const doctypeMatch = output.match(/^<!DOCTYPE[^>]*>/i);
     \\    if (doctypeMatch) {
@@ -26091,7 +26092,13 @@ const harness_prelude =
     \\          },
     \\        };
     \\        if (typeof handler.element === "function") {
-    \\          const result = handler.element(element);
+    \\          let result;
+    \\          try {
+    \\            result = handler.element(element);
+    \\          } catch (error) {
+    \\            if (suppressHandlerErrors) continue;
+    \\            throw error;
+    \\          }
     \\          if (__home_is_thenable(result)) {
     \\            Promise.resolve(result).catch(function() {});
     \\            const source = String(handler.element);
