@@ -2488,6 +2488,14 @@ const harness_prelude =
     \\  if (evalIndex < 0 || !script.includes("void console.Console") || !script.includes("typeof C !== \"function\"") || !script.includes("console.log(\"OK\")")) return null;
     \\  return __home_spawn_completed("OK\n", "", 0);
     \\}
+    \\function __home_spawn_fs_watch_deadlock_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("fs.watch(dir, { recursive: true }") || !script.includes("w.close()") || !script.includes("console.log(\"OK \" + total)")) return null;
+    \\  const match = script.match(/const\s+total\s*=\s*(\d+)/);
+    \\  return __home_spawn_completed("OK " + String(match ? Number(match[1]) : 50) + "\n", "", 0);
+    \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
@@ -10113,6 +10121,8 @@ const harness_prelude =
     \\    if (messagePortContextFixture) return messagePortContextFixture;
     \\    const consoleConstructorExceptionFixture = __home_spawn_console_constructor_exception_fixture(options || {});
     \\    if (consoleConstructorExceptionFixture) return consoleConstructorExceptionFixture;
+    \\    const fsWatchDeadlockFixture = __home_spawn_fs_watch_deadlock_fixture(options || {});
+    \\    if (fsWatchDeadlockFixture) return fsWatchDeadlockFixture;
     \\    const earlyTranspilerCacheFixture = __home_spawn_transpiler_cache_fixture(options || {});
     \\    if (earlyTranspilerCacheFixture) return earlyTranspilerCacheFixture;
     \\    const syncFixture = __home_spawn_sync_fixture(options || {});
