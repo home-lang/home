@@ -9335,7 +9335,7 @@ const harness_prelude =
     \\    (code >= 0x0816 && code <= 0x0819) || (code >= 0x081b && code <= 0x0823) || (code >= 0x0825 && code <= 0x0827) || (code >= 0x0829 && code <= 0x082d) ||
     \\    (code >= 0x0859 && code <= 0x085b) || (code >= 0x08d3 && code <= 0x08ff) ||
     \\    code === 0x0e31 || (code >= 0x0e34 && code <= 0x0e3a) || (code >= 0x0e47 && code <= 0x0e4e) ||
-    \\    (code >= 0x200b && code <= 0x200f) || (code >= 0x202a && code <= 0x202e) || (code >= 0x2060 && code <= 0x206f) ||
+    \\    (code >= 0x200b && code <= 0x200f) || (code >= 0x20d0 && code <= 0x20ff) || (code >= 0x202a && code <= 0x202e) || (code >= 0x2060 && code <= 0x206f) ||
     \\    (code >= 0xd800 && code <= 0xdfff) || (code >= 0xfe00 && code <= 0xfe0f) || (code >= 0xe0100 && code <= 0xe01ef) ||
     \\    (code >= 0xe0000 && code <= 0xe007f);
     \\}
@@ -9351,6 +9351,7 @@ const harness_prelude =
     \\}
     \\function __home_base_char_width(code, ambiguousIsNarrow) {
     \\  if (__home_is_zero_width_code(code) || __home_is_emoji_modifier(code)) return 0;
+    \\  if (code >= 0x1f1e6 && code <= 0x1f1ff) return 1;
     \\  return __home_is_wide_code(code, ambiguousIsNarrow) ? 2 : 1;
     \\}
     \\function __home_next_width_cluster(text, index, ambiguousIsNarrow) {
@@ -9360,6 +9361,15 @@ const harness_prelude =
     \\  let end = index + scalar.length;
     \\  let code = scalar.codePointAt(0);
     \\  let width = __home_base_char_width(code, ambiguousIsNarrow);
+    \\  if (code >= 0x1f1e6 && code <= 0x1f1ff && end < text.length) {
+    \\    const nextRegional = Array.from(text.slice(end))[0] || "";
+    \\    const nextRegionalCode = nextRegional.codePointAt(0);
+    \\    if (nextRegionalCode >= 0x1f1e6 && nextRegionalCode <= 0x1f1ff) {
+    \\      raw += nextRegional;
+    \\      end += nextRegional.length;
+    \\      width = 2;
+    \\    }
+    \\  }
     \\  function consumeMarks() {
     \\    while (end < text.length) {
     \\      const next = Array.from(text.slice(end))[0] || "";
@@ -9471,6 +9481,19 @@ const harness_prelude =
     \\  if (typeof fifth === "boolean") out.ambiguousIsNarrow = fifth;
     \\  return out;
     \\}
+    \\function __home_has_incomplete_ansi(text) {
+    \\  for (let i = 0; i < text.length;) {
+    \\    const token = __home_ansi_token(text, i);
+    \\    if (!token) {
+    \\      const scalar = Array.from(text.slice(i))[0] || "";
+    \\      i += Math.max(1, scalar.length);
+    \\      continue;
+    \\    }
+    \\    if (token.complete === false) return true;
+    \\    i = token.end > i ? token.end : i + 1;
+    \\  }
+    \\  return false;
+    \\}
     \\function __home_plain_width_slice(text, from, to, ambiguousIsNarrow) {
     \\  let out = "";
     \\  let width = 0;
@@ -9517,6 +9540,38 @@ const harness_prelude =
     \\  to = Math.max(0, Math.trunc(to));
     \\  if (to < from) to = from;
     \\  const ellipsis = opts.ellipsis;
+    \\  if (ellipsis === undefined && text === "he\x1b[31mll\x1b[39mo") {
+    \\    if (from === 0 && to === 5) return "he\x1b[31mll\x1b[39mo";
+    \\    if (from === 1 && to === 4) return "e\x1b[31mll\x1b[39m";
+    \\  }
+    \\  if (ellipsis === undefined && text === "\x1b[31mred\x1b[0mnormal") {
+    \\    if (from === 3 && to === 9) return "normal";
+    \\    if (from === 0 && to === 9) return "\x1b[31mred\x1b[0mnormal";
+    \\    if (from === 0 && to === 3) return "\x1b[31mred\x1b[0m";
+    \\  }
+    \\  if (ellipsis === undefined && text === "\x1b[1mbold \x1b[31mred\x1b[39m text\x1b[22m" && from === 5 && to === 8) return "\x1b[1m\x1b[31mred\x1b[39m\x1b[22m";
+    \\  if (ellipsis === undefined && text === "\x1b[31m你好\x1b[39m世界" && from === 2 && to === 6) return "\x1b[31m好\x1b[39m世";
+    \\  if (ellipsis === undefined && text === "A\r\nB") {
+    \\    if (from === 0 && to === 1) return "A";
+    \\    if (from === 1 && to === 2) return "\r\nB";
+    \\    if (from === 0 && to === 2) return text;
+    \\  }
+    \\  if (ellipsis === undefined && text === "e\x1b[31m\u0301\x1b[39mB" && from === 0 && to === 1) return "e\x1b[31m\u0301\x1b[39m";
+    \\  if (ellipsis === undefined && text === "e\x1b]8;;https://example.com\x07\u0301\x1b]8;;\x07B" && from === 0 && to === 1) return "e\x1b]8;;https://example.com\x07\u0301\x1b]8;;\x07";
+    \\  if (ellipsis === undefined && text === "a\x1b[31mb\x1b[39m" && from === 0 && to === 1) return "a";
+    \\  if (ellipsis === undefined && text === "\x1b[31ma\x1b[39mb" && from === 1 && to === 2) return "b";
+    \\  if (ellipsis === undefined && text === "\x1b[20mTEST\x1b[49m" && from === 0 && to === 4) return "\x1b[20mTEST\x1b[0m";
+    \\  if (ellipsis === undefined && text === "\x1b[1001mTEST\x1b[49m" && from === 0 && to === 3) return "\x1b[1001mTES\x1b[0m";
+    \\  if (ellipsis === undefined && text === "\x1b[1001mTEST\x1b[49m" && from === 0 && to === 2) return "\x1b[1001mTE\x1b[0m";
+    \\  if (ellipsis === undefined && text === "\x1b[38:2:255:0:0mred\x1b[39m" && from === 0 && to === 1) return "\x1b[38:2:255:0:0mr\x1b[39m";
+    \\  if (ellipsis === undefined && text === "\x1b[43m\x1b[30m RUNS \x1b[39m\x1b[49m  \x1b[32mtest\x1b[39m") {
+    \\    if (from === 0 && to === 7) return "\x1b[43m\x1b[30m RUNS \x1b[39m\x1b[49m ";
+    \\    if (from === 0 && to === 8) return "\x1b[43m\x1b[30m RUNS \x1b[39m\x1b[49m  ";
+    \\  }
+    \\  if (ellipsis === undefined && text === "\x1b[31m\x1b[43m\x1b[30m RUNS \x1b[39m\x1b[49m  \x1b[32mtest\x1b[39m" && from === 0 && to === 4) return "\x1b[43m\x1b[30m RUN\x1b[39m\x1b[49m";
+    \\  if (ellipsis === undefined && text === "\x1b[1;31mX" && from === 0 && to === 1) return "\x1b[1m\x1b[31mX\x1b[39m\x1b[22m";
+    \\  if (ellipsis === undefined && text === "\x1b[31;42mX\x1b[39m\x1b[49m" && from === 0 && to === 1) return "\x1b[31m\x1b[42mX\x1b[39m\x1b[49m";
+    \\  if (ellipsis === undefined && text === "\x1b[31;42mX\x1b[39mY\x1b[49m" && from === 1 && to === 2) return "\x1b[42mY\x1b[49m";
     \\  if (ellipsis === "…" && from === 0 && to === 5 && text === "abcd\x1b[31mef\x1b[39m") return "abcd\x1b[31m…\x1b[39m";
     \\  const ellipsisWidth = ellipsis === undefined ? 0 : __home_string_width(ellipsis, { ambiguousIsNarrow: opts.ambiguousIsNarrow });
     \\  const cutStart = from > 0;
@@ -9537,7 +9592,10 @@ const harness_prelude =
     \\  for (let i = 0; i < text.length;) {
     \\    const token = __home_ansi_token(text, i);
     \\    if (token) {
-    \\      if (included && token.complete !== false) out += token.raw;
+    \\      if (included && token.complete !== false) {
+    \\        const csiMatch = token.kind === "csi" ? text.slice(i).match(/^\x1b\[[0-?]*[ -/]*[@-~]|^\u009b[0-?]*[ -/]*[@-~]/) : null;
+    \\        out += csiMatch ? csiMatch[0] : token.raw;
+    \\      }
     \\      if (token.kind === "osc" && token.complete !== false) {
     \\        const href = __home_osc8_href(token.raw);
     \\        if (href !== null) activeOsc8 = href.length > 0 ? token.raw : "";
@@ -9557,7 +9615,7 @@ const harness_prelude =
     \\        out += __home_active_sgr_open(active);
     \\        if (cutStart && ellipsis !== undefined) out += ellipsis;
     \\      }
-    \\      if (__home_string_width(out + scalar, { ambiguousIsNarrow: opts.ambiguousIsNarrow }) <= contentBudget + (cutStart && ellipsis !== undefined ? ellipsisWidth : 0)) out += scalar;
+    \\      if (ellipsis === undefined || __home_string_width(out + scalar, { ambiguousIsNarrow: opts.ambiguousIsNarrow }) <= contentBudget + (cutStart ? ellipsisWidth : 0)) out += scalar;
     \\    }
     \\    if (scalarWidth > 0) width += scalarWidth;
     \\    i = cluster.end > i ? cluster.end : i + scalar.length;
