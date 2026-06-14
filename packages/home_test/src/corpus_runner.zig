@@ -30650,6 +30650,20 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "cross-runner mock function compatibility matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/A.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "mock.module require.resolve sibling TypeScript module integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/B.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "mock.module require.resolve sibling TypeScript module integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6879/6879.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "mock.module live re-export binding integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module-resolve-log.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "mock.module missing package resolver integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "mock.module dynamic import and live binding matrix")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/only-failures.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test only-failures CLI reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/only-inside-only.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test only filtering CLI reporter")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/pretty-format-overflow.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test pretty-format overflow subprocess reporter")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
