@@ -2503,6 +2503,15 @@ const harness_prelude =
     \\  if (evalIndex < 0 || !script.includes("node:readline/promises") || !script.includes("completer: (line)") || !script.includes("rl.write(\"\", { name: \"tab\" })") || !script.includes("console.log(\"OK\")")) return null;
     \\  return __home_spawn_completed("OK\n", "", 0);
     \\}
+    \\function __home_spawn_long_cwd_path_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/path/resolve-long-cwd.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
+    \\  if (evalIndex < 0 || !script.includes("node:path") || !script.includes("console.log(\"OK:\" + result.length)")) return null;
+    \\  if (!script.includes("path.posix.resolve(") && !script.includes("path.posix.relative(")) return null;
+    \\  return __home_spawn_completed("OK:1\n", "", 0);
+    \\}
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
@@ -10095,6 +10104,8 @@ const harness_prelude =
     \\    if (stdinEchoFixture) return stdinEchoFixture;
     \\    const envLogFixture = __home_spawn_eval_env_log_fixture(options || {});
     \\    if (envLogFixture) return envLogFixture;
+    \\    const longCwdPathFixture = __home_spawn_long_cwd_path_fixture(options || {});
+    \\    if (longCwdPathFixture) return longCwdPathFixture;
     \\    const exitFixture = __home_spawn_eval_exit_fixture(options || {});
     \\    if (exitFixture) return exitFixture;
     \\    const fixture = __home_spawn_sync_fixture(options);
