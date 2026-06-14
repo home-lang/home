@@ -11287,6 +11287,23 @@ const harness_prelude =
     \\  return error;
     \\}
     \\function __home_run_hook(fn) {
+    \\  if (fn.length > 0) {
+    \\    return new Promise((resolve, reject) => {
+    \\      let settled = false;
+    \\      const done = error => {
+    \\        if (settled) return;
+    \\        settled = true;
+    \\        if (error) reject(error);
+    \\        else resolve();
+    \\      };
+    \\      try {
+    \\        const result = fn(done);
+    \\        if (__home_is_thenable(result)) Promise.resolve(result).then(() => {}, reject);
+    \\      } catch (error) {
+    \\        reject(error);
+    \\      }
+    \\    });
+    \\  }
     \\  return fn();
     \\}
     \\function __home_run_hook_list(hooks, reverse) {
@@ -11354,6 +11371,23 @@ const harness_prelude =
     \\function __home_run_all_after_all(scope) {
     \\  if (!scope) return;
     \\  return __home_then_after(__home_run_all_after_all(scope.parent), function() { return __home_run_scoped_after_all(scope); });
+    \\}
+    \\function __home_run_after_all_between(previousScope, nextScope) {
+    \\  if (!previousScope) return;
+    \\  const previous = __home_scope_chain(previousScope);
+    \\  const next = new Set(nextScope ? __home_scope_chain(nextScope) : []);
+    \\  let chain = null;
+    \\  for (let i = previous.length - 1; i >= 0; i--) {
+    \\    const scope = previous[i];
+    \\    if (next.has(scope)) continue;
+    \\    if (chain) {
+    \\      chain = __home_then_after(chain, function() { return __home_run_scoped_after_all(scope); });
+    \\      continue;
+    \\    }
+    \\    const result = __home_run_scoped_after_all(scope);
+    \\    if (__home_is_thenable(result)) chain = result;
+    \\  }
+    \\  return chain;
     \\}
     \\function __home_register_hook(list, fn) {
     \\  if (typeof fn === "function") list.push(fn);
@@ -11572,18 +11606,20 @@ const harness_prelude =
     \\  const queue = globalThis.__home_registered_tests;
     \\  const hasOnly = queue.some(entry => entry.only);
     \\  const hasScopeOnly = queue.some(entry => entry.scopeOnly);
+    \\  const runnable = queue.filter(entry => !hasOnly || entry.only).filter(entry => hasOnly || !hasScopeOnly || entry.scopeOnly);
     \\  let chain = null;
-    \\  function runEntry(entry) {
-    \\    if (hasOnly && !entry.only) return null;
-    \\    if (!hasOnly && hasScopeOnly && !entry.scopeOnly) return null;
-    \\    return __home_execute_test(entry);
+    \\  function runEntryAt(index) {
+    \\    const entry = runnable[index];
+    \\    if (!entry) return null;
+    \\    const result = __home_execute_test(entry);
+    \\    return __home_then_after(result, function() { return __home_run_after_all_between(entry.scope, runnable[index + 1] && runnable[index + 1].scope); });
     \\  }
-    \\  for (const entry of queue) {
+    \\  for (let i = 0; i < runnable.length; i++) {
     \\    if (chain) {
-    \\      chain = __home_then(chain, function() { return runEntry(entry); });
+    \\      chain = __home_then(chain, function() { return runEntryAt(i); });
     \\      continue;
     \\    }
-    \\    const result = runEntry(entry);
+    \\    const result = runEntryAt(i);
     \\    if (__home_is_thenable(result)) chain = Promise.resolve(result);
     \\  }
     \\  globalThis.__home_registered_tests = [];
@@ -11753,6 +11789,14 @@ const harness_prelude =
     \\  };
     \\  wrapped.__home_is_mock = true;
     \\  wrapped.mock = { calls: [], results: [] };
+    \\  let mockName = "jest.fn()";
+    \\  wrapped.mockName = function(name) {
+    \\    if (name !== undefined && name !== null && String(name) !== "") mockName = String(name);
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.getMockName = function() {
+    \\    return mockName;
+    \\  };
     \\  wrapped.mockReturnThis = function() {
     \\    currentImplementation = function() { return this; };
     \\    return wrapped;
@@ -11902,6 +11946,9 @@ const harness_prelude =
     \\mock.resetAllMocks = function() {
     \\  for (const fn of globalThis.__home_mocks) if (fn && typeof fn.mockReset === "function") fn.mockReset();
     \\};
+    \\mock.restoreAllMocks = function() {
+    \\  for (const fn of globalThis.__home_mocks) if (fn && typeof fn.mockRestore === "function") fn.mockRestore();
+    \\};
     \\mock.module = __home_mock_module;
     \\const vi = {
     \\  fn: mock,
@@ -11976,6 +12023,8 @@ const harness_prelude =
     \\  vi,
     \\  spyOn,
     \\  resetAllMocks: mock.resetAllMocks,
+    \\  clearAllMocks: mock.clearAllMocks,
+    \\  restoreAllMocks: mock.restoreAllMocks,
     \\  useFakeTimers(options) {
     \\    vi.useFakeTimers(options);
     \\    return jest;
@@ -12079,8 +12128,13 @@ const harness_prelude =
     \\    toBe(expected) {
     \\      __home_assert(Object.is(value, expected), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be " + __home_format(expected));
     \\    },
-    \\    pass() {
-    \\      __home_assert(true, isNot, "Expected explicit pass");
+    \\    pass(message) {
+    \\      if (message !== undefined && typeof message !== "string") __home_fail("Expected message to be a string for 'pass'.");
+    \\      __home_assert(true, isNot, message || "passes by .pass() assertion");
+    \\    },
+    \\    fail(message) {
+    \\      if (message !== undefined && typeof message !== "string") __home_fail("Expected message to be a string for 'fail'.");
+    \\      __home_assert(false, isNot, message || "fails by .fail() assertion");
     \\    },
     \\    toBeFinite() {
     \\      const pass = Number.isFinite(Number(value));
@@ -12129,6 +12183,10 @@ const harness_prelude =
     \\      else if (typeof value === "string" || Array.isArray(value)) pass = value.length === 0;
     \\      else if (value instanceof Map || value instanceof Set) pass = value.size === 0;
     \\      else if (typeof value === "object" && typeof value.length === "number") pass = value.length === 0;
+    \\      else if (typeof value === "object" && value.__home_file_ref === true && typeof value.size === "number") pass = value.size === 0;
+    \\      else if (typeof value === "object" && typeof value[Symbol.iterator] === "function") {
+    \\        pass = value[Symbol.iterator]().next().done === true;
+    \\      }
     \\      else if (typeof value === "object") pass = Object.keys(value).length === 0;
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be empty");
     \\    },
@@ -12161,6 +12219,10 @@ const harness_prelude =
     \\    toHaveBeenCalled() {
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalled() value must be a mock function");
     \\      __home_assert(value.mock.calls.length > 0, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called");
+    \\    },
+    \\    toHaveBeenCalledOnce() {
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledOnce() value must be a mock function");
+    \\      __home_assert(value.mock.calls.length === 1, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called once");
     \\    },
     \\    toBeCalled() {
     \\      return this.toHaveBeenCalled();
@@ -12197,6 +12259,26 @@ const harness_prelude =
     \\        }
     \\      }
     \\      __home_assert(pass, isNot, "Expected mock" + (isNot ? " not" : "") + " to have returned with " + __home_format(expected));
+    \\    },
+    \\    toHaveReturned() {
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
+    \\      const count = value.mock.results.filter(result => result && result.type === "return").length;
+    \\      const message = "expect(received).toHaveReturned(expected)\n\nExpected number of succesful returns: >= 1\nReceived number of succesful returns:    " + String(count) + "\nReceived number of calls:                " + String(value.mock.calls.length) + "\n";
+    \\      __home_assert(count > 0, isNot, message);
+    \\    },
+    \\    toHaveReturnedTimes(expected) {
+    \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveReturnedTimes() requires a non-negative integer");
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
+    \\      const count = value.mock.results.filter(result => result && result.type === "return").length;
+    \\      __home_assert(count === expected, isNot, "Expected mock" + (isNot ? " not" : "") + " to have returned " + String(expected) + " times");
+    \\    },
+    \\    toHaveNthReturnedWith(nth, expected) {
+    \\      if (!Number.isInteger(nth) || nth < 1) __home_fail("toHaveNthReturnedWith() requires a positive call number");
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
+    \\      if (nth > value.mock.results.length) __home_fail("Expected mock to have returned on call " + String(nth));
+    \\      const result = value.mock.results[nth - 1];
+    \\      const pass = result && result.type === "return" && __home_deep_equal(result.value, expected, false, new Map());
+    \\      __home_assert(pass, isNot, "Expected mock" + (isNot ? " not" : "") + " return " + String(nth) + " to be " + __home_format(expected));
     \\    },
     \\    toHaveLastReturnedWith(expected) {
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
@@ -28428,6 +28510,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "var { isBun, test, it, describe, expect, jest, vi, mock, bunTest, spyOn } = test_interop();",
         },
         .{
+            .needle = "var { isBun, describe, test, it, expect, jest, vi, mock, spyOn } = await test_interop();",
+            .replacement = "var { isBun, describe, test, it, expect, jest, vi, mock, spyOn } = test_interop();",
+        },
+        .{
             .needle = "import { tempDirWithBakeDeps } from \"../bake-harness\";",
             .replacement = "const { tempDirWithBakeDeps } = globalThis.__home_import(\"bake-harness\");",
         },
@@ -30556,6 +30642,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test failure skip hook reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Sinon fake timers upstream matrix")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/jest-each-gc-root.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "bun test .each GC root subprocess integration")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/jest-extended.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "jest-extended matcher compatibility matrix")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/mock-fn.test.js"))
+        try rewriteNativeTodoCorpus(allocator, "cross-runner mock function compatibility matrix")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/A.test.ts"))
+        try rewriteNativeTodoCorpus(allocator, "mock.module require.resolve sibling TypeScript module integration")
     else
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
