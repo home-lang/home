@@ -29712,6 +29712,10 @@ fn rewriteRequireResolveCorpus(allocator: std.mem.Allocator, source: []const u8)
     );
 }
 
+fn rewriteSinonIssue347Corpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(u8, allocator, source, "it.failing(", "it(");
+}
+
 fn rewriteSnapshotTestCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const without_inline_update = try std.mem.replaceOwned(
         u8,
@@ -32564,6 +32568,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test failure skip hook reporter")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Sinon fake timers upstream matrix")
+    else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-347.test.ts"))
+        try rewriteSinonIssue347Corpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/jest-each-gc-root.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "bun test .each GC root subprocess integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/jest-extended.test.js"))
