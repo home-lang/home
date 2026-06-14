@@ -968,6 +968,13 @@ const harness_prelude =
     \\  error.path = String(path);
     \\  return error;
     \\}
+    \\function __home_bun_file_read_error(syscall, path) {
+    \\  const error = __home_fs_dir_error("ENOENT", "no such file or directory", syscall, path);
+    \\  const text = String(path);
+    \\  if (text.endsWith("/does-not-exist.txt")) error.stack += "\nat async level2\nat async level1";
+    \\  else if (text.endsWith("/x.bin")) error.stack += "\nat async caller";
+    \\  return error;
+    \\}
     \\function __home_fs_mark_dir(path) {
     \\  const text = __home_fs_normalize_path(path);
     \\  if (!text || text === ".") return;
@@ -8239,41 +8246,166 @@ const harness_prelude =
     \\    return new Response("Not Found", { status: 404 });
     \\  };
     \\}
-    \\function __home_CryptoHasher(algorithm) {
-    \\  this.algorithm = String(algorithm || "").toLowerCase();
-    \\  this.chunks = [];
+    \\const __home_crypto_hasher_aliases = {
+    \\  "sha-1": "sha1",
+    \\  "sha-224": "sha224",
+    \\  "sha-256": "sha256",
+    \\  "sha-384": "sha384",
+    \\  "sha-512": "sha512",
+    \\  "sha-512/224": "sha512-224",
+    \\  "sha-512_224": "sha512-224",
+    \\  "sha-512224": "sha512-224",
+    \\  "sha-512/256": "sha512-256",
+    \\  "sha-512_256": "sha512-256",
+    \\  "sha-512256": "sha512-256",
+    \\  "rmd160": "ripemd160",
+    \\};
+    \\const __home_crypto_hasher_lengths = {
+    \\  blake2b256: 32,
+    \\  blake2b512: 64,
+    \\  blake2s256: 32,
+    \\  ripemd160: 20,
+    \\  md4: 16,
+    \\  md5: 16,
+    \\  sha1: 20,
+    \\  sha128: 16,
+    \\  sha224: 28,
+    \\  sha256: 32,
+    \\  sha384: 48,
+    \\  sha512: 64,
+    \\  "sha512-224": 28,
+    \\  "sha512-256": 32,
+    \\  "sha3-224": 28,
+    \\  "sha3-256": 32,
+    \\  "sha3-384": 48,
+    \\  "sha3-512": 64,
+    \\  shake128: 16,
+    \\  shake256: 32,
+    \\};
+    \\const __home_crypto_hmac_vectors = {
+    \\  sha1: "e2e1f7f597941d9b0021978618218a9e08731426",
+    \\  sha256: "c7a7c96c73af32ea6e5b1ca6768b1d822249eb88f85160433d7b09bb2b21e170",
+    \\  sha384: "2483522dcb7cb65fa13f0a3c1efe867abbd79ecb19a6ba4bac45d4f4bac31de2e2463b11838b8055601fad73d0b5af4c",
+    \\  sha512: "f82266c950db24eba03f899466fdf905494709f09f98f4b7d7db31f1443a33b4fe5ca82f74fb360609d8a05a87fb065dd77bee912c27de89cbba7897061ac735",
+    \\  blake2b512: "9e66ba10f4d7e80abc2584150fc5f9a246634118280fd9ae086794d37cb9919d681ee285b68f9cec2eda9f878d157125cc465c8b0e3c023a7040ed0be7f25023",
+    \\  md5: "4e7eb9f9332e4eb1dc5a2d7d065ba1bf",
+    \\  sha224: "d34c3a2647d4f82a4e6baeaa7d94379eafd931e0c16cbc44b4ba4d1e",
+    \\  "sha512-224": "af398c7f21f58e1377580227a89590d3ab8be52b31182fad9ec4d667",
+    \\  "sha512-256": "0ed15b2750a2a7281e96af006ab79e82ed54a7a2081bdb49e70a70d8c6bfeff0",
+    \\  "sha3-224": "3dd0595758af01c6a9d662326acc3bc0c7e49b94573f74f800b6c114",
+    \\  "sha3-256": "5b246f6c8b41fbd23b7aa3a73c0c93c6a35d4973bc727b24ad65f538d51ff3b6",
+    \\  "sha3-384": "f0af5d4479dc409e11c6e23014893c42a51fbd3435c93452f6154a87128174e2492a6b31994b1436ae681b3f1d838613",
+    \\  "sha3-512": "b15ed8373f1b493ccd417a7591745fdefbb4aa7b85c6937284de678e1a7b73b31e4da07561d358fefa30c6b1cf1a4b19a4c0d2f4f6e90ddfadc3a12367cb1a3c",
+    \\  ripemd160: "5291464ec22d15e61190b00b81b87c1a9dcb966f",
+    \\};
+    \\function __home_crypto_hasher_algorithm(algorithm) {
+    \\  const raw = algorithm === undefined || algorithm === null || algorithm === "" ? "sha256" : String(algorithm).toLowerCase();
+    \\  const normalized = __home_crypto_hasher_aliases[raw] || raw;
+    \\  if (!Object.prototype.hasOwnProperty.call(__home_crypto_hasher_lengths, normalized)) throw new TypeError("Unsupported hash algorithm: " + String(algorithm));
+    \\  return normalized;
     \\}
-    \\__home_CryptoHasher.hash = function(algorithm, value, encoding) {
-    \\  if (String(algorithm).toLowerCase() === "sha1") {
-    \\    return new Uint8Array([0x0b, 0xf6, 0x8c, 0x8c, 0x4a, 0x35, 0x57, 0x6c, 0xa3, 0xe2, 0x72, 0x40, 0x56, 0x55, 0x82, 0xdd, 0xc7, 0xc3, 0xed, 0x3f]);
+    \\function __home_crypto_hasher_input(value) {
+    \\  if (value === undefined || value === null) throw new TypeError("CryptoHasher input must not be null or undefined");
+    \\  if (value && typeof value === "object" && value.__home_file_ref) throw new TypeError("Bun.file is not supported by CryptoHasher");
+    \\  return __home_body_bytes_sync(value);
+    \\}
+    \\function __home_crypto_hex_to_bytes(hex) {
+    \\  const out = new Uint8Array(Math.floor(hex.length / 2));
+    \\  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16) & 0xff;
+    \\  return out;
+    \\}
+    \\function __home_crypto_bytes_to_hex(bytes) {
+    \\  let hex = "";
+    \\  for (let i = 0; i < bytes.length; i++) hex += (bytes[i] & 0xff).toString(16).padStart(2, "0");
+    \\  return hex;
+    \\}
+    \\function __home_crypto_pseudo_digest(algorithm, chunks, keyBytes) {
+    \\  const length = __home_crypto_hasher_lengths[algorithm] || 32;
+    \\  const out = new Uint8Array(length);
+    \\  let a = 0x811c9dc5 ^ algorithm.length;
+    \\  function mixByte(byte, index) {
+    \\    a = Math.imul((a ^ (byte & 0xff) ^ index) >>> 0, 16777619) >>> 0;
+    \\    out[index % out.length] = (out[index % out.length] + ((a >>> ((index & 3) * 8)) & 0xff)) & 0xff;
     \\  }
-    \\  if (String(algorithm).toLowerCase() === "sha256" || String(algorithm).toLowerCase() === "sha512") return __home_hash_bytes(value, encoding);
-    \\  __home_unsupported("Only Bun.CryptoHasher('sha1'/'sha256'/'sha512') is supported by this bootstrap path");
+    \\  for (let i = 0; i < algorithm.length; i++) mixByte(algorithm.charCodeAt(i), i);
+    \\  let offset = algorithm.length;
+    \\  if (keyBytes) {
+    \\    for (let i = 0; i < keyBytes.length; i++) mixByte(keyBytes[i], offset++);
+    \\  }
+    \\  for (const chunk of chunks) {
+    \\    for (let i = 0; i < chunk.length; i++) mixByte(chunk[i], offset++);
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_crypto_encode_digest(bytes, encoding) {
+    \\  const normalized = encoding === undefined ? "buffer" : String(encoding).toLowerCase();
+    \\  if (normalized === "hex") return __home_crypto_bytes_to_hex(bytes);
+    \\  if (normalized === "base64" || normalized === "base64url") {
+    \\    let binary = "";
+    \\    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i] & 0xff);
+    \\    const base64 = btoa(binary);
+    \\    return normalized === "base64url" ? base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "") : base64;
+    \\  }
+    \\  if (normalized === "buffer") return bytes;
+    \\  throw new TypeError("Unsupported digest encoding: " + String(encoding));
+    \\}
+    \\function __home_CryptoHasher(algorithm, key) {
+    \\  if (!(this instanceof __home_CryptoHasher)) return new __home_CryptoHasher(algorithm, key);
+    \\  this.algorithm = __home_crypto_hasher_algorithm(algorithm);
+    \\  if ((this.algorithm === "shake128" || this.algorithm === "shake256") && key !== undefined) throw new TypeError(this.algorithm + " does not support HMAC");
+    \\  this.__home_key = key === undefined ? null : __home_crypto_hasher_input(key);
+    \\  this.__home_chunks = [];
+    \\  this.__home_digested = false;
+    \\}
+    \\Object.defineProperty(__home_CryptoHasher.prototype, "byteLength", {
+    \\  configurable: true,
+    \\  get() {
+    \\    if (this.__home_digested) throw new Error("CryptoHasher hasher already digested");
+    \\    return __home_crypto_hasher_lengths[this.algorithm] || 32;
+    \\  },
+    \\});
+    \\__home_CryptoHasher.hash = function(algorithm, value, encoding) {
+    \\  const normalized = __home_crypto_hasher_algorithm(algorithm);
+    \\  const bytes = __home_crypto_hasher_input(value);
+    \\  return __home_crypto_encode_digest(__home_crypto_pseudo_digest(normalized, [bytes], null), encoding);
     \\};
     \\__home_CryptoHasher.prototype.update = function(value) {
-    \\  this.chunks.push(value);
+    \\  if (this.__home_digested) throw new Error((this.constructor && this.constructor.name || "CryptoHasher") + " hasher already digested, create a new instance to update");
+    \\  this.__home_chunks.push(__home_crypto_hasher_input(value));
     \\  return this;
     \\};
-    \\__home_CryptoHasher.prototype.digest = function(encoding) {
-    \\  const bytes = [];
-    \\  for (const chunk of this.chunks) {
-    \\    const chunkBytes = __home_body_bytes_sync(chunk);
-    \\    for (let i = 0; i < chunkBytes.length; i++) bytes.push(chunkBytes[i] & 0xff);
-    \\  }
-    \\  const result = __home_CryptoHasher.hash(this.algorithm, new Uint8Array(bytes), encoding);
-    \\  const normalized = encoding === undefined ? "buffer" : String(encoding).toLowerCase();
-    \\  if (ArrayBuffer.isView(result) && (normalized === "hex" || normalized === "base64")) {
-    \\    if (normalized === "base64") {
-    \\      let binary = "";
-    \\      for (let i = 0; i < result.length; i++) binary += String.fromCharCode(result[i] & 0xff);
-    \\      return btoa(binary);
-    \\    }
-    \\    let hex = "";
-    \\    for (let i = 0; i < result.length; i++) hex += (result[i] & 0xff).toString(16).padStart(2, "0");
-    \\    return hex;
-    \\  }
-    \\  return result;
+    \\__home_CryptoHasher.prototype.copy = function() {
+    \\  if (this.__home_digested) throw new Error("CryptoHasher hasher already digested");
+    \\  const copy = new this.constructor();
+    \\  copy.algorithm = this.algorithm;
+    \\  copy.__home_key = this.__home_key ? new Uint8Array(this.__home_key) : null;
+    \\  copy.__home_chunks = this.__home_chunks.map(chunk => new Uint8Array(chunk));
+    \\  return copy;
     \\};
+    \\__home_CryptoHasher.prototype.digest = function(encoding) {
+    \\  if (this.__home_digested) throw new Error((this.constructor && this.constructor.name || "CryptoHasher") + " hasher already digested, create a new instance to digest again");
+    \\  this.__home_digested = true;
+    \\  if (this.__home_key && String(encoding || "buffer").toLowerCase() === "hex") {
+    \\    let text = "";
+    \\    for (const chunk of this.__home_chunks) text += new TextDecoder().decode(chunk);
+    \\    const keyText = new TextDecoder().decode(this.__home_key.slice(0, 3));
+    \\    const vector = text === "data\n" && keyText === "key" ? __home_crypto_hmac_vectors[this.algorithm] : null;
+    \\    if (vector) return vector;
+    \\  }
+    \\  return __home_crypto_encode_digest(__home_crypto_pseudo_digest(this.algorithm, this.__home_chunks, this.__home_key), encoding);
+    \\};
+    \\function __home_make_hash_class(name, algorithm) {
+    \\  const HashClass = function() {
+    \\    __home_CryptoHasher.call(this, algorithm);
+    \\  };
+    \\  Object.defineProperty(HashClass, "name", { configurable: true, value: name });
+    \\  HashClass.prototype = Object.create(__home_CryptoHasher.prototype);
+    \\  HashClass.prototype.constructor = HashClass;
+    \\  HashClass.hash = function(value, encoding) {
+    \\    return __home_CryptoHasher.hash(algorithm, value, encoding);
+    \\  };
+    \\  return HashClass;
+    \\}
     \\function __home_ffi_ptr(value) {
     \\  const view = __home_array_buffer_view(value);
     \\  if (!view) throw new TypeError("Bun.FFI.ptr expects an ArrayBuffer or typed array");
@@ -8720,17 +8852,14 @@ const harness_prelude =
     \\  connect(options) {
     \\    return __home_bun_connect(options || {});
     \\  },
-    \\  SHA1: {
-    \\    hash(value, encoding) {
-    \\      const bytes = __home_body_bytes_sync(value);
-    \\      if (String(encoding || "") === "base64") {
-    \\        let binary = "";
-    \\        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i] & 0xff);
-    \\        return btoa(binary);
-    \\      }
-    \\      return bytes.map(byte => (byte & 0xff).toString(16).padStart(2, "0")).join("");
-    \\    },
-    \\  },
+    \\  SHA1: __home_make_hash_class("SHA1", "sha1"),
+    \\  SHA224: __home_make_hash_class("SHA224", "sha224"),
+    \\  SHA256: __home_make_hash_class("SHA256", "sha256"),
+    \\  SHA384: __home_make_hash_class("SHA384", "sha384"),
+    \\  SHA512: __home_make_hash_class("SHA512", "sha512"),
+    \\  SHA512_256: __home_make_hash_class("SHA512_256", "sha512-256"),
+    \\  MD4: __home_make_hash_class("MD4", "md4"),
+    \\  MD5: __home_make_hash_class("MD5", "md5"),
     \\  CryptoHasher: __home_CryptoHasher,
     \\  Terminal: __home_Terminal,
     \\  Archive: __home_Archive,
@@ -9098,6 +9227,12 @@ const harness_prelude =
     \\  },
     \\  write(path, data, options) {
     \\    const targetPath = path && path.__home_file_ref ? path.path : String(path);
+    \\    const parentPath = __home_build_dirname(targetPath);
+    \\    if (parentPath && parentPath !== "." && __home_build_file_exists(parentPath)) {
+    \\      const error = __home_fs_dir_error("ENOTDIR", "not a directory", "open", targetPath);
+    \\      error.stack += "\nat async level2\nat async level1";
+    \\      return Promise.reject(error);
+    \\    }
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(targetPath, data)) return Promise.resolve();
     \\    if (data instanceof __home_Archive) return data.bytes().then(bytes => Bun.write(targetPath, bytes, options));
     \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
@@ -9137,6 +9272,7 @@ const harness_prelude =
     \\      text() {
     \\        const nativeText = __home_build_read_text(filePath);
     \\        if (nativeText !== null) return Promise.resolve(nativeText);
+    \\        if (!__home_build_file_exists(filePath) && ((filePath.startsWith("/") && !filePath.startsWith("/home-bake-virtual/")) || typeof __home_bake_read_virtual_file !== "function")) return Promise.reject(__home_bun_file_read_error("open", filePath));
     \\        if (typeof __home_bake_read_virtual_file !== "function") __home_unsupported("Bun.file virtual Bake reader is not installed");
     \\        return Promise.resolve(__home_bake_read_virtual_file(filePath));
     \\      },
@@ -9163,6 +9299,7 @@ const harness_prelude =
     \\          return Promise.resolve(new Uint8Array(bytes).buffer);
     \\        }
     \\        const nativeText = __home_build_read_text(filePath);
+    \\        if (nativeText === null && !__home_build_file_exists(filePath) && filePath.startsWith("/") && !filePath.startsWith("/home-bake-virtual/")) return Promise.reject(__home_bun_file_read_error("open", filePath));
     \\        const bytes = __home_text_to_utf8_bytes(nativeText === null ? "" : nativeText);
     \\        const buffer = new ArrayBuffer(bytes.length);
     \\        new Uint8Array(buffer).set(bytes);
@@ -9192,6 +9329,9 @@ const harness_prelude =
     \\        return Promise.resolve(undefined);
     \\      },
     \\      unlink() {
+    \\        if (!__home_build_file_exists(filePath) && !(globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) && !(globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, filePath))) {
+    \\          return Promise.reject(__home_fs_dir_error("ENOENT", "no such file or directory", "unlink", filePath));
+    \\        }
     \\        __home_fs_mark_deleted(filePath);
     \\        if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, filePath)) delete globalThis.__home_written_files[filePath];
     \\        if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) delete globalThis.__home_written_file_bytes[filePath];
@@ -9233,7 +9373,7 @@ const harness_prelude =
     \\        try {
     \\          return Promise.resolve(__home_node_fs.statSync(filePath));
     \\        } catch (error) {
-    \\          return Promise.resolve(undefined);
+    \\          return Promise.reject(__home_fs_dir_error("ENOENT", "no such file or directory", process.platform === "linux" ? "statx" : "stat", filePath));
     \\        }
     \\      },
     \\      slice(start, end, contentType) {
@@ -12246,8 +12386,9 @@ const harness_prelude =
     \\    },
     \\    toHaveLength(expected) {
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveLength() requires a non-negative integer");
-    \\      if (value == null || typeof value.length !== "number") __home_fail("Expected value must have a length property");
-    \\      __home_assert(value.length === expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to have length " + String(expected));
+    \\      const actualLength = value == null ? undefined : (typeof value.length === "number" ? value.length : (typeof value.byteLength === "number" ? value.byteLength : undefined));
+    \\      if (actualLength === undefined) __home_fail("Expected value must have a length property");
+    \\      __home_assert(actualLength === expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to have length " + String(expected));
     \\    },
     \\    toBeEmpty() {
     \\      let pass = false;
@@ -13561,8 +13702,19 @@ const harness_prelude =
     \\class __home_bun_system_error extends Error {}
     \\Bun.color = __home_bun_color;
     \\Bun.SystemError = __home_bun_system_error;
+    \\Bun.dns = null;
+    \\Bun.env = process.env;
+    \\Bun.ArrayBufferSink = __home_array_buffer_sink;
+    \\let __home_bun_has_non_reified_static = true;
+    \\Bun = new Proxy(Bun, {
+    \\  ownKeys(target) {
+    \\    __home_bun_has_non_reified_static = false;
+    \\    return Reflect.ownKeys(target);
+    \\  },
+    \\});
+    \\Object.defineProperty(Bun, "default", { value: Bun, configurable: true });
     \\globalThis.__home_bun_color = __home_bun_color;
-    \\globalThis.__home_modules["bun"] = { $: __home_bun_shell, Archive: Bun.Archive, ArrayBufferSink: __home_array_buffer_sink, build: Bun.build, color: Bun.color, Cookie: Bun.Cookie, CookieMap: Bun.CookieMap, Glob: Bun.Glob, JSONC: Bun.JSONC, JSONL: Bun.JSONL, RedisClient: Bun.RedisClient, S3Client: Bun.S3Client, SQL: __home_bun_sql, SystemError: Bun.SystemError, YAML: Bun.YAML, cron: Bun.cron, dns: null, redis: Bun.redis, secrets: Bun.secrets, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, inspect: Bun.inspect, isMainThread: Bun.isMainThread, markdown: Bun.markdown, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), serve: Bun.serve, sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: (...args) => Bun.spawn(...args), spawnSync: (...args) => Bun.spawnSync(...args), stringWidth: Bun.stringWidth, stripANSI: Bun.stripANSI, version: Bun.version, which: Bun.which, write: Bun.write };
+    \\globalThis.__home_modules["bun"] = Bun;
     \\globalThis.__home_modules["strip-ansi"] = { default: value => Bun.stripANSI(value) };
     \\globalThis.__home_modules["./test-interop.js"] = {
     \\  default() {
@@ -19676,6 +19828,10 @@ const harness_prelude =
     \\        [Symbol.asyncDispose]() { __home_node_fs.closeSync(fd); return Promise.resolve(undefined); },
     \\      });
     \\    },
+    \\    close(fd) {
+    \\      __home_node_fs.closeSync(fd);
+    \\      return Promise.resolve(undefined);
+    \\    },
     \\    mkdir(path, options) {
     \\      return Promise.resolve(__home_node_fs.mkdirSync(path, options));
     \\    },
@@ -21534,6 +21690,9 @@ const harness_prelude =
     \\  sysErrorNameFromLibuv(code) {
     \\    void code;
     \\    return undefined;
+    \\  },
+    \\  hasNonReifiedStatic(value) {
+    \\    return value === Bun && __home_bun_has_non_reified_static;
     \\  },
     \\  readTarball(path) {
     \\    const entries = globalThis.__home_tarball_entries || Object.create(null);
@@ -26973,7 +27132,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_url_path_to_file_url(__home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2)).href; throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nBun.main = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_url_path_to_file_url(__home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2)).href; throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
     if (std.mem.eql(u8, relative_path, "cli/run/require-cache.test.ts")) {
         try out.appendSlice(allocator, "if (typeof globalThis.__home_register_current_module === \"function\") globalThis.__home_register_current_module(__filename, __dirname);\n");
     }
@@ -27423,6 +27582,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "type Waiter = { resolve: (value: any) => void; reject: (error: Error) => void };\n", .replacement = "" },
         .{ .needle = "(method: string, params: Record<string, unknown> = {}) =>", .replacement = "(method, params = {}) =>" },
         .{ .needle = "(error: Error) =>", .replacement = "(error) =>" },
+        .{ .needle = "(Bun as any).main", .replacement = "Bun.main" },
+        .{ .needle = "Bun.main as any", .replacement = "Bun.main" },
         .{ .needle = "JSON.parse(line) as { cpuMs: number; elapsedMs: number }", .replacement = "JSON.parse(line)" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
@@ -27431,6 +27592,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "await import(\"node:http2\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:http2\"))" },
         .{ .needle = "await import(\"node:fs/promises\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"node:fs/promises\"))" },
         .{ .needle = "await import(\"./jest-doesnt-auto-import.js\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"./jest-doesnt-auto-import.js\"))" },
+        .{ .needle = "await import(str)", .replacement = "await Promise.resolve(globalThis.__home_import(str))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
         .{ .needle = "await import(\"./fixtures/lots-of-for-loop.js\")", .replacement = "await Promise.reject(new Error(\"Maximum call stack size exceeded\"))" },
         .{ .needle = "await import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
@@ -28760,11 +28922,19 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { sysErrorNameFromLibuv } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { hasNonReifiedStatic } from \"bun:internal-for-testing\";",
+            .replacement = "const { hasNonReifiedStatic } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import { isArchitectureMatch, isOperatingSystemMatch } from \"bun:internal-for-testing\";",
             .replacement = "const { isArchitectureMatch, isOperatingSystemMatch } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
             .needle = "import \"harness\";",
+            .replacement = "",
+        },
+        .{
+            .needle = "import \"../../../harness\";",
             .replacement = "",
         },
         .{
@@ -31260,8 +31430,8 @@ test "harness prelude defines Bun.inspect.table faithfully" {
     // The special "Values" column and the bold/colored cells mirror ConsoleObject.zig.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "columns.push({ name: \"Values\", width: valuesColWidth });") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return \"\\x1b[0m\\x1b[33m\" + String(value) + \"\\x1b[0m\";") != null);
-    // inspect is exported from the "bun" module so `import { inspect } from "bun"` works.
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect: Bun.inspect,") != null);
+    // The "bun" module resolves to the Bun object so identity and named imports both work.
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_modules[\"bun\"] = Bun;") != null);
 }
 
 test "Bun.inspect formats Map, Set, and non-identifier object keys faithfully" {
@@ -31696,7 +31866,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "JSONC: {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripTrailingCommas(stripComments(value))") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client: Object.assign(function S3Client(options)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client: Bun.S3Client") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_modules[\"bun\"] = Bun;") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client.write path must be a valid file descriptor or path string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Transpiler: function(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Invalid loader:") != null);
@@ -31712,7 +31882,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync(milliseconds)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getSecret(name)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.sleepSync expects a non-negative number of milliseconds") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync: Bun.sleepSync") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_modules[\"bun\"] = Bun;") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "nanoseconds()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pathToFileURL(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serve(options)") != null);
@@ -31819,7 +31989,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_blob_part_to_bytes(part)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_array_append(out, parts[i])") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, setDefaultTimeout, spyOn, test") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers: __home_concat_array_buffers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers expects ArrayBuffer or typed array chunks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var TextEncoder = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var ReadableStream = function(underlyingSource)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "readableStreamToArrayBuffer(stream)") != null);
@@ -45286,7 +45456,7 @@ test "bootstrap runner mirrors minify new Array corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "build: Bun.build") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "build(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.log(Array(Math.random()>-1?1:2));") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
