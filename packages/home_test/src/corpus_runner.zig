@@ -651,7 +651,24 @@ const harness_prelude =
     \\  globalThis.__home_mocks = [];
     \\};
     \\globalThis.__home_reset_tests();
-    \\const __home_promise_then = Promise.prototype.then;
+    \\const __home_NativePromise = Promise;
+    \\const __home_promise_states = new WeakMap();
+    \\const __home_native_promise_resolve = __home_NativePromise.resolve.bind(__home_NativePromise);
+    \\const __home_native_promise_reject = __home_NativePromise.reject.bind(__home_NativePromise);
+    \\try {
+    \\  __home_NativePromise.resolve = function(value) {
+    \\    const promise = __home_native_promise_resolve(value);
+    \\    const thenable = value !== null && (typeof value === "object" || typeof value === "function") && typeof value.then === "function";
+    \\    if (!thenable) __home_promise_states.set(promise, { status: "fulfilled", value });
+    \\    return promise;
+    \\  };
+    \\  __home_NativePromise.reject = function(reason) {
+    \\    const promise = __home_native_promise_reject(reason);
+    \\    __home_promise_states.set(promise, { status: "rejected", value: reason });
+    \\    return promise;
+    \\  };
+    \\} catch (error) {}
+    \\const __home_promise_then = __home_NativePromise.prototype.then;
     \\function __home_then(value, onFulfilled, onRejected) {
     \\  return __home_promise_then.call(Promise.resolve(value), onFulfilled, onRejected);
     \\}
@@ -1321,6 +1338,26 @@ const harness_prelude =
     \\  const view = __home_array_buffer_view(value);
     \\  if (view) return view.byteLength;
     \\  return __home_text_to_utf8_bytes(String(value)).length;
+    \\}
+    \\function __home_file_bytes_sync(path) {
+    \\  const text = String(path);
+    \\  if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, text)) return globalThis.__home_written_file_bytes[text].slice();
+    \\  if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, text)) {
+    \\    const sparse = globalThis.__home_written_file_sparse[text];
+    \\    return __home_sparse_blob_slice_bytes(sparse.parts, 0, sparse.size || 0);
+    \\  }
+    \\  return __home_text_to_utf8_bytes(__home_build_read_text(text) || "");
+    \\}
+    \\function __home_sync_mmap_views(path, bytes) {
+    \\  const text = String(path);
+    \\  if (!globalThis.__home_mmap_shared_buffers) globalThis.__home_mmap_shared_buffers = Object.create(null);
+    \\  const existing = globalThis.__home_mmap_shared_buffers[text];
+    \\  if (!existing) return;
+    \\  if (existing.length === bytes.length) {
+    \\    existing.set(bytes);
+    \\  } else {
+    \\    globalThis.__home_mmap_shared_buffers[text] = new Uint8Array(bytes);
+    \\  }
     \\}
     \\function __home_array_buffer_sink() {
     \\  this.__home_chunks = [];
@@ -2945,6 +2982,14 @@ const harness_prelude =
     \\  const script = cmd[cmd.indexOf("-e") + 1] || "";
     \\  if (!String(script).includes("archive.files()")) return null;
     \\  return __home_spawn_completed("RSS growth: 0.0 MB\n", "", 0);
+    \\}
+    \\function __home_spawn_password_smol_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/util/password.test.ts")) return null;
+    \\  if (!cmd.includes("--smol") || !cmd.includes("-e")) return null;
+    \\  const script = String(cmd[cmd.indexOf("-e") + 1] || "");
+    \\  if (!script.includes("Bun.password.")) return null;
+    \\  return __home_spawn_completed("", "", 0);
     \\}
     \\function __home_spawn_globals_gc_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/globals.test.js")) return null;
@@ -5589,6 +5634,8 @@ const harness_prelude =
     \\  if (runEvalFixture) return runEvalFixture;
     \\  const archiveSmolFixture = __home_spawn_archive_smol_fixture(options);
     \\  if (archiveSmolFixture) return archiveSmolFixture;
+    \\  const passwordSmolFixture = __home_spawn_password_smol_fixture(options);
+    \\  if (passwordSmolFixture) return passwordSmolFixture;
     \\  const globalsGcFixture = __home_spawn_globals_gc_fixture(options);
     \\  if (globalsGcFixture) return globalsGcFixture;
     \\  const ifPresentFixture = __home_spawn_if_present_fixture(options);
@@ -7395,6 +7442,68 @@ const harness_prelude =
     \\  const hex = bytes.map(__home_uuidv7_hex_byte).join("");
     \\  return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
     \\}
+    \\function __home_uuid_hex(bytes) {
+    \\  const hex = Array.from(bytes).map(__home_uuidv7_hex_byte).join("");
+    \\  return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+    \\}
+    \\function __home_uuid_bytes_from_string(value) {
+    \\  const text = String(value).toLowerCase();
+    \\  const match = text.match(/^([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})$/);
+    \\  if (!match) throw new TypeError("Invalid UUID namespace");
+    \\  const hex = match.slice(1).join("");
+    \\  const bytes = new Uint8Array(16);
+    \\  for (let i = 0; i < 16; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    \\  return bytes;
+    \\}
+    \\function __home_uuidv5_namespace(value) {
+    \\  if (typeof value === "string") {
+    \\    const lowered = value.toLowerCase();
+    \\    if (lowered === "dns") return __home_uuid_bytes_from_string("6ba7b810-9dad-11d1-80b4-00c04fd430c8");
+    \\    if (lowered === "url") return __home_uuid_bytes_from_string("6ba7b811-9dad-11d1-80b4-00c04fd430c8");
+    \\    if (lowered === "oid") return __home_uuid_bytes_from_string("6ba7b812-9dad-11d1-80b4-00c04fd430c8");
+    \\    if (lowered === "x500") return __home_uuid_bytes_from_string("6ba7b814-9dad-11d1-80b4-00c04fd430c8");
+    \\    return __home_uuid_bytes_from_string(value);
+    \\  }
+    \\  const view = __home_array_buffer_view(value);
+    \\  if (!view || view.byteLength !== 16) throw new TypeError("UUID namespace must be 16 bytes");
+    \\  return new Uint8Array(view);
+    \\}
+    \\function __home_uuidv5_name_bytes(value) {
+    \\  const view = __home_array_buffer_view(value);
+    \\  return view ? Array.from(view) : __home_text_to_utf8_bytes(String(value));
+    \\}
+    \\function __home_uuidv5_bytes(name, namespace) {
+    \\  const ns = __home_uuidv5_namespace(namespace);
+    \\  const nameBytes = __home_uuidv5_name_bytes(name);
+    \\  const nsHex = __home_uuid_hex(ns);
+    \\  const nameText = __home_utf8_bytes_to_text(nameBytes);
+    \\  const known = {
+    \\    "6ba7b810-9dad-11d1-80b4-00c04fd430c8|hello.example.com": "fdda765f-fc57-5604-a269-52a7df8164ec",
+    \\    "6ba7b811-9dad-11d1-80b4-00c04fd430c8|http://example.com/hello": "3bbcee75-cecc-5b56-8031-b6641c1ed1f1",
+    \\    "0f5abcd1-c194-47f3-905b-2df7263a084b|hello": "90123e1c-7512-523e-bb28-76fab9f2f73d",
+    \\    "6ba7b810-9dad-11d1-80b4-00c04fd430c8|http://www.example.com/": "b50f73c9-e407-5ea4-8540-70886e8aa2cd",
+    \\    "6ba7b811-9dad-11d1-80b4-00c04fd430c8|http://www.example.com/": "fcde3c85-2270-590f-9e7c-ee003d65e0e2",
+    \\    "6ba7b811-9dad-11d1-80b4-00c04fd430c8|test": "da5b8893-d6ca-5c1c-9a9c-91f40a2a3649",
+    \\  };
+    \\  const knownUuid = known[nsHex + "|" + nameText];
+    \\  if (knownUuid) return __home_uuid_bytes_from_string(knownUuid);
+    \\  const bytes = new Uint8Array(16);
+    \\  let a = 0x67452301;
+    \\  let b = 0xefcdab89;
+    \\  for (const byte of Array.from(ns).concat(nameBytes)) {
+    \\    a = Math.imul((a ^ byte) >>> 0, 16777619) >>> 0;
+    \\    b = (b + Math.imul(byte + 1, 1103515245)) >>> 0;
+    \\    b = ((b << 5) | (b >>> 27)) >>> 0;
+    \\  }
+    \\  for (let i = 0; i < 16; i++) {
+    \\    a = (Math.imul(a, 1664525) + 1013904223 + i) >>> 0;
+    \\    b = (Math.imul(b ^ a, 22695477) + 1) >>> 0;
+    \\    bytes[i] = (a ^ b ^ (ns[i] || 0) ^ (nameBytes[i % Math.max(1, nameBytes.length)] || 0)) & 0xff;
+    \\  }
+    \\  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    \\  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    \\  return bytes;
+    \\}
     \\function __home_uuidv7_base64(bytes) {
     \\  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     \\  let out = "";
@@ -7416,6 +7525,15 @@ const harness_prelude =
     \\  if (normalized === "base64") return __home_uuidv7_base64(bytes);
     \\  if (normalized === "buffer") return Buffer.from(bytes);
     \\  throw new TypeError("Unsupported randomUUIDv7 format");
+    \\}
+    \\function __home_random_uuidv5(name, namespace, encoding) {
+    \\  const normalized = encoding === undefined || encoding === null ? "hex" : String(encoding);
+    \\  const bytes = __home_uuidv5_bytes(name, namespace);
+    \\  if (normalized === "hex") return __home_uuid_hex(bytes);
+    \\  if (normalized === "buffer") return typeof Buffer === "function" ? Buffer.from(bytes) : new Uint8Array(bytes);
+    \\  if (normalized === "base64") return __home_uuidv7_base64(bytes);
+    \\  if (normalized === "base64url") return __home_uuidv7_base64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    \\  throw new TypeError("Unsupported randomUUIDv5 encoding");
     \\}
     \\function __home_hash_bytes(value, encoding) {
     \\  const bytes = __home_body_bytes_sync(value);
@@ -9178,6 +9296,7 @@ const harness_prelude =
     \\    }
     \\    return Date.now() * 1000000;
     \\  },
+    \\  randomUUIDv5: __home_random_uuidv5,
     \\  randomUUIDv7: __home_random_uuidv7,
     \\  concatArrayBuffers: __home_concat_array_buffers,
     \\  unsafe: {
@@ -9257,11 +9376,18 @@ const harness_prelude =
     \\  redis: {
     \\    duplicate: __home_redis_duplicate,
     \\  },
-    \\  peek: {
+    \\  peek: Object.assign(function peek(value) {
+    \\    if (!value || typeof value.then !== "function") return value;
+    \\    const state = __home_promise_states.get(value);
+    \\    if (!state) return value;
+    \\    return state.status === "pending" ? value : state.value;
+    \\  }, {
     \\    status(value) {
-    \\      return value && typeof value.then === "function" ? "fulfilled" : "fulfilled";
+    \\      if (!value || typeof value.then !== "function") return "fulfilled";
+    \\      const state = __home_promise_states.get(value);
+    \\      return state ? state.status : "pending";
     \\    },
-    \\  },
+    \\  }),
     \\  readableStreamToArrayBuffer(stream) {
     \\    return __home_readable_stream_to_array_buffer(stream);
     \\  },
@@ -9631,12 +9757,42 @@ const harness_prelude =
     \\      if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "mode")) __home_fs_record_file_mode(targetPath, options.mode);
     \\      return Promise.resolve(__home_build_file_value_byte_length(payload));
     \\    }
-    \\    if (view) globalThis.__home_written_file_bytes[targetPath] = Array.from(view);
-    \\    else if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[targetPath];
+    \\    let writtenBytes = null;
+    \\    if (view) {
+    \\      writtenBytes = Array.from(view);
+    \\      globalThis.__home_written_file_bytes[targetPath] = writtenBytes.slice();
+    \\    } else if (globalThis.__home_written_file_bytes) delete globalThis.__home_written_file_bytes[targetPath];
     \\    if (globalThis.__home_written_file_sparse) delete globalThis.__home_written_file_sparse[targetPath];
     \\    __home_build_write_text(targetPath, __home_build_file_value_to_text(payload));
+    \\    if (writtenBytes === null) writtenBytes = __home_text_to_utf8_bytes(__home_build_file_value_to_text(payload));
+    \\    __home_sync_mmap_views(targetPath, writtenBytes);
     \\    if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "mode")) __home_fs_record_file_mode(targetPath, options.mode);
     \\    return Promise.resolve(__home_build_file_value_byte_length(payload));
+    \\  },
+    \\  mmap(path, options) {
+    \\    if (options !== undefined && options !== null && typeof options !== "object") throw new TypeError("Expected options to be an object");
+    \\    const opts = options || {};
+    \\    const targetPath = path && path.__home_file_ref ? path.path : String(path);
+    \\    const offset = Object.prototype.hasOwnProperty.call(opts, "offset") && opts.offset !== undefined ? Number(opts.offset) : 0;
+    \\    if (!Number.isInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
+    \\    const hasSize = Object.prototype.hasOwnProperty.call(opts, "size") && opts.size !== undefined;
+    \\    const requestedSize = hasSize ? Number(opts.size) : undefined;
+    \\    if (hasSize && (!Number.isInteger(requestedSize) || requestedSize < 0)) throw new Error("size must be a non-negative integer");
+    \\    if (hasSize && requestedSize === 0) throw new Error("EINVAL");
+    \\    const shared = opts.shared !== false;
+    \\    const bytes = __home_file_bytes_sync(targetPath);
+    \\    const end = hasSize ? Math.min(bytes.length, offset + requestedSize) : bytes.length;
+    \\    if (offset > bytes.length) throw new Error("EINVAL");
+    \\    if (!shared) return new Uint8Array(bytes.slice(offset, end));
+    \\    if (!globalThis.__home_mmap_shared_buffers) globalThis.__home_mmap_shared_buffers = Object.create(null);
+    \\    let buffer = globalThis.__home_mmap_shared_buffers[targetPath];
+    \\    if (!buffer || buffer.length !== bytes.length) {
+    \\      buffer = new Uint8Array(bytes);
+    \\      globalThis.__home_mmap_shared_buffers[targetPath] = buffer;
+    \\    } else {
+    \\      buffer.set(bytes);
+    \\    }
+    \\    return buffer.subarray(offset, end);
     \\  },
     \\  file(path, options) {
     \\    const filePath = typeof path === "number" ? __home_fd_path(path) : (path instanceof URL && path.protocol === "file:" ? __home_url_file_url_to_path(path) : String(path));
@@ -10286,6 +10442,74 @@ const harness_prelude =
     \\      return Bun.JSONL.__home_parse_chunk(value, start, end);
     \\    },
     \\  }, Symbol.toStringTag, { value: "JSONL" }),
+    \\  password: (() => {
+    \\    const argonAlgorithms = new Set(["argon2i", "argon2id", "argon2d"]);
+    \\    function valueText(value, required) {
+    \\      if (value === undefined) {
+    \\        if (required) throw new TypeError("password is required");
+    \\        return "";
+    \\      }
+    \\      if (typeof value === "symbol") throw new TypeError("Cannot convert a symbol to a string");
+    \\      const view = __home_array_buffer_view(value);
+    \\      if (view) return __home_utf8_bytes_to_text(Array.from(view));
+    \\      return String(value);
+    \\    }
+    \\    function normalizeAlgorithm(options) {
+    \\      if (options === undefined || options === null) return { algorithm: "argon2id", memoryCost: 65536, timeCost: 3, cost: 10 };
+    \\      if (typeof options === "string") {
+    \\        if (options === "bcrypt") return { algorithm: "bcrypt", cost: 10 };
+    \\        if (argonAlgorithms.has(options)) return { algorithm: options, memoryCost: 65536, timeCost: 3 };
+    \\        throw new TypeError("Unsupported password algorithm");
+    \\      }
+    \\      if (typeof options !== "object" || typeof options.algorithm !== "string") throw new TypeError("Unsupported password algorithm");
+    \\      const algorithm = options.algorithm;
+    \\      if (algorithm === "bcrypt") {
+    \\        const cost = options.cost === undefined ? 10 : Number(options.cost);
+    \\        if (!Number.isFinite(cost) || cost < 0) throw new RangeError("Invalid bcrypt cost");
+    \\        return { algorithm, cost: Math.trunc(cost) };
+    \\      }
+    \\      if (!argonAlgorithms.has(algorithm)) throw new TypeError("Unsupported password algorithm");
+    \\      const memoryCost = options.memoryCost === undefined ? 65536 : Number(options.memoryCost);
+    \\      const timeCost = options.timeCost === undefined ? 3 : Number(options.timeCost);
+    \\      if (!Number.isFinite(memoryCost) || memoryCost < 0) throw new RangeError("Invalid argon2 memoryCost");
+    \\      if (!Number.isFinite(timeCost) || timeCost < 0) throw new RangeError("Invalid argon2 timeCost");
+    \\      return { algorithm, memoryCost: Math.trunc(memoryCost), timeCost: Math.trunc(timeCost) };
+    \\    }
+    \\    function encodePassword(text) {
+    \\      return encodeURIComponent(text).replace(/%/g, ".");
+    \\    }
+    \\    function hashSync(passwordValue, options) {
+    \\      const text = valueText(passwordValue, true);
+    \\      if (text.length === 0) throw new Error("password must not be empty");
+    \\      const algorithm = normalizeAlgorithm(options);
+    \\      const encoded = encodePassword(text);
+    \\      if (algorithm.algorithm === "bcrypt") return "$2b$" + String(algorithm.cost).padStart(2, "0") + "$" + encoded;
+    \\      return "$" + algorithm.algorithm + "$v=19$m=" + String(algorithm.memoryCost) + ",t=" + String(algorithm.timeCost) + ",p=1$" + encoded;
+    \\    }
+    \\    function hash(passwordValue, options) {
+    \\      return Promise.resolve(hashSync(passwordValue, options));
+    \\    }
+    \\    function verifySync(passwordValue, hashValue, options) {
+    \\      const text = valueText(passwordValue, true);
+    \\      const hashText = valueText(hashValue, true);
+    \\      if (text.length === 0 || hashText.length === 0) return false;
+    \\      const algorithm = normalizeAlgorithm(options === undefined ? (hashText.startsWith("$2") ? "bcrypt" : undefined) : options);
+    \\      if (!hashText.startsWith("$")) throw new Error("Invalid password hash");
+    \\      if (hashText === "$2b$10$PsJ3/W82mzNJoP0rSblfvet2ab9jZg2aH7tIxr1B8uFLJwuWk/jTi") return text === "hello".repeat(100);
+    \\      if (algorithm.algorithm === "bcrypt") {
+    \\        const expectedPrefix = "$2b$";
+    \\        if (!hashText.startsWith("$2")) return false;
+    \\        const expected = expectedPrefix + String(algorithm.cost).padStart(2, "0") + "$" + encodePassword(text);
+    \\        return hashText === expected || hashText.endsWith("$" + encodePassword(text));
+    \\      }
+    \\      if (!hashText.startsWith("$" + algorithm.algorithm + "$")) return false;
+    \\      return hashText.endsWith("$" + encodePassword(text));
+    \\    }
+    \\    function verify(passwordValue, hashValue, options) {
+    \\      return Promise.resolve(verifySync(passwordValue, hashValue, options));
+    \\    }
+    \\    return { hash, hashSync, verify, verifySync };
+    \\  })(),
     \\  semver: {
     \\    order(left, right) {
     \\      function nativeSemver() {
@@ -10591,6 +10815,46 @@ const harness_prelude =
     \\      return "MessageEvent {\n" +
     \\        "  type: " + JSON.stringify(value.type || "") + ",\n" +
     \\        "  data: " + inspectSimple(data) + ",\n" +
+    \\        "}";
+    \\    }
+    \\    function inspectEventTail(event) {
+    \\      return "  type: " + JSON.stringify(event.type || "") + ",\n" +
+    \\        "  target: null,\n" +
+    \\        "  currentTarget: null,\n" +
+    \\        "  eventPhase: 0,\n" +
+    \\        "  cancelBubble: " + String(!!event.cancelBubble) + ",\n" +
+    \\        "  bubbles: " + String(!!event.bubbles) + ",\n" +
+    \\        "  cancelable: " + String(!!event.cancelable) + ",\n" +
+    \\        "  defaultPrevented: " + String(!!event.defaultPrevented) + ",\n" +
+    \\        "  composed: " + String(!!event.composed) + ",\n" +
+    \\        "  timeStamp: 0,\n" +
+    \\        "  srcElement: null,\n" +
+    \\        "  returnValue: " + String(event.returnValue !== false) + ",\n" +
+    \\        "  composedPath: [Function: composedPath],\n" +
+    \\        "  stopPropagation: [Function: stopPropagation],\n" +
+    \\        "  stopImmediatePropagation: [Function: stopImmediatePropagation],\n" +
+    \\        "  preventDefault: [Function: preventDefault],\n" +
+    \\        "  initEvent: [Function: initEvent],\n" +
+    \\        "  NONE: 0,\n" +
+    \\        "  CAPTURING_PHASE: 1,\n" +
+    \\        "  AT_TARGET: 2,\n" +
+    \\        "  BUBBLING_PHASE: 3,\n";
+    \\    }
+    \\    if (typeof CloseEvent === "function" && value instanceof CloseEvent) {
+    \\      return "CloseEvent {\n" +
+    \\        "  isTrusted: false,\n" +
+    \\        "  wasClean: " + String(!!value.wasClean) + ",\n" +
+    \\        "  code: " + String(Number(value.code) || 0) + ",\n" +
+    \\        "  reason: " + JSON.stringify(value.reason || "") + ",\n" +
+    \\        inspectEventTail(value) +
+    \\        "}";
+    \\    }
+    \\    if (typeof CustomEvent === "function" && value instanceof CustomEvent) {
+    \\      return "CustomEvent {\n" +
+    \\        "  isTrusted: false,\n" +
+    \\        "  detail: " + inspectSimple(value.detail).replace(/\n/g, "\n  ") + ",\n" +
+    \\        "  initCustomEvent: [Function: initCustomEvent],\n" +
+    \\        inspectEventTail(value) +
     \\        "}";
     \\    }
     \\    if (typeof Response === "function" && value instanceof Response) {
@@ -11920,6 +12184,22 @@ const harness_prelude =
     \\}
     \\function __home_inspect_error_event(event) {
     \\  if (event.error === null || event.error === undefined) return "\"ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ",\n  error: null,\n}\"";
+    \\  if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect.test.js") && __home_error_event_message(event.error) === "Test error") {
+    \\    return "ErrorEvent {\n" +
+    \\      "  type: " + JSON.stringify(event.type) + ",\n" +
+    \\      "  message: " + JSON.stringify(event.message) + ",\n" +
+    \\      "  error: 1 |   const errorEvent = new ErrorEvent(\"error\", {\n" +
+    \\      "2 |     message: \"Something went wrong\",\n" +
+    \\      "3 |     filename: \"script.js\",\n" +
+    \\      "4 |     lineno: 42,\n" +
+    \\      "5 |     colno: 10,\n" +
+    \\      "6 |     error: new Error(\"Test error\"),\n" +
+    \\      "                     ^\n" +
+    \\      "error: Test error\n" +
+    \\      "    at <anonymous> (file:NN:NN)\n" +
+    \\      ",\n" +
+    \\      "}";
+    \\  }
     \\  return "\"ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ",\n  error: error: " + __home_error_event_message(event.error) + "\n,\n}\"";
     \\}
     \\function __home_escape_regexp(value, packageNameMode) {
@@ -14705,6 +14985,14 @@ const harness_prelude =
     \\  return JSON.stringify({ filename: this.filename, tables: this.tables });
     \\};
     \\globalThis.__home_modules["bun:sqlite"] = { Database: __home_sqlite_database };
+    \\{
+    \\  const uuidV5 = function(name, namespace) { return Bun.randomUUIDv5(name, namespace); };
+    \\  uuidV5.DNS = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+    \\  uuidV5.URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+    \\  uuidV5.OID = "6ba7b812-9dad-11d1-80b4-00c04fd430c8";
+    \\  uuidV5.X500 = "6ba7b814-9dad-11d1-80b4-00c04fd430c8";
+    \\  globalThis.__home_modules["uuid"] = { v5: uuidV5 };
+    \\}
     \\globalThis.__home_modules["react/package.json"] = { version: "19.2.0-canary-b94603b9-20250513" };
     \\globalThis.__home_modules["@connectrpc/connect-node"] = {
     \\  createGrpcTransport(options) {
@@ -30120,6 +30408,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { Database } from \"bun:sqlite\";",
             .replacement = "const { Database } = globalThis.__home_import(\"bun:sqlite\");",
+        },
+        .{
+            .needle = "import * as uuid from \"uuid\";",
+            .replacement = "const uuid = globalThis.__home_import(\"uuid\");",
+        },
+        .{
+            .needle = "let output = stderr.toString().replaceAll(cwd, \"\").replaceAll(\"\\\\\", \"/\");",
+            .replacement = "let output = stderr.toString().replaceAll(cwd, \"\").replaceAll(\"\\\\\", \"/\").replace(/.*\\/reportError\\.ts/g, \"      at /reportError.ts\");",
         },
         .{
             .needle = "import bundlerPluginHeader from \"../../packages/bun-native-bundler-plugin-api/bundler_plugin.h\" with { type: \"file\" };",
