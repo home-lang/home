@@ -9470,6 +9470,68 @@ const harness_prelude =
     \\  if (end < 0 || (c1 >= 0 && c1 < end)) end = c1;
     \\  return end < 0 ? null : text.slice(start, end);
     \\}
+    \\function __home_osc8_parts(raw) {
+    \\  const text = String(raw);
+    \\  let intro = "";
+    \\  let start = -1;
+    \\  if (text.startsWith("\x1b]")) {
+    \\    intro = "\x1b]";
+    \\    start = 2;
+    \\  } else if (text.startsWith("\u009d")) {
+    \\    intro = "\u009d";
+    \\    start = 1;
+    \\  }
+    \\  if (start < 0 || !text.startsWith("8;", start)) return null;
+    \\  let terminator = "";
+    \\  let end = text.indexOf("\x07", start);
+    \\  const st = text.indexOf("\x1b\\", start);
+    \\  const c1 = text.indexOf("\u009c", start);
+    \\  if (end >= 0) terminator = "\x07";
+    \\  if (st >= 0 && (end < 0 || st < end)) {
+    \\    end = st;
+    \\    terminator = "\x1b\\";
+    \\  }
+    \\  if (c1 >= 0 && (end < 0 || c1 < end)) {
+    \\    end = c1;
+    \\    terminator = "\u009c";
+    \\  }
+    \\  if (end < 0) return null;
+    \\  const body = text.slice(start, end);
+    \\  const split = body.indexOf(";", 2);
+    \\  if (split < 0) return null;
+    \\  return { intro, body, href: body.slice(split + 1), close: intro + "8;;" + terminator };
+    \\}
+    \\function __home_slice_simple_osc8_link(text, from, to, ambiguousIsNarrow) {
+    \\  const open = __home_ansi_token(text, 0);
+    \\  if (!open || open.kind !== "osc" || open.complete === false) return null;
+    \\  const openParts = __home_osc8_parts(open.raw);
+    \\  if (!openParts || openParts.href.length === 0) return null;
+    \\  let close = null;
+    \\  for (let i = open.end; i < text.length;) {
+    \\    const token = __home_ansi_token(text, i);
+    \\    if (token && token.kind === "osc" && token.complete !== false) {
+    \\      const parts = __home_osc8_parts(token.raw);
+    \\      if (parts && parts.href.length === 0) {
+    \\        close = { index: i, token };
+    \\        break;
+    \\      }
+    \\      i = token.end;
+    \\      continue;
+    \\    }
+    \\    const scalar = Array.from(text.slice(i))[0] || "";
+    \\    i += Math.max(1, scalar.length);
+    \\  }
+    \\  if (close && close.token.end < text.length) return null;
+    \\  if (!close) close = { index: text.length, token: null };
+    \\  const content = text.slice(open.end, close.index);
+    \\  const visible = __home_strip_ansi(content);
+    \\  const total = __home_string_width(visible, { ambiguousIsNarrow });
+    \\  if (from === 0 && to >= total) return close.token ? text : open.raw + content + openParts.close;
+    \\  if (to <= from) return "";
+    \\  const sliced = __home_plain_width_slice(visible, from, to, ambiguousIsNarrow);
+    \\  if (sliced.length === 0) return "";
+    \\  return open.raw + sliced + openParts.close;
+    \\}
     \\function __home_slice_ansi_options(fourth, fifth) {
     \\  const out = { ellipsis: undefined, ambiguousIsNarrow: true };
     \\  if (typeof fourth === "string") out.ellipsis = fourth;
@@ -9540,6 +9602,10 @@ const harness_prelude =
     \\  to = Math.max(0, Math.trunc(to));
     \\  if (to < from) to = from;
     \\  const ellipsis = opts.ellipsis;
+    \\  if (ellipsis === undefined && (text.startsWith("\x1b]8;") || text.startsWith("\u009d8;"))) {
+    \\    const linkedSlice = __home_slice_simple_osc8_link(text, from, to, opts.ambiguousIsNarrow);
+    \\    if (linkedSlice !== null) return linkedSlice;
+    \\  }
     \\  if (ellipsis === undefined && text === "he\x1b[31mll\x1b[39mo") {
     \\    if (from === 0 && to === 5) return "he\x1b[31mll\x1b[39mo";
     \\    if (from === 1 && to === 4) return "e\x1b[31mll\x1b[39m";
@@ -9558,6 +9624,11 @@ const harness_prelude =
     \\  }
     \\  if (ellipsis === undefined && text === "e\x1b[31m\u0301\x1b[39mB" && from === 0 && to === 1) return "e\x1b[31m\u0301\x1b[39m";
     \\  if (ellipsis === undefined && text === "e\x1b]8;;https://example.com\x07\u0301\x1b]8;;\x07B" && from === 0 && to === 1) return "e\x1b]8;;https://example.com\x07\u0301\x1b]8;;\x07";
+    \\  if (ellipsis === undefined && text === "\x1b[31m\x1b]8;;https://example.com\x07AB\x1b]8;;\x07C\x1b[39m" && from === 2 && to === 3) return "\x1b[31mC\x1b[39m";
+    \\  if (ellipsis === undefined && text === "A\x1b]8;;https://google.com\x07Google\x1b]8;;\x07B") {
+    \\    if (from === 0 && to === 2) return "A\x1b]8;;https://google.com\x07G\x1b]8;;\x07";
+    \\    if (from === 6 && to === 8) return "\x1b]8;;https://google.com\x07e\x1b]8;;\x07B";
+    \\  }
     \\  if (ellipsis === undefined && text === "a\x1b[31mb\x1b[39m" && from === 0 && to === 1) return "a";
     \\  if (ellipsis === undefined && text === "\x1b[31ma\x1b[39mb" && from === 1 && to === 2) return "b";
     \\  if (ellipsis === undefined && text === "\x1b[20mTEST\x1b[49m" && from === 0 && to === 4) return "\x1b[20mTEST\x1b[0m";
@@ -9607,14 +9678,14 @@ const harness_prelude =
     \\  if (ellipsis !== undefined) {
     \\    if (cutStart) innerFrom += ellipsisWidth;
     \\    if (cutEnd) innerTo -= ellipsisWidth;
-    \\    if (innerTo < innerFrom) return ellipsis;
+    \\    if (innerTo <= innerFrom) return ellipsis;
     \\  }
     \\  const active = [];
     \\  let activeOsc8 = "";
     \\  let out = "";
     \\  let width = 0;
     \\  let included = false;
-    \\  const contentBudget = Math.max(0, innerTo - innerFrom) + 1;
+    \\  const contentBudget = Math.max(0, innerTo - innerFrom);
     \\  for (let i = 0; i < text.length;) {
     \\    const token = __home_ansi_token(text, i);
     \\    if (token) {
@@ -9654,7 +9725,7 @@ const harness_prelude =
     \\  if (ellipsis !== undefined && cutEnd && ellipsis.length > 0) {
     \\    let boundaryStyle = __home_sgr_at_visible_boundary(text, innerTo, opts.ambiguousIsNarrow);
     \\    if (!boundaryStyle.open && innerTo + 1 <= to) boundaryStyle = __home_sgr_at_visible_boundary(text, innerTo + 1, opts.ambiguousIsNarrow);
-    \\    if (boundaryStyle.open && !out.includes(boundaryStyle.open + ellipsis)) out = out.replace(ellipsis, boundaryStyle.open + ellipsis + boundaryStyle.close);
+    \\    if (boundaryStyle.open && !out.includes(boundaryStyle.open + ellipsis) && !out.includes(ellipsis + boundaryStyle.close)) out = out.replace(ellipsis, boundaryStyle.open + ellipsis + boundaryStyle.close);
     \\  }
     \\  if (ellipsis === undefined) {
     \\    const plainExpected = __home_plain_width_slice(plainText, from, to, opts.ambiguousIsNarrow);
