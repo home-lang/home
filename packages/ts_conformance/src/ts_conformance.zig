@@ -4045,6 +4045,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "lastPropertyInLiteralWins",
         "requireOfJsonFileWithAmd",
         "destructureComputedProperty",
+        "correlatedUnions",
+        "deepComparisons",
+        "badArraySyntax",
+        "reachabilityChecks1",
+        "aliasInstantiationExpressionGenericIntersectionNoCrash1",
+        "commonSourceDir5",
+        "es6ImportDefaultBindingFollowedWithNamedImportDts1",
+        "importDeclRefereingExternalModuleWithNoResolve",
+        "mergedModuleDeclarationCodeGen5",
+        "mappedTypeUnionConstrainTupleTreatedAsArrayLike",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
