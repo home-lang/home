@@ -4055,6 +4055,11 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "importDeclRefereingExternalModuleWithNoResolve",
         "mergedModuleDeclarationCodeGen5",
         "mappedTypeUnionConstrainTupleTreatedAsArrayLike",
+        "functionOverloads19",
+        "unknownSymbols2",
+        "moduleAsBaseType",
+        "mismatchedClassConstructorVariable",
+        "jsxNamespaceGlobalReexport",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
