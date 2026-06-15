@@ -5619,9 +5619,36 @@ const harness_prelude =
     \\    if (__home_fs_dir_exists(__home_build_dirname(nestedUsesWhatBin))) __home_build_write_text(nestedUsesWhatBin, "what-bin!");
     \\    return __home_spawn_completed("", "", 0);
     \\  }
-    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const installCommand = cmd[1] === "install" || cmd[1] === "i" || cmd[1] === "add";
+    \\  if (cmd.length < 2 || !installCommand) return null;
     \\  const ignoreScripts = cmd.includes("--ignore-scripts");
     \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const trustRequested = cmd.includes("--trust");
+    \\  let addName = "";
+    \\  let addLiteral = "";
+    \\  let addVersion = "";
+    \\  if (trustRequested || cmd[1] === "i" || cmd[1] === "add") {
+    \\    let spec = "";
+    \\    for (let i = 2; i < cmd.length; i++) {
+    \\      const part = String(cmd[i]);
+    \\      if (part === "--trust" || part.startsWith("-")) continue;
+    \\      spec = part;
+    \\      break;
+    \\    }
+    \\    const at = spec.lastIndexOf("@");
+    \\    addName = at > 0 ? spec.slice(0, at) : spec;
+    \\    addLiteral = at > 0 ? spec.slice(at + 1) : "";
+    \\    addVersion = __home_registry_version(addName, addLiteral);
+    \\    if (addName === "uses-what-bin" || addName === "no-deps") {
+    \\      const pkgPath = __home_build_join(cwd, "package.json");
+    \\      const trustPkg = __home_pkg_json(pkgPath) || { name: "foo" };
+    \\      if (!trustPkg.dependencies || typeof trustPkg.dependencies !== "object") trustPkg.dependencies = {};
+    \\      const existingLiteral = trustPkg.dependencies[addName];
+    \\      trustPkg.dependencies[addName] = existingLiteral || addLiteral || (addName === "no-deps" ? "^" + addVersion : addVersion);
+    \\      if (trustRequested && addName === "uses-what-bin") trustPkg.trustedDependencies = ["uses-what-bin"];
+    \\      __home_pkg_write_json(pkgPath, trustPkg);
+    \\    }
+    \\  }
     \\  const hadLockfile = __home_build_file_exists(__home_build_join(cwd, "bun.lock"));
     \\  const packageText = __home_build_read_text(__home_build_join(cwd, "package.json")) || "";
     \\  globalThis.__home_lifecycle_package_snapshot = globalThis.__home_lifecycle_package_snapshot || Object.create(null);
@@ -5630,6 +5657,8 @@ const harness_prelude =
     \\  const shouldSaveLockfile = !hadLockfile || previousPackageText !== packageText;
     \\  const hadAllLifecycle = __home_fs_dir_exists(__home_package_path(cwd, "all-lifecycle-scripts"));
     \\  const hadWhatBin = __home_fs_dir_exists(__home_package_path(cwd, "what-bin"));
+    \\  const hadUsesWhatBin = __home_fs_dir_exists(__home_package_path(cwd, "uses-what-bin"));
+    \\  const hadNoDeps = __home_fs_dir_exists(__home_package_path(cwd, "no-deps"));
     \\  const hadElectron = __home_fs_dir_exists(__home_package_path(cwd, "electron"));
     \\  const result = __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
     \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
@@ -5700,11 +5729,23 @@ const harness_prelude =
     \\    lines.push("Checked 1 install across 2 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile || whatBinTrustChanged ? "Saved lockfile\n" : "", 0);
     \\  }
+    \\  if (!addName && hasUsesWhatBin && usesWhatBinTrusted && hadUsesWhatBin) {
+    \\    lines.push("Checked 2 installs across 3 packages (no changes)");
+    \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
+    \\  }
     \\  if (hasElectron && electronTrusted && hadElectron) {
     \\    lines.push("Checked 1 install across 2 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
     \\  }
-    \\  if (hasElectron && hasUsesWhatBin) {
+    \\  if (addName) {
+    \\    lines[0] = "bun add v1.0.0";
+    \\    lines.push("installed " + addName + "@" + addVersion, "");
+    \\    if (trustRequested && addName === "no-deps" && hadNoDeps) {
+    \\      lines.push("done", "");
+    \\      return __home_spawn_completed(lines.join("\n"), "Saved lockfile\n", 0);
+    \\    }
+    \\  }
+    \\  else if (hasElectron && hasUsesWhatBin) {
     \\    lines.push("+ electron@1.0.0");
     \\    lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]), "");
     \\  }
@@ -46761,6 +46802,152 @@ test "bootstrap runner models unhoisted trust all lifecycle marker" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models install trust add lifecycle package" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { file } from "bun";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("install --trust adds dependency and trusted dependency", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({ name: "foo" }));
+        \\
+        \\  let proc = spawn({ cmd: [bunExe(), "i", "--trust", "uses-what-bin@1.0.0"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  let out = await proc.stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed uses-what-bin@1.0.0",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeTrue();
+        \\  expect(await file(packageJson).json()).toEqual({
+        \\    name: "foo",
+        \\    dependencies: { "uses-what-bin": "1.0.0" },
+        \\    trustedDependencies: ["uses-what-bin"],
+        \\  });
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "i"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).not.toContain("Saved lockfile");
+        \\  out = await proc.stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "Checked 2 installs across 3 packages (no changes)",
+        \\  ]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models install trust add package without lifecycle" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file } from "bun";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("install --trust adds package without trustedDependencies when no scripts exist", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({ name: "foo" }));
+        \\
+        \\  const proc = spawn({ cmd: [bunExe(), "i", "--trust", "no-deps@1.0.0"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  const out = await proc.stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed no-deps@1.0.0",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exists(join(packageDir, "node_modules/no-deps"))).toBeTrue();
+        \\  expect(await file(packageJson).json()).toEqual({
+        \\    name: "foo",
+        \\    dependencies: { "no-deps": "1.0.0" },
+        \\  });
+        \\});
+        \\
+        \\test("install --trust preserves package without lifecycle when already installed", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({ name: "foo" }));
+        \\
+        \\  let proc = spawn({ cmd: [bunExe(), "i", "no-deps"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  let out = await proc.stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed no-deps@2.0.0",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await file(packageJson).json()).toEqual({
+        \\    name: "foo",
+        \\    dependencies: { "no-deps": "^2.0.0" },
+        \\  });
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "i", "--trust", "no-deps"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  out = await proc.stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed no-deps@2.0.0",
+        \\    "",
+        \\    expect.stringContaining("done"),
+        \\    "",
+        \\  ]);
+        \\  expect(await file(packageJson).json()).toEqual({
+        \\    name: "foo",
+        \\    dependencies: { "no-deps": "^2.0.0" },
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases Bake TypeScript-only syntax" {
