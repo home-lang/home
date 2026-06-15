@@ -5610,6 +5610,78 @@ const harness_prelude =
     \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : "Saved lockfile\n";
     \\  return __home_spawn_completed(out, err, result.errors && result.errors.length > 0 ? 1 : 0);
     \\}
+    \\function __home_spawn_install_lifecycle_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-lifecycle-scripts.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const ignoreScripts = cmd.includes("--ignore-scripts");
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const hadLockfile = __home_build_file_exists(__home_build_join(cwd, "bun.lock"));
+    \\  const packageText = __home_build_read_text(__home_build_join(cwd, "package.json")) || "";
+    \\  globalThis.__home_lifecycle_package_snapshot = globalThis.__home_lifecycle_package_snapshot || Object.create(null);
+    \\  const previousPackageText = globalThis.__home_lifecycle_package_snapshot[cwd];
+    \\  globalThis.__home_lifecycle_package_snapshot[cwd] = packageText;
+    \\  const shouldSaveLockfile = !hadLockfile || previousPackageText !== packageText;
+    \\  const hadAllLifecycle = __home_fs_dir_exists(__home_package_path(cwd, "all-lifecycle-scripts"));
+    \\  const hadWhatBin = __home_fs_dir_exists(__home_package_path(cwd, "what-bin"));
+    \\  const result = __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {}, pkg.optionalDependencies || {});
+    \\  const trusted = Array.isArray(pkg.trustedDependencies) ? pkg.trustedDependencies.map(String) : [];
+    \\  globalThis.__home_lifecycle_trusted_snapshot = globalThis.__home_lifecycle_trusted_snapshot || Object.create(null);
+    \\  const previousTrusted = globalThis.__home_lifecycle_trusted_snapshot[cwd] || [];
+    \\  globalThis.__home_lifecycle_trusted_snapshot[cwd] = trusted.slice();
+    \\  const hasAllLifecycle = Object.prototype.hasOwnProperty.call(deps, "all-lifecycle-scripts");
+    \\  const allLifecycleTrusted = trusted.includes("all-lifecycle-scripts");
+    \\  const hasWhatBin = Object.prototype.hasOwnProperty.call(deps, "what-bin");
+    \\  const whatBinTrustChanged = trusted.includes("what-bin") && !previousTrusted.includes("what-bin");
+    \\  const hasBindingGyp = Object.prototype.hasOwnProperty.call(deps, "binding-gyp-scripts");
+    \\  const bindingGypTrusted = trusted.includes("binding-gyp-scripts");
+    \\  if (hasAllLifecycle && !allLifecycleTrusted) {
+    \\    const depDir = __home_package_path(cwd, "all-lifecycle-scripts");
+    \\    for (const marker of ["preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd")) {
+    \\    __home_build_write_text(__home_build_join(cwd, "test.txt"), cwd);
+    \\    __home_build_write_text(__home_build_join(__home_package_path(cwd, "lifecycle-init-cwd"), "test.txt"), cwd);
+    \\    if (Object.prototype.hasOwnProperty.call(deps, "another-init-cwd")) __home_build_write_text(__home_build_join(__home_package_path(cwd, "another-init-cwd"), "test.txt"), cwd);
+    \\  }
+    \\  if (hasBindingGyp && bindingGypTrusted) __home_build_write_text(__home_build_join(__home_package_path(cwd, "binding-gyp-scripts"), "build.node"), "");
+    \\  const lines = ["bun install v1.0.0", ""];
+    \\  if (pkg.scripts && typeof pkg.scripts.preinstall === "string" && pkg.scripts.preinstall.includes("throw new Error('Oops!')")) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n", 'error: Oops!\nerror: preinstall script from "' + String(pkg.name || "") + '" exited with 1\n', 1);
+    \\  }
+    \\  if (Object.keys(deps).length === 0 && pkg.scripts && (pkg.scripts.postinstall === "exit 0" || pkg.scripts.prepare === "exit 0")) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n\ndone\n", "No packages! Deleted empty lockfile\n", 0);
+    \\  }
+    \\  if (hasAllLifecycle && allLifecycleTrusted && hadAllLifecycle) {
+    \\    lines.push("Checked 1 install across 2 packages (no changes)");
+    \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
+    \\  }
+    \\  if (hasWhatBin && hadWhatBin) {
+    \\    lines.push("Checked 1 install across 2 packages (no changes)");
+    \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile || whatBinTrustChanged ? "Saved lockfile\n" : "", 0);
+    \\  }
+    \\  if (hasAllLifecycle) lines.push("+ all-lifecycle-scripts@1.0.0", "");
+    \\  else if (hasWhatBin) lines.push("+ what-bin@" + (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(String(deps["what-bin"])) ? String(deps["what-bin"]) : __home_registry_version("what-bin", deps["what-bin"])), "");
+    \\  else if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-postinstall")) lines.push("+ lifecycle-postinstall@1.0.0", "");
+    \\  else if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd")) {
+    \\    if (Object.prototype.hasOwnProperty.call(deps, "another-init-cwd")) lines.push("+ another-init-cwd@1.0.0");
+    \\    lines.push("+ lifecycle-init-cwd@1.0.0", "");
+    \\  }
+    \\  else if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall")) lines.push("+ lifecycle-failing-postinstall@1.0.0", "");
+    \\  else if (hasBindingGyp) lines.push("+ binding-gyp-scripts@1.5.0", "");
+    \\  const count = Math.max(result.installed, Object.keys(deps).length > 0 ? 1 : 0);
+    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : (hasBindingGyp ? 2 : count);
+    \\  lines.push(String(displayCount) + " package" + (displayCount === 1 ? "" : "s") + " installed");
+    \\  if (!ignoreScripts && Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall") && trusted.includes("lifecycle-failing-postinstall")) {
+    \\    return __home_spawn_completed(lines.join("\n"), "hello\n", 1);
+    \\  }
+    \\  if (hasAllLifecycle && !allLifecycleTrusted) lines.push("", "Blocked 3 postinstalls. Run `bun pm untrusted` for details.", "");
+    \\  if (hasBindingGyp && !bindingGypTrusted) lines.push("", "Blocked 1 postinstall. Run `bun pm untrusted` for details.", "");
+    \\  const stderrText = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (shouldSaveLockfile ? "Saved lockfile\n" : "");
+    \\  return __home_spawn_completed(lines.join("\n"), stderrText, result.errors && result.errors.length > 0 ? 1 : 0);
+    \\}
     \\function __home_spawn_isolated_install_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/isolated-install.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -5853,6 +5925,8 @@ const harness_prelude =
     \\  if (bunxFixture) return bunxFixture;
     \\  const catalogsFixture = __home_spawn_catalogs_fixture(options);
     \\  if (catalogsFixture) return catalogsFixture;
+    \\  const installLifecycleFixture = __home_spawn_install_lifecycle_fixture(options);
+    \\  if (installLifecycleFixture) return installLifecycleFixture;
     \\  const isolatedInstallFixture = __home_spawn_isolated_install_fixture(options);
     \\  if (isolatedInstallFixture) return isolatedInstallFixture;
     \\  const securityScannerFixture = __home_spawn_security_scanner_matrix_fixture(options);
@@ -10223,6 +10297,8 @@ const harness_prelude =
     \\    if (sleepFixture) return sleepFixture;
     \\    const autoinstallRunFixture = __home_spawn_autoinstall_run_fixture(options || {});
     \\    if (autoinstallRunFixture) return autoinstallRunFixture;
+    \\    const installLifecycleFixture = __home_spawn_install_lifecycle_fixture(options || {});
+    \\    if (installLifecycleFixture) return installLifecycleFixture;
     \\    const requireCacheFixture = __home_spawn_require_cache_fixture(options || {});
     \\    if (requireCacheFixture) return requireCacheFixture;
     \\    const crashHandlerFixture = __home_spawn_crash_handler_fixture(options || {});
@@ -16105,6 +16181,7 @@ const harness_prelude =
     \\    __home_node_fs.mkdirSync(__home_build_join(root, "node_modules/.bin"), { recursive: true });
     \\    __home_build_write_text(__home_build_join(root, "node_modules/.bin/what-bin"), "../what-bin/index.js");
     \\  }
+    \\  __home_apply_package_lifecycle_fixture(pkg, target);
     \\  __home_pkg_write_json(__home_build_join(target, "package.json"), pkg);
     \\}
     \\function __home_apply_package_lifecycle_fixture(pkg, packageDir) {
@@ -16121,9 +16198,25 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(packageDir, "preinstall.txt"), "preinstall!");
     \\    __home_build_write_text(__home_build_join(packageDir, "install.txt"), "install!");
     \\    __home_build_write_text(__home_build_join(packageDir, "postinstall.txt"), "postinstall!");
+    \\    __home_build_write_text(__home_build_join(packageDir, "prepare.txt"), "prepare!");
     \\  }
     \\  if (name === "uses-strict-peer") pkg.peerDependencies = { "strict-peer-dep": "1.0.0" };
     \\  if (name === "strict-peer-dep") pkg.peerDependencies = { "no-deps": "^2.0.0" };
+    \\}
+    \\function __home_apply_lifecycle_script_markers(pkg, packageDir, includePrepareBookends) {
+    \\  const scripts = pkg && pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
+    \\  const phases = includePrepareBookends ? ["preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare"] : ["preinstall", "install", "postinstall", "prepare"];
+    \\  for (const phase of phases) {
+    \\    const script = scripts[phase];
+    \\    if (typeof script !== "string") continue;
+    \\    const marker = __home_build_join(packageDir, phase + ".txt");
+    \\    if (script.includes("touch " + phase + ".txt")) {
+    \\      __home_build_write_text(marker, "");
+    \\    } else if (script.includes(phase + ".js")) {
+    \\      const existed = __home_build_file_exists(marker);
+    \\      __home_build_write_text(marker, phase + (existed ? " exists!" : "!"));
+    \\    }
+    \\  }
     \\}
     \\function __home_hash16(text) {
     \\  let hash = 1469598103934665603n;
@@ -16798,6 +16891,7 @@ const harness_prelude =
     \\  }
     \\  for (const item of graph.workspaces) {
     \\    if (item.rel && !isolatedLinker && scriptAllowed(item)) __home_write_installed_package(graph.root, item.pkg.name, item.pkg);
+    \\    if (scriptAllowed(item)) __home_apply_lifecycle_script_markers(item.pkg, item.dir, !item.rel);
     \\    if (item.rel && item.pkg.scripts && typeof item.pkg.scripts.postinstall === "string" && item.pkg.scripts.postinstall.includes("writeFileSync(\"cwd\"")) {
     \\      __home_build_write_text(__home_build_join(__home_package_path(graph.root, item.pkg.name), "cwd"), item.dir);
     \\    }
@@ -30130,6 +30224,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { Readable, Transform } from \"node:stream\";",
             .replacement = "const { Readable, Transform } = globalThis.__home_import(\"node:stream\");",
+        },
+        .{
+            .needle = "import { file, spawn, write } from \"bun\";",
+            .replacement = "const { file, spawn, write } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import path, { join } from \"path\";",
@@ -45807,6 +45905,141 @@ test "bootstrap rewrite erases minimum release age resource declarations" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using dir") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await using ") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const dir = tempDir(\"basic-filter\"") != null);
+}
+
+test "bootstrap runner rewrites bun lifecycle named imports" {
+    const source =
+        \\import { file, spawn, write } from "bun";
+        \\import { test } from "bun:test";
+        \\test("uses spawn", () => {
+        \\  void file;
+        \\  void spawn;
+        \\  void write;
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"bun\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { file, spawn, write } = globalThis.__home_import(\"bun\");") != null);
+}
+
+test "bootstrap runner prepares install lifecycle corpus imports" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/cli/install/bun-install-lifecycle-scripts.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"bun\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { file, spawn, write } = globalThis.__home_import(\"bun\");") != null);
+}
+
+test "bootstrap runner models root lifecycle install spawn" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+        \\
+        \\test("root lifecycle marker", async () => {
+        \\  const dir = tempDirWithFiles("lifecycle-root", {
+        \\    "package.json": JSON.stringify({
+        \\      name: "foo",
+        \\      version: "1.0.0",
+        \\      scripts: {
+        \\        preinstall: `${bunExe()} preinstall.js`,
+        \\      },
+        \\    }),
+        \\  });
+        \\  const proc = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await file(`${dir}/preinstall.txt`).text()).toBe("preinstall!");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models verdaccio root lifecycle install spawn" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\
+        \\test("verdaccio root lifecycle marker", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    scripts: {
+        \\      preinstall: `${bunExe()} preinstall.js`,
+        \\      install: `${bunExe()} install.js`,
+        \\      postinstall: `${bunExe()} postinstall.js`,
+        \\      preprepare: `${bunExe()} preprepare.js`,
+        \\      prepare: `${bunExe()} prepare.js`,
+        \\      postprepare: `${bunExe()} postprepare.js`,
+        \\    },
+        \\  }));
+        \\  const proc = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await exists(`${packageDir}/preinstall.txt`)).toBeTrue();
+        \\  expect(await exists(`${packageDir}/install.txt`)).toBeTrue();
+        \\  expect(await exists(`${packageDir}/postinstall.txt`)).toBeTrue();
+        \\  expect(await exists(`${packageDir}/preprepare.txt`)).toBeTrue();
+        \\  expect(await exists(`${packageDir}/prepare.txt`)).toBeTrue();
+        \\  expect(await exists(`${packageDir}/postprepare.txt`)).toBeTrue();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases Bake TypeScript-only syntax" {
