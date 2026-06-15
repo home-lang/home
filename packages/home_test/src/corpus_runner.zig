@@ -5668,6 +5668,9 @@ const harness_prelude =
     \\  if (Object.keys(deps).length === 0 && pkg.scripts && (pkg.scripts.postinstall === "exit 0" || pkg.scripts.prepare === "exit 0")) {
     \\    return __home_spawn_completed("bun install v1.0.0\n\ndone\n", "No packages! Deleted empty lockfile\n", 0);
     \\  }
+    \\  if (Object.keys(deps).length === 0 && pkg.scripts && typeof pkg.scripts.install === "string" && pkg.scripts.install.includes("node-gyp --version")) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n\ndone\n", "", 0);
+    \\  }
     \\  if (hasAllLifecycle && allLifecycleTrusted && hadAllLifecycle) {
     \\    lines.push("Checked 1 install across 2 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
@@ -46181,6 +46184,45 @@ test "bootstrap runner models root node-gyp install scripts" {
         \\  expect(await proc.exited).toBe(0);
         \\  expect(await proc.stdout.text()).toContain("+ node-gyp@1.5.0");
         \\  expect(await exists(join(second.packageDir, "build.node"))).toBeFalse();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models node-gyp availability in root lifecycle" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\
+        \\test("node-gyp lifecycle availability", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    scripts: { install: "node-gyp --version" },
+        \\  }));
+        \\  const proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  const err = await proc.stderr.text();
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
