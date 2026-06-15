@@ -2448,6 +2448,17 @@ const harness_prelude =
     \\    throw new Error("ENOENT: no such file or directory, chdir '" + String(options.cwd) + "'");
     \\  }
     \\}
+    \\function __home_spawn_resource_usage() {
+    \\  const zero = 0n;
+    \\  return {
+    \\    cpuTime: { user: zero, system: zero, total: zero },
+    \\    maxRSS: zero,
+    \\    messages: { sent: zero, received: zero },
+    \\    ops: { in: zero, out: zero },
+    \\    fs: { read: zero, write: zero },
+    \\    contextSwitches: { voluntary: zero, involuntary: zero },
+    \\  };
+    \\}
     \\function __home_spawn_completed(stdoutText, stderrText, exitCode) {
     \\  const stdout = __home_spawn_pipe_text(String(stdoutText || ""));
     \\  const stderr = __home_spawn_pipe_text(String(stderrText || ""));
@@ -2457,6 +2468,7 @@ const harness_prelude =
     \\    exited: Promise.resolve(exitCode == null ? 0 : exitCode),
     \\    exitCode: exitCode == null ? 0 : exitCode,
     \\    signalCode: null,
+    \\    resourceUsage() { return __home_spawn_resource_usage(); },
     \\    kill(signal) { void signal; this.signalCode = "SIGTERM"; return true; },
     \\    [Symbol.dispose]() {},
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
@@ -5617,6 +5629,8 @@ const harness_prelude =
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    const nestedUsesWhatBin = __home_build_join(__home_package_path(cwd, "pkg1"), "node_modules/uses-what-bin/what-bin.txt");
     \\    if (__home_fs_dir_exists(__home_build_dirname(nestedUsesWhatBin))) __home_build_write_text(nestedUsesWhatBin, "what-bin!");
+    \\    const slowUsesWhatBin = __home_build_join(__home_package_path(cwd, "uses-what-bin-slow"), "what-bin.txt");
+    \\    if (__home_fs_dir_exists(__home_build_dirname(slowUsesWhatBin))) __home_build_write_text(slowUsesWhatBin, "what-bin!");
     \\    return __home_spawn_completed("", "", 0);
     \\  }
     \\  if (cmd.length >= 3 && cmd[1] === "pm" && cmd[2] === "untrusted") {
@@ -5730,6 +5744,7 @@ const harness_prelude =
     \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
     \\  }
     \\  if (hasUsesWhatBin && !usesWhatBinTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
+    \\  if (hasUsesWhatBinSlow) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin-slow"), "what-bin.txt"));
     \\  if (hasElectron && !electronTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "electron"), "preinstall.txt"));
     \\  if (hasFileEsbuild) {
     \\    const packageJson = __home_pkg_json(__home_build_join(__home_package_path(cwd, "esbuild"), "package.json")) || {};
@@ -10557,6 +10572,7 @@ const harness_prelude =
     \\      exited,
     \\      exitCode: result.exitCode == null ? 1 : result.exitCode,
     \\      signalCode: result.signalCode == null ? null : result.signalCode,
+    \\      resourceUsage() { return __home_spawn_resource_usage(); },
     \\    };
     \\  },
     \\  build(options) {
@@ -33929,6 +33945,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_serveNative(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof options.fetch === \"function\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stopServeNative(handle.id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_resource_usage()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cpuTime: { user: zero, system: zero, total: zero }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "resourceUsage() { return __home_spawn_resource_usage(); }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options, spawnOptions)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_options(options, spawnOptions)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cli/install/bun-run.test.ts") != null);
@@ -46462,6 +46481,24 @@ test "bootstrap runner models uses-what-bin-slow lifecycle dependency" {
         \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
         \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin-slow/what-bin.txt"))).toBeTrue();
         \\});
+        \\
+        \\test("uses what-bin slow is blocked until trust all", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { "uses-what-bin-slow": "1.0.0" },
+        \\  }));
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin-slow/what-bin.txt"))).toBeFalse();
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "pm", "trust", "--all"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin-slow/what-bin.txt"))).toBeTrue();
+        \\  expect(proc.resourceUsage()?.cpuTime.total).toBeLessThan(750_000);
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -46474,7 +46511,7 @@ test "bootstrap runner models uses-what-bin-slow lifecycle dependency" {
 
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner models stress lifecycle dependency output" {
