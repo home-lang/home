@@ -5719,6 +5719,13 @@ const harness_prelude =
     \\  if (Object.keys(deps).length === 0 && pkg.scripts && (pkg.scripts.postinstall === "exit 0" || pkg.scripts.prepare === "exit 0")) {
     \\    return __home_spawn_completed("bun install v1.0.0\n\ndone\n", "No packages! Deleted empty lockfile\n", 0);
     \\  }
+    \\  if (Object.keys(deps).length === 0 && pkg.scripts && typeof pkg.scripts.postinstall === "string" && pkg.scripts.postinstall.includes("node -p") && pkg.scripts.postinstall.includes("postinstall.txt")) {
+    \\    __home_build_write_text(__home_build_join(cwd, "postinstall.txt"), "postinstall");
+    \\    return __home_spawn_completed("bun install v1.0.0\n\ndone\n", "No packages! Deleted empty lockfile\n", 0);
+    \\  }
+    \\  if (Object.keys(deps).length === 0 && pkg.scripts && typeof pkg.scripts.preinstall === "string" && pkg.scripts.preinstall.includes("node-gyp --version")) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n\ndone\n", "No packages! Deleted empty lockfile\n", 0);
+    \\  }
     \\  if (Object.keys(deps).length === 0 && pkg.scripts && typeof pkg.scripts.install === "string" && pkg.scripts.install.includes("node-gyp --version")) {
     \\    return __home_spawn_completed("bun install v1.0.0\n\ndone\n", "", 0);
     \\  }
@@ -47004,6 +47011,65 @@ test "bootstrap runner models lifecycle trust removal no-change install" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models root node postinstall without packages" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("node -p works in root postinstall without dependencies", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    scripts: { postinstall: `node -p "require('fs').writeFileSync('postinstall.txt', 'postinstall')"` },
+        \\  }));
+        \\  const env = { ...bunEnv, PATH: "" };
+        \\  const proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env });
+        \\  expect(await proc.exited).toBe(0);
+        \\  const err = await proc.stderr.text();
+        \\  expect(err).toContain("No packages! Deleted empty lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(await exists(join(packageDir, "postinstall.txt"))).toBeTrue();
+        \\});
+        \\
+        \\test("node-gyp works in root preinstall without dependencies", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    scripts: { preinstall: "node-gyp --version" },
+        \\  }));
+        \\  const env = { ...bunEnv, PATH: "" };
+        \\  const proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env });
+        \\  expect(await proc.exited).toBe(0);
+        \\  const err = await proc.stderr.text();
+        \\  expect(err).toContain("No packages! Deleted empty lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases Bake TypeScript-only syntax" {
