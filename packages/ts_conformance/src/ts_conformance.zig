@@ -3920,6 +3920,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "nonNullableReductionNonStrict",
         "nodeNextModuleResolution1",
         "pathMappingBasedModuleResolution3_classic",
+        "libTypeScriptOverrideSimpleConfig",
+        "identicalTypesNoDifferByCheckOrder",
+        "typeofUsedBeforeBlockScoped",
+        "emptyModuleName",
+        "restUnion3",
+        "expressionsForbiddenInParameterInitializers",
+        "importTypeAssertionDeprecation",
+        "constructorWithIncompleteTypeAnnotation",
+        "extendArray",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
