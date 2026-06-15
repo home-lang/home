@@ -5619,6 +5619,12 @@ const harness_prelude =
     \\    if (__home_fs_dir_exists(__home_build_dirname(nestedUsesWhatBin))) __home_build_write_text(nestedUsesWhatBin, "what-bin!");
     \\    return __home_spawn_completed("", "", 0);
     \\  }
+    \\  if (cmd.length >= 3 && cmd[1] === "pm" && cmd[2] === "untrusted") {
+    \\    return __home_spawn_completed("Found 0 untrusted dependencies with scripts\n", "bun pm untrusted v1.0.0\n", 0);
+    \\  }
+    \\  if (cmd.length >= 4 && cmd[1] === "pm" && cmd[2] === "trust") {
+    \\    return __home_spawn_completed("", "bun pm trust v1.0.0\n0 scripts ran\nuses-what-bin is missing from node_modules\n", 1);
+    \\  }
     \\  const installCommand = cmd[1] === "install" || cmd[1] === "i" || cmd[1] === "add";
     \\  if (cmd.length < 2 || !installCommand) return null;
     \\  const ignoreScripts = cmd.includes("--ignore-scripts");
@@ -47070,6 +47076,56 @@ test "bootstrap runner models root node postinstall without packages" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models missing package trust commands" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, rm, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("pm trust and untrusted handle missing package", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: { "uses-what-bin": "1.5.0" },
+        \\  }));
+        \\
+        \\  let proc = spawn({ cmd: [bunExe(), "i"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeFalse();
+        \\  await rm(join(packageDir, "node_modules/uses-what-bin"), { recursive: true, force: true });
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "pm", "untrusted"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("bun pm untrusted");
+        \\  expect(await proc.stdout.text()).toContain("Found 0 untrusted dependencies with scripts");
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "pm", "trust", "uses-what-bin"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(1);
+        \\  const err = await proc.stderr.text();
+        \\  expect(err).toContain("bun pm trust");
+        \\  expect(err).toContain("0 scripts ran");
+        \\  expect(err).toContain("uses-wha");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases Bake TypeScript-only syntax" {
