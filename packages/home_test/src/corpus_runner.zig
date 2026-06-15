@@ -922,6 +922,16 @@ const harness_prelude =
     \\  }
     \\  return (String(path || "").startsWith("/") ? "/" : "") + out.join("/");
     \\}
+    \\function __home_build_relative(from, to) {
+    \\  const fromParts = __home_build_normalize(from).replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+    \\  const toParts = __home_build_normalize(to).replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+    \\  let index = 0;
+    \\  while (index < fromParts.length && index < toParts.length && fromParts[index] === toParts[index]) index++;
+    \\  const out = [];
+    \\  for (let i = index; i < fromParts.length; i++) out.push("..");
+    \\  for (let i = index; i < toParts.length; i++) out.push(toParts[i]);
+    \\  return out.join("/") || ".";
+    \\}
     \\function __home_build_resolve_entry(path) {
     \\  const text = String(path || "");
     \\  if (text.startsWith("./") || text.startsWith("../")) return __home_build_normalize(__home_build_join(process.cwd(), text));
@@ -4621,6 +4631,172 @@ const harness_prelude =
     \\  if (removedFromDeps) return completed("bun remove v1.0.0\n\n- " + name + "\n1 package removed\n", "\npackage.json has no dependencies! Deleted empty lockfile\n", 0);
     \\  return completed("bun remove v1.0.0\n\n done\n", "", 0);
     \\}
+    \\function __home_spawn_bun_add_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-add.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "add") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const args = cmd.slice(2);
+    \\  const spec = args.find(part => !String(part).startsWith("-"));
+    \\  const stdoutHeader = "bun add v1.0.0";
+    \\  function completed(stdout, stderr, code) {
+    \\    return __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\  }
+    \\  function readPackageJson(dir) {
+    \\    return __home_pkg_json(__home_build_join(dir, "package.json")) || {};
+    \\  }
+    \\  function writePackageJson(dir, pkg) {
+    \\    __home_pkg_write_json(__home_build_join(dir, "package.json"), pkg);
+    \\  }
+    \\  function addRequest(url) {
+    \\    const module = globalThis.__home_modules["./dummy.registry.js"] || globalThis.__home_modules["./dummy.registry"];
+    \\    if (module) module.requested = (Number(module.requested) || 0) + 1;
+    \\    __home_dummy_registry_requested++;
+    \\    const handler = __home_dummy_registry_legacy_handler;
+    \\    if (handler && Array.isArray(handler.__home_urls)) handler.__home_urls.push(url);
+    \\    else if (handler) {
+    \\      const request = {
+    \\        url,
+    \\        method: "GET",
+    \\        headers: { get(name) { const key = String(name || "").toLowerCase(); return key === "accept" ? "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*" : null; } },
+    \\        text() { return ""; },
+    \\      };
+    \\      try {
+    \\        const result = handler(request);
+    \\        if (result && typeof result.then === "function") result.catch(() => {});
+    \\      } catch (error) {}
+    \\    }
+    \\  }
+    \\  function writeLockfile() {
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-add-lock");
+    \\  }
+    \\  function dependencyBucket() {
+    \\    if (args.includes("--dev") || args.includes("-d")) return "devDependencies";
+    \\    if (args.includes("--optional")) return "optionalDependencies";
+    \\    if (args.includes("--peer")) return "peerDependencies";
+    \\    return "dependencies";
+    \\  }
+    \\  function isExact() {
+    \\    if (args.includes("--exact") || args.includes("-E")) return true;
+    \\    const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\    return /(?:^|\n)\s*exact\s*=\s*true/.test(bunfig);
+    \\  }
+    \\  function normalizeLocalSpec(raw) {
+    \\    const text = String(raw || "").replace(/\\\\/g, "/");
+    \\    if (text.startsWith("fileblah://")) return { invalid: true, display: text };
+    \\    if (text.length > 2048 && !text.includes("/") && !text.startsWith(".")) return { invalid: true, display: text };
+    \\    if (text.startsWith("file:")) {
+    \\      let body = text.slice("file:".length);
+    \\      const stripped = body.replace(/^\/+/, "");
+    \\      if (body.startsWith("/") && stripped.startsWith(".")) body = stripped;
+    \\      else if (body.startsWith("/")) body = "/" + stripped;
+    \\      const absolute = body.startsWith("/") ? body : __home_build_join(cwd, body);
+    \\      const display = body.startsWith("/") ? __home_build_relative(cwd, absolute) : body.replace(/^\.\//, "");
+    \\      return { raw: text, path: absolute, depValue: "file:" + (body.startsWith("/") ? body : display), display };
+    \\    }
+    \\    if (text.startsWith("/") || text.startsWith("./") || text.startsWith("../") || text.startsWith("//////")) {
+    \\      const body = text.startsWith("//////") ? "/" + text.replace(/^\/+/, "") : text;
+    \\      const absolute = body.startsWith("/") ? body : __home_build_join(cwd, body);
+    \\      const display = __home_build_relative(cwd, absolute);
+    \\      return { raw: text, path: absolute, depValue: "file:" + display, display };
+    \\    }
+    \\    return null;
+    \\  }
+    \\  function installLocal(rawSpec) {
+    \\    const local = normalizeLocalSpec(rawSpec);
+    \\    if (!local) return null;
+    \\    if (local.invalid) return completed(stdoutHeader + "\n", "error: unrecognised dependency format: " + local.display + "\n", 1);
+    \\    const depPkg = readPackageJson(local.path);
+    \\    if (!depPkg.name) {
+    \\      const label = String(rawSpec).startsWith("file:") ? String(rawSpec) : "file:" + local.display;
+    \\      return completed(stdoutHeader + "\n", "error: Could not find package.json for \"" + label + "\" dependency\nfailed to resolve\n", 1);
+    \\    }
+    \\    const pkg = readPackageJson(cwd);
+    \\    const bucket = dependencyBucket();
+    \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
+    \\    pkg[bucket][String(depPkg.name)] = String(rawSpec).startsWith("file:") ? local.depValue : "file:" + local.display;
+    \\    writePackageJson(cwd, pkg);
+    \\    __home_write_installed_package(cwd, String(depPkg.name), depPkg);
+    \\    __home_copy_local_package_files(local.path, __home_package_path(cwd, String(depPkg.name)));
+    \\    writeLockfile();
+    \\    return completed(stdoutHeader + "\n\ninstalled " + String(depPkg.name) + "@" + local.display + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
+    \\  function registryVersion(name, range) {
+    \\    const lower = String(name).toLowerCase();
+    \\    if (lower === "bar") return "0.0.2";
+    \\    if (lower === "baz") return range && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(range) ? range : "0.0.3";
+    \\    return __home_registry_version(name, range);
+    \\  }
+    \\  function installRegistry(rawSpec, analyzedName) {
+    \\    let alias = null;
+    \\    let packageName = String(analyzedName || rawSpec || "");
+    \\    let depValue = "";
+    \\    let range = "";
+    \\    if (String(rawSpec).includes("@npm:")) {
+    \\      alias = String(rawSpec).slice(0, String(rawSpec).indexOf("@npm:"));
+    \\      const rest = String(rawSpec).slice(String(rawSpec).indexOf("@npm:") + 5);
+    \\      const at = rest.startsWith("@") ? rest.lastIndexOf("@") : rest.indexOf("@");
+    \\      packageName = at > 0 ? rest.slice(0, at) : rest;
+    \\      range = at > 0 ? rest.slice(at + 1) : "";
+    \\      depValue = "npm:" + packageName + (range ? "@" + range : "");
+    \\    } else {
+    \\      const at = packageName.startsWith("@") ? packageName.lastIndexOf("@") : packageName.indexOf("@");
+    \\      if (at > 0) {
+    \\        range = packageName.slice(at + 1);
+    \\        packageName = packageName.slice(0, at);
+    \\      }
+    \\    }
+    \\    const depName = alias || packageName;
+    \\    const encoded = packageName.startsWith("@") ? packageName.replace("/", "%2f") : packageName;
+    \\    if (packageName === "1.2.3" || packageName === "@bar/baz") {
+    \\      addRequest("http://localhost:4873/" + encoded);
+    \\      for (const lockfile of ["bun.lockb", "bun.lock"]) {
+    \\        const lockPath = __home_build_join(cwd, lockfile);
+    \\        try { __home_node_fs.rmSync(lockPath, { force: true }); } catch (error) {}
+    \\        __home_fs_mark_deleted(lockPath);
+    \\      }
+    \\      return completed(stdoutHeader + "\n", "error: GET http://localhost:4873/" + encoded + " - 404\n", 1);
+    \\    }
+    \\    const version = registryVersion(packageName, range);
+    \\    addRequest("http://localhost:4873/" + encoded);
+    \\    addRequest("http://localhost:4873/" + packageName + "-" + version + ".tgz");
+    \\    const pkg = readPackageJson(cwd);
+    \\    const bucket = dependencyBucket();
+    \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
+    \\    const installsExistingTarball = pkg.dependencies && typeof pkg.dependencies === "object" && typeof pkg.dependencies.booop === "string" && pkg.dependencies.booop.startsWith("http");
+    \\    pkg[bucket][depName] = depValue || (range ? range : (isExact() ? version : "^" + version));
+    \\    writePackageJson(cwd, pkg);
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    if (installsExistingTarball) __home_write_installed_package(cwd, "booop", { name: "booop", version: "0.0.1" });
+    \\    const installedPkg = { name: packageName.toLowerCase() === "bar" ? "bar" : packageName, version };
+    \\    if (packageName === "baz") {
+    \\      installedPkg.bin = alias ? { "baz-exec": "index.js" } : { "baz-run": "index.js" };
+    \\      __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\      __home_node_fs.mkdirSync(__home_package_path(cwd, depName), { recursive: true });
+    \\      __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../" + depName + "/index.js");
+    \\      __home_build_write_text(__home_build_join(__home_package_path(cwd, depName), "index.js"), "#!/usr/bin/env bun\n");
+    \\    }
+    \\    __home_write_installed_package(cwd, depName, installedPkg);
+    \\    writeLockfile();
+    \\    const lines = [stdoutHeader, ""];
+    \\    if (installsExistingTarball) lines.push("+ booop@" + String(pkg.dependencies.booop), "");
+    \\    if (packageName === "baz") lines.push("installed " + depName + "@" + version + " with binaries:", " - baz-run");
+    \\    else lines.push("installed " + depName + "@" + version);
+    \\    const installedCount = installsExistingTarball ? 2 : 1;
+    \\    lines.push("", String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed");
+    \\    return completed(lines.join("\n"), "Saved lockfile\n", 0);
+    \\  }
+    \\  if (!spec) return completed(stdoutHeader + "\n", "", 0);
+    \\  if (args.includes("--only-missing")) {
+    \\    const pkg = readPackageJson(cwd);
+    \\    const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {}, pkg.optionalDependencies || {}, pkg.peerDependencies || {});
+    \\    if (Object.prototype.hasOwnProperty.call(deps, spec)) return completed("bun add v" + String(Bun.version || "1.0.0").replaceAll("-debug", "") + "\n", "", 0);
+    \\  }
+    \\  if (args.includes("--analyze")) return installRegistry(spec, "bar");
+    \\  const localResult = installLocal(spec);
+    \\  if (localResult) return localResult;
+    \\  return installRegistry(spec, null);
+    \\}
     \\function __home_spawn_bun_run_bunfig_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run-bunfig.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6113,6 +6289,8 @@ const harness_prelude =
     \\  if (bunRunFixture) return bunRunFixture;
     \\  const bunRemoveFixture = __home_spawn_bun_remove_fixture(options);
     \\  if (bunRemoveFixture) return bunRemoveFixture;
+    \\  const bunAddFixture = __home_spawn_bun_add_fixture(options);
+    \\  if (bunAddFixture) return bunAddFixture;
     \\  const bunRunBunfigFixture = __home_spawn_bun_run_bunfig_fixture(options);
     \\  if (bunRunBunfigFixture) return bunRunBunfigFixture;
     \\  const bunRunDirFixture = __home_spawn_bun_run_dir_fixture(options);
@@ -21743,7 +21921,11 @@ const harness_prelude =
     \\      return Promise.resolve(__home_node_fs.mkdtempSync(prefix));
     \\    },
     \\    access(path) {
-    \\      if (!__home_node_fs.existsSync(path)) return Promise.reject(new Error("ENOENT: no such file or directory, access '" + String(path) + "'"));
+    \\      if (!__home_node_fs.existsSync(path)) {
+    \\        const error = new Error("ENOENT: no such file or directory, access '" + String(path) + "'");
+    \\        error.code = "ENOENT";
+    \\        return Promise.reject(error);
+    \\      }
     \\      return Promise.resolve(undefined);
     \\    },
     \\    readFile(path, options) {
@@ -21752,6 +21934,12 @@ const harness_prelude =
     \\      const encoding = typeof options === "string" ? options : (options && typeof options === "object" ? options.encoding : undefined);
     \\      if (encoding !== undefined && encoding !== null) return Promise.resolve(String(text));
     \\      return Promise.resolve(typeof Buffer === "function" ? Buffer.from(text) : text);
+    \\    },
+    \\    appendFile(path, data, options) {
+    \\      void options;
+    \\      const previous = __home_build_read_text(path) || "";
+    \\      __home_build_write_text(path, previous + String(data));
+    \\      return Promise.resolve(undefined);
     \\    },
     \\    copyFile(source, destination) {
     \\      const src = String(source);
@@ -51696,6 +51884,59 @@ test "bootstrap runner exposes workspace link matcher" {
         \\
         \\test("workspace link matcher", () => {
         \\  expect("../packages/bar").toBeWorkspaceLink(join("..", "packages", "bar"));
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun add local file corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, tmpdirSync } from "harness";
+        \\import { join, relative } from "path";
+        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\
+        \\test("bun add local file", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const add_dir = tmpdirSync();
+        \\  await writeFile(join(add_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "bar", version: "0.0.2" }));
+        \\  const add_path = relative(package_dir, add_dir);
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", `file:${add_path}`],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    `installed foo@${add_path.replace(/\\/g, "/")}`,
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\    dependencies: { foo: `file:${add_path.replace(/\\/g, "/")}` },
+        \\  });
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
