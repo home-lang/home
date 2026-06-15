@@ -1282,6 +1282,14 @@ pub const Interner = struct {
         return self.pool.conditional_payloads.items[self.pool.payloadOf(id)];
     }
 
+    pub fn conditionalPayloadOrNull(self: *const Interner, id: TypeId) ?types.ConditionalPayload {
+        if (id >= self.pool.typeCount()) return null;
+        if (!self.pool.flagsOf(id).is_conditional) return null;
+        const idx: usize = self.pool.payloadOf(id);
+        if (idx >= self.pool.conditional_payloads.items.len) return null;
+        return self.pool.conditional_payloads.items[idx];
+    }
+
     pub fn mappedPayload(self: *const Interner, id: TypeId) types.MappedPayload {
         std.debug.assert(self.pool.flagsOf(id).is_mapped);
         return self.pool.mapped_payloads.items[self.pool.payloadOf(id)];
