@@ -3975,6 +3975,17 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "blockScopedSameNameFunctionDeclarationStrictES5",
         "functionTypeArgumentAssignmentCompat",
         "objectCreate-errors",
+        "spreadInvalidArgumentType",
+        "recursiveExportAssignmentAndFindAliasedType2",
+        "ClassDeclarationWithInvalidConstOnPropertyDeclaration",
+        "promiseIdentity2",
+        "interfaceDeclaration4",
+        "functionCall8",
+        "exportImportCanSubstituteConstEnumForValue",
+        "jsFileMethodOverloads2",
+        "collisionExportsRequireAndClass",
+        "genericCallbackInvokedInsideItsContainingFunction1",
+        "jsdocInTypeScript",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
