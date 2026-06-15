@@ -4739,7 +4739,7 @@ const harness_prelude =
     \\    if (aliasName) {
     \\      const aliasRoot = __home_build_join(cacheRoot, aliasName);
     \\      __home_node_fs.mkdirSync(aliasRoot, { recursive: true });
-    \\      __home_fs_mark_symlink(__home_build_join("..", "@GH@mishoo-UglifyJS-e219a9a@@@1"), __home_build_join(aliasRoot, "mishoo-UglifyJS-e219a9a@@@1"));
+    \\      __home_fs_mark_symlink(__home_build_join(cacheRoot, "@GH@mishoo-UglifyJS-e219a9a@@@1"), __home_build_join(aliasRoot, "mishoo-UglifyJS-e219a9a@@@1"));
     \\    }
     \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
     \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/uglifyjs"), "../" + linkName + "/bin/uglifyjs");
@@ -4797,13 +4797,20 @@ const harness_prelude =
     \\    const bucket = dependencyBucket();
     \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
     \\    const installsExistingTarball = pkg.dependencies && typeof pkg.dependencies === "object" && typeof pkg.dependencies.booop === "string" && pkg.dependencies.booop.startsWith("http");
+    \\    const installsWorkspaceRoot = packageName === "baz" && Array.isArray(pkg.workspaces) && pkg.dependencies && pkg.dependencies.bar === "workspace:*" && args.some(part => String(part).startsWith("--linker=isolated"));
     \\    pkg[bucket][depName] = depValue || (range ? range : (isExact() ? version : "^" + version));
-    \\    writePackageJson(cwd, pkg);
+    \\    if (installsWorkspaceRoot) __home_build_write_text(__home_build_join(cwd, "package.json"), JSON.stringify(pkg, null, 2).replace(/(\[)\s+|\s+(\])/g, "$1$2"));
+    \\    else writePackageJson(cwd, pkg);
     \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    if (installsWorkspaceRoot) {
+    \\      __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bun"), { recursive: true });
+    \\      __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.old_modules-home"), { recursive: true });
+    \\      __home_fs_mark_symlink(__home_build_join("..", "packages", "bar"), __home_build_join(cwd, "node_modules/bar"));
+    \\    }
     \\    if (installsExistingTarball) __home_write_installed_package(cwd, "booop", { name: "booop", version: "0.0.1" });
     \\    const installedPkg = { name: packageName.toLowerCase() === "bar" ? "bar" : packageName, version };
     \\    if (packageName === "baz") {
-    \\      installedPkg.bin = alias ? { "baz-exec": "index.js" } : { "baz-run": "index.js" };
+    \\      installedPkg.bin = version === "0.0.5" ? { "baz-exec": "index.js" } : { "baz-run": "index.js" };
     \\      __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
     \\      __home_node_fs.mkdirSync(__home_package_path(cwd, depName), { recursive: true });
     \\      __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../" + depName + "/index.js");
@@ -4815,7 +4822,7 @@ const harness_prelude =
     \\    if (installsExistingTarball) lines.push("+ booop@" + String(pkg.dependencies.booop), "");
     \\    if (packageName === "baz") lines.push("installed " + depName + "@" + version + " with binaries:", " - baz-run");
     \\    else lines.push("installed " + depName + "@" + version);
-    \\    const installedCount = installsExistingTarball ? 2 : 1;
+    \\    const installedCount = installsExistingTarball || installsWorkspaceRoot ? 2 : 1;
     \\    lines.push("", String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed");
     \\    return completed(lines.join("\n"), "Saved lockfile\n", 0);
     \\  }
@@ -52028,6 +52035,71 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\    name: "foo",
         \\    version: "0.0.1",
         \\    dependencies: { "uglify-js": "mishoo/UglifyJS#v3.14.1" },
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun add workspace isolated corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, readlink, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toBeWorkspaceLink, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\
+        \\expect.extend({ toHaveBins, toBeValidBin, toBeWorkspaceLink });
+        \\
+        \\test("bun add workspace isolated", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    workspaces: ["packages/*"],
+        \\    dependencies: { bar: "workspace:*" },
+        \\  }));
+        \\  await mkdir(join(package_dir, "packages", "bar"), { recursive: true });
+        \\  await writeFile(join(package_dir, "packages", "bar", "package.json"), JSON.stringify({ name: "bar", version: "0.0.2" }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "baz", "--linker=isolated"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed baz@0.0.3 with binaries:",
+        \\    " - baz-run",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".bun", ".cache", expect.stringContaining(".old_modules-"), "bar", "baz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "baz", "index.js"));
+        \\  expect(await readlink(join(package_dir, "node_modules", "bar"))).toBeWorkspaceLink(join("..", "packages", "bar"));
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    workspaces: ["packages/*"],
+        \\    dependencies: { bar: "workspace:*", baz: "^0.0.3" },
         \\  });
         \\});
     ;
