@@ -3874,6 +3874,9 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "assignToObjectTypeWithPrototypeProperty",
         "jsFileCompilationInterfaceSyntax",
         "emitMemberAccessExpression",
+        "overloadingOnConstants1",
+        "untypedFunctionCallsWithTypeParameters1",
+        "declFileEmitDeclarationOnlyError1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
