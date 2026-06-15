@@ -5620,10 +5620,36 @@ const harness_prelude =
     \\    return __home_spawn_completed("", "", 0);
     \\  }
     \\  if (cmd.length >= 3 && cmd[1] === "pm" && cmd[2] === "untrusted") {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\    const trusted = Array.isArray(pkg.trustedDependencies) ? pkg.trustedDependencies.map(String) : [];
+    \\    const usesPath = __home_package_path(cwd, "uses-what-bin");
+    \\    if (__home_fs_dir_exists(usesPath) && !trusted.includes("uses-what-bin")) return __home_spawn_completed("./node_modules/uses-what-bin @1.0.0\n", "bun pm untrusted v1.0.0\n", 0);
     \\    return __home_spawn_completed("Found 0 untrusted dependencies with scripts\n", "bun pm untrusted v1.0.0\n", 0);
     \\  }
     \\  if (cmd.length >= 4 && cmd[1] === "pm" && cmd[2] === "trust") {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const usesPath = __home_package_path(cwd, "uses-what-bin");
+    \\    if (__home_fs_dir_exists(usesPath)) {
+    \\      __home_build_write_text(__home_build_join(usesPath, "what-bin.txt"), "what-bin!");
+    \\      const pkgPath = __home_build_join(cwd, "package.json");
+    \\      const pkg = __home_pkg_json(pkgPath) || { name: "foo" };
+    \\      pkg.trustedDependencies = ["uses-what-bin"];
+    \\      __home_pkg_write_json(pkgPath, pkg);
+    \\      return __home_spawn_completed("1 script ran across 1 package\n", "bun pm trust v1.0.0\n", 0);
+    \\    }
     \\    return __home_spawn_completed("", "bun pm trust v1.0.0\n0 scripts ran\nuses-what-bin is missing from node_modules\n", 1);
+    \\  }
+    \\  if (cmd.length >= 3 && (cmd[1] === "rm" || cmd[1] === "remove") && cmd[2] === "uses-what-bin") {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    __home_fs_mark_deleted(__home_package_path(cwd, "uses-what-bin"));
+    \\    const pkgPath = __home_build_join(cwd, "package.json");
+    \\    const pkg = __home_pkg_json(pkgPath) || { name: "foo" };
+    \\    if (pkg.dependencies && typeof pkg.dependencies === "object") delete pkg.dependencies["uses-what-bin"];
+    \\    if (Array.isArray(pkg.trustedDependencies)) pkg.trustedDependencies = pkg.trustedDependencies.filter(name => String(name) !== "uses-what-bin");
+    \\    if (Array.isArray(pkg.trustedDependencies) && pkg.trustedDependencies.length === 0) delete pkg.trustedDependencies;
+    \\    __home_pkg_write_json(pkgPath, pkg);
+    \\    return __home_spawn_completed("1 package removed: uses-what-bin\n", "Saved lockfile\n", 0);
     \\  }
     \\  const installCommand = cmd[1] === "install" || cmd[1] === "i" || cmd[1] === "add";
     \\  if (cmd.length < 2 || !installCommand) return null;
@@ -5681,6 +5707,7 @@ const harness_prelude =
     \\  const hasUsesWhatBin = Object.prototype.hasOwnProperty.call(deps, "uses-what-bin");
     \\  const usesWhatBinTrusted = trusted.includes("uses-what-bin");
     \\  const usesWhatBinTrustRemoved = previousTrusted.includes("uses-what-bin") && !usesWhatBinTrusted;
+    \\  const hasNoDeps = Object.prototype.hasOwnProperty.call(deps, "no-deps");
     \\  const hasElectron = Object.prototype.hasOwnProperty.call(deps, "electron");
     \\  const electronTrusted = trusted.includes("electron") || (hasElectron && !hasExplicitTrustedDependencies && !String(deps.electron || "").startsWith("file:") && !String(deps.electron || "").startsWith("link:"));
     \\  const hasFileEsbuild = Object.prototype.hasOwnProperty.call(deps, "esbuild") && String(deps.esbuild || "").startsWith("file:");
@@ -5743,8 +5770,16 @@ const harness_prelude =
     \\    lines.push("Checked 1 install across 2 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile || whatBinTrustChanged ? "Saved lockfile\n" : "", 0);
     \\  }
+    \\  if (!addName && hasNoDeps && hasUsesWhatBin && hadUsesWhatBin && !usesWhatBinTrusted) {
+    \\    lines.push("Checked 3 installs across 4 packages (no changes)", "");
+    \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
+    \\  }
+    \\  if (!addName && hasNoDeps && !hasUsesWhatBin && hadNoDeps) {
+    \\    lines.push(hadUsesWhatBin ? "1 package removed: uses-what-bin" : "Checked 1 install across 2 packages (no changes)");
+    \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
+    \\  }
     \\  if (!addName && hasUsesWhatBin && hadUsesWhatBin && (usesWhatBinTrusted || usesWhatBinTrustRemoved)) {
-    \\    lines.push("Checked 2 installs across 3 packages (no changes)");
+    \\    lines.push(hasNoDeps ? "Checked 3 installs across 4 packages (no changes)" : "Checked 2 installs across 3 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
     \\  }
     \\  if (hasElectron && electronTrusted && hadElectron) {
@@ -5761,6 +5796,10 @@ const harness_prelude =
     \\  }
     \\  else if (hasElectron && hasUsesWhatBin) {
     \\    lines.push("+ electron@1.0.0");
+    \\    lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]), "");
+    \\  }
+    \\  else if (hasNoDeps && hasUsesWhatBin && !hadUsesWhatBin) {
+    \\    if (!hadNoDeps) lines.push("+ no-deps@" + __home_registry_version("no-deps", deps["no-deps"]));
     \\    lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]), "");
     \\  }
     \\  else if (hasUsesWhatBin && hasWhatBin) {
@@ -5787,7 +5826,7 @@ const harness_prelude =
     \\    lines.push("");
     \\  }
     \\  const count = Math.max(result.installed, Object.keys(deps).length > 0 ? 1 : 0);
-    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow || (hasUsesWhatBin && !hasWhatBin) || (hasElectron && hasUsesWhatBin)) ? (hasElectron && hasUsesWhatBin ? 3 : 2) : ((hasUsesWhatBin && hasWhatBin) ? 3 : (stressDeps.length > 0 ? stressDeps.length : count)));
+    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasNoDeps && hasUsesWhatBin && !hadUsesWhatBin) ? (hadNoDeps ? 1 : 3) : ((hasBindingGyp || hasUsesWhatBinSlow || (hasUsesWhatBin && !hasWhatBin) || (hasElectron && hasUsesWhatBin)) ? (hasElectron && hasUsesWhatBin ? 3 : 2) : ((hasUsesWhatBin && hasWhatBin) ? 3 : (stressDeps.length > 0 ? stressDeps.length : count))));
     \\  lines.push(String(displayCount) + " package" + (displayCount === 1 ? "" : "s") + " installed");
     \\  if (hasFileEsbuild && fileEsbuildTrusted) lines.push("");
     \\  if (!ignoreScripts && Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall") && trusted.includes("lifecycle-failing-postinstall")) {
@@ -47112,6 +47151,80 @@ test "bootstrap runner models missing package trust commands" {
         \\  expect(err).toContain("bun pm trust");
         \\  expect(err).toContain("0 scripts ran");
         \\  expect(err).toContain("uses-wha");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models lifecycle trust add delete add again" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("trusted lifecycle package can be removed and reported untrusted when added again", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await verdaccio.writeBunfig(packageDir, { saveTextLockfile: false, linker: "hoisted" });
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: { "no-deps": "1.0.0", "uses-what-bin": "1.0.0" },
+        \\  }));
+        \\
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  let out = await proc.stdout.text();
+        \\  expect(out).toContain("+ no-deps@1.0.0");
+        \\  expect(out).toContain("+ uses-what-bin@1.0.0");
+        \\  expect(out).toContain("3 packages installed");
+        \\  expect(out).toContain("Blocked 1 postinstall");
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeFalse();
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "pm", "trust", "uses-what-bin"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stdout.text()).toContain("1 script ran across 1 package");
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeTrue();
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "rm", "uses-what-bin"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stdout.text()).toContain("1 package removed");
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: { "no-deps": "1.0.0", "uses-what-bin": "1.0.0" },
+        \\  }));
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "i"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  out = await proc.stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]$/m, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    expect.stringContaining("+ uses-what-bin@1.0.0"),
+        \\    "",
+        \\    "1 package installed",
+        \\    "",
+        \\    "Blocked 1 postinstall. Run `bun pm untrusted` for details.",
+        \\    "",
+        \\  ]);
+        \\
+        \\  proc = spawn({ cmd: [bunExe(), "pm", "untrusted"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stdout.text()).toContain("./node_modules/uses-what-bin @1.0.0");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
