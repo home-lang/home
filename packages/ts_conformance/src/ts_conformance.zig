@@ -3929,6 +3929,11 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "importTypeAssertionDeprecation",
         "constructorWithIncompleteTypeAnnotation",
         "extendArray",
+        "classImplementsMethodWIthTupleArgs",
+        "circularAccessorAnnotations",
+        "parseUnaryExpressionNoTypeAssertionInJsx2",
+        "unusedVariablesinForLoop",
+        "undeclaredModuleError",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
