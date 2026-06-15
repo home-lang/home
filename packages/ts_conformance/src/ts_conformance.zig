@@ -4026,6 +4026,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "emitClassExpressionInDeclarationFile2",
         "parseJsxElementInUnaryExpressionNoCrash1",
         "jsxElementTypeLiteralWithGeneric",
+        "jsxNamespaceElementChildrenAttributeIgnoredWhenReactJsx",
+        "jsFileCompilationTypeArgumentSyntaxOfCall",
+        "superCallWithMissingBaseClass",
+        "jsFileClassPropertyType3",
+        "ClassDeclaration26",
+        "controlFlowForCatchAndFinally",
+        "jsFileCompilationLetDeclarationOrder2",
+        "contextualTypesNegatedTypeLikeConstraintInGenericMappedType2",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
