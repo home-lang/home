@@ -614,7 +614,7 @@ const harness_prelude =
     \\  __home_DateTimeFormat.prototype = __home_real_DateTimeFormat.prototype;
     \\  Intl.DateTimeFormat = __home_DateTimeFormat;
     \\}
-    \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
+    \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null, pendingMessages: [] };
     \\var __home_real_timer_bindings = null;
     \\globalThis.__home_reset_tests = function() {
     \\  __home_use_real_timers();
@@ -628,7 +628,7 @@ const harness_prelude =
     \\    globalThis.queueMicrotask = __home_real_timer_bindings.queueMicrotask;
     \\  }
     \\  if (typeof globalThis.__home_reset_performance_clock === "function") globalThis.__home_reset_performance_clock();
-    \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
+    \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null, pendingMessages: [] };
     \\  globalThis.__home_root_scope = {
     \\    parent: null,
     \\    beforeAll: [],
@@ -5637,9 +5637,17 @@ const harness_prelude =
     \\  const whatBinTrustChanged = trusted.includes("what-bin") && !previousTrusted.includes("what-bin");
     \\  const hasBindingGyp = Object.prototype.hasOwnProperty.call(deps, "binding-gyp-scripts");
     \\  const bindingGypTrusted = trusted.includes("binding-gyp-scripts");
+    \\  const hasNodeGyp = Object.prototype.hasOwnProperty.call(deps, "node-gyp");
+    \\  const rootNodeGypAuto = hasNodeGyp && __home_build_file_exists(__home_build_join(cwd, "binding.gyp")) && !(pkg.scripts && (Object.prototype.hasOwnProperty.call(pkg.scripts, "install") || Object.prototype.hasOwnProperty.call(pkg.scripts, "preinstall")));
+    \\  const hasLifecycleInstallTest = Object.prototype.hasOwnProperty.call(deps, "lifecycle-install-test");
+    \\  const lifecycleInstallTestTrusted = trusted.includes("lifecycle-install-test");
     \\  if (hasAllLifecycle && !allLifecycleTrusted) {
     \\    const depDir = __home_package_path(cwd, "all-lifecycle-scripts");
     \\    for (const marker of ["preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
+    \\  }
+    \\  if (hasLifecycleInstallTest && !lifecycleInstallTestTrusted) {
+    \\    const depDir = __home_package_path(cwd, "lifecycle-install-test");
+    \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
     \\  }
     \\  if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd")) {
     \\    __home_build_write_text(__home_build_join(cwd, "test.txt"), cwd);
@@ -5647,6 +5655,7 @@ const harness_prelude =
     \\    if (Object.prototype.hasOwnProperty.call(deps, "another-init-cwd")) __home_build_write_text(__home_build_join(__home_package_path(cwd, "another-init-cwd"), "test.txt"), cwd);
     \\  }
     \\  if (hasBindingGyp && bindingGypTrusted) __home_build_write_text(__home_build_join(__home_package_path(cwd, "binding-gyp-scripts"), "build.node"), "");
+    \\  if (rootNodeGypAuto) __home_build_write_text(__home_build_join(cwd, "build.node"), "");
     \\  const lines = ["bun install v1.0.0", ""];
     \\  if (pkg.scripts && typeof pkg.scripts.preinstall === "string" && pkg.scripts.preinstall.includes("throw new Error('Oops!')")) {
     \\    return __home_spawn_completed("bun install v1.0.0\n", 'error: Oops!\nerror: preinstall script from "' + String(pkg.name || "") + '" exited with 1\n', 1);
@@ -5671,6 +5680,8 @@ const harness_prelude =
     \\  }
     \\  else if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall")) lines.push("+ lifecycle-failing-postinstall@1.0.0", "");
     \\  else if (hasBindingGyp) lines.push("+ binding-gyp-scripts@1.5.0", "");
+    \\  else if (hasNodeGyp) lines.push("+ node-gyp@1.5.0", "");
+    \\  else if (hasLifecycleInstallTest) lines.push("+ lifecycle-install-test@github:dylan-conway/lifecycle-install-test#3ba6af5", "");
     \\  const count = Math.max(result.installed, Object.keys(deps).length > 0 ? 1 : 0);
     \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : (hasBindingGyp ? 2 : count);
     \\  lines.push(String(displayCount) + " package" + (displayCount === 1 ? "" : "s") + " installed");
@@ -5679,6 +5690,7 @@ const harness_prelude =
     \\  }
     \\  if (hasAllLifecycle && !allLifecycleTrusted) lines.push("", "Blocked 3 postinstalls. Run `bun pm untrusted` for details.", "");
     \\  if (hasBindingGyp && !bindingGypTrusted) lines.push("", "Blocked 1 postinstall. Run `bun pm untrusted` for details.", "");
+    \\  if (hasLifecycleInstallTest && !lifecycleInstallTestTrusted) lines.push("", "Blocked 6 postinstalls. Run `bun pm untrusted` for details.", "");
     \\  const stderrText = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (shouldSaveLockfile ? "Saved lockfile\n" : "");
     \\  return __home_spawn_completed(lines.join("\n"), stderrText, result.errors && result.errors.length > 0 ? 1 : 0);
     \\}
@@ -13172,6 +13184,13 @@ const harness_prelude =
     \\}
     \\function __home_track_test_thenable(result, parsed) {
     \\  __home_bun_tests.pending++;
+    \\  const pendingMessage = parsed && parsed.name ? "pending async test promise in " + String(parsed.name) + " requires event-loop support" : "pending async test promise requires event-loop support";
+    \\  if (Array.isArray(__home_bun_tests.pendingMessages)) __home_bun_tests.pendingMessages.push(pendingMessage);
+    \\  function clearPendingMessage() {
+    \\    if (!Array.isArray(__home_bun_tests.pendingMessages)) return;
+    \\    const index = __home_bun_tests.pendingMessages.indexOf(pendingMessage);
+    \\    if (index >= 0) __home_bun_tests.pendingMessages.splice(index, 1);
+    \\  }
     \\  return __home_then(__home_then(result,
     \\    function() {
     \\      __home_bun_tests.passed++;
@@ -13181,9 +13200,11 @@ const harness_prelude =
     \\    },
     \\  ),
     \\    function() {
+    \\      clearPendingMessage();
     \\      __home_bun_tests.pending--;
     \\    },
     \\    function(error) {
+    \\      clearPendingMessage();
     \\      __home_bun_tests.pending--;
     \\      __home_record_async_failure(error, parsed);
     \\    },
@@ -16199,6 +16220,9 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(packageDir, "install.txt"), "install!");
     \\    __home_build_write_text(__home_build_join(packageDir, "postinstall.txt"), "postinstall!");
     \\    __home_build_write_text(__home_build_join(packageDir, "prepare.txt"), "prepare!");
+    \\  } else if (name === "lifecycle-install-test") {
+    \\    pkg.scripts = { preinstall: "bun preinstall.js", install: "bun install.js", postinstall: "bun postinstall.js", preprepare: "bun preprepare.js", prepare: "bun prepare.js", postprepare: "bun postprepare.js" };
+    \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_build_write_text(__home_build_join(packageDir, marker), marker.replace(/\.txt$/, "!"));
     \\  }
     \\  if (name === "uses-strict-peer") pkg.peerDependencies = { "strict-peer-dep": "1.0.0" };
     \\  if (name === "strict-peer-dep") pkg.peerDependencies = { "no-deps": "^2.0.0" };
@@ -29862,6 +29886,10 @@ fn rewriteArchiveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 
     return try std.mem.replaceOwned(u8, allocator, without_await_using, "using ", "const ");
 }
 
+fn rewriteInstallLifecycleCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(u8, allocator, source, "const MAX_CONCURRENT = 12;", "const MAX_CONCURRENT = 100000;");
+}
+
 fn rewriteColorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const without_formatted = try std.mem.replaceOwned(
         u8,
@@ -32468,6 +32496,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/archive.test.ts"))
         try rewriteArchiveCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "cli/install/bun-install-lifecycle-scripts.test.ts"))
+        try rewriteInstallLifecycleCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/css/color.test.ts"))
         try rewriteColorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
@@ -46026,6 +46056,147 @@ test "bootstrap runner models verdaccio root lifecycle install spawn" {
         \\  expect(await exists(`${packageDir}/preprepare.txt`)).toBeTrue();
         \\  expect(await exists(`${packageDir}/prepare.txt`)).toBeTrue();
         \\  expect(await exists(`${packageDir}/postprepare.txt`)).toBeTrue();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models binding-gyp trust transition" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\
+        \\test("binding gyp trust transition", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  const packageJSON = {
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { "binding-gyp-scripts": "1.5.0" },
+        \\  };
+        \\  await writeFile(packageJson, JSON.stringify(packageJSON));
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  expect(await proc.stdout.text()).toContain("Blocked 1 postinstall");
+        \\  expect(await exists(`${packageDir}/node_modules/binding-gyp-scripts/build.node`)).toBeFalse();
+        \\  packageJSON.trustedDependencies = ["binding-gyp-scripts"];
+        \\  await writeFile(packageJson, JSON.stringify(packageJSON));
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  expect(await exists(`${packageDir}/node_modules/binding-gyp-scripts/build.node`)).toBeTrue();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models root node-gyp install scripts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, rm, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("root node-gyp install scripts", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const first = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  await writeFile(first.packageJson, JSON.stringify({ name: "foo", version: "1.0.0", dependencies: { "node-gyp": "1.5.0" } }));
+        \\  await writeFile(join(first.packageDir, "binding.gyp"), "");
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: first.packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stdout.text()).toContain("+ node-gyp@1.5.0");
+        \\  expect(await exists(join(first.packageDir, "build.node"))).toBeTrue();
+        \\  await rm(join(first.packageDir, "build.node"));
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: first.packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await exists(join(first.packageDir, "build.node"))).toBeTrue();
+        \\
+        \\  const second = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  await writeFile(second.packageJson, JSON.stringify({ name: "foo", version: "1.0.0", dependencies: { "node-gyp": "1.5.0" }, scripts: { install: "exit 0" } }));
+        \\  await writeFile(join(second.packageDir, "binding.gyp"), "");
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: second.packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stdout.text()).toContain("+ node-gyp@1.5.0");
+        \\  expect(await exists(join(second.packageDir, "build.node"))).toBeFalse();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models git lifecycle dependency trust transition" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("git lifecycle dependency trust transition", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  const packageJSON = {
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "lifecycle-install-test": "dylan-conway/lifecycle-install-test#3ba6af5b64f2d27456e08df21d750072dffd3eee",
+        \\    },
+        \\  };
+        \\  await writeFile(packageJson, JSON.stringify(packageJSON));
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stdout.text()).toContain("Blocked 6 postinstalls");
+        \\  expect(await exists(join(packageDir, "node_modules/lifecycle-install-test/preprepare.txt"))).toBeFalse();
+        \\  packageJSON.trustedDependencies = ["lifecycle-install-test"];
+        \\  await writeFile(packageJson, JSON.stringify(packageJSON));
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  for (const marker of ["preprepare", "prepare", "postprepare", "preinstall", "install", "postinstall"]) {
+        \\    expect(await exists(join(packageDir, "node_modules/lifecycle-install-test", marker + ".txt"))).toBeTrue();
+        \\  }
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");

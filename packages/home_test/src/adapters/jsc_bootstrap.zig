@@ -415,7 +415,7 @@ pub const Runtime = struct {
             };
         }
         if (counters.pending != 0) {
-            const message = readString(self, allocator, "__home_bun_tests.firstFailure || 'pending async test promise requires event-loop support'") catch |err| {
+            const message = readString(self, allocator, "__home_bun_tests.firstFailure || (__home_bun_tests.pendingMessages && __home_bun_tests.pendingMessages.length ? __home_bun_tests.pendingMessages.join('; ') : 'pending async test promise requires event-loop support')") catch |err| {
                 return runner.FileRun.failBorrowed(spec.path, @errorName(err));
             };
             defer allocator.free(message);
