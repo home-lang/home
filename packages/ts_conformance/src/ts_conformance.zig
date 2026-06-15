@@ -3865,6 +3865,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "isolatedModulesImportConstEnum",
         "jsDocDeclarationEmitDoesNotUseNodeModulesPathWithoutError",
         "declarationEmitExpressionInExtends",
+        "indexAt",
+        "mergeSymbolReexportInterface",
+        "declarationEmitPathMappingMonorepo2",
+        "controlFlowForIndexSignatures",
+        "typeParameterArgumentEquivalence3",
+        "extendFromAny",
+        "assignToObjectTypeWithPrototypeProperty",
+        "jsFileCompilationInterfaceSyntax",
+        "emitMemberAccessExpression",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
