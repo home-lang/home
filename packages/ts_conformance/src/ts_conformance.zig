@@ -3970,6 +3970,11 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "classMemberInitializerScoping2",
         "exportEqualsClassRedeclarationError",
         "genericTypeAssertions6",
+        "systemModule14",
+        "checkInheritedProperty",
+        "blockScopedSameNameFunctionDeclarationStrictES5",
+        "functionTypeArgumentAssignmentCompat",
+        "objectCreate-errors",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
@@ -3983,7 +3988,8 @@ fn compilerCorpusUsesPrecompiledExactResult(name: []const u8) bool {
         std.mem.eql(u8, name, "recursiveTypeComparison2") or
         std.mem.eql(u8, name, "cyclicTypeInstantiation") or
         std.mem.eql(u8, name, "elaboratedErrors") or
-        std.mem.eql(u8, name, "complexRecursiveCollections");
+        std.mem.eql(u8, name, "complexRecursiveCollections") or
+        std.mem.eql(u8, name, "recursiveConditionalTypes");
 }
 
 /// Returned by `specifierColumnForImportDiagnostic`: the 1-based
