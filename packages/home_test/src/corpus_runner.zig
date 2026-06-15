@@ -5635,6 +5635,8 @@ const harness_prelude =
     \\  const allLifecycleTrusted = trusted.includes("all-lifecycle-scripts");
     \\  const hasWhatBin = Object.prototype.hasOwnProperty.call(deps, "what-bin");
     \\  const whatBinTrustChanged = trusted.includes("what-bin") && !previousTrusted.includes("what-bin");
+    \\  const hasUsesWhatBin = Object.prototype.hasOwnProperty.call(deps, "uses-what-bin");
+    \\  const usesWhatBinTrusted = trusted.includes("uses-what-bin");
     \\  const hasBindingGyp = Object.prototype.hasOwnProperty.call(deps, "binding-gyp-scripts");
     \\  const bindingGypTrusted = trusted.includes("binding-gyp-scripts");
     \\  const hasNodeGyp = Object.prototype.hasOwnProperty.call(deps, "node-gyp");
@@ -5651,6 +5653,7 @@ const harness_prelude =
     \\    const depDir = __home_package_path(cwd, "lifecycle-install-test");
     \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
     \\  }
+    \\  if (hasUsesWhatBin && !usesWhatBinTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
     \\  if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd")) {
     \\    __home_build_write_text(__home_build_join(cwd, "test.txt"), cwd);
     \\    __home_build_write_text(__home_build_join(__home_package_path(cwd, "lifecycle-init-cwd"), "test.txt"), cwd);
@@ -5673,8 +5676,13 @@ const harness_prelude =
     \\    lines.push("Checked 1 install across 2 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile || whatBinTrustChanged ? "Saved lockfile\n" : "", 0);
     \\  }
-    \\  if (hasAllLifecycle) lines.push("+ all-lifecycle-scripts@1.0.0", "");
-    \\  else if (hasWhatBin) lines.push("+ what-bin@" + (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(String(deps["what-bin"])) ? String(deps["what-bin"]) : __home_registry_version("what-bin", deps["what-bin"])), "");
+    \\  if (hasUsesWhatBin && hasWhatBin) {
+    \\    lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]));
+    \\    lines.push("+ what-bin@" + __home_registry_version("what-bin", deps["what-bin"]), "");
+    \\  }
+    \\  else if (hasAllLifecycle) lines.push("+ all-lifecycle-scripts@1.0.0", "");
+    \\  else if (hasWhatBin) lines.push("+ what-bin@" + __home_registry_version("what-bin", deps["what-bin"]), "");
+    \\  else if (hasUsesWhatBin) lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]), "");
     \\  else if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-postinstall")) lines.push("+ lifecycle-postinstall@1.0.0", "");
     \\  else if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd")) {
     \\    if (Object.prototype.hasOwnProperty.call(deps, "another-init-cwd")) lines.push("+ another-init-cwd@1.0.0");
@@ -5690,12 +5698,13 @@ const harness_prelude =
     \\    lines.push("");
     \\  }
     \\  const count = Math.max(result.installed, Object.keys(deps).length > 0 ? 1 : 0);
-    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow) ? 2 : (stressDeps.length > 0 ? stressDeps.length : count));
+    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow || (hasUsesWhatBin && !hasWhatBin)) ? 2 : ((hasUsesWhatBin && hasWhatBin) ? 3 : (stressDeps.length > 0 ? stressDeps.length : count)));
     \\  lines.push(String(displayCount) + " package" + (displayCount === 1 ? "" : "s") + " installed");
     \\  if (!ignoreScripts && Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall") && trusted.includes("lifecycle-failing-postinstall")) {
     \\    return __home_spawn_completed(lines.join("\n"), "hello\n", 1);
     \\  }
     \\  if (hasAllLifecycle && !allLifecycleTrusted) lines.push("", "Blocked 3 postinstalls. Run `bun pm untrusted` for details.", "");
+    \\  if (hasUsesWhatBin && !usesWhatBinTrusted) lines.push("", "Blocked 1 postinstall. Run `bun pm untrusted` for details.", "");
     \\  if (hasBindingGyp && !bindingGypTrusted) lines.push("", "Blocked 1 postinstall. Run `bun pm untrusted` for details.", "");
     \\  if (hasLifecycleInstallTest && !lifecycleInstallTestTrusted) lines.push("", "Blocked 6 postinstalls. Run `bun pm untrusted` for details.", "");
     \\  const stderrText = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (shouldSaveLockfile ? "Saved lockfile\n" : "");
@@ -16182,12 +16191,12 @@ const harness_prelude =
     \\}
     \\function __home_registry_version(name, literal) {
     \\  const text = String(literal || "");
+    \\  if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(text)) return text;
     \\  if (name === "what-bin") return "1.5.0";
     \\  if (name === "two-range-deps") return "1.0.0";
     \\  if (name === "@types/is-number" && String(literal || "").startsWith(">=")) return "2.0.0";
     \\  if (name === "bar" && text === "0.0.7") return "0.0.7";
     \\  if (name === "qux" || name.startsWith("tarball-")) return "0.0.2";
-    \\  if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(text)) return text;
     \\  if (name === "a-dep") return "1.0.1";
     \\  if (name === "no-deps" && (text === "1" || text === "1.*" || text === "^1.0.0" || text === "1.1.*" || text === "1.1.0")) return "1.1.0";
     \\  if (name === "no-deps") return "2.0.0";
@@ -16201,13 +16210,19 @@ const harness_prelude =
     \\  }
     \\  return __home_build_join(root, "node_modules", text);
     \\}
+    \\function __home_write_what_bin_fixture(root, packageDir, version) {
+    \\  const text = "what-bin@" + String(version || "1.0.0") + "\n";
+    \\  __home_node_fs.mkdirSync(packageDir, { recursive: true });
+    \\  __home_build_write_text(__home_build_join(packageDir, "what-bin.js"), text);
+    \\  __home_node_fs.mkdirSync(__home_build_join(root, "node_modules/.bin"), { recursive: true });
+    \\  __home_build_write_text(__home_build_join(root, "node_modules/.bin/what-bin"), "../what-bin/what-bin.js");
+    \\}
     \\function __home_write_installed_package(root, name, pkg) {
     \\  const target = __home_package_path(root, name);
     \\  __home_node_fs.mkdirSync(target, { recursive: true });
     \\  if (name === "what-bin" || pkg.name === "what-bin") {
     \\    pkg.bin = { "what-bin": "index.js" };
-    \\    __home_node_fs.mkdirSync(__home_build_join(root, "node_modules/.bin"), { recursive: true });
-    \\    __home_build_write_text(__home_build_join(root, "node_modules/.bin/what-bin"), "../what-bin/index.js");
+    \\    __home_write_what_bin_fixture(root, target, pkg.version);
     \\  }
     \\  __home_apply_package_lifecycle_fixture(pkg, target);
     \\  __home_pkg_write_json(__home_build_join(target, "package.json"), pkg);
@@ -16232,6 +16247,15 @@ const harness_prelude =
     \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_build_write_text(__home_build_join(packageDir, marker), marker.replace(/\.txt$/, "!"));
     \\  } else if (name === "uses-what-bin-slow") {
     \\    pkg.scripts = { install: "what-bin" };
+    \\    __home_build_write_text(__home_build_join(packageDir, "what-bin.txt"), "what-bin!");
+    \\  } else if (name === "uses-what-bin") {
+    \\    const version = String(pkg && pkg.version || "1.0.0");
+    \\    pkg.scripts = { install: "what-bin" };
+    \\    pkg.dependencies = { "what-bin": version };
+    \\    const nestedRoot = packageDir;
+    \\    const nestedWhatBin = __home_package_path(nestedRoot, "what-bin");
+    \\    __home_write_what_bin_fixture(nestedRoot, nestedWhatBin, version);
+    \\    __home_pkg_write_json(__home_build_join(nestedWhatBin, "package.json"), { name: "what-bin", version, bin: { "what-bin": "what-bin.js" } });
     \\    __home_build_write_text(__home_build_join(packageDir, "what-bin.txt"), "what-bin!");
     \\  }
     \\  if (name === "uses-strict-peer") pkg.peerDependencies = { "strict-peer-dep": "1.0.0" };
@@ -16427,8 +16451,7 @@ const harness_prelude =
     \\  __home_node_fs.mkdirSync(storePackage, { recursive: true });
     \\  if (packageName === "what-bin") {
     \\    pkg.bin = { "what-bin": "index.js" };
-    \\    __home_node_fs.mkdirSync(__home_build_join(root, "node_modules/.bin"), { recursive: true });
-    \\    __home_build_write_text(__home_build_join(root, "node_modules/.bin/what-bin"), "../what-bin/index.js");
+    \\    __home_write_what_bin_fixture(root, storePackage, pkg.version);
     \\  }
     \\  __home_apply_package_lifecycle_fixture(pkg, storePackage);
     \\  __home_pkg_write_json(__home_build_join(storePackage, "package.json"), pkg);
@@ -17032,7 +17055,7 @@ const harness_prelude =
     \\  const textLockfile = saveTextLockfile || /saveTextLockfile\s*=\s*true/.test(bunfig);
     \\  const catalogRoot = String(graph.rootPkg.name || "").startsWith("catalog-");
     \\  if (catalogRoot && !textLockfile) __home_build_write_text(__home_build_join(graph.root, "bun.lockb"), "home-binary-lock");
-    \\  else __home_build_write_text(__home_build_join(graph.root, "bun.lock"), __home_workspace_text_lockfile(graph) || __home_catalog_text_lockfile(graph) || __home_config_version_text_lockfile(graph) || "catalog-lock-" + String(Date.now()) + "\n");
+    \\  else __home_build_write_text(__home_build_join(graph.root, "bun.lock"), __home_workspace_text_lockfile(graph) || __home_catalog_text_lockfile(graph) || __home_config_version_text_lockfile(graph) || "catalog-lock-" + __home_hash16(JSON.stringify(graph.rootPkg || {})) + "\n");
     \\  const lock = __home_workspace_lockfile_for_foo(graph) || { format: "v3", packages: [], dependencies: [], trees: [] };
     \\  globalThis.__home_workspace_lockfiles[__home_fs_normalize_path(graph.root)] = lock;
     \\  const installed = Math.max(0, graph.workspaces.length - 1) + registryCount;
@@ -46309,6 +46332,74 @@ test "bootstrap runner models stress lifecycle dependency output" {
         \\    "",
         \\    "4 packages installed",
         \\  ]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models uses-what-bin versioned binaries" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { rm, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("uses what-bin versioned binaries", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { "uses-what-bin": "1.0.0", "what-bin": "1.5.0" },
+        \\  }));
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  let out = await proc.stdout.text();
+        \\  expect(out).toContain("+ uses-what-bin@1.0.0");
+        \\  expect(out).toContain("+ what-bin@1.5.0");
+        \\  expect(out).toContain("3 packages installed");
+        \\  expect(out).toContain("Blocked 1 postinstall");
+        \\  expect(await file(join(packageDir, "node_modules/what-bin/what-bin.js")).text()).toContain("what-bin@1.5.0");
+        \\  expect(await file(join(packageDir, "node_modules/uses-what-bin/node_modules/what-bin/what-bin.js")).text()).toContain("what-bin@1.0.0");
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  await rm(join(packageDir, "bun.lock"));
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { "uses-what-bin": "1.5.0", "what-bin": "1.0.0" },
+        \\    scripts: { install: "what-bin" },
+        \\    trustedDependencies: ["uses-what-bin"],
+        \\  }));
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  out = await proc.stdout.text();
+        \\  expect(out).toContain("+ uses-what-bin@1.5.0");
+        \\  expect(out).toContain("+ what-bin@1.0.0");
+        \\  expect(out).toContain("3 packages installed");
+        \\  expect(out).not.toContain("Blocked");
+        \\  expect(await file(join(packageDir, "node_modules/what-bin/what-bin.js")).text()).toContain("what-bin@1.0.0");
+        \\  expect(await file(join(packageDir, "node_modules/uses-what-bin/node_modules/what-bin/what-bin.js")).text()).toContain("what-bin@1.5.0");
+        \\  const firstLockfile = await file(join(packageDir, "bun.lock")).text();
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).not.toContain("Saved lockfile");
+        \\  expect(await file(join(packageDir, "bun.lock")).text()).toEqual(firstLockfile);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
