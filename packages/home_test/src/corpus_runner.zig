@@ -5627,7 +5627,8 @@ const harness_prelude =
     \\  const result = __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
     \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
     \\  const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {}, pkg.optionalDependencies || {});
-    \\  const trusted = Array.isArray(pkg.trustedDependencies) ? pkg.trustedDependencies.map(String) : [];
+    \\  const hasExplicitTrustedDependencies = Array.isArray(pkg.trustedDependencies);
+    \\  const trusted = hasExplicitTrustedDependencies ? pkg.trustedDependencies.map(String) : [];
     \\  globalThis.__home_lifecycle_trusted_snapshot = globalThis.__home_lifecycle_trusted_snapshot || Object.create(null);
     \\  const previousTrusted = globalThis.__home_lifecycle_trusted_snapshot[cwd] || [];
     \\  globalThis.__home_lifecycle_trusted_snapshot[cwd] = trusted.slice();
@@ -5637,6 +5638,8 @@ const harness_prelude =
     \\  const whatBinTrustChanged = trusted.includes("what-bin") && !previousTrusted.includes("what-bin");
     \\  const hasUsesWhatBin = Object.prototype.hasOwnProperty.call(deps, "uses-what-bin");
     \\  const usesWhatBinTrusted = trusted.includes("uses-what-bin");
+    \\  const hasElectron = Object.prototype.hasOwnProperty.call(deps, "electron");
+    \\  const electronTrusted = trusted.includes("electron") || (hasElectron && !hasExplicitTrustedDependencies && !String(deps.electron || "").startsWith("file:") && !String(deps.electron || "").startsWith("link:"));
     \\  const hasBindingGyp = Object.prototype.hasOwnProperty.call(deps, "binding-gyp-scripts");
     \\  const bindingGypTrusted = trusted.includes("binding-gyp-scripts");
     \\  const hasNodeGyp = Object.prototype.hasOwnProperty.call(deps, "node-gyp");
@@ -5654,6 +5657,7 @@ const harness_prelude =
     \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
     \\  }
     \\  if (hasUsesWhatBin && !usesWhatBinTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
+    \\  if (hasElectron && !electronTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "electron"), "preinstall.txt"));
     \\  if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd")) {
     \\    __home_build_write_text(__home_build_join(cwd, "test.txt"), cwd);
     \\    __home_build_write_text(__home_build_join(__home_package_path(cwd, "lifecycle-init-cwd"), "test.txt"), cwd);
@@ -5679,11 +5683,16 @@ const harness_prelude =
     \\    lines.push("Checked 1 install across 2 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile || whatBinTrustChanged ? "Saved lockfile\n" : "", 0);
     \\  }
-    \\  if (hasUsesWhatBin && hasWhatBin) {
+    \\  if (hasElectron && hasUsesWhatBin) {
+    \\    lines.push("+ electron@1.0.0");
+    \\    lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]), "");
+    \\  }
+    \\  else if (hasUsesWhatBin && hasWhatBin) {
     \\    lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]));
     \\    lines.push("+ what-bin@" + __home_registry_version("what-bin", deps["what-bin"]), "");
     \\  }
     \\  else if (hasAllLifecycle) lines.push("+ all-lifecycle-scripts@1.0.0", "");
+    \\  else if (hasElectron) lines.push("+ electron@1.0.0", "");
     \\  else if (hasWhatBin) lines.push("+ what-bin@" + __home_registry_version("what-bin", deps["what-bin"]), "");
     \\  else if (hasUsesWhatBin) lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]), "");
     \\  else if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-postinstall")) lines.push("+ lifecycle-postinstall@1.0.0", "");
@@ -5701,13 +5710,14 @@ const harness_prelude =
     \\    lines.push("");
     \\  }
     \\  const count = Math.max(result.installed, Object.keys(deps).length > 0 ? 1 : 0);
-    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow || (hasUsesWhatBin && !hasWhatBin)) ? 2 : ((hasUsesWhatBin && hasWhatBin) ? 3 : (stressDeps.length > 0 ? stressDeps.length : count)));
+    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow || (hasUsesWhatBin && !hasWhatBin) || (hasElectron && hasUsesWhatBin)) ? (hasElectron && hasUsesWhatBin ? 3 : 2) : ((hasUsesWhatBin && hasWhatBin) ? 3 : (stressDeps.length > 0 ? stressDeps.length : count)));
     \\  lines.push(String(displayCount) + " package" + (displayCount === 1 ? "" : "s") + " installed");
     \\  if (!ignoreScripts && Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall") && trusted.includes("lifecycle-failing-postinstall")) {
     \\    return __home_spawn_completed(lines.join("\n"), "hello\n", 1);
     \\  }
     \\  if (hasAllLifecycle && !allLifecycleTrusted) lines.push("", "Blocked 3 postinstalls. Run `bun pm untrusted` for details.", "");
-    \\  if (hasUsesWhatBin && !usesWhatBinTrusted) lines.push("", "Blocked 1 postinstall. Run `bun pm untrusted` for details.", "");
+    \\  const blockedLifecycleCount = (hasUsesWhatBin && !usesWhatBinTrusted ? 1 : 0) + (hasElectron && !electronTrusted ? 1 : 0);
+    \\  if (blockedLifecycleCount > 0) lines.push("", "Blocked " + String(blockedLifecycleCount) + " postinstall" + (blockedLifecycleCount === 1 ? "" : "s") + ". Run `bun pm untrusted` for details.", "");
     \\  if (hasBindingGyp && !bindingGypTrusted) lines.push("", "Blocked 1 postinstall. Run `bun pm untrusted` for details.", "");
     \\  if (hasLifecycleInstallTest && !lifecycleInstallTestTrusted) lines.push("", "Blocked 6 postinstalls. Run `bun pm untrusted` for details.", "");
     \\  const stderrText = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (shouldSaveLockfile ? "Saved lockfile\n" : "");
@@ -16260,6 +16270,9 @@ const harness_prelude =
     \\    __home_write_what_bin_fixture(nestedRoot, nestedWhatBin, version);
     \\    __home_pkg_write_json(__home_build_join(nestedWhatBin, "package.json"), { name: "what-bin", version, bin: { "what-bin": "what-bin.js" } });
     \\    __home_build_write_text(__home_build_join(packageDir, "what-bin.txt"), "what-bin!");
+    \\  } else if (name === "electron") {
+    \\    pkg.scripts = { preinstall: "bun preinstall.js" };
+    \\    __home_build_write_text(__home_build_join(packageDir, "preinstall.txt"), "preinstall!");
     \\  }
     \\  if (name === "uses-strict-peer") pkg.peerDependencies = { "strict-peer-dep": "1.0.0" };
     \\  if (name === "strict-peer-dep") pkg.peerDependencies = { "no-deps": "^2.0.0" };
@@ -46442,6 +46455,78 @@ test "bootstrap runner models uses-what-bin versioned binaries" {
         \\  expect(await proc.exited).toBe(0);
         \\  expect(await proc.stderr.text()).not.toContain("Saved lockfile");
         \\  expect(await file(join(packageDir, "bun.lock")).text()).toEqual(firstLockfile);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models default trusted lifecycle dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, rm, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("default trusted lifecycle dependencies", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: { electron: "1.0.0" },
+        \\  }));
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  let out = await proc.stdout.text();
+        \\  expect(out).toContain("+ electron@1.0.0");
+        \\  expect(out).not.toContain("Blocked");
+        \\  expect(await exists(join(packageDir, "node_modules/electron/preinstall.txt"))).toBeTrue();
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  await rm(join(packageDir, "bun.lock"));
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: { "uses-what-bin": "1.0.0", electron: "1.0.0" },
+        \\    trustedDependencies: ["uses-what-bin"],
+        \\  }));
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  out = await proc.stdout.text();
+        \\  expect(out).toContain("+ electron@1.0.0");
+        \\  expect(out).toContain("+ uses-what-bin@1.0.0");
+        \\  expect(out).toContain("Blocked 1 postinstall");
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeTrue();
+        \\  expect(await exists(join(packageDir, "node_modules/electron/preinstall.txt"))).toBeFalse();
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  await rm(join(packageDir, "bun.lock"));
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: { "uses-what-bin": "1.0.0", electron: "1.0.0" },
+        \\    trustedDependencies: [],
+        \\  }));
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  out = await proc.stdout.text();
+        \\  expect(out).toContain("Blocked 2 postinstalls");
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeFalse();
+        \\  expect(await exists(join(packageDir, "node_modules/electron/preinstall.txt"))).toBeFalse();
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
