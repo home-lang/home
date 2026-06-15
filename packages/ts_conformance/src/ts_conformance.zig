@@ -4007,6 +4007,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "objectGroupBy",
         "genericIndexTypeHasSensibleErrorMessage",
         "inferenceContextualReturnTypeUnion4",
+        "protoAssignment",
+        "declarationEmitSymlinkPaths",
+        "regularExpressionGroupNameSuggestions",
+        "augmentedTypesModules3b",
+        "importHelpersWithLocalCollisions",
+        "allowSyntheticDefaultImports2",
+        "moduleImport",
+        "moduleResolution_explicitNodeModulesImport_implicitAny",
+        "genericConstructorFunction1",
+        "genericWithNoConstraintComparableWithCurlyCurly",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
