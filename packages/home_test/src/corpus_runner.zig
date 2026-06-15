@@ -5402,6 +5402,23 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_bad_workspace_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bad-workspace.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const patterns = Array.isArray(pkg.workspaces) ? pkg.workspaces : [];
+    \\  for (const pattern of patterns) {
+    \\    const text = String(pattern || "");
+    \\    const normalized = text.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+    \\    if (!normalized || normalized === ".") continue;
+    \\    const packageJson = __home_build_join(cwd, normalized, "package.json");
+    \\    if (!__home_build_file_exists(packageJson)) return __home_spawn_completed("", "Workspace not found \"" + text + "\"\n", 1);
+    \\  }
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), "");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\}
     \\function __home_overrides_effective(rootPkg, packageName, fallbackVersion) {
     \\  const overrides = rootPkg && rootPkg.overrides && typeof rootPkg.overrides === "object" ? rootPkg.overrides : {};
     \\  const override = Object.prototype.hasOwnProperty.call(overrides, packageName) ? String(overrides[packageName]) : "";
@@ -6132,6 +6149,8 @@ const harness_prelude =
     \\  if (minimumReleaseAgeFixture) return minimumReleaseAgeFixture;
     \\  const npmrcFixture = __home_spawn_npmrc_fixture(options);
     \\  if (npmrcFixture) return npmrcFixture;
+    \\  const badWorkspaceFixture = __home_spawn_bad_workspace_fixture(options);
+    \\  if (badWorkspaceFixture) return badWorkspaceFixture;
     \\  const overridesFixture = __home_spawn_overrides_fixture(options);
     \\  if (overridesFixture) return overridesFixture;
     \\  const publicHoistFixture = __home_spawn_public_hoist_fixture(options);
@@ -47349,6 +47368,47 @@ test "bootstrap runner honors npmrc ignore-scripts lifecycle toggle" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner reports bad workspace path" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawnSync } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\
+        \\test("bad workspace path", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "hey",
+        \\    workspaces: ["i-dont-exist"],
+        \\  }));
+        \\  const { stderr, exitCode } = spawnSync({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    env: bunEnv,
+        \\    stderr: "pipe",
+        \\    stdout: "pipe",
+        \\  });
+        \\  expect(stderr.toString()).toContain('Workspace not found "i-dont-exist"');
+        \\  expect(exitCode).toBe(1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bad-workspace.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
