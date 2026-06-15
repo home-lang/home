@@ -3857,6 +3857,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "bluebirdStaticThis",
         "importAnImport",
         "pushTypeGetTypeOfAlias",
+        "bigIntWithTargetLessThanES2016",
+        "reactReadonlyHOCAssignabilityReal",
+        "indexedAccessKeyofNestedSimplifiedSubstituteUnwrapped",
+        "genericDefaultsErrors",
+        "spellingSuggestionLeadingUnderscores01",
+        "isolatedModulesImportConstEnum",
+        "jsDocDeclarationEmitDoesNotUseNodeModulesPathWithoutError",
+        "declarationEmitExpressionInExtends",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
