@@ -3934,6 +3934,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "parseUnaryExpressionNoTypeAssertionInJsx2",
         "unusedVariablesinForLoop",
         "undeclaredModuleError",
+        "conflictMarkerTrivia3",
+        "ipromise3",
+        "collisionExportsRequireAndAmbientModule",
+        "errorRecoveryInClassDeclaration",
+        "impliedNodeFormatEmit2",
+        "duplicateIdentifiersAcrossContainerBoundaries",
+        "functionOverloads43",
+        "jsFileFunctionParametersAsOptional2",
+        "classWithDuplicateIdentifier",
+        "decoratorUsedBeforeDeclaration",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
