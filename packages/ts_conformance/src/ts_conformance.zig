@@ -3905,6 +3905,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "sourceMapValidationFor",
         "declarationEmitExpressionInExtends4",
         "relationComplexityError",
+        "parserPrivateIdentifierInArrayAssignment",
+        "functionOverloads",
+        "errorForwardReferenceForwadingConstructor",
+        "classMemberInitializerWithLamdaScoping2",
+        "unusedLocalsInMethod1",
+        "recursiveBaseCheck5",
+        "jsFileCompilationBindStrictModeErrors",
+        "unparenthesizedConstructorTypeInUnionOrIntersection",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
