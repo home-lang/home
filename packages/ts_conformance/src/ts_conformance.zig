@@ -3992,6 +3992,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "augmentExportEquals6",
         "objectLiteralFunctionArgContextualTyping",
         "capturedParametersInInitializers1",
+        "declFileTypeAnnotationVisibilityErrorReturnTypeOfFunction",
+        "noImplicitReturnsWithoutReturnExpression",
+        "importHelpersNoHelpersForAsyncGenerators",
+        "errorSpanForUnclosedJsxTag",
+        "jsxFactoryNotIdentifierOrQualifiedName2",
+        "varianceMeasurement",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
