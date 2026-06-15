@@ -3886,6 +3886,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "prettyContextNotDebugAssertion",
         "mappedTypeNotMistakenlyHomomorphic",
         "enumPropertyAccessBeforeInitalisation",
+        "deprecatedCompilerOptions3",
+        "letDeclarations-useBeforeDefinition2",
+        "controlFlowDestructuringVariablesInTryCatch",
+        "asyncFunctionReturnType",
+        "duplicatePackage_withErrors",
+        "nullableFunctionError",
+        "declarationsWithRecursiveInternalTypesProduceUniqueTypeParams",
+        "objectLiteralsAgainstUnionsOfArrays01",
+        "importNonExportedMember10",
+        "genericIndexedAccessVarianceComparisonResultCorrect",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
