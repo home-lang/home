@@ -3986,6 +3986,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "collisionExportsRequireAndClass",
         "genericCallbackInvokedInsideItsContainingFunction1",
         "jsdocInTypeScript",
+        "intersectionsAndOptionalProperties2",
+        "typeofExternalModules",
+        "pathMappingBasedModuleResolution5_node",
+        "augmentExportEquals6",
+        "objectLiteralFunctionArgContextualTyping",
+        "capturedParametersInInitializers1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
