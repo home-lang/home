@@ -4092,6 +4092,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "typeParametersInStaticMethods",
         "errorsWithInvokablesInUnions01",
         "incompatibleExports1",
+        "baseExpressionTypeParameters",
+        "commonJsUnusedLocals",
+        "moduleAugmentationsImports4",
+        "conditionalEqualityOnLiteralObjects",
+        "conflictingMemberTypesInBases",
+        "objectLiteralEnumPropertyNames",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
