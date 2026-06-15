@@ -3954,6 +3954,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "jsxFactoryAndJsxFragmentFactoryErrorNotIdentifier",
         "functionTypeArgumentArityErrors",
         "prototypes",
+        "specialIntersectionsInMappedTypes",
+        "experimentalDecoratorMetadataUnresolvedTypeObjectInEmit",
+        "declarationEmitNameConflicts3",
+        "collisionArgumentsClassMethod",
+        "templateLiteralEscapeSequence",
+        "staticAsIdentifier",
+        "unusedSingleParameterInMethodDeclaration",
+        "errorForUsingPropertyOfTypeAsType03",
+        "publicGetterProtectedSetterFromThisParameter",
+        "collisionArgumentsInType",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
