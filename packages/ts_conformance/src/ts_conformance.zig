@@ -3944,6 +3944,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "jsFileFunctionParametersAsOptional2",
         "classWithDuplicateIdentifier",
         "decoratorUsedBeforeDeclaration",
+        "inheritedFunctionAssignmentCompatibility",
+        "narrowingTypeofUndefined1",
+        "noCheckNoEmit",
+        "mismatchedGenericArguments1",
+        "evalOrArgumentsInDeclarationFunctions",
+        "webworkerIterable",
+        "duplicateIdentifierInCatchBlock",
+        "jsxFactoryAndJsxFragmentFactoryErrorNotIdentifier",
+        "functionTypeArgumentArityErrors",
+        "prototypes",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
