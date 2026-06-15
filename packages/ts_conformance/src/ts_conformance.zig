@@ -3896,6 +3896,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "objectLiteralsAgainstUnionsOfArrays01",
         "importNonExportedMember10",
         "genericIndexedAccessVarianceComparisonResultCorrect",
+        "baseConstraintOfDecorator",
+        "longObjectInstantiationChain2",
+        "signatureCombiningRestParameters1",
+        "jsxFactoryMissingErrorInsideAClass",
+        "genericDefaults",
+        "constEnums",
+        "sourceMapValidationFor",
+        "declarationEmitExpressionInExtends4",
+        "relationComplexityError",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;

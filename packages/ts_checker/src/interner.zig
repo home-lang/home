@@ -729,8 +729,11 @@ pub const Interner = struct {
     /// Look up the declaration-site variance of a type-parameter type.
     /// Returns `.bivariant` for non-type-parameter ids (caller filters).
     pub fn typeParameterVariance(self: *const Interner, id: TypeId) types.Variance {
+        if (id >= self.pool.typeCount()) return .bivariant;
         if (!self.pool.flagsOf(id).is_type_parameter) return .bivariant;
-        const payload = self.pool.type_parameter_payloads.items[self.pool.payloadOf(id)];
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.type_parameter_payloads.items.len) return .bivariant;
+        const payload = self.pool.type_parameter_payloads.items[payload_idx];
         return payload.variance;
     }
 
@@ -745,8 +748,11 @@ pub const Interner = struct {
 
     /// Look up the name (StringId) of a type-parameter type.
     pub fn typeParameterName(self: *const Interner, id: TypeId) ?StringId {
+        if (id >= self.pool.typeCount()) return null;
         if (!self.pool.flagsOf(id).is_type_parameter) return null;
-        const payload = self.pool.type_parameter_payloads.items[self.pool.payloadOf(id)];
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.type_parameter_payloads.items.len) return null;
+        const payload = self.pool.type_parameter_payloads.items[payload_idx];
         return payload.name;
     }
 
