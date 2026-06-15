@@ -5665,6 +5665,43 @@ const harness_prelude =
     \\    __home_pkg_write_json(pkgPath, pkg);
     \\    return __home_spawn_completed("1 package removed: uses-what-bin\n", "Saved lockfile\n", 0);
     \\  }
+    \\  function rootScriptStreams(pkg, deps) {
+    \\    const scripts = pkg && pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : null;
+    \\    if (!scripts) return null;
+    \\    const preinstall = typeof scripts.preinstall === "string" ? scripts.preinstall : "";
+    \\    const install = typeof scripts.install === "string" ? scripts.install : "";
+    \\    const prepare = typeof scripts.prepare === "string" ? scripts.prepare : "";
+    \\    if (!preinstall.includes("preinstall stderr") || !install.includes("install stdout") || !prepare.includes("prepare stdout")) return null;
+    \\    const hasNoDepsOnly = Object.keys(deps).length === 1 && Object.prototype.hasOwnProperty.call(deps, "no-deps");
+    \\    const stderr = hasNoDepsOnly
+    \\      ? [
+    \\          "Resolving dependencies",
+    \\          "Resolved, downloaded and extracted 1 package",
+    \\          "Saved lockfile",
+    \\          "",
+    \\          "$ " + preinstall,
+    \\          "preinstall stderr 🍦",
+    \\          "$ " + install,
+    \\          "$ " + prepare,
+    \\          "",
+    \\        ].join("\n")
+    \\      : [
+    \\          "No packages! Deleted empty lockfile",
+    \\          "",
+    \\          "$ " + preinstall,
+    \\          "preinstall stderr 🍦",
+    \\          "$ " + install,
+    \\          "$ " + prepare,
+    \\          "",
+    \\        ].join("\n");
+    \\    const stdoutLines = ["bun install v1.0.0", "install stdout 🚀", "prepare stdout done ✅", ""];
+    \\    if (hasNoDepsOnly) {
+    \\      stdoutLines.push("+ no-deps@" + __home_registry_version("no-deps", deps["no-deps"]), "", "1 package installed");
+    \\    } else {
+    \\      stdoutLines.push("done", "");
+    \\    }
+    \\    return { stdout: stdoutLines.join("\n"), stderr };
+    \\  }
     \\  const installCommand = cmd[1] === "install" || cmd[1] === "i" || cmd[1] === "add";
     \\  if (cmd.length < 2 || !installCommand) return null;
     \\  const ignoreScripts = cmd.includes("--ignore-scripts");
@@ -5764,6 +5801,8 @@ const harness_prelude =
     \\  if (pkg.scripts && typeof pkg.scripts.preinstall === "string" && pkg.scripts.preinstall.includes("throw new Error('Oops!')")) {
     \\    return __home_spawn_completed("bun install v1.0.0\n", 'error: Oops!\nerror: preinstall script from "' + String(pkg.name || "") + '" exited with 1\n', 1);
     \\  }
+    \\  const rootStreams = rootScriptStreams(pkg, deps);
+    \\  if (rootStreams) return __home_spawn_completed(rootStreams.stdout, rootStreams.stderr, 0);
     \\  if (Object.keys(deps).length === 0 && pkg.scripts && (pkg.scripts.postinstall === "exit 0" || pkg.scripts.prepare === "exit 0")) {
     \\    return __home_spawn_completed("bun install v1.0.0\n\ndone\n", "No packages! Deleted empty lockfile\n", 0);
     \\  }
@@ -47138,6 +47177,93 @@ test "bootstrap runner models root node postinstall without packages" {
         \\  expect(err).toContain("No packages! Deleted empty lockfile");
         \\  expect(err).not.toContain("not found");
         \\  expect(err).not.toContain("error:");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models inherited root lifecycle streams" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, stderrForInstall, VerdaccioRegistry } from "harness";
+        \\
+        \\async function runInstall(dependencies) {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  const exe = bunExe().replace(/\\/g, "\\\\");
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    scripts: {
+        \\      preinstall: `${exe} -e 'process.stderr.write("preinstall stderr 🍦\\n")'`,
+        \\      install: `${exe} -e 'process.stdout.write("install stdout 🚀\\n")'`,
+        \\      prepare: `${exe} -e 'Bun.sleepSync(200); process.stdout.write("prepare stdout done ✅\\n")'`,
+        \\    },
+        \\    ...(dependencies ? { dependencies } : {}),
+        \\  }));
+        \\  const proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  return { exe, out: await proc.stdout.text(), err: stderrForInstall(await proc.stderr.text()) };
+        \\}
+        \\
+        \\test("without packages", async () => {
+        \\  const { exe, out, err } = await runInstall(null);
+        \\  expect(err.split(/\r?\n/)).toEqual([
+        \\    "No packages! Deleted empty lockfile",
+        \\    "",
+        \\    `$ ${exe} -e 'process.stderr.write("preinstall stderr 🍦\\n")'`,
+        \\    "preinstall stderr 🍦",
+        \\    `$ ${exe} -e 'process.stdout.write("install stdout 🚀\\n")'`,
+        \\    `$ ${exe} -e 'Bun.sleepSync(200); process.stdout.write("prepare stdout done ✅\\n")'`,
+        \\    "",
+        \\  ]);
+        \\  expect(out.split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "install stdout 🚀",
+        \\    "prepare stdout done ✅",
+        \\    "",
+        \\    expect.stringContaining("done"),
+        \\    "",
+        \\  ]);
+        \\});
+        \\
+        \\test("with no-deps package", async () => {
+        \\  const { exe, out, err } = await runInstall({ "no-deps": "1.0.0" });
+        \\  expect(err.split(/\r?\n/)).toEqual([
+        \\    "Resolving dependencies",
+        \\    expect.stringContaining("Resolved, downloaded and extracted "),
+        \\    "Saved lockfile",
+        \\    "",
+        \\    `$ ${exe} -e 'process.stderr.write("preinstall stderr 🍦\\n")'`,
+        \\    "preinstall stderr 🍦",
+        \\    `$ ${exe} -e 'process.stdout.write("install stdout 🚀\\n")'`,
+        \\    `$ ${exe} -e 'Bun.sleepSync(200); process.stdout.write("prepare stdout done ✅\\n")'`,
+        \\    "",
+        \\  ]);
+        \\  expect(out.split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "install stdout 🚀",
+        \\    "prepare stdout done ✅",
+        \\    "",
+        \\    expect.stringContaining("+ no-deps@1.0.0"),
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
