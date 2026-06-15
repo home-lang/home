@@ -4098,6 +4098,17 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "conditionalEqualityOnLiteralObjects",
         "conflictingMemberTypesInBases",
         "objectLiteralEnumPropertyNames",
+        "controlFlowSelfReferentialLoop",
+        "exportDefaultFunctionInNamespace",
+        "invalidUnicodeEscapeSequance2",
+        "amdDependencyComment2",
+        "genericSpecializations2",
+        "es6ImportWithoutFromClauseWithExport",
+        "augmentedTypesInterface",
+        "augmentExportEquals2_1",
+        "readonlyAssignmentInSubclassOfClassExpression",
+        "reactNamespaceMissingDeclaration",
+        "aliasesInSystemModule1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
