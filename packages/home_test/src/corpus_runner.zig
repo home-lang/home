@@ -2533,6 +2533,20 @@ const harness_prelude =
     \\function __home_spawn_version_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd.length >= 2 && cmd[1] === "--version") return __home_spawn_completed(String(Bun.version || "1.4.0") + "\n", "", 0);
+    \\  if (cmd.length >= 2 && cmd[1] === "--revision") return __home_spawn_completed(String(Bun.version || "1.4.0") + "+home\n", "", 0);
+    \\  if (cmd.length >= 2 && String(cmd[1]).startsWith("--config=")) return __home_spawn_completed("", "", 0);
+    \\  if (cmd.length >= 2 && cmd[1] === "getcompletes") {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\    const scripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
+    \\    let names = Object.keys(scripts).filter(name => {
+    \\      if (name.startsWith("pre") && Object.prototype.hasOwnProperty.call(scripts, name.slice(3))) return false;
+    \\      if (name.startsWith("post") && Object.prototype.hasOwnProperty.call(scripts, name.slice(4))) return false;
+    \\      return true;
+    \\    });
+    \\    if (names.length === 0) names = ["run", "test", "install"];
+    \\    return __home_spawn_completed(names.map(name => name + "\t").join("\n") + "\n", "", 0);
+    \\  }
     \\  return null;
     \\}
     \\function __home_spawn_stdin_echo_fixture(options, sync) {
