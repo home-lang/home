@@ -4034,6 +4034,17 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "controlFlowForCatchAndFinally",
         "jsFileCompilationLetDeclarationOrder2",
         "contextualTypesNegatedTypeLikeConstraintInGenericMappedType2",
+        "divergentAccessors1",
+        "constDeclarations-access3",
+        "expandoFunctionExpressionsWithDynamicNames2",
+        "expandoFunctionSymbolPropertyJs",
+        "prototypeInstantiatedWithBaseConstraint",
+        "aliasBug",
+        "letDeclarations-scopes-duplicates7",
+        "jsxLibraryManagedAttributesUnusedGeneric",
+        "lastPropertyInLiteralWins",
+        "requireOfJsonFileWithAmd",
+        "destructureComputedProperty",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
