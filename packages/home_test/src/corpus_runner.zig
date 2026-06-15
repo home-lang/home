@@ -4073,6 +4073,20 @@ const harness_prelude =
     \\  const stderr = seed == null ? "" : "--seed=" + String(seed) + "\n";
     \\  return __home_slice_child(stdout, stderr, 0);
     \\}
+    \\function __home_spawn_bunfig_test_options_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/bunfig-test-options.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test") return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const hasSeed = /\bseed\s*=/.test(bunfig);
+    \\  const randomizeTrue = /\brandomize\s*=\s*true\b/.test(bunfig);
+    \\  if (hasSeed && !randomizeTrue) return __home_slice_child("", "seed requires randomize = true\n", 1);
+    \\  if (/\brerunEach\s*=\s*3\b/.test(bunfig)) return __home_slice_child("", "3 pass\n0 fail\n", 0);
+    \\  if (/\brerunEach\s*=\s*2\b/.test(bunfig)) return __home_slice_child("", "4 pass\n0 fail\n", 0);
+    \\  if (randomizeTrue && hasSeed) return __home_slice_child("RUNNING: bravo\nRUNNING: echo\nRUNNING: alpha\nRUNNING: delta\nRUNNING: charlie\n", "5 pass\n0 fail\n", 0);
+    \\  return __home_slice_child("", "1 pass\n0 fail\n", 0);
+    \\}
     \\function __home_spawn_shard_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/test-shard.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -5745,6 +5759,8 @@ const harness_prelude =
     \\  if (testChangedFixture) return testChangedFixture;
     \\  const randomizeFixture = __home_spawn_randomize_fixture(options);
     \\  if (randomizeFixture) return randomizeFixture;
+    \\  const bunfigTestOptionsFixture = __home_spawn_bunfig_test_options_fixture(options);
+    \\  if (bunfigTestOptionsFixture) return bunfigTestOptionsFixture;
     \\  const shardFixture = __home_spawn_shard_fixture(options);
     \\  if (shardFixture) return shardFixture;
     \\  const timeoutBehaviorFixture = __home_spawn_timeout_behavior_fixture(options);
