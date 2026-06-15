@@ -4085,6 +4085,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "selfReferencingFile2",
         "unusedImports_entireImportDeclaration",
         "memberVariableDeclarations1",
+        "aliasUsageInObjectLiteral",
+        "arrayToLocaleStringES2020",
+        "commonSourceDirectory",
+        "cachedModuleResolution4",
+        "typeParametersInStaticMethods",
+        "errorsWithInvokablesInUnions01",
+        "incompatibleExports1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
