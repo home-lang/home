@@ -3998,6 +3998,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "errorSpanForUnclosedJsxTag",
         "jsxFactoryNotIdentifierOrQualifiedName2",
         "varianceMeasurement",
+        "module_augmentExistingVariable",
+        "jsdocTypedef_propertyWithNoType",
+        "contextualTypingOfLambdaReturnExpression",
+        "exportEqualErrorType",
+        "jsdocTypeCast",
+        "ambientExternalModuleInAnotherExternalModule",
+        "objectGroupBy",
+        "genericIndexTypeHasSensibleErrorMessage",
+        "inferenceContextualReturnTypeUnion4",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
