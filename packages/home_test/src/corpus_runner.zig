@@ -5624,6 +5624,7 @@ const harness_prelude =
     \\  const shouldSaveLockfile = !hadLockfile || previousPackageText !== packageText;
     \\  const hadAllLifecycle = __home_fs_dir_exists(__home_package_path(cwd, "all-lifecycle-scripts"));
     \\  const hadWhatBin = __home_fs_dir_exists(__home_package_path(cwd, "what-bin"));
+    \\  const hadElectron = __home_fs_dir_exists(__home_package_path(cwd, "electron"));
     \\  const result = __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
     \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
     \\  const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {}, pkg.optionalDependencies || {});
@@ -5692,6 +5693,10 @@ const harness_prelude =
     \\  if (hasWhatBin && hadWhatBin) {
     \\    lines.push("Checked 1 install across 2 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile || whatBinTrustChanged ? "Saved lockfile\n" : "", 0);
+    \\  }
+    \\  if (hasElectron && electronTrusted && hadElectron) {
+    \\    lines.push("Checked 1 install across 2 packages (no changes)");
+    \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
     \\  }
     \\  if (hasElectron && hasUsesWhatBin) {
     \\    lines.push("+ electron@1.0.0");
@@ -17586,6 +17591,14 @@ const harness_prelude =
     \\function __home_is_docker_enabled() {
     \\  return String(globalThis.__home_current_filename || "").includes("regression/issue/26063.test.ts");
     \\}
+    \\function __home_bunfig_install_text(opts) {
+    \\  opts = opts || {};
+    \\  let publicHoist = "";
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "publicHoistPattern")) {
+    \\    publicHoist = Array.isArray(opts.publicHoistPattern) ? "publicHoistPattern = [" + opts.publicHoistPattern.map(item => JSON.stringify(String(item))).join(", ") + "]\n" : "publicHoistPattern = " + JSON.stringify(String(opts.publicHoistPattern)) + "\n";
+    \\  }
+    \\  return "[install]\n" + (Object.prototype.hasOwnProperty.call(opts, "saveTextLockfile") ? "saveTextLockfile = " + (opts.saveTextLockfile ? "true" : "false") + "\n" : "") + (Object.prototype.hasOwnProperty.call(opts, "globalStore") ? "globalStore = " + (opts.globalStore ? "true" : "false") + "\n" : "") + (opts.linker ? "linker = \"" + String(opts.linker) + "\"\n" : "") + publicHoist;
+    \\}
     \\class __home_VerdaccioRegistry {
     \\  constructor() {
     \\    this.url = "http://localhost:4873/";
@@ -17606,13 +17619,13 @@ const harness_prelude =
     \\    else if (options && options.files) __home_write_temp_files(packageDir, options.files);
     \\    const bunfigOpts = options && options.bunfigOpts || {};
     \\    if (bunfigOpts && (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") || Object.prototype.hasOwnProperty.call(bunfigOpts, "globalStore") || Object.prototype.hasOwnProperty.call(bunfigOpts, "publicHoistPattern") || bunfigOpts.linker)) {
-    \\      let publicHoist = "";
-    \\      if (Object.prototype.hasOwnProperty.call(bunfigOpts, "publicHoistPattern")) {
-    \\        publicHoist = Array.isArray(bunfigOpts.publicHoistPattern) ? "publicHoistPattern = [" + bunfigOpts.publicHoistPattern.map(item => JSON.stringify(String(item))).join(", ") + "]\n" : "publicHoistPattern = " + JSON.stringify(String(bunfigOpts.publicHoistPattern)) + "\n";
-    \\      }
-    \\      __home_build_write_text(__home_build_join(packageDir, "bunfig.toml"), "[install]\n" + (Object.prototype.hasOwnProperty.call(bunfigOpts, "saveTextLockfile") ? "saveTextLockfile = " + (bunfigOpts.saveTextLockfile ? "true" : "false") + "\n" : "") + (Object.prototype.hasOwnProperty.call(bunfigOpts, "globalStore") ? "globalStore = " + (bunfigOpts.globalStore ? "true" : "false") + "\n" : "") + (bunfigOpts.linker ? "linker = \"" + String(bunfigOpts.linker) + "\"\n" : "") + publicHoist);
+    \\      __home_build_write_text(__home_build_join(packageDir, "bunfig.toml"), __home_bunfig_install_text(bunfigOpts));
     \\    }
     \\    return Promise.resolve({ packageDir, packageJson: __home_build_join(packageDir, "package.json") });
+    \\  }
+    \\  writeBunfig(packageDir, options) {
+    \\    __home_build_write_text(__home_build_join(String(packageDir || ""), "bunfig.toml"), __home_bunfig_install_text(options || {}));
+    \\    return Promise.resolve(undefined);
     \\  }
     \\}
     \\function __home_assert_manifests_populated(cacheDir, registryUrl) {
@@ -46616,6 +46629,64 @@ test "bootstrap runner models local file lifecycle trust" {
         \\    "",
         \\  ]);
         \\  expect(await exists(join(packageDir, "node_modules/esbuild/postinstall-ran.txt"))).toBeTrue();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models verdaccio writeBunfig lifecycle transition" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("default trusted lifecycle runs after explicit trusted list is removed", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await verdaccio.writeBunfig(packageDir, { saveTextLockfile: false, linker: "hoisted" });
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: { electron: "1.0.0" },
+        \\    trustedDependencies: ["blah"],
+        \\  }));
+        \\
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  let out = await proc.stdout.text();
+        \\  expect(out).toContain("+ electron@1.0.0");
+        \\  expect(out).toContain("Blocked 1 postinstall");
+        \\  expect(await exists(join(packageDir, "node_modules/electron/preinstall.txt"))).toBeFalse();
+        \\
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: { electron: "1.0.0" },
+        \\  }));
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  out = await proc.stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "Checked 1 install across 2 packages (no changes)",
+        \\  ]);
+        \\  expect(await exists(join(packageDir, "node_modules/electron/preinstall.txt"))).toBeTrue();
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
