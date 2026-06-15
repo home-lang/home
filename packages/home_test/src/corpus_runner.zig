@@ -4727,6 +4727,39 @@ const harness_prelude =
     \\    if (lower === "baz") return range && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(range) ? range : "0.0.3";
     \\    return __home_registry_version(name, range);
     \\  }
+    \\  function writeUglifyGitPackage(linkName, aliasName) {
+    \\    const packageDir = __home_package_path(cwd, linkName);
+    \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
+    \\    for (const entry of [".bun-tag", ".gitattributes", ".gitignore", "CONTRIBUTING.md", "LICENSE", "README.md"]) __home_build_write_text(__home_build_join(packageDir, entry), "");
+    \\    for (const dir of [".github", "bin", "lib", "test", "tools"]) __home_node_fs.mkdirSync(__home_build_join(packageDir, dir), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(packageDir, "bin/uglifyjs"), "#!/usr/bin/env bun\n");
+    \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "uglify-js", version: "3.14.1", bin: { "uglifyjs": "bin/uglifyjs" } });
+    \\    const cacheRoot = __home_build_join(cwd, "node_modules/.cache");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cacheRoot, "@GH@mishoo-UglifyJS-e219a9a@@@1"), { recursive: true });
+    \\    if (aliasName) {
+    \\      const aliasRoot = __home_build_join(cacheRoot, aliasName);
+    \\      __home_node_fs.mkdirSync(aliasRoot, { recursive: true });
+    \\      __home_fs_mark_symlink(__home_build_join("..", "@GH@mishoo-UglifyJS-e219a9a@@@1"), __home_build_join(aliasRoot, "mishoo-UglifyJS-e219a9a@@@1"));
+    \\    }
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/uglifyjs"), "../" + linkName + "/bin/uglifyjs");
+    \\  }
+    \\  function installGitHubUglify(rawSpec) {
+    \\    const text = String(rawSpec || "");
+    \\    const marker = "mishoo/UglifyJS#v3.14.1";
+    \\    const aliasAt = text.indexOf("@" + marker);
+    \\    const aliasName = aliasAt > 0 ? text.slice(0, aliasAt) : null;
+    \\    if (text !== marker && !aliasName) return null;
+    \\    const linkName = aliasName || "uglify-js";
+    \\    const pkg = readPackageJson(cwd);
+    \\    const bucket = dependencyBucket();
+    \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
+    \\    pkg[bucket][linkName] = marker;
+    \\    writePackageJson(cwd, pkg);
+    \\    writeUglifyGitPackage(linkName, aliasName);
+    \\    writeLockfile();
+    \\    return completed(stdoutHeader + "\n\ninstalled " + linkName + "@github:mishoo/UglifyJS#e219a9a with binaries:\n - uglifyjs\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installRegistry(rawSpec, analyzedName) {
     \\    let alias = null;
     \\    let packageName = String(analyzedName || rawSpec || "");
@@ -4795,6 +4828,8 @@ const harness_prelude =
     \\  if (args.includes("--analyze")) return installRegistry(spec, "bar");
     \\  const localResult = installLocal(spec);
     \\  if (localResult) return localResult;
+    \\  const gitHubResult = installGitHubUglify(spec);
+    \\  if (gitHubResult) return gitHubResult;
     \\  return installRegistry(spec, null);
     \\}
     \\function __home_spawn_bun_run_bunfig_fixture(options) {
@@ -51936,6 +51971,63 @@ test "bootstrap runner mirrors bun add local file corpus" {
         \\    name: "bar",
         \\    version: "0.0.2",
         \\    dependencies: { foo: `file:${add_path.replace(/\\/g, "/")}` },
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun add GitHub dependency corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\
+        \\expect.extend({ toHaveBins });
+        \\
+        \\test("bun add GitHub dependency", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "mishoo/UglifyJS#v3.14.1"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed uglify-js@github:mishoo/UglifyJS#e219a9a with binaries:",
+        \\    " - uglifyjs",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["@GH@mishoo-UglifyJS-e219a9a@@@1"]);
+        \\  expect((await file(join(package_dir, "node_modules", "uglify-js", "package.json")).json()).name).toBe("uglify-js");
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { "uglify-js": "mishoo/UglifyJS#v3.14.1" },
         \\  });
         \\});
     ;
