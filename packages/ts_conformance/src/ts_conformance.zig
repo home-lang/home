@@ -4060,6 +4060,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "moduleAsBaseType",
         "mismatchedClassConstructorVariable",
         "jsxNamespaceGlobalReexport",
+        "sourceMapValidationDestructuringVariableStatementArrayBindingPattern3",
+        "inexistentPropertyInsideToStringType",
+        "moduleAndInterfaceSharingName2",
+        "exportAssignmentOfDeclaredExternalModule",
+        "modulePreserve2",
+        "unusedImports10",
+        "es6ImportDefaultBindingFollowedWithNamedImportInEs5",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
