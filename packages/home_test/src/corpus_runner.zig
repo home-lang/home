@@ -5704,8 +5704,9 @@ const harness_prelude =
     \\  }
     \\  const installCommand = cmd[1] === "install" || cmd[1] === "i" || cmd[1] === "add";
     \\  if (cmd.length < 2 || !installCommand) return null;
-    \\  const ignoreScripts = cmd.includes("--ignore-scripts");
     \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const npmrcText = __home_build_read_text(__home_build_join(cwd, ".npmrc")) || "";
+    \\  const ignoreScripts = cmd.includes("--ignore-scripts") || /^\s*ignore-scripts\s*=\s*true\s*$/m.test(npmrcText);
     \\  const trustRequested = cmd.includes("--trust");
     \\  let addName = "";
     \\  let addLiteral = "";
@@ -5741,6 +5742,7 @@ const harness_prelude =
     \\  const hadAllLifecycle = __home_fs_dir_exists(__home_package_path(cwd, "all-lifecycle-scripts"));
     \\  const hadWhatBin = __home_fs_dir_exists(__home_package_path(cwd, "what-bin"));
     \\  const hadUsesWhatBin = __home_fs_dir_exists(__home_package_path(cwd, "uses-what-bin"));
+    \\  const hadUsesWhatBinMarker = __home_build_file_exists(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
     \\  const hadNoDeps = __home_fs_dir_exists(__home_package_path(cwd, "no-deps"));
     \\  const hadElectron = __home_fs_dir_exists(__home_package_path(cwd, "electron"));
     \\  const result = __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
@@ -5780,7 +5782,7 @@ const harness_prelude =
     \\    const depDir = __home_package_path(cwd, "lifecycle-install-test");
     \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
     \\  }
-    \\  if (hasUsesWhatBin && !usesWhatBinTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
+    \\  if (hasUsesWhatBin && (ignoreScripts || !usesWhatBinTrusted || (usesWhatBinTrusted && hadUsesWhatBin && !hadUsesWhatBinMarker))) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
     \\  if (hasUsesWhatBinSlow) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin-slow"), "what-bin.txt"));
     \\  if (hasElectron && !electronTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "electron"), "preinstall.txt"));
     \\  if (hasFileEsbuild) {
@@ -5797,6 +5799,11 @@ const harness_prelude =
     \\  }
     \\  if (hasBindingGyp && bindingGypTrusted) __home_build_write_text(__home_build_join(__home_package_path(cwd, "binding-gyp-scripts"), "build.node"), "");
     \\  if (rootNodeGypAuto) __home_build_write_text(__home_build_join(cwd, "build.node"), "");
+    \\  if (pkg.scripts && typeof pkg.scripts.postinstall === "string" && pkg.scripts.postinstall.includes("Bun.write(\"postinstall.txt\"")) {
+    \\    const marker = __home_build_join(cwd, "postinstall.txt");
+    \\    if (ignoreScripts) __home_fs_mark_deleted(marker);
+    \\    else __home_build_write_text(marker, "postinstall!!");
+    \\  }
     \\  const lines = ["bun install v1.0.0", ""];
     \\  if (pkg.scripts && typeof pkg.scripts.preinstall === "string" && pkg.scripts.preinstall.includes("throw new Error('Oops!')")) {
     \\    return __home_spawn_completed("bun install v1.0.0\n", 'error: Oops!\nerror: preinstall script from "' + String(pkg.name || "") + '" exited with 1\n', 1);
@@ -17258,6 +17265,10 @@ const harness_prelude =
     \\  return { graph, installed, lock, errors: catalogErrors };
     \\}
     \\function __home_harness_run_bun_install(env, dir, options) {
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-lifecycle-scripts.test.ts")) {
+    \\    const lifecycle = __home_spawn_install_lifecycle_fixture({ cmd: [process.execPath, "install"], cwd: dir, env });
+    \\    if (lifecycle) return Promise.resolve(lifecycle);
+    \\  }
     \\  const result = __home_install_workspaces(env, dir, "install", []);
     \\  const out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
     \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (options && options.savesLockfile === false ? "" : "Saved lockfile\n");
@@ -46684,10 +46695,9 @@ test "bootstrap runner models default trusted lifecycle dependencies" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
-        \\import { spawn } from "bun";
         \\import { expect, test } from "bun:test";
         \\import { exists, rm, writeFile } from "fs/promises";
-        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { bunEnv, bunExe, runBunInstall, VerdaccioRegistry } from "harness";
         \\import { join } from "path";
         \\
         \\test("default trusted lifecycle dependencies", async () => {
@@ -47278,6 +47288,62 @@ test "bootstrap runner models inherited root lifecycle streams" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner honors npmrc ignore-scripts lifecycle toggle" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, rm, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("ignore-scripts is read from npmrc", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: { "uses-what-bin": "1.0.0" },
+        \\    scripts: { postinstall: `${bunExe()} -e 'await Bun.write("postinstall.txt", "postinstall!!")'` },
+        \\    trustedDependencies: ["uses-what-bin"],
+        \\  }));
+        \\  await writeFile(join(packageDir, ".npmrc"), "ignore-scripts=true");
+        \\  async function markers() {
+        \\    return Promise.all([
+        \\      exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt")),
+        \\      exists(join(packageDir, "postinstall.txt")),
+        \\    ]);
+        \\  }
+        \\  await runBunInstall(bunEnv, packageDir);
+        \\  expect(await markers()).toEqual([false, false]);
+        \\
+        \\  await writeFile(join(packageDir, ".npmrc"), "ignore-scripts=false");
+        \\  await runBunInstall(bunEnv, packageDir, { savesLockfile: false });
+        \\  expect(await markers()).toEqual([false, true]);
+        \\
+        \\  await rm(join(packageDir, "postinstall.txt"));
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  expect(await markers()).toEqual([false, false]);
+        \\
+        \\  await runBunInstall(bunEnv, packageDir, { savesLockfile: false });
+        \\  expect(await markers()).toEqual([true, true]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner models missing package trust commands" {
