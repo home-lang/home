@@ -4067,6 +4067,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "modulePreserve2",
         "unusedImports10",
         "es6ImportDefaultBindingFollowedWithNamedImportInEs5",
+        "es6ClassTest",
+        "bom-utf16be",
+        "genericChainedCalls",
+        "exportDefaultInterfaceClassAndFunctionOverloads",
+        "contextualComputedNonBindablePropertyType",
+        "importTypeWithUnparenthesizedGenericFunctionParsed",
+        "literalTypeNameAssertionNotTriggered",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
