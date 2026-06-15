@@ -3877,6 +3877,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "overloadingOnConstants1",
         "untypedFunctionCallsWithTypeParameters1",
         "declFileEmitDeclarationOnlyError1",
+        "nestedGlobalNamespaceInClass",
+        "getterSetterNonAccessor",
+        "assertionFunctionsCanNarrowByDiscriminant",
+        "typeOfOnTypeArg",
+        "commentsOnJSXExpressionsArePreserved",
+        "commonJsExportTypeDeclarationError",
+        "prettyContextNotDebugAssertion",
+        "mappedTypeNotMistakenlyHomomorphic",
+        "enumPropertyAccessBeforeInitalisation",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
