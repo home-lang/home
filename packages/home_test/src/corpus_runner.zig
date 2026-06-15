@@ -5613,6 +5613,12 @@ const harness_prelude =
     \\function __home_spawn_install_lifecycle_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-lifecycle-scripts.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length >= 4 && cmd[1] === "pm" && cmd[2] === "trust" && cmd.includes("--all")) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const nestedUsesWhatBin = __home_build_join(__home_package_path(cwd, "pkg1"), "node_modules/uses-what-bin/what-bin.txt");
+    \\    if (__home_fs_dir_exists(__home_build_dirname(nestedUsesWhatBin))) __home_build_write_text(nestedUsesWhatBin, "what-bin!");
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
     \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
     \\  const ignoreScripts = cmd.includes("--ignore-scripts");
     \\  const cwd = String(options && options.cwd || process.cwd());
@@ -16965,6 +16971,8 @@ const harness_prelude =
     \\    const deps = Object.assign({}, workspace.pkg.dependencies || {}, workspace.pkg.devDependencies || {});
     \\    return Object.prototype.hasOwnProperty.call(deps, "no-deps");
     \\  });
+    \\  const rootDeps = Object.assign({}, graph.rootPkg.dependencies || {}, graph.rootPkg.devDependencies || {});
+    \\  const rootTrusted = Array.isArray(graph.rootPkg.trustedDependencies) ? graph.rootPkg.trustedDependencies.map(String) : [];
     \\  function scriptAllowed(item) {
     \\    if (filters.length === 0) return true;
     \\    function matches(raw) {
@@ -17044,7 +17052,9 @@ const harness_prelude =
     \\        if (depName === "self-dep" && String(literal) === "1.0.2") pkg.dependencies = { "self-dep": "1.0.1" };
     \\        if (depName === "one-optional-peer-dep" && pkg.version === "1.0.1" && !graphHasNoDeps) pkg.dependencies = { "no-deps": "^1.0.0" };
     \\        if (depName === "one-one-dep") pkg.dependencies = { "no-deps": "1.0.1" };
-    \\        const targetRoot = item.rel && graph.byName[depName] ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
+    \\        const rootDepAlias = __home_npm_alias(rootDeps[depName]);
+    \\        const rootAliasConflict = item.rel && rootDepAlias && rootDepAlias.name !== depName;
+    \\        const targetRoot = item.rel && (graph.byName[depName] || rootAliasConflict) ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
     \\        const isolatedLinkRoot = isolatedLinker && item.rel ? item.dir : targetRoot;
     \\        let isolatedStoreName = localDep && localDep.storeName;
     \\        if (isolatedLinker && depName === "one-optional-peer-dep") {
@@ -17059,6 +17069,9 @@ const harness_prelude =
     \\            __home_copy_local_package_files(localDep.dir, packageDir);
     \\            __home_normalize_installed_bin_files(packageDir, pkg);
     \\          }
+    \\        }
+    \\        if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-lifecycle-scripts.test.ts") && item.rel && depName === "uses-what-bin" && !rootTrusted.includes("uses-what-bin")) {
+    \\          __home_fs_mark_deleted(__home_build_join(__home_package_path(targetRoot, depName), "what-bin.txt"));
     \\        }
     \\        if (!isolatedLinker && depName === "two-range-deps") __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/@types"), { recursive: true });
     \\        if (String(globalThis.__home_current_filename || "").includes("cli/install/config-version.test.ts") && item.rel && depName === "no-deps") {
@@ -46687,6 +46700,53 @@ test "bootstrap runner models verdaccio writeBunfig lifecycle transition" {
         \\    "Checked 1 install across 2 packages (no changes)",
         \\  ]);
         \\  expect(await exists(join(packageDir, "node_modules/electron/preinstall.txt"))).toBeTrue();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models unhoisted trust all lifecycle marker" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("unhoisted untrusted scripts can be trusted later", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: { "uses-what-bin": "npm:a-dep@1.0.3" },
+        \\    workspaces: ["pkg1"],
+        \\  }));
+        \\  await writeFile(join(packageDir, "pkg1", "package.json"), JSON.stringify({
+        \\    name: "pkg1",
+        \\    dependencies: { "uses-what-bin": "1.0.0" },
+        \\  }));
+        \\
+        \\  await spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv }).exited;
+        \\  expect(await exists(join(packageDir, "node_modules/pkg1/node_modules/uses-what-bin"))).toBeTrue();
+        \\  expect(await exists(join(packageDir, "node_modules/pkg1/node_modules/uses-what-bin/what-bin.txt"))).toBeFalse();
+        \\
+        \\  const proc = spawn({ cmd: [bunExe(), "pm", "trust", "--all"], cwd: packageDir, stdout: "ignore", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.stderr.text()).not.toContain("error:");
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "node_modules/pkg1/node_modules/uses-what-bin/what-bin.txt"))).toBeTrue();
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
