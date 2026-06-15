@@ -5641,6 +5641,7 @@ const harness_prelude =
     \\  const rootNodeGypAuto = hasNodeGyp && __home_build_file_exists(__home_build_join(cwd, "binding.gyp")) && !(pkg.scripts && (Object.prototype.hasOwnProperty.call(pkg.scripts, "install") || Object.prototype.hasOwnProperty.call(pkg.scripts, "preinstall")));
     \\  const hasLifecycleInstallTest = Object.prototype.hasOwnProperty.call(deps, "lifecycle-install-test");
     \\  const lifecycleInstallTestTrusted = trusted.includes("lifecycle-install-test");
+    \\  const hasUsesWhatBinSlow = Object.prototype.hasOwnProperty.call(deps, "uses-what-bin-slow");
     \\  if (hasAllLifecycle && !allLifecycleTrusted) {
     \\    const depDir = __home_package_path(cwd, "all-lifecycle-scripts");
     \\    for (const marker of ["preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
@@ -5682,8 +5683,9 @@ const harness_prelude =
     \\  else if (hasBindingGyp) lines.push("+ binding-gyp-scripts@1.5.0", "");
     \\  else if (hasNodeGyp) lines.push("+ node-gyp@1.5.0", "");
     \\  else if (hasLifecycleInstallTest) lines.push("+ lifecycle-install-test@github:dylan-conway/lifecycle-install-test#3ba6af5", "");
+    \\  else if (hasUsesWhatBinSlow) lines.push("+ uses-what-bin-slow@1.0.0", "");
     \\  const count = Math.max(result.installed, Object.keys(deps).length > 0 ? 1 : 0);
-    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : (hasBindingGyp ? 2 : count);
+    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow) ? 2 : count);
     \\  lines.push(String(displayCount) + " package" + (displayCount === 1 ? "" : "s") + " installed");
     \\  if (!ignoreScripts && Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall") && trusted.includes("lifecycle-failing-postinstall")) {
     \\    return __home_spawn_completed(lines.join("\n"), "hello\n", 1);
@@ -16223,6 +16225,9 @@ const harness_prelude =
     \\  } else if (name === "lifecycle-install-test") {
     \\    pkg.scripts = { preinstall: "bun preinstall.js", install: "bun install.js", postinstall: "bun postinstall.js", preprepare: "bun preprepare.js", prepare: "bun prepare.js", postprepare: "bun postprepare.js" };
     \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_build_write_text(__home_build_join(packageDir, marker), marker.replace(/\.txt$/, "!"));
+    \\  } else if (name === "uses-what-bin-slow") {
+    \\    pkg.scripts = { install: "what-bin" };
+    \\    __home_build_write_text(__home_build_join(packageDir, "what-bin.txt"), "what-bin!");
     \\  }
     \\  if (name === "uses-strict-peer") pkg.peerDependencies = { "strict-peer-dep": "1.0.0" };
     \\  if (name === "strict-peer-dep") pkg.peerDependencies = { "no-deps": "^2.0.0" };
@@ -46197,6 +46202,49 @@ test "bootstrap runner models git lifecycle dependency trust transition" {
         \\  for (const marker of ["preprepare", "prepare", "postprepare", "preinstall", "install", "postinstall"]) {
         \\    expect(await exists(join(packageDir, "node_modules/lifecycle-install-test", marker + ".txt"))).toBeTrue();
         \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models uses-what-bin-slow lifecycle dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("uses what-bin slow lifecycle dependency", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { "uses-what-bin-slow": "1.0.0" },
+        \\    trustedDependencies: ["uses-what-bin-slow"],
+        \\    scripts: { install: '[[ -f "./node_modules/uses-what-bin-slow/what-bin.txt" ]]' },
+        \\  }));
+        \\  const proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  const out = await proc.stdout.text();
+        \\  expect(out).toContain("+ uses-what-bin-slow@1.0.0");
+        \\  expect(out).toContain("2 packages installed");
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin-slow/what-bin.txt"))).toBeTrue();
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
