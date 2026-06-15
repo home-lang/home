@@ -5640,6 +5640,9 @@ const harness_prelude =
     \\  const usesWhatBinTrusted = trusted.includes("uses-what-bin");
     \\  const hasElectron = Object.prototype.hasOwnProperty.call(deps, "electron");
     \\  const electronTrusted = trusted.includes("electron") || (hasElectron && !hasExplicitTrustedDependencies && !String(deps.electron || "").startsWith("file:") && !String(deps.electron || "").startsWith("link:"));
+    \\  const hasFileEsbuild = Object.prototype.hasOwnProperty.call(deps, "esbuild") && String(deps.esbuild || "").startsWith("file:");
+    \\  const fileEsbuildTrusted = trusted.includes("esbuild");
+    \\  const fileEsbuildVersion = hasFileEsbuild ? (String(deps.esbuild || "").slice("file:".length).replace(/\\/g, "/").replace(/\/+$/, "").split("/").filter(Boolean).pop() || "local-esbuild") : "";
     \\  const hasBindingGyp = Object.prototype.hasOwnProperty.call(deps, "binding-gyp-scripts");
     \\  const bindingGypTrusted = trusted.includes("binding-gyp-scripts");
     \\  const hasNodeGyp = Object.prototype.hasOwnProperty.call(deps, "node-gyp");
@@ -5658,6 +5661,13 @@ const harness_prelude =
     \\  }
     \\  if (hasUsesWhatBin && !usesWhatBinTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
     \\  if (hasElectron && !electronTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "electron"), "preinstall.txt"));
+    \\  if (hasFileEsbuild) {
+    \\    const packageJson = __home_pkg_json(__home_build_join(__home_package_path(cwd, "esbuild"), "package.json")) || {};
+    \\    const postinstall = packageJson.scripts && typeof packageJson.scripts.postinstall === "string" ? packageJson.scripts.postinstall : "";
+    \\    const marker = __home_build_join(__home_package_path(cwd, "esbuild"), "postinstall-ran.txt");
+    \\    if (fileEsbuildTrusted && postinstall.includes("postinstall-ran.txt")) __home_build_write_text(marker, "ran");
+    \\    else __home_fs_mark_deleted(marker);
+    \\  }
     \\  if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd")) {
     \\    __home_build_write_text(__home_build_join(cwd, "test.txt"), cwd);
     \\    __home_build_write_text(__home_build_join(__home_package_path(cwd, "lifecycle-init-cwd"), "test.txt"), cwd);
@@ -5693,6 +5703,7 @@ const harness_prelude =
     \\  }
     \\  else if (hasAllLifecycle) lines.push("+ all-lifecycle-scripts@1.0.0", "");
     \\  else if (hasElectron) lines.push("+ electron@1.0.0", "");
+    \\  else if (hasFileEsbuild) lines.push("+ esbuild@" + fileEsbuildVersion, "");
     \\  else if (hasWhatBin) lines.push("+ what-bin@" + __home_registry_version("what-bin", deps["what-bin"]), "");
     \\  else if (hasUsesWhatBin) lines.push("+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]), "");
     \\  else if (Object.prototype.hasOwnProperty.call(deps, "lifecycle-postinstall")) lines.push("+ lifecycle-postinstall@1.0.0", "");
@@ -5712,12 +5723,14 @@ const harness_prelude =
     \\  const count = Math.max(result.installed, Object.keys(deps).length > 0 ? 1 : 0);
     \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow || (hasUsesWhatBin && !hasWhatBin) || (hasElectron && hasUsesWhatBin)) ? (hasElectron && hasUsesWhatBin ? 3 : 2) : ((hasUsesWhatBin && hasWhatBin) ? 3 : (stressDeps.length > 0 ? stressDeps.length : count)));
     \\  lines.push(String(displayCount) + " package" + (displayCount === 1 ? "" : "s") + " installed");
+    \\  if (hasFileEsbuild && fileEsbuildTrusted) lines.push("");
     \\  if (!ignoreScripts && Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall") && trusted.includes("lifecycle-failing-postinstall")) {
     \\    return __home_spawn_completed(lines.join("\n"), "hello\n", 1);
     \\  }
     \\  if (hasAllLifecycle && !allLifecycleTrusted) lines.push("", "Blocked 3 postinstalls. Run `bun pm untrusted` for details.", "");
     \\  const blockedLifecycleCount = (hasUsesWhatBin && !usesWhatBinTrusted ? 1 : 0) + (hasElectron && !electronTrusted ? 1 : 0);
     \\  if (blockedLifecycleCount > 0) lines.push("", "Blocked " + String(blockedLifecycleCount) + " postinstall" + (blockedLifecycleCount === 1 ? "" : "s") + ". Run `bun pm untrusted` for details.", "");
+    \\  if (hasFileEsbuild && !fileEsbuildTrusted) lines.push("", "Blocked 1 postinstall. Run `bun pm untrusted` for details.", "");
     \\  if (hasBindingGyp && !bindingGypTrusted) lines.push("", "Blocked 1 postinstall. Run `bun pm untrusted` for details.", "");
     \\  if (hasLifecycleInstallTest && !lifecycleInstallTestTrusted) lines.push("", "Blocked 6 postinstalls. Run `bun pm untrusted` for details.", "");
     \\  const stderrText = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (shouldSaveLockfile ? "Saved lockfile\n" : "");
@@ -46527,6 +46540,82 @@ test "bootstrap runner models default trusted lifecycle dependencies" {
         \\  expect(out).toContain("Blocked 2 postinstalls");
         \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeFalse();
         \\  expect(await exists(join(packageDir, "node_modules/electron/preinstall.txt"))).toBeFalse();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models local file lifecycle trust" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, mkdir, rm, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("file dependencies with default trusted names require explicit trust", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  const esbuildPath = join(packageDir, "local-esbuild");
+        \\  await mkdir(esbuildPath, { recursive: true });
+        \\  await writeFile(join(esbuildPath, "package.json"), JSON.stringify({
+        \\    name: "esbuild",
+        \\    version: "1.0.0",
+        \\    scripts: { postinstall: "exit 1" },
+        \\  }));
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { esbuild: "file:./local-esbuild" },
+        \\  }));
+        \\
+        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  let out = await proc.stdout.text();
+        \\  expect(out).toContain("+ esbuild@local-esbuild");
+        \\  expect(out).toContain("Blocked 1 postinstall");
+        \\  expect(await exists(join(packageDir, "node_modules/esbuild/postinstall-ran.txt"))).toBeFalse();
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  await rm(join(packageDir, "bun.lock"));
+        \\  await writeFile(join(esbuildPath, "package.json"), JSON.stringify({
+        \\    name: "esbuild",
+        \\    version: "1.0.0",
+        \\    scripts: { postinstall: `${bunExe()} -e "require('fs').writeFileSync('postinstall-ran.txt', 'ran')"` },
+        \\  }));
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { esbuild: "file:./local-esbuild" },
+        \\    trustedDependencies: ["esbuild"],
+        \\  }));
+        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  out = await proc.stdout.text();
+        \\  expect(out).toContain("+ esbuild@local-esbuild");
+        \\  expect(out).not.toContain("Blocked");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]$/m, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ esbuild@local-esbuild",
+        \\    "",
+        \\    "1 package installed",
+        \\    "",
+        \\  ]);
+        \\  expect(await exists(join(packageDir, "node_modules/esbuild/postinstall-ran.txt"))).toBeTrue();
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
