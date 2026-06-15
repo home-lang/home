@@ -3964,6 +3964,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "errorForUsingPropertyOfTypeAsType03",
         "publicGetterProtectedSetterFromThisParameter",
         "collisionArgumentsInType",
+        "arrayCast",
+        "moduleResolutionAsTypeReferenceDirective",
+        "internalImportUnInstantiatedModuleMergedWithClassNotReferencingInstance",
+        "classMemberInitializerScoping2",
+        "exportEqualsClassRedeclarationError",
+        "genericTypeAssertions6",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
