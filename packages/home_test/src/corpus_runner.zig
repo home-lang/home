@@ -5674,6 +5674,7 @@ const harness_prelude =
     \\  const whatBinTrustChanged = trusted.includes("what-bin") && !previousTrusted.includes("what-bin");
     \\  const hasUsesWhatBin = Object.prototype.hasOwnProperty.call(deps, "uses-what-bin");
     \\  const usesWhatBinTrusted = trusted.includes("uses-what-bin");
+    \\  const usesWhatBinTrustRemoved = previousTrusted.includes("uses-what-bin") && !usesWhatBinTrusted;
     \\  const hasElectron = Object.prototype.hasOwnProperty.call(deps, "electron");
     \\  const electronTrusted = trusted.includes("electron") || (hasElectron && !hasExplicitTrustedDependencies && !String(deps.electron || "").startsWith("file:") && !String(deps.electron || "").startsWith("link:"));
     \\  const hasFileEsbuild = Object.prototype.hasOwnProperty.call(deps, "esbuild") && String(deps.esbuild || "").startsWith("file:");
@@ -5729,7 +5730,7 @@ const harness_prelude =
     \\    lines.push("Checked 1 install across 2 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile || whatBinTrustChanged ? "Saved lockfile\n" : "", 0);
     \\  }
-    \\  if (!addName && hasUsesWhatBin && usesWhatBinTrusted && hadUsesWhatBin) {
+    \\  if (!addName && hasUsesWhatBin && hadUsesWhatBin && (usesWhatBinTrusted || usesWhatBinTrustRemoved)) {
     \\    lines.push("Checked 2 installs across 3 packages (no changes)");
     \\    return __home_spawn_completed(lines.join("\n"), shouldSaveLockfile ? "Saved lockfile\n" : "", 0);
     \\  }
@@ -46948,6 +46949,61 @@ test "bootstrap runner models install trust add package without lifecycle" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models lifecycle trust removal no-change install" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, rm, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("removing trustedDependencies does not rerun blocked lifecycle", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir();
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    trustedDependencies: ["uses-what-bin"],
+        \\    dependencies: { "uses-what-bin": "1.0.0" },
+        \\  }));
+        \\
+        \\  let proc = spawn({ cmd: [bunExe(), "i"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeTrue();
+        \\
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: { "uses-what-bin": "1.0.0" },
+        \\  }));
+        \\  await rm(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"), { force: true });
+        \\  proc = spawn({ cmd: [bunExe(), "i"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  const out = await proc.stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "Checked 2 installs across 3 packages (no changes)",
+        \\  ]);
+        \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin/what-bin.txt"))).toBeFalse();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases Bake TypeScript-only syntax" {
