@@ -3913,6 +3913,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "recursiveBaseCheck5",
         "jsFileCompilationBindStrictModeErrors",
         "unparenthesizedConstructorTypeInUnionOrIntersection",
+        "null",
+        "mergedClassWithNamespacePrototype",
+        "unionErrorMessageOnMatchingDiscriminant",
+        "incompatibleTypes",
+        "nonNullableReductionNonStrict",
+        "nodeNextModuleResolution1",
+        "pathMappingBasedModuleResolution3_classic",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
