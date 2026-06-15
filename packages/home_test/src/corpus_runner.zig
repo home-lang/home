@@ -11339,10 +11339,18 @@ const harness_prelude =
     \\        pad + "  type: " + JSON.stringify(inspectBlobType(type)) + "\n" +
     \\        pad + "}";
     \\    }
-    \\    function inspectMessageHeaders(headers) {
+    \\    function inspectMessageHeaders(headers, showContentType) {
     \\      const json = headers && typeof headers.toJSON === "function" ? headers.toJSON() : {};
     \\      const keys = Object.keys(json);
-    \\      if (keys.every(key => key === "content-length" || key === "content-type" || key === "user-agent")) return "Headers {}";
+    \\      if (keys.every(key => key === "content-length" || (!showContentType && key === "content-type") || key === "user-agent")) return "Headers {}";
+    \\      if (showContentType) {
+    \\        const visibleKeys = keys.filter(key => key !== "content-length" && key !== "user-agent");
+    \\        if (visibleKeys.length === 0) return "Headers {}";
+    \\        const lines = ["Headers {"];
+    \\        for (const key of visibleKeys) lines.push("  " + JSON.stringify(key) + ": " + JSON.stringify(json[key]) + ",");
+    \\        lines.push("}");
+    \\        return lines.join("\n");
+    \\      }
     \\      return Bun.inspect(headers);
     \\    }
     \\    if ((typeof Blob === "function" && value instanceof Blob) || (value && typeof value === "object" && (Array.isArray(value.__home_blob_bytes) || Array.isArray(value.__home_blob_sparse_parts)))) return inspectBlob(value, 0);
@@ -11409,7 +11417,7 @@ const harness_prelude =
     \\      const bodyRef = bodyValue && bodyValue.__home_file_ref ? bodyValue : null;
     \\      const bodyBlob = typeof Blob === "function" && bodyValue instanceof Blob ? bodyValue : null;
     \\      const bodySize = bodyRef ? bodyRef.size : (bodyBlob ? bodyBlob.size : (typeof bodyValue === "string" ? __home_text_to_utf8_bytes(bodyValue).length : null));
-    \\      const headersText = inspectMessageHeaders(value.headers);
+    \\      const headersText = inspectMessageHeaders(value.headers, true);
     \\      const lines = ["Response" + (bodySize !== null ? " (" + inspectSize(bodySize) + ")" : "") + " {"];
     \\      lines.push("  ok: " + String(value.status >= 200 && value.status < 300) + ",");
     \\      lines.push("  url: " + JSON.stringify(value.url || "") + ",");
