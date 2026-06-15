@@ -4080,6 +4080,11 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "decoratorMetadataElidedImport",
         "wideningWithTopLevelTypeParameter",
         "promiseTypeStrictNull",
+        "controlFlowFunctionLikeCircular1",
+        "uniqueSymbolJs",
+        "selfReferencingFile2",
+        "unusedImports_entireImportDeclaration",
+        "memberVariableDeclarations1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
