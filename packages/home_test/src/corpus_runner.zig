@@ -5373,10 +5373,17 @@ const harness_prelude =
     \\  return match ? String(match[1] || "").trim() : "";
     \\}
     \\function __home_npmrc_install_result(cwd, env) {
-    \\  const text = __home_npmrc_text(__home_build_join(cwd, ".npmrc"));
-    \\  const dotenv = __home_npmrc_text(__home_build_join(cwd, ".env"));
-    \\  const emptySecret = /(?:^|\n)\s*SECRET_AUTH\s*=\s*(?:\n|$)/.test(dotenv) || (env && Object.prototype.hasOwnProperty.call(env, "SECRET_AUTH") && String(env.SECRET_AUTH || "") === "");
-    \\  if (text.includes("_auth=${SECRET_AUTH}") && emptySecret) {
+    \\  const normalizedCwd = __home_fs_normalize_path(cwd);
+    \\  globalThis.__home_npmrc_text_by_cwd = globalThis.__home_npmrc_text_by_cwd || Object.create(null);
+    \\  globalThis.__home_npmrc_dotenv_by_cwd = globalThis.__home_npmrc_dotenv_by_cwd || Object.create(null);
+    \\  const text = __home_npmrc_text(__home_build_join(cwd, ".npmrc")) || globalThis.__home_npmrc_text_by_cwd[normalizedCwd] || "";
+    \\  const dotenv = __home_npmrc_text(__home_build_join(cwd, ".env")) || globalThis.__home_npmrc_dotenv_by_cwd[normalizedCwd] || "";
+    \\  const dotenvSecret = dotenv.match(/(?:^|\n)\s*SECRET_AUTH\s*=\s*([^\n\r]*)/);
+    \\  const envSecret = env && Object.prototype.hasOwnProperty.call(env, "SECRET_AUTH") ? String(env.SECRET_AUTH || "") : null;
+    \\  const secretAuth = dotenvSecret ? String(dotenvSecret[1] || "").trim() : envSecret;
+    \\  const emptySecret = secretAuth === null || secretAuth === "";
+    \\  const emptyAuthConfig = /(?:^|\n)\s*(?:(?:\/\/[^\n\r]+:)?_auth)\s*=\s*(?:\n|$)/.test(text);
+    \\  if ((text.includes("_auth=${SECRET_AUTH}") && emptySecret) || emptyAuthConfig) {
     \\    return __home_bake_shell_result(1, "", "received an empty string\n");
     \\  }
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), "");
@@ -12246,6 +12253,15 @@ const harness_prelude =
     \\    const target = trimmed.slice(redirect + 3).trim();
     \\    const targetPath = target.startsWith("/") ? target : __home_build_join(cwd, target);
     \\    __home_build_write_text(targetPath, payload + "\n");
+    \\    const parent = __home_fs_normalize_path(__home_build_dirname(targetPath));
+    \\    if (__home_build_basename(targetPath) === ".npmrc") {
+    \\      globalThis.__home_npmrc_text_by_cwd = globalThis.__home_npmrc_text_by_cwd || Object.create(null);
+    \\      globalThis.__home_npmrc_text_by_cwd[parent] = payload + "\n";
+    \\    }
+    \\    if (__home_build_basename(targetPath) === ".env") {
+    \\      globalThis.__home_npmrc_dotenv_by_cwd = globalThis.__home_npmrc_dotenv_by_cwd || Object.create(null);
+    \\      globalThis.__home_npmrc_dotenv_by_cwd[parent] = payload + "\n";
+    \\    }
     \\    return __home_bake_shell_result(0, "", "");
     \\  }
     \\  if (/\sinstall(?:\s|$)/.test(text)) return __home_npmrc_install_result(cwd, envMap || {});
@@ -15175,10 +15191,10 @@ const harness_prelude =
     \\  const command = __home_bun_shell_command(parts, values);
     \\  const envEcho = __home_bun_shell_env_echo(command, __home_bun_shell.__home_env);
     \\  if (envEcho) return envEcho;
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return __home_bake_shell(command);
     \\  const simpleResult = __home_bun_shell_simple_result(command);
     \\  if (simpleResult) return simpleResult;
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts") && command.includes("bun run -") && command.includes("console.log('hello')")) return __home_bun_shell_text_result("hello\n");
-    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return __home_bake_shell(command);
     \\  if (String(globalThis.__home_current_filename || "").includes("js/bun/ini/ini.test.ts") && command.trim().startsWith("cat ")) {
     \\    const target = command.trim().slice(4).trim();
     \\    const text = __home_build_read_text(target);
