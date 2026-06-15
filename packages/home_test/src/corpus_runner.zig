@@ -4760,6 +4760,20 @@ const harness_prelude =
     \\    writeLockfile();
     \\    return completed(stdoutHeader + "\n\ninstalled " + linkName + "@github:mishoo/UglifyJS#e219a9a with binaries:\n - uglifyjs\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installGenericGitDependency(rawSpec) {
+    \\    const text = String(rawSpec || "");
+    \\    let depName = "";
+    \\    if (/^dylan-conway\/install-test-3#v1\.0\.[0-2]$/.test(text)) depName = "install-test-3";
+    \\    else if (text === "git@github.com:dylan-conway/install-test-no-packagejson") depName = "install-test-no-packagejson";
+    \\    if (!depName) return null;
+    \\    const pkg = readPackageJson(cwd);
+    \\    const bucket = dependencyBucket();
+    \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
+    \\    pkg[bucket][depName] = text;
+    \\    writePackageJson(cwd, pkg);
+    \\    writeLockfile();
+    \\    return completed(stdoutHeader + "\n\ninstalled " + depName + "@github:" + text + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installRegistry(rawSpec, analyzedName) {
     \\    let alias = null;
     \\    let packageName = String(analyzedName || rawSpec || "");
@@ -4837,6 +4851,8 @@ const harness_prelude =
     \\  if (localResult) return localResult;
     \\  const gitHubResult = installGitHubUglify(spec);
     \\  if (gitHubResult) return gitHubResult;
+    \\  const genericGitResult = installGenericGitDependency(spec);
+    \\  if (genericGitResult) return genericGitResult;
     \\  return installRegistry(spec, null);
     \\}
     \\function __home_spawn_bun_run_bunfig_fixture(options) {
@@ -52100,6 +52116,48 @@ test "bootstrap runner mirrors bun add workspace isolated corpus" {
         \\    version: "0.0.1",
         \\    workspaces: ["packages/*"],
         \\    dependencies: { bar: "workspace:*", baz: "^0.0.3" },
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun add generic git dependency name" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\
+        \\test("bun add generic git dependency name", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo" }));
+        \\  const { stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "dylan-conway/install-test-3#v1.0.0"],
+        \\    cwd: package_dir,
+        \\    stdout: "ignore",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).not.toContain("error:");
+        \\  expect(await exited).toBe(0);
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    dependencies: { "install-test-3": "dylan-conway/install-test-3#v1.0.0" },
         \\  });
         \\});
     ;
