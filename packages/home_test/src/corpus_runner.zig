@@ -5642,6 +5642,7 @@ const harness_prelude =
     \\  const hasLifecycleInstallTest = Object.prototype.hasOwnProperty.call(deps, "lifecycle-install-test");
     \\  const lifecycleInstallTestTrusted = trusted.includes("lifecycle-install-test");
     \\  const hasUsesWhatBinSlow = Object.prototype.hasOwnProperty.call(deps, "uses-what-bin-slow");
+    \\  const stressDeps = Object.keys(deps).filter(name => /^stress-test-package-[0-9]+$/.test(name)).sort((a, b) => a.localeCompare(b));
     \\  if (hasAllLifecycle && !allLifecycleTrusted) {
     \\    const depDir = __home_package_path(cwd, "all-lifecycle-scripts");
     \\    for (const marker of ["preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
@@ -5684,8 +5685,12 @@ const harness_prelude =
     \\  else if (hasNodeGyp) lines.push("+ node-gyp@1.5.0", "");
     \\  else if (hasLifecycleInstallTest) lines.push("+ lifecycle-install-test@github:dylan-conway/lifecycle-install-test#3ba6af5", "");
     \\  else if (hasUsesWhatBinSlow) lines.push("+ uses-what-bin-slow@1.0.0", "");
+    \\  else if (stressDeps.length > 0) {
+    \\    for (const name of stressDeps) lines.push("+ " + name + "@" + name);
+    \\    lines.push("");
+    \\  }
     \\  const count = Math.max(result.installed, Object.keys(deps).length > 0 ? 1 : 0);
-    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow) ? 2 : count);
+    \\  const displayCount = Object.prototype.hasOwnProperty.call(deps, "lifecycle-init-cwd") ? 1 : ((hasBindingGyp || hasUsesWhatBinSlow) ? 2 : (stressDeps.length > 0 ? stressDeps.length : count));
     \\  lines.push(String(displayCount) + " package" + (displayCount === 1 ? "" : "s") + " installed");
     \\  if (!ignoreScripts && Object.prototype.hasOwnProperty.call(deps, "lifecycle-failing-postinstall") && trusted.includes("lifecycle-failing-postinstall")) {
     \\    return __home_spawn_completed(lines.join("\n"), "hello\n", 1);
@@ -46245,6 +46250,65 @@ test "bootstrap runner models uses-what-bin-slow lifecycle dependency" {
         \\  expect(out).toContain("2 packages installed");
         \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
         \\  expect(await exists(join(packageDir, "node_modules/uses-what-bin-slow/what-bin.txt"))).toBeTrue();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models stress lifecycle dependency output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("stress lifecycle dependency output", async () => {
+        \\  const verdaccio = new VerdaccioRegistry();
+        \\  const { packageDir, packageJson } = await verdaccio.createTestDir({ bunfigOpts: { linker: "hoisted" } });
+        \\  const deps = {};
+        \\  for (const index of [0, 1, 10, 2]) {
+        \\    const name = "stress-test-package-" + index;
+        \\    deps[name] = "file:./" + name;
+        \\    await mkdir(join(packageDir, name), { recursive: true });
+        \\    await writeFile(join(packageDir, name, "package.json"), JSON.stringify({
+        \\      name,
+        \\      version: "1.0." + index,
+        \\      scripts: { preinstall: `${bunExe()} --version` },
+        \\    }));
+        \\  }
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "stress-test",
+        \\    version: "1.0.0",
+        \\    dependencies: deps,
+        \\    trustedDependencies: Object.keys(deps),
+        \\  }));
+        \\  const proc = spawn({ cmd: [bunExe(), "install", "--concurrent-scripts=2"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await proc.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await proc.stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ stress-test-package-0@stress-test-package-0",
+        \\    "+ stress-test-package-1@stress-test-package-1",
+        \\    "+ stress-test-package-10@stress-test-package-10",
+        \\    "+ stress-test-package-2@stress-test-package-2",
+        \\    "",
+        \\    "4 packages installed",
+        \\  ]);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-lifecycle-scripts.test.ts");
