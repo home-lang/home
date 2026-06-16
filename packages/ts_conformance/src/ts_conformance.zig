@@ -4181,6 +4181,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "functionParameterArityMismatch",
         "selfReferencingSpreadInLoop",
         "contextualExpressionTypecheckingDoesntBlowStack",
+        "intraBindingPatternReferences",
+        "controlFlowForStatementContinueIntoIncrementor1",
+        "jsdocFunctionTypeFalsePositive",
+        "pathsValidation3",
+        "varianceCallbacksAndIndexedAccesses",
+        "newLineInTypeofInstantiation",
+        "newNonReferenceType",
+        "classExtendsInterfaceThatExtendsClassWithPrivates1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
