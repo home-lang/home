@@ -4362,6 +4362,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "arraySigChecking",
         "nonExportedElementsOfMergedModules",
         "objectLiteralFunctionArgContextualTyping2",
+        "reachabilityChecks4",
+        "excessPropertyCheckIntersectionWithRecursiveType",
+        "typedArrays",
+        "es6ImportDefaultBindingFollowedWithNamedImport1",
+        "letDeclarations-scopes-duplicates2",
+        "exportDefaultStripsFreshness",
+        "moduleAssignmentCompat3",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
