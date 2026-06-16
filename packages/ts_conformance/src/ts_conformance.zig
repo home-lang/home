@@ -4313,6 +4313,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "pathMappingBasedModuleResolution7_node",
         "jsdocAccessEnumType",
         "externModule",
+        "yieldStarContextualType",
+        "taggedTemplatesWithIncompleteTemplateExpressions3",
+        "internalAliasUninitializedModuleInsideLocalModuleWithoutExportAccessError",
+        "typeName1",
+        "typeParamExtendsOtherTypeParam",
+        "unusedImports1",
+        "requireOfJsonFileInJsFile",
+        "declarationEmitComputedPropertyNameSymbol2",
+        "mappedTypeAndIndexSignatureRelation",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
