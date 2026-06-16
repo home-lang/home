@@ -4189,6 +4189,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "newLineInTypeofInstantiation",
         "newNonReferenceType",
         "classExtendsInterfaceThatExtendsClassWithPrivates1",
+        "jsdocClassMissingTypeArguments",
+        "importHelpersES6",
+        "cloduleWithDuplicateMember2",
+        "mutuallyRecursiveCallbacks",
+        "arrayAssignmentTest4",
+        "deeplyNestedCheck",
+        "narrowingMutualSubtypes",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
