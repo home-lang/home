@@ -4849,8 +4849,10 @@ const harness_prelude =
     \\    const pkg = readPackageJson(cwd);
     \\    let bucket = dependencyBucket();
     \\    const existingRegularDependency = pkg.dependencies && typeof pkg.dependencies === "object" && Object.prototype.hasOwnProperty.call(pkg.dependencies, depName);
+    \\    const existingPeerDependency = pkg.peerDependencies && typeof pkg.peerDependencies === "object" && Object.prototype.hasOwnProperty.call(pkg.peerDependencies, depName);
     \\    const reusesInstalledPackage = existingRegularDependency && __home_build_file_exists(__home_build_join(__home_package_path(cwd, depName), "package.json"));
     \\    if (existingRegularDependency) bucket = "dependencies";
+    \\    else if (existingPeerDependency && !args.includes("--dev") && !args.includes("-d") && !args.includes("--optional")) bucket = "peerDependencies";
     \\    addRequest("http://localhost:4873/" + encoded);
     \\    if (!reusesInstalledPackage) addRequest("http://localhost:4873/" + packageName + "-" + version + ".tgz");
     \\    if (transitiveBazRange) {
@@ -4919,6 +4921,28 @@ const harness_prelude =
     \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
     \\  const cwd = String(options && options.cwd || process.cwd());
     \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  if (cmd.includes("--save")) {
+    \\    const spec = cmd.slice(2).find(part => !String(part).startsWith("-"));
+    \\    if (spec) {
+    \\      const raw = String(spec);
+    \\      if (raw.startsWith("file:")) {
+    \\        const body = raw.slice("file:".length).replace(/\\\\/g, "/");
+    \\        const absolute = body.startsWith("/") ? body : __home_build_join(cwd, body);
+    \\        const depPkg = __home_pkg_json(__home_build_join(absolute, "package.json")) || {};
+    \\        const depName = String(depPkg.name || "");
+    \\        if (depName) {
+    \\          if (!pkg.dependencies || typeof pkg.dependencies !== "object") pkg.dependencies = {};
+    \\          const display = body.startsWith("/") ? __home_build_relative(cwd, absolute) : body.replace(/^\.\//, "");
+    \\          pkg.dependencies[depName] = "file:" + display;
+    \\          __home_pkg_write_json(__home_build_join(cwd, "package.json"), pkg);
+    \\          __home_write_installed_package(cwd, depName, depPkg);
+    \\          __home_copy_local_package_files(absolute, __home_package_path(cwd, depName));
+    \\          __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-add-lock");
+    \\          return __home_spawn_completed("bun add v1.0.0\n\ninstalled " + depName + "@" + display + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\        }
+    \\      }
+    \\    }
+    \\  }
     \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
     \\  if (String(deps["uglify-js"] || "") === "bun@github.com:mishoo/UglifyJS.git" && __home_build_file_exists(__home_build_join(__home_package_path(cwd, "uglify-js"), "package.json"))) {
     \\    return __home_spawn_completed("bun install v1.0.0\n\nChecked 1 install across 2 packages (no changes)", "", 0);
@@ -52416,6 +52440,106 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun add install save redirects and peers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, tmpdirSync } from "harness";
+        \\import { join, relative } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\async function expectInstallSaveRedirect(saveFlagFirst) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const add_dir = tmpdirSync();
+        \\  const fooPackage = { name: "foo", version: "0.0.1" };
+        \\  await writeFile(join(add_dir, "package.json"), JSON.stringify(fooPackage));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "bar", version: "0.0.2" }));
+        \\  const add_path = relative(package_dir, add_dir);
+        \\  const args = [`file:${add_path}`.replace(/\\/g, "\\\\"), "--save"];
+        \\  if (saveFlagFirst) args.reverse();
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install", ...args],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    `installed foo@${add_path.replace(/\\/g, "/")}`,
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "foo"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "foo", "package.json")).json()).toEqual(fooPackage);
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\    dependencies: { foo: `file:${add_path.replace(/\\/g, "/")}` },
+        \\  });
+        \\}
+        \\
+        \\test("install --save local dependency redirects to add", async () => {
+        \\  await expectInstallSaveRedirect(true);
+        \\});
+        \\
+        \\test("install local dependency --save redirects to add", async () => {
+        \\  await expectInstallSaveRedirect(false);
+        \\});
+        \\
+        \\test("bun add updates an existing peer dependency bucket", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    peerDependencies: { bar: "~0.0.1" },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "bar"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed bar@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/bar`, `${root_url}/bar-0.0.2.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({ name: "bar", version: "0.0.2" });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    peerDependencies: { bar: "^0.0.2" },
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add registry names and buckets" {
