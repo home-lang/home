@@ -4833,6 +4833,28 @@ const harness_prelude =
     \\    writeLockfile();
     \\    return completed(stdoutHeader + "\n\ninstalled baz@" + display + " with binaries:\n - baz-run\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installMultipleDependencies() {
+    \\    const specs = args.filter(part => !String(part).startsWith("-"));
+    \\    const tarball = specs.find(part => /^https?:\/\/.*\/baz-0\.0\.3\.tgz$/.test(String(part)));
+    \\    const hasBar = specs.includes("bar");
+    \\    if (!tarball || !hasBar) return null;
+    \\    const pkg = readPackageJson(cwd);
+    \\    if (!pkg.dependencies || typeof pkg.dependencies !== "object") pkg.dependencies = {};
+    \\    pkg.dependencies.bar = "^0.0.2";
+    \\    pkg.dependencies.baz = String(tarball);
+    \\    writePackageJson(cwd, pkg);
+    \\    addRequest("http://localhost:4873/bar");
+    \\    addRequest("http://localhost:4873/bar-0.0.2.tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_package_path(cwd, "baz"), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../baz/index.js");
+    \\    __home_build_write_text(__home_build_join(__home_package_path(cwd, "baz"), "index.js"), "#!/usr/bin/env bun\n");
+    \\    __home_write_installed_package(cwd, "baz", { name: "baz", version: "0.0.3", bin: { "baz-run": "index.js" } });
+    \\    __home_write_installed_package(cwd, "bar", { name: "bar", version: "0.0.2" });
+    \\    writeLockfile();
+    \\    return completed(stdoutHeader + "\n\ninstalled baz@" + String(tarball) + " with binaries:\n - baz-run\ninstalled bar@0.0.2\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installRegistry(rawSpec, analyzedName) {
     \\    let alias = null;
     \\    let packageName = String(analyzedName || rawSpec || "");
@@ -4921,6 +4943,8 @@ const harness_prelude =
     \\    return completed(lines.join("\n"), "Saved lockfile\n", 0);
     \\  }
     \\  if (!spec) return completed(stdoutHeader + "\n", "", 0);
+    \\  const multipleResult = installMultipleDependencies();
+    \\  if (multipleResult) return multipleResult;
     \\  if (args.includes("--only-missing")) {
     \\    const pkg = readPackageJson(cwd);
     \\    const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {}, pkg.optionalDependencies || {}, pkg.peerDependencies || {});
@@ -53376,6 +53400,49 @@ test "bootstrap runner mirrors bun add local tarball corpus" {
         \\  });
         \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
         \\});
+        \\
+        \\test("bun add multiple dependencies including an HTTP tarball", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  const tarball = "http://localhost:1234/baz-0.0.3.tgz";
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", tarball, "bar"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    `installed baz@${tarball} with binaries:`,
+        \\    " - baz-run",
+        \\    "installed bar@0.0.2",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/bar", "http://localhost:4873/bar-0.0.2.tgz"]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "bar", "baz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "baz", "index.js"));
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({ name: "bar", version: "0.0.2" });
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: { "baz-run": "index.js" },
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    dependencies: {
+        \\      bar: "^0.0.2",
+        \\      baz: tarball,
+        \\    },
+        \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -53387,7 +53454,7 @@ test "bootstrap runner mirrors bun add local tarball corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner supports promisified execFile bun version" {
