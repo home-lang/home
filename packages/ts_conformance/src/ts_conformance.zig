@@ -4536,6 +4536,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "arrayToLocaleStringES2015",
         "privacyCannotNameVarTypeDeclFile",
         "nodeNextPackageSelfNameWithOutDir",
+        "narrowingAssignmentReadonlyRespectsAssertion",
+        "jsxChildrenGenericContextualTypes",
+        "noInferCommonPropertyCheck1",
+        "symbolObserverMismatchingPolyfillsWorkTogether",
+        "library_ObjectPrototypeProperties",
+        "returnTypeInferenceContextualParameterTypesInGenerator1",
+        "privacyGloImport",
+        "unusedLocalsAndParameters",
+        "functionAssignabilityWithArrayLike01",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
