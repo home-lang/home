@@ -4332,6 +4332,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "importAndVariableDeclarationConflict3",
         "simpleRecursionWithBaseCase1",
         "typedArraysSubarray",
+        "asyncFunctionReturnExpressionErrorSpans",
+        "objectFreezeLiteralsDontWiden",
+        "initializedDestructuringAssignmentTypes",
+        "pathsValidation2",
+        "recursiveConditionalCrash4",
+        "prefixUnaryOperatorsOnExportedVariables",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
