@@ -4447,6 +4447,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "contextualTypeIterableUnions",
         "emitCapturingThisInTupleDestructuring1",
         "emitBundleWithShebang1",
+        "uncalledFunctionChecksInConditional",
+        "circularConstraintYieldsAppropriateError",
+        "homomorphicMappedTypeWithNonHomomorphicInstantiationSpreadable1",
+        "classWithOverloadImplementationOfWrongName2",
+        "pathMappingBasedModuleResolution6_node",
+        "unusedIdentifiersConsolidated1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
