@@ -53210,10 +53210,35 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
         \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
         \\
         \\test("bun add generic git dependency name", async () => {
+        \\  for (const dep of [
+        \\    "dylan-conway/install-test-3#v1.0.0",
+        \\    "dylan-conway/install-test-3#v1.0.1",
+        \\    "dylan-conway/install-test-3#v1.0.2",
+        \\  ]) {
+        \\    await dummyBeforeEach({ linker: "hoisted" });
+        \\    await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo" }));
+        \\    const { stderr, exited } = spawn({
+        \\      cmd: [bunExe(), "add", dep],
+        \\      cwd: package_dir,
+        \\      stdout: "ignore",
+        \\      stderr: "pipe",
+        \\      env,
+        \\    });
+        \\    expect(await stderr.text()).not.toContain("error:");
+        \\    expect(await exited).toBe(0);
+        \\    expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\      name: "foo",
+        \\      dependencies: { "install-test-3": dep },
+        \\    });
+        \\  }
+        \\});
+        \\
+        \\test("bun add generic git dependency without package json on default branch", async () => {
         \\  await dummyBeforeEach({ linker: "hoisted" });
         \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo" }));
+        \\  const dep = "git@github.com:dylan-conway/install-test-no-packagejson";
         \\  const { stderr, exited } = spawn({
-        \\    cmd: [bunExe(), "add", "dylan-conway/install-test-3#v1.0.0"],
+        \\    cmd: [bunExe(), "add", dep],
         \\    cwd: package_dir,
         \\    stdout: "ignore",
         \\    stderr: "pipe",
@@ -53223,7 +53248,7 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
         \\  expect(await exited).toBe(0);
         \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
         \\    name: "foo",
-        \\    dependencies: { "install-test-3": "dylan-conway/install-test-3#v1.0.0" },
+        \\    dependencies: { "install-test-no-packagejson": dep },
         \\  });
         \\});
         \\
@@ -53270,7 +53295,7 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add registry package without announced bins" {
