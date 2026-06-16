@@ -4251,6 +4251,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "typePredicateStructuralMatch",
         "contextualTypingOfConditionalExpression2",
         "unusedTypeParameters5",
+        "moduleElementsInWrongContext3",
+        "functionSignatureAssignmentCompat1",
+        "customAsyncIterator",
+        "doYouNeedToChangeYourTargetLibraryES2016Plus",
+        "callOverloads3",
+        "recursivelyExpandingUnionNoStackoverflow",
+        "nodeNextPackageImportMapRootDir",
+        "objectFreeze",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
