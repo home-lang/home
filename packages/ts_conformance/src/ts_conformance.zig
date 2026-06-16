@@ -4215,6 +4215,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "conflictingDeclarationsImportFromNamespace1",
         "moduleAssignmentCompat2",
         "isolatedDeclarationErrorsAugmentation",
+        "controlFlowForFunctionLike1",
+        "exportInterfaceClassAndValueWithDuplicatesInImportList",
+        "contextualTypingWithGenericAndNonGenericSignature",
+        "undefinedTypeArgument1",
+        "excessPropertyCheckWithUnions",
+        "exportDefaultInterfaceAndFunctionOverloads",
+        "recursiveTupleTypes1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
