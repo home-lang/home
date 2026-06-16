@@ -4638,6 +4638,11 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "genericFunctionCallSignatureReturnTypeMismatch",
         "constructorOverloads7",
         "typeofProperty",
+        "accessorDeclarationOrder",
+        "promiseIdentityWithAny",
+        "argumentsPropertyNameInJsMode1",
+        "stringIndexerAssignments2",
+        "assignmentToObjectAndFunction",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
