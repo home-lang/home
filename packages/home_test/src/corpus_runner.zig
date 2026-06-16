@@ -53191,12 +53191,14 @@ test "bootstrap runner mirrors bun add workspace isolated corpus" {
         \\import { mkdir, readlink, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toBeWorkspaceLink, toHaveBins } from "harness";
         \\import { join } from "path";
-        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
         \\
         \\expect.extend({ toHaveBins, toBeValidBin, toBeWorkspaceLink });
         \\
         \\test("bun add workspace isolated", async () => {
         \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, { "0.0.3": { bin: { "baz-run": "index.js" } } }));
         \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
         \\    name: "foo",
         \\    version: "0.0.1",
@@ -53222,16 +53224,25 @@ test "bootstrap runner mirrors bun add workspace isolated corpus" {
         \\    "2 packages installed",
         \\  ]);
         \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/baz`, `${root_url}/baz-0.0.3.tgz`]);
+        \\  expect(requested).toBe(2);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".bun", ".cache", expect.stringContaining(".old_modules-"), "bar", "baz"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
         \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "baz", "index.js"));
         \\  expect(await readlink(join(package_dir, "node_modules", "bar"))).toBeWorkspaceLink(join("..", "packages", "bar"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "baz"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: { "baz-run": "index.js" },
+        \\  });
         \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
         \\    name: "foo",
         \\    version: "0.0.1",
         \\    workspaces: ["packages/*"],
         \\    dependencies: { bar: "workspace:*", baz: "^0.0.3" },
         \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
