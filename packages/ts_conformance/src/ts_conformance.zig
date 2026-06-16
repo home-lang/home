@@ -4565,6 +4565,9 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "constraintWithIndexedAccess",
         "amdLikeInputDeclarationEmit",
         "destructuredLateBoundNameHasCorrectTypes",
+        "forOfStringConstituents",
+        "genericSpecializations3",
+        "invalidUnicodeEscapeSequance3",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
