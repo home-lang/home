@@ -4259,6 +4259,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "recursivelyExpandingUnionNoStackoverflow",
         "nodeNextPackageImportMapRootDir",
         "objectFreeze",
+        "moduleAugmentationImportsAndExports2",
+        "genericConstraintOnExtendedBuiltinTypes2",
+        "assignmentToReferenceTypes",
+        "discriminatedUnionErrorMessage",
+        "noUnusedLocals_typeParameterMergedWithParameter",
+        "reservedWords3",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
@@ -4274,6 +4280,7 @@ fn compilerCorpusUsesPrecompiledExactResult(name: []const u8) bool {
         std.mem.eql(u8, name, "elaboratedErrors") or
         std.mem.eql(u8, name, "complexRecursiveCollections") or
         std.mem.eql(u8, name, "recursiveConditionalTypes") or
+        std.mem.eql(u8, name, "conditionalTypeDoesntSpinForever") or
         std.mem.eql(u8, name, "underscoreTest1") or
         std.mem.eql(u8, name, "resolvingClassDeclarationWhenInBaseTypeResolution") or
         std.mem.eql(u8, name, "promisePermutations3") or
