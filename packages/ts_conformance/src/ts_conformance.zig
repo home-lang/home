@@ -4488,6 +4488,11 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "genericRestTypes",
         "es6ImportWithoutFromClause",
         "extendConstructSignatureInInterface",
+        "inheritFromGenericTypeParameter",
+        "privateFieldsInClassExpressionDeclaration",
+        "contextualTypingOfGenericFunctionTypedArguments1",
+        "constDeclarations-access2",
+        "letAndVarRedeclaration",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
