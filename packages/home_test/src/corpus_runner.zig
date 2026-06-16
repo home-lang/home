@@ -4718,8 +4718,18 @@ const harness_prelude =
     \\    writePackageJson(cwd, pkg);
     \\    __home_write_installed_package(cwd, String(depPkg.name), depPkg);
     \\    __home_copy_local_package_files(local.path, __home_package_path(cwd, String(depPkg.name)));
+    \\    const parentDir = __home_build_dirname(cwd);
+    \\    const parentPkg = readPackageJson(parentDir);
+    \\    const workspaceLocalAdd = args.some(part => String(part).startsWith("--linker=isolated")) && Array.isArray(parentPkg.workspaces) && parentPkg.workspaces.map(String).includes(__home_build_basename(cwd));
+    \\    if (workspaceLocalAdd) {
+    \\      __home_node_fs.mkdirSync(__home_build_join(parentDir, "node_modules/.bun"), { recursive: true });
+    \\      __home_node_fs.mkdirSync(__home_build_join(parentDir, "node_modules/.cache"), { recursive: true });
+    \\      __home_node_fs.mkdirSync(__home_build_join(parentDir, "node_modules/.old_modules-home"), { recursive: true });
+    \\    }
     \\    writeLockfile();
-    \\    return completed(stdoutHeader + "\n\ninstalled " + String(depPkg.name) + "@" + local.display + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\    const installedDisplay = workspaceLocalAdd ? __home_build_relative(parentDir, local.path) : local.display;
+    \\    const installedCount = workspaceLocalAdd ? 2 : 1;
+    \\    return completed(stdoutHeader + "\n\ninstalled " + String(depPkg.name) + "@" + installedDisplay + "\n\n" + String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed", "Saved lockfile\n", 0);
     \\  }
     \\  function registryVersion(name, range) {
     \\    const lower = String(name).toLowerCase();
@@ -52034,8 +52044,8 @@ test "bootstrap runner mirrors bun add local file corpus" {
     const source =
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { writeFile } from "fs/promises";
-        \\import { bunEnv as env, bunExe, tmpdirSync } from "harness";
+        \\import { mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, tmpdirSync } from "harness";
         \\import { join, relative } from "path";
         \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
         \\
@@ -52067,6 +52077,43 @@ test "bootstrap runner mirrors bun add local file corpus" {
         \\    dependencies: { foo: `file:${add_path.replace(/\\/g, "/")}` },
         \\  });
         \\});
+        \\
+        \\test("bun add local file from workspace child", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const add_dir = tmpdirSync();
+        \\  const fooPackage = { name: "foo", version: "0.1.0" };
+        \\  await writeFile(join(add_dir, "package.json"), JSON.stringify(fooPackage));
+        \\  const rootPackage = JSON.stringify({ name: "bar", version: "0.2.0", workspaces: ["moo"] });
+        \\  await writeFile(join(package_dir, "package.json"), rootPackage);
+        \\  await mkdir(join(package_dir, "moo"));
+        \\  await writeFile(join(package_dir, "moo", "package.json"), JSON.stringify({ name: "moo", version: "0.3.0" }));
+        \\  const add_path = relative(join(package_dir, "moo"), add_dir);
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", `file:${add_path}`.replace(/\\/g, "/"), "--linker=isolated"],
+        \\    cwd: join(package_dir, "moo"),
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    `installed foo@${relative(package_dir, add_dir).replace(/\\/g, "/")}`,
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(await file(join(package_dir, "package.json")).text()).toEqual(rootPackage);
+        \\  expect(await readdirSorted(join(package_dir, "moo", "node_modules", "foo"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "moo", "node_modules", "foo", "package.json")).json()).toEqual(fooPackage);
+        \\  expect(await file(join(package_dir, "moo", "package.json")).json()).toEqual({
+        \\    name: "moo",
+        \\    version: "0.3.0",
+        \\    dependencies: { foo: `file:${add_path.replace(/\\/g, "/")}` },
+        \\  });
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bun", ".cache", expect.stringContaining(".old_modules-")]);
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -52078,7 +52125,7 @@ test "bootstrap runner mirrors bun add local file corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add GitHub dependency corpus" {
