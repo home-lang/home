@@ -4620,6 +4620,10 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "augmentedTypesEnum2",
         "thisAssignmentInNamespaceDeclaration1",
         "taggedTemplatesWithIncompleteTemplateExpressions6",
+        "typeInferenceConflictingCandidates",
+        "collisionArgumentsInterfaceMembers",
+        "amdDependencyCommentName4",
+        "typeGuardNarrowsIndexedAccessOfKnownProperty8",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
