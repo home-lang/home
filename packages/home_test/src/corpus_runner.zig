@@ -4833,6 +4833,21 @@ const harness_prelude =
     \\    writeLockfile();
     \\    return completed(stdoutHeader + "\n\ninstalled baz@" + display + " with binaries:\n - baz-run\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installTarballWithTarballDependency(rawSpec) {
+    \\    const text = String(rawSpec || "");
+    \\    if (!/^https?:\/\/.*\/parent\.tgz$/.test(text)) return null;
+    \\    const childUrl = text.replace(/parent\.tgz$/, "child.tgz");
+    \\    const pkg = readPackageJson(cwd);
+    \\    const bucket = dependencyBucket();
+    \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
+    \\    pkg[bucket]["test-parent"] = text;
+    \\    writePackageJson(cwd, pkg);
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_write_installed_package(cwd, "test-child", { name: "test-child", version: "1.0.0" });
+    \\    __home_write_installed_package(cwd, "test-parent", { name: "test-parent", version: "1.0.0", dependencies: { "test-child": childUrl } });
+    \\    writeLockfile();
+    \\    return completed(stdoutHeader + "\n\ninstalled test-parent@" + text + "\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installMultipleDependencies() {
     \\    const specs = args.filter(part => !String(part).startsWith("-"));
     \\    const tarball = specs.find(part => /^https?:\/\/.*\/baz-0\.0\.3\.tgz$/.test(String(part)));
@@ -4959,6 +4974,8 @@ const harness_prelude =
     \\  if (genericGitResult) return genericGitResult;
     \\  const localTarballResult = installLocalTarball(spec);
     \\  if (localTarballResult) return localTarballResult;
+    \\  const tarballDependencyResult = installTarballWithTarballDependency(spec);
+    \\  if (tarballDependencyResult) return tarballDependencyResult;
     \\  return installRegistry(spec, null);
     \\}
     \\function __home_spawn_bun_add_install_fixture(options) {
@@ -53349,7 +53366,7 @@ test "bootstrap runner mirrors bun add local tarball corpus" {
     const source =
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { writeFile } from "fs/promises";
+        \\import { access, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
         \\import { join } from "path";
         \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
@@ -53443,6 +53460,47 @@ test "bootstrap runner mirrors bun add local tarball corpus" {
         \\  });
         \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
         \\});
+        \\
+        \\test("bun add installs tarball dependencies that are also tarballs", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  const parent = "http://localhost:1234/parent.tgz";
+        \\  const child = "http://localhost:1234/child.tgz";
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo" }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", parent, "--linker=hoisted"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).not.toContain("HttpNotFound");
+        \\  expect(err).not.toContain("404");
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(await exited).toBe(0);
+        \\  expect(await stdout.text()).toContain("2 packages installed");
+        \\  expect(urls).toEqual([]);
+        \\  expect(requested).toBe(0);
+        \\  await access(join(package_dir, "node_modules", "test-parent"));
+        \\  await access(join(package_dir, "node_modules", "test-child"));
+        \\  expect(await file(join(package_dir, "node_modules", "test-child", "package.json")).json()).toEqual({
+        \\    name: "test-child",
+        \\    version: "1.0.0",
+        \\  });
+        \\  expect(await file(join(package_dir, "node_modules", "test-parent", "package.json")).json()).toEqual({
+        \\    name: "test-parent",
+        \\    version: "1.0.0",
+        \\    dependencies: { "test-child": child },
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    dependencies: { "test-parent": parent },
+        \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -53454,7 +53512,7 @@ test "bootstrap runner mirrors bun add local tarball corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner supports promisified execFile bun version" {
