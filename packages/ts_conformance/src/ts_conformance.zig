@@ -4576,6 +4576,18 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "moduleResolutionWithExtensions_unexpected2",
         "symbolLinkDeclarationEmitModuleNames",
         "parameterReferenceInInitializer1",
+        "reachabilityChecks11",
+        "overload1",
+        "capturedLetConstInLoop7_ES6",
+        "classFieldSuperNotAccessibleJs",
+        "esModuleInteropDefaultImports",
+        "genericConstraint1",
+        "requireOfJsonFileWithModuleNodeResolutionEmitSystem",
+        "augmentExportEquals3_1",
+        "controlFlowPropertyDeclarations",
+        "mergeSymbolRexportFunction",
+        "circularResolvedSignature",
+        "jsxNamespaceGlobalReexportMissingAliasTarget",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
