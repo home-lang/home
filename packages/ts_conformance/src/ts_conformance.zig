@@ -4169,6 +4169,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "excessPropertyCheckIntersectionWithIndexSignature",
         "signatureLengthMismatchInOverload",
         "arrayDestructuringInSwitch2",
+        "externalModuleRefernceResolutionOrderInImportDeclaration",
+        "jsFileCompilationAmbientVarDeclarationSyntax",
+        "baseClassImprovedMismatchErrors",
+        "classExtendsClauseClassNotReferringConstructor",
+        "errorElaboration",
+        "propertiesAndIndexers2",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
