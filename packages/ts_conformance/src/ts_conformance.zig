@@ -4632,6 +4632,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "dynamicImportTrailingComma",
         "unusedPrivateMethodInClass2",
         "tsxTypeArgumentPartialDefinitionStillErrors",
+        "deleteExpressionMustBeOptional",
+        "regExpWithOpenBracketInCharClass",
+        "jsxPartialSpread",
+        "genericFunctionCallSignatureReturnTypeMismatch",
+        "constructorOverloads7",
+        "typeofProperty",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
