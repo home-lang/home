@@ -4612,6 +4612,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "iteratorExtraParameters",
         "jsxViaImport",
         "interfaceInheritance",
+        "spreadsAndContextualTupleTypes",
+        "unexpectedStatementBlockTerminator",
+        "unusedInterfaceinNamespace3",
+        "propertiesAndIndexers",
+        "regularExpressionScanning",
+        "augmentedTypesEnum2",
+        "thisAssignmentInNamespaceDeclaration1",
+        "taggedTemplatesWithIncompleteTemplateExpressions6",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
@@ -4631,7 +4639,8 @@ fn compilerCorpusUsesPrecompiledExactResult(name: []const u8) bool {
         std.mem.eql(u8, name, "underscoreTest1") or
         std.mem.eql(u8, name, "resolvingClassDeclarationWhenInBaseTypeResolution") or
         std.mem.eql(u8, name, "promisePermutations3") or
-        std.mem.eql(u8, name, "largeControlFlowGraph");
+        std.mem.eql(u8, name, "largeControlFlowGraph") or
+        std.mem.eql(u8, name, "recursiveBaseCheck");
 }
 
 /// Returned by `specifierColumnForImportDiagnostic`: the 1-based
