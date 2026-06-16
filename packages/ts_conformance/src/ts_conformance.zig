@@ -4556,6 +4556,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "objectLitStructuralTypeMismatch",
         "nonNullableTypes1",
         "targetTypeBaseCalls",
+        "lambdaArgCrash",
+        "parserUnparsedTokenCrash1",
+        "crashInYieldStarInAsyncFunction",
+        "heterogeneousArrayAndOverloads",
+        "es6ImportEqualsExportModuleEs2015Error",
+        "unmetTypeConstraintInImportCall",
+        "constraintWithIndexedAccess",
+        "amdLikeInputDeclarationEmit",
+        "destructuredLateBoundNameHasCorrectTypes",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
