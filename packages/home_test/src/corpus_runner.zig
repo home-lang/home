@@ -4779,12 +4779,14 @@ const harness_prelude =
     \\    const pkg = readPackageJson(cwd);
     \\    const bucket = dependencyBucket();
     \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
+    \\    const reusesInstalledPackage = pkg.dependencies && typeof pkg.dependencies === "object" && Object.prototype.hasOwnProperty.call(pkg.dependencies, linkName) && __home_build_file_exists(__home_build_join(__home_package_path(cwd, linkName), "package.json"));
     \\    pkg[bucket][linkName] = isScpGitUrl ? scpMarker : marker;
     \\    writePackageJson(cwd, pkg);
     \\    writeUglifyGitPackage(linkName, aliasName, isScpGitUrl ? "9d05c118f06c3b4c.git" : null);
     \\    writeLockfile();
     \\    const display = isScpGitUrl ? "git+ssh://bun@github.com:mishoo/UglifyJS.git" : "github:mishoo/UglifyJS#e219a9a";
-    \\    return completed(stdoutHeader + "\n\ninstalled " + linkName + "@" + display + " with binaries:\n - uglifyjs\n\n1 package installed", "Saved lockfile\n", 0);
+    \\    const footer = reusesInstalledPackage ? "" : "\n\n1 package installed";
+    \\    return completed(stdoutHeader + "\n\ninstalled " + linkName + "@" + display + " with binaries:\n - uglifyjs" + footer, "Saved lockfile\n", 0);
     \\  }
     \\  function installGenericGitDependency(rawSpec) {
     \\    const text = String(rawSpec || "");
@@ -52121,6 +52123,23 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\    version: "0.0.1",
         \\    dependencies: { "uglify-js": "mishoo/UglifyJS#v3.14.1" },
         \\  });
+        \\  const repeat = spawn({
+        \\    cmd: [bunExe(), "add", "mishoo/UglifyJS#v3.14.1"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await repeat.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await repeat.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed uglify-js@github:mishoo/UglifyJS#e219a9a with binaries:",
+        \\    " - uglifyjs",
+        \\  ]);
+        \\  expect(await repeat.exited).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["@GH@mishoo-UglifyJS-e219a9a@@@1"]);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
