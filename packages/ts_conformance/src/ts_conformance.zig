@@ -4462,6 +4462,17 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "strictSubtypeAndNarrowing",
         "iteratorsAndStrictNullChecks",
         "namespaceMergedWithImportAliasNoCrash",
+        "moduleResolution_relativeImportJsFile_noImplicitAny",
+        "fuzzy",
+        "checkMergedGlobalUMDSymbol",
+        "parametersSyntaxErrorNoCrash3",
+        "implicitAnyGetAndSetAccessorWithAnyReturnType",
+        "unusedNamespaceInModule",
+        "funClodule",
+        "abstractPropertyNegative",
+        "duplicateLocalVariable4",
+        "letDeclarations-useBeforeDefinition",
+        "enumUsedBeforeDeclaration",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
