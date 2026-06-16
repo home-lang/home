@@ -4175,6 +4175,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "classExtendsClauseClassNotReferringConstructor",
         "errorElaboration",
         "propertiesAndIndexers2",
+        "inferentialTypingWithObjectLiteralProperties",
+        "assignmentCompatability42",
+        "noUnusedLocals_writeOnly",
+        "functionParameterArityMismatch",
+        "selfReferencingSpreadInLoop",
+        "contextualExpressionTypecheckingDoesntBlowStack",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
