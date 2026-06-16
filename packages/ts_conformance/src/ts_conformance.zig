@@ -4517,6 +4517,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "constDeclarations-errors",
         "exportDefaultForNonInstantiatedModule",
         "unusedLocalsStartingWithUnderscore",
+        "exportDefaultClassInNamespace",
+        "arrayAssignmentTest1",
+        "destructureTupleWithVariableElement",
+        "mappedTypeWithAsClauseAndLateBoundProperty",
+        "sourceMapValidationDestructuringVariableStatementArrayBindingPattern2",
+        "inferFromGenericFunctionReturnTypes1",
+        "importHelpersNoHelpers",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
