@@ -1501,6 +1501,12 @@ passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models the
 the corpus. Native parity still requires Home's real CLI fetch path to
 propagate the configured user agent through HTTP requests.
 
+The copied `cli/watch/watcher-trace.test.ts` fixture now passes in Home as
+`4` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
+`BUN_WATCHER_TRACE` file creation, JSON watch event shape, empty trace
+paths, and append behavior across reloads. Native parity still requires
+Home's real watcher to emit trace files from filesystem events.
+
 The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
 `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
 explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`
