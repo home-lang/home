@@ -4232,6 +4232,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "noInferUnionExcessPropertyCheck1",
         "dynamicImportInDefaultExportExpression",
         "typeInferenceReturnTypeCallback",
+        "cf",
+        "typePredicateInLoop",
+        "mappedTypeInferenceFromApparentType",
+        "arrayFromAsync",
+        "typeofAmbientExternalModules",
+        "discriminantNarrowingCouldBeCircular",
+        "primaryExpressionMods",
+        "accessorInAmbientContextES5",
+        "intersectionsOfLargeUnions2",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
