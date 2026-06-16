@@ -52097,6 +52097,69 @@ test "bootstrap runner mirrors bun add local file corpus" {
         \\  expect(await file(join(package_dir, "package.json")).text()).toEqual(JSON.stringify({ name: "bar", version: "0.0.2" }));
         \\});
         \\
+        \\test("bun add accepts local file protocol prefixes", async () => {
+        \\  for (const pathType of ["absolute", "relative"]) {
+        \\    for (const protocolPrefix of ["file:///", "file://", "file:/", "file:", "", "//////"]) {
+        \\      await dummyBeforeEach({ linker: "hoisted" });
+        \\      const add_dir = tmpdirSync();
+        \\      await writeFile(join(add_dir, "package.json"), JSON.stringify({ name: "foo", version: "1.2.3" }));
+        \\      await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "bar", version: "2.3.4" }));
+        \\      const add_path_rel = relative(package_dir, add_dir);
+        \\      const add_path_abs = add_dir;
+        \\      const add_dep = `${protocolPrefix}${pathType === "relative" && protocolPrefix !== "//////" ? add_path_rel : add_path_abs}`;
+        \\      const { stdout, stderr, exited } = spawn({
+        \\        cmd: [bunExe(), "add", add_dep],
+        \\        cwd: package_dir,
+        \\        stdout: "pipe",
+        \\        stderr: "pipe",
+        \\        env,
+        \\      });
+        \\      expect(await stderr.text()).toContain("Saved lockfile");
+        \\      expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\        expect.stringContaining("bun add v1."),
+        \\        "",
+        \\        `installed foo@${add_path_rel.replace(/\\/g, "/")}`,
+        \\        "",
+        \\        "1 package installed",
+        \\      ]);
+        \\      expect(await exited).toBe(0);
+        \\    }
+        \\  }
+        \\});
+        \\
+        \\test("bun add rejects invalid local dependency formats", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const add_dir = tmpdirSync();
+        \\  await writeFile(join(add_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "bar", version: "0.0.2" }));
+        \\  const add_path = relative(package_dir, add_dir).replace(/\\/g, "\\\\");
+        \\  const dep = `fileblah://${add_path}`;
+        \\  const invalidProtocol = spawn({
+        \\    cmd: [bunExe(), "add", dep],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await invalidProtocol.stderr.text()).toContain(`error: unrecognised dependency format: ${dep}`);
+        \\  expect(await invalidProtocol.stdout.text()).toEqual(expect.stringContaining("bun add v1."));
+        \\  expect(await invalidProtocol.exited).toBe(1);
+        \\  expect(await file(join(package_dir, "package.json")).text()).toEqual(JSON.stringify({ name: "bar", version: "0.0.2" }));
+        \\
+        \\  const longDep = "a".repeat(8000);
+        \\  const tooLong = spawn({
+        \\    cmd: [bunExe(), "add", longDep],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await tooLong.stderr.text()).toContain(`error: unrecognised dependency format: ${longDep}`);
+        \\  expect(await tooLong.stdout.text()).toEqual(expect.stringContaining("bun add v1."));
+        \\  expect(await tooLong.exited).toBe(1);
+        \\  expect(await file(join(package_dir, "package.json")).text()).toEqual(JSON.stringify({ name: "bar", version: "0.0.2" }));
+        \\});
+        \\
         \\test("bun add --only-missing skips existing dependency", async () => {
         \\  await dummyBeforeEach({ linker: "hoisted" });
         \\  const urls = [];
@@ -52226,7 +52289,7 @@ test "bootstrap runner mirrors bun add local file corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add GitHub dependency corpus" {
