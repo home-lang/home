@@ -16863,6 +16863,13 @@ pub const Parser = struct {
                     last_child_end = self.hir.spanOf(child).end;
                 },
                 .open_brace => {
+                    if (self.jsxCommentExpressionEnd(t.span.start)) |comment_end| {
+                        while (self.peek().kind != .eof and self.peek().span.end <= comment_end) _ = self.advance();
+                        const node = try self.builder.addJsxExpression(.{ .start = t.span.start, .end = comment_end }, hir_mod.none_node_id);
+                        try out.append(self.gpa, node);
+                        last_child_end = comment_end;
+                        continue;
+                    }
                     _ = self.advance();
                     if (self.peek().kind == .close_brace) {
                         _ = self.advance();
@@ -16916,6 +16923,15 @@ pub const Parser = struct {
                 },
             }
         }
+    }
+
+    fn jsxCommentExpressionEnd(self: *const Parser, start: u32) ?u32 {
+        if (start + 3 > self.source.len) return null;
+        if (!std.mem.startsWith(u8, self.source[start..], "{/*")) return null;
+        const body_start = start + 3;
+        const rel = std.mem.indexOf(u8, self.source[body_start..], "*/}") orelse return null;
+        const end = body_start + rel + 3;
+        return @intCast(end);
     }
 
     /// Scan a JSX child-text byte range and emit TS1382 for each
@@ -22438,6 +22454,19 @@ test "parser: TS1381/TS1382 stay clean for well-formed JSX content" {
         try T.expectEqual(@as(u32, 0), countDiag(s, 1381));
         try T.expectEqual(@as(u32, 0), countDiag(s, 1382));
     }
+}
+
+test "parser: JSX block comments do not report stray closing brace" {
+    var s = try newTsxTestSetup(
+        \\let v = <div>
+        \\  {/* @ts-ignore */}
+        \\  <Foo />
+        \\</div>;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1381));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1382));
 }
 
 test "parser: jsx self-close after expression-value attribute does not glom into a regex literal" {

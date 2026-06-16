@@ -54392,7 +54392,9 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         std.debug.print("  FAIL  {s}: {s}\n", .{ r.name, r.detail });
     }
 
-    if (requested_start == 0 and requested_limit == null) {
+    if (name_filter != null) {
+        try T.expect(stats.total() > 0);
+    } else if (requested_start == 0 and requested_limit == null) {
         try T.expect(stats.total() > 1000);
     } else {
         try T.expect(stats.total() == end - start);
