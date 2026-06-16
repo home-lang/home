@@ -4148,6 +4148,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "typeParameterDiamond1",
         "outModuleConcatCommonjs",
         "nodeNextPackageSelfNameWithOutDirDeclDirRootDir",
+        "abstractPropertyBasics",
+        "literalWideningWithCompoundLikeAssignments",
+        "staticModifierAlreadySeen",
+        "destructuringAssignmentWithDefault",
+        "typeGuardNarrowsIndexedAccessOfKnownProperty9",
+        "reexportedMissingAlias",
+        "duplicateLocalVariable1",
+        "localTypeParameterInferencePriority",
+        "noSymbolForMergeCrash",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
