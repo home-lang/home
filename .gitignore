@@ -89,3 +89,4 @@ pantry
 packages/runtime/test/bun-corpus/node_modules/
 /.zig-cache*
 /bun-test-scratch
+/.zig-global-cache
