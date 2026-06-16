@@ -4453,6 +4453,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "classWithOverloadImplementationOfWrongName2",
         "pathMappingBasedModuleResolution6_node",
         "unusedIdentifiersConsolidated1",
+        "indexWithUndefinedAndNull",
+        "superInObjectLiterals_ES6",
+        "ambientExternalModuleWithRelativeModuleName",
+        "blockScopedEnumVariablesUseBeforeDef_isolatedModules",
+        "controlFlowArrayErrors",
+        "classExtendsNull2",
+        "strictSubtypeAndNarrowing",
+        "iteratorsAndStrictNullChecks",
+        "namespaceMergedWithImportAliasNoCrash",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
