@@ -4530,6 +4530,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "es6ImportEqualsDeclaration",
         "newOnInstanceSymbol",
         "moduleSharesNameWithImportDeclarationInsideIt5",
+        "importWithTrailingSlash",
+        "inKeywordAndIntersection",
+        "recursiveObjectLiteral",
+        "arrayToLocaleStringES2015",
+        "privacyCannotNameVarTypeDeclFile",
+        "nodeNextPackageSelfNameWithOutDir",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
