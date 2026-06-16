@@ -4598,6 +4598,10 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "conditionalDoesntLeakUninstantiatedTypeParameter",
         "isolatedModulesRequiresPreserveConstEnum",
         "spellingSuggestionJSXAttribute",
+        "constEnumBadPropertyNames",
+        "autoTypeAssignedUsingDestructuringFromNeverNoCrash",
+        "reactNamespaceInvalidInput",
+        "spreadOfObjectLiteralAssignableToIndexSignature",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
