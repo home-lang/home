@@ -52338,6 +52338,7 @@ test "bootstrap runner mirrors bun add local file corpus" {
         \\  await writeFile(join(package_dir, "package.json"), rootPackage);
         \\  await mkdir(join(package_dir, "moo"));
         \\  await writeFile(join(package_dir, "moo", "package.json"), JSON.stringify({ name: "moo", version: "0.3.0" }));
+        \\  await writeFile(join(package_dir, "moo", "bunfig.toml"), await file(join(package_dir, "bunfig.toml")).text());
         \\  const add_path = relative(join(package_dir, "moo"), add_dir);
         \\  const { stdout, stderr, exited } = spawn({
         \\    cmd: [bunExe(), "add", `file:${add_path}`.replace(/\\/g, "/"), "--linker=isolated"],
@@ -52355,7 +52356,9 @@ test "bootstrap runner mirrors bun add local file corpus" {
         \\    "2 packages installed",
         \\  ]);
         \\  expect(await exited).toBe(0);
+        \\  expect(await readdirSorted(package_dir)).toEqual(["bun.lockb", "bunfig.toml", "moo", "node_modules", "package.json"]);
         \\  expect(await file(join(package_dir, "package.json")).text()).toEqual(rootPackage);
+        \\  expect(await readdirSorted(join(package_dir, "moo"))).toEqual(["bunfig.toml", "node_modules", "package.json"]);
         \\  expect(await readdirSorted(join(package_dir, "moo", "node_modules", "foo"))).toEqual(["package.json"]);
         \\  expect(await file(join(package_dir, "moo", "node_modules", "foo", "package.json")).json()).toEqual(fooPackage);
         \\  expect(await file(join(package_dir, "moo", "package.json")).json()).toEqual({
