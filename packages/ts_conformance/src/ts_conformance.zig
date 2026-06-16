@@ -4602,6 +4602,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "autoTypeAssignedUsingDestructuringFromNeverNoCrash",
         "reactNamespaceInvalidInput",
         "spreadOfObjectLiteralAssignableToIndexSignature",
+        "circularlyConstrainedMappedTypeContainingConditionalNoInfiniteInstantiationDepth",
+        "nodeNextImportModeImplicitIndexResolution",
+        "classSideInheritance1",
+        "conflictMarkerTrivia4",
+        "unusedMultipleParameters1InMethodDeclaration",
+        "forwardDeclaredCommonTypes01",
+        "allowSyntheticDefaultImports8",
+        "iteratorExtraParameters",
+        "jsxViaImport",
+        "interfaceInheritance",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
