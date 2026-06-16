@@ -1472,6 +1472,13 @@ The copied `cli/env/bun-options.test.ts` fixture now passes in Home as
 executable runs. Native parity still requires Home's real CLI argument
 initialization to merge `BUN_OPTIONS` before runtime dispatch.
 
+The copied `cli/env/ci-info.test.ts` fixture now passes in Home as `4`
+passed, `0` failed, `0` unsupported, `0` todo. The bootstrap lowers the
+relative harness import and models Bun's CI detection for `.only`,
+including explicit `CI=false` opt-out and common CI provider variables.
+Native parity still requires Home's real test runner to enforce `.only`
+from environment detection instead of the corpus spawn fixture.
+
 The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
 `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
 explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`

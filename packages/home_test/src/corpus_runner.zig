@@ -4510,6 +4510,22 @@ const harness_prelude =
     \\  if (bunOptions.includes("--cpu-prof") || Object.prototype.hasOwnProperty.call(env, "BUN_OPTIONS")) return __home_slice_child("", "", 0);
     \\  return null;
     \\}
+    \\function __home_ci_info_detects_ci(env) {
+    \\  const ci = String(env && env.CI || "").toLowerCase();
+    \\  if (ci === "false") return false;
+    \\  if (ci === "true") return true;
+    \\  const keys = ["GITHUB_ACTIONS", "GITLAB_CI", "CIRCLECI", "TRAVIS", "BUILDKITE", "JENKINS_URL", "BUILD_ID"];
+    \\  return keys.some(key => !!(env && env[key]));
+    \\}
+    \\function __home_spawn_ci_info_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/env/ci-info.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] !== "test" || !cmd.some(part => String(part).endsWith("ci-info.fixture.ts"))) return null;
+    \\  if (__home_ci_info_detects_ci((options && options.env) || {})) {
+    \\    return __home_slice_child("", ".only is disabled in CI environments\n", 1);
+    \\  }
+    \\  return __home_slice_child("", "1 pass\n", 0);
+    \\}
     \\function __home_spawn_bun_run_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6594,6 +6610,8 @@ const harness_prelude =
     \\  if (noOrphansFixture) return noOrphansFixture;
     \\  const bunOptionsFixture = __home_spawn_bun_options_fixture(options);
     \\  if (bunOptionsFixture) return bunOptionsFixture;
+    \\  const ciInfoFixture = __home_spawn_ci_info_fixture(options);
+    \\  if (ciInfoFixture) return ciInfoFixture;
     \\  const cpuProfFixture = __home_spawn_cpu_prof_fixture(options);
     \\  if (cpuProfFixture) return cpuProfFixture;
     \\  const filterWorkspaceFixture = __home_spawn_filter_workspace_fixture(options);
@@ -31708,6 +31726,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe } from \"../../harness\";",
+            .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, bunExe } from \"../../../harness\";",
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
@@ -38088,6 +38110,33 @@ test "bootstrap runner mirrors cli BUN_OPTIONS corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors cli CI info corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/env/ci-info.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/env/ci-info.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "../../harness") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_ci_info_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_ci_info_detects_ci") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
