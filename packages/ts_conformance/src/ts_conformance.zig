@@ -4210,6 +4210,11 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "jsFileCompilationEnumSyntax",
         "exportSpecifierReferencingOuterDeclaration3",
         "reachabilityChecks5",
+        "letDeclarations-scopes-duplicates3",
+        "requireOfJsonFileNonRelativeWithoutExtension",
+        "conflictingDeclarationsImportFromNamespace1",
+        "moduleAssignmentCompat2",
+        "isolatedDeclarationErrorsAugmentation",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
