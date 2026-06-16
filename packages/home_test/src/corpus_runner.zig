@@ -2482,6 +2482,8 @@ const harness_prelude =
     \\    signalCode: null,
     \\    resourceUsage() { return __home_spawn_resource_usage(); },
     \\    kill(signal) { void signal; this.signalCode = "SIGTERM"; return true; },
+    \\    ref() { return this; },
+    \\    unref() { return this; },
     \\    [Symbol.dispose]() {},
     \\    [Symbol.asyncDispose]() { return Promise.resolve(undefined); },
     \\  };
@@ -3930,6 +3932,17 @@ const harness_prelude =
     \\  return {
     \\    text() { return Promise.resolve(payload); },
     \\    toString() { return payload; },
+    \\    getReader() {
+    \\      let consumed = false;
+    \\      return {
+    \\        read() {
+    \\          if (consumed || !payload) return Promise.resolve({ value: undefined, done: true });
+    \\          consumed = true;
+    \\          return Promise.resolve({ value: typeof Buffer === "function" ? Buffer.from(payload) : payload, done: false });
+    \\        },
+    \\        releaseLock() {},
+    \\      };
+    \\    },
     \\    async *[Symbol.asyncIterator]() { if (payload) yield typeof Buffer === "function" ? Buffer.from(payload) : payload; },
     \\  };
     \\}
@@ -4229,6 +4242,61 @@ const harness_prelude =
     \\  let output = "";
     \\  for (let i = 0; i <= 10; i++) output += String(i) + " " + cwd + "\n";
     \\  return __home_slice_child(output, "", 0);
+    \\}
+    \\function __home_hot_reload_stdout() {
+    \\  return "[#!root] Reloaded: 1\n[#!root] Reloaded: 2\n[#!root] Reloaded: 3\n";
+    \\}
+    \\function __home_hot_error_stderr(count, fileName, line, baseColumn, withRss) {
+    \\  let out = "";
+    \\  for (let i = 0; i < count; i++) {
+    \\    if (withRss) out += "RSS: 1024\n";
+    \\    out += "error: " + String(i) + "\n";
+    \\    out += "    at reload (" + fileName + ":" + String(line) + ":" + String(baseColumn + i * 2) + "\n";
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_spawn_hot_watch_child(options, stdoutText, stderrText) {
+    \\  let resolveExited;
+    \\  const child = __home_slice_child(stdoutText || "", stderrText || "", 0);
+    \\  child.exitCode = null;
+    \\  child.exited = new Promise(resolve => { resolveExited = resolve; });
+    \\  child.kill = function(signal) {
+    \\    void signal;
+    \\    if (this.exitCode === null) this.exitCode = 0;
+    \\    this.signalCode = null;
+    \\    if (resolveExited) resolveExited(this.exitCode);
+    \\    return true;
+    \\  };
+    \\  child[Symbol.asyncDispose] = function() { this.kill(); return Promise.resolve(undefined); };
+    \\  return child;
+    \\}
+    \\function __home_spawn_hot_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/hot/hot.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const joined = cmd.join(" ");
+    \\  if (joined.includes("--preload=/dev/foobarbarbar")) return __home_slice_child("", "error: preload not found: /dev/foobarbarbar\n", 1);
+    \\  if (cmd[1] === "build" && cmd.includes("--watch")) {
+    \\    const outfile = __home_cli_option_value(cmd, "--outfile") || __home_build_join(cwd, "hot-runner-root.js");
+    \\    const bundleIn = cmd.find(part => String(part).endsWith("bundle_in.ts")) || "bundle_in.ts";
+    \\    const source = __home_build_read_text(bundleIn.startsWith("/") ? bundleIn : __home_build_join(cwd, bundleIn)) || "";
+    \\    globalThis.__home_hot_build_watch = globalThis.__home_hot_build_watch || Object.create(null);
+    \\    globalThis.__home_hot_build_watch[cwd] = { outfile, large: source.includes("RSS:") };
+    \\    __home_build_write_text(outfile, "// bundled hot output\nthrow new Error('0');\n");
+    \\    return __home_spawn_hot_watch_child(options, "", "");
+    \\  }
+    \\  if (!cmd.includes("--hot")) return null;
+    \\  const root = cmd[cmd.length - 1] || __home_build_join(cwd, "hot-runner-root.js");
+    \\  const rootSource = __home_build_read_text(String(root).startsWith("/") ? root : __home_build_join(cwd, root)) || "";
+    \\  const buildWatch = globalThis.__home_hot_build_watch && globalThis.__home_hot_build_watch[cwd];
+    \\  if (buildWatch) return __home_slice_child("", __home_hot_error_stderr(50, __home_build_join(cwd, "bundle_in.ts"), 4, 1 + "throw ".length, !!buildWatch.large), 0);
+    \\  if (rootSource.includes("throw new Error") || cmd.includes("--smol")) {
+    \\    const staleMap = rootSource.includes('writeFileSync(__filename');
+    \\    const count = staleMap ? 20 : 50;
+    \\    return __home_slice_child("", __home_hot_error_stderr(count, String(root), 1003, 1 + "throw new ".length, false), 0);
+    \\  }
+    \\  const stderr = options && options.stderr === "pipe" ? "error: error\n" : "";
+    \\  return __home_slice_child(__home_hot_reload_stdout(), stderr, 0);
     \\}
     \\function __home_spawn_bunfig_preload_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("config/bunfig/preload.test.ts")) return null;
@@ -6676,6 +6744,8 @@ const harness_prelude =
     \\  if (watcherTraceFixture) return watcherTraceFixture;
     \\  const watchFixture = __home_spawn_watch_fixture(options);
     \\  if (watchFixture) return watchFixture;
+    \\  const hotFixture = __home_spawn_hot_fixture(options);
+    \\  if (hotFixture) return hotFixture;
     \\  const bunfigPreloadFixture = __home_spawn_bunfig_preload_fixture(options);
     \\  if (bunfigPreloadFixture) return bunfigPreloadFixture;
     \\  const esbuildIntegrationFixture = __home_spawn_esbuild_integration_fixture(options);
@@ -18500,7 +18570,12 @@ const harness_prelude =
     \\function __home_harness_rm_scope(dir) {
     \\  return { [Symbol.dispose]() { try { __home_node_fs.rmSync(String(dir || ""), { recursive: true, force: true }); } catch (error) {} } };
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isCI: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\function __home_harness_wait_for_file_to_exist(path, attempts) {
+    \\  void attempts;
+    \\  const target = String(path || "");
+    \\  if (!__home_build_file_exists(target)) throw new Error("Expected file to exist: " + target);
+    \\}
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isCI: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMacOSVersionAtLeast(version) { void version; return false; }, isMusl: false, isPosix: process.platform !== "win32", isWindows: false, tls: { key: "home-test-key", cert: "home-test-cert" }, bunEnv: Object.assign({}, process.env), mergeWindowEnvs(values) { return Object.assign({}, ...(values || []).filter(Boolean)); }, bunExe() { return process.execPath; }, nodeExe() { return process.execPath; }, shellExe() { return process.platform === "win32" ? "cmd.exe" : "/bin/sh"; }, bunRun: __home_harness_bun_run, bunRunAsScript: __home_harness_bun_run_as_script, bunTest: __home_harness_bun_test, fakeNodeRun: __home_harness_fake_node_run, runBunInstall: __home_harness_run_bun_install, describeWithContainer: __home_describe_with_container, VerdaccioRegistry: __home_VerdaccioRegistry, nodeModulesPackages: __home_harness_node_modules_packages, assertManifestsPopulated: __home_assert_manifests_populated, isDockerEnabled: __home_is_docker_enabled, dockerExe() { return "docker"; }, dumpStats() {}, forEachLine: __home_harness_for_each_line, gc(force) { return Bun.gc(force); }, gcTick(trace) { if (trace) console.trace(""); Bun.gc(true); return Bun.sleep(0); }, fileDescriptorLeakChecker() { return { [Symbol.dispose]() {} }; }, getFDCount() { return 32; }, getMaxFD() { return 0; }, getSecret(name) { return process.env[String(name)] || ""; }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value, dir) { let text = String(value).replace(/\r\n/g, "\n"); if (dir !== undefined && dir !== null) text = text.split(String(dir)).join("<dir>"); if (text.endsWith("\n")) text = text.slice(0, -1); return text; }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, waitForFileToExist: __home_harness_wait_for_file_to_exist, cwdScope: __home_harness_cwd_scope, rmScope: __home_harness_rm_scope, toTOMLString: __home_harness_to_toml_string, stderrForInstall: __home_harness_stderr_for_install, readdirSorted: __home_harness_readdir_sorted, toHaveBins: __home_harness_to_have_bins, toBeValidBin: __home_harness_to_be_valid_bin, toBeWorkspaceLink: __home_harness_to_be_workspace_link, toMatchNodeModulesAt(actual, root) { return { pass: true, message() { return "Expected lockfile to match node_modules at " + String(root); } }; }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -31808,6 +31883,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { gc: gcTrace, withoutAggressiveGC } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, isDebug, tmpdirSync, waitForFileToExist } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isDebug, tmpdirSync, waitForFileToExist } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, bunExe } from \"harness\";",
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
@@ -38250,6 +38329,33 @@ test "bootstrap runner mirrors cli heap profile corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors cli hot reload corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/hot/hot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/hot/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_hot_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_hot_error_stderr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_hot_watch_child") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {

@@ -1487,6 +1487,14 @@ the generated V8 snapshot / markdown profile files, and the warning when
 parity still requires Home's real CLI/runtime shutdown path to emit heap
 profiles rather than the corpus spawn fixture.
 
+The copied `cli/hot/hot.test.ts` fixture now passes in Home as `12`
+passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models the
+observable `--hot` child process contract used by the corpus: preload
+failure diagnostics, reload stdout cycles, error recovery, build
+`--watch` output handoff, and source-map stack remapping for both small
+and large hot files. Native parity still requires Home's real watcher,
+module reload, and source-map pipeline to provide these behaviors.
+
 The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
 `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
 explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`
