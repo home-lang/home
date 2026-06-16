@@ -43,7 +43,7 @@ Drop-in `tsc` / `tsgo` replacement. Detailed per-feature status:
 | Capability | Status |
 |---|---|
 | Conformance coarse mode (5,907-case corpus) | ✅ 5,907 / 5,907 (100%) |
-| Conformance exact mode (byte-for-byte) | 🚧 4,177 / 5,907 (~70.7%; 1,730 remain) |
+| Conformance exact mode (byte-for-byte) | 🚧 4,178 / 5,907 (~70.7%; 1,729 remain) |
 | Baseline-aware categories (19 folders, 586 cases) | ✅ 586 / 586 (100%) |
 | Diagnostic-code catalogue | ✅ ~2,000 entries |
 | JS emit (full Phase 1 surface) | ✅ Stable |
