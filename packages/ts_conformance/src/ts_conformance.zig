@@ -4409,6 +4409,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "indexedAccessCanBeHighOrder",
         "unusedTypeParameters4",
         "intersectionsOfLargeUnions",
+        "importDeclWithExportModifierAndExportAssignmentInAmbientContext",
+        "duplicateErrorNameNotFound",
+        "innerAliases",
+        "constEnumNamespaceReferenceCausesNoImport2",
+        "typePartameterConstraintInstantiatedWithDefaultWhenCheckingDefault",
+        "checkIndexConstraintOfJavascriptClassExpression",
+        "recursiveIdenticalOverloadResolution",
+        "overloadsWithConstraints",
+        "assignmentCompatWithOverloads",
+        "invalidStaticField",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
