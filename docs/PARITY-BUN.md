@@ -1495,6 +1495,12 @@ failure diagnostics, reload stdout cycles, error recovery, build
 and large hot files. Native parity still requires Home's real watcher,
 module reload, and source-map pipeline to provide these behaviors.
 
+The copied `cli/user-agent.test.ts` fixture now passes in Home as `2`
+passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models the
+`--user-agent` and default Bun user-agent child process exits asserted by
+the corpus. Native parity still requires Home's real CLI fetch path to
+propagate the configured user agent through HTTP requests.
+
 The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
 `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
 explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`
