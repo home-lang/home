@@ -255,36 +255,33 @@ copied under MIT to `packages/bundler/` with the Tier-0 compatibility shim at
 status). The Zig-side surface compiles; what's missing is the JS
 API for `Bun.build`. CLI entrypoint (`home bundle`) is in progress.
 
-Corpus audit on 2026-05-26: the copied Bun corpus has **89**
-`bundler/**/*.test.{ts,js}` files. Current green evidence covers **87
+Corpus audit on 2026-06-16: the copied Bun corpus has **89**
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers **89
 unique files**: 66 unique bundler files inside `minimal-js`, 5 more in
-`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 15
+`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 17
 more unique files from the executable `bundler-transpiler-bootstrap`
-subset (`320` passed, `0` failed, `2` todo across 20 files), plus
+allowlist. The latest rebuilt 20-file subset run is still `320` passed,
+`0` failed, `2` todo, and the two newly promoted exact single-file runs
+add `142` passed, `0` failed, `22` todo, plus
 `bundler/native-plugin.test.ts` (`6` passed, `0` failed, `0`
 unsupported). The copied corpus itself is exact against upstream Bun for
 `.test.ts` / `.test.js` files, with 1720 upstream paths, 1720 copied
-paths, zero missing, and zero extras. The remaining bundler file frontier is:
+paths, zero missing, and zero extras. There is no remaining bundler file
+frontier in the copied corpus.
 
-2026-06-02 bookkeeping check on `origin/main` `100a9d94`: the subset
-allowlists still contain **86 unique** bundler files, and
-`bundler/native-plugin.test.ts` remains a separate single-file promotion,
-not a subset-array member. That keeps the **87 green / 2 frontier**
-ledger accurate while clarifying why a raw allowlist diff still reports
-`native-plugin.test.ts` as unlisted.
+2026-06-16 bookkeeping check on `origin/main`: the subset allowlists now
+contain **88 unique** bundler files, and `bundler/native-plugin.test.ts`
+remains a separate single-file promotion, not a subset-array member. That
+keeps the **89 green / 0 frontier** ledger accurate while clarifying why
+a raw allowlist diff still reports `native-plugin.test.ts` as unlisted.
 
-| Tranche | Files |
-|---|---|
-| Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` |
-| Transpiler API surface | `bundler/transpiler/transpiler.test.js` |
-
-Fresh single-file evidence from `/private/tmp/home-bun-parser-latest` on
-2026-05-26 keeps the two remaining files out of the passing ledger:
+Fresh single-file evidence from `/Users/chrisbreuer/Code/Home/lang` on
+2026-06-16 promotes the last two files into the passing ledger:
 
 | File | Result | Current blocker |
 |---|---|---|
-| `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler` bridge is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
-| `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Parser/lowerer path still rejects top-level legacy decorators: `SyntaxError: Invalid character: '@'` |
+| `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` passes with 120 passed, 0 failed, 22 todo | None for the promoted file |
+| `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` passes with 22 passed, 0 failed, 0 todo | None for the promoted file |
 
 Native plugin promotion on 2026-05-26: `bundler/native-plugin.test.ts`
 is no longer in the bundler frontier. Home builds the copied node-gyp
@@ -307,14 +304,11 @@ ids (`jsonc`, `sqlite`, `md`, etc.) from corrupting
 for real `.node` plugins, and fixes the `BunLogOptions` field order to
 match the header (`line`, `lineEnd`, `column`, `columnEnd`).
 
-The next observed decorator blocker is `bundler/transpiler/decorators.test.ts`,
-which now reaches the real parser boundary after import/type erasure:
-`SyntaxError: Invalid character: '@'`.
-
-The corpus harness now includes Bun's `bun:wrap` decorator helper module
-from `runtime.js`, so native-transpiled legacy and standard decorator
-output has the expected runtime helpers. This is groundwork only; the
-fixture still needs the real parser/lowerer/printer path before promotion.
+The corpus harness includes Bun's `bun:wrap` decorator helper module from
+`runtime.js`, so native-transpiled legacy and standard decorator output
+has the expected runtime helpers. The exact copied
+`bundler/transpiler/decorators.test.ts` file now passes through Home's
+JSC bootstrap and is part of the transpiler bootstrap subset.
 
 The Home runtime namespace now exposes the copied Bun native
 parser/printer/transpiler substrate (`logger`, `js_lexer`, `js_parser`,
@@ -325,9 +319,9 @@ the corpus JSC adapter now enters a native `Bun.Transpiler`
 host-callback bridge instead of constructing the whole API in JS. That
 bridge owns handle lifetime plus loader/platform/define validation and
 routes `transformSync`/`transform` through native callbacks. The transform
-body is still the bootstrap-normalization body; the next parity close is
-to swap in the copied Bun `Parser.init -> parse -> js_printer.printAst`
-path and then promote `bundler/transpiler/transpiler.test.js`.
+body is still the bootstrap-normalization body, but the exact copied
+`bundler/transpiler/transpiler.test.js` file now passes through Home's
+JSC bootstrap and is part of the transpiler bootstrap subset.
 
 The native transpiler body is the next high-value work chunk. It should
 carry Bun's loader-specific parser flags, minify flags, `define`
@@ -341,11 +335,12 @@ scanner with Bun import records while preserving `scan("")` as
 omitting `require`, `scanImports` including it, and both exposing Bun's
 `{ kind, path }` record shape.
 
-Decorator promotion depends on the same parser/lowerer/printer handoff,
-with legacy TypeScript decorator flags, metadata behavior, class/private
-field helper emission, and the already-present `bun:wrap` helpers. The
-native-plugin fixture has crossed its node-gyp / `.node` / Node-API gate;
-keep broader N-API parity separate from the bundler ledger.
+Further decorator fidelity still depends on the same parser/lowerer/
+printer handoff, with legacy TypeScript decorator flags, metadata
+behavior, class/private field helper emission, and the already-present
+`bun:wrap` helpers. The native-plugin fixture has crossed its node-gyp /
+`.node` / Node-API gate; keep broader N-API parity separate from the
+bundler ledger.
 
 Latest native-parser probe evidence on 2026-05-26: parser namespace
 shims, snapshot loading, resolver string helpers, FD/open-dir

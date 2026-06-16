@@ -517,6 +517,7 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
     "bundler/bundler_feature_flag.test.ts",
     "bundler/plugin-error-nested-throw.test.ts",
     "bundler/transpiler/decorator-metadata.test.ts",
+    "bundler/transpiler/decorators.test.ts",
     "bundler/transpiler/es-decorators.test.ts",
     "bundler/transpiler/es-decorators-esbuild.test.ts",
     "bundler/transpiler/preserve-use-strict-cjs.test.ts",
@@ -527,6 +528,7 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
     "bundler/transpiler/bun-pragma.test.ts",
     "bundler/transpiler/property.test.ts",
     "bundler/transpiler/transpiler-stack-overflow.test.ts",
+    "bundler/transpiler/transpiler.test.js",
     "bundler/transpiler/jsx-production.test.ts",
     "bundler/transpiler/runtime-transpiler.test.ts",
     "bundler/transpiler/macro-test.test.ts",
@@ -34072,27 +34074,29 @@ test "bundler core itBundled subset names the first tranche" {
 
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
-    try std.testing.expectEqual(@as(usize, 20), files.len);
+    try std.testing.expectEqual(@as(usize, 22), files.len);
     try std.testing.expectEqualStrings("bundler/bundler_feature_flag.test.ts", files[0]);
     try std.testing.expectEqualStrings("bundler/plugin-error-nested-throw.test.ts", files[1]);
     try std.testing.expectEqualStrings("bundler/transpiler/decorator-metadata.test.ts", files[2]);
-    try std.testing.expectEqualStrings("bundler/transpiler/es-decorators.test.ts", files[3]);
-    try std.testing.expectEqualStrings("bundler/transpiler/es-decorators-esbuild.test.ts", files[4]);
-    try std.testing.expectEqualStrings("bundler/transpiler/preserve-use-strict-cjs.test.ts", files[5]);
-    try std.testing.expectEqualStrings("bundler/transpiler/template-literal.test.ts", files[6]);
-    try std.testing.expectEqualStrings("bundler/transpiler/function-tostring-require.test.ts", files[7]);
-    try std.testing.expectEqualStrings("bundler/transpiler/export-default.test.js", files[8]);
-    try std.testing.expectEqualStrings("bundler/transpiler/scope-mismatch-panic.test.ts", files[9]);
-    try std.testing.expectEqualStrings("bundler/transpiler/bun-pragma.test.ts", files[10]);
-    try std.testing.expectEqualStrings("bundler/transpiler/property.test.ts", files[11]);
-    try std.testing.expectEqualStrings("bundler/transpiler/transpiler-stack-overflow.test.ts", files[12]);
-    try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[13]);
-    try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[14]);
-    try std.testing.expectEqualStrings("bundler/transpiler/macro-test.test.ts", files[15]);
-    try std.testing.expectEqualStrings("bundler/cli.test.ts", files[16]);
-    try std.testing.expectEqualStrings("bundler/resolver/cache-invalidation.test.ts", files[17]);
-    try std.testing.expectEqualStrings("bundler/resolver/cache-node-compat.test.ts", files[18]);
-    try std.testing.expectEqualStrings("bundler/resolver/cache-runtime.test.ts", files[19]);
+    try std.testing.expectEqualStrings("bundler/transpiler/decorators.test.ts", files[3]);
+    try std.testing.expectEqualStrings("bundler/transpiler/es-decorators.test.ts", files[4]);
+    try std.testing.expectEqualStrings("bundler/transpiler/es-decorators-esbuild.test.ts", files[5]);
+    try std.testing.expectEqualStrings("bundler/transpiler/preserve-use-strict-cjs.test.ts", files[6]);
+    try std.testing.expectEqualStrings("bundler/transpiler/template-literal.test.ts", files[7]);
+    try std.testing.expectEqualStrings("bundler/transpiler/function-tostring-require.test.ts", files[8]);
+    try std.testing.expectEqualStrings("bundler/transpiler/export-default.test.js", files[9]);
+    try std.testing.expectEqualStrings("bundler/transpiler/scope-mismatch-panic.test.ts", files[10]);
+    try std.testing.expectEqualStrings("bundler/transpiler/bun-pragma.test.ts", files[11]);
+    try std.testing.expectEqualStrings("bundler/transpiler/property.test.ts", files[12]);
+    try std.testing.expectEqualStrings("bundler/transpiler/transpiler-stack-overflow.test.ts", files[13]);
+    try std.testing.expectEqualStrings("bundler/transpiler/transpiler.test.js", files[14]);
+    try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[15]);
+    try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[16]);
+    try std.testing.expectEqualStrings("bundler/transpiler/macro-test.test.ts", files[17]);
+    try std.testing.expectEqualStrings("bundler/cli.test.ts", files[18]);
+    try std.testing.expectEqualStrings("bundler/resolver/cache-invalidation.test.ts", files[19]);
+    try std.testing.expectEqualStrings("bundler/resolver/cache-node-compat.test.ts", files[20]);
+    try std.testing.expectEqualStrings("bundler/resolver/cache-runtime.test.ts", files[21]);
 }
 
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {

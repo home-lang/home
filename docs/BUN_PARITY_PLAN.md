@@ -145,33 +145,24 @@ Porting rules for source agents:
 **Last updated:** 2026-05-26. Bun source presence is complete for the
 pinned `/Users/chrisbreuer/Code/bun` Zig checkout, but integrated runtime
 parity remains at the last audited **552 / 1193 (~46.3%)** until a fresh
-integration audit moves it. The executable corpus ratchet is focused on
-the remaining 2-file bundler frontier after `minimal-js`,
+integration audit moves it. The executable corpus ratchet has closed the
+copied bundler corpus frontier after `minimal-js`,
 `bundler-core-itbundled`, `bundler-transpiler-bootstrap`, and the native
 plugin corpus file established green Home-run bootstrap slices. The next
-work is intentionally split across big independent agent chunks:
-decorator semantics, `Bun.Transpiler` and macro surface, then
-Bake/server-heavy corpus.
+work moves to the Bake/server-heavy corpus without treating scaffold-only
+runtime substrate as integrated parity credit.
 
-**Bookkeeping reconciliation (2026-06-02, `origin/main` `100a9d94`):**
-the copied bundler corpus is still **89** files. The committed subset
-allowlists cover **86 unique** bundler files (`66` in `minimal-js`, `5`
-more in `bundler-core-itbundled`, and `15` more unique files in the
-20-file `bundler-transpiler-bootstrap` tranche; several transpiler files
+**Bookkeeping reconciliation (2026-06-16, `origin/main`):** the copied
+bundler corpus is still **89** files. The committed subset allowlists
+cover **88 unique** bundler files (`66` in `minimal-js`, `5` more in
+`bundler-core-itbundled`, and `17` more unique files in the 22-file
+`bundler-transpiler-bootstrap` tranche; several transpiler files
 intentionally overlap the minimal subset). `bundler/native-plugin.test.ts`
 is not in those subset arrays, but remains promoted by its single-file
-native-plugin evidence. Therefore the bundler parity ledger still has an
-exact **2-file** frontier:
-`bundler/transpiler/decorators.test.ts` and
-`bundler/transpiler/transpiler.test.js`.
+native-plugin evidence. Therefore the bundler parity ledger now has an
+exact **89 green / 0 frontier** status.
 
-When the next parser-probe frontier shrink lands, update the docs by
-replacing the stale three-item compile-frontier wording
-(`PackageInstall` / `ThreadPool.Task` / `bun.sys.File`) with the new
-exact blockers, reproduction flags, and whether the probe is compile-only
-or behavioral. Do not move the two-file bundler ledger unless the exact
-copied corpus file passes through Home without a corpus-only semantic
-mock. Snapshot bookkeeping is still accurate: the minimal subset
+Snapshot bookkeeping is still accurate: the minimal subset
 allowlists three snapshot fixture paths, and only
 `js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts`
 is an upstream `test.todo` whose snapshot matcher body is intentionally
@@ -492,16 +483,19 @@ closed the TypeScript/non-null lowering blocker for the first ordinary
 Second agent-sized chunk: **bundler transpiler bootstrap tranche**.
 `bundler_transpiler_bootstrap` now exists and is accepted by
 `home test --bun-corpus-native-subset=bundler-transpiler-bootstrap`.
-It runs sixteen additional bundler/transpiler files plus the CLI build
-surface and resolver cache tranche, passing:
-**320 passed, 0 failed, 2 upstream/platform todo**
-on 2026-05-26.
+It now names eighteen bundler/transpiler files plus the CLI build surface
+and resolver cache tranche. The latest source allowlist adds the exact
+copied `decorators.test.ts` and `transpiler.test.js` files. The promoted
+evidence is split between the prior rebuilt 20-file subset
+(**320 passed, 0 failed, 2 upstream/platform todo**) and the two exact
+single-file runs below (**142 passed, 0 failed, 22 todo**).
 
 Files in the tranche:
 
 - `bundler/bundler_feature_flag.test.ts`
 - `bundler/plugin-error-nested-throw.test.ts`
 - `bundler/transpiler/decorator-metadata.test.ts`
+- `bundler/transpiler/decorators.test.ts`
 - `bundler/transpiler/es-decorators.test.ts`
 - `bundler/transpiler/es-decorators-esbuild.test.ts`
 - `bundler/transpiler/preserve-use-strict-cjs.test.ts`
@@ -512,6 +506,7 @@ Files in the tranche:
 - `bundler/transpiler/bun-pragma.test.ts`
 - `bundler/transpiler/property.test.ts`
 - `bundler/transpiler/transpiler-stack-overflow.test.ts`
+- `bundler/transpiler/transpiler.test.js`
 - `bundler/transpiler/jsx-production.test.ts`
 - `bundler/transpiler/runtime-transpiler.test.ts`
 - `bundler/transpiler/macro-test.test.ts`
@@ -520,30 +515,21 @@ Files in the tranche:
 - `bundler/resolver/cache-node-compat.test.ts`
 - `bundler/resolver/cache-runtime.test.ts`
 
-Remaining bundler file frontier after the 20-file transpiler/CLI/resolver tranche
-and native-plugin promotion, classified by next faithful work batch:
+Bundler corpus promotion after the 22-file transpiler/CLI/resolver tranche
+and native-plugin promotion:
 
-| Tranche | Files | Primary blocker from local corpus |
-|---|---|---|
-| A. Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` | Top-level legacy decorator lowering; latest probe reaches the real parser blocker, `SyntaxError: Invalid character: '@'` |
-| B. Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, loader validation, transform APIs, and callback behavior |
+| File | Evidence |
+|---|---|
+| `bundler/transpiler/decorators.test.ts` | Exact copied corpus file passes through `home-debug`, then joins `bundler-transpiler-bootstrap` |
+| `bundler/transpiler/transpiler.test.js` | Exact copied corpus file passes through `home-debug`, then joins `bundler-transpiler-bootstrap` |
 
-Agent handoff order for the remaining bundler work:
-
-1. **Decorator semantics agent:** copy/integrate the parser and
-   transpiler decorator lowering substrate needed by
-   `bundler/transpiler/decorators.test.ts`.
-2. **Transpiler/macro agent:** wire `Bun.Transpiler`, macro import
-   resolution, macro execution, and the wider transpiler API enough to
-   promote `bundler/transpiler/transpiler.test.js`.
-
-Fresh single-file probes on 2026-05-26 in
-`/private/tmp/home-bun-parser-latest`:
+Fresh single-file probes on 2026-06-16 in
+`/Users/chrisbreuer/Code/Home/lang`:
 
 | Command | Result | Current blocker |
 |---|---|---|
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | Fails before promotion: 0 passed, 1 failed | Enters `Bun.Transpiler.transformSync`; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is the malformed-enum parse-error section |
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | Fails before promotion: 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | **Passes: 120 passed, 0 failed, 22 todo** | None for the promoted file |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | **Passes: 22 passed, 0 failed, 0 todo** | None for the promoted file |
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | **Passes: 6 passed, 0 failed, 0 unsupported** | Home now dlopens the built `.node` addon, runs Node-API registration callbacks, exposes N-API externals/functions, calls the Bun native `onBeforeParse` ABI, and routes the generated `bun run dist/index.js` output through the build artifact |
 
 Native plugin promotion update on 2026-05-26: the JSC corpus adapter now
@@ -1127,8 +1113,8 @@ the non-JSC build gate. The latest runtime slice also compiles the copied
 `runtime/cli/test/parallel` subtree through `home_rt` and adds focused
 frame-ingest plus aggregate JUnit parsing tests.
 
-Promotion rule for the last two bundler files: a file only leaves the
-frontier when its exact copied corpus file passes through `home-debug`
+Promotion rule for future bundler files: a file only enters the green
+ledger when its exact copied corpus file passes through `home-debug`
 without a corpus-only semantic mock, and the relevant upstream Bun source
 path is named in the commit notes. Metadata probes and bootstrap
 normalization can stay as scaffolding, but they are not parity credit.
