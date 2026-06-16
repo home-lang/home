@@ -4265,6 +4265,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "discriminatedUnionErrorMessage",
         "noUnusedLocals_typeParameterMergedWithParameter",
         "reservedWords3",
+        "classExtendsClauseClassMergedWithModuleNotReferingConstructor",
+        "optionalArgsWithDefaultValues",
+        "importTypeTypeofClassStaticLookup",
+        "dynamicImportsDeclaration",
+        "capturedLetConstInLoop6",
+        "returnTypeParameter",
+        "tsxNotUsingApparentTypeOfSFC",
+        "spellingSuggestionModule",
+        "pathMappingBasedModuleResolution1_amd",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
