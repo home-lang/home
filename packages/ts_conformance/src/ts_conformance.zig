@@ -4545,6 +4545,17 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "privacyGloImport",
         "unusedLocalsAndParameters",
         "functionAssignabilityWithArrayLike01",
+        "accessorInferredReturnTypeErrorInReturnStatement",
+        "manyCompilerErrorsInTheTwoFiles",
+        "nodeResolution2",
+        "classExpressionWithDecorator1",
+        "selfReferencingFile3",
+        "methodChainError",
+        "extendGlobalThis2",
+        "mixedStaticAndInstanceClassMembers",
+        "objectLitStructuralTypeMismatch",
+        "nonNullableTypes1",
+        "targetTypeBaseCalls",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
