@@ -4426,6 +4426,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "typeParameterConstrainedToOuterTypeParameter",
         "excessivelyLargeTupleSpread",
         "errorElaborationDivesIntoApparentlyPresentPropsOnly",
+        "jsFileImportPreservedWhenUsed",
+        "capturedLetConstInLoop7",
+        "typeParameterDiamond4",
+        "emitClassMergedWithConstNamespaceNotElided",
+        "genericMemberFunction",
+        "controlFlowLoopAnalysis",
+        "declarationEmitComputedPropertyNameEnum1",
+        "crashDeclareGlobalTypeofExport",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
