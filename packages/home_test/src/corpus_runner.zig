@@ -52047,7 +52047,7 @@ test "bootstrap runner mirrors bun add local file corpus" {
         \\import { mkdir, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, readdirSorted, tmpdirSync } from "harness";
         \\import { join, relative } from "path";
-        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
         \\
         \\test("bun add local file", async () => {
         \\  await dummyBeforeEach({ linker: "hoisted" });
@@ -52076,6 +52076,107 @@ test "bootstrap runner mirrors bun add local file corpus" {
         \\    version: "0.0.2",
         \\    dependencies: { foo: `file:${add_path.replace(/\\/g, "/")}` },
         \\  });
+        \\});
+        \\
+        \\test("bun add rejects missing local file package", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const add_dir = tmpdirSync();
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "bar", version: "0.0.2" }));
+        \\  const add_path = relative(package_dir, add_dir);
+        \\  const dep = `file:${add_path}`.replace(/\\/g, "\\\\");
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", dep],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain(`error: Could not find package.json for "file:${add_path}" dependency`);
+        \\  expect(await stdout.text()).toEqual(expect.stringContaining("bun add v1."));
+        \\  expect(await exited).toBe(1);
+        \\  expect(await file(join(package_dir, "package.json")).text()).toEqual(JSON.stringify({ name: "bar", version: "0.0.2" }));
+        \\});
+        \\
+        \\test("bun add --only-missing skips existing dependency", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  const first = spawn({
+        \\    cmd: [bunExe(), "add", "--only-missing", "bar"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await first.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await first.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed bar@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await first.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/bar", "http://localhost:4873/bar-0.0.2.tgz"]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({ name: "bar", version: "0.0.2" });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { bar: "^0.0.2" },
+        \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
+        \\  urls.length = 0;
+        \\  const second = spawn({
+        \\    cmd: [bunExe(), "add", "bar", "--only-missing"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await second.stderr.text()).toBe("");
+        \\  expect((await second.stdout.text()).split("\n").filter(Boolean)).toStrictEqual([
+        \\    expect.stringContaining("bun add v" + Bun.version.replaceAll("-debug", "")),
+        \\  ]);
+        \\  expect(await second.exited).toBe(0);
+        \\  expect(urls).toEqual([]);
+        \\});
+        \\
+        \\test("bun add --analyze scans dependencies", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  await writeFile(join(package_dir, "entry-point.ts"), `import "./local-file.ts";`);
+        \\  await writeFile(join(package_dir, "local-file.ts"), `export * from "bar";`);
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "./entry-point.ts", "--analyze"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed bar@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/bar", "http://localhost:4873/bar-0.0.2.tgz"]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({ name: "bar", version: "0.0.2" });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { bar: "^0.0.2" },
+        \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
         \\});
         \\
         \\test("bun add local file from workspace child", async () => {
@@ -52125,7 +52226,7 @@ test "bootstrap runner mirrors bun add local file corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add GitHub dependency corpus" {
