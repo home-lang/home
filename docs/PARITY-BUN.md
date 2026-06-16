@@ -1455,6 +1455,15 @@ as `1` passed, `0` failed, `0` unsupported, `0` todo. It exercises the
 real subprocess path through `Bun.spawn`, piped stderr, and malformed CJS
 wrapper diagnostics instead of a bootstrap-only shortcut.
 
+The copied `cli/console-depth.test.ts` fixture now passes in Home as `9`
+passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
+Bun's `--console-depth` flag, `[console].depth` bunfig override, depth
+`0` infinite rendering, invalid-value diagnostic, and shared
+`console.log` / `console.error` / `console.warn` object-depth formatting.
+Native parity still requires the real CLI flag path and console
+inspector formatting to run through Home's runtime rather than the corpus
+spawn fixture.
+
 The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
 `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
 explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`

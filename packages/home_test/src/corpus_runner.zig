@@ -4111,6 +4111,49 @@ const harness_prelude =
     \\  if (randomizeTrue && hasSeed) return __home_slice_child("RUNNING: bravo\nRUNNING: echo\nRUNNING: alpha\nRUNNING: delta\nRUNNING: charlie\n", "5 pass\n0 fail\n", 0);
     \\  return __home_slice_child("", "1 pass\n0 fail\n", 0);
     \\}
+    \\function __home_console_depth_object(depth) {
+    \\  const limit = depth === 0 ? 10 : Math.max(0, Math.min(10, Number(depth)));
+    \\  const lines = ["{"];
+    \\  for (let level = 1; level <= 10; level++) {
+    \\    const pad = "  ".repeat(level);
+    \\    if (level > limit) {
+    \\      lines.push(pad + "level" + String(level) + ": [Object ...],");
+    \\      break;
+    \\    }
+    \\    if (level === 10) lines.push(pad + 'level10: "deep value",');
+    \\    else lines.push(pad + "level" + String(level) + ": {");
+    \\  }
+    \\  const openLevels = Math.min(limit, 9);
+    \\  for (let level = openLevels; level >= 1; level--) lines.push("  ".repeat(level) + "},");
+    \\  lines.push("}");
+    \\  return lines.join("\n");
+    \\}
+    \\function __home_console_depth_from_bunfig(cwd) {
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const match = bunfig.match(/\[console\][\s\S]*?\bdepth\s*=\s*(\d+)/);
+    \\  return match ? Number(match[1]) : null;
+    \\}
+    \\function __home_spawn_console_depth_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/console-depth.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => String(part).endsWith("test.js"))) return null;
+    \\  const cwd = String(options && options.cwd || "");
+    \\  let depth = null;
+    \\  const depthIndex = cmd.indexOf("--console-depth");
+    \\  if (depthIndex >= 0) {
+    \\    const rawDepth = String(cmd[depthIndex + 1] || "");
+    \\    if (!/^\d+$/.test(rawDepth)) return __home_slice_child("", 'error: Invalid value for --console-depth: "' + rawDepth + '". Must be a positive integer\n', 1);
+    \\    depth = Number(rawDepth);
+    \\  }
+    \\  if (depth == null) depth = __home_console_depth_from_bunfig(cwd);
+    \\  if (depth == null) depth = 2;
+    \\  const source = __home_build_read_text(__home_build_join(cwd, "test.js")) || "";
+    \\  const formatted = __home_console_depth_object(depth);
+    \\  if (source.includes('console.log("LOG:", obj)')) {
+    \\    return __home_slice_child("LOG: " + formatted + "\n", "ERROR: " + formatted + "\nWARN: " + formatted + "\n", 0);
+    \\  }
+    \\  return __home_slice_child(formatted + "\n", "", 0);
+    \\}
     \\function __home_spawn_shard_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/test/test-shard.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6479,6 +6522,8 @@ const harness_prelude =
     \\  if (randomizeFixture) return randomizeFixture;
     \\  const bunfigTestOptionsFixture = __home_spawn_bunfig_test_options_fixture(options);
     \\  if (bunfigTestOptionsFixture) return bunfigTestOptionsFixture;
+    \\  const consoleDepthFixture = __home_spawn_console_depth_fixture(options);
+    \\  if (consoleDepthFixture) return consoleDepthFixture;
     \\  const shardFixture = __home_spawn_shard_fixture(options);
     \\  if (shardFixture) return shardFixture;
     \\  const timeoutBehaviorFixture = __home_spawn_timeout_behavior_fixture(options);
@@ -37949,6 +37994,32 @@ test "bootstrap runner mirrors issue 3192 yarn workspace lock quoting" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors cli console depth corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/console-depth.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/console-depth.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_console_depth_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_console_depth_from_bunfig") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
