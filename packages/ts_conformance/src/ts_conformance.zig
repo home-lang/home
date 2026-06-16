@@ -4588,6 +4588,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "mergeSymbolRexportFunction",
         "circularResolvedSignature",
         "jsxNamespaceGlobalReexportMissingAliasTarget",
+        "anonymousModules",
+        "arrayBindingPatternOmittedExpressions",
+        "noErrorUsingImportExportModuleAugmentationInDeclarationFile2",
+        "genericClassInheritsConstructorFromNonGenericClass",
+        "exportInFunction",
+        "newAbstractInstance",
+        "letAsIdentifier",
+        "conditionalDoesntLeakUninstantiatedTypeParameter",
+        "isolatedModulesRequiresPreserveConstEnum",
+        "spellingSuggestionJSXAttribute",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
