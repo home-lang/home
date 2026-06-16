@@ -4493,6 +4493,17 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "contextualTypingOfGenericFunctionTypedArguments1",
         "constDeclarations-access2",
         "letAndVarRedeclaration",
+        "inferenceOfNullableObjectTypesWithCommonBase",
+        "uniqueSymbolAllowsIndexInObjectWithIndexSignature",
+        "typeAliasDeclarationEmit3",
+        "errorCause",
+        "inferenceExactOptionalProperties2",
+        "objectLitGetterSetter",
+        "moduledecl",
+        "letDeclarations-scopes-duplicates6",
+        "crashInsourcePropertyIsRelatableToTargetProperty",
+        "unusedSwitchStatement",
+        "computedEnumMemberSyntacticallyString",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
