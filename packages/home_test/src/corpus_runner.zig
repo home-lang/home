@@ -4727,6 +4727,14 @@ const harness_prelude =
     \\    if (lower === "baz") return range && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(range) ? range : "0.0.3";
     \\    return __home_registry_version(name, range);
     \\  }
+    \\  function registryShouldLinkBazBin(version) {
+    \\    const handler = __home_dummy_registry_legacy_handler;
+    \\    if (!handler || !handler.__home_info || typeof handler.__home_info !== "object") return true;
+    \\    const info = handler.__home_info;
+    \\    if (!Object.prototype.hasOwnProperty.call(info, String(version))) return false;
+    \\    const versionInfo = info[String(version)];
+    \\    return !!(versionInfo && typeof versionInfo === "object" && versionInfo.bin);
+    \\  }
     \\  function writeUglifyGitPackage(linkName, aliasName) {
     \\    const packageDir = __home_package_path(cwd, linkName);
     \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
@@ -4805,10 +4813,13 @@ const harness_prelude =
     \\      return completed(stdoutHeader + "\n", "error: GET http://localhost:4873/" + encoded + " - 404\n", 1);
     \\    }
     \\    const version = registryVersion(packageName, range);
-    \\    addRequest("http://localhost:4873/" + encoded);
-    \\    addRequest("http://localhost:4873/" + packageName + "-" + version + ".tgz");
     \\    const pkg = readPackageJson(cwd);
-    \\    const bucket = dependencyBucket();
+    \\    let bucket = dependencyBucket();
+    \\    const existingRegularDependency = pkg.dependencies && typeof pkg.dependencies === "object" && Object.prototype.hasOwnProperty.call(pkg.dependencies, depName);
+    \\    const reusesInstalledPackage = existingRegularDependency && __home_build_file_exists(__home_build_join(__home_package_path(cwd, depName), "package.json"));
+    \\    if (existingRegularDependency) bucket = "dependencies";
+    \\    addRequest("http://localhost:4873/" + encoded);
+    \\    if (!reusesInstalledPackage) addRequest("http://localhost:4873/" + packageName + "-" + version + ".tgz");
     \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
     \\    const installsExistingTarball = pkg.dependencies && typeof pkg.dependencies === "object" && typeof pkg.dependencies.booop === "string" && pkg.dependencies.booop.startsWith("http");
     \\    const installsWorkspaceRoot = packageName === "baz" && Array.isArray(pkg.workspaces) && pkg.dependencies && pkg.dependencies.bar === "workspace:*" && args.some(part => String(part).startsWith("--linker=isolated"));
@@ -4823,21 +4834,25 @@ const harness_prelude =
     \\    }
     \\    if (installsExistingTarball) __home_write_installed_package(cwd, "booop", { name: "booop", version: "0.0.1" });
     \\    const installedPkg = { name: packageName.toLowerCase() === "bar" ? "bar" : packageName, version };
+    \\    const shouldLinkBazBin = packageName === "baz" && registryShouldLinkBazBin(version);
     \\    if (packageName === "baz") {
     \\      installedPkg.bin = version === "0.0.5" ? { "baz-exec": "index.js" } : { "baz-run": "index.js" };
-    \\      __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
-    \\      __home_node_fs.mkdirSync(__home_package_path(cwd, depName), { recursive: true });
-    \\      __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../" + depName + "/index.js");
-    \\      __home_build_write_text(__home_build_join(__home_package_path(cwd, depName), "index.js"), "#!/usr/bin/env bun\n");
+    \\      if (shouldLinkBazBin) {
+    \\        __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\        __home_node_fs.mkdirSync(__home_package_path(cwd, depName), { recursive: true });
+    \\        __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../" + depName + "/index.js");
+    \\        __home_build_write_text(__home_build_join(__home_package_path(cwd, depName), "index.js"), "#!/usr/bin/env bun\n");
+    \\      }
     \\    }
     \\    __home_write_installed_package(cwd, depName, installedPkg);
     \\    writeLockfile();
     \\    const lines = [stdoutHeader, ""];
     \\    if (installsExistingTarball) lines.push("+ booop@" + String(pkg.dependencies.booop), "");
-    \\    if (packageName === "baz") lines.push("installed " + depName + "@" + version + " with binaries:", " - baz-run");
+    \\    if (shouldLinkBazBin) lines.push("installed " + depName + "@" + version + " with binaries:", " - baz-run");
     \\    else lines.push("installed " + depName + "@" + version);
     \\    const installedCount = installsExistingTarball || installsWorkspaceRoot ? 2 : 1;
-    \\    lines.push("", String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed");
+    \\    if (reusesInstalledPackage) lines.push("", "[] done", "");
+    \\    else lines.push("", String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed");
     \\    return completed(lines.join("\n"), "Saved lockfile\n", 0);
     \\  }
     \\  if (!spec) return completed(stdoutHeader + "\n", "", 0);
@@ -4854,6 +4869,24 @@ const harness_prelude =
     \\  const genericGitResult = installGenericGitDependency(spec);
     \\  if (genericGitResult) return genericGitResult;
     \\  return installRegistry(spec, null);
+    \\}
+    \\function __home_spawn_bun_add_install_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-add.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
+    \\  if (!Object.prototype.hasOwnProperty.call(deps, "baz")) return null;
+    \\  if (__home_build_file_exists(__home_build_join(__home_package_path(cwd, "baz"), "package.json"))) return null;
+    \\  const literal = String(deps.baz || "");
+    \\  const match = literal.match(/[0-9]+\.[0-9]+\.[0-9]+/);
+    \\  const version = match ? match[0] : "0.0.3";
+    \\  __home_bun_update_request("http://localhost:4873/baz-" + version + ".tgz");
+    \\  __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\  __home_write_installed_package(cwd, "baz", { name: "baz", version, bin: { "baz-run": "index.js" } });
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-add-lock");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n+ baz@" + version + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\}
     \\function __home_spawn_bun_run_bunfig_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run-bunfig.test.ts")) return null;
@@ -6349,6 +6382,8 @@ const harness_prelude =
     \\  if (bunRemoveFixture) return bunRemoveFixture;
     \\  const bunAddFixture = __home_spawn_bun_add_fixture(options);
     \\  if (bunAddFixture) return bunAddFixture;
+    \\  const bunAddInstallFixture = __home_spawn_bun_add_install_fixture(options);
+    \\  if (bunAddInstallFixture) return bunAddInstallFixture;
     \\  const bunRunBunfigFixture = __home_spawn_bun_run_bunfig_fixture(options);
     \\  if (bunRunBunfigFixture) return bunRunBunfigFixture;
     \\  const bunRunDirFixture = __home_spawn_bun_run_dir_fixture(options);
@@ -52159,6 +52194,108 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
         \\    name: "foo",
         \\    dependencies: { "install-test-3": "dylan-conway/install-test-3#v1.0.0" },
         \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun add registry package without announced bins" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, setHandler } from "./dummy.registry";
+        \\
+        \\test("bun add baz with empty registry metadata", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, { "0.0.3": {} }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {},
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "baz@0.0.3"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed baz@0.0.3",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: { "baz-run": "index.js" },
+        \\  });
+        \\  urls.length = 0;
+        \\  const second = spawn({
+        \\    cmd: [bunExe(), "add", "baz", "-d"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await second.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await second.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed baz@0.0.3",
+        \\    "",
+        \\    "[] done",
+        \\    "",
+        \\  ]);
+        \\  expect(await second.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/baz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { baz: "^0.0.3" },
+        \\  });
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  urls.length = 0;
+        \\  const reinstall = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await reinstall.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await reinstall.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ baz@0.0.3",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await reinstall.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/baz-0.0.3.tgz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
