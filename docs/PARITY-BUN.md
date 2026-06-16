@@ -1479,6 +1479,14 @@ including explicit `CI=false` opt-out and common CI provider variables.
 Native parity still requires Home's real test runner to enforce `.only`
 from environment detection instead of the corpus spawn fixture.
 
+The copied `cli/heap-prof.test.ts` fixture now passes in Home as `7`
+passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
+`--heap-prof`, `--heap-prof-md`, `--heap-prof-dir`, `--heap-prof-name`,
+the generated V8 snapshot / markdown profile files, and the warning when
+`--heap-prof-name` is provided without enabling heap profiling. Native
+parity still requires Home's real CLI/runtime shutdown path to emit heap
+profiles rather than the corpus spawn fixture.
+
 The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
 `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
 explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`

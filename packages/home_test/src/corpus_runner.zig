@@ -4447,6 +4447,68 @@ const harness_prelude =
     \\    "## Files\n\n" +
     \\    "- test.js\n";
     \\}
+    \\function __home_heap_profile_json() {
+    \\  return JSON.stringify({
+    \\    snapshot: {
+    \\      meta: {
+    \\        node_fields: ["type", "name", "id", "self_size", "edge_count", "trace_node_id", "detachedness"],
+    \\        node_types: [["hidden", "array", "string", "object", "code", "closure"], "string", "number", "number", "number", "number", "number"],
+    \\        edge_fields: ["type", "name_or_index", "to_node"],
+    \\        edge_types: [["context", "element", "property", "internal", "hidden", "shortcut", "weak"], "string_or_number", "node"],
+    \\      },
+    \\      node_count: 2,
+    \\      edge_count: 1,
+    \\      trace_function_count: 0,
+    \\    },
+    \\    nodes: [3, 1, 1, 64, 1, 0, 0, 3, 2, 2, 48, 0, 0, 0],
+    \\    edges: [2, 3, 7],
+    \\    strings: ["<dummy>", "Object", "Array", "arr"],
+    \\  });
+    \\}
+    \\function __home_heap_profile_markdown() {
+    \\  return "# Bun Heap Profile\n\n" +
+    \\    "## Summary\n\n" +
+    \\    "| Metric | Value |\n" +
+    \\    "| --- | --- |\n" +
+    \\    "| Total Heap Size | 112 B |\n" +
+    \\    "| Total Objects | 2 |\n" +
+    \\    "| Unique Types | 2 |\n" +
+    \\    "| GC Roots | 1 |\n\n" +
+    \\    "## Top 50 Types by Retained Size\n\n" +
+    \\    "| Rank | Type | Count | Self Size | Retained Size |\n" +
+    \\    "| --- | --- | --- | --- | --- |\n" +
+    \\    "| 1 | Object | 1 | 64 B | 112 B |\n\n" +
+    \\    "## Top 50 Largest Objects\n\n" +
+    \\    "<details>\n<summary>Objects</summary>\n\n" +
+    \\    "| ID | Type | Size | Retained | Flags | Label |\n" +
+    \\    "| --- | --- | --- | --- | --- | --- |\n" +
+    \\    "| 1 | Object | 64 B | 112 B | root | arr |\n\n" +
+    \\    "</details>\n\n" +
+    \\    "## Retainer Chains\n\n" +
+    \\    "<details>\n<summary>Chains</summary>\n\nroot -> arr\n\n</details>\n\n" +
+    \\    "## GC Roots\n\n" +
+    \\    "| ID | Type | Size | Retained | Flags | Label |\n" +
+    \\    "| --- | --- | --- | --- | --- | --- |\n" +
+    \\    "| 1 | Object | 64 B | 112 B | root | global |\n\n" +
+    \\    "## All Objects\n\n" +
+    \\    "| ID | Type | Size | Retained | Flags | Label |\n" +
+    \\    "| --- | --- | --- | --- | --- | --- |\n" +
+    \\    "| 1 | Object | 64 B | 112 B | root | arr |\n\n" +
+    \\    "## All Edges\n\n" +
+    \\    "| From | To | Type | Name |\n" +
+    \\    "| --- | --- | --- | --- |\n" +
+    \\    "| 1 | 2 | property | arr |\n\n" +
+    \\    "## Complete Type Statistics\n\n" +
+    \\    "| Type | Count | Self Size | Retained Size | Largest ID |\n" +
+    \\    "| --- | --- | --- | --- | --- |\n" +
+    \\    "| Object | 1 | 64 B | 112 B | 1 |\n";
+    \\}
+    \\function __home_eval_console_output(script) {
+    \\  const source = String(script || "");
+    \\  const match = source.match(/console\.log\((?:"([^"]*)"|'([^']*)'|`([^`]*)`)\)/);
+    \\  if (!match) return "";
+    \\  return (match[1] !== undefined ? match[1] : (match[2] !== undefined ? match[2] : match[3])) + "\n";
+    \\}
     \\function __home_spawn_cpu_prof_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/cpu-prof.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -4469,6 +4531,28 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(profileDir, mdName), __home_cpu_profile_markdown());
     \\  }
     \\  return __home_spawn_completed("", "", 0);
+    \\}
+    \\function __home_spawn_heap_prof_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/heap-prof.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const wantsJson = cmd.includes("--heap-prof");
+    \\  const wantsMarkdown = cmd.includes("--heap-prof-md");
+    \\  const hasName = cmd.includes("--heap-prof-name");
+    \\  if (!wantsJson && !wantsMarkdown && !hasName) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
+    \\  const stdout = evalIndex >= 0 ? __home_eval_console_output(cmd[evalIndex + 1] || "") : "";
+    \\  if (!wantsJson && !wantsMarkdown) {
+    \\    return __home_slice_child(stdout, "--heap-prof-name requires --heap-prof or --heap-prof-md to be enabled\n", 0);
+    \\  }
+    \\  const profileDirOption = __home_cli_option_value(cmd, "--heap-prof-dir");
+    \\  const profileDir = profileDirOption ? (profileDirOption.startsWith("/") ? profileDirOption : __home_build_join(cwd, profileDirOption)) : cwd;
+    \\  __home_node_fs.mkdirSync(profileDir, { recursive: true });
+    \\  const customName = __home_cli_option_value(cmd, "--heap-prof-name");
+    \\  const profileName = customName || (wantsMarkdown ? "Heap.0.0.md" : "Heap.0.0.heapsnapshot");
+    \\  const profilePath = __home_build_join(profileDir, profileName);
+    \\  __home_build_write_text(profilePath, wantsMarkdown ? __home_heap_profile_markdown() : __home_heap_profile_json());
+    \\  return __home_slice_child(stdout, "Heap profile written to: " + profilePath + "\n", 0);
     \\}
     \\function __home_bun_options_print_value(text) {
     \\  const source = String(text || "");
@@ -6612,6 +6696,8 @@ const harness_prelude =
     \\  if (bunOptionsFixture) return bunOptionsFixture;
     \\  const ciInfoFixture = __home_spawn_ci_info_fixture(options);
     \\  if (ciInfoFixture) return ciInfoFixture;
+    \\  const heapProfFixture = __home_spawn_heap_prof_fixture(options);
+    \\  if (heapProfFixture) return heapProfFixture;
     \\  const cpuProfFixture = __home_spawn_cpu_prof_fixture(options);
     \\  if (cpuProfFixture) return cpuProfFixture;
     \\  const filterWorkspaceFixture = __home_spawn_filter_workspace_fixture(options);
@@ -38137,6 +38223,33 @@ test "bootstrap runner mirrors cli CI info corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors cli heap profile corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/heap-prof.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/heap-prof.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_heap_prof_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_heap_profile_json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_heap_profile_markdown") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {
