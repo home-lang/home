@@ -53101,6 +53101,64 @@ test "bootstrap runner mirrors bun add registry package without announced bins" 
         \\  expect(urls.sort()).toEqual(["http://localhost:4873/baz-0.0.3.tgz"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
         \\});
+        \\
+        \\test("bun add uses the registry latest tag by default", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, { "0.0.3": {}, "0.0.5": {}, latest: "0.0.3" }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\  }));
+        \\  const first = spawn({
+        \\    cmd: [bunExe(), "add", "baz"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await first.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await first.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed baz@0.0.3",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await first.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/baz", "http://localhost:4873/baz-0.0.3.tgz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: { "baz-run": "index.js" },
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { baz: "^0.0.3" },
+        \\  });
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  urls.length = 0;
+        \\  const reinstall = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await reinstall.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await reinstall.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ baz@0.0.3",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await reinstall.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/baz-0.0.3.tgz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -53112,7 +53170,7 @@ test "bootstrap runner mirrors bun add registry package without announced bins" 
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner supports promisified execFile bun version" {
