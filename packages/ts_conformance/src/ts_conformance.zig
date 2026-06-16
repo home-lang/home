@@ -4109,6 +4109,20 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "readonlyAssignmentInSubclassOfClassExpression",
         "reactNamespaceMissingDeclaration",
         "aliasesInSystemModule1",
+        "contravariantOnlyInferenceWithAnnotatedOptionalParameterJs",
+        "es6ClassTest5",
+        "moduleAugmentationOfAlias",
+        "unusedTypeParameterInLambda3",
+        "overloadingStaticFunctionsInFunctions",
+        "nativeToBoxedTypes",
+        "moduleWithTryStatement1",
+        "unusedVariablesWithUnderscoreInBindingElement",
+        "privacyAccessorDeclFile",
+        "modularizeLibrary_Dom.asynciterable",
+        "pathMappingWithoutBaseUrl2",
+        "pathMappingBasedModuleResolution4_classic",
+        "capturedLetConstInLoop9_ES6",
+        "lift",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
