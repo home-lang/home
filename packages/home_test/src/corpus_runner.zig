@@ -4735,7 +4735,7 @@ const harness_prelude =
     \\    const versionInfo = info[String(version)];
     \\    return !!(versionInfo && typeof versionInfo === "object" && versionInfo.bin);
     \\  }
-    \\  function writeUglifyGitPackage(linkName, aliasName) {
+    \\  function writeUglifyGitPackage(linkName, aliasName, cacheEntry) {
     \\    const packageDir = __home_package_path(cwd, linkName);
     \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
     \\    for (const entry of [".bun-tag", ".gitattributes", ".gitignore", "CONTRIBUTING.md", "LICENSE", "README.md"]) __home_build_write_text(__home_build_join(packageDir, entry), "");
@@ -4743,7 +4743,8 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(packageDir, "bin/uglifyjs"), "#!/usr/bin/env bun\n");
     \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "uglify-js", version: "3.14.1", bin: { "uglifyjs": "bin/uglifyjs" } });
     \\    const cacheRoot = __home_build_join(cwd, "node_modules/.cache");
-    \\    __home_node_fs.mkdirSync(__home_build_join(cacheRoot, "@GH@mishoo-UglifyJS-e219a9a@@@1"), { recursive: true });
+    \\    const cacheName = cacheEntry || "@GH@mishoo-UglifyJS-e219a9a@@@1";
+    \\    __home_node_fs.mkdirSync(__home_build_join(cacheRoot, cacheName), { recursive: true });
     \\    if (aliasName) {
     \\      const aliasRoot = __home_build_join(cacheRoot, aliasName);
     \\      __home_node_fs.mkdirSync(aliasRoot, { recursive: true });
@@ -4755,24 +4756,28 @@ const harness_prelude =
     \\  function installGitHubUglify(rawSpec) {
     \\    const text = String(rawSpec || "");
     \\    const marker = "mishoo/UglifyJS#v3.14.1";
+    \\    const scpMarker = "bun@github.com:mishoo/UglifyJS.git";
     \\    const aliasAt = text.indexOf("@" + marker);
     \\    const aliasName = aliasAt > 0 ? text.slice(0, aliasAt) : null;
-    \\    if (text !== marker && !aliasName) return null;
+    \\    const isScpGitUrl = text === scpMarker;
+    \\    if (text !== marker && !aliasName && !isScpGitUrl) return null;
     \\    const linkName = aliasName || "uglify-js";
     \\    const pkg = readPackageJson(cwd);
     \\    const bucket = dependencyBucket();
     \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
-    \\    pkg[bucket][linkName] = marker;
+    \\    pkg[bucket][linkName] = isScpGitUrl ? scpMarker : marker;
     \\    writePackageJson(cwd, pkg);
-    \\    writeUglifyGitPackage(linkName, aliasName);
+    \\    writeUglifyGitPackage(linkName, aliasName, isScpGitUrl ? "9d05c118f06c3b4c.git" : null);
     \\    writeLockfile();
-    \\    return completed(stdoutHeader + "\n\ninstalled " + linkName + "@github:mishoo/UglifyJS#e219a9a with binaries:\n - uglifyjs\n\n1 package installed", "Saved lockfile\n", 0);
+    \\    const display = isScpGitUrl ? "git+ssh://bun@github.com:mishoo/UglifyJS.git" : "github:mishoo/UglifyJS#e219a9a";
+    \\    return completed(stdoutHeader + "\n\ninstalled " + linkName + "@" + display + " with binaries:\n - uglifyjs\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
     \\  function installGenericGitDependency(rawSpec) {
     \\    const text = String(rawSpec || "");
     \\    let depName = "";
     \\    if (/^dylan-conway\/install-test-3#v1\.0\.[0-2]$/.test(text)) depName = "install-test-3";
     \\    else if (text === "git@github.com:dylan-conway/install-test-no-packagejson") depName = "install-test-no-packagejson";
+    \\    else if (text === "https://github.com/liz3/empty-bun-repo") depName = "test-repo";
     \\    if (!depName) return null;
     \\    const pkg = readPackageJson(cwd);
     \\    const bucket = dependencyBucket();
@@ -4877,6 +4882,9 @@ const harness_prelude =
     \\  const cwd = String(options && options.cwd || process.cwd());
     \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
     \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
+    \\  if (String(deps["uglify-js"] || "") === "bun@github.com:mishoo/UglifyJS.git" && __home_build_file_exists(__home_build_join(__home_package_path(cwd, "uglify-js"), "package.json"))) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n\nChecked 1 install across 2 packages (no changes)", "", 0);
+    \\  }
     \\  if (!Object.prototype.hasOwnProperty.call(deps, "baz")) return null;
     \\  if (__home_build_file_exists(__home_build_join(__home_package_path(cwd, "baz"), "package.json"))) return null;
     \\  const literal = String(deps.baz || "");
@@ -52102,6 +52110,77 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors bun add SCP Git URL dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\
+        \\expect.extend({ toHaveBins });
+        \\
+        \\test("bun add SCP Git URL dependency", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  const first = spawn({
+        \\    cmd: [bunExe(), "add", "bun@github.com:mishoo/UglifyJS.git"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await first.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await first.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed uglify-js@git+ssh://bun@github.com:mishoo/UglifyJS.git with binaries:",
+        \\    " - uglifyjs",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await first.exited).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["9d05c118f06c3b4c.git"]);
+        \\  expect((await file(join(package_dir, "node_modules", "uglify-js", "package.json")).json()).name).toBe("uglify-js");
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { "uglify-js": "bun@github.com:mishoo/UglifyJS.git" },
+        \\  });
+        \\  const second = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await second.stderr.text()).toBe("");
+        \\  expect((await second.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "Checked 1 install across 2 packages (no changes)",
+        \\  ]);
+        \\  expect(await second.exited).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors bun add workspace isolated corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -52195,6 +52274,39 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
         \\    dependencies: { "install-test-3": "dylan-conway/install-test-3#v1.0.0" },
         \\  });
         \\});
+        \\
+        \\test("bun add plain GitHub URL dependency name", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  const first = spawn({
+        \\    cmd: [bunExe(), "add", "https://github.com/liz3/empty-bun-repo"],
+        \\    cwd: package_dir,
+        \\    stdout: "ignore",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await first.exited).toBe(0);
+        \\  expect(await first.stderr.text()).not.toContain("error:");
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { "test-repo": "https://github.com/liz3/empty-bun-repo" },
+        \\  });
+        \\  const second = spawn({
+        \\    cmd: [bunExe(), "add", "https://github.com/liz3/empty-bun-repo"],
+        \\    cwd: package_dir,
+        \\    stdout: "ignore",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await second.exited).toBe(0);
+        \\  expect(await second.stderr.text()).not.toContain("error:");
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { "test-repo": "https://github.com/liz3/empty-bun-repo" },
+        \\  });
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -52206,7 +52318,7 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add registry package without announced bins" {
