@@ -4624,6 +4624,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "collisionArgumentsInterfaceMembers",
         "amdDependencyCommentName4",
         "typeGuardNarrowsIndexedAccessOfKnownProperty8",
+        "withStatementErrors",
+        "isolatedDeclarationErrors",
+        "noIterationTypeErrorsInCFA",
+        "jsxAttributeWithoutExpressionReact",
+        "parseAssertEntriesError",
+        "dynamicImportTrailingComma",
+        "unusedPrivateMethodInClass2",
+        "tsxTypeArgumentPartialDefinitionStillErrors",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
