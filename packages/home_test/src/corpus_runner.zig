@@ -52632,11 +52632,13 @@ test "bootstrap runner mirrors bun add install save redirects and peers" {
         \\  expect(urls.sort()).toEqual([`${root_url}/bar`, `${root_url}/bar-0.0.2.tgz`]);
         \\  expect(requested).toBe(2);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["package.json"]);
         \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({ name: "bar", version: "0.0.2" });
         \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
         \\    name: "foo",
         \\    peerDependencies: { bar: "^0.0.2" },
         \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
