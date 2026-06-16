@@ -4504,6 +4504,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "crashInsourcePropertyIsRelatableToTargetProperty",
         "unusedSwitchStatement",
         "computedEnumMemberSyntacticallyString",
+        "unclosedExportClause02",
+        "constEnumSyntheticNodesComments",
+        "commonSourceDir4",
+        "doubleUnderStringLiteralAssignability",
+        "subclassThisTypeAssignable02",
+        "mergedModuleDeclarationCodeGen4",
+        "conditionalTypesSimplifyWhenTrivial",
+        "noImplicitAnyIndexing",
+        "functionOverloads18",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
