@@ -4338,6 +4338,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "pathsValidation2",
         "recursiveConditionalCrash4",
         "prefixUnaryOperatorsOnExportedVariables",
+        "instantiateContextuallyTypedGenericThis",
+        "deeplyNestedConditionalTypes",
+        "constantEnumAssert",
+        "noImplicitAnyParametersInInterface",
+        "genericsWithDuplicateTypeParameters1",
+        "moduleResolutionWithSuffixes_one_jsonModule",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
