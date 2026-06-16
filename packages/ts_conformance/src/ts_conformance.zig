@@ -4643,6 +4643,11 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "argumentsPropertyNameInJsMode1",
         "stringIndexerAssignments2",
         "assignmentToObjectAndFunction",
+        "awaitedType",
+        "indexedAccessConstraints",
+        "unusedInvalidTypeArguments",
+        "abstractClassUnionInstantiation",
+        "umdGlobalAugmentationNoCrash",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
