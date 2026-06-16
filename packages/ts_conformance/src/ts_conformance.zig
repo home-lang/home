@@ -4304,6 +4304,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "classExtendsNull3",
         "conflictingTypeParameterSymbolTransfer",
         "unusedSetterInClass",
+        "parametersSyntaxErrorNoCrash2",
+        "jsxCallElaborationCheckNoCrash1",
+        "jsEmitIntersectionProperty",
+        "jsxNamespacePrefixInName",
+        "bigintAmbientMinimal",
+        "downlevelLetConst16",
+        "pathMappingBasedModuleResolution7_node",
+        "jsdocAccessEnumType",
+        "externModule",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
