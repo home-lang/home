@@ -4524,6 +4524,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "sourceMapValidationDestructuringVariableStatementArrayBindingPattern2",
         "inferFromGenericFunctionReturnTypes1",
         "importHelpersNoHelpers",
+        "potentiallyUncalledDecorators",
+        "contextualOverloadListFromUnionWithPrimitiveNoImplicitAny",
+        "jsEnumTagOnObjectFrozen",
+        "es6ImportEqualsDeclaration",
+        "newOnInstanceSymbol",
+        "moduleSharesNameWithImportDeclarationInsideIt5",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
