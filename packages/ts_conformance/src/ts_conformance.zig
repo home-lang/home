@@ -4222,6 +4222,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "excessPropertyCheckWithUnions",
         "exportDefaultInterfaceAndFunctionOverloads",
         "recursiveTupleTypes1",
+        "privateAccessInSubclass1",
+        "mergeSymbolReexportedTypeAliasInstantiation",
+        "genericCloduleInModule2",
+        "classMemberInitializerScoping",
+        "declFileTypeAnnotationVisibilityErrorAccessors",
+        "interfaceImplementation1",
+        "unusedMultipleParameters1InFunctionDeclaration",
+        "noInferUnionExcessPropertyCheck1",
+        "dynamicImportInDefaultExportExpression",
+        "typeInferenceReturnTypeCallback",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
