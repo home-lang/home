@@ -52366,6 +52366,115 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors bun add registry names and buckets" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, appendFile, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\async function expectMissingRegistryPackage(spec, encoded) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(async request => {
+        \\    urls.push(request.url);
+        \\    return new Response("not to be found", { status: 404 });
+        \\  });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", spec],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect((await stderr.text()).split(/\r?\n/)).toContain(`error: GET http://localhost:4873/${encoded} - 404`);
+        \\  expect(await stdout.text()).toEqual(expect.stringContaining("bun add v1."));
+        \\  expect(await exited).toBe(1);
+        \\  expect(urls.sort()).toEqual([`${root_url}/${encoded}`]);
+        \\  expect(requested).toBe(1);
+        \\  try {
+        \\    await access(join(package_dir, "bun.lockb"));
+        \\    throw new Error("expected missing lockfile");
+        \\  } catch (error) {
+        \\    expect(error.code).toBe("ENOENT");
+        \\  }
+        \\}
+        \\
+        \\async function expectAddBar(args, expectedPackageJson) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  if (args.includes("install.exact")) {
+        \\    await appendFile(join(package_dir, "bunfig.toml"), "exact = true\n");
+        \\    args = args.filter(arg => arg !== "install.exact");
+        \\  }
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", ...args, "BaR"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed BaR@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/BaR", "http://localhost:4873/BaR-0.0.2.tgz"]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "BaR"]);
+        \\  expect(await file(join(package_dir, "node_modules", "BaR", "package.json")).json()).toEqual({ name: "bar", version: "0.0.2" });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual(expectedPackageJson);
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
+        \\}
+        \\
+        \\test("semver-like registry names are fetched as names", async () => {
+        \\  await expectMissingRegistryPackage("1.2.3", "1.2.3");
+        \\});
+        \\
+        \\test("scoped registry names are percent-encoded", async () => {
+        \\  await expectMissingRegistryPackage("@bar/baz", "@bar%2fbaz");
+        \\});
+        \\
+        \\test("capitalized registry names preserve dependency keys", async () => {
+        \\  await expectAddBar([], { name: "foo", version: "0.0.1", dependencies: { BaR: "^0.0.2" } });
+        \\});
+        \\
+        \\test("exact registry adds honor flags and bunfig", async () => {
+        \\  await expectAddBar(["--exact"], { name: "foo", version: "0.0.1", dependencies: { BaR: "0.0.2" } });
+        \\  await expectAddBar(["-E"], { name: "foo", version: "0.0.1", dependencies: { BaR: "0.0.2" } });
+        \\  await expectAddBar(["install.exact"], { name: "foo", version: "0.0.1", dependencies: { BaR: "0.0.2" } });
+        \\});
+        \\
+        \\test("registry adds honor dependency bucket flags", async () => {
+        \\  await expectAddBar(["--dev"], { name: "foo", version: "0.0.1", devDependencies: { BaR: "^0.0.2" } });
+        \\  await expectAddBar(["--optional"], { name: "foo", version: "0.0.1", optionalDependencies: { BaR: "^0.0.2" } });
+        \\  await expectAddBar(["--peer"], { name: "foo", version: "0.0.1", peerDependencies: { BaR: "^0.0.2" } });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors bun add SCP Git URL dependency" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
