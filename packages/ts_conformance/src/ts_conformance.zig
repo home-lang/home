@@ -4481,6 +4481,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "taggedTemplatesWithIncompleteTemplateExpressions2",
         "fileWithNextLine3",
         "getterSetterSubtypeAssignment",
+        "controlFlowCaching",
+        "elidedJSImport1",
+        "declarationEmitOverloadedPrivateInference",
+        "exportDefaultTypeClassAndValue",
+        "genericRestTypes",
+        "es6ImportWithoutFromClause",
+        "extendConstructSignatureInInterface",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
