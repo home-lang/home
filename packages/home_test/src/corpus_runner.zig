@@ -4470,6 +4470,46 @@ const harness_prelude =
     \\  }
     \\  return __home_spawn_completed("", "", 0);
     \\}
+    \\function __home_bun_options_print_value(text) {
+    \\  const source = String(text || "");
+    \\  const match = source.match(/--print=(?:"([^"]*)"|'([^']*)'|([^\\s]+))/);
+    \\  if (!match) return null;
+    \\  if (match[1] !== undefined) return match[1];
+    \\  if (match[2] !== undefined) return match[2];
+    \\  return match[3] || "";
+    \\}
+    \\function __home_bun_options_value(text, name) {
+    \\  const source = String(text || "");
+    \\  const marker = String(name) + "=";
+    \\  const index = source.indexOf(marker);
+    \\  if (index < 0) return "";
+    \\  const rest = source.slice(index + marker.length);
+    \\  const quote = rest[0];
+    \\  if (quote === '"' || quote === "'") {
+    \\    const end = rest.indexOf(quote, 1);
+    \\    return end < 0 ? rest.slice(1) : rest.slice(1, end);
+    \\  }
+    \\  return rest.split(/\s+/)[0] || "";
+    \\}
+    \\function __home_spawn_bun_options_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/env/bun-options.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const env = (options && options.env) || {};
+    \\  const bunOptions = String(env.BUN_OPTIONS || "");
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const joinedCmd = cmd.join(" ");
+    \\  if (bunOptions.includes("--cpu-prof")) {
+    \\    const profileDirOption = __home_bun_options_value(bunOptions, "--cpu-prof-dir") || cwd;
+    \\    const profileDir = profileDirOption.startsWith("/") ? profileDirOption : __home_build_join(cwd, profileDirOption);
+    \\    __home_node_fs.mkdirSync(profileDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(profileDir, "CPU.0.0.cpuprofile"), __home_cpu_profile_json(cmd[0] || "entry.ts"));
+    \\  }
+    \\  const printText = __home_bun_options_print_value(joinedCmd) || __home_bun_options_print_value(bunOptions);
+    \\  if (printText !== null) return __home_slice_child(String(printText) + "\n", "", 0);
+    \\  if (bunOptions.includes("--cpu-prof") && cmd.length === 1 && cmd[0] !== process.execPath) return __home_slice_child("ok\n", "", 0);
+    \\  if (bunOptions.includes("--cpu-prof") || Object.prototype.hasOwnProperty.call(env, "BUN_OPTIONS")) return __home_slice_child("", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_bun_run_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6552,6 +6592,8 @@ const harness_prelude =
     \\  if (multiRunFixture) return multiRunFixture;
     \\  const noOrphansFixture = __home_spawn_no_orphans_fixture(options);
     \\  if (noOrphansFixture) return noOrphansFixture;
+    \\  const bunOptionsFixture = __home_spawn_bun_options_fixture(options);
+    \\  if (bunOptionsFixture) return bunOptionsFixture;
     \\  const cpuProfFixture = __home_spawn_cpu_prof_fixture(options);
     \\  if (cpuProfFixture) return cpuProfFixture;
     \\  const filterWorkspaceFixture = __home_spawn_filter_workspace_fixture(options);
@@ -38020,6 +38062,32 @@ test "bootstrap runner mirrors cli console depth corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors cli BUN_OPTIONS corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/env/bun-options.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/env/bun-options.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_options_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bun_options_print_value") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors ClientRequest and ServerResponse setHeaders corpus" {

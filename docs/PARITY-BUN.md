@@ -1464,6 +1464,14 @@ Native parity still requires the real CLI flag path and console
 inspector formatting to run through Home's runtime rather than the corpus
 spawn fixture.
 
+The copied `cli/env/bun-options.test.ts` fixture now passes in Home as
+`7` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
+`BUN_OPTIONS` insertion ahead of command-line args for `--print` /
+`--quiet`, empty environment options, and `--cpu-prof` /
+`--cpu-prof-dir` profile emission for both direct eval and compiled
+executable runs. Native parity still requires Home's real CLI argument
+initialization to merge `BUN_OPTIONS` before runtime dispatch.
+
 The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
 `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
 explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`
