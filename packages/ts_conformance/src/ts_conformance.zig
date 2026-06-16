@@ -4443,6 +4443,10 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "es6ImportDefaultBindingMergeErrors",
         "inKeywordNarrowingWithNoUncheckedIndexedAccess",
         "useBeforeDeclaration",
+        "indexingTypesWithNever",
+        "contextualTypeIterableUnions",
+        "emitCapturingThisInTupleDestructuring1",
+        "emitBundleWithShebang1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
