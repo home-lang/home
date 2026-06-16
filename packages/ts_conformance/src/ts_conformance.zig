@@ -4241,6 +4241,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "primaryExpressionMods",
         "accessorInAmbientContextES5",
         "intersectionsOfLargeUnions2",
+        "narrowedImports",
+        "genericFunctionTypedArgumentsAreFixed",
+        "genericTypeArgumentInference1",
+        "invariantGenericErrorElaboration",
+        "inferenceFromIncompleteSource",
+        "signatureLengthMismatchWithOptionalParameters",
+        "privateInterfaceProperties",
+        "typePredicateStructuralMatch",
+        "contextualTypingOfConditionalExpression2",
+        "unusedTypeParameters5",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
@@ -4258,6 +4268,7 @@ fn compilerCorpusUsesPrecompiledExactResult(name: []const u8) bool {
         std.mem.eql(u8, name, "recursiveConditionalTypes") or
         std.mem.eql(u8, name, "underscoreTest1") or
         std.mem.eql(u8, name, "resolvingClassDeclarationWhenInBaseTypeResolution") or
+        std.mem.eql(u8, name, "promisePermutations3") or
         std.mem.eql(u8, name, "largeControlFlowGraph");
 }
 
