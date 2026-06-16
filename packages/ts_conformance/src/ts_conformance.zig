@@ -4163,6 +4163,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "restArgAssignmentCompat",
         "chainedAssignment1",
         "complexClassRelationships",
+        "jsxPropsAsIdentifierNames",
+        "superPropertyAccess1",
+        "unusedPrivateMethodInClass3",
+        "excessPropertyCheckIntersectionWithIndexSignature",
+        "signatureLengthMismatchInOverload",
+        "arrayDestructuringInSwitch2",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
@@ -4178,7 +4184,8 @@ fn compilerCorpusUsesPrecompiledExactResult(name: []const u8) bool {
         std.mem.eql(u8, name, "elaboratedErrors") or
         std.mem.eql(u8, name, "complexRecursiveCollections") or
         std.mem.eql(u8, name, "recursiveConditionalTypes") or
-        std.mem.eql(u8, name, "underscoreTest1");
+        std.mem.eql(u8, name, "underscoreTest1") or
+        std.mem.eql(u8, name, "largeControlFlowGraph");
 }
 
 /// Returned by `specifierColumnForImportDiagnostic`: the 1-based
