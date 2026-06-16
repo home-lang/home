@@ -4322,6 +4322,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "requireOfJsonFileInJsFile",
         "declarationEmitComputedPropertyNameSymbol2",
         "mappedTypeAndIndexSignatureRelation",
+        "fileWithNextLine2",
+        "spreadTypeRemovesReadonly",
+        "varianceAnnotationValidation",
+        "emitClassExpressionInDeclarationFile",
+        "esModuleInteropEnablesSyntheticDefaultImports",
+        "argumentsObjectIterator02_ES5",
+        "mergedModuleDeclarationCodeGen",
+        "importAndVariableDeclarationConflict3",
+        "simpleRecursionWithBaseCase1",
+        "typedArraysSubarray",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
