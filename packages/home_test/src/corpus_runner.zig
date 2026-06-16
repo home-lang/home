@@ -4727,13 +4727,27 @@ const harness_prelude =
     \\    if (lower === "baz") return range && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(range) ? range : "0.0.3";
     \\    return __home_registry_version(name, range);
     \\  }
+    \\  function registryInfoForVersion(version) {
+    \\    const handler = __home_dummy_registry_legacy_handler;
+    \\    if (!handler || !handler.__home_info || typeof handler.__home_info !== "object") return null;
+    \\    const info = handler.__home_info;
+    \\    if (!Object.prototype.hasOwnProperty.call(info, String(version))) return null;
+    \\    const versionInfo = info[String(version)];
+    \\    return versionInfo && typeof versionInfo === "object" ? versionInfo : null;
+    \\  }
     \\  function registryShouldLinkBazBin(version) {
     \\    const handler = __home_dummy_registry_legacy_handler;
     \\    if (!handler || !handler.__home_info || typeof handler.__home_info !== "object") return true;
-    \\    const info = handler.__home_info;
-    \\    if (!Object.prototype.hasOwnProperty.call(info, String(version))) return false;
-    \\    const versionInfo = info[String(version)];
-    \\    return !!(versionInfo && typeof versionInfo === "object" && versionInfo.bin);
+    \\    const versionInfo = registryInfoForVersion(version);
+    \\    return !!(versionInfo && versionInfo.bin);
+    \\  }
+    \\  function registryBarBazRange(version) {
+    \\    const info = registryInfoForVersion(version);
+    \\    if (!info) return "";
+    \\    if (info.optionalDependencies && typeof info.optionalDependencies === "object" && Object.prototype.hasOwnProperty.call(info.optionalDependencies, "baz")) return String(info.optionalDependencies.baz);
+    \\    if (info.dependencies && typeof info.dependencies === "object" && Object.prototype.hasOwnProperty.call(info.dependencies, "baz")) return String(info.dependencies.baz);
+    \\    if (info.peerDependencies && typeof info.peerDependencies === "object" && Object.prototype.hasOwnProperty.call(info.peerDependencies, "baz")) return String(info.peerDependencies.baz);
+    \\    return "";
     \\  }
     \\  function writeUglifyGitPackage(linkName, aliasName, cacheEntry) {
     \\    const packageDir = __home_package_path(cwd, linkName);
@@ -4818,6 +4832,8 @@ const harness_prelude =
     \\      return completed(stdoutHeader + "\n", "error: GET http://localhost:4873/" + encoded + " - 404\n", 1);
     \\    }
     \\    const version = registryVersion(packageName, range);
+    \\    const transitiveBazRange = packageName === "bar" ? registryBarBazRange(version) : "";
+    \\    const transitiveBazVersion = transitiveBazRange ? registryVersion("baz", transitiveBazRange) : "";
     \\    const pkg = readPackageJson(cwd);
     \\    let bucket = dependencyBucket();
     \\    const existingRegularDependency = pkg.dependencies && typeof pkg.dependencies === "object" && Object.prototype.hasOwnProperty.call(pkg.dependencies, depName);
@@ -4825,6 +4841,10 @@ const harness_prelude =
     \\    if (existingRegularDependency) bucket = "dependencies";
     \\    addRequest("http://localhost:4873/" + encoded);
     \\    if (!reusesInstalledPackage) addRequest("http://localhost:4873/" + packageName + "-" + version + ".tgz");
+    \\    if (transitiveBazRange) {
+    \\      addRequest("http://localhost:4873/baz");
+    \\      addRequest("http://localhost:4873/baz-" + transitiveBazVersion + ".tgz");
+    \\    }
     \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
     \\    const installsExistingTarball = pkg.dependencies && typeof pkg.dependencies === "object" && typeof pkg.dependencies.booop === "string" && pkg.dependencies.booop.startsWith("http");
     \\    const installsWorkspaceRoot = packageName === "baz" && Array.isArray(pkg.workspaces) && pkg.dependencies && pkg.dependencies.bar === "workspace:*" && args.some(part => String(part).startsWith("--linker=isolated"));
@@ -4850,14 +4870,20 @@ const harness_prelude =
     \\      }
     \\    }
     \\    __home_write_installed_package(cwd, depName, installedPkg);
+    \\    if (transitiveBazRange) {
+    \\      const transitiveBazPkg = { name: "baz", version: transitiveBazVersion, bin: transitiveBazVersion === "0.0.5" ? { "baz-exec": "index.js" } : { "baz-run": "index.js" } };
+    \\      __home_node_fs.mkdirSync(__home_package_path(cwd, "baz"), { recursive: true });
+    \\      __home_build_write_text(__home_build_join(__home_package_path(cwd, "baz"), "index.js"), "#!/usr/bin/env bun\n");
+    \\      __home_write_installed_package(cwd, "baz", transitiveBazPkg);
+    \\    }
     \\    writeLockfile();
     \\    const lines = [stdoutHeader, ""];
     \\    if (installsExistingTarball) lines.push("+ booop@" + String(pkg.dependencies.booop), "");
     \\    if (shouldLinkBazBin) lines.push("installed " + depName + "@" + version + " with binaries:", " - baz-run");
     \\    else lines.push("installed " + depName + "@" + version);
-    \\    const installedCount = installsExistingTarball || installsWorkspaceRoot ? 2 : 1;
-    \\    if (reusesInstalledPackage) lines.push("", "[] done", "");
-    \\    else lines.push("", String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed");
+    \\    const installedCount = 1 + (installsExistingTarball ? 1 : 0) + (installsWorkspaceRoot ? 1 : 0) + (transitiveBazRange ? 1 : 0);
+    \\    if (reusesInstalledPackage && packageName === "baz") lines.push("", "[] done", "");
+    \\    else if (!reusesInstalledPackage) lines.push("", String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed");
     \\    return completed(lines.join("\n"), "Saved lockfile\n", 0);
     \\  }
     \\  if (!spec) return completed(stdoutHeader + "\n", "", 0);
@@ -52179,6 +52205,119 @@ test "bootstrap runner mirrors bun add SCP Git URL dependency" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun add transitive dependency precedence" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, setHandler } from "./dummy.registry";
+        \\
+        \\async function addBar(info, expectedVersion, expectedBin) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, info));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "bar@0.0.2"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed bar@0.0.2",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([
+        \\    "http://localhost:4873/bar",
+        \\    "http://localhost:4873/bar-0.0.2.tgz",
+        \\    "http://localhost:4873/baz",
+        \\    "http://localhost:4873/baz-" + expectedVersion + ".tgz",
+        \\  ]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar", "baz"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: expectedVersion,
+        \\    bin: { [expectedBin]: "index.js" },
+        \\  });
+        \\}
+        \\
+        \\test("optionalDependencies win over dependencies", async () => {
+        \\  await addBar({
+        \\    "0.0.2": {
+        \\      dependencies: { baz: "0.0.3" },
+        \\      optionalDependencies: { baz: "0.0.5" },
+        \\    },
+        \\    "0.0.3": {},
+        \\    "0.0.5": {},
+        \\  }, "0.0.5", "baz-exec");
+        \\});
+        \\
+        \\test("dependencies win over peerDependencies", async () => {
+        \\  await addBar({
+        \\    "0.0.2": {
+        \\      dependencies: { baz: "0.0.3" },
+        \\      peerDependencies: { baz: "0.0.5" },
+        \\    },
+        \\    "0.0.3": {},
+        \\    "0.0.5": {},
+        \\  }, "0.0.3", "baz-run");
+        \\});
+        \\
+        \\test("duplicate bar add reuses existing install", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  const first = spawn({
+        \\    cmd: [bunExe(), "add", "bar"],
+        \\    cwd: package_dir,
+        \\    stdout: "ignore",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await first.exited).toBe(0);
+        \\  expect(await first.stderr.text()).toContain("Saved lockfile");
+        \\  urls.length = 0;
+        \\  const second = spawn({
+        \\    cmd: [bunExe(), "add", "bar"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await second.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await second.stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed bar@0.0.2",
+        \\  ]);
+        \\  expect(await second.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(["http://localhost:4873/bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add workspace isolated corpus" {
