@@ -4350,6 +4350,18 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "withStatementNestedScope",
         "arrayOfSubtypeIsAssignableToReadonlyArray",
         "indirectDiscriminantAndExcessProperty",
+        "multiLineContextDiagnosticWithPretty",
+        "jsxNamespacePrefixIntrinsics",
+        "class2",
+        "importNonExportedMember4",
+        "destructionAssignmentError",
+        "genericFunctionInference1",
+        "narrowByClauseExpressionInSwitchTrue5",
+        "reexportMissingDefault5",
+        "erasableSyntaxOnlyDeclaration",
+        "arraySigChecking",
+        "nonExportedElementsOfMergedModules",
+        "objectLiteralFunctionArgContextualTyping2",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
