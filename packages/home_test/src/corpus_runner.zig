@@ -52298,10 +52298,10 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
     const source =
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { writeFile } from "fs/promises";
+        \\import { readlink, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, readdirSorted, toHaveBins } from "harness";
-        \\import { join } from "path";
-        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\import { join, resolve } from "path";
+        \\import { dummyBeforeEach, package_dir, requested } from "./dummy.registry";
         \\
         \\expect.extend({ toHaveBins });
         \\
@@ -52352,6 +52352,58 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["@GH@mishoo-UglifyJS-e219a9a@@@1"]);
         \\});
+        \\
+        \\test("bun add aliased GitHub dependency", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "uglify@mishoo/UglifyJS#v3.14.1"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed uglify@github:mishoo/UglifyJS#e219a9a with binaries:",
+        \\    " - uglifyjs",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["@GH@mishoo-UglifyJS-e219a9a@@@1", "uglify"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache", "uglify"))).toEqual(["mishoo-UglifyJS-e219a9a@@@1"]);
+        \\  expect(resolve(await readlink(join(package_dir, "node_modules", ".cache", "uglify", "mishoo-UglifyJS-e219a9a@@@1")))).toBe(join(package_dir, "node_modules", ".cache", "@GH@mishoo-UglifyJS-e219a9a@@@1"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "uglify"))).toEqual([
+        \\    ".bun-tag",
+        \\    ".gitattributes",
+        \\    ".github",
+        \\    ".gitignore",
+        \\    "CONTRIBUTING.md",
+        \\    "LICENSE",
+        \\    "README.md",
+        \\    "bin",
+        \\    "lib",
+        \\    "package.json",
+        \\    "test",
+        \\    "tools",
+        \\  ]);
+        \\  expect(await file(join(package_dir, "node_modules", "uglify", "package.json")).json()).toEqual({
+        \\    name: "uglify-js",
+        \\    version: "3.14.1",
+        \\    bin: { uglifyjs: "bin/uglifyjs" },
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { uglify: "mishoo/UglifyJS#v3.14.1" },
+        \\  });
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -52363,7 +52415,7 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add registry names and buckets" {
@@ -52580,6 +52632,49 @@ test "bootstrap runner mirrors bun add registry alias and semver corpus" {
         \\  });
         \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
         \\});
+        \\
+        \\test("npm aliases can keep alias names while resolving target packages", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.0.3": { bin: { "baz-run": "index.js" } },
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "bar@npm:baz@~0.0.2"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed bar@0.0.3 with binaries:",
+        \\    " - baz-run",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/baz`, `${root_url}/baz-0.0.3.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "bar", "index.js"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: { "baz-run": "index.js" },
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { bar: "npm:baz@~0.0.2" },
+        \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -52591,7 +52686,7 @@ test "bootstrap runner mirrors bun add registry alias and semver corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add SCP Git URL dependency" {
