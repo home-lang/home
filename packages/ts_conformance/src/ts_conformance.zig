@@ -4385,6 +4385,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "importAssertionNonstring",
         "collisionArgumentsArrowFunctions",
         "propagationOfPromiseInitialization",
+        "parseErrorInHeritageClause1",
+        "emptyTypeArgumentListWithNew",
+        "aliasInaccessibleModule2",
+        "reactImportDropped",
+        "exportObjectRest",
+        "noCircularDefinitionOnExportOfPrivateInMergedNamespace",
+        "errorOnUnionVsObjectShouldDeeplyDisambiguate2",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
