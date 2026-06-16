@@ -52388,7 +52388,7 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
     const source =
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { readlink, writeFile } from "fs/promises";
+        \\import { access, readlink, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, readdirSorted, toHaveBins } from "harness";
         \\import { join, resolve } from "path";
         \\import { dummyBeforeEach, package_dir, requested } from "./dummy.registry";
@@ -52418,12 +52418,31 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["@GH@mishoo-UglifyJS-e219a9a@@@1"]);
-        \\  expect((await file(join(package_dir, "node_modules", "uglify-js", "package.json")).json()).name).toBe("uglify-js");
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "uglify-js"))).toEqual([
+        \\    ".bun-tag",
+        \\    ".gitattributes",
+        \\    ".github",
+        \\    ".gitignore",
+        \\    "CONTRIBUTING.md",
+        \\    "LICENSE",
+        \\    "README.md",
+        \\    "bin",
+        \\    "lib",
+        \\    "package.json",
+        \\    "test",
+        \\    "tools",
+        \\  ]);
+        \\  expect(await file(join(package_dir, "node_modules", "uglify-js", "package.json")).json()).toEqual({
+        \\    name: "uglify-js",
+        \\    version: "3.14.1",
+        \\    bin: { uglifyjs: "bin/uglifyjs" },
+        \\  });
         \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
         \\    name: "foo",
         \\    version: "0.0.1",
         \\    dependencies: { "uglify-js": "mishoo/UglifyJS#v3.14.1" },
         \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
         \\  const repeat = spawn({
         \\    cmd: [bunExe(), "add", "mishoo/UglifyJS#v3.14.1"],
         \\    cwd: package_dir,
@@ -52441,6 +52460,31 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\  expect(await repeat.exited).toBe(0);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["@GH@mishoo-UglifyJS-e219a9a@@@1"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "uglify-js"))).toEqual([
+        \\    ".bun-tag",
+        \\    ".gitattributes",
+        \\    ".github",
+        \\    ".gitignore",
+        \\    "CONTRIBUTING.md",
+        \\    "LICENSE",
+        \\    "README.md",
+        \\    "bin",
+        \\    "lib",
+        \\    "package.json",
+        \\    "test",
+        \\    "tools",
+        \\  ]);
+        \\  expect(await file(join(package_dir, "node_modules", "uglify-js", "package.json")).json()).toEqual({
+        \\    name: "uglify-js",
+        \\    version: "3.14.1",
+        \\    bin: { uglifyjs: "bin/uglifyjs" },
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { "uglify-js": "mishoo/UglifyJS#v3.14.1" },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
         \\});
         \\
         \\test("bun add aliased GitHub dependency", async () => {
