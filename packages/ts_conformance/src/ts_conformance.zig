@@ -4375,6 +4375,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "mutrec",
         "isolatedModulesExportDeclarationType",
         "indexWithUndefinedAndNullStrictNullChecks",
+        "conditionalTypesASI",
+        "typeofInternalModules",
+        "unusedMultipleParameter2InFunctionExpression",
+        "varArgWithNoParamName",
+        "misspelledNewMetaProperty",
+        "collisionExportsRequireAndFunction",
+        "unionPropertyOfProtectedAndIntersectionProperty",
+        "importAssertionNonstring",
+        "collisionArgumentsArrowFunctions",
+        "propagationOfPromiseInitialization",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
