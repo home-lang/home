@@ -4392,6 +4392,16 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "exportObjectRest",
         "noCircularDefinitionOnExportOfPrivateInMergedNamespace",
         "errorOnUnionVsObjectShouldDeeplyDisambiguate2",
+        "excessPropertyCheckWithSpread",
+        "underscoreMapFirst",
+        "inheritedModuleMembersForClodule",
+        "reassignStaticProp",
+        "assignmentIndexedToPrimitives",
+        "noImplicitAnyLoopCrash",
+        "recursiveGenericUnionType2",
+        "jsdocTypeNongenericInstantiationAttempt",
+        "promisePermutations2",
+        "classExtendingAny",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
