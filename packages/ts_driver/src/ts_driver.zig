@@ -302,6 +302,7 @@ pub const CompileOptions = struct {
     /// TypeScript only reports JS semantic checker diagnostics when
     /// `checkJs` is enabled. Callers that know the virtual file kind
     /// can set this directly.
+    allow_js: bool = false,
     suppress_js_check_diagnostics: bool = false,
     /// Optional parsed tsconfig. When present, the driver applies
     /// the relevant compilerOptions:
@@ -1880,6 +1881,7 @@ pub fn compileSource(
     );
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
+    checker.setAllowJsEnabled(options.allow_js);
     checker.setEmitImplicitAnySuggestions(options.include_suggestions);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());

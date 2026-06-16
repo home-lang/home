@@ -420,6 +420,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .always_strict = c.always_strict,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
+        .allow_js = directiveBool(if (c.raw_source.len > 0) c.raw_source else c.source, "allowJs") orelse false,
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
@@ -1916,6 +1917,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const module_kind_label = directiveValue(directive_source, "module") orelse
         directiveValue(directive_source, "Module") orelse
         tsconfig_options.module;
+    const allow_js_project = try virtualFilesAllowJs(gpa, c.raw_source, virtual_files.items);
     var compile_options = ts_driver.CompileOptions{
         .is_tsx = c.is_tsx,
         .jsx_option_present = directiveValue(directive_source, "jsx") != null,
@@ -1924,6 +1926,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .always_strict = c.always_strict,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
+        .allow_js = allow_js_project,
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
@@ -1959,7 +1962,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         while (it.next()) |entry| gpa.free(entry.key_ptr.*);
         seen_keys.deinit(gpa);
     }
-    const allow_js_project = try virtualFilesAllowJs(gpa, c.raw_source, virtual_files.items);
     for (program_files.items, 0..) |pf, i| {
         // Defensive bounds check: a fixture that fails to register
         // some of its virtual files (e.g. via resolver errors before
