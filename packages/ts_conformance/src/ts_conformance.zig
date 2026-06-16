@@ -4419,6 +4419,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "overloadsWithConstraints",
         "assignmentCompatWithOverloads",
         "invalidStaticField",
+        "moduleResolutionWithSuffixes_one_externalModule_withPaths",
+        "moduleAugmentationImportsAndExports3",
+        "reservedWords2",
+        "noCheckDoesNotReportError",
+        "typeParameterConstrainedToOuterTypeParameter",
+        "excessivelyLargeTupleSpread",
+        "errorElaborationDivesIntoApparentlyPresentPropsOnly",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
