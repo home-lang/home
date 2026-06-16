@@ -4344,6 +4344,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "noImplicitAnyParametersInInterface",
         "genericsWithDuplicateTypeParameters1",
         "moduleResolutionWithSuffixes_one_jsonModule",
+        "genericClassWithStaticFactory",
+        "unusedVariablesinForLoop4",
+        "temporal",
+        "withStatementNestedScope",
+        "arrayOfSubtypeIsAssignableToReadonlyArray",
+        "indirectDiscriminantAndExcessProperty",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
