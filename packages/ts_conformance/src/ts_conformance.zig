@@ -4289,6 +4289,15 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "contextualReturnTypeOfIIFE",
         "jsxNestedWithinTernaryParsesCorrectly",
         "redeclareParameterInCatchBlock",
+        "omittedExpressionForOfLoop",
+        "optionalChainWithInstantiationExpression1",
+        "neverAsDiscriminantType",
+        "errorOnUnionVsObjectShouldDeeplyDisambiguate",
+        "functionCall7",
+        "moduleVisibilityTest4",
+        "es6ImportDefaultBindingFollowedWithNamedImportWithExport",
+        "functionOverloads1",
+        "metadataOfClassFromAlias2",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
