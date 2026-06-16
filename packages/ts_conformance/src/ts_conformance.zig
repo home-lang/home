@@ -4568,6 +4568,14 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "forOfStringConstituents",
         "genericSpecializations3",
         "invalidUnicodeEscapeSequance3",
+        "jsxRuntimePragma",
+        "isolatedDeclarationErrorsDefault",
+        "blockScopedFunctionDeclarationES5",
+        "declarationEmitModuleWithScopeMarker",
+        "thislessFunctionsNotContextSensitive1",
+        "moduleResolutionWithExtensions_unexpected2",
+        "symbolLinkDeclarationEmitModuleNames",
+        "parameterReferenceInInitializer1",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
