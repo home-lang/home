@@ -4813,6 +4813,26 @@ const harness_prelude =
     \\    writeLockfile();
     \\    return completed(stdoutHeader + "\n\ninstalled " + depName + "@github:" + text + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installLocalTarball(rawSpec) {
+    \\    const text = String(rawSpec || "").replace(/\\\\/g, "/");
+    \\    if (text !== "baz-0.0.3.tgz" && !text.endsWith("/baz-0.0.3.tgz")) return null;
+    \\    const tarballPath = text.startsWith("/") ? text : __home_build_join(cwd, text);
+    \\    if (!__home_build_file_exists(tarballPath)) return null;
+    \\    const pkg = readPackageJson(cwd);
+    \\    const bucket = dependencyBucket();
+    \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
+    \\    const display = text.startsWith("/") ? __home_build_relative(cwd, tarballPath) : text.replace(/^\.\//, "");
+    \\    pkg[bucket].baz = display;
+    \\    writePackageJson(cwd, pkg);
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_package_path(cwd, "baz"), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../baz/index.js");
+    \\    __home_build_write_text(__home_build_join(__home_package_path(cwd, "baz"), "index.js"), "#!/usr/bin/env bun\n");
+    \\    __home_write_installed_package(cwd, "baz", { name: "baz", version: "0.0.3", bin: { "baz-run": "index.js" } });
+    \\    writeLockfile();
+    \\    return completed(stdoutHeader + "\n\ninstalled baz@" + display + " with binaries:\n - baz-run\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installRegistry(rawSpec, analyzedName) {
     \\    let alias = null;
     \\    let packageName = String(analyzedName || rawSpec || "");
@@ -4913,6 +4933,8 @@ const harness_prelude =
     \\  if (gitHubResult) return gitHubResult;
     \\  const genericGitResult = installGenericGitDependency(spec);
     \\  if (genericGitResult) return genericGitResult;
+    \\  const localTarballResult = installLocalTarball(spec);
+    \\  if (localTarballResult) return localTarballResult;
     \\  return installRegistry(spec, null);
     \\}
     \\function __home_spawn_bun_add_install_fixture(options) {
@@ -53295,6 +53317,77 @@ test "bootstrap runner mirrors bun add registry package without announced bins" 
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun add local tarball corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\test("bun add local tarball dependency", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\  }));
+        \\  await writeFile(join(package_dir, "baz-0.0.3.tgz"), "home tarball fixture");
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "add", "baz-0.0.3.tgz"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed baz@baz-0.0.3.tgz with binaries:",
+        \\    " - baz-run",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls).toEqual([]);
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "baz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "baz", "index.js"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "baz"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: { "baz-run": "index.js" },
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { baz: "baz-0.0.3.tgz" },
+        \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner supports promisified execFile bun version" {
