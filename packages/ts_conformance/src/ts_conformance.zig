@@ -4128,6 +4128,12 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "commonMissingSemicolons",
         "noErrorUsingImportExportModuleAugmentationInDeclarationFile3",
         "didYouMeanStringLiteral",
+        "conditionalExpression1",
+        "forwardRefInTypeDeclaration",
+        "indexerAssignability",
+        "keyRemappingKeyofResult2",
+        "contextualTypingWithGenericSignature",
+        "duplicateIdentifiersAcrossFileBoundaries",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
