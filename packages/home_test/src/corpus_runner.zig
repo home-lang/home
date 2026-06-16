@@ -53461,6 +53461,7 @@ test "bootstrap runner mirrors bun add registry package without announced bins" 
         \\  ]);
         \\  expect(await first.exited).toBe(0);
         \\  expect(urls.sort()).toEqual(["http://localhost:4873/baz", "http://localhost:4873/baz-0.0.3.tgz"]);
+        \\  expect(requested).toBe(2);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
         \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
         \\    name: "baz",
@@ -53491,7 +53492,19 @@ test "bootstrap runner mirrors bun add registry package without announced bins" 
         \\  ]);
         \\  expect(await reinstall.exited).toBe(0);
         \\  expect(urls.sort()).toEqual(["http://localhost:4873/baz-0.0.3.tgz"]);
+        \\  expect(requested).toBe(3);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: { "baz-run": "index.js" },
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { baz: "^0.0.3" },
+        \\  });
+        \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
