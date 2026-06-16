@@ -4196,6 +4196,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "arrayAssignmentTest4",
         "deeplyNestedCheck",
         "narrowingMutualSubtypes",
+        "classDeclarationShouldBeOutOfScopeInComputedNames",
+        "unparenthesizedFunctionTypeInUnionOrIntersection",
+        "unusedMultipleParameter1InFunctionExpression",
+        "parameterListAsTupleType",
+        "deleteReadonly",
+        "functionOverloads29",
+        "checkerInitializationCrash",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
