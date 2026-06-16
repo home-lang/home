@@ -4134,6 +4134,20 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "keyRemappingKeyofResult2",
         "contextualTypingWithGenericSignature",
         "duplicateIdentifiersAcrossFileBoundaries",
+        "contextualSigInstantiationRestParams",
+        "parseUnmatchedTypeAssertion",
+        "contextuallyTypingRestParameters",
+        "truthinessCallExpressionCoercion",
+        "useBeforeDefinitionInDeclarationFiles",
+        "exportDefaultAlias_excludesEverything",
+        "constructorAsType",
+        "declFileImportedTypeUseInTypeArgPosition",
+        "jsFileCompilationDuplicateFunctionImplementation",
+        "stringTrim",
+        "unusedInterfaceinNamespace2",
+        "typeParameterDiamond1",
+        "outModuleConcatCommonjs",
+        "nodeNextPackageSelfNameWithOutDirDeclDirRootDir",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
