@@ -4402,6 +4402,13 @@ fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
         "jsdocTypeNongenericInstantiationAttempt",
         "promisePermutations2",
         "classExtendingAny",
+        "optionalFunctionArgAssignability",
+        "nodeResolution6",
+        "implementArrayInterface",
+        "moduleElementsInWrongContext2",
+        "indexedAccessCanBeHighOrder",
+        "unusedTypeParameters4",
+        "intersectionsOfLargeUnions",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
