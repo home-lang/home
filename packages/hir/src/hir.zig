@@ -682,6 +682,14 @@ pub const ImportPayload = struct {
     /// plain default import (same `default_binding`/`module` shape).
     /// Lowered to `const name = require("module");`.
     is_require_equals: bool = false,
+    /// True for a deferred import (`import defer * as ns from "m"`). Drives
+    /// the checker's TS18058/TS18059/TS18060 grammar diagnostics.
+    is_deferred: bool = false,
+    /// Source span of the deferred import clause (`defer * as ns`), used to
+    /// anchor the deferred-import grammar diagnostics. Only meaningful when
+    /// `is_deferred` is true.
+    deferred_clause_start: u32 = 0,
+    deferred_clause_end: u32 = 0,
 };
 
 pub const ExportPayload = struct {

@@ -7347,11 +7347,27 @@ pub const Parser = struct {
         defer named.deinit(self.gpa);
         var default_binding_had_comma = false;
 
+        // Deferred import modifier: `import defer * as ns from "m"`. `defer`
+        // is contextual, so disambiguate exactly as tsc's
+        // `parseImportDeclarationOrImportEqualsDeclaration`: after a `defer`
+        // identifier, treat it as the modifier unless the next token shows
+        // `defer` is itself the imported name (`import defer from "m"` /
+        // `import defer, {x} from "m"` / `import defer = require(...)`).
+        var is_deferred = false;
+        var deferred_clause_start: u32 = 0;
         if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
-            self.tokenTextEquals(self.peek(), "defer") and
-            self.peekAt(1).kind == .open_brace)
+            self.tokenTextEquals(self.peek(), "defer") and !is_type_only)
         {
-            try self.reportCodeAt(self.peek().span.start, self.peek().line, 18059, "Named imports are not allowed in a deferred import.");
+            const after = self.peekAt(1).kind;
+            const parse_as_defer = if (after == .kw_from)
+                self.peekAt(2).kind != .string_literal
+            else
+                after != .comma and after != .equal;
+            if (parse_as_defer) {
+                is_deferred = true;
+                deferred_clause_start = self.peek().span.start;
+                _ = self.advance(); // consume `defer`
+            }
         }
 
         if ((self.peek().kind == .identifier or self.peek().kind == .kw_await or self.peek().kind.isContextualKeyword()) and
@@ -7634,6 +7650,10 @@ pub const Parser = struct {
             );
         }
 
+        // End of the import clause (the binding, before `from`) — anchors the
+        // deferred-import grammar diagnostics in the checker.
+        const deferred_clause_end: u32 = self.tokens[self.cursor - 1].span.end;
+
         if (self.peek().kind != .kw_from) {
             const here = self.peek();
             try self.reportCodeAt(here.span.start, here.line, 1005, "'from' expected.");
@@ -7687,7 +7707,7 @@ pub const Parser = struct {
         else
             try self.internStringLiteral(mod_tok);
         const end_pos = self.tokens[self.cursor - 1].span.end;
-        return try self.builder.addImport(
+        const import_node = try self.builder.addImport(
             .{ .start = start.span.start, .end = end_pos },
             mod_id,
             default_binding,
@@ -7696,6 +7716,13 @@ pub const Parser = struct {
             named.items,
             is_type_only,
         );
+        if (is_deferred) {
+            const payload = &self.hir.import_payloads.items[self.hir.payloads.items[import_node]];
+            payload.is_deferred = true;
+            payload.deferred_clause_start = deferred_clause_start;
+            payload.deferred_clause_end = deferred_clause_end;
+        }
+        return import_node;
     }
 
     fn consumeImportEqualsTail(self: *Parser) ParseError!void {
@@ -20739,13 +20766,45 @@ test "parser: malformed named imports recover like es6ImportNamedImportParsingEr
     try T.expect(saw_1141);
 }
 
-test "parser: deferred import cannot use named bindings" {
+test "parser: deferred import with named bindings parses cleanly (TS18059 is a checker grammar error)" {
+    // The parser consumes the `defer` modifier and records the named binding;
+    // the deferred-import grammar diagnostics (TS18058/18059/18060) are emitted
+    // by the checker, which knows the `--module` setting.
     var s = try newTestSetup("import defer { foo } from \"./a\";");
     defer destroyTestSetup(s);
 
-    _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 18059), s.parser.diagnostics.items[0].code);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const imp = hir_mod.importOf(&s.hir, top);
+    try T.expect(imp.is_deferred);
+    try T.expect(imp.named_len > 0);
+    try T.expect(imp.default_binding == hir_mod.none_node_id);
+}
+
+test "parser: deferred namespace import sets is_deferred and namespace binding" {
+    var s = try newTestSetup("import defer * as ns from \"./a\";");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const imp = hir_mod.importOf(&s.hir, top);
+    try T.expect(imp.is_deferred);
+    try T.expect(imp.namespace_binding != hir_mod.none_node_id);
+}
+
+test "parser: import defer from string treats defer as default binding (not deferred)" {
+    // `import defer from "m"` imports a default binding named `defer`; the
+    // trailing string after `from` disambiguates it from a deferred import.
+    var s = try newTestSetup("import defer from \"./a\";");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const imp = hir_mod.importOf(&s.hir, top);
+    try T.expect(!imp.is_deferred);
+    try T.expect(imp.default_binding != hir_mod.none_node_id);
 }
 
 test "parser: import namespace" {
