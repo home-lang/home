@@ -1758,6 +1758,57 @@ pub const Parser = struct {
         return false;
     }
 
+    /// True when the `@filename:` virtual section that contains `pos` has
+    /// top-level (depth-0) ESM module syntax — a non-dynamic `import` or an
+    /// `export`. Multi-file conformance fixtures are parsed as one source with
+    /// `@filename:` markers, but module-ness / strict-mode is per file, so the
+    /// global `top_level_module_syntax_indicator` over-reports: an `export` in
+    /// one section must not make a *script* section a module. When no markers
+    /// exist, falls back to the whole-source indicator.
+    fn sectionHasTopLevelModuleSyntaxAt(self: *const Parser, pos: u32) bool {
+        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
+            std.mem.indexOf(u8, self.source, "@Filename:") == null)
+        {
+            return self.top_level_module_syntax_indicator;
+        }
+        var sec_start: u32 = 0;
+        var sec_end: u32 = @intCast(self.source.len);
+        var line_start: usize = 0;
+        while (line_start < self.source.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse self.source.len;
+            const line = self.source[line_start..line_end];
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                if (line_start <= pos) {
+                    sec_start = @intCast(@min(line_end + 1, self.source.len));
+                } else {
+                    sec_end = @intCast(line_start);
+                    break;
+                }
+            }
+            if (line_end >= self.source.len) break;
+            line_start = line_end + 1;
+        }
+        var depth: u32 = 0;
+        var i: usize = 0;
+        while (i < self.tokens.len) : (i += 1) {
+            const tok = self.tokens[i];
+            if (tok.span.start < sec_start) continue;
+            if (tok.span.start >= sec_end) break;
+            switch (tok.kind) {
+                .open_brace, .open_paren, .open_bracket => depth += 1,
+                .close_brace, .close_paren, .close_bracket => if (depth > 0) {
+                    depth -= 1;
+                },
+                .kw_export => if (depth == 0) return true,
+                .kw_import => if (depth == 0 and (i + 1 >= self.tokens.len or self.tokens[i + 1].kind != .open_paren)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     /// Like [`sourceHasTopLevelExternalModuleIndicator`] but treats
     /// `export as namespace Foo;` as NOT a module indicator. Mirrors
     /// upstream `isExternalModule` which omits `GlobalModuleExport`
@@ -2647,7 +2698,7 @@ pub const Parser = struct {
             });
             return;
         }
-        if (self.top_level_module_syntax_indicator) {
+        if (self.sectionHasTopLevelModuleSyntaxAt(tok.span.start)) {
             const raw = self.source[tok.span.start..tok.span.end];
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -24623,6 +24674,44 @@ test "parser: external module restricted names use module-strict diagnostics" {
     }
     try T.expect(saw_1214);
     try T.expectEqual(@as(u32, 2), count_1215);
+}
+
+test "parser: restricted name in a script @filename section uses TS1100 not module TS1215" {
+    // Multi-file fixture parsed as one source: section 0.ts is a module
+    // (top-level export), but section 1.ts is a script whose only `import`
+    // is a *dynamic* import(). The `function arguments` in 1.ts must report
+    // the plain strict TS1100, not the module-strict TS1215 — the export in
+    // 0.ts must not leak module-ness across the section boundary. Mirrors
+    // importCallExpressionInScriptContext1.
+    var s = try newTestSetup(
+        "// @filename: 0.ts\nexport function foo() { return 1; }\n// @filename: 1.ts\nvar p1 = import(\"./0\");\nfunction arguments() { }",
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_1100: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1100) count_1100 += 1;
+        try T.expect(d.code != 1215);
+    }
+    try T.expectEqual(@as(u32, 1), count_1100);
+}
+
+test "parser: restricted name in a module @filename section still uses TS1215" {
+    // Companion to the script-section case: when the section itself has a
+    // top-level `export`, the restricted name keeps the module-strict TS1215.
+    var s = try newTestSetup(
+        "// @filename: 0.ts\nvar a = 1;\n// @filename: 1.ts\nexport const b = 2;\nfunction arguments() { }",
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_1215: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1215) count_1215 += 1;
+        try T.expect(d.code != 1100);
+    }
+    try T.expectEqual(@as(u32, 1), count_1215);
 }
 
 test "parser: arguments parameter outside class does not report TS1210" {
