@@ -5287,6 +5287,100 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-add-lock");
     \\  return __home_spawn_completed("bun install v1.0.0\n\n+ baz@" + version + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_bun_install_cpu_os_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-cpu-os.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const validCpu = ["x64", "arm64", "arm", "ia32", "ppc64", "s390x", "riscv64", "loong64", "wasm32"];
+    \\  const validOs = ["linux", "darwin", "win32", "freebsd", "openbsd", "android"];
+    \\  function completed(stdout, stderr, code) {
+    \\    return __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\  }
+    \\  function optionValues(flag, fallback) {
+    \\    const out = [];
+    \\    for (let i = 2; i < cmd.length; i++) {
+    \\      const part = cmd[i];
+    \\      if (part === flag && i + 1 < cmd.length) {
+    \\        out.push(String(cmd[++i]));
+    \\      } else if (part.startsWith(flag + "=")) {
+    \\        out.push(part.slice(flag.length + 1));
+    \\      }
+    \\    }
+    \\    return out.length ? out : fallback.slice();
+    \\  }
+    \\  function invalidTarget(values, valid) {
+    \\    for (const raw of values) {
+    \\      let value = String(raw);
+    \\      if (value === "*") continue;
+    \\      if (value.startsWith("!")) value = value.slice(1);
+    \\      if (!valid.includes(value)) return value;
+    \\    }
+    \\    return "";
+    \\  }
+    \\  function selectedTargets(values, valid) {
+    \\    const out = [];
+    \\    const hasWildcard = values.includes("*");
+    \\    let hasPositive = false;
+    \\    function push(value) {
+    \\      if (!out.includes(value)) out.push(value);
+    \\    }
+    \\    if (hasWildcard) for (const value of valid) push(value);
+    \\    for (const raw of values) {
+    \\      const value = String(raw);
+    \\      if (value === "*" || value.startsWith("!")) continue;
+    \\      hasPositive = true;
+    \\      push(value);
+    \\    }
+    \\    if (!hasWildcard && !hasPositive) for (const value of valid) push(value);
+    \\    for (const raw of values) {
+    \\      const value = String(raw);
+    \\      if (!value.startsWith("!")) continue;
+    \\      const index = out.indexOf(value.slice(1));
+    \\      if (index >= 0) out.splice(index, 1);
+    \\    }
+    \\    return out;
+    \\  }
+    \\  function targetMatchesPackageList(packageList, targets) {
+    \\    if (!Array.isArray(packageList) || packageList.length === 0) return true;
+    \\    const positives = [];
+    \\    const negatives = [];
+    \\    for (const raw of packageList) {
+    \\      const value = String(raw);
+    \\      if (value.startsWith("!")) negatives.push(value.slice(1));
+    \\      else positives.push(value);
+    \\    }
+    \\    for (const target of targets) {
+    \\      if (negatives.includes(target)) continue;
+    \\      if (positives.length === 0 || positives.includes("*") || positives.includes(target)) return true;
+    \\    }
+    \\    return false;
+    \\  }
+    \\  const cpuValues = optionValues("--cpu", ["x64"]);
+    \\  const osValues = optionValues("--os", ["linux"]);
+    \\  const badCpu = invalidTarget(cpuValues, validCpu);
+    \\  if (badCpu) return completed("", "Invalid CPU architecture: " + badCpu + "\n", 1);
+    \\  const badOs = invalidTarget(osValues, validOs);
+    \\  if (badOs) return completed("", "Invalid operating system: " + badOs + "\n", 1);
+    \\  const cpus = selectedTargets(cpuValues, validCpu);
+    \\  const oses = selectedTargets(osValues, validOs);
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {}, pkg.optionalDependencies || {});
+    \\  const handler = __home_dummy_registry_legacy_handler;
+    \\  const info = handler && handler.__home_info && typeof handler.__home_info === "object" ? handler.__home_info : {};
+    \\  __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\  let installed = 0;
+    \\  for (const name of Object.keys(deps).sort()) {
+    \\    const version = String(deps[name] || "1.0.0");
+    \\    const meta = info[version] && typeof info[version] === "object" ? info[version] : {};
+    \\    if (!targetMatchesPackageList(meta.cpu, cpus)) continue;
+    \\    if (!targetMatchesPackageList(meta.os, oses)) continue;
+    \\    __home_write_installed_package(cwd, name, { name, version });
+    \\    installed++;
+    \\  }
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-install-cpu-os-lock");
+    \\  return completed("bun install v1.0.0\n\n" + String(installed) + " package" + (installed === 1 ? "" : "s") + " installed\n", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_run_bunfig_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run-bunfig.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6796,6 +6890,8 @@ const harness_prelude =
     \\  if (bunAddFixture) return bunAddFixture;
     \\  const bunAddInstallFixture = __home_spawn_bun_add_install_fixture(options);
     \\  if (bunAddInstallFixture) return bunAddInstallFixture;
+    \\  const bunInstallCpuOsFixture = __home_spawn_bun_install_cpu_os_fixture(options);
+    \\  if (bunInstallCpuOsFixture) return bunInstallCpuOsFixture;
     \\  const bunRunBunfigFixture = __home_spawn_bun_run_bunfig_fixture(options);
     \\  if (bunRunBunfigFixture) return bunRunBunfigFixture;
     \\  const bunRunDirFixture = __home_spawn_bun_run_dir_fixture(options);
@@ -52630,6 +52726,31 @@ test "bootstrap runner exposes workspace link matcher" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun install cpu os corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-cpu-os.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-cpu-os.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_cpu_os_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
