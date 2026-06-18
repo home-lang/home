@@ -39,10 +39,10 @@ pub const Execute = struct {
 
     pub fn deinit(this: *Execute) void {
         for (this.params) |*param| {
-            param.deinit(bun.default_allocator);
+            param.deinit(home_rt.default_allocator);
         }
         if (this.params.len > 0) {
-            bun.default_allocator.free(this.params);
+            home_rt.default_allocator.free(this.params);
         }
     }
 
@@ -102,10 +102,10 @@ pub const Execute = struct {
     pub const write = writeWrap(Execute, writeInternal).write;
 };
 
-const debug = bun.Output.scoped(.PreparedStatement, .hidden);
+const debug = home_rt.Output.scoped(.PreparedStatement, .hidden);
 
 const AnyMySQLError = @import("./AnyMySQLError.zig");
-const bun = @import("bun");
+const home_rt = @import("home");
 const std = @import("std");
 const CommandType = @import("./CommandType.zig").CommandType;
 const Param = @import("../MySQLParam.zig").Param;
