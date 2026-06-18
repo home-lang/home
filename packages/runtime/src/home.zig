@@ -3417,6 +3417,10 @@ pub const runtime = struct {
         pub const shell_completions = @import("runtime/cli/shell_completions.zig");
         pub const fuzzilli_command = @import("runtime/cli/fuzzilli_command.zig");
         pub const filter_arg = @import("runtime/cli/filter_arg.zig");
+        pub const add_command = @import("runtime/cli/add_command.zig");
+        pub const remove_command = @import("runtime/cli/remove_command.zig");
+        pub const patch_command = @import("runtime/cli/patch_command.zig");
+        pub const patch_commit_command = @import("runtime/cli/patch_commit_command.zig");
         // Wave-26 grinder (2026-05-19) — `which-npm-client` result
         // descriptor (npm client `bin` path + `Tag` enum). Pure data
         // — upstream `@import("bun")` was unused.
@@ -6073,6 +6077,10 @@ test "home_rt: runtime cli parked helper surfaces compile" {
     try std.testing.expectEqual(runtime_cli.shell_completions.Shell.zsh, runtime_cli.shell_completions.Shell.fromEnv([]const u8, "/bin/zsh"));
     try std.testing.expect(@hasDecl(runtime_cli.discord_command, "DiscordCommand"));
     try std.testing.expect(@hasDecl(runtime_cli.filter_arg, "FilterSet"));
+    try std.testing.expect(@hasDecl(runtime_cli.add_command, "AddCommand"));
+    try std.testing.expect(@hasDecl(runtime_cli.remove_command, "RemoveCommand"));
+    try std.testing.expect(@hasDecl(runtime_cli.patch_command, "PatchCommand"));
+    try std.testing.expect(@hasDecl(runtime_cli.patch_commit_command, "PatchCommitCommand"));
 }
 
 test "home_rt: Environment flags exist" {
@@ -6236,6 +6244,10 @@ test {
     _ = @import("runtime/cli/ci_info.zig");
     _ = @import("runtime/cli/discord_command.zig");
     _ = @import("runtime/cli/filter_arg.zig");
+    _ = @import("runtime/cli/add_command.zig");
+    _ = @import("runtime/cli/remove_command.zig");
+    _ = @import("runtime/cli/patch_command.zig");
+    _ = @import("runtime/cli/patch_commit_command.zig");
     _ = @import("runtime/cli/list-of-yarn-commands.zig");
     _ = @import("runtime/cli/test/ParallelRunner.zig");
     _ = @import("runtime/cli/test/parallel/Channel.zig");
