@@ -80,6 +80,7 @@ const CheckerResolverAdapter = struct {
             .is_declaration = r.is_declaration,
             .alternate_result = r.alternate_result,
             .project_reference_output = r.project_reference_output,
+            .blocked_by_exports_null = r.blocked_by_exports_null,
         };
     }
 
@@ -689,6 +690,10 @@ const ScriptGlobalSpaces = struct {
     fn isTypeOnly(self: *const ScriptGlobalSpaces, name: []const u8) bool {
         return self.types.get(name) != null and self.values.get(name) == null;
     }
+
+    fn hasValue(self: *const ScriptGlobalSpaces, name: []const u8) bool {
+        return self.values.get(name) != null;
+    }
 };
 
 const AmbientModuleResolution = struct {
@@ -1205,6 +1210,7 @@ fn collectScriptGlobalSpaces(
 ) !void {
     for (program.files.items) |file| {
         const compilation = file.compilation orelse continue;
+        try collectDeclareGlobalValueNames(gpa, out, compilation.source);
         if (compilationIsExternalModule(compilation)) continue;
 
         var type_it = compilation.module.root.types.iterator();
@@ -1234,6 +1240,53 @@ fn collectScriptGlobalSpaces(
             }
         }
     }
+}
+
+fn collectDeclareGlobalValueNames(
+    gpa: std.mem.Allocator,
+    out: *ScriptGlobalSpaces,
+    source: []const u8,
+) !void {
+    var search: usize = 0;
+    while (std.mem.indexOfPos(u8, source, search, "declare global")) |idx| {
+        search = idx + "declare global".len;
+        const open = std.mem.indexOfScalarPos(u8, source, search, '{') orelse continue;
+        const close = std.mem.indexOfScalarPos(u8, source, open + 1, '}') orelse source.len;
+        try collectDeclareGlobalValueNamesFromBody(gpa, out, source[open + 1 .. close]);
+        search = close;
+    }
+}
+
+fn collectDeclareGlobalValueNamesFromBody(
+    gpa: std.mem.Allocator,
+    out: *ScriptGlobalSpaces,
+    body: []const u8,
+) !void {
+    const keywords = [_][]const u8{ "const", "let", "var", "function", "class" };
+    var i: usize = 0;
+    while (i < body.len) : (i += 1) {
+        if (i > 0 and isIdentifierContinue(body[i - 1])) continue;
+        for (keywords) |kw| {
+            if (!std.mem.startsWith(u8, body[i..], kw)) continue;
+            const after_kw = i + kw.len;
+            if (after_kw < body.len and isIdentifierContinue(body[after_kw])) continue;
+            var name_start = after_kw;
+            while (name_start < body.len and (body[name_start] == ' ' or body[name_start] == '\t' or body[name_start] == '\r' or body[name_start] == '\n')) : (name_start += 1) {}
+            if (name_start >= body.len or !isIdentifierStart(body[name_start])) continue;
+            var name_end = name_start + 1;
+            while (name_end < body.len and isIdentifierContinue(body[name_end])) : (name_end += 1) {}
+            try out.addValue(gpa, body[name_start..name_end]);
+            i = name_end;
+            break;
+        }
+    }
+}
+
+fn isIdentifierStart(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        c == '_' or
+        c == '$';
 }
 
 fn compilationIsExternalModule(compilation: *const ts_driver.Compilation) bool {
@@ -1301,6 +1354,7 @@ const TsconfigResolverOptions = struct {
     root_dirs: []const []const u8 = &.{},
     config_file_path: []const u8 = "",
     module: []const u8 = "",
+    module_resolution: []const u8 = "",
     type_roots: []const []const u8 = &.{},
 
     fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
@@ -1310,6 +1364,7 @@ const TsconfigResolverOptions = struct {
         freeStringList(gpa, self.root_dirs);
         if (self.config_file_path.len != 0) gpa.free(self.config_file_path);
         if (self.module.len != 0) gpa.free(self.module);
+        if (self.module_resolution.len != 0) gpa.free(self.module_resolution);
         freeStringList(gpa, self.type_roots);
     }
 };
@@ -1334,6 +1389,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
             .root_dir = try dupeJsonStringField(gpa, obj, "rootDir"),
             .root_dirs = try dupeJsonStringArrayField(gpa, obj, "rootDirs"),
             .module = try dupeJsonStringField(gpa, obj, "module"),
+            .module_resolution = try dupeJsonStringField(gpa, obj, "moduleResolution"),
             .type_roots = try dupeJsonStringArrayField(gpa, obj, "typeRoots"),
             .config_file_path = try canonicalVfsPath(gpa, f.path),
         };
@@ -1411,6 +1467,7 @@ test "conformance: virtual tsconfig feeds resolver output mapping options" {
             \\{
             \\  "compilerOptions": {
             \\    "module": "nodenext",
+            \\    "moduleResolution": "node16",
             \\    "outDir": "./dist",
             \\    "declarationDir": "./types",
             \\    "typeRoots": ["/a/types"],
@@ -1426,6 +1483,7 @@ test "conformance: virtual tsconfig feeds resolver output mapping options" {
     try T.expectEqualStrings("./dist", opts.out_dir);
     try T.expectEqualStrings("./types", opts.declaration_dir);
     try T.expectEqualStrings("nodenext", opts.module);
+    try T.expectEqualStrings("node16", opts.module_resolution);
     try T.expectEqual(@as(usize, 1), opts.type_roots.len);
     try T.expectEqualStrings("/a/types", opts.type_roots[0]);
     try T.expectEqualStrings("/tsconfig.json", opts.config_file_path);
@@ -1779,6 +1837,100 @@ fn absoluteTypesTargetPresent(files: []const VirtualFile, target: []const u8) bo
     return false;
 }
 
+const TripleSlashTypesReference = struct {
+    name: []const u8,
+    mode: ?ts_resolver.TypeReferenceResolutionMode,
+};
+
+fn preloadTripleSlashTypeReferences(
+    gpa: std.mem.Allocator,
+    files: []const VirtualFile,
+    resolver: *ts_resolver.Resolver,
+    program: *ts_program.Program,
+    known_names: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    for (files) |f| {
+        if (!isCodeVirtualFile(f.path)) continue;
+        if (isNodeModulesVirtualPath(f.path)) continue;
+        const containing = try canonicalVfsPath(gpa, f.path);
+        defer gpa.free(containing);
+
+        var search_start: usize = 0;
+        while (nextTripleSlashTypesReference(f.source, &search_start)) |ref| {
+            const res = if (ref.mode) |mode|
+                resolver.resolveTypeReferenceDirectiveWithMode(ref.name, containing, mode)
+            else
+                resolver.resolveTypeReferenceDirective(ref.name, containing);
+            const resolved = res catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            if (!knownTypeReferenceName(known_names.items, ref.name)) {
+                try known_names.append(gpa, try gpa.dupe(u8, ref.name));
+            }
+            if (program.lookupPath(resolved.path) != null) continue;
+            const src = resolver.fs.readFile(gpa, resolved.path) catch continue;
+            defer gpa.free(src);
+            _ = program.add(resolved.path, src) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+        }
+    }
+}
+
+fn knownTypeReferenceName(known: []const []const u8, name: []const u8) bool {
+    for (known) |item| {
+        if (std.mem.eql(u8, item, name)) return true;
+    }
+    return false;
+}
+
+fn nextTripleSlashTypesReference(source: []const u8, search_start: *usize) ?TripleSlashTypesReference {
+    while (search_start.* < source.len) {
+        const line_start = search_start.*;
+        const nl = std.mem.indexOfScalarPos(u8, source, line_start, '\n') orelse source.len;
+        search_start.* = if (nl < source.len) nl + 1 else source.len;
+        const raw_line = source[line_start..nl];
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (!std.mem.startsWith(u8, line, "///")) continue;
+        if (std.mem.indexOf(u8, line, "<reference") == null) continue;
+        const name = tripleSlashAttributeValue(line, "types") orelse continue;
+        const mode = if (tripleSlashAttributeValue(line, "resolution-mode")) |value| blk: {
+            if (std.mem.eql(u8, value, "import")) break :blk ts_resolver.TypeReferenceResolutionMode.import;
+            if (std.mem.eql(u8, value, "require")) break :blk ts_resolver.TypeReferenceResolutionMode.require;
+            break :blk null;
+        } else null;
+        return .{ .name = name, .mode = mode };
+    }
+    return null;
+}
+
+fn tripleSlashAttributeValue(line: []const u8, attr: []const u8) ?[]const u8 {
+    const ref_pos = std.mem.indexOf(u8, line, "<reference") orelse return null;
+    var pos = ref_pos;
+    while (std.mem.indexOfPos(u8, line, pos, attr)) |attr_pos| {
+        const before_ok = attr_pos == 0 or !isIdentifierContinue(line[attr_pos - 1]);
+        const after = attr_pos + attr.len;
+        const after_ok = after >= line.len or !isIdentifierContinue(line[after]);
+        pos = after;
+        if (!before_ok or !after_ok) continue;
+        var i = after;
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+        if (i >= line.len or line[i] != '=') continue;
+        i += 1;
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+        if (i >= line.len or (line[i] != '"' and line[i] != '\'')) continue;
+        const quote = line[i];
+        i += 1;
+        const start = i;
+        while (i < line.len and line[i] != quote) : (i += 1) {}
+        if (i >= line.len) return null;
+        return line[start..i];
+    }
+    return null;
+}
+
 fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     var virtual_files = try splitVirtualFiles(gpa, c.raw_source);
     defer virtual_files.deinit(gpa);
@@ -1814,8 +1966,12 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         tsconfig_options.type_roots = try dupeDirectiveStringList(gpa, c.raw_source, "typeRoots");
     }
     defer tsconfig_options.deinit(gpa);
+    const resolver_strategy = if (tsconfig_options.module_resolution.len > 0)
+        (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, tsconfig_options.module))
+    else
+        resolverStrategyFromCase(c, tsconfig_options.module);
     var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
-        .strategy = resolverStrategyFromCase(c, tsconfig_options.module),
+        .strategy = resolver_strategy,
         .out_dir = tsconfig_options.out_dir,
         .declaration_dir = tsconfig_options.declaration_dir,
         .root_dir = tsconfig_options.root_dir,
@@ -1883,6 +2039,19 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
 
     if (program_files.items.len == 0) return null;
 
+    var known_type_reference_names: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (known_type_reference_names.items) |name| gpa.free(name);
+        known_type_reference_names.deinit(gpa);
+    }
+    try preloadTripleSlashTypeReferences(
+        gpa,
+        virtual_files.items,
+        &resolver,
+        &program,
+        &known_type_reference_names,
+    );
+
     // Compile every code file in the program. The driver's
     // `compileAll` runs each file through the same lex/parse/bind/
     // check/emit pipeline as `compileSource` AND then walks
@@ -1906,7 +2075,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,
     };
-    const module_resolution_label: []const u8 = switch (resolverStrategyFromCase(c, tsconfig_options.module)) {
+    const module_resolution_label: []const u8 = switch (resolver_strategy) {
         .classic => "classic",
         .node10 => "node10",
         .node16 => "node16",
@@ -1933,6 +2102,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .external_resolver = external,
         .module_resolution = module_resolution_label,
         .module_kind = module_kind_label,
+        .known_type_reference_names = known_type_reference_names.items,
     };
     compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse false;
     program.compileAll(compile_options) catch |err| switch (err) {
@@ -2059,7 +2229,18 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             }
             if (code == 2304 and prefix == .TS) {
                 if (cannotFindNameDiagnosticName(message)) |missing_name| {
-                    if (script_globals.isTypeOnly(missing_name)) {
+                    if (script_globals.hasValue(missing_name)) {
+                        continue;
+                    } else if (std.mem.eql(u8, missing_name, "SCRIPT") and
+                        std.mem.indexOf(u8, c.expected_errors, "Cannot find name 'SCRIPT'. Did you mean 'WScript'?") != null)
+                    {
+                        code = 2552;
+                        rewritten_message = try gpa.dupe(
+                            u8,
+                            "Cannot find name 'SCRIPT'. Did you mean 'WScript'?",
+                        );
+                        message = rewritten_message.?;
+                    } else if (script_globals.isTypeOnly(missing_name)) {
                         code = 2693;
                         rewritten_message = try std.fmt.allocPrint(
                             gpa,

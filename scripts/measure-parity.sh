@@ -127,7 +127,7 @@ print_markdown() {
 | Area | Coverage | Source |
 |---|---|---|
 | **TypeScript — coarse corpus** | **5,907 / 5,907 — 100%** | \`HOME_TS_CONFORMANCE_FULL=1\` against upstream conformance corpus |
-| **TypeScript — exact (byte-for-byte)** | **4,179 / 5,907 — ~70.7%** | \`HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1\`; 1,728 exact cases remain |
+| **TypeScript — exact (byte-for-byte)** | **4,183 / 5,907 — ~70.8%** | \`HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1\`; 1,724 exact cases remain |
 | **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture \`.errors.txt\` byte comparison |
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | \`assignmentCompatibility\` + \`comparable\` + \`inOperator\` + \`stringLiteral\` |
 | **TypeScript — diagnostic codes** | **~${TS_DIAG_CODES} entries** | mirrors the full upstream \`diag(code, …)\` table |

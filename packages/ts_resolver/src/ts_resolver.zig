@@ -42,6 +42,14 @@ pub const Strategy = enum {
     bundler,
 };
 
+pub const TypeReferenceResolutionMode = enum {
+    import,
+    require,
+};
+
+const import_type_reference_conditions = [_][]const u8{ "import", "node" };
+const require_type_reference_conditions = [_][]const u8{ "require", "node" };
+
 /// tsc-compatible display name for a resolution strategy, used in the
 /// TS6087/TS6088 `--traceResolution` banner.
 fn strategyName(s: Strategy) []const u8 {
@@ -157,6 +165,11 @@ pub const Resolution = struct {
     /// it to report TS6305 instead of treating the source as a normal
     /// implementation-file resolution.
     project_reference_output: ?[]const u8 = null,
+    /// True when the package exports object contains an active
+    /// `import`/`require` condition mapped to null. TypeScript treats
+    /// that as a hard module-resolution failure even if the `types`
+    /// condition can name a declaration file.
+    blocked_by_exports_null: bool = false,
     /// tsc's package identity string for node_modules resolutions when
     /// the owning package.json has both `name` and `version`.
     package_id: ?[]const u8 = null,
@@ -452,6 +465,33 @@ pub const Resolver = struct {
             }
             return e;
         }
+    }
+
+    /// Resolve a triple-slash `<reference types="...">` directive with
+    /// an explicit `resolution-mode` attribute. TypeScript applies that
+    /// requested ESM/CJS condition set to package exports even when the
+    /// surrounding project otherwise uses a legacy resolver.
+    pub fn resolveTypeReferenceDirectiveWithMode(
+        self: *Resolver,
+        directive: []const u8,
+        containing_file: []const u8,
+        mode: TypeReferenceResolutionMode,
+    ) ResolveError!Resolution {
+        const saved_strategy = self.config.strategy;
+        const saved_conditions = self.config.conditions;
+        self.config.strategy = switch (saved_strategy) {
+            .classic, .node10 => .bundler,
+            else => saved_strategy,
+        };
+        self.config.conditions = switch (mode) {
+            .import => &import_type_reference_conditions,
+            .require => &require_type_reference_conditions,
+        };
+        defer {
+            self.config.strategy = saved_strategy;
+            self.config.conditions = saved_conditions;
+        }
+        return self.resolveTypeReferenceDirective(directive, containing_file);
     }
 
     /// `resolveImpl` plus the TS6086/6089/6090 banner traces. Separated
@@ -1484,7 +1524,12 @@ pub const Resolver = struct {
                     if (has_root_pkg_json) {
                         const sub_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, split.subpath);
                         switch (sub_outcome) {
-                            .resolved => |r| return try self.withPackageId(.{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration }, pkg_root, root_pkg_json, false),
+                            .resolved => |r| return try self.withPackageId(.{
+                                .path = r.path,
+                                .source = .node_modules,
+                                .is_declaration = r.is_declaration,
+                                .blocked_by_exports_null = r.blocked_by_exports_null,
+                            }, pkg_root, root_pkg_json, false),
                             .blocked => {
                                 if (try self.tryAtTypesFallback(nm, split.name, split.subpath)) |r| return r;
                                 return null;
@@ -1498,7 +1543,12 @@ pub const Resolver = struct {
                     if (has_root_pkg_json) {
                         const root_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, ".");
                         switch (root_outcome) {
-                            .resolved => |r| return try self.withPackageId(.{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration }, pkg_root, root_pkg_json, false),
+                            .resolved => |r| return try self.withPackageId(.{
+                                .path = r.path,
+                                .source = .node_modules,
+                                .is_declaration = r.is_declaration,
+                                .blocked_by_exports_null = r.blocked_by_exports_null,
+                            }, pkg_root, root_pkg_json, false),
                             .blocked => {
                                 if (try self.tryAtTypesFallback(nm, split.name, "")) |r| return r;
                                 return null;
@@ -1642,6 +1692,23 @@ pub const Resolver = struct {
         if (try self.tryFileWithExtensions(candidate)) |r| {
             if (r.is_declaration) return .{ .path = r.path, .source = .type_roots, .is_declaration = true };
         }
+        const trimmed = if (candidate.len > 1 and candidate[candidate.len - 1] == '/') candidate[0 .. candidate.len - 1] else candidate;
+        const pkg_json = try self.joinPath(trimmed, "package.json");
+        if (self.fs.fileExists(pkg_json)) {
+            const outcome = try self.resolvePackageSubpath(trimmed, pkg_json, ".");
+            switch (outcome) {
+                .resolved => |r| if (r.is_declaration) {
+                    return .{
+                        .path = r.path,
+                        .source = .type_roots,
+                        .is_declaration = true,
+                        .package_id = r.package_id,
+                    };
+                },
+                .blocked => return null,
+                .none => {},
+            }
+        }
         if (try self.tryDirectoryIndex(candidate)) |r| {
             if (r.is_declaration) return .{ .path = r.path, .source = .type_roots, .is_declaration = true };
         }
@@ -1739,6 +1806,7 @@ pub const Resolver = struct {
                     "."
                 else
                     try std.fmt.allocPrint(self.ar(), "./{s}", .{subpath});
+                const active_null = self.exportsHasActiveNullCondition(exports_v, key);
                 if (try self.lookupExports(exports_v, key, "exports", pkg_dir)) |target| {
                     switch (target) {
                         .matched_null => return .blocked, // hard rejection
@@ -1766,11 +1834,15 @@ pub const Resolver = struct {
                             }
                             if (try self.tryFileWithExtensions(joined)) |r| {
                                 try self.tracePackagePeerDependencies(pkg_dir, obj);
-                                return .{ .resolved = r };
+                                var out = r;
+                                out.blocked_by_exports_null = active_null;
+                                return .{ .resolved = out };
                             }
                             if (try self.tryLoadInputFileForPath(joined)) |r| {
                                 try self.tracePackagePeerDependencies(pkg_dir, obj);
-                                return .{ .resolved = r };
+                                var out = r;
+                                out.blocked_by_exports_null = active_null;
+                                return .{ .resolved = out };
                             }
                             // The exports map matched but the target file
                             // is missing on disk; tsc treats this as a
@@ -1810,6 +1882,41 @@ pub const Resolver = struct {
             if (try self.resolvePackageMain(pkg_dir, pkg_json)) |r| return .{ .resolved = r };
         }
         return .none;
+    }
+
+    fn exportsHasActiveNullCondition(self: *Resolver, exports_v: std.json.Value, key: []const u8) bool {
+        const node = self.exportsNodeForKey(exports_v, key) orelse return false;
+        return self.conditionalNodeHasActiveNull(node);
+    }
+
+    fn exportsNodeForKey(self: *Resolver, exports_v: std.json.Value, key: []const u8) ?std.json.Value {
+        _ = self;
+        if (exports_v != .object) return if (std.mem.eql(u8, key, ".")) exports_v else null;
+        const obj = exports_v.object;
+        if (obj.get(key)) |entry| return entry;
+        if (!std.mem.eql(u8, key, ".")) return null;
+        var it = obj.iterator();
+        while (it.next()) |entry| {
+            if (std.mem.startsWith(u8, entry.key_ptr.*, ".")) return null;
+        }
+        return exports_v;
+    }
+
+    fn conditionalNodeHasActiveNull(self: *Resolver, node: std.json.Value) bool {
+        if (node == .null) return true;
+        if (node != .object) return false;
+        const obj = node.object;
+        for (self.config.conditions) |cond| {
+            if (std.mem.eql(u8, cond, "types")) continue;
+            if (obj.get(cond)) |v| {
+                if (v == .null) return true;
+                if (self.conditionalNodeHasActiveNull(v)) return true;
+            }
+        }
+        if (obj.get("default")) |v| {
+            if (v == .null) return true;
+        }
+        return false;
     }
 
     const TypeVersionsEntry = struct {

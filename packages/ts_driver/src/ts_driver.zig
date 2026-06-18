@@ -346,6 +346,13 @@ pub const CompileOptions = struct {
     /// to satisfy per-file triple-slash path diagnostics after a
     /// multi-file fixture has been split into individual sources.
     known_reference_paths: []const []const u8 = &.{},
+    /// Program-level triple-slash `types` references that have already
+    /// been resolved through the module resolver before this individual
+    /// file is checked. This lets split-file program compilation avoid a
+    /// spurious TS2688 when the referenced package resolves via
+    /// package.json `exports` (for example to `index.d.mts`) rather than
+    /// a direct `index.d.ts` probe visible to the single-file driver.
+    known_type_reference_names: []const []const u8 = &.{},
     /// Effective `--moduleResolution` value as a normalized
     /// lower-case label (`"classic"`, `"node10"`, `"node16"`,
     /// `"nodenext"`, `"bundler"`). The conformance harness derives
@@ -743,6 +750,7 @@ fn reportMissingReferenceTypesDiagnostics(
     gpa: std.mem.Allocator,
     c: *Compilation,
     source: []const u8,
+    options: CompileOptions,
 ) CompileError!void {
     if (std.mem.indexOf(u8, source, "<reference") == null or
         std.mem.indexOf(u8, source, "types") == null)
@@ -778,6 +786,7 @@ fn reportMissingReferenceTypesDiagnostics(
         if (idx >= line.len) continue;
         const name = line[types_start..idx];
         if (name.len == 0) continue;
+        if (knownTypeReferenceName(options, name)) continue;
         if (try referenceTypesDirectiveExists(gpa, io, source, name)) continue;
 
         const message = try std.fmt.allocPrint(gpa, "Cannot find type definition file for '{s}'.", .{name});
@@ -790,6 +799,13 @@ fn reportMissingReferenceTypesDiagnostics(
             message,
         );
     }
+}
+
+fn knownTypeReferenceName(options: CompileOptions, name: []const u8) bool {
+    for (options.known_type_reference_names) |known| {
+        if (std.mem.eql(u8, known, name)) return true;
+    }
+    return false;
 }
 
 const ts_reference_supported_extensions = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".cts", ".d.cts", ".mts", ".d.mts" };
@@ -1665,7 +1681,7 @@ pub fn compileSource(
     try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
     try reportSelfReferencePathDiagnostics(gpa, c, source, options);
     try reportMissingReferencePathDiagnostics(gpa, c, source, options);
-    try reportMissingReferenceTypesDiagnostics(gpa, c, source);
+    try reportMissingReferenceTypesDiagnostics(gpa, c, source, options);
     try extractReferenceDirectives(gpa, c, source);
     try appendJsonModuleValidationDiagnostics(gpa, c, source, options.importer_path);
 
