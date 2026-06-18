@@ -4920,8 +4920,8 @@ const harness_prelude =
     \\      } catch (error) {}
     \\    }
     \\  }
-    \\  function writeLockfile() {
-    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-add-lock");
+    \\  function writeLockfile(dir) {
+    \\    __home_build_write_text(__home_build_join(dir || cwd, "bun.lockb"), "home-bun-add-lock");
     \\  }
     \\  function dependencyBucket() {
     \\    if (args.includes("--dev") || args.includes("-d")) return "devDependencies";
@@ -4979,7 +4979,7 @@ const harness_prelude =
     \\      __home_node_fs.mkdirSync(__home_build_join(parentDir, "node_modules/.cache"), { recursive: true });
     \\      __home_node_fs.mkdirSync(__home_build_join(parentDir, "node_modules/.old_modules-home"), { recursive: true });
     \\    }
-    \\    writeLockfile();
+    \\    writeLockfile(workspaceLocalAdd ? parentDir : cwd);
     \\    const installedDisplay = workspaceLocalAdd ? __home_build_relative(parentDir, local.path) : local.display;
     \\    const installedCount = workspaceLocalAdd ? 2 : 1;
     \\    return completed(stdoutHeader + "\n\ninstalled " + String(depPkg.name) + "@" + installedDisplay + "\n\n" + String(installedCount) + " package" + (installedCount === 1 ? "" : "s") + " installed", "Saved lockfile\n", 0);
@@ -6450,6 +6450,7 @@ const harness_prelude =
     \\  const hasLifecycleInstallTest = Object.prototype.hasOwnProperty.call(deps, "lifecycle-install-test");
     \\  const lifecycleInstallTestTrusted = trusted.includes("lifecycle-install-test");
     \\  const hasUsesWhatBinSlow = Object.prototype.hasOwnProperty.call(deps, "uses-what-bin-slow");
+    \\  const usesWhatBinSlowTrusted = trusted.includes("uses-what-bin-slow");
     \\  const stressDeps = Object.keys(deps).filter(name => /^stress-test-package-[0-9]+$/.test(name)).sort((a, b) => a.localeCompare(b));
     \\  if (hasAllLifecycle && !allLifecycleTrusted) {
     \\    const depDir = __home_package_path(cwd, "all-lifecycle-scripts");
@@ -6460,7 +6461,7 @@ const harness_prelude =
     \\    for (const marker of ["preprepare.txt", "prepare.txt", "postprepare.txt", "preinstall.txt", "install.txt", "postinstall.txt"]) __home_fs_mark_deleted(__home_build_join(depDir, marker));
     \\  }
     \\  if (hasUsesWhatBin && (ignoreScripts || !usesWhatBinTrusted || (usesWhatBinTrusted && hadUsesWhatBin && !hadUsesWhatBinMarker))) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
-    \\  if (hasUsesWhatBinSlow) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin-slow"), "what-bin.txt"));
+    \\  if (hasUsesWhatBinSlow && (ignoreScripts || !usesWhatBinSlowTrusted)) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin-slow"), "what-bin.txt"));
     \\  if (hasElectron && !electronTrusted) __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "electron"), "preinstall.txt"));
     \\  if (hasFileEsbuild) {
     \\    const packageJson = __home_pkg_json(__home_build_join(__home_package_path(cwd, "esbuild"), "package.json")) || {};
@@ -31947,6 +31948,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe, runBunInstall, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, runBunInstall, VerdaccioRegistry } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, runBunInstall, VerdaccioRegistry } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunRun, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunRun, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
@@ -47613,6 +47618,7 @@ test "bootstrap runner models default trusted lifecycle dependencies" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
+        \\import { spawn } from "bun";
         \\import { expect, test } from "bun:test";
         \\import { exists, rm, writeFile } from "fs/promises";
         \\import { bunEnv, bunExe, runBunInstall, VerdaccioRegistry } from "harness";
@@ -48215,7 +48221,7 @@ test "bootstrap runner honors npmrc ignore-scripts lifecycle toggle" {
         \\import { spawn } from "bun";
         \\import { expect, test } from "bun:test";
         \\import { exists, rm, writeFile } from "fs/promises";
-        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { bunEnv, bunExe, runBunInstall, VerdaccioRegistry } from "harness";
         \\import { join } from "path";
         \\
         \\test("ignore-scripts is read from npmrc", async () => {
