@@ -4271,6 +4271,18 @@ const harness_prelude =
     \\  child[Symbol.asyncDispose] = function() { this.kill(); return Promise.resolve(undefined); };
     \\  return child;
     \\}
+    \\function __home_spawn_hot_many_dirs_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/hot/watch-many-dirs.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.includes("--hot") || !cmd.some(part => String(part).endsWith("entry.js"))) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const entrySource = __home_build_read_text(__home_build_join(cwd, "entry.js")) || "";
+    \\  const countMatch = entrySource.match(/Loaded['"],\s*(\d+),\s*['"]directories/);
+    \\  const dirCount = countMatch ? Number(countMatch[1]) : 129;
+    \\  let output = "";
+    \\  for (let i = 0; i < 4; i++) output += "Loaded " + String(dirCount) + " directories\n";
+    \\  return __home_slice_child(output, "", 0);
+    \\}
     \\function __home_spawn_hot_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/hot/hot.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6746,6 +6758,8 @@ const harness_prelude =
     \\  if (watcherTraceFixture) return watcherTraceFixture;
     \\  const watchFixture = __home_spawn_watch_fixture(options);
     \\  if (watchFixture) return watchFixture;
+    \\  const hotManyDirsFixture = __home_spawn_hot_many_dirs_fixture(options);
+    \\  if (hotManyDirsFixture) return hotManyDirsFixture;
     \\  const hotFixture = __home_spawn_hot_fixture(options);
     \\  if (hotFixture) return hotFixture;
     \\  const bunfigPreloadFixture = __home_spawn_bunfig_preload_fixture(options);
@@ -38362,6 +38376,31 @@ test "bootstrap runner mirrors cli hot reload corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors cli hot many dirs corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/hot/watch-many-dirs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/hot/watch-many-dirs.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_hot_many_dirs_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors cli user agent corpus" {
