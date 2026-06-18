@@ -2,7 +2,7 @@ pub fn toContainEqual(
     this: *Expect,
     globalThis: *JSGlobalObject,
     callFrame: *CallFrame,
-) bun.JSError!JSValue {
+) home_rt.JSError!JSValue {
     defer this.postMatch(globalThis);
     const thisValue = callFrame.this();
     const arguments_ = callFrame.arguments_old(1);
@@ -70,7 +70,7 @@ pub fn toContainEqual(
                 entry_: ?*anyopaque,
                 item: JSValue,
             ) callconv(.c) void {
-                const entry = bun.cast(*ExpectedEntry, entry_.?);
+                const entry = home_rt.cast(*ExpectedEntry, entry_.?);
                 if (item.jestDeepEquals(entry.expected, entry.globalThis) catch return) {
                     entry.pass.* = true;
                     // TODO(perf): break out of the `forEach` when a match is found
@@ -101,13 +101,13 @@ pub fn toContainEqual(
     return this.throw(globalThis, signature, "\n\n" ++ expected_line ++ received_line, .{ expected_fmt, value_fmt });
 }
 
-const bun = @import("bun");
-const strings = bun.strings;
+const home_rt = @import("home");
+const strings = home_rt.strings;
 
-const jsc = bun.jsc;
-const CallFrame = bun.jsc.CallFrame;
-const JSGlobalObject = bun.jsc.JSGlobalObject;
-const JSValue = bun.jsc.JSValue;
+const jsc = home_rt.jsc;
+const CallFrame = home_rt.jsc.CallFrame;
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+const JSValue = home_rt.jsc.JSValue;
 
-const Expect = bun.jsc.Expect.Expect;
+const Expect = home_rt.jsc.Expect.Expect;
 const getSignature = Expect.getSignature;
