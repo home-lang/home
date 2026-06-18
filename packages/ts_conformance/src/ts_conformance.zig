@@ -118,22 +118,37 @@ const CheckerResolverAdapter = struct {
         const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx) or
             ts_program.moduleExportsTypeOnlyNamespaceName(self.resolver.gpa, src, name, is_tsx);
         const exported_value = ts_program.moduleExportsValueSpaceName(self.resolver.gpa, src, name, is_tsx);
+        const has_ambient_module = self.ambientModulePathForSpecifier(specifier, containing) != null;
+        var ambient_src_owned: ?[]const u8 = null;
+        defer if (ambient_src_owned) |owned| self.resolver.gpa.free(owned);
+        const ambient_facts = if (self.ambientModulePathForSpecifier(specifier, containing)) |ambient_path| blk: {
+            const ambient_src = if (std.mem.eql(u8, ambient_path, r.path))
+                src
+            else src_blk: {
+                ambient_src_owned = self.resolver.fs.readFile(self.resolver.gpa, ambient_path) catch break :blk null;
+                break :src_blk ambient_src_owned.?;
+            };
+            break :blk ts_program.ambientModuleExportFacts(self.resolver.gpa, ambient_src, specifier, name, is_tsx);
+        } else null;
         // `cannot be named`: not a direct top-level export, but reachable
         // only as a nested member of an exported namespace (no importable
         // alias). Only queried when it is not a top-level export.
-        const cannot_be_named = !exported and
+        const ambient_exported = if (ambient_facts) |facts| facts.exported_type or facts.exported_value else false;
+        const cannot_be_named = !exported and !ambient_exported and
             ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
         const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
         const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
-        const export_path = if (type_only_pos != null) (arena.dupe(u8, r.path) catch return null) else "";
+        const effective_type_only_pos = if (ambient_facts) |facts| facts.type_only_pos orelse type_only_pos else type_only_pos;
+        const export_path = if (effective_type_only_pos != null) (arena.dupe(u8, r.path) catch return null) else "";
         return .{
             .module_name = module_name,
-            .exported_type = exported,
-            .exported_value = exported_value,
+            .exported_type = exported or if (ambient_facts) |facts| facts.exported_type else false,
+            .exported_value = exported_value or if (ambient_facts) |facts| facts.exported_value else false,
             .cannot_be_named = cannot_be_named,
-            .type_only_export = type_only_pos != null,
+            .type_only_export = effective_type_only_pos != null,
             .export_path = export_path,
-            .export_pos = type_only_pos orelse 0,
+            .export_pos = effective_type_only_pos orelse 0,
+            .ambient_module = has_ambient_module,
         };
     }
 
@@ -413,19 +428,24 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     if (shouldRouteThroughProgram(c)) {
         if (try runProgram(gpa, c)) |program_result| return program_result;
     }
+    const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
+    const module_kind_raw = directiveValue(directive_source, "module") orelse
+        directiveValue(directive_source, "Module") orelse
+        "";
     var compilation = ts_driver.compileSource(gpa, c.source, .{
         .is_tsx = c.is_tsx,
-        .jsx_option_present = directiveValue(c.raw_source, "jsx") != null or directiveValue(c.source, "jsx") != null,
+        .jsx_option_present = directiveValue(directive_source, "jsx") != null,
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
         .syntax_target_es2015 = c.syntax_target_es2015,
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
-        .allow_js = directiveBool(if (c.raw_source.len > 0) c.raw_source else c.source, "allowJs") orelse false,
+        .allow_js = directiveBool(directive_source, "allowJs") orelse false,
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
         .importer_path = c.path,
+        .module_kind = firstCommaSeparatedValue(module_kind_raw),
     }) catch |err| {
         const detail = try std.fmt.allocPrint(gpa, "compile failed: {s}", .{@errorName(err)});
         return .{
@@ -547,7 +567,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             .code = code,
             .code_prefix = prefix,
             .severity = .err,
-            .message = d.message,
+            .message = if (exact_mode) diagnosticHeaderMessage(d.message) else d.message,
             .span_len = d.span_len,
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
@@ -1970,8 +1990,14 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, tsconfig_options.module))
     else
         resolverStrategyFromCase(c, tsconfig_options.module);
+    const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
+    const module_kind_raw = directiveValue(directive_source, "module") orelse
+        directiveValue(directive_source, "Module") orelse
+        tsconfig_options.module;
+    const module_kind_label = firstCommaSeparatedValue(module_kind_raw);
     var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
         .strategy = resolver_strategy,
+        .module_kind = module_kind_label,
         .out_dir = tsconfig_options.out_dir,
         .declaration_dir = tsconfig_options.declaration_dir,
         .root_dir = tsconfig_options.root_dir,
@@ -2082,10 +2108,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .nodenext => "nodenext",
         .bundler => "bundler",
     };
-    const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
-    const module_kind_label = directiveValue(directive_source, "module") orelse
-        directiveValue(directive_source, "Module") orelse
-        tsconfig_options.module;
     const allow_js_project = try virtualFilesAllowJs(gpa, c.raw_source, virtual_files.items);
     var compile_options = ts_driver.CompileOptions{
         .is_tsx = c.is_tsx,
@@ -2258,7 +2280,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .code = code,
                 .code_prefix = prefix,
                 .severity = .err,
-                .message = message,
+                .message = if (exact_mode) diagnosticHeaderMessage(message) else message,
                 .span_len = d.span_len,
             };
             const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
@@ -4940,6 +4962,11 @@ fn trimTrailingDot(s: []const u8) []const u8 {
     return s;
 }
 
+fn diagnosticHeaderMessage(message: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, message, '\n')) |idx| return message[0..idx];
+    return message;
+}
+
 /// Resolve `specifier` (relative or bare) from `from_path` via the
 /// program's resolver and return the resolved file path, owned by
 /// `gpa`. Returns `null` when resolution doesn't find a matching
@@ -6487,6 +6514,11 @@ fn directiveValueMentions(source: []const u8, directive_name: []const u8, value:
         if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, part, " \t\r"), value)) return true;
     }
     return false;
+}
+
+fn firstCommaSeparatedValue(raw: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, raw, ',') orelse raw.len;
+    return std.mem.trim(u8, raw[0..end], " \t\r");
 }
 
 fn commentedJsonHasKey(source: []const u8, key: []const u8) bool {

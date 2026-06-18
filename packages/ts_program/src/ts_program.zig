@@ -2626,6 +2626,89 @@ pub fn moduleExportsTypeOnlyNamespaceName(
     return false;
 }
 
+pub const ModuleExportFacts = struct {
+    exported_type: bool = false,
+    exported_value: bool = false,
+    type_only_pos: ?u32 = null,
+};
+
+pub fn ambientModuleExportFacts(
+    gpa: std.mem.Allocator,
+    module_source: []const u8,
+    specifier: []const u8,
+    name: []const u8,
+    is_tsx: bool,
+) ?ModuleExportFacts {
+    var compilation = ts_driver.compileSource(gpa, module_source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return null;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    const name_id = compilation.interner.lookup(name) orelse return null;
+    if (compilation.hir.kindOf(compilation.root) != .block_stmt) return null;
+    var facts: ModuleExportFacts = .{};
+    var found_module = false;
+    for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+        const stmt_kind = compilation.hir.kindOf(stmt);
+        if (stmt_kind != .module_decl and stmt_kind != .namespace_decl) continue;
+        const ns = hir_mod_ns.namespaceOf(&compilation.hir, stmt);
+        if (ns.name == hir_mod_ns.none_node_id or compilation.hir.kindOf(ns.name) != .literal_string) continue;
+        const lit = hir_mod_ns.literalStringOf(&compilation.hir, ns.name);
+        if (!std.mem.eql(u8, compilation.interner.get(lit.value), specifier)) continue;
+        found_module = true;
+        collectAmbientModuleExportFacts(&compilation.hir, name_id, hir_mod_ns.namespaceBody(&compilation.hir, stmt), &facts);
+    }
+    return if (found_module) facts else null;
+}
+
+fn collectAmbientModuleExportFacts(
+    hir: *const hir_mod_ns.Hir,
+    name: hir_mod_ns.StringId,
+    stmts: []const hir_mod_ns.NodeId,
+    facts: *ModuleExportFacts,
+) void {
+    for (stmts) |stmt| {
+        if (hir.kindOf(stmt) == .export_decl) {
+            const ex = hir_mod_ns.exportOf(hir, stmt);
+            for (hir_mod_ns.exportNamed(hir, stmt)) |spec_node| {
+                if (hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod_ns.importSpecifierOf(hir, spec_node);
+                if (sp.local != name and sp.imported != name) continue;
+                if (ex.is_type_only or sp.is_type_only) {
+                    facts.type_only_pos = 0;
+                    facts.exported_type = true;
+                } else {
+                    facts.exported_value = true;
+                }
+            }
+            if (ex.decl == hir_mod_ns.none_node_id) continue;
+            collectAmbientModuleExportDeclFacts(hir, name, ex.decl, ex.is_type_only, facts);
+            continue;
+        }
+        collectAmbientModuleExportDeclFacts(hir, name, stmt, false, facts);
+    }
+}
+
+fn collectAmbientModuleExportDeclFacts(
+    hir: *const hir_mod_ns.Hir,
+    name: hir_mod_ns.StringId,
+    decl: hir_mod_ns.NodeId,
+    is_type_only: bool,
+    facts: *ModuleExportFacts,
+) void {
+    if (declarationName(hir, decl) != name) return;
+    if (declCreatesTypeSpaceName(hir, decl)) facts.exported_type = true;
+    if (is_type_only) {
+        facts.type_only_pos = 0;
+    } else if (declCreatesRuntimeValue(hir, decl)) {
+        facts.exported_value = true;
+    }
+}
+
 fn moduleRootHasExportedRuntimeValue(hir: *const hir_mod_ns.Hir, root: hir_mod_ns.NodeId, name: hir_mod_ns.StringId) bool {
     if (hir.kindOf(root) != .block_stmt) return false;
     for (hir_mod_ns.blockStmts(hir, root)) |stmt| {
@@ -2642,6 +2725,13 @@ fn moduleRootHasExportedRuntimeValue(hir: *const hir_mod_ns.Hir, root: hir_mod_n
         }
     }
     return false;
+}
+
+fn declCreatesTypeSpaceName(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) bool {
+    return switch (hir.kindOf(node)) {
+        .interface_decl, .type_alias_decl, .class_decl, .class_expr, .enum_decl, .namespace_decl, .module_decl => true,
+        else => false,
+    };
 }
 
 fn declarationName(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) hir_mod_ns.StringId {

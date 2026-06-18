@@ -49,6 +49,8 @@ pub const TypeReferenceResolutionMode = enum {
 
 const import_type_reference_conditions = [_][]const u8{ "import", "node" };
 const require_type_reference_conditions = [_][]const u8{ "require", "node" };
+const bundler_import_conditions = [_][]const u8{"import"};
+const bundler_require_conditions = [_][]const u8{"require"};
 
 /// tsc-compatible display name for a resolution strategy, used in the
 /// TS6087/TS6088 `--traceResolution` banner.
@@ -77,6 +79,10 @@ pub const Config = struct {
     /// matters: tsc inserts these *after* `node` and `default` is
     /// always tried last.
     conditions: []const []const u8 = &.{ "import", "node" },
+    /// Effective `compilerOptions.module`, when a caller has one.
+    /// Bundler resolution uses this together with the importer
+    /// extension to pick `import` vs `require` conditions.
+    module_kind: []const u8 = "",
     /// File extensions to probe for module specifiers without one.
     extensions: []const []const u8 = &.{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".hm", ".home", ".d.hm", ".d.home", ".js", ".jsx", ".mjs", ".cjs" },
     /// True when `compilerOptions.allowImportingTsExtensions` is on.
@@ -413,10 +419,19 @@ pub const Resolver = struct {
                 self.traceMsg(6088, "Module resolution kind is not specified, using '{s}'.", .{kind});
             }
         }
-        const dir = dirname(containing_file);
-        // Cache key: "<dir>\x00<specifier>" interned in the resolver arena.
+        const saved_conditions = self.config.conditions;
+        if (self.activeConditionsForResolution(containing_file)) |conditions| {
+            self.config.conditions = conditions;
+        }
+        defer self.config.conditions = saved_conditions;
+
+        // Cache key: "<containing-file>\x00<specifier>" interned in
+        // the resolver arena. Bundler resolution can vary conditions
+        // by importer extension (`.mts` vs `.cts`) and effective module
+        // kind, so a directory-only key would incorrectly share
+        // package-export results across files in the same folder.
         // On allocation failure, fall through to an uncached resolve.
-        const key = std.fmt.allocPrint(self.arena.allocator(), "{s}\x00{s}", .{ dir, specifier }) catch
+        const key = std.fmt.allocPrint(self.arena.allocator(), "{s}\x00{s}", .{ containing_file, specifier }) catch
             return self.resolveTraced(specifier, containing_file);
         if (self.cache.get(key)) |cached| return cached orelse error.NotFound;
         const result = self.resolveTraced(specifier, containing_file);
@@ -430,6 +445,20 @@ pub const Resolver = struct {
             if (e == error.NotFound and self.ambiguous_root == null) self.cache.put(self.gpa, key, null) catch {};
         }
         return result;
+    }
+
+    fn activeConditionsForResolution(self: *Resolver, containing_file: []const u8) ?[]const []const u8 {
+        if (self.config.strategy != .bundler) return null;
+        if (std.mem.endsWith(u8, containing_file, ".cts") or
+            std.mem.endsWith(u8, containing_file, ".cjs"))
+            return &bundler_require_conditions;
+        if (std.mem.endsWith(u8, containing_file, ".mts") or
+            std.mem.endsWith(u8, containing_file, ".mjs"))
+            return &bundler_import_conditions;
+        if (self.config.module_kind.len == 0) return null;
+        if (std.ascii.eqlIgnoreCase(self.config.module_kind, "commonjs"))
+            return &bundler_require_conditions;
+        return &bundler_import_conditions;
     }
 
     /// Resolve a triple-slash `<reference types="...">` directive.
@@ -1019,6 +1048,11 @@ pub const Resolver = struct {
         const explicit_json = hasExtension(base, ".json");
         const explicit_known = hasKnownExtension(base) or (explicit_json and self.config.resolve_json);
         if (explicit_known) {
+            if (self.config.strategy == .bundler and isImplementationOutputPath(base)) {
+                if (try self.tryFileWithOutputExtensionSubstitution(base)) |resolution| {
+                    return resolution;
+                }
+            }
             if (self.fileExistsTraced(base)) {
                 return .{
                     .path = try self.ar().dupe(u8, base),
@@ -1026,7 +1060,12 @@ pub const Resolver = struct {
                     .is_declaration = isDeclarationPath(base),
                 };
             }
-            if (try self.tryFileWithOutputExtensionSubstitution(base)) |resolution| {
+            if (self.config.strategy != .bundler or !isImplementationOutputPath(base)) {
+                if (try self.tryFileWithOutputExtensionSubstitution(base)) |resolution| {
+                    return resolution;
+                }
+            }
+            if (try self.tryFileWithTsExtensionSubstitution(base)) |resolution| {
                 return resolution;
             }
         }
@@ -1053,6 +1092,36 @@ pub const Resolver = struct {
                     .path = candidate,
                     .source = .relative,
                     .is_declaration = false,
+                };
+            }
+        }
+        return null;
+    }
+
+    fn tryFileWithTsExtensionSubstitution(self: *Resolver, path: []const u8) ResolveError!?Resolution {
+        const Substitution = struct {
+            stem: []const u8,
+            candidates: []const []const u8,
+        };
+        const substitution: Substitution = blk: {
+            if (std.mem.endsWith(u8, path, ".ts") and !std.mem.endsWith(u8, path, ".d.ts"))
+                break :blk .{ .stem = path[0 .. path.len - ".ts".len], .candidates = &.{ ".tsx", ".d.ts" } };
+            if (std.mem.endsWith(u8, path, ".tsx"))
+                break :blk .{ .stem = path[0 .. path.len - ".tsx".len], .candidates = &.{".d.ts"} };
+            if (std.mem.endsWith(u8, path, ".mts"))
+                break :blk .{ .stem = path[0 .. path.len - ".mts".len], .candidates = &.{".d.mts"} };
+            if (std.mem.endsWith(u8, path, ".cts"))
+                break :blk .{ .stem = path[0 .. path.len - ".cts".len], .candidates = &.{".d.cts"} };
+            return null;
+        };
+        for (substitution.candidates) |ext| {
+            const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ substitution.stem, ext }) catch return error.OutOfMemory;
+            if (std.mem.eql(u8, candidate, path)) continue;
+            if (self.fileExistsTraced(candidate)) {
+                return .{
+                    .path = candidate,
+                    .source = .relative,
+                    .is_declaration = isDeclarationPath(candidate),
                 };
             }
         }
@@ -2538,6 +2607,13 @@ fn stripOutputExtension(path: []const u8) ?[]const u8 {
         if (std.mem.endsWith(u8, path, ext)) return path[0 .. path.len - ext.len];
     }
     return null;
+}
+
+fn isImplementationOutputPath(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".js") or
+        std.mem.endsWith(u8, path, ".jsx") or
+        std.mem.endsWith(u8, path, ".mjs") or
+        std.mem.endsWith(u8, path, ".cjs");
 }
 
 fn sourceExtensionsForOutputPath(path: []const u8) []const []const u8 {
