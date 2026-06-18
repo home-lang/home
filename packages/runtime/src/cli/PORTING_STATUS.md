@@ -3,18 +3,19 @@
 Upstream SHA: `fd0b6f1a271fca0b8124b69f230b100f4d636af6` (see
 `../../UPSTREAM_SHA.txt`).
 
-Each row tracks one file copied from `~/Code/bun/src/cli/`. `bun=N`
-counts `bun.X` references in the upstream file (rough porting effort
-proxy). `Compile` is the local status after the import rewrite.
+Each row tracks one file copied from `~/Code/bun/src/cli/` or, for the
+runtime CLI leaves, `~/Code/bun/src/runtime/cli/`. `bun=N` counts `bun.X`
+references in the upstream file (rough porting effort proxy). `Compile` is
+the local status after the import rewrite.
 
 | File | LOC | bun | Compile | Top externs needed / status |
 |---|---:|---:|---|---|
 | `which_npm_client.zig` | 12 | 0 | **clean (Tier 0)** | `home_rt` (no members yet) |
 | `list-of-yarn-commands.zig` | 70 | 1 | **clean** | `home_rt.ComptimeStringMap` ✓ |
-| `colon_list_type.zig` | 62 | 6 | blocked | `home_rt.options.Loader`, `home_rt.schema.api.Loader` (Loader vocabulary not ported) |
-| `discord_command.zig` | 10 | 1 | blocked | sibling `cli/open.zig` (not yet copied — needs `home_rt.spawnSync` + JSC.EventLoopHandle) |
-| `ci_info.zig` | 27 | 4 | blocked | codegen-generated `ci_info` module (Bun emits this from `src/codegen/ci_info.ts` at build time); `home_rt.once` (memoization helper); `home_rt.env_var.CI` ✓ |
-| `shell_completions.zig` | 75 | 2 | blocked | `home_rt.Output.writer()` (needs a real buffered writer, not just `std.debug.print`); embedded completion files (`completions-bash`/`-zsh`/`-fish` — generated at Bun build time) |
+| `colon_list_type.zig` | 62 | 6 | **clean (parked loaders)** | `home_rt.options.Loader`, `home_rt.schema.api.Loader` paths parked until Loader vocabulary ports |
+| `discord_command.zig` | 10 | 1 | **clean (parked opener)** | `open.openURL` parked until spawn + JSC.EventLoopHandle land; fallback URL print path tested |
+| `ci_info.zig` | 27 | 4 | **clean (parked codegen)** | codegen-generated `ci_info` table and `home_rt.once` parked; env-var fallback shape tested |
+| `shell_completions.zig` | 75 | 2 | **clean (parked embeds)** | completion embeds parked as empty literals until generated completion files port |
 | `pm_why_command.zig` | 12 | 2 | blocked | `home_rt.cli.Command` + `home_rt.install.PackageManager` (huge substrate — Phase 12.9) |
 | `add_command.zig` | 11 | 2 | blocked | same as pm_why_command (Command + PackageManager) |
 | `remove_command.zig` | 11 | 2 | blocked | same |
@@ -25,7 +26,7 @@ proxy). `Compile` is the local status after the import rewrite.
 | `add_completions.zig` | 105 | 2 | blocked (auto-gen) | `home_rt.zstd` (compressed completions blob — needs zstd substrate) |
 | `Arguments.zig` | 1744 | 62 | blocked | `home_rt.options.*`, `home_rt.api.*`, `home_rt.allocators.*`, ... (the full bundler/runtime arg-parser dependency graph) |
 
-47 cli files total (33 129 LOC upstream); 2 clean + 13 documented-blocked rows
+47 cli files total (33 129 LOC upstream); 6 clean + 9 documented-blocked rows
 above. The other ~32 follow the same pattern — most are thin shells over
 `PackageManager` / `Command` / JSC.
 

@@ -6056,6 +6056,23 @@ test "home_rt: cli.yarn_commands recognises canonical yarn verbs" {
     try std.testing.expect(!cli.yarn_commands.all_yarn_commands.has("not-a-yarn-command"));
 }
 
+test "home_rt: runtime cli.yarn_commands surface is exported" {
+    const runtime_cli = runtime.cli;
+    try std.testing.expect(runtime_cli.list_of_yarn_commands.all_yarn_commands.has("dlx"));
+    try std.testing.expect(runtime_cli.list_of_yarn_commands.all_yarn_commands.has("generateLockEntry"));
+    try std.testing.expect(!runtime_cli.list_of_yarn_commands.all_yarn_commands.has("not-a-yarn-command"));
+}
+
+test "home_rt: runtime cli parked helper surfaces compile" {
+    const runtime_cli = runtime.cli;
+    const npm_client: runtime_cli.NPMClient = .{ .bin = "bun", .tag = .bun };
+    try std.testing.expectEqualStrings("bun", npm_client.bin);
+    try std.testing.expectEqual(runtime_cli.NPMClient.Tag.bun, npm_client.tag);
+    try std.testing.expectEqual(@as(?[]const u8, null), runtime_cli.ci_info.detectCIName());
+    try std.testing.expectEqual(runtime_cli.shell_completions.Shell.zsh, runtime_cli.shell_completions.Shell.fromEnv([]const u8, "/bin/zsh"));
+    try std.testing.expect(@hasDecl(runtime_cli.discord_command, "DiscordCommand"));
+}
+
 test "home_rt: Environment flags exist" {
     try std.testing.expect(Environment.isPosix != Environment.isWindows);
 }
@@ -6216,6 +6233,7 @@ test {
     _ = @import("threading/threading.zig");
     _ = @import("runtime/cli/ci_info.zig");
     _ = @import("runtime/cli/discord_command.zig");
+    _ = @import("runtime/cli/list-of-yarn-commands.zig");
     _ = @import("runtime/cli/test/ParallelRunner.zig");
     _ = @import("runtime/cli/test/parallel/Channel.zig");
     _ = @import("runtime/cli/test/parallel/Coordinator.zig");
