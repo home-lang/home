@@ -1,5 +1,5 @@
 pub fn cloneActiveStrong() ?BunTestPtr {
-    const runner = bun.jsc.Jest.Jest.runner orelse return null;
+    const runner = home_rt.jsc.Jest.Jest.runner orelse return null;
     return runner.bun_test_root.cloneActiveFile();
 }
 
@@ -17,18 +17,18 @@ pub const js_fns = struct {
         }
     };
     const GetActiveCfg = struct { signature: Signature, allow_in_preload: bool };
-    fn getActiveTestRoot(globalThis: *jsc.JSGlobalObject, cfg: GetActiveCfg) bun.JSError!*BunTestRoot {
-        if (bun.jsc.Jest.Jest.runner == null) {
+    fn getActiveTestRoot(globalThis: *jsc.JSGlobalObject, cfg: GetActiveCfg) home_rt.JSError!*BunTestRoot {
+        if (home_rt.jsc.Jest.Jest.runner == null) {
             return globalThis.throw("Cannot use {f} outside of the test runner. Run \"bun test\" to run tests.", .{cfg.signature});
         }
-        const bunTestRoot = &bun.jsc.Jest.Jest.runner.?.bun_test_root;
+        const bunTestRoot = &home_rt.jsc.Jest.Jest.runner.?.bun_test_root;
         const vm = globalThis.bunVM();
         if (vm.is_in_preload and !cfg.allow_in_preload) {
             return globalThis.throw("Cannot use {f} during preload.", .{cfg.signature});
         }
         return bunTestRoot;
     }
-    pub fn cloneActiveStrong(globalThis: *jsc.JSGlobalObject, cfg: GetActiveCfg) bun.JSError!BunTestPtr {
+    pub fn cloneActiveStrong(globalThis: *jsc.JSGlobalObject, cfg: GetActiveCfg) home_rt.JSError!BunTestPtr {
         const bunTestRoot = try getActiveTestRoot(globalThis, cfg);
         const bunTest = bunTestRoot.cloneActiveFile() orelse {
             return globalThis.throw("Cannot use {f} outside of a test file.", .{cfg.signature});
@@ -39,13 +39,13 @@ pub const js_fns = struct {
 
     pub fn genericHook(comptime tag: @TypeOf(.enum_literal)) type {
         return struct {
-            pub fn hookFn(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+            pub fn hookFn(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) home_rt.JSError!jsc.JSValue {
                 group.begin(@src());
                 defer group.end();
                 errdefer group.log("ended in error", .{});
 
-                var args = try ScopeFunctions.parseArguments(globalThis, callFrame, .{ .str = @tagName(tag) ++ "()" }, bun.default_allocator, .{ .callback = .require, .kind = .hook });
-                defer args.deinit(bun.default_allocator);
+                var args = try ScopeFunctions.parseArguments(globalThis, callFrame, .{ .str = @tagName(tag) ++ "()" }, home_rt.default_allocator, .{ .callback = .require, .kind = .hook });
+                defer args.deinit(home_rt.default_allocator);
 
                 const has_done_parameter = if (args.callback) |callback| try callback.getLength(globalThis) > 0 else false;
 
@@ -107,7 +107,7 @@ pub const js_fns = struct {
                         const new_item = ExecutionEntry.create(bunTest.gpa, null, args.callback, cfg, null, .{}, .execution);
                         new_item.next = append_point.next;
                         append_point.next = new_item;
-                        bun.handleOom(bunTest.extra_execution_entries.append(new_item));
+                        home_rt.handleOom(bunTest.extra_execution_entries.append(new_item));
 
                         return .js_undefined;
                     },
@@ -118,9 +118,9 @@ pub const js_fns = struct {
     }
 };
 
-pub const BunTestPtr = bun.ptr.shared.WithOptions(*BunTest, .{
+pub const BunTestPtr = home_rt.ptr.shared.WithOptions(*BunTest, .{
     .allow_weak = true,
-    .Allocator = bun.DefaultAllocator,
+    .Allocator = home_rt.DefaultAllocator,
 });
 pub const BunTestRoot = struct {
     gpa: std.mem.Allocator,
@@ -147,14 +147,14 @@ pub const BunTestRoot = struct {
         };
     }
     pub fn deinit(this: *BunTestRoot) void {
-        bun.assert(this.hook_scope.entries.items.len == 0); // entries must not be appended to the hook_scope
+        home_rt.assert(this.hook_scope.entries.items.len == 0); // entries must not be appended to the hook_scope
         this.hook_scope.destroy(this.gpa);
-        bun.assert(this.active_file == null);
+        home_rt.assert(this.active_file == null);
     }
     /// Drop preload-level hooks registered in the previous global. The next
     /// file's `loadPreloads()` re-registers them against the fresh global.
     pub fn resetHookScopeForTestIsolation(this: *BunTestRoot) void {
-        bun.assert(this.hook_scope.entries.items.len == 0);
+        home_rt.assert(this.hook_scope.entries.items.len == 0);
         this.hook_scope.destroy(this.gpa);
         this.hook_scope = DescribeScope.create(this.gpa, .{
             .parent = null,
@@ -172,7 +172,7 @@ pub const BunTestRoot = struct {
         group.begin(@src());
         defer group.end();
 
-        bun.assert(this.active_file.get() == null);
+        home_rt.assert(this.active_file.get() == null);
 
         this.active_file = .new(undefined);
         this.active_file.get().?.init(this.gpa, this, file_id, reporter, default_concurrent, first_last);
@@ -181,7 +181,7 @@ pub const BunTestRoot = struct {
         group.begin(@src());
         defer group.end();
 
-        bun.assert(this.active_file.get() != null);
+        home_rt.assert(this.active_file.get() != null);
         this.active_file.get().?.reporter = null;
         this.active_file.deinit();
         this.active_file = .initNull();
@@ -206,11 +206,11 @@ pub const BunTestRoot = struct {
         if (this.active_file.get()) |active_file| {
             if (active_file.reporter) |reporter| {
                 if (reporter.reporters.dots and reporter.last_printed_dot) {
-                    bun.Output.prettyError("<r>\n", .{});
-                    bun.Output.flush();
+                    home_rt.Output.prettyError("<r>\n", .{});
+                    home_rt.Output.flush();
                     reporter.last_printed_dot = false;
                 }
-                if (bun.jsc.Jest.Jest.runner) |runner| {
+                if (home_rt.jsc.Jest.Jest.runner) |runner| {
                     runner.current_file.printIfNeeded();
                 }
             }
@@ -221,14 +221,14 @@ pub const BunTestRoot = struct {
 pub const BunTest = struct {
     bun_test_root: *BunTestRoot,
     in_run_loop: bool,
-    allocation_scope: bun.AllocationScope,
+    allocation_scope: home_rt.AllocationScope,
     gpa: std.mem.Allocator,
     arena_allocator: std.heap.ArenaAllocator,
     arena: std.mem.Allocator,
     file_id: jsc.Jest.TestRunner.File.ID,
     /// null if the runner has moved on to the next file but a strong reference to BunTest is stll keeping it alive
     reporter: ?*test_command.CommandLineReporter,
-    timer: bun.api.Timer.EventLoopTimer = .{ .next = .epoch, .tag = .BunTest },
+    timer: home_rt.api.Timer.EventLoopTimer = .{ .next = .epoch, .tag = .BunTest },
     result_queue: ResultQueue,
     /// Whether tests in this file should default to concurrent execution
     default_concurrent: bool,
@@ -277,7 +277,7 @@ pub const BunTest = struct {
 
         if (this.timer.state == .ACTIVE) {
             // must remove an active timer to prevent UAF (if the timer were to trigger after BunTest deinit)
-            bun.jsc.VirtualMachine.get().timer.remove(&this.timer);
+            home_rt.jsc.VirtualMachine.get().timer.remove(&this.timer);
         }
 
         for (this.extra_execution_entries.items) |entry| {
@@ -339,7 +339,7 @@ pub const BunTest = struct {
         buntest_weak: BunTestPtr.Weak,
         phase: RefDataValue,
         ref_count: RefCount,
-        const RefCount = bun.ptr.RefCount(RefData, "ref_count", @"#destroy", .{});
+        const RefCount = home_rt.ptr.RefCount(RefData, "ref_count", @"#destroy", .{});
 
         pub const deref = RefCount.deref;
         pub fn dupe(this: *RefData) *RefData {
@@ -355,7 +355,7 @@ pub const BunTest = struct {
             group.log("refData: {f}", .{this.phase});
 
             var buntest_weak = this.buntest_weak;
-            bun.destroy(this);
+            home_rt.destroy(this);
             buntest_weak.deinit();
         }
         pub fn bunTest(this: *RefData) ?BunTestPtr {
@@ -367,7 +367,7 @@ pub const BunTest = struct {
             .collection => .{ .collection = .{ .active_scope = this.collection.active_scope } },
             .execution => blk: {
                 const active_group = this.execution.activeGroup() orelse {
-                    bun.debugAssert(false); // should have switched phase if we're calling getCurrentStateData, but it could happen with re-entry maybe
+                    home_rt.debugAssert(false); // should have switched phase if we're calling getCurrentStateData, but it could happen with re-entry maybe
                     break :blk .{ .done = .{} };
                 };
                 const sequences = active_group.sequences(&this.execution);
@@ -405,7 +405,7 @@ pub const BunTest = struct {
         defer group.end();
         group.log("ref: {f}", .{phase});
 
-        return bun.new(RefData, .{
+        return home_rt.new(RefData, .{
             .buntest_weak = this_strong.cloneWeak(),
             .phase = phase,
             .ref_count = .init(),
@@ -414,7 +414,7 @@ pub const BunTest = struct {
 
     export const Bun__TestScope__Describe2__bunTestThen = jsc.toJSHostFn(bunTestThen);
     export const Bun__TestScope__Describe2__bunTestCatch = jsc.toJSHostFn(bunTestCatch);
-    fn bunTestThenOrCatch(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, is_catch: bool) bun.JSError!void {
+    fn bunTestThenOrCatch(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, is_catch: bool) home_rt.JSError!void {
         group.begin(@src());
         defer group.end();
         errdefer group.log("ended in error", .{});
@@ -439,15 +439,15 @@ pub const BunTest = struct {
         this.addResult(refdata.phase);
         runNextTick(refdata.buntest_weak, globalThis, refdata.phase);
     }
-    fn bunTestThen(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    fn bunTestThen(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) home_rt.JSError!jsc.JSValue {
         try bunTestThenOrCatch(globalThis, callframe, false);
         return .js_undefined;
     }
-    fn bunTestCatch(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    fn bunTestCatch(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) home_rt.JSError!jsc.JSValue {
         try bunTestThenOrCatch(globalThis, callframe, true);
         return .js_undefined;
     }
-    pub fn bunTestDoneCallback(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    pub fn bunTestDoneCallback(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) home_rt.JSError!jsc.JSValue {
         group.begin(@src());
         defer group.end();
 
@@ -487,7 +487,7 @@ pub const BunTest = struct {
 
         return .js_undefined;
     }
-    pub fn bunTestTimeoutCallback(this_strong: BunTestPtr, _: *const bun.timespec, vm: *jsc.VirtualMachine) void {
+    pub fn bunTestTimeoutCallback(this_strong: BunTestPtr, _: *const home_rt.timespec, vm: *jsc.VirtualMachine) void {
         group.begin(@src());
         defer group.end();
         const this = this_strong.get();
@@ -506,12 +506,12 @@ pub const BunTest = struct {
         };
     }
     pub fn runNextTick(weak: BunTestPtr.Weak, globalThis: *jsc.JSGlobalObject, phase: RefDataValue) void {
-        const done_callback_test = bun.new(RunTestsTask, .{ .weak = weak.clone(), .globalThis = globalThis, .phase = phase });
-        errdefer bun.destroy(done_callback_test);
+        const done_callback_test = home_rt.new(RunTestsTask, .{ .weak = weak.clone(), .globalThis = globalThis, .phase = phase });
+        errdefer home_rt.destroy(done_callback_test);
         const task = jsc.ManagedTask.New(RunTestsTask, RunTestsTask.call).init(done_callback_test);
         const vm = globalThis.bunVM();
         var strong = weak.upgrade() orelse {
-            if (bun.Environment.ci_assert) bun.assert(false); // shouldn't be calling runNextTick after moving on to the next file
+            if (home_rt.Environment.ci_assert) home_rt.assert(false); // shouldn't be calling runNextTick after moving on to the next file
             return; // but just in case
         };
         defer strong.deinit();
@@ -524,7 +524,7 @@ pub const BunTest = struct {
         phase: RefDataValue,
 
         pub fn call(this: *RunTestsTask) void {
-            defer bun.destroy(this);
+            defer home_rt.destroy(this);
             defer this.weak.deinit();
             var strong = this.weak.upgrade() orelse return;
             defer strong.deinit();
@@ -535,10 +535,10 @@ pub const BunTest = struct {
     };
 
     pub fn addResult(this: *BunTest, result: RefDataValue) void {
-        bun.handleOom(this.result_queue.writeItem(result));
+        home_rt.handleOom(this.result_queue.writeItem(result));
     }
 
-    pub fn run(this_strong: BunTestPtr, globalThis: *jsc.JSGlobalObject) bun.JSError!void {
+    pub fn run(this_strong: BunTestPtr, globalThis: *jsc.JSGlobalObject) home_rt.JSError!void {
         group.begin(@src());
         defer group.end();
         const this = this_strong.get();
@@ -547,7 +547,7 @@ pub const BunTest = struct {
         this.in_run_loop = true;
         defer this.in_run_loop = false;
 
-        var min_timeout: bun.timespec = .epoch;
+        var min_timeout: home_rt.timespec = .epoch;
 
         while (this.result_queue.readItem()) |result| {
             globalThis.clearTerminationException();
@@ -558,7 +558,7 @@ pub const BunTest = struct {
             };
             switch (step_result) {
                 .waiting => |waiting| {
-                    min_timeout = bun.timespec.minIgnoreEpoch(min_timeout, waiting.timeout);
+                    min_timeout = home_rt.timespec.minIgnoreEpoch(min_timeout, waiting.timeout);
                 },
                 .complete => {
                     if (try this._advance(globalThis) == .exit) return;
@@ -570,7 +570,7 @@ pub const BunTest = struct {
         this.updateMinTimeout(globalThis, &min_timeout);
     }
 
-    fn updateMinTimeout(this: *BunTest, globalThis: *jsc.JSGlobalObject, min_timeout: *const bun.timespec) void {
+    fn updateMinTimeout(this: *BunTest, globalThis: *jsc.JSGlobalObject, min_timeout: *const home_rt.timespec) void {
         group.begin(@src());
         defer group.end();
         // only set the timer if the new timeout is sooner than the current timeout. this unfortunately means that we can't unset an unnecessary timer.
@@ -586,7 +586,7 @@ pub const BunTest = struct {
                 group.log("-> inserting timer", .{});
                 globalThis.bunVM().timer.insert(&this.timer);
                 if (group.getLogEnabled()) {
-                    const duration = this.timer.next.duration(&bun.timespec.now(.force_real_time));
+                    const duration = this.timer.next.duration(&home_rt.timespec.now(.force_real_time));
                     group.log("-> timer duration: {}", .{duration});
                 }
             }
@@ -594,7 +594,7 @@ pub const BunTest = struct {
         }
     }
 
-    fn _advance(this: *BunTest, _: *jsc.JSGlobalObject) bun.JSError!enum { cont, exit } {
+    fn _advance(this: *BunTest, _: *jsc.JSGlobalObject) home_rt.JSError!enum { cont, exit } {
         group.begin(@src());
         defer group.end();
         group.log("advance from {s}", .{@tagName(this.phase)});
@@ -616,7 +616,7 @@ pub const BunTest = struct {
                     const path = reporter.jest.files.items(.source)[this.file_id].path.text;
                     // Basename only so the hash is platform-independent (path
                     // separators and absolute prefixes differ on Windows).
-                    break :blk std.Random.DefaultPrng.init(bun.hash(std.fs.path.basename(path)) +% seed);
+                    break :blk std.Random.DefaultPrng.init(home_rt.hash(std.fs.path.basename(path)) +% seed);
                 } else null;
                 const should_randomize: ?std.Random = if (per_file_prng) |*p| p.random() else null;
 
@@ -647,7 +647,7 @@ pub const BunTest = struct {
     }
 
     /// if sync, the result is returned. if async, null is returned.
-    pub fn runTestCallback(this_strong: BunTestPtr, globalThis: *jsc.JSGlobalObject, cfg_callback: jsc.JSValue, cfg_done_parameter: bool, cfg_data: BunTest.RefDataValue, timeout: *const bun.timespec) ?RefDataValue {
+    pub fn runTestCallback(this_strong: BunTestPtr, globalThis: *jsc.JSGlobalObject, cfg_callback: jsc.JSValue, cfg_done_parameter: bool, cfg_data: BunTest.RefDataValue, timeout: *const home_rt.timespec) ?RefDataValue {
         group.begin(@src());
         defer group.end();
         const this = this_strong.get();
@@ -700,7 +700,7 @@ pub const BunTest = struct {
                     dcb_ref = ref(this_strong, cfg_data);
                     dcb_data.ref = dcb_ref;
                 }
-            } else bun.debugAssert(false); // this should be unreachable, we create DoneCallback above
+            } else home_rt.debugAssert(false); // this should be unreachable, we create DoneCallback above
         }
 
         if (result != .zero) {
@@ -763,30 +763,30 @@ pub const BunTest = struct {
         this.bun_test_root.onBeforePrint();
         if (handle_status == .show_unhandled_error_between_tests or handle_status == .show_unhandled_error_in_describe) {
             this.reporter.?.jest.unhandled_errors_between_tests += 1;
-            bun.Output.prettyErrorln(
+            home_rt.Output.prettyErrorln(
                 \\<r>
                 \\<b><d>#<r> <red><b>Unhandled error<r><d> between tests<r>
                 \\<d>-------------------------------<r>
                 \\
             , .{});
-            bun.Output.flush();
+            home_rt.Output.flush();
         }
 
         globalThis.bunVM().runErrorHandler(exception.?, null);
 
         if (handle_status == .show_unhandled_error_between_tests or handle_status == .show_unhandled_error_in_describe) {
-            bun.Output.prettyError("<r><d>-------------------------------<r>\n\n", .{});
+            home_rt.Output.prettyError("<r><d>-------------------------------<r>\n\n", .{});
         }
 
-        bun.Output.flush();
+        home_rt.Output.flush();
     }
 };
 
 pub const HandleUncaughtExceptionResult = enum { hide_error, show_handled_error, show_unhandled_error_between_tests, show_unhandled_error_in_describe };
 
-pub const ResultQueue = bun.LinearFifo(BunTest.RefDataValue, .Dynamic);
+pub const ResultQueue = home_rt.LinearFifo(BunTest.RefDataValue, .Dynamic);
 pub const StepResult = union(enum) {
-    waiting: struct { timeout: bun.timespec = .epoch },
+    waiting: struct { timeout: home_rt.timespec = .epoch },
     complete,
 };
 
@@ -843,7 +843,7 @@ pub const BaseScope = struct {
     pub fn init(this: BaseScopeCfg, gpa: std.mem.Allocator, name_not_owned: ?[]const u8, parent: ?*DescribeScope, has_callback: bool) BaseScope {
         return .{
             .parent = parent,
-            .name = if (name_not_owned) |name| bun.handleOom(gpa.dupe(u8, name)) else null,
+            .name = if (name_not_owned) |name| home_rt.handleOom(gpa.dupe(u8, name)) else null,
             .concurrent = switch (this.self_concurrent) {
                 .yes => true,
                 .no => false,
@@ -880,7 +880,7 @@ pub const DescribeScope = struct {
     failed: bool = false,
 
     pub fn create(gpa: std.mem.Allocator, base: BaseScope) *DescribeScope {
-        return bun.create(gpa, DescribeScope, .{
+        return home_rt.create(gpa, DescribeScope, .{
             .base = base,
             .entries = .init(gpa),
             .beforeEach = .init(gpa),
@@ -921,13 +921,13 @@ pub const DescribeScope = struct {
             target = scope.base.parent;
         }
     }
-    pub fn appendDescribe(this: *DescribeScope, gpa: std.mem.Allocator, name_not_owned: ?[]const u8, base: BaseScopeCfg) bun.JSError!*DescribeScope {
+    pub fn appendDescribe(this: *DescribeScope, gpa: std.mem.Allocator, name_not_owned: ?[]const u8, base: BaseScopeCfg) home_rt.JSError!*DescribeScope {
         const child = create(gpa, .init(base, gpa, name_not_owned, this, false));
         child.base.propagate(false);
         try this.entries.append(.{ .describe = child });
         return child;
     }
-    pub fn appendTest(this: *DescribeScope, gpa: std.mem.Allocator, name_not_owned: ?[]const u8, callback: ?jsc.JSValue, cfg: ExecutionEntryCfg, base: BaseScopeCfg, phase: ExecutionEntry.AddedInPhase) bun.JSError!*ExecutionEntry {
+    pub fn appendTest(this: *DescribeScope, gpa: std.mem.Allocator, name_not_owned: ?[]const u8, callback: ?jsc.JSValue, cfg: ExecutionEntryCfg, base: BaseScopeCfg, phase: ExecutionEntry.AddedInPhase) home_rt.JSError!*ExecutionEntry {
         const entry = ExecutionEntry.create(gpa, name_not_owned, callback, cfg, this, base, phase);
         entry.base.propagate(entry.callback != null);
         try this.entries.append(.{ .test_callback = entry });
@@ -942,7 +942,7 @@ pub const DescribeScope = struct {
             .afterAll => return &this.afterAll,
         }
     }
-    pub fn appendHook(this: *DescribeScope, gpa: std.mem.Allocator, tag: HookTag, callback: ?jsc.JSValue, cfg: ExecutionEntryCfg, base: BaseScopeCfg, phase: ExecutionEntry.AddedInPhase) bun.JSError!*ExecutionEntry {
+    pub fn appendHook(this: *DescribeScope, gpa: std.mem.Allocator, tag: HookTag, callback: ?jsc.JSValue, cfg: ExecutionEntryCfg, base: BaseScopeCfg, phase: ExecutionEntry.AddedInPhase) home_rt.JSError!*ExecutionEntry {
         const entry = ExecutionEntry.create(gpa, null, callback, cfg, this, base, phase);
         try this.getHookEntries(tag).append(entry);
         return entry;
@@ -965,7 +965,7 @@ pub const ExecutionEntry = struct {
     has_done_parameter: bool,
     /// '.epoch' = not set
     /// when this entry begins executing, the timespec will be set to the current time plus the timeout(ms).
-    timespec: bun.timespec = .epoch,
+    timespec: home_rt.timespec = .epoch,
     added_in_phase: AddedInPhase,
     /// Number of times to retry a failed test (0 = no retries)
     retry_count: u32,
@@ -979,7 +979,7 @@ pub const ExecutionEntry = struct {
     const AddedInPhase = enum { preload, collection, execution };
 
     fn create(gpa: std.mem.Allocator, name_not_owned: ?[]const u8, cb: ?jsc.JSValue, cfg: ExecutionEntryCfg, parent: ?*DescribeScope, base: BaseScopeCfg, phase: AddedInPhase) *ExecutionEntry {
-        const entry = bun.create(gpa, ExecutionEntry, .{
+        const entry = home_rt.create(gpa, ExecutionEntry, .{
             .base = .init(base, gpa, name_not_owned, parent, cb != null),
             .callback = null,
             .timeout = cfg.timeout,
@@ -993,7 +993,7 @@ pub const ExecutionEntry = struct {
             entry.callback = switch (entry.base.mode) {
                 .skip => null,
                 .todo => blk: {
-                    const run_todo = if (bun.jsc.Jest.Jest.runner) |runner| runner.run_todo else false;
+                    const run_todo = if (home_rt.jsc.Jest.Jest.runner) |runner| runner.run_todo else false;
                     break :blk if (run_todo) .init(gpa, c) else null;
                 },
                 else => .init(gpa, c),
@@ -1002,7 +1002,7 @@ pub const ExecutionEntry = struct {
         return entry;
     }
 
-    pub fn evaluateTimeout(this: *ExecutionEntry, sequence: *Execution.ExecutionSequence, now: *const bun.timespec) bool {
+    pub fn evaluateTimeout(this: *ExecutionEntry, sequence: *Execution.ExecutionSequence, now: *const home_rt.timespec) bool {
         if (!this.timespec.eql(&.epoch) and this.timespec.order(now) == .lt) {
             // timed out
             sequence.result = if (this == sequence.test_entry)
@@ -1049,7 +1049,7 @@ pub const TestScheduleEntry = union(enum) {
 pub const RunOneResult = union(enum) {
     done,
     execute: struct {
-        timeout: bun.timespec = .epoch,
+        timeout: home_rt.timespec = .epoch,
     },
 };
 
@@ -1067,6 +1067,6 @@ const group = debug.group;
 const std = @import("std");
 const test_command = @import("../cli/test_command.zig");
 
-const bun = @import("bun");
-const jsc = bun.jsc;
+const home_rt = @import("home");
+const jsc = home_rt.jsc;
 const Strong = jsc.Strong.Deprecated;
