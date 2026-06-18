@@ -1,3 +1,11 @@
+// Copied from bun/src/runtime/cli/test/parallel/Worker.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see
+// ../../../../cli/LICENSE.bun.md.
+//
+// Rewrites:
+//   - @import("bun") → @import("home")
+//   - bun.* → home_rt.* namespace references
+
 //! One spawned `bun test --test-worker --isolate` process plus its three
 //! pipes. Tightly coupled with `Coordinator` (which owns the worker slice and
 //! routes IPC frames); this file holds only the per-process state and the
@@ -7,7 +15,7 @@ pub const Worker = @This();
 
 coord: *Coordinator,
 idx: u32,
-process: ?*bun.spawn.Process = null,
+process: ?*home_rt.spawn.Process = null,
 
 /// Bidirectional IPC over fd 3. POSIX: usockets adopted from a socketpair.
 /// Windows: `uv.Pipe` (the parent end of `.buffer` extra-fd, full-duplex).
@@ -27,7 +35,7 @@ inflight: ?u32 = null,
 /// range has the most remaining — the end is furthest from that worker's
 /// hot region.
 range: FileRange = .{ .lo = 0, .hi = 0 },
-/// `bun.milliTimestamp()` at the most recent dispatch; drives lazy
+/// `home_rt.milliTimestamp()` at the most recent dispatch; drives lazy
 /// scale-up.
 dispatched_at: i64 = 0,
 /// Worker stdout+stderr since the last `test_done`. Flushed atomically
@@ -36,11 +44,11 @@ captured: std.ArrayListUnmanaged(u8) = .empty,
 alive: bool = false,
 /// Set when the process-exit notification arrives. Reaping waits for both
 /// this and `ipc.done` so trailing IPC frames are decoded first.
-exit_status: ?bun.spawn.Status = null,
-extra_fd_stdio: [1]bun.spawn.SpawnOptions.Stdio = .{.ignore},
+exit_status: ?home_rt.spawn.Status = null,
+extra_fd_stdio: [1]home_rt.spawn.SpawnOptions.Stdio = .{.ignore},
 
 pub fn start(this: *Worker) !void {
-    bun.assert(!this.alive);
+    home_rt.assert(!this.alive);
     const coord = this.coord;
 
     this.out.reader.setParent(&this.out);
@@ -71,7 +79,7 @@ pub fn start(this: *Worker) !void {
         // `.buffer` extra_fd creates an AF_UNIX socketpair; the parent end is
         // adopted into a usockets `Channel`.
         this.extra_fd_stdio = .{.buffer};
-        const options: bun.spawn.SpawnOptions = .{
+        const options: home_rt.spawn.SpawnOptions = .{
             .stdin = .ignore,
             .stdout = .buffer,
             .stderr = .buffer,
@@ -84,7 +92,7 @@ pub fn start(this: *Worker) !void {
             .new_process_group = true,
             .linux_pdeathsig = if (Environment.isLinux) std.posix.SIG.KILL else null,
         };
-        var spawned = try (try bun.spawn.spawnProcess(&options, coord.argv.ptr, coord.envps[this.idx].ptr)).unwrap();
+        var spawned = try (try home_rt.spawn.spawnProcess(&options, coord.argv.ptr, coord.envps[this.idx].ptr)).unwrap();
         defer spawned.extra_pipes.deinit();
         this.process = spawned.toProcess(coord.vm.eventLoop(), false);
         if (spawned.stdout) |fd| try this.out.reader.start(fd, true).unwrap();
@@ -102,22 +110,22 @@ pub fn start(this: *Worker) !void {
         // CRT fd 3 with uv_pipe_init(ipc=1) + uv_pipe_open in Channel.adopt.
         // Both ends agreeing on the libuv IPC framing is what matters; our
         // own [u32 len][u8 kind] frames ride inside it unchanged.
-        const uv = bun.windows.libuv;
+        const uv = home_rt.windows.libuv;
 
-        const ipc_pipe = bun.new(uv.Pipe, std.mem.zeroes(uv.Pipe));
+        const ipc_pipe = home_rt.new(uv.Pipe, std.mem.zeroes(uv.Pipe));
         errdefer if (this.ipc.backend.pipe == null) ipc_pipe.closeAndDestroy();
 
         this.extra_fd_stdio = .{.{ .ipc = ipc_pipe }};
-        const options: bun.spawn.SpawnOptions = .{
+        const options: home_rt.spawn.SpawnOptions = .{
             .stdin = .ignore,
-            .stdout = .{ .buffer = bun.new(uv.Pipe, std.mem.zeroes(uv.Pipe)) },
-            .stderr = .{ .buffer = bun.new(uv.Pipe, std.mem.zeroes(uv.Pipe)) },
+            .stdout = .{ .buffer = home_rt.new(uv.Pipe, std.mem.zeroes(uv.Pipe)) },
+            .stderr = .{ .buffer = home_rt.new(uv.Pipe, std.mem.zeroes(uv.Pipe)) },
             .extra_fds = &this.extra_fd_stdio,
             .cwd = coord.cwd,
             .windows = .{ .loop = jsc.EventLoopHandle.init(coord.vm) },
             .stream = true,
         };
-        var spawned = try (try bun.spawn.spawnProcess(&options, coord.argv.ptr, coord.envps[this.idx].ptr)).unwrap();
+        var spawned = try (try home_rt.spawn.spawnProcess(&options, coord.argv.ptr, coord.envps[this.idx].ptr)).unwrap();
         defer spawned.extra_pipes.deinit();
         this.process = spawned.toProcess(coord.vm.eventLoop(), false);
 
@@ -130,7 +138,7 @@ pub fn start(this: *Worker) !void {
     if (Environment.isWindows) {
         if (coord.windows_job) |job| {
             if (process.poller == .uv) {
-                _ = bun.windows.AssignProcessToJobObject(job, process.poller.uv.process_handle);
+                _ = home_rt.windows.AssignProcessToJobObject(job, process.poller.uv.process_handle);
             }
         }
     }
@@ -153,7 +161,7 @@ pub fn start(this: *Worker) !void {
     }
 }
 
-pub fn onProcessExit(this: *Worker, _: *bun.spawn.Process, status: bun.spawn.Status, _: *const bun.spawn.Rusage) void {
+pub fn onProcessExit(this: *Worker, _: *home_rt.spawn.Process, status: home_rt.spawn.Status, _: *const home_rt.spawn.Rusage) void {
     this.alive = false;
     this.coord.onWorkerExit(this, status);
 }
@@ -161,7 +169,7 @@ pub fn onProcessExit(this: *Worker, _: *bun.spawn.Process, status: bun.spawn.Sta
 pub fn eventLoop(this: *Worker) *jsc.EventLoop {
     return this.coord.vm.eventLoop();
 }
-pub fn loop(this: *Worker) *bun.Async.Loop {
+pub fn loop(this: *Worker) *home_rt.Async.Loop {
     return this.coord.vm.uvLoop();
 }
 
@@ -172,7 +180,7 @@ pub fn dispatch(this: *Worker, file_idx: u32, file: []const u8) void {
     f.str(file);
     this.ipc.send(f.finish());
     this.inflight = file_idx;
-    this.dispatched_at = bun.milliTimestamp();
+    this.dispatched_at = home_rt.milliTimestamp();
 }
 
 pub fn shutdown(this: *Worker) void {
@@ -205,7 +213,7 @@ pub fn onChannelDone(this: *Worker) void {
 /// and flushes atomically with the next test result so console output from
 /// concurrent files never interleaves.
 pub const WorkerPipe = struct {
-    reader: bun.io.BufferedReader = bun.io.BufferedReader.init(WorkerPipe),
+    reader: home_rt.io.BufferedReader = home_rt.io.BufferedReader.init(WorkerPipe),
     worker: *Worker,
     role: enum { stdout, stderr },
     /// EOF or error observed.
@@ -215,20 +223,20 @@ pub const WorkerPipe = struct {
         this.reader.deinit();
     }
 
-    pub fn onReadChunk(this: *WorkerPipe, chunk: []const u8, _: bun.io.ReadState) bool {
-        bun.handleOom(this.worker.captured.appendSlice(bun.default_allocator, chunk));
+    pub fn onReadChunk(this: *WorkerPipe, chunk: []const u8, _: home_rt.io.ReadState) bool {
+        home_rt.handleOom(this.worker.captured.appendSlice(home_rt.default_allocator, chunk));
         return true;
     }
     pub fn onReaderDone(this: *WorkerPipe) void {
         this.done = true;
     }
-    pub fn onReaderError(this: *WorkerPipe, _: bun.sys.Error) void {
+    pub fn onReaderError(this: *WorkerPipe, _: home_rt.sys.Error) void {
         this.done = true;
     }
     pub fn eventLoop(this: *WorkerPipe) *jsc.EventLoop {
         return this.worker.coord.vm.eventLoop();
     }
-    pub fn loop(this: *WorkerPipe) *bun.Async.Loop {
+    pub fn loop(this: *WorkerPipe) *home_rt.Async.Loop {
         return this.worker.coord.vm.uvLoop();
     }
 };
@@ -239,7 +247,14 @@ const std = @import("std");
 const Channel = @import("./Channel.zig").Channel;
 const Coordinator = @import("./Coordinator.zig").Coordinator;
 
-const bun = @import("bun");
-const Environment = bun.Environment;
-const Output = bun.Output;
-const jsc = bun.jsc;
+const home_rt = @import("home");
+const Environment = home_rt.Environment;
+const Output = home_rt.Output;
+const jsc = home_rt.jsc;
+
+test "Worker exposes process lifecycle entrypoints" {
+    try std.testing.expect(@hasDecl(Worker, "start"));
+    try std.testing.expect(@hasDecl(Worker, "dispatch"));
+    try std.testing.expect(@hasDecl(Worker, "shutdown"));
+    try std.testing.expect(@hasDecl(WorkerPipe, "onReadChunk"));
+}
