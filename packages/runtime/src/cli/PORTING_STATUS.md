@@ -16,6 +16,7 @@ the local status after the import rewrite.
 | `discord_command.zig` | 10 | 1 | **clean (parked opener)** | `open.openURL` parked until spawn + JSC.EventLoopHandle land; fallback URL print path tested |
 | `ci_info.zig` | 27 | 4 | **clean (parked codegen)** | codegen-generated `ci_info` table and `home_rt.once` parked; env-var fallback shape tested |
 | `shell_completions.zig` | 75 | 2 | **clean (parked embeds)** | completion embeds parked as empty literals until generated completion files port |
+| `filter_arg.zig` | 285 | 15 | **clean** | workspace package glob/filter helper; `FilterSet` covered with inline tests |
 | `pm_why_command.zig` | 12 | 2 | blocked | `home_rt.cli.Command` + `home_rt.install.PackageManager` (huge substrate — Phase 12.9) |
 | `add_command.zig` | 11 | 2 | blocked | same as pm_why_command (Command + PackageManager) |
 | `remove_command.zig` | 11 | 2 | blocked | same |
@@ -26,7 +27,7 @@ the local status after the import rewrite.
 | `add_completions.zig` | 105 | 2 | blocked (auto-gen) | `home_rt.zstd` (compressed completions blob — needs zstd substrate) |
 | `Arguments.zig` | 1744 | 62 | blocked | `home_rt.options.*`, `home_rt.api.*`, `home_rt.allocators.*`, ... (the full bundler/runtime arg-parser dependency graph) |
 
-47 cli files total (33 129 LOC upstream); 6 clean + 9 documented-blocked rows
+47 cli files total (33 129 LOC upstream); 7 clean + 9 documented-blocked rows
 above. The other ~32 follow the same pattern — most are thin shells over
 `PackageManager` / `Command` / JSC.
 

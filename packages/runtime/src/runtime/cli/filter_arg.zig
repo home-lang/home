@@ -1,3 +1,11 @@
+// Copied from bun/src/runtime/cli/filter_arg.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
+//
+// Rewrites:
+//   - @import("bun") → @import("home")
+//   - bun.* → home_rt.* for the parser, glob, path, logger, sys, and Output
+//     surfaces this CLI filter helper needs.
+
 const SKIP_LIST = .{
     // skip hidden directories
     ".",
@@ -24,29 +32,29 @@ fn globIgnoreFn(val: []const u8) bool {
 
 const GlobWalker = glob.GlobWalker(globIgnoreFn, glob.walk.DirEntryAccessor, false);
 
-pub fn getCandidatePackagePatterns(allocator: std.mem.Allocator, log: *bun.logger.Log, out_patterns: *std.array_list.Managed([]u8), workdir_: []const u8, root_buf: *bun.PathBuffer) ![]const u8 {
-    bun.ast.Expr.Data.Store.create();
-    bun.ast.Stmt.Data.Store.create();
+pub fn getCandidatePackagePatterns(allocator: std.mem.Allocator, log: *home_rt.logger.Log, out_patterns: *std.array_list.Managed([]u8), workdir_: []const u8, root_buf: *home_rt.PathBuffer) ![]const u8 {
+    home_rt.ast.Expr.Data.Store.create();
+    home_rt.ast.Stmt.Data.Store.create();
     defer {
-        bun.ast.Expr.Data.Store.reset();
-        bun.ast.Stmt.Data.Store.reset();
+        home_rt.ast.Expr.Data.Store.reset();
+        home_rt.ast.Stmt.Data.Store.reset();
     }
 
     var workdir = workdir_;
 
     while (true) : (workdir = std.fs.path.dirname(workdir) orelse break) {
-        var name_buf: bun.PathBuffer = undefined;
-        const json_path: [:0]const u8 = bun.path.joinAbsStringBufZ(workdir, name_buf[0..], &.{"package.json"}, .auto);
+        var name_buf: home_rt.PathBuffer = undefined;
+        const json_path: [:0]const u8 = home_rt.path.joinAbsStringBufZ(workdir, name_buf[0..], &.{"package.json"}, .auto);
 
         log.msgs.clearRetainingCapacity();
         log.errors = 0;
         log.warnings = 0;
 
-        const json_source = switch (bun.sys.File.toSource(json_path, allocator, .{})) {
+        const json_source = switch (home_rt.sys.File.toSource(json_path, allocator, .{})) {
             .err => |err| {
                 switch (err.getErrno()) {
                     .NOENT, .ACCES, .PERM => continue,
-                    else => |errno| return bun.errnoToZigErr(errno),
+                    else => |errno| return home_rt.errnoToZigErr(errno),
                 }
             },
             .result => |source| source,
@@ -133,10 +141,18 @@ pub const FilterSet = struct {
     pub fn init(allocator: std.mem.Allocator, filters: []const []const u8, cwd_: []const u8) !FilterSet {
         const cwd = cwd_;
 
-        var buf: bun.PathBuffer = undefined;
+        var buf: home_rt.PathBuffer = undefined;
         // TODO fixed buffer allocator with fallback?
         var list = try std.array_list.Managed(Pattern).initCapacity(allocator, filters.len);
         var self = FilterSet{ .allocator = allocator, .filters = &.{} };
+        errdefer {
+            for (list.items) |filter| {
+                if (filter.kind == .path) {
+                    allocator.free(filter.pattern);
+                }
+            }
+            list.deinit();
+        }
         for (filters) |filter_utf8_| {
             if (strings.eqlComptime(filter_utf8_, "*") or strings.eqlComptime(filter_utf8_, "**")) {
                 self.match_all = true;
@@ -147,7 +163,7 @@ pub const FilterSet = struct {
             const is_path = filter_utf8.len > 0 and filter_utf8[0] == '.';
             if (is_path) {
                 const parts = [_]string{filter_utf8};
-                const filter_utf8_temp = try allocator.dupe(u8, bun.path.joinAbsStringBuf(cwd, &buf, &parts, .loose));
+                const filter_utf8_temp = try allocator.dupe(u8, home_rt.path.joinAbsStringBuf(cwd, &buf, &parts, .loose));
                 std.mem.replaceScalar(u8, filter_utf8_temp, '\\', '/');
                 filter_utf8 = filter_utf8_temp;
                 try list.append(.{
@@ -162,7 +178,12 @@ pub const FilterSet = struct {
                 });
             }
         }
-        self.filters = list.items;
+        if (list.items.len == 0) {
+            list.deinit();
+            self.filters = &.{};
+        } else {
+            self.filters = list.items;
+        }
         return self;
     }
 
@@ -277,9 +298,33 @@ const string = []const u8;
 
 const std = @import("std");
 
-const bun = @import("bun");
-const Global = bun.Global;
-const JSON = bun.json;
-const Output = bun.Output;
-const glob = bun.glob;
-const strings = bun.strings;
+const home_rt = @import("home");
+const Global = home_rt.Global;
+const JSON = home_rt.json;
+const Output = home_rt.Output;
+const glob = home_rt.glob;
+const strings = home_rt.strings;
+
+test "FilterSet matches package names by glob" {
+    var filter_set = try FilterSet.init(std.testing.allocator, &.{"@scope/*"}, "/repo");
+    defer filter_set.deinit();
+
+    try std.testing.expect(filter_set.matches("/repo/packages/a", "@scope/pkg"));
+    try std.testing.expect(!filter_set.matches("/repo/packages/a", "plain-pkg"));
+}
+
+test "FilterSet matches relative path filters against normalized paths" {
+    var filter_set = try FilterSet.init(std.testing.allocator, &.{"./packages/*"}, "/repo");
+    defer filter_set.deinit();
+
+    try std.testing.expect(filter_set.matches("/repo/packages/app", ""));
+    try std.testing.expect(!filter_set.matches("/repo/other/app", ""));
+}
+
+test "FilterSet wildcard requires a package name" {
+    var filter_set = try FilterSet.init(std.testing.allocator, &.{"*"}, "/repo");
+    defer filter_set.deinit();
+
+    try std.testing.expect(filter_set.matches("/repo/packages/app", "app"));
+    try std.testing.expect(!filter_set.matches("/repo/packages/app", ""));
+}

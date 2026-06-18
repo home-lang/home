@@ -3416,6 +3416,7 @@ pub const runtime = struct {
         pub const ColonListType = colon_list_type.ColonListType;
         pub const shell_completions = @import("runtime/cli/shell_completions.zig");
         pub const fuzzilli_command = @import("runtime/cli/fuzzilli_command.zig");
+        pub const filter_arg = @import("runtime/cli/filter_arg.zig");
         // Wave-26 grinder (2026-05-19) — `which-npm-client` result
         // descriptor (npm client `bin` path + `Tag` enum). Pure data
         // — upstream `@import("bun")` was unused.
@@ -6071,6 +6072,7 @@ test "home_rt: runtime cli parked helper surfaces compile" {
     try std.testing.expectEqual(@as(?[]const u8, null), runtime_cli.ci_info.detectCIName());
     try std.testing.expectEqual(runtime_cli.shell_completions.Shell.zsh, runtime_cli.shell_completions.Shell.fromEnv([]const u8, "/bin/zsh"));
     try std.testing.expect(@hasDecl(runtime_cli.discord_command, "DiscordCommand"));
+    try std.testing.expect(@hasDecl(runtime_cli.filter_arg, "FilterSet"));
 }
 
 test "home_rt: Environment flags exist" {
@@ -6233,6 +6235,7 @@ test {
     _ = @import("threading/threading.zig");
     _ = @import("runtime/cli/ci_info.zig");
     _ = @import("runtime/cli/discord_command.zig");
+    _ = @import("runtime/cli/filter_arg.zig");
     _ = @import("runtime/cli/list-of-yarn-commands.zig");
     _ = @import("runtime/cli/test/ParallelRunner.zig");
     _ = @import("runtime/cli/test/parallel/Channel.zig");
