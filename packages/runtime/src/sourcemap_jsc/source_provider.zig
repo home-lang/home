@@ -3,11 +3,11 @@
 //! `getExternalData` live here so `src/sourcemap/` has no JSC types;
 //! `getSourceMapImpl` calls it via `@hasDecl(SourceProviderKind, "getExternalData")`.
 
-extern "c" fn BakeGlobalObject__isBakeGlobalObject(global: *bun.jsc.JSGlobalObject) bool;
-extern "c" fn BakeGlobalObject__getPerThreadData(global: *bun.jsc.JSGlobalObject) *bun.bake.production.PerThread;
+extern "c" fn BakeGlobalObject__isBakeGlobalObject(global: *home_rt.jsc.JSGlobalObject) bool;
+extern "c" fn BakeGlobalObject__getPerThreadData(global: *home_rt.jsc.JSGlobalObject) *home_rt.bake.production.PerThread;
 
 pub const BakeSourceProvider = opaque {
-    extern fn BakeSourceProvider__getSourceSlice(*BakeSourceProvider) bun.String;
+    extern fn BakeSourceProvider__getSourceSlice(*BakeSourceProvider) home_rt.String;
     pub const getSourceSlice = BakeSourceProvider__getSourceSlice;
 
     pub fn toSourceContentPtr(this: *BakeSourceProvider) SourceMap.ParsedSourceMap.SourceContentPtr {
@@ -18,7 +18,7 @@ pub const BakeSourceProvider = opaque {
     /// current global is a `Bake::GlobalObject`; null otherwise (caller falls
     /// back to reading `<source>.map` from disk).
     pub fn getExternalData(_: *BakeSourceProvider, source_filename: []const u8) ?[]const u8 {
-        const global = bun.jsc.VirtualMachine.get().global;
+        const global = home_rt.jsc.VirtualMachine.get().global;
         if (!BakeGlobalObject__isBakeGlobalObject(global)) return null;
         _ = BakeGlobalObject__getPerThreadData(global);
         _ = source_filename;
@@ -42,5 +42,5 @@ pub const BakeSourceProvider = opaque {
     }
 };
 
-const bun = @import("bun");
-const SourceMap = bun.SourceMap;
+const home_rt = @import("home");
+const SourceMap = home_rt.SourceMap;

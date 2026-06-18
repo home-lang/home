@@ -1,6 +1,6 @@
-//! JSC bridge for `bun.logger`. Keeps `src/logger/` free of JSC types.
+//! JSC bridge for `home_rt.logger`. Keeps `src/logger/` free of JSC types.
 
-pub fn msgFromJS(allocator: std.mem.Allocator, globalObject: *jsc.JSGlobalObject, file: []const u8, err: jsc.JSValue) bun.JSError!Msg {
+pub fn msgFromJS(allocator: std.mem.Allocator, globalObject: *jsc.JSGlobalObject, file: []const u8, err: jsc.JSValue) home_rt.JSError!Msg {
     var zig_exception_holder: jsc.ZigException.Holder = jsc.ZigException.Holder.init();
     if (err.toError()) |value| {
         value.toZigException(globalObject, zig_exception_holder.zigException());
@@ -20,14 +20,14 @@ pub fn msgFromJS(allocator: std.mem.Allocator, globalObject: *jsc.JSGlobalObject
     };
 }
 
-pub fn msgToJS(this: Msg, globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator) bun.OOM!jsc.JSValue {
+pub fn msgToJS(this: Msg, globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator) home_rt.OOM!jsc.JSValue {
     return switch (this.metadata) {
-        .build => bun.api.BuildMessage.create(globalObject, allocator, this),
-        .resolve => bun.api.ResolveMessage.create(globalObject, allocator, this, ""),
+        .build => home_rt.api.BuildMessage.create(globalObject, allocator, this),
+        .resolve => home_rt.api.ResolveMessage.create(globalObject, allocator, this, ""),
     };
 }
 
-pub fn levelFromJS(globalThis: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError!?Log.Level {
+pub fn levelFromJS(globalThis: *jsc.JSGlobalObject, value: jsc.JSValue) home_rt.JSError!?Log.Level {
     if (value == .zero or value.isUndefined()) {
         return null;
     }
@@ -39,7 +39,7 @@ pub fn levelFromJS(globalThis: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSEr
     return Log.Level.Map.fromJS(globalThis, value);
 }
 
-pub fn logToJS(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Allocator, message: []const u8) bun.JSError!jsc.JSValue {
+pub fn logToJS(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Allocator, message: []const u8) home_rt.JSError!jsc.JSValue {
     const msgs: []const Msg = this.msgs.items;
     var errors_stack: [256]jsc.JSValue = undefined;
 
@@ -49,15 +49,15 @@ pub fn logToJS(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Alloca
         1 => {
             const msg = msgs[0];
             return switch (msg.metadata) {
-                .build => bun.api.BuildMessage.create(global, allocator, msg),
-                .resolve => bun.api.ResolveMessage.create(global, allocator, msg, ""),
+                .build => home_rt.api.BuildMessage.create(global, allocator, msg),
+                .resolve => home_rt.api.ResolveMessage.create(global, allocator, msg, ""),
             };
         },
         else => {
             for (msgs[0..count], 0..) |msg, i| {
                 errors_stack[i] = switch (msg.metadata) {
-                    .build => try bun.api.BuildMessage.create(global, allocator, msg),
-                    .resolve => try bun.api.ResolveMessage.create(global, allocator, msg, ""),
+                    .build => try home_rt.api.BuildMessage.create(global, allocator, msg),
+                    .resolve => try home_rt.api.ResolveMessage.create(global, allocator, msg, ""),
                 };
             }
             const out = jsc.ZigString.init(message);
@@ -68,11 +68,11 @@ pub fn logToJS(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Alloca
 }
 
 /// unlike toJS, this always produces an AggregateError object
-pub fn logToJSAggregateError(this: Log, global: *jsc.JSGlobalObject, message: bun.String) bun.JSError!jsc.JSValue {
-    return global.createAggregateErrorWithArray(message, try logToJSArray(this, global, bun.default_allocator));
+pub fn logToJSAggregateError(this: Log, global: *jsc.JSGlobalObject, message: home_rt.String) home_rt.JSError!jsc.JSValue {
+    return global.createAggregateErrorWithArray(message, try logToJSArray(this, global, home_rt.default_allocator));
 }
 
-pub fn logToJSArray(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Allocator) bun.JSError!jsc.JSValue {
+pub fn logToJSArray(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.Allocator) home_rt.JSError!jsc.JSValue {
     const msgs: []const Msg = this.msgs.items;
 
     const arr = try jsc.JSValue.createEmptyArray(global, msgs.len);
@@ -85,9 +85,9 @@ pub fn logToJSArray(this: Log, global: *jsc.JSGlobalObject, allocator: std.mem.A
 
 const std = @import("std");
 
-const bun = @import("bun");
-const jsc = bun.jsc;
+const home_rt = @import("home");
+const jsc = home_rt.jsc;
 
-const logger = bun.logger;
+const logger = home_rt.logger;
 const Log = logger.Log;
 const Msg = logger.Msg;

@@ -1,20 +1,20 @@
 //! JS testing bindings for `InternalSourceMap`. Keeps `src/sourcemap/` free of JSC types.
 
 pub const TestingAPIs = struct {
-    pub fn fromVLQ(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    pub fn fromVLQ(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) home_rt.JSError!jsc.JSValue {
         const vlq_str = try callframe.argument(0).toBunString(globalThis);
         defer vlq_str.deref();
-        const vlq = vlq_str.toUTF8(bun.default_allocator);
+        const vlq = vlq_str.toUTF8(home_rt.default_allocator);
         defer vlq.deinit();
 
-        const blob = InternalSourceMap.fromVLQ(bun.default_allocator, vlq.slice(), 0) catch {
+        const blob = InternalSourceMap.fromVLQ(home_rt.default_allocator, vlq.slice(), 0) catch {
             return globalThis.throw("InternalSourceMap.fromVLQ: invalid VLQ input", .{});
         };
-        defer bun.default_allocator.free(blob);
+        defer home_rt.default_allocator.free(blob);
         return jsc.ArrayBuffer.createUint8Array(globalThis, blob);
     }
 
-    pub fn toVLQ(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    pub fn toVLQ(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) home_rt.JSError!jsc.JSValue {
         const ab = callframe.argument(0).asArrayBuffer(globalThis) orelse {
             return globalThis.throw("InternalSourceMap.toVLQ: expected Uint8Array", .{});
         };
@@ -23,13 +23,13 @@ pub const TestingAPIs = struct {
             return globalThis.throw("InternalSourceMap.toVLQ: invalid blob", .{});
         }
         const ism = InternalSourceMap{ .data = bytes.ptr };
-        var out = MutableString.initEmpty(bun.default_allocator);
+        var out = MutableString.initEmpty(home_rt.default_allocator);
         defer out.deinit();
         ism.appendVLQTo(&out);
-        return bun.String.createUTF8ForJS(globalThis, out.list.items);
+        return home_rt.String.createUTF8ForJS(globalThis, out.list.items);
     }
 
-    pub fn find(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    pub fn find(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) home_rt.JSError!jsc.JSValue {
         const ab = callframe.argument(0).asArrayBuffer(globalThis) orelse {
             return globalThis.throw("InternalSourceMap.find: expected Uint8Array", .{});
         };
@@ -53,7 +53,7 @@ pub const TestingAPIs = struct {
     }
 };
 
-const bun = @import("bun");
-const MutableString = bun.MutableString;
-const jsc = bun.jsc;
-const InternalSourceMap = bun.SourceMap.InternalSourceMap;
+const home_rt = @import("home");
+const MutableString = home_rt.MutableString;
+const jsc = home_rt.jsc;
+const InternalSourceMap = home_rt.SourceMap.InternalSourceMap;
