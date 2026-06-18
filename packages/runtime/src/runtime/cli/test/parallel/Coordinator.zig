@@ -1,3 +1,11 @@
+// Copied from bun/src/runtime/cli/test/parallel/Coordinator.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see
+// ../../../../cli/LICENSE.bun.md.
+//
+// Rewrites:
+//   - @import("bun") → @import("home")
+//   - bun.* → home_rt.* namespace references
+
 //! Process-pool coordinator for `bun test --parallel`. Owns the worker slice,
 //! drives the event loop, routes IPC frames to per-test output, and handles
 //! crash accounting / panic-abort / bail / lazy scale-up. Construction and
@@ -71,7 +79,7 @@ pub const Coordinator = struct {
             if (this.isDone()) break;
             if (this.spawned_count < this.parallel_limit and this.hasUndispatchedFiles() and !this.bailed) {
                 // Bound the wait so we wake to scale up even if no I/O arrives.
-                var ts = bun.timespec{
+                var ts = home_rt.timespec{
                     .sec = @divTrunc(this.scale_up_after_ms, std.time.ms_per_s),
                     .nsec = @mod(this.scale_up_after_ms, std.time.ms_per_s) * std.time.ns_per_ms,
                 };
@@ -99,12 +107,12 @@ pub const Coordinator = struct {
                 }
             }
         }
-        if (this.worker_tmpdir) |d| bun.FD.cwd().deleteTree(d) catch {};
-        bun.Global.exit(130);
+        if (this.worker_tmpdir) |d| home_rt.FD.cwd().deleteTree(d) catch {};
+        home_rt.Global.exit(130);
     }
 
     fn spawnWorker(this: *Coordinator) bool {
-        bun.assert(this.spawned_count < this.parallel_limit);
+        home_rt.assert(this.spawned_count < this.parallel_limit);
         const w = &this.workers[this.spawned_count];
         // A prior failed start()'s errdefer leaves ipc.done = true; reset so a
         // retry on the same slot starts with a fresh channel.
@@ -113,7 +121,7 @@ pub const Coordinator = struct {
         w.err = .{ .role = .stderr, .worker = w };
         w.start() catch |e| {
             Output.err(e, "failed to spawn test worker", .{});
-            if (this.live_workers == 0) bun.Global.exit(1);
+            if (this.live_workers == 0) home_rt.Global.exit(1);
             return false;
         };
         this.spawned_count += 1;
@@ -127,7 +135,7 @@ pub const Coordinator = struct {
     fn maybeScaleUp(this: *Coordinator) void {
         if (this.spawned_count >= this.parallel_limit) return;
         if (this.bailed or !this.hasUndispatchedFiles()) return;
-        const now = bun.milliTimestamp();
+        const now = home_rt.milliTimestamp();
         for (this.workers[0..this.spawned_count]) |*w| {
             if (!w.alive) continue;
             if (w.inflight == null) return;
@@ -172,7 +180,7 @@ pub const Coordinator = struct {
     }
 
     pub fn relPath(this: *Coordinator, file_idx: u32) []const u8 {
-        return bun.path.relative(bun.fs.FileSystem.instance.top_level_dir, this.files[file_idx].slice());
+        return home_rt.path.relative(home_rt.fs.FileSystem.instance.top_level_dir, this.files[file_idx].slice());
     }
 
     fn ensureHeader(this: *Coordinator, file_idx: u32) void {
@@ -194,7 +202,7 @@ pub const Coordinator = struct {
         this.breakDots();
         if (w.inflight) |idx| this.ensureHeader(idx);
         Output.errorWriter().writeAll(w.captured.items) catch {};
-        if (!bun.strings.endsWithChar(w.captured.items, '\n')) {
+        if (!home_rt.strings.endsWithChar(w.captured.items, '\n')) {
             Output.errorWriter().writeByte('\n') catch {};
         }
         w.captured.clearRetainingCapacity();
@@ -212,7 +220,7 @@ pub const Coordinator = struct {
                 if (formatted.len == 0) return; // e.g. pass under --only-failures
                 // dots-mode failures print a full line (writeTestStatusLine);
                 // dots themselves are unterminated.
-                const is_dot = this.dots and !bun.strings.endsWithChar(formatted, '\n');
+                const is_dot = this.dots and !home_rt.strings.endsWithChar(formatted, '\n');
                 if (!is_dot) {
                     this.breakDots();
                     this.ensureHeader(idx);
@@ -259,20 +267,20 @@ pub const Coordinator = struct {
                     &this.reporter.skips_to_repeat_buf,
                     &this.reporter.todos_to_repeat_buf,
                 }) |dest| {
-                    bun.handleOom(dest.appendSlice(bun.default_allocator, rd.str()));
+                    home_rt.handleOom(dest.appendSlice(home_rt.default_allocator, rd.str()));
                 }
             },
             .junit_file, .coverage_file => {
                 const path = rd.str();
                 if (path.len == 0) return;
                 const list = if (kind == .junit_file) &this.junit_fragments else &this.coverage_fragments;
-                bun.handleOom(list.append(bun.default_allocator, bun.handleOom(bun.default_allocator.dupe(u8, path))));
+                home_rt.handleOom(list.append(home_rt.default_allocator, home_rt.handleOom(home_rt.default_allocator.dupe(u8, path))));
             },
             .run, .shutdown => {},
         }
     }
 
-    pub fn onWorkerExit(this: *Coordinator, w: *Worker, status: bun.spawn.Status) void {
+    pub fn onWorkerExit(this: *Coordinator, w: *Worker, status: home_rt.spawn.Status) void {
         w.exit_status = status;
         // The Channel delivers any remaining buffered data then close (which
         // sets ipc.done and calls tryReap), so no explicit drain is needed —
@@ -287,7 +295,7 @@ pub const Coordinator = struct {
         this.reapWorker(w, status);
     }
 
-    fn reapWorker(this: *Coordinator, w: *Worker, status: bun.spawn.Status) void {
+    fn reapWorker(this: *Coordinator, w: *Worker, status: home_rt.spawn.Status) void {
         // Decrement here (not in onProcessExit) so drive() keeps pumping until
         // the IPC pipe has been drained and this reap actually runs.
         this.live_workers -= 1;
@@ -336,11 +344,11 @@ pub const Coordinator = struct {
             w.ipc.deinit();
             w.out.deinit();
             w.err.deinit();
-            w.captured.deinit(bun.default_allocator);
+            w.captured.deinit(home_rt.default_allocator);
         }
     }
 
-    fn accountCrash(this: *Coordinator, file_idx: u32, status: bun.spawn.Status) void {
+    fn accountCrash(this: *Coordinator, file_idx: u32, status: home_rt.spawn.Status) void {
         this.breakDots();
         var buf: [32]u8 = undefined;
         Output.prettyError("<r><red>✗<r> <b>{s}<r> <d>(worker crashed: {s})<r>\n", .{
@@ -349,7 +357,7 @@ pub const Coordinator = struct {
         });
         this.reporter.summary().fail += 1;
         this.reporter.summary().files += 1;
-        bun.handleOom(this.crashed_files.append(bun.default_allocator, file_idx));
+        home_rt.handleOom(this.crashed_files.append(home_rt.default_allocator, file_idx));
         this.files_done += 1;
         if (this.bail > 0 and this.reporter.summary().fail >= this.bail) this.bailOut();
     }
@@ -363,7 +371,7 @@ pub const Coordinator = struct {
     /// from process.exit(N) — so this classification is effectively
     /// POSIX-only and Windows worker crashes fall into the non-panic
     /// per-file-failure branch.
-    fn isPanicStatus(status: bun.spawn.Status) bool {
+    fn isPanicStatus(status: home_rt.spawn.Status) bool {
         const sig = status.signalCode() orelse return false;
         return switch (sig) {
             .SIGILL, .SIGTRAP, .SIGABRT, .SIGBUS, .SIGFPE, .SIGSEGV, .SIGSYS => true,
@@ -371,7 +379,7 @@ pub const Coordinator = struct {
         };
     }
 
-    fn describeStatus(buf: []u8, status: bun.spawn.Status) []const u8 {
+    fn describeStatus(buf: []u8, status: home_rt.spawn.Status) []const u8 {
         return switch (status) {
             .exited => |e| std.fmt.bufPrint(buf, "exit code {d}", .{e.code}) catch unreachable,
             // SignalCode is non-exhaustive (`_`); @tagName on an unnamed value
@@ -389,7 +397,7 @@ pub const Coordinator = struct {
     /// files as aborted so the run ends immediately with a non-zero exit
     /// and the panic's stderr (already flushed via flushCaptured) is the
     /// last meaningful output, not buried under hundreds of later passes.
-    fn abortOnWorkerPanic(this: *Coordinator, file_idx: u32, status: bun.spawn.Status) void {
+    fn abortOnWorkerPanic(this: *Coordinator, file_idx: u32, status: home_rt.spawn.Status) void {
         this.breakDots();
         var buf: [32]u8 = undefined;
         Output.prettyError(
@@ -428,7 +436,7 @@ pub const Coordinator = struct {
                 Output.prettyError("<r><red>✗<r> <b>{s}<r> <d>({s})<r>\n", .{ this.relPath(idx), reason });
                 this.reporter.summary().fail += 1;
                 this.reporter.summary().files += 1;
-                bun.handleOom(this.crashed_files.append(bun.default_allocator, idx));
+                home_rt.handleOom(this.crashed_files.append(home_rt.default_allocator, idx));
                 this.files_done += 1;
             }
         }
@@ -449,8 +457,8 @@ pub const Coordinator = struct {
     /// this (SIGKILL).
     pub const AbortHandler = struct {
         var should_abort: std.atomic.Value(bool) = .init(false);
-        var prev_int: if (Environment.isPosix) bun.sys.Sigaction else void = undefined;
-        var prev_term: if (Environment.isPosix) bun.sys.Sigaction else void = undefined;
+        var prev_int: if (Environment.isPosix) home_rt.sys.Sigaction else void = undefined;
+        var prev_term: if (Environment.isPosix) home_rt.sys.Sigaction else void = undefined;
 
         fn posixHandler(_: i32, _: *const std.posix.siginfo_t, _: ?*const anyopaque) callconv(.c) void {
             should_abort.store(true, .release);
@@ -468,38 +476,38 @@ pub const Coordinator = struct {
 
         pub fn install() void {
             if (Environment.isPosix) {
-                const act = bun.sys.Sigaction{
+                const act = home_rt.sys.Sigaction{
                     .handler = .{ .sigaction = posixHandler },
-                    .mask = bun.sys.sigemptyset(),
+                    .mask = home_rt.sys.sigemptyset(),
                     .flags = std.posix.SA.SIGINFO,
                 };
-                bun.sys.sigaction(std.posix.SIG.INT, &act, &prev_int);
-                bun.sys.sigaction(std.posix.SIG.TERM, &act, &prev_term);
+                home_rt.sys.sigaction(std.posix.SIG.INT, &act, &prev_int);
+                home_rt.sys.sigaction(std.posix.SIG.TERM, &act, &prev_term);
             } else {
-                _ = bun.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.TRUE);
+                _ = home_rt.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.TRUE);
             }
         }
 
         pub fn uninstall() void {
             if (Environment.isPosix) {
-                bun.sys.sigaction(std.posix.SIG.INT, &prev_int, null);
-                bun.sys.sigaction(std.posix.SIG.TERM, &prev_term, null);
+                home_rt.sys.sigaction(std.posix.SIG.INT, &prev_int, null);
+                home_rt.sys.sigaction(std.posix.SIG.TERM, &prev_term, null);
             } else {
-                _ = bun.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.FALSE);
+                _ = home_rt.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.FALSE);
             }
         }
     };
 
     pub fn createWindowsKillOnCloseJob() ?std.os.windows.HANDLE {
         if (!Environment.isWindows) return null;
-        const job = bun.windows.CreateJobObjectA(null, null) orelse return null;
-        var jeli = std.mem.zeroes(bun.c.JOBOBJECT_EXTENDED_LIMIT_INFORMATION);
-        jeli.BasicLimitInformation.LimitFlags = bun.c.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if (bun.c.SetInformationJobObject(
+        const job = home_rt.windows.CreateJobObjectA(null, null) orelse return null;
+        var jeli = std.mem.zeroes(home_rt.c.JOBOBJECT_EXTENDED_LIMIT_INFORMATION);
+        jeli.BasicLimitInformation.LimitFlags = home_rt.c.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (home_rt.c.SetInformationJobObject(
             job,
-            bun.c.JobObjectExtendedLimitInformation,
+            home_rt.c.JobObjectExtendedLimitInformation,
             &jeli,
-            @sizeOf(bun.c.JOBOBJECT_EXTENDED_LIMIT_INFORMATION),
+            @sizeOf(home_rt.c.JOBOBJECT_EXTENDED_LIMIT_INFORMATION),
         ) == 0) {
             std.os.windows.CloseHandle(job);
             return null;
@@ -508,6 +516,13 @@ pub const Coordinator = struct {
     }
 };
 
+test "Coordinator exposes worker orchestration entrypoints" {
+    try std.testing.expect(@hasDecl(Coordinator, "drive"));
+    try std.testing.expect(@hasDecl(Coordinator, "onFrame"));
+    try std.testing.expect(@hasDecl(Coordinator, "onWorkerExit"));
+    try std.testing.expect(@hasDecl(Coordinator, "AbortHandler"));
+}
+
 const Frame = @import("./Frame.zig");
 const Worker = @import("./Worker.zig");
 const std = @import("std");
@@ -515,8 +530,8 @@ const std = @import("std");
 const test_command = @import("../../test_command.zig");
 const CommandLineReporter = test_command.CommandLineReporter;
 
-const bun = @import("bun");
-const Environment = bun.Environment;
-const Output = bun.Output;
-const PathString = bun.PathString;
-const jsc = bun.jsc;
+const home_rt = @import("home");
+const Environment = home_rt.Environment;
+const Output = home_rt.Output;
+const PathString = home_rt.PathString;
+const jsc = home_rt.jsc;
