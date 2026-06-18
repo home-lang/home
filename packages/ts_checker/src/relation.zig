@@ -816,8 +816,8 @@ pub const Engine = struct {
         //     block below since enum literals carry `is_number`/`is_string`.
         //   * a *bare* literal (non-enum) IS assignable to an enum-literal
         //     target with a matching value (so `0`/`"UP"` flow into a
-        //     `Choice.Yes` slot), but a *different* enum literal or a
-        //     value mismatch is rejected.
+        //     `Choice.Yes` slot), but broad `number`, a *different* enum
+        //     literal, or a value mismatch is rejected.
         //   * an enum literal is assignable to a bare literal target with
         //     the same value (tsc 222/228).
         if (tf.is_enum_literal) {
@@ -828,11 +828,9 @@ pub const Engine = struct {
                 // re-interned cases that didn't unify to one id).
                 return self.enumLiteralsRelated(source, target);
             }
-            // Bare literal (or primitive) source into an enum-literal
-            // target: tsc accepts a literal whose value matches and
-            // `number` into a numeric enum literal.
+            // Bare literal source into an enum-literal target: tsc accepts
+            // a literal whose value matches, but not broad `number`.
             if (sf.is_literal and self.literalValuesEqual(source, target)) return true;
-            if (source == Primitive.number_t and tf.is_number) return true;
             return false;
         }
         if (sf.is_enum_literal and tf.is_literal and !tf.is_enum_literal) {
