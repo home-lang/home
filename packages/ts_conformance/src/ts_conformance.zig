@@ -514,6 +514,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         diag_line: u32,
         diag_col: u32,
         code: u32,
+        span_len: u32,
         line: []const u8,
         src_idx: u32,
     };
@@ -596,6 +597,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             .diag_line = diag_line,
             .diag_col = diag_col,
             .code = code,
+            .span_len = d.span_len,
             .line = try gpa.dupe(u8, formatted),
             .src_idx = @intCast(src_idx),
         });
@@ -622,6 +624,9 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             if (file_order != .eq) return file_order == .lt;
             if (a.diag_line != b.diag_line) return a.diag_line < b.diag_line;
             if (a.diag_col != b.diag_col) return a.diag_col < b.diag_col;
+            if (a.span_len != 0 and b.span_len != 0 and a.span_len != b.span_len) {
+                return a.span_len < b.span_len;
+            }
             if (a.code != b.code) return a.code < b.code;
             return a.src_idx < b.src_idx;
         }
