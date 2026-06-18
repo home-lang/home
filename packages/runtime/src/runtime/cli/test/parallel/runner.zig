@@ -1,3 +1,11 @@
+// Copied from bun/src/runtime/cli/test/parallel/runner.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see
+// ../../../../cli/LICENSE.bun.md.
+//
+// Rewrites:
+//   - @import("bun") → @import("home")
+//   - bun.* → home_rt.* namespace references
+
 //! Coordinator and worker entry points: `runAsCoordinator` (sets up the
 //! `Coordinator`, sorts/partitions files, drives the loop, merges fragments)
 //! and `runAsWorker` (the `--test-worker` side that reads framed commands
@@ -24,8 +32,8 @@ pub fn runAsCoordinator(
     if (K <= 1) {
         // Jest sets JEST_WORKER_ID=1 even with --maxWorkers=1; match that so
         // tests can rely on the var whenever --parallel is passed.
-        bun.handleOom(vm.transpiler.env.map.put("JEST_WORKER_ID", "1"));
-        bun.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_ID", "1"));
+        home_rt.handleOom(vm.transpiler.env.map.put("JEST_WORKER_ID", "1"));
+        home_rt.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_ID", "1"));
         TestCommand.runAllTests(reporter, vm, files, allocator);
         return false;
     }
@@ -37,24 +45,24 @@ pub fn runAsCoordinator(
     // Workers' stderr is a pipe; have them format with ANSI when we will be
     // rendering to a color terminal so streamed lines match serial output.
     if (Output.enable_ansi_colors_stderr) {
-        bun.handleOom(vm.transpiler.env.map.put("FORCE_COLOR", "1"));
+        home_rt.handleOom(vm.transpiler.env.map.put("FORCE_COLOR", "1"));
     }
-    defer if (worker_tmpdir) |d| bun.FD.cwd().deleteTree(d) catch {};
+    defer if (worker_tmpdir) |d| home_rt.FD.cwd().deleteTree(d) catch {};
     if (ctx.test_options.reporters.junit or coverage_opts.enabled) {
         const dir = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/bun-test-worker-{d}", .{
-            bun.fs.FileSystem.RealFS.getDefaultTempDir(),
-            if (bun.Environment.isWindows) std.os.windows.GetCurrentProcessId() else std.c.getpid(),
+            home_rt.fs.FileSystem.RealFS.getDefaultTempDir(),
+            if (home_rt.Environment.isWindows) std.os.windows.GetCurrentProcessId() else std.c.getpid(),
         }, 0);
-        bun.FD.cwd().makePath(u8, dir) catch |e| {
+        home_rt.FD.cwd().makePath(u8, dir) catch |e| {
             Output.err(e, "failed to create worker temp dir {s}", .{dir});
-            bun.Global.exit(1);
+            home_rt.Global.exit(1);
         };
         worker_tmpdir = dir;
-        bun.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_TMP", dir));
+        home_rt.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_TMP", dir));
         // Coordinator's own JunitReporter would otherwise produce an empty
         // document and overwrite the merged one in writeJUnitReportIfNeeded.
         if (reporter.reporters.junit) |jr| {
-            bun.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_JUNIT", "1"));
+            home_rt.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_JUNIT", "1"));
             jr.deinit();
             reporter.reporters.junit = null;
         }
@@ -67,8 +75,8 @@ pub fn runAsCoordinator(
     const envps = try arena.allocator().alloc([:null]?[*:0]const u8, K);
     for (envps, 0..) |*envp, i| {
         const id = try std.fmt.allocPrint(arena.allocator(), "{d}", .{i + 1});
-        bun.handleOom(vm.transpiler.env.map.put("JEST_WORKER_ID", id));
-        bun.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_ID", id));
+        home_rt.handleOom(vm.transpiler.env.map.put("JEST_WORKER_ID", id));
+        home_rt.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_ID", id));
         envp.* = try vm.transpiler.env.map.createNullDelimitedEnvMap(arena.allocator());
     }
     const argv = try buildWorkerArgv(arena.allocator(), ctx);
@@ -81,7 +89,7 @@ pub fn runAsCoordinator(
     if (!ctx.test_options.randomize) {
         std.sort.pdq(PathString, sorted, {}, struct {
             fn lt(_: void, a: PathString, b: PathString) bool {
-                return bun.strings.order(a.slice(), b.slice()) == .lt;
+                return home_rt.strings.order(a.slice(), b.slice()) == .lt;
             }
         }.lt);
     }
@@ -92,7 +100,7 @@ pub fn runAsCoordinator(
         .vm = vm,
         .reporter = reporter,
         .files = sorted,
-        .cwd = bun.fs.FileSystem.instance.top_level_dir,
+        .cwd = home_rt.fs.FileSystem.instance.top_level_dir,
         .argv = argv,
         .envps = envps,
         .workers = workers,
@@ -156,7 +164,7 @@ fn buildWorkerArgv(arena: std.mem.Allocator, ctx: Command.Context) ![:null]?[*:0
         }
     }.f;
 
-    try argv.append(arena, (bun.selfExePath() catch return error.SelfExePathFailed).ptr);
+    try argv.append(arena, (home_rt.selfExePath() catch return error.SelfExePathFailed).ptr);
     try argv.append(arena, "test");
     try argv.append(arena, "--test-worker");
     try argv.append(arena, "--isolate");
@@ -276,7 +284,7 @@ const WorkerCommands = struct {
             .run => {
                 this.pending_idx = rd.u32_();
                 this.pending_path.clearRetainingCapacity();
-                bun.handleOom(this.pending_path.appendSlice(bun.default_allocator, rd.str()));
+                home_rt.handleOom(this.pending_path.appendSlice(home_rt.default_allocator, rd.str()));
             },
             .shutdown => this.done = true,
             else => {},
@@ -297,7 +305,7 @@ pub fn runAsWorker(
     vm.test_isolation_enabled = true;
     vm.auto_killer.enabled = true;
 
-    var arena = bun.MimallocArena.init();
+    var arena = home_rt.MimallocArena.init();
     vm.eventLoop().ensureWaker();
     vm.arena = &arena;
     vm.allocator = arena.allocator();
@@ -315,7 +323,7 @@ pub fn runAsWorker(
         pub fn begin(self: *@This()) void {
             if (!self.cmds.channel.adopt(self.vm, .fromUV(3))) {
                 Output.prettyErrorln("<red>error<r>: test worker failed to adopt IPC fd", .{});
-                bun.Global.exit(1);
+                home_rt.Global.exit(1);
             }
             worker_cmds = &self.cmds;
 
@@ -375,7 +383,7 @@ pub fn runAsWorker(
         if (!loop.cmds.channel.hasPendingWrites() or loop.cmds.channel.done) break;
         vm.eventLoop().autoTick();
     }
-    bun.Global.exit(0);
+    home_rt.Global.exit(0);
 }
 
 fn workerFlushAggregates(reporter: *CommandLineReporter, vm: *jsc.VirtualMachine, ctx: Command.Context, worker_tmp: ?[]const u8, cmds: *WorkerCommands) void {
@@ -398,7 +406,7 @@ fn workerFlushAggregates(reporter: *CommandLineReporter, vm: *jsc.VirtualMachine
         else
             @intCast(std.c.getpid());
         if (reporter.reporters.junit) |junit| {
-            const path = bun.handleOom(std.fmt.allocPrintSentinel(bun.default_allocator, "{s}/w{d}.xml", .{ dir, id }, 0));
+            const path = home_rt.handleOom(std.fmt.allocPrintSentinel(home_rt.default_allocator, "{s}/w{d}.xml", .{ dir, id }, 0));
             if (junit.current_file.len > 0) junit.endTestSuite() catch {};
             if (junit.writeToFile(path)) |_| {
                 worker_frame.begin(.junit_file);
@@ -409,7 +417,7 @@ fn workerFlushAggregates(reporter: *CommandLineReporter, vm: *jsc.VirtualMachine
             }
         }
         if (ctx.test_options.coverage.enabled) {
-            const path = bun.handleOom(std.fmt.allocPrintSentinel(bun.default_allocator, "{s}/cov{d}.lcov", .{ dir, id }, 0));
+            const path = home_rt.handleOom(std.fmt.allocPrintSentinel(home_rt.default_allocator, "{s}/cov{d}.lcov", .{ dir, id }, 0));
             if (reporter.writeLcovOnly(vm, &ctx.test_options.coverage, path)) |_| {
                 worker_frame.begin(.coverage_file);
                 worker_frame.str(path);
@@ -450,8 +458,14 @@ const test_command = @import("../../test_command.zig");
 const CommandLineReporter = test_command.CommandLineReporter;
 const TestCommand = test_command.TestCommand;
 
-const bun = @import("bun");
-const Environment = bun.Environment;
-const Output = bun.Output;
-const PathString = bun.PathString;
-const jsc = bun.jsc;
+const home_rt = @import("home");
+const Environment = home_rt.Environment;
+const Output = home_rt.Output;
+const PathString = home_rt.PathString;
+const jsc = home_rt.jsc;
+
+test "parallel runner exposes coordinator and worker entrypoints" {
+    try std.testing.expect(@hasDecl(@This(), "runAsCoordinator"));
+    try std.testing.expect(@hasDecl(@This(), "runAsWorker"));
+    try std.testing.expect(@hasDecl(@This(), "workerEmitTestDone"));
+}
