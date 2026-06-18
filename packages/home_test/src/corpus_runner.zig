@@ -1291,6 +1291,7 @@ const harness_prelude =
     \\  const text = String(resolvedOverlayPath);
     \\  const candidates = [text];
     \\  if (!text.startsWith("/") && !text.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + text);
+    \\  if (text.startsWith("test/")) candidates.push("packages/runtime/test/bun-corpus/" + text.slice("test/".length));
     \\  const upstreamSrcIndex = text.indexOf("src/runtime/");
     \\  if (upstreamSrcIndex >= 0) candidates.push("packages/runtime/upstream/" + text.slice(upstreamSrcIndex));
     \\  for (const candidate of candidates) {
