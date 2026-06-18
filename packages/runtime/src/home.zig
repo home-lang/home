@@ -3419,6 +3419,7 @@ pub const runtime = struct {
         pub const filter_arg = @import("runtime/cli/filter_arg.zig");
         pub const add_command = @import("runtime/cli/add_command.zig");
         pub const remove_command = @import("runtime/cli/remove_command.zig");
+        pub const update_command = @import("runtime/cli/update_command.zig");
         pub const patch_command = @import("runtime/cli/patch_command.zig");
         pub const patch_commit_command = @import("runtime/cli/patch_commit_command.zig");
         // Wave-26 grinder (2026-05-19) — `which-npm-client` result
@@ -6079,6 +6080,7 @@ test "home_rt: runtime cli parked helper surfaces compile" {
     try std.testing.expect(@hasDecl(runtime_cli.filter_arg, "FilterSet"));
     try std.testing.expect(@hasDecl(runtime_cli.add_command, "AddCommand"));
     try std.testing.expect(@hasDecl(runtime_cli.remove_command, "RemoveCommand"));
+    try std.testing.expect(@hasDecl(runtime_cli.update_command, "UpdateCommand"));
     try std.testing.expect(@hasDecl(runtime_cli.patch_command, "PatchCommand"));
     try std.testing.expect(@hasDecl(runtime_cli.patch_commit_command, "PatchCommitCommand"));
 }
@@ -6246,6 +6248,7 @@ test {
     _ = @import("runtime/cli/filter_arg.zig");
     _ = @import("runtime/cli/add_command.zig");
     _ = @import("runtime/cli/remove_command.zig");
+    _ = @import("runtime/cli/update_command.zig");
     _ = @import("runtime/cli/patch_command.zig");
     _ = @import("runtime/cli/patch_commit_command.zig");
     _ = @import("runtime/cli/list-of-yarn-commands.zig");
