@@ -23,11 +23,12 @@ the local status after the import rewrite.
 | `patch_command.zig` | 17 | 2 | **clean** | thin `PackageManager.updatePackageJSONAndInstallCatchError(.patch)` wrapper |
 | `patch_commit_command.zig` | 11 | 2 | **clean** | thin `PackageManager.updatePackageJSONAndInstallCatchError(.@"patch-commit")` wrapper |
 | `pm_why_command.zig` | 12 | 2 | **clean** | thin `WhyCommand.execFromPm` wrapper |
+| `scan_command.zig` | 76 | 2 | **clean** | `PackageManager` + `security_scanner` lockfile scan wrapper |
 | `exec_command.zig` | 46 | 9 | blocked | `home_rt.Transpiler`, `home_rt.jsc.MiniEventLoop`, `home_rt.shell.Interpreter`, `home_rt.path.join`, `home_rt.sys.getcwd` (Phase 12.3 + 12.6) |
 | `add_completions.zig` | 105 | 2 | blocked (auto-gen) | `home_rt.zstd` (compressed completions blob — needs zstd substrate) |
 | `Arguments.zig` | 1744 | 62 | blocked | `home_rt.options.*`, `home_rt.api.*`, `home_rt.allocators.*`, ... (the full bundler/runtime arg-parser dependency graph) |
 
-47 cli files total (33 129 LOC upstream); 13 clean + 3 documented-blocked rows
+47 cli files total (33 129 LOC upstream); 14 clean + 3 documented-blocked rows
 above. The other ~32 follow the same pattern — most are thin shells over
 `PackageManager` / `Command` / JSC.
 

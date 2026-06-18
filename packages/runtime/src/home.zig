@@ -3423,6 +3423,7 @@ pub const runtime = struct {
         pub const patch_command = @import("runtime/cli/patch_command.zig");
         pub const patch_commit_command = @import("runtime/cli/patch_commit_command.zig");
         pub const pm_why_command = @import("runtime/cli/pm_why_command.zig");
+        pub const scan_command = @import("runtime/cli/scan_command.zig");
         // Wave-26 grinder (2026-05-19) — `which-npm-client` result
         // descriptor (npm client `bin` path + `Tag` enum). Pure data
         // — upstream `@import("bun")` was unused.
@@ -6085,6 +6086,7 @@ test "home_rt: runtime cli parked helper surfaces compile" {
     try std.testing.expect(@hasDecl(runtime_cli.patch_command, "PatchCommand"));
     try std.testing.expect(@hasDecl(runtime_cli.patch_commit_command, "PatchCommitCommand"));
     try std.testing.expect(@hasDecl(runtime_cli.pm_why_command, "PmWhyCommand"));
+    try std.testing.expect(@hasDecl(runtime_cli.scan_command, "ScanCommand"));
 }
 
 test "home_rt: Environment flags exist" {
@@ -6254,6 +6256,7 @@ test {
     _ = @import("runtime/cli/patch_command.zig");
     _ = @import("runtime/cli/patch_commit_command.zig");
     _ = @import("runtime/cli/pm_why_command.zig");
+    _ = @import("runtime/cli/scan_command.zig");
     _ = @import("runtime/cli/list-of-yarn-commands.zig");
     _ = @import("runtime/cli/test/ParallelRunner.zig");
     _ = @import("runtime/cli/test/parallel/Channel.zig");

@@ -1,3 +1,11 @@
+// Copied from bun/src/runtime/cli/scan_command.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
+//
+// Rewrites:
+//   - @import("bun") → @import("home")
+//   - bun.Global → home_rt.Global
+//   - bun.Output → home_rt.Output
+
 pub const ScanCommand = struct {
     pub fn exec(ctx: Command.Context) !void {
         const cli = try PackageManager.CommandLineArguments.parse(ctx.allocator, .scan);
@@ -71,6 +79,13 @@ const security_scanner = @import("../../install/PackageManager/security_scanner.
 const Command = @import("./cli.zig").Command;
 const PackageManager = @import("../../install/install.zig").PackageManager;
 
-const bun = @import("bun");
-const Global = bun.Global;
-const Output = bun.Output;
+const home_rt = @import("home");
+const std = @import("std");
+
+const Global = home_rt.Global;
+const Output = home_rt.Output;
+
+test "ScanCommand exposes the upstream exec shape" {
+    try std.testing.expect(@hasDecl(ScanCommand, "exec"));
+    try std.testing.expect(@hasDecl(ScanCommand, "execWithManager"));
+}
