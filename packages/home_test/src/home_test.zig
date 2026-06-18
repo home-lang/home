@@ -11,7 +11,7 @@
 //! ## Status
 //!
 //! This file is the *facade*. The vendored sources under
-//! `src/bun/` do **not** compile yet: every file references
+//! `src/bun/` do **not** compile yet: most files still reference
 //! `@import("bun")` (Bun's stdlib aggregator), which doesn't exist
 //! here. The adaptation plan lives in `src/PORTING_STATUS.md`.
 //!
