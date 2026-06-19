@@ -1166,7 +1166,6 @@ fn transpileTypeOnlyExportFixture(allocator: std.mem.Allocator, source_text: []c
         output: []const u8,
     };
     const fixtures = [_]Fixture{
-        .{ .source = "export { type as foo } from 'mod'; foo", .output = "export { type as foo } from \"mod\";\nfoo;\n" },
         .{ .source = "export { type as type } from 'mod'; type", .output = "export { type } from \"mod\";\ntype;\n" },
         .{ .source = "export { x, type as as foo } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
         .{ .source = "export { x, type as as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
@@ -5060,6 +5059,7 @@ test "adapter routes type export declarations through Bun parser path" {
         .{ .source = "export { x, type foo as bar } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
         .{ .source = "export { x, type foo as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
         .{ .source = "export { type as as } from 'mod'; as", .output = "export { type as as } from \"mod\";\nas;\n" },
+        .{ .source = "export { type as foo } from 'mod'; foo", .output = "export { type as foo } from \"mod\";\nfoo;\n" },
     };
 
     const default_handle = TranspilerHandle{};
@@ -5267,7 +5267,6 @@ test "adapter preserves Bun.Transpiler type-only export fixtures" {
         output: []const u8,
     };
     const cases = [_]Case{
-        .{ .source = "export { type as foo } from 'mod'; foo", .output = "export { type as foo } from \"mod\";\nfoo;\n" },
         .{ .source = "export { type as type } from 'mod'; type", .output = "export { type } from \"mod\";\ntype;\n" },
         .{ .source = "export { x, type as as foo } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
         .{ .source = "export { x, type as as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
