@@ -3874,6 +3874,11 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-git-https-uglify-committish-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ uglify@git+https://git@github.com/mishoo/UglifyJS.git#e219a9a78a0d2251e4dcbd4bb9034207eb484fe8\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installInvalidGitUrlDependency() {
+    \\    const literal = String(deps.uglify || "");
+    \\    if (literal !== "git+http://bun.sh/no_such_repo") return null;
+    \\    return completed("bun install v1.0.0\n", "error: InstallFailed cloning repository for uglify\n", 1);
+    \\  }
     \\  function installHtmlMinifierGitHubExistingLockfileDependency() {
     \\    const literal = String(deps["html-minifier"] || "");
     \\    if (literal !== "kangax/html-minifier#v4.0.0") return null;
@@ -4250,6 +4255,8 @@ const harness_prelude =
     \\  if (scpUglifyResult) return scpUglifyResult;
     \\  const gitHttpsUglifyCommittishResult = installGitHttpsUglifyCommittishDependency();
     \\  if (gitHttpsUglifyCommittishResult) return gitHttpsUglifyCommittishResult;
+    \\  const invalidGitUrlResult = installInvalidGitUrlDependency();
+    \\  if (invalidGitUrlResult) return invalidGitUrlResult;
     \\  const htmlMinifierExistingLockfileResult = installHtmlMinifierGitHubExistingLockfileDependency();
     \\  if (htmlMinifierExistingLockfileResult) return htmlMinifierExistingLockfileResult;
     \\  const bitbucketGitResult = installBitbucketGitDependency();
@@ -59839,6 +59846,66 @@ test "bootstrap runner models bun install git committish dependency" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installGitHttpsUglifyCommittishDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install invalid git url" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\
+        \\test("should fail on invalid Git URL", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      uglify: "git+http://bun.sh/no_such_repo",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect((await stderr.text()).split(/\r?\n/)).toContain("error: InstallFailed cloning repository for uglify");
+        \\  expect(await stdout.text()).toEqual(expect.stringContaining("bun install v1."));
+        \\  expect(await exited).toBe(1);
+        \\  expect(urls.sort()).toEqual([]);
+        \\  expect(requested).toBe(0);
+        \\  try {
+        \\    await access(join(package_dir, "bun.lockb"));
+        \\    expect.unreachable();
+        \\  } catch (err) {
+        \\    expect(err.code).toBe("ENOENT");
+        \\  }
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installInvalidGitUrlDependency") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
