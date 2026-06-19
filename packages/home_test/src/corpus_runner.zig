@@ -5429,6 +5429,28 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-native-binlink-lock");
     \\  return completed("bun install v1.0.0\n\n1 package installed\n", "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_bun_install_pathname_trailing_slash_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-pathname-trailing-slash.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const bunfig = String(__home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "");
+    \\  const registryMatch = bunfig.match(/registry\s*=\s*"([^"]+)"/);
+    \\  const registry = registryMatch ? registryMatch[1] : "http://localhost:43000/";
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const depName = Object.keys(deps).sort()[0] || "react";
+    \\  let url;
+    \\  try {
+    \\    url = new URL(registry);
+    \\    url.pathname = (url.pathname.replace(/\/+$/, "") || "") + "/" + String(depName).replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
+    \\  } catch (error) {
+    \\    url = new URL("http://localhost:43000/" + encodeURIComponent(depName));
+    \\  }
+    \\  const handle = globalThis.__home_serve_handles_by_origin[String(url.origin)] || globalThis.__home_serve_handles_by_origin["http://localhost:" + String(url.port)] || globalThis.__home_serve_handles_by_origin["http://127.0.0.1:" + String(url.port)];
+    \\  if (handle && !handle.stopped && typeof handle.fetch === "function") handle.fetch(new Request(url.href));
+    \\  return __home_spawn_completed("", "", 1);
+    \\}
     \\function __home_spawn_bun_install_patch_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-patch.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6949,6 +6971,8 @@ const harness_prelude =
     \\  if (bunInstallCpuOsFixture) return bunInstallCpuOsFixture;
     \\  const bunInstallNativeBinlinkFixture = __home_spawn_bun_install_native_binlink_fixture(options);
     \\  if (bunInstallNativeBinlinkFixture) return bunInstallNativeBinlinkFixture;
+    \\  const bunInstallPathnameTrailingSlashFixture = __home_spawn_bun_install_pathname_trailing_slash_fixture(options);
+    \\  if (bunInstallPathnameTrailingSlashFixture) return bunInstallPathnameTrailingSlashFixture;
     \\  const bunInstallPatchFixture = __home_spawn_bun_install_patch_fixture(options);
     \\  if (bunInstallPatchFixture) return bunInstallPatchFixture;
     \\  const bunRunBunfigFixture = __home_spawn_bun_run_bunfig_fixture(options);
@@ -53072,6 +53096,31 @@ test "bootstrap runner mirrors bun install patch corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun install pathname trailing slash corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-pathname-trailing-slash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-pathname-trailing-slash.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_pathname_trailing_slash_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
