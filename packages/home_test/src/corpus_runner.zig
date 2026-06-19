@@ -3802,6 +3802,14 @@ const harness_prelude =
     \\    const handler = __home_dummy_registry_legacy_handler;
     \\    if (handler && Array.isArray(handler.__home_urls)) handler.__home_urls.push(url);
     \\  }
+    \\  function installInvalidNetworkConcurrency() {
+    \\    const flagIndex = cmd.findIndex(part => String(part) === "--network-concurrency" || String(part).startsWith("--network-concurrency="));
+    \\    if (flagIndex < 0) return null;
+    \\    const raw = String(cmd[flagIndex]).includes("=") ? String(cmd[flagIndex]).slice(String(cmd[flagIndex]).indexOf("=") + 1) : String(cmd[flagIndex + 1] || "");
+    \\    const value = Number(raw);
+    \\    if (raw !== "" && Number.isInteger(value) && value >= 0 && value <= 65535) return null;
+    \\    return completed("bun install v1.0.0\n", "Expected --network-concurrency to be a number between 0 and 65535\n", 1);
+    \\  }
     \\  function installFrozenLockfileMismatch() {
     \\    const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
     \\    const frozen = cmd.includes("--frozen-lockfile") || cmd.includes("ci") || /(?:^|\n)\s*frozenLockfile\s*=\s*true\b/.test(bunfig);
@@ -4315,6 +4323,8 @@ const harness_prelude =
     \\    __home_write_installed_package(cwd, "uses-what-bin", { name: "uses-what-bin", version: "1.0.0" });
     \\  }
     \\  const registryBase = "http://localhost:4873";
+    \\  const invalidNetworkConcurrencyResult = installInvalidNetworkConcurrency();
+    \\  if (invalidNetworkConcurrencyResult) return invalidNetworkConcurrencyResult;
     \\  if (Object.prototype.hasOwnProperty.call(deps, "baz") && Object.prototype.hasOwnProperty.call(optionalDeps, "baz")) {
     \\    return installBaz(String(optionalDeps.baz || "0.0.3"), "registry-optional-precedence-lockb");
     \\  }
@@ -57081,6 +57091,65 @@ test "bootstrap runner models bun install caret one dependency miss" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install invalid network concurrency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { createTestContext, destroyTestContext, dummyRegistryForContext, setContextHandler } from "./dummy.registry.js";
+        \\
+        \\for (const input of ["abcdef", "65537", "-1"]) {
+        \\  test(`bun install --network-concurrency=${input} fails`, async () => {
+        \\    const ctx = await createTestContext({ linker: "hoisted" });
+        \\    try {
+        \\      const urls = [];
+        \\      setContextHandler(ctx, dummyRegistryForContext(ctx, urls));
+        \\      await writeFile(join(ctx.package_dir, "package.json"), JSON.stringify({
+        \\        name: "foo",
+        \\        version: "0.0.1",
+        \\        dependencies: {
+        \\          bar: "^1",
+        \\        },
+        \\      }));
+        \\      const { stderr, exited } = spawn({
+        \\        cmd: [bunExe(), "install", "--network-concurrency", input],
+        \\        cwd: ctx.package_dir,
+        \\        stdout: "ignore",
+        \\        stdin: "ignore",
+        \\        stderr: "pipe",
+        \\        env,
+        \\      });
+        \\      expect(await stderr.text()).toContain("Expected --network-concurrency to be a number between 0 and 65535");
+        \\      expect(await exited).toBe(1);
+        \\      expect(urls).toEqual([]);
+        \\      expect(ctx.requested).toBe(0);
+        \\    } finally {
+        \\      destroyTestContext(ctx);
+        \\    }
+        \\  });
+        \\}
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installInvalidNetworkConcurrency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install caret zero dot one dependency miss" {
