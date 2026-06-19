@@ -1345,6 +1345,23 @@ pub const Engine = struct {
             }
             return self.interner.internIntersection(members.items) catch t;
         }
+        if (flags.is_template_literal) {
+            if (payload_idx >= self.interner.pool.template_literal_payloads.items.len) return t;
+            const texts = self.interner.templateLiteralTexts(t);
+            const source_parts = self.interner.templateLiteralTypes(t);
+            const snapshot = try self.interner.gpa.dupe(TypeId, source_parts);
+            defer self.interner.gpa.free(snapshot);
+            var parts: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer parts.deinit(self.interner.gpa);
+            var changed = false;
+            for (snapshot) |part| {
+                const subbed = self.validOrUnknown(try self.substituteTpDeepLimit(part, map, depth + 1));
+                if (subbed != part) changed = true;
+                try parts.append(self.interner.gpa, subbed);
+            }
+            if (!changed) return t;
+            return self.interner.internTemplateLiteral(texts, parts.items) catch t;
+        }
         if (flags.is_object_type) {
             if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;
             const source_members = self.interner.objectMembers(t);
