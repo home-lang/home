@@ -1087,7 +1087,6 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileImportPrinterFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileClassStaticBlockFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnarySimplificationFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileCommaOperatorFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileTemplateNumericProductFixture(allocator, source_text)) |fixture_output| return fixture_output;
@@ -1155,22 +1154,6 @@ fn transpileUnicodeStringArrayFixture(allocator: std.mem.Allocator, handle: *con
             .bun => try allocator.dupe(u8, "let list = [\"\\u2022\", \"-\", \"\\u25E6\", \"\\u25AA\", \"\\u25AB\"];\n"),
             else => try allocator.dupe(u8, "let list = [\"•\", \"-\", \"◦\", \"▪\", \"▫\"];\n"),
         };
-    }
-    return null;
-}
-
-fn transpileClassStaticBlockFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const Fixture = struct {
-        source: []const u8,
-        output: []const u8,
-    };
-    const fixtures = [_]Fixture{
-        .{ .source = "class Foo { static {} }", .output = "class Foo {\n  static {}\n}\n" },
-        .{ .source = "class Foo { static {} x = 1 }", .output = "class Foo {\n  static {}\n  x = 1;\n}\n" },
-        .{ .source = "class Foo { static { this.foo() } }", .output = "class Foo {\n  static {\n    this.foo();\n  }\n}\n" },
-    };
-    for (fixtures) |fixture| {
-        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
     }
     return null;
 }
@@ -5058,6 +5041,27 @@ test "adapter routes type export declarations through Bun parser path" {
     }
 }
 
+test "adapter routes class static blocks through Bun parser path" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "class Foo { static {} }", .output = "class Foo {\n  static {}\n}\n" },
+        .{ .source = "class Foo { static {} x = 1 }", .output = "class Foo {\n  static {}\n  x = 1;\n}\n" },
+        .{ .source = "class Foo { static { this.foo() } }", .output = "class Foo {\n  static {\n    this.foo();\n  }\n}\n" },
+    };
+
+    const default_handle = TranspilerHandle{};
+    for (cases) |case| {
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
+
+        const output = try transpileSource(std.testing.allocator, &default_handle, case.source, .ts);
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
 test "adapter preserves Bun.Transpiler async conditional type fixture" {
     const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, "a as any ? async () => b : c;")).?;
     defer std.testing.allocator.free(output);
@@ -5247,19 +5251,7 @@ test "adapter preserves UTF-8 string array characters like Bun.Transpiler" {
     try std.testing.expectEqualStrings("let list = [\"\\u2022\", \"-\", \"\\u25E6\", \"\\u25AA\", \"\\u25AB\"];\n", bun_output);
 }
 
-test "adapter preserves Bun.Transpiler class static block fixtures" {
-    const simple = (try transpileEarlyTranspilerFixture(std.testing.allocator, "class Foo { static {} }")).?;
-    defer std.testing.allocator.free(simple);
-    try std.testing.expectEqualStrings("class Foo {\n  static {}\n}\n", simple);
-
-    const field = (try transpileEarlyTranspilerFixture(std.testing.allocator, "class Foo { static {} x = 1 }")).?;
-    defer std.testing.allocator.free(field);
-    try std.testing.expectEqualStrings("class Foo {\n  static {}\n  x = 1;\n}\n", field);
-
-    const call = (try transpileEarlyTranspilerFixture(std.testing.allocator, "class Foo { static { this.foo() } }")).?;
-    defer std.testing.allocator.free(call);
-    try std.testing.expectEqualStrings("class Foo {\n  static {\n    this.foo();\n  }\n}\n", call);
-
+test "adapter preserves Bun.Transpiler class static block diagnostics" {
     try std.testing.expectEqualStrings(
         "\"yield\" is a reserved word and cannot be used in strict mode",
         transpileParseErrorMessage("class Foo { static { yield } }").?,
