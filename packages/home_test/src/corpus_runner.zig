@@ -3109,13 +3109,28 @@ const harness_prelude =
     \\      return completed("basic-1", "1.0.0", "basic-1", "1.0.0", saved);
     \\    }
     \\  }
+    \\  if (names.length === 1 && deps["one-range-dep"] === "1.0.0") {
+    \\    __home_write_installed_package(cwd, "one-range-dep", { name: "one-range-dep", version: "1.0.0", dependencies: { "no-deps": "^1.0.0" } });
+    \\    __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.1.0" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-basic-lockb-one-range-dep-transitive\n");
+    \\    const out = "bun install v1.0.0\n\n+ one-range-dep@1.0.0\n\n2 packages installed";
+    \\    return __home_spawn_completed(out, "Saved lockfile\n", 0);
+    \\  }
     \\  if (Object.prototype.hasOwnProperty.call(deps, "one-range-dep") && deps["one-range-dep"] === "1.0.0" && deps["no-deps"] === "1.0.0") {
-    \\    const saved = !__home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\    const lockPath = __home_build_join(cwd, "bun.lockb");
+    \\    const lockText = __home_build_read_text(lockPath) || "";
+    \\    const hasLockfile = __home_build_file_exists(lockPath);
+    \\    const hasNodeModules = __home_fs_dir_exists(__home_build_join(cwd, "node_modules"));
     \\    __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.0.0" });
     \\    __home_write_installed_package(cwd, "one-range-dep", { name: "one-range-dep", version: "1.0.0", dependencies: { "no-deps": "^1.0.0" } });
-    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-basic-lockb-one-range-dep\n");
+    \\    if (hasLockfile && hasNodeModules) {
+    \\      __home_write_installed_package(__home_package_path(cwd, "one-range-dep"), "no-deps", { name: "no-deps", version: "1.1.0" });
+    \\      __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-basic-lockb-one-range-dep-added-root\n");
+    \\      return __home_spawn_completed("bun install v1.0.0\n\n+ no-deps@1.0.0\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\    }
+    \\    __home_build_write_text(lockPath, "registry-basic-lockb-one-range-dep\n");
     \\    const out = "bun install v1.0.0\n\n+ no-deps@1.0.0\n+ one-range-dep@1.0.0\n\n2 packages installed";
-    \\    return __home_spawn_completed(out, saved ? "Saved lockfile\n" : "", 0);
+    \\    return __home_spawn_completed(hasLockfile && lockText.includes("added-root") ? "bun install v1.0.0\n\n+ no-deps@1.0.0\n+ one-range-dep@1.0.0\n\n3 packages installed" : out, hasLockfile ? "" : "Saved lockfile\n", 0);
     \\  }
     \\  if (Object.prototype.hasOwnProperty.call(deps, "peer-deps-fixed") && deps["peer-deps-fixed"] === "1.0.0" && Object.prototype.hasOwnProperty.call(deps, "no-deps")) {
     \\    const noDepsVersion = String(deps["no-deps"] || "");
@@ -54712,6 +54727,107 @@ test "bootstrap runner models bun install registry child peer upgrade" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "peer-deps-fixed") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry package added after install" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { rm, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, bunExe, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("package added after install keeps transitive dependency copy", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-package-added-after-install", {});
+        \\  const packageJson = join(packageDir, "package.json");
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "one-range-dep": "1.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  let { stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stdin: "pipe", stderr: "pipe", env });
+        \\  let err = await stderr.text();
+        \\  let out = await stdout.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ one-range-dep@1.0.0",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await file(join(packageDir, "node_modules", "no-deps", "package.json")).json()).toEqual({ name: "no-deps", version: "1.1.0" });
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "one-range-dep": "1.0.0",
+        \\      "no-deps": "1.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  ({ stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stdin: "pipe", stderr: "pipe", env }));
+        \\  err = await stderr.text();
+        \\  out = await stdout.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ no-deps@1.0.0",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await file(join(packageDir, "node_modules", "no-deps", "package.json")).json()).toEqual({ name: "no-deps", version: "1.0.0" });
+        \\  expect(await file(join(packageDir, "node_modules", "one-range-dep", "node_modules", "no-deps", "package.json")).json()).toEqual({ name: "no-deps", version: "1.1.0" });
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  ({ stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stdin: "pipe", stderr: "pipe", env }));
+        \\  err = await stderr.text();
+        \\  out = await stdout.text();
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ no-deps@1.0.0",
+        \\    "+ one-range-dep@1.0.0",
+        \\    "",
+        \\    "3 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "one-range-dep") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
