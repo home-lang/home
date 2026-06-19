@@ -1166,7 +1166,6 @@ fn transpileTypeOnlyExportFixture(allocator: std.mem.Allocator, source_text: []c
         output: []const u8,
     };
     const fixtures = [_]Fixture{
-        .{ .source = "export type {foo, bar as baz} from 'bar'", .output = "" },
         .{ .source = "export type {foo, bar as baz}", .output = "" },
         .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
         .{ .source = "export type {foo} from 'bar'\nx", .output = "x;\n" },
@@ -5053,14 +5052,20 @@ test "adapter routes TypeScript transforms through the native parser path" {
     try std.testing.expect(!shouldUseBunParserForTranspile("export function loader() {}", .jsx, &tree_shaking_handle));
 }
 
-test "adapter drops type-only conditional alias through Bun parser path" {
-    const source = "type Foo<T> = T extends infer U ? U : never;";
-    try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, source)) == null);
+test "adapter drops type-only declarations through Bun parser path" {
+    const cases = [_][]const u8{
+        "type Foo<T> = T extends infer U ? U : never;",
+        "export type {foo, bar as baz} from 'bar'",
+    };
 
     const default_handle = TranspilerHandle{};
-    const output = try transpileSource(std.testing.allocator, &default_handle, source, .ts);
-    defer std.testing.allocator.free(output);
-    try std.testing.expectEqualStrings("", output);
+    for (cases) |source| {
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, source)) == null);
+
+        const output = try transpileSource(std.testing.allocator, &default_handle, source, .ts);
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings("", output);
+    }
 }
 
 test "adapter preserves Bun.Transpiler async conditional type fixture" {
@@ -5258,7 +5263,6 @@ test "adapter preserves Bun.Transpiler type-only export fixtures" {
         output: []const u8,
     };
     const cases = [_]Case{
-        .{ .source = "export type {foo, bar as baz} from 'bar'", .output = "" },
         .{ .source = "export type {foo, bar as baz}", .output = "" },
         .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
         .{ .source = "export type {foo} from 'bar'\nx", .output = "x;\n" },
