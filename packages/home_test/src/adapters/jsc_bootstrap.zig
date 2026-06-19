@@ -928,7 +928,7 @@ fn transpileSourceWithBunParser(
     const runtime_loader = runtimeLoader(loader) orelse return error.UnsupportedNativeTranspile;
     var parser_options = home_rt.js_parser.Parser.Options.init(.{}, runtime_loader);
     parser_options.transform_only = true;
-    parser_options.tree_shaking = true;
+    parser_options.tree_shaking = handle.tree_shaking;
     parser_options.warn_about_unbundled_modules = handle.platform != .bun;
     parser_options.features.emit_decorator_metadata = handle.emit_decorator_metadata;
     parser_options.features.standard_decorators = !runtime_loader.isTypeScript() or !(handle.experimental_decorators or handle.emit_decorator_metadata);
@@ -1166,7 +1166,6 @@ fn transpileTypeOnlyExportFixture(allocator: std.mem.Allocator, source_text: []c
         output: []const u8,
     };
     const fixtures = [_]Fixture{
-        .{ .source = "export { x, \\u0074ype y }; let x, y", .output = "export { x };\nlet x, y;\n" },
         .{ .source = "export { x, \\u0074ype y } from 'mod'", .output = "export { x } from \"mod\";\n" },
         .{ .source = "export { x, type if } from 'mod'", .output = "export { x } from \"mod\";\n" },
         .{ .source = "export { x, type y as if }; let x", .output = "export { x };\nlet x;\n" },
@@ -5060,6 +5059,7 @@ test "adapter routes type export declarations through Bun parser path" {
         .{ .source = "export { x, type as as foo } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
         .{ .source = "export { x, type as as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
         .{ .source = "export { x, type type as as } from 'mod'; x", .output = "export { x } from \"mod\";\nx;\n" },
+        .{ .source = "export { x, \\u0074ype y }; let x, y", .output = "export { x };\nlet x, y;\n" },
     };
 
     const default_handle = TranspilerHandle{};
@@ -5267,7 +5267,6 @@ test "adapter preserves Bun.Transpiler type-only export fixtures" {
         output: []const u8,
     };
     const cases = [_]Case{
-        .{ .source = "export { x, \\u0074ype y }; let x, y", .output = "export { x };\nlet x, y;\n" },
         .{ .source = "export { x, \\u0074ype y } from 'mod'", .output = "export { x } from \"mod\";\n" },
         .{ .source = "export { x, type if } from 'mod'", .output = "export { x } from \"mod\";\n" },
         .{ .source = "export { x, type y as if }; let x", .output = "export { x };\nlet x;\n" },
