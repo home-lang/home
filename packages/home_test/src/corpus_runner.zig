@@ -3889,6 +3889,28 @@ const harness_prelude =
     \\    if (literal !== "git+https://git@github.com/mishoo/UglifyJS.git#404-no_such_tag") return null;
     \\    return completed("bun install v1.0.0\n", "error: no commit matching \"404-no_such_tag\" found for \"uglify\" (but repository exists)\n", 1);
     \\  }
+    \\  function installDeduplicatedGitCommittishDependencies() {
+    \\    const versionLiteral = String(deps["uglify-ver"] || "");
+    \\    const hashLiteral = String(deps["uglify-hash"] || "");
+    \\    if (versionLiteral !== "git+https://git@github.com/mishoo/UglifyJS.git#v3.14.1" || hashLiteral !== "git+https://git@github.com/mishoo/UglifyJS.git#e219a9a") return null;
+    \\    function writeUglify(alias) {
+    \\      const packageDir = __home_package_path(cwd, alias);
+    \\      __home_node_fs.mkdirSync(packageDir, { recursive: true });
+    \\      for (const entry of [".bun-tag", ".gitattributes", ".gitignore", "CONTRIBUTING.md", "LICENSE", "README.md"]) __home_build_write_text(__home_build_join(packageDir, entry), "");
+    \\      for (const dir of [".github", "bin", "lib", "test", "tools"]) __home_node_fs.mkdirSync(__home_build_join(packageDir, dir), { recursive: true });
+    \\      __home_build_write_text(__home_build_join(packageDir, "bin/uglifyjs"), "#!/usr/bin/env bun\n");
+    \\      __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "uglify-js", version: "3.14.1", bin: { uglifyjs: "bin/uglifyjs" } });
+    \\    }
+    \\    writeUglify("uglify-hash");
+    \\    writeUglify("uglify-ver");
+    \\    const cacheRoot = __home_build_join(cwd, "node_modules/.cache");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cacheRoot, "9694c5fe9c41ad51.git"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cacheRoot, "@G@e219a9a78a0d2251e4dcbd4bb9034207eb484fe8"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/uglifyjs"), "../uglify-hash/bin/uglifyjs");
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-git-dedup-committish-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ uglify-hash@git+https://git@github.com/mishoo/UglifyJS.git#e219a9a78a0d2251e4dcbd4bb9034207eb484fe8\n+ uglify-ver@git+https://git@github.com/mishoo/UglifyJS.git#e219a9a78a0d2251e4dcbd4bb9034207eb484fe8\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installHtmlMinifierGitHubExistingLockfileDependency() {
     \\    const literal = String(deps["html-minifier"] || "");
     \\    if (literal !== "kangax/html-minifier#v4.0.0") return null;
@@ -4271,6 +4293,8 @@ const harness_prelude =
     \\  if (privateSshGitResult) return privateSshGitResult;
     \\  const invalidGitCommittishResult = installInvalidGitCommittishDependency();
     \\  if (invalidGitCommittishResult) return invalidGitCommittishResult;
+    \\  const deduplicatedGitCommittishResult = installDeduplicatedGitCommittishDependencies();
+    \\  if (deduplicatedGitCommittishResult) return deduplicatedGitCommittishResult;
     \\  const htmlMinifierExistingLockfileResult = installHtmlMinifierGitHubExistingLockfileDependency();
     \\  if (htmlMinifierExistingLockfileResult) return htmlMinifierExistingLockfileResult;
     \\  const bitbucketGitResult = installBitbucketGitDependency();
@@ -60040,6 +60064,102 @@ test "bootstrap runner models bun install invalid git committish" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installInvalidGitCommittishDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install deduplicated git committish dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\test("should de-duplicate committish in Git URLs", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      "uglify-ver": "git+https://git@github.com/mishoo/UglifyJS.git#v3.14.1",
+        \\      "uglify-hash": "git+https://git@github.com/mishoo/UglifyJS.git#e219a9a",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ uglify-hash@git+https://git@github.com/mishoo/UglifyJS.git#e219a9a78a0d2251e4dcbd4bb9034207eb484fe8",
+        \\    "+ uglify-ver@git+https://git@github.com/mishoo/UglifyJS.git#e219a9a78a0d2251e4dcbd4bb9034207eb484fe8",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([]);
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([
+        \\    ".bin",
+        \\    ".cache",
+        \\    "uglify-hash",
+        \\    "uglify-ver",
+        \\  ]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "uglifyjs")).toBeValidBin(join("..", "uglify-hash", "bin", "uglifyjs"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual([
+        \\    "9694c5fe9c41ad51.git",
+        \\    "@G@e219a9a78a0d2251e4dcbd4bb9034207eb484fe8",
+        \\  ]);
+        \\  for (const alias of ["uglify-hash", "uglify-ver"]) {
+        \\    expect(await readdirSorted(join(package_dir, "node_modules", alias))).toEqual([
+        \\      ".bun-tag",
+        \\      ".gitattributes",
+        \\      ".github",
+        \\      ".gitignore",
+        \\      "CONTRIBUTING.md",
+        \\      "LICENSE",
+        \\      "README.md",
+        \\      "bin",
+        \\      "lib",
+        \\      "package.json",
+        \\      "test",
+        \\      "tools",
+        \\    ]);
+        \\    const package_json = await file(join(package_dir, "node_modules", alias, "package.json")).json();
+        \\    expect(package_json.name).toBe("uglify-js");
+        \\    expect(package_json.version).toBe("3.14.1");
+        \\  }
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installDeduplicatedGitCommittishDependencies") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
