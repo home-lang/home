@@ -24284,7 +24284,32 @@ const harness_prelude =
     \\  if (result.error) return Promise.reject(result.error);
     \\  return Promise.resolve({ stdout: result.stdout, stderr: result.stderr });
     \\};
+    \\function __home_child_process_exec(command, options, callback) {
+    \\  if (typeof options === "function") {
+    \\    callback = options;
+    \\    options = {};
+    \\  }
+    \\  options = options || {};
+    \\  let result;
+    \\  try {
+    \\    result = { error: null, stdout: __home_child_process_run(String(command), process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", String(command)] : ["/bin/sh", "-c", String(command)], options, false), stderr: __home_child_process_exec_file_output("", options) };
+    \\  } catch (error) {
+    \\    result = { error, stdout: error && error.stdout !== undefined ? error.stdout : __home_child_process_exec_file_output("", options), stderr: error && error.stderr !== undefined ? error.stderr : __home_child_process_exec_file_output(error && error.message ? error.message + "\n" : "", options) };
+    \\  }
+    \\  if (typeof callback === "function") callback(result.error, result.stdout, result.stderr);
+    \\  return { pid: 0, kill() { return true; } };
+    \\}
+    \\__home_child_process_exec[__home_util_promisify_custom] = function(command, options) {
+    \\  options = options || {};
+    \\  try {
+    \\    const stdout = __home_child_process_run(String(command), process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", String(command)] : ["/bin/sh", "-c", String(command)], options, false);
+    \\    return Promise.resolve({ stdout, stderr: __home_child_process_exec_file_output("", options) });
+    \\  } catch (error) {
+    \\    return Promise.reject(error);
+    \\  }
+    \\};
     \\const __home_child_process = {
+    \\  exec: __home_child_process_exec,
     \\  execFile: __home_child_process_exec_file,
     \\  execFileSync(file, args, options) {
     \\    const extra = Array.isArray(args) ? args.map(String) : [];
@@ -34422,6 +34447,7 @@ fn corpusAllowsNoTests(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "internal/ban-words.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/console/console-table.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-preload-global-lifecycle-hook-preloaded.js") or
+        std.mem.eql(u8, relative_path, "cli/install/bun-install-proxy.test.ts") or
         std.mem.eql(u8, relative_path, "regression/issue/28632.test.ts");
 }
 
@@ -53121,6 +53147,33 @@ test "bootstrap runner mirrors bun install pathname trailing slash corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner loads docker-gated bun install proxy corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-proxy.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-proxy.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(prepared.fileSpec().allow_no_tests);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "exec: __home_child_process_exec") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
