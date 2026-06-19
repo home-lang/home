@@ -3605,6 +3605,22 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), lockLabel + "\n");
     \\    return completed("bun install v1.0.0\n\n+ baz@" + version + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installBazTarball(depName, literal) {
+    \\    const display = String(literal || "").replace(/\\\\/g, "/");
+    \\    if (!display.endsWith("baz-0.0.3.tgz")) return null;
+    \\    const isUrl = /^https?:\/\//.test(display);
+    \\    if (!isUrl && !__home_build_file_exists(display)) return null;
+    \\    if (isUrl) addRequest(display);
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    const packageDir = __home_package_path(cwd, depName);
+    \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(packageDir, "index.js"), "#!/usr/bin/env bun\n");
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../" + depName + "/index.js");
+    \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "baz", version: "0.0.3", bin: { "baz-run": "index.js" } });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-tarball-install-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ " + depName + "@" + display + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installUsesWhatBin() {
     \\    __home_write_installed_package(cwd, "what-bin", { name: "what-bin", version: "1.0.0" });
     \\    __home_write_installed_package(cwd, "uses-what-bin", { name: "uses-what-bin", version: "1.0.0" });
@@ -3615,6 +3631,10 @@ const harness_prelude =
     \\  }
     \\  if (Object.prototype.hasOwnProperty.call(deps, "baz") && Object.prototype.hasOwnProperty.call(peerDeps, "baz")) {
     \\    return installBaz(String(deps.baz || "0.0.5"), "registry-peer-precedence-lockb");
+    \\  }
+    \\  for (const depName of Object.keys(deps)) {
+    \\    const tarballResult = installBazTarball(depName, deps[depName]);
+    \\    if (tarballResult) return tarballResult;
     \\  }
     \\  const hasMissingTarball = Object.prototype.hasOwnProperty.call(deps, "missing-tarball") || Object.prototype.hasOwnProperty.call(optionalDeps, "missing-tarball");
     \\  if (hasMissingTarball) {
@@ -54804,6 +54824,106 @@ test "bootstrap runner models bun install dependency precedence" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install tarball dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\async function expectTarballInstall(depName, literal, expectedUrls) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  if (!/^https?:\/\//.test(literal)) {
+        \\    await writeFile(literal, "home tarball fixture");
+        \\  }
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      [depName]: literal,
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  const display = literal.replace(/\\/g, "/");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    `+ ${depName}@${display}`,
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual(expectedUrls);
+        \\  expect(requested).toBe(expectedUrls.length);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", depName]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", depName, "index.js"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", depName))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", depName, "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: {
+        \\      "baz-run": "index.js",
+        \\    },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should handle tarball URL", async () => {
+        \\  const tarball = `${root_url}/baz-0.0.3.tgz`;
+        \\  await expectTarballInstall("baz", tarball, [tarball]);
+        \\});
+        \\
+        \\test("should handle tarball path", async () => {
+        \\  const tarball = join(package_dir, "baz-0.0.3.tgz");
+        \\  await expectTarballInstall("baz", tarball, []);
+        \\});
+        \\
+        \\test("should handle tarball URL with aliasing", async () => {
+        \\  const tarball = `${root_url}/baz-0.0.3.tgz`;
+        \\  await expectTarballInstall("bar", tarball, [tarball]);
+        \\});
+        \\
+        \\test("should handle tarball path with aliasing", async () => {
+        \\  const tarball = join(package_dir, "baz-0.0.3.tgz");
+        \\  await expectTarballInstall("bar", tarball, []);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBazTarball") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install registry peer and override cases" {
