@@ -3598,12 +3598,31 @@ const harness_prelude =
     \\  } else {
     \\    for (const item of graph.workspaces) if (item.rel) linked.push({ name: String(item.pkg.name || ""), rel: item.rel, display: "" });
     \\  }
+    \\  const registryDeps = [];
+    \\  const registryDepSeen = Object.create(null);
+    \\  for (const item of graph.workspaces) {
+    \\    const workspaceDeps = item.pkg && item.pkg.dependencies && typeof item.pkg.dependencies === "object" ? item.pkg.dependencies : {};
+    \\    for (const depName of Object.keys(workspaceDeps)) {
+    \\      const literal = String(workspaceDeps[depName] || "");
+    \\      if (__home_workspace_dep_target(depName, literal, graph)) continue;
+    \\      if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(literal)) continue;
+    \\      const key = depName + "@" + literal;
+    \\      if (registryDepSeen[key]) continue;
+    \\      registryDepSeen[key] = true;
+    \\      registryDeps.push({ name: depName, version: literal });
+    \\    }
+    \\  }
     \\  if (!hadLock || hasQux || packageGraphChanged || hasLifecycleScripts) __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
     \\  for (const item of linked) {
     \\    const linkPath = __home_package_path(cwd, item.name);
     \\    __home_node_fs.mkdirSync(__home_build_dirname(linkPath), { recursive: true });
     \\    const relativeTarget = __home_build_relative(__home_build_dirname(linkPath), __home_build_join(cwd, item.rel)).replace(/\\/g, "/");
     \\    __home_fs_mark_symlink(relativeTarget, linkPath);
+    \\  }
+    \\  for (const dep of registryDeps) {
+    \\    addRegistryRequest("http://localhost:4873/" + dep.name);
+    \\    if (!hadLock) addRegistryRequest("http://localhost:4873/" + dep.name + "-" + dep.version + ".tgz");
+    \\    __home_write_installed_package(cwd, dep.name, { name: dep.name, version: dep.version });
     \\  }
     \\  if (hasQux) {
     \\    addRegistryRequest("http://localhost:4873/qux");
@@ -3630,7 +3649,7 @@ const harness_prelude =
     \\    }
     \\  }
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "workspace-basic-lockb\n");
-    \\  const count = linked.length + (hasQux ? 1 : 0);
+    \\  const count = linked.length + registryDeps.length + (hasQux ? 1 : 0);
     \\  const lines = ["bun install v1.0.0", ""];
     \\  if (workspaceSpecifier && linked.length === 1) lines.push("+ " + linked[0].name + "@" + linked[0].display, "");
     \\  if (hasQux) lines.push("+ qux@0.0.2", "");
@@ -56247,6 +56266,79 @@ test "bootstrap runner models bun install caret zero dot zero dot two dependency
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBarSemverSuccessDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install matching workspace dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, setHandler } from "./dummy.registry";
+        \\
+        \\test("should handle matching workspaces from dependencies", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.2.0": { as: "0.2.0" },
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    workspaces: ["packages/*"],
+        \\  }));
+        \\  await mkdir(join(package_dir, "packages", "pkg1"), { recursive: true });
+        \\  await mkdir(join(package_dir, "packages", "pkg2"), { recursive: true });
+        \\  await writeFile(join(package_dir, "packages", "pkg1", "package.json"), JSON.stringify({
+        \\    name: "pkg1",
+        \\    version: "0.2.0",
+        \\  }));
+        \\  await writeFile(join(package_dir, "packages", "pkg2", "package.json"), JSON.stringify({
+        \\    name: "pkg2",
+        \\    version: "0.2.0",
+        \\    dependencies: {
+        \\      moo: "0.2.0",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "3 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_workspace_basic_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
