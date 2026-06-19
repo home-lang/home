@@ -3568,6 +3568,7 @@ const harness_prelude =
     \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
     \\  if (String(deps.baz || "") === "~0.0.2" && graph.workspaces.some(item => String(item.pkg && item.pkg.name || "") === "bar" && String(item.pkg && item.pkg.dependencies && item.pkg.dependencies.moo || "") === "npm:baz")) return null;
     \\  if (String(deps.bar || "") === "npm:baz" && graph.workspaces.some(item => String(item.pkg && item.pkg.name || "") === "moo" && String(item.pkg && item.pkg.dependencies && item.pkg.dependencies.bar || "") === "0.0.2")) return null;
+    \\  if (String(deps.boba || "") === "npm:baz@0.0.5" && graph.workspaces.some(item => String(item.pkg && item.pkg.name || "") === "moo" && String(item.pkg && item.pkg.dependencies && item.pkg.dependencies.boba || "") === ">=0.0.3")) return null;
     \\  const hasQux = Object.prototype.hasOwnProperty.call(deps, "qux");
     \\  const workspaceSnapshot = JSON.stringify({
     \\    root: pkg,
@@ -3799,6 +3800,22 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-alias-name-collision-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ bar@0.0.3\n\n3 packages installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installBazAliasMatchingWorkspaceVersion() {
+    \\    if (String(deps.boba || "") !== "npm:baz@0.0.5") return null;
+    \\    const workspacePkg = __home_pkg_json(__home_build_join(cwd, "moo", "package.json"));
+    \\    const workspaceDeps = workspacePkg && workspacePkg.dependencies && typeof workspacePkg.dependencies === "object" ? workspacePkg.dependencies : {};
+    \\    if (String(workspacePkg && workspacePkg.name || "") !== "moo" || String(workspaceDeps.boba || "") !== ">=0.0.3") return null;
+    \\    addRequest(registryBase + "/baz");
+    \\    addRequest(registryBase + "/baz-0.0.5.tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_fs_mark_symlink("../moo", __home_build_join(cwd, "node_modules/moo"));
+    \\    const packageDir = __home_package_path(cwd, "boba");
+    \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(packageDir, "index.js"), "#!/usr/bin/env bun\n");
+    \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "baz", version: "0.0.5", bin: { "baz-exec": "index.js" } });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-baz-alias-matching-version-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ boba@0.0.5\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installBazAlias(aliasName, literal) {
     \\    if (!["npm:baz", "npm:baz@0.0.3", "npm:baz@latest"].includes(String(literal || ""))) return null;
     \\    const packageDir = __home_package_path(cwd, aliasName);
@@ -3937,6 +3954,8 @@ const harness_prelude =
     \\  if (bazDirectAndWorkspaceAliasResult) return bazDirectAndWorkspaceAliasResult;
     \\  const aliasNameCollisionResult = installAliasNameCollisionWithWorkspace();
     \\  if (aliasNameCollisionResult) return aliasNameCollisionResult;
+    \\  const bazAliasMatchingWorkspaceVersionResult = installBazAliasMatchingWorkspaceVersion();
+    \\  if (bazAliasMatchingWorkspaceVersionResult) return bazAliasMatchingWorkspaceVersionResult;
     \\  if (String(deps.baz || "") === "~0.0.2") {
     \\    return installBaz("0.0.3", "registry-latest-tagged-lockb", true);
     \\  }
@@ -57350,6 +57369,89 @@ test "bootstrap runner models bun install alias name collision" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installAliasNameCollisionWithWorkspace") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install npm alias matching workspace version" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\test("should get npm alias with matching version", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.0.3": { as: "0.0.3" },
+        \\    "0.0.5": { as: "0.0.5" },
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    workspaces: ["moo"],
+        \\    dependencies: {
+        \\      boba: "npm:baz@0.0.5",
+        \\    },
+        \\  }));
+        \\  await mkdir(join(package_dir, "moo"));
+        \\  await writeFile(join(package_dir, "moo", "package.json"), JSON.stringify({
+        \\    name: "moo",
+        \\    version: "0.0.2",
+        \\    dependencies: {
+        \\      boba: ">=0.0.3",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ boba@0.0.5",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/baz`, `${root_url}/baz-0.0.5.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "boba", "moo"]);
+        \\  expect(await file(join(package_dir, "node_modules", "boba", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.5",
+        \\    bin: {
+        \\      "baz-exec": "index.js",
+        \\    },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBazAliasMatchingWorkspaceVersion") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
