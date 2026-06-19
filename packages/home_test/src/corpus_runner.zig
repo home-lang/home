@@ -63573,6 +63573,7 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\    "1 package installed",
         \\  ]);
         \\  expect(await exited).toBe(0);
+        \\  expect(requested).toBe(0);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["@GH@mishoo-UglifyJS-e219a9a@@@1"]);
@@ -63616,7 +63617,9 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\    " - uglifyjs",
         \\  ]);
         \\  expect(await repeat.exited).toBe(0);
+        \\  expect(requested).toBe(0);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["@GH@mishoo-UglifyJS-e219a9a@@@1"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", "uglify-js"))).toEqual([
         \\    ".bun-tag",
