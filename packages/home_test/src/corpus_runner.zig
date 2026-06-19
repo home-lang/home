@@ -4021,6 +4021,23 @@ const harness_prelude =
     \\    if (rootHasBar) return completed("bun install v1.0.0\n\n+ bar@0.0.2\n+ moo@moo\n\n2 packages installed", "Saved lockfile\n", 0);
     \\    return completed("bun install v1.0.0\n\n+ moo@moo\n\n2 packages installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installWorkspaceRootFromChild() {
+    \\    if (__home_build_basename(cwd) !== "moo") return null;
+    \\    if (String(pkg.name || "") !== "moo" || String(deps.bar || "") !== "^0.0.2") return null;
+    \\    const root = __home_build_dirname(cwd);
+    \\    const rootPkg = __home_pkg_json(__home_build_join(root, "package.json")) || {};
+    \\    const workspaces = Array.isArray(rootPkg.workspaces) ? rootPkg.workspaces.map(String) : [];
+    \\    if (!workspaces.includes("moo") && !workspaces.includes("*")) return null;
+    \\    addRequest(registryBase + "/bar");
+    \\    addRequest(registryBase + "/bar-0.0.2.tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(root, "node_modules/.cache"), { recursive: true });
+    \\    __home_write_installed_package(root, "bar", { name: "bar", version: "0.0.2" });
+    \\    const mooDir = __home_package_path(root, "moo");
+    \\    __home_node_fs.mkdirSync(mooDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(mooDir, "package.json"), __home_build_read_text(__home_build_join(cwd, "package.json")) || JSON.stringify(pkg));
+    \\    __home_build_write_text(__home_build_join(root, "bun.lockb"), "registry-workspace-root-from-child-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ bar@0.0.2\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installBazDirectAndWorkspaceAlias() {
     \\    if (String(deps.baz || "") !== "~0.0.2") return null;
     \\    const workspacePkg = __home_pkg_json(__home_build_join(cwd, "bar", "package.json"));
@@ -4302,6 +4319,8 @@ const harness_prelude =
     \\  }
     \\  const folderDevDependencyResult = installFolderDevDependency();
     \\  if (folderDevDependencyResult) return folderDevDependencyResult;
+    \\  const workspaceRootFromChildResult = installWorkspaceRootFromChild();
+    \\  if (workspaceRootFromChildResult) return workspaceRootFromChildResult;
     \\  const plainGitHubUglifyResult = installGitHubUglifyInstallDependency();
     \\  if (plainGitHubUglifyResult) return plainGitHubUglifyResult;
     \\  const gitHttpsUglifyJsResult = installGitHttpsUglifyJsDependency();
@@ -55835,6 +55854,90 @@ test "bootstrap runner models bun install folder devDependencies" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installFolderDevDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install workspace root from child" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\async function expectWorkspaceChildInstall(workspaces) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.1.0",
+        \\    workspaces,
+        \\  }));
+        \\  await mkdir(join(package_dir, "moo"));
+        \\  const moo_package = JSON.stringify({
+        \\    name: "moo",
+        \\    version: "0.2.0",
+        \\    dependencies: {
+        \\      bar: "^0.0.2",
+        \\    },
+        \\  });
+        \\  await writeFile(join(package_dir, "moo", "package.json"), moo_package);
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: join(package_dir, "moo"),
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ bar@0.0.2",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/bar`, `${root_url}/bar-0.0.2.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar", "moo"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "moo"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "moo", "package.json")).text()).toEqual(moo_package);
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should install dependencies in root package of workspace", async () => {
+        \\  await expectWorkspaceChildInstall(["moo"]);
+        \\});
+        \\
+        \\test("should install dependencies in root package of workspace (*)", async () => {
+        \\  await expectWorkspaceChildInstall(["*"]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installWorkspaceRootFromChild") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
