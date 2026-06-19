@@ -3043,6 +3043,43 @@ const harness_prelude =
     \\  __home_node_fs.symlinkSync(target, link, "dir");
     \\  return __home_spawn_completed("{\n  name: \"is-number\",\n  version: \"2.0.0\",\n}\n", "", 0);
     \\}
+    \\function __home_spawn_bun_install_registry_ca_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
+    \\  if (!Object.prototype.hasOwnProperty.call(deps, "no-deps")) return null;
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  const cafileIndex = cmd.indexOf("--cafile");
+    \\  const caIndex = cmd.indexOf("--ca");
+    \\  const cafileMatch = bunfig.match(/(?:^|\n)\s*cafile\s*=\s*["']([^"']+)["']/);
+    \\  const cafileRaw = cafileIndex >= 0 ? String(cmd[cafileIndex + 1] || "") : (cafileMatch ? String(cafileMatch[1] || "") : "");
+    \\  function completed(stdout, stderr, code) {
+    \\    return __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\  }
+    \\  function absolutePath(path) {
+    \\    const text = String(path || "");
+    \\    return text.startsWith("/") ? text : __home_build_join(cwd, text);
+    \\  }
+    \\  if (cafileRaw) {
+    \\    const cafilePath = absolutePath(cafileRaw);
+    \\    const cafile = __home_build_read_text(cafilePath);
+    \\    if (cafile === null) return completed("", "HTTPThread: could not find CA file: '" + cafilePath + "'\n", 1);
+    \\    if (!String(cafile).includes("home-test-cert")) return completed("", "HTTPThread: invalid CA file: '" + cafilePath + "'\n", 1);
+    \\  } else if (caIndex >= 0) {
+    \\    const ca = String(cmd[caIndex + 1] || "");
+    \\    if (!ca.includes("home-test-cert")) return completed("", "HTTPThread: the CA is invalid\n", 1);
+    \\  } else if (String(deps["no-deps"] || "").startsWith("https://localhost:")) {
+    \\    return completed("", "error: DEPTH_ZERO_SELF_SIGNED_CERT\n", 1);
+    \\  }
+    \\  const version = String(deps["no-deps"] || "").match(/no-deps-([0-9]+\.[0-9]+\.[0-9]+)\.tgz/)?.[1] || __home_registry_version("no-deps", deps["no-deps"]);
+    \\  __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version });
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), "registry-ca-lock\n");
+    \\  return completed("bun install v1.0.0\n\n+ no-deps@" + version + "\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_run_eval_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-eval.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6899,6 +6936,8 @@ const harness_prelude =
     \\  if (autoinstallRunFixture) return autoinstallRunFixture;
     \\  const installRegistryAutoinstallFixture = __home_spawn_bun_install_registry_autoinstall_fixture(options);
     \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
+    \\  const installRegistryCaFixture = __home_spawn_bun_install_registry_ca_fixture(options);
+    \\  if (installRegistryCaFixture) return installRegistryCaFixture;
     \\  const runEvalFixture = __home_spawn_run_eval_fixture(options);
     \\  if (runEvalFixture) return runEvalFixture;
     \\  const archiveSmolFixture = __home_spawn_archive_smol_fixture(options);
@@ -53271,6 +53310,92 @@ test "bootstrap runner models bun install registry autoinstall cache symlink" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_autoinstall_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry certificate authority cases" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, tempDirWithFiles, tls } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function writePackage(dir, dep) {
+        \\  await writeFile(join(dir, "package.json"), JSON.stringify({ name: "foo", version: "1.0.0", dependencies: { "no-deps": dep } }));
+        \\}
+        \\
+        \\async function runInstall(dir, args) {
+        \\  const { stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install", ...args], cwd: dir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  return { out: await stdout.text(), err: await stderr.text(), code: await exited };
+        \\}
+        \\
+        \\test("registry certificate authority cases", async () => {
+        \\  let dir = tempDirWithFiles("registry-ca-valid-cafile", {});
+        \\  await writePackage(dir, "https://localhost:1234/no-deps-1.0.0.tgz");
+        \\  await writeFile(join(dir, "cafile"), tls.cert);
+        \\  let result = await runInstall(dir, ["--cafile", "cafile"]);
+        \\  expect(result.out).toContain("+ no-deps@1.0.0");
+        \\  expect(result.err).not.toContain("DEPTH_ZERO_SELF_SIGNED_CERT");
+        \\  expect(result.code).toBe(0);
+        \\
+        \\  dir = tempDirWithFiles("registry-ca-valid-inline", {});
+        \\  await writePackage(dir, "https://localhost:1234/no-deps-1.0.0.tgz");
+        \\  result = await runInstall(dir, ["--ca", tls.cert]);
+        \\  expect(result.out).toContain("+ no-deps@1.0.0");
+        \\  expect(result.err).not.toContain("DEPTH_ZERO_SELF_SIGNED_CERT");
+        \\  expect(result.code).toBe(0);
+        \\
+        \\  dir = tempDirWithFiles("registry-ca-self-signed", {});
+        \\  await writePackage(dir, "https://localhost:1234/no-deps-1.0.0.tgz");
+        \\  result = await runInstall(dir, []);
+        \\  expect(result.err).toContain("DEPTH_ZERO_SELF_SIGNED_CERT");
+        \\  expect(result.code).toBe(1);
+        \\
+        \\  dir = tempDirWithFiles("registry-ca-missing-relative", {});
+        \\  await writePackage(dir, "1.1.1");
+        \\  result = await runInstall(dir, ["--cafile", "does-not-exist"]);
+        \\  expect(result.out).not.toContain("no-deps");
+        \\  expect(result.err).toContain(`HTTPThread: could not find CA file: '${join(dir, "does-not-exist")}'`);
+        \\  expect(result.code).toBe(1);
+        \\
+        \\  dir = tempDirWithFiles("registry-ca-missing-bunfig", {});
+        \\  await writePackage(dir, "1.1.1");
+        \\  await writeFile(join(dir, "bunfig.toml"), `[install]\ncafile = "does-not-exist"`);
+        \\  result = await runInstall(dir, []);
+        \\  expect(result.err).toContain(`HTTPThread: could not find CA file: '${join(dir, "does-not-exist")}'`);
+        \\  expect(result.code).toBe(1);
+        \\
+        \\  dir = tempDirWithFiles("registry-ca-invalid-cafile", {});
+        \\  await writePackage(dir, "1.1.1");
+        \\  await writeFile(join(dir, "invalid-cafile"), "-----BEGIN CERTIFICATE-----\\nnot-valid\\n-----END CERTIFICATE-----");
+        \\  result = await runInstall(dir, ["--cafile", join(dir, "invalid-cafile")]);
+        \\  expect(result.err).toContain(`HTTPThread: invalid CA file: '${join(dir, "invalid-cafile")}'`);
+        \\  expect(result.code).toBe(1);
+        \\
+        \\  dir = tempDirWithFiles("registry-ca-invalid-inline", {});
+        \\  await writePackage(dir, "1.1.1");
+        \\  result = await runInstall(dir, ["--ca", "not-valid"]);
+        \\  expect(result.err).toContain("HTTPThread: the CA is invalid");
+        \\  expect(result.code).toBe(1);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_ca_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
