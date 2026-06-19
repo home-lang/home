@@ -18752,6 +18752,10 @@ const harness_prelude =
     \\        if (depName === "one-one-dep") pkg.dependencies = { "no-deps": "1.0.1" };
     \\        if (depName === "duplicate-name-and-version" && pkg.version === "1.0.2") pkg.dependencies = { "a-dep": "1.0.1" };
     \\        if (peerReplacementDep && pkg.version === "1.0.0") pkg.peerDependencies = { "no-deps": "1.0.0" };
+    \\        if (depName === "optional-peer-deps" && (pkg.version === "1.0.0" || pkg.version === "1.0.1")) {
+    \\          pkg.peerDependencies = { "no-deps": "*" };
+    \\          pkg.peerDependenciesMeta = { "no-deps": { optional: true } };
+    \\        }
     \\        const rootDepAlias = __home_npm_alias(rootDeps[depName]);
     \\        const rootAliasConflict = item.rel && rootDepAlias && rootDepAlias.name !== depName;
     \\        const targetRoot = item.rel && (graph.byName[depName] || rootAliasConflict) ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
@@ -54537,6 +54541,81 @@ test "bootstrap runner models bun install registry peer replacement matrix" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "1-peer-dep-a") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry optional peer update" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file } from "bun";
+        \\import { install_test_helpers } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\import { rm, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, runBunInstall, tempDirWithFiles, toMatchNodeModulesAt } from "harness";
+        \\import { join } from "path";
+        \\
+        \\const { parseLockfile } = install_test_helpers;
+        \\expect.extend({ toMatchNodeModulesAt });
+        \\
+        \\test("optional peer dependency update keeps peer metadata", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-optional-peer-update", {});
+        \\  const packageJson = join(packageDir, "package.json");
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: {
+        \\      "optional-peer-deps": "1.0.0",
+        \\      "no-deps": "1.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  await runBunInstall(env, packageDir);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(parseLockfile(packageDir)).toMatchNodeModulesAt(packageDir);
+        \\  expect(await file(join(packageDir, "node_modules", "optional-peer-deps", "package.json")).json()).toMatchObject({
+        \\    name: "optional-peer-deps",
+        \\    version: "1.0.0",
+        \\    peerDependencies: { "no-deps": "*" },
+        \\    peerDependenciesMeta: { "no-deps": { optional: true } },
+        \\  });
+        \\
+        \\  await Promise.all([
+        \\    writeFile(packageJson, JSON.stringify({
+        \\      name: "foo",
+        \\      dependencies: {
+        \\        "optional-peer-deps": "1.0.1",
+        \\        "no-deps": "1.0.0",
+        \\      },
+        \\    })),
+        \\    rm(join(packageDir, "node_modules"), { recursive: true, force: true }),
+        \\    rm(join(packageDir, ".bun-cache"), { recursive: true, force: true }),
+        \\  ]);
+        \\
+        \\  await runBunInstall(env, packageDir);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(parseLockfile(packageDir)).toMatchNodeModulesAt(packageDir);
+        \\  expect(await file(join(packageDir, "node_modules", "optional-peer-deps", "package.json")).json()).toMatchObject({
+        \\    name: "optional-peer-deps",
+        \\    version: "1.0.1",
+        \\    peerDependencies: { "no-deps": "*" },
+        \\    peerDependenciesMeta: { "no-deps": { optional: true } },
+        \\  });
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "optional-peer-deps") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
