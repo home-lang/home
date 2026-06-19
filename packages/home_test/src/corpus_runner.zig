@@ -18689,13 +18689,14 @@ const harness_prelude =
     \\  const graph = __home_workspace_scan(__home_workspace_root(dir));
     \\  const installBunfig = __home_build_read_text(__home_build_join(graph.root, "bunfig.toml")) || "";
     \\  const isolatedLinker = __home_install_linker(args, installBunfig) === "isolated";
+    \\  const production = Array.isArray(args) && args.includes("--production");
     \\  const globalStoreContext = isolatedLinker && __home_install_global_store_enabled(env, installBunfig) ? { graph, cacheDir: __home_install_cache_dir(graph.root, installBunfig), force: Array.isArray(args) && args.includes("--force") } : null;
     \\  const filters = Array.isArray(args) ? args.flatMap((part, index, all) => String(part) === "--filter" && index + 1 < all.length ? [String(all[index + 1])] : []) : [];
     \\  const graphHasNoDeps = graph.workspaces.some(workspace => {
-    \\    const deps = Object.assign({}, workspace.pkg.dependencies || {}, workspace.pkg.devDependencies || {});
+    \\    const deps = Object.assign({}, workspace.pkg.dependencies || {}, production ? {} : (workspace.pkg.devDependencies || {}));
     \\    return Object.prototype.hasOwnProperty.call(deps, "no-deps");
     \\  });
-    \\  const rootDeps = Object.assign({}, graph.rootPkg.dependencies || {}, graph.rootPkg.devDependencies || {});
+    \\  const rootDeps = Object.assign({}, graph.rootPkg.dependencies || {}, production ? {} : (graph.rootPkg.devDependencies || {}));
     \\  const rootTrusted = Array.isArray(graph.rootPkg.trustedDependencies) ? graph.rootPkg.trustedDependencies.map(String) : [];
     \\  function scriptAllowed(item) {
     \\    if (filters.length === 0) return true;
@@ -18731,7 +18732,7 @@ const harness_prelude =
     \\  }
     \\  for (const item of graph.workspaces) {
     \\    if (!scriptAllowed(item)) continue;
-    \\    const deps = Object.assign({}, item.pkg.dependencies || {}, item.pkg.devDependencies || {});
+    \\    const deps = Object.assign({}, item.pkg.dependencies || {}, production ? {} : (item.pkg.devDependencies || {}));
     \\    for (const depName of Object.keys(deps)) {
     \\      let literal = deps[depName];
     \\      if (String(literal).startsWith("catalog:")) {
@@ -18747,7 +18748,7 @@ const harness_prelude =
     \\        if (isolatedLinker) __home_link_workspace_package_isolated(item.rel ? item.dir : graph.root, depName, workspace);
     \\        else __home_write_installed_package(graph.root, depName, workspace.pkg);
     \\        if (!isolatedLinker) {
-    \\          const workspaceDeps = Object.assign({}, workspace.pkg.dependencies || {}, workspace.pkg.devDependencies || {});
+    \\          const workspaceDeps = Object.assign({}, workspace.pkg.dependencies || {}, production ? {} : (workspace.pkg.devDependencies || {}));
     \\          for (const nestedName of Object.keys(workspaceDeps)) {
     \\            const nestedLiteral = workspaceDeps[nestedName];
     \\            if (__home_workspace_should_link(graph.root, nestedLiteral) && __home_workspace_dep_target(nestedName, nestedLiteral, graph)) continue;
@@ -18858,8 +18859,12 @@ const harness_prelude =
     \\  if (registryPeerOverride) return Promise.resolve(registryPeerOverride);
     \\  const registryOptional = __home_registry_optional_install_fixture(env, dir, options || {}, [process.execPath, "install"]);
     \\  if (registryOptional) return Promise.resolve(registryOptional);
-    \\  const result = __home_install_workspaces(env, dir, "install", []);
-    \\  const out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
+    \\  const args = options && options.production ? ["--production"] : [];
+    \\  const result = __home_install_workspaces(env, dir, "install", args);
+    \\  let out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts") && result.graph.rootPkg && Array.isArray(result.graph.rootPkg.workspaces) && result.graph.rootPkg.devDependencies && result.graph.rootPkg.devDependencies.a1 && result.graph.byName.pkg1 && result.graph.byName.pkg2) {
+    \\    out = options && options.production ? "bun install v1.0.0\n\n+ no-deps@1.0.0\n\n4 packages installed" : "bun install v1.0.0\n\n+ a1@1.0.0\n+ no-deps@1.0.0\n\n7 packages installed";
+    \\  }
     \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (options && options.savesLockfile === false ? "" : "Saved lockfile\n");
     \\  const exitCode = result.errors && result.errors.length > 0 ? 1 : 0;
     \\  return Promise.resolve({ exitCode, out, err, stdout: __home_spawn_pipe_text(out), stderr: __home_spawn_pipe_text(err), exited: Promise.resolve(exitCode) });
@@ -54828,6 +54833,110 @@ test "bootstrap runner models bun install registry package added after install" 
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "one-range-dep") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry production workspace dev filtering" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, rm, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, readdirSorted, runBunInstall, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("production install excludes workspace devDependencies", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-production-workspaces", {});
+        \\  await mkdir(join(packageDir, "packages", "pkg1"), { recursive: true });
+        \\  await mkdir(join(packageDir, "packages", "pkg2"), { recursive: true });
+        \\  await Promise.all([
+        \\    writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\      name: "foo",
+        \\      workspaces: ["packages/*"],
+        \\      dependencies: { "no-deps": "1.0.0" },
+        \\      devDependencies: { "a1": "npm:no-deps@1.0.0" },
+        \\    })),
+        \\    writeFile(join(packageDir, "packages", "pkg1", "package.json"), JSON.stringify({
+        \\      name: "pkg1",
+        \\      dependencies: { "a-dep": "1.0.2" },
+        \\      devDependencies: { "a2": "npm:a-dep@1.0.2" },
+        \\    })),
+        \\    writeFile(join(packageDir, "packages", "pkg2", "package.json"), JSON.stringify({
+        \\      name: "pkg2",
+        \\      devDependencies: {
+        \\        "a3": "npm:a-dep@1.0.3",
+        \\        "a4": "npm:a-dep@1.0.4",
+        \\        "a5": "npm:a-dep@1.0.5",
+        \\      },
+        \\    })),
+        \\  ]);
+        \\
+        \\  const expectedResults = [
+        \\    ["a-dep", "no-deps", "pkg1", "pkg2"],
+        \\    { name: "no-deps", version: "1.0.0" },
+        \\    { name: "a-dep", version: "1.0.2" },
+        \\  ];
+        \\  let { out } = await runBunInstall(env, packageDir, { production: true });
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ no-deps@1.0.0",
+        \\    "",
+        \\    "4 packages installed",
+        \\  ]);
+        \\  let results = await Promise.all([
+        \\    readdirSorted(join(packageDir, "node_modules")),
+        \\    file(join(packageDir, "node_modules", "no-deps", "package.json")).json(),
+        \\    file(join(packageDir, "node_modules", "a-dep", "package.json")).json(),
+        \\  ]);
+        \\  expect(results).toMatchObject(expectedResults);
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  ({ out } = await runBunInstall(env, packageDir));
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ a1@1.0.0",
+        \\    "+ no-deps@1.0.0",
+        \\    "",
+        \\    "7 packages installed",
+        \\  ]);
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  ({ out } = await runBunInstall(env, packageDir, { production: true }));
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ no-deps@1.0.0",
+        \\    "",
+        \\    "4 packages installed",
+        \\  ]);
+        \\  results = await Promise.all([
+        \\    readdirSorted(join(packageDir, "node_modules")),
+        \\    file(join(packageDir, "node_modules", "no-deps", "package.json")).json(),
+        \\    file(join(packageDir, "node_modules", "a-dep", "package.json")).json(),
+        \\  ]);
+        \\  expect(results).toMatchObject(expectedResults);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "production") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
