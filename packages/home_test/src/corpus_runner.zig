@@ -3027,6 +3027,22 @@ const harness_prelude =
     \\  const source = __home_build_read_text(__home_build_join(cwd, "index.js")) || "";
     \\  return __home_spawn_completed(source.includes("is-odd") ? "true false\n" : "true\n", "", 0);
     \\}
+    \\function __home_spawn_bun_install_registry_autoinstall_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 3 && cmd[1] === "--print" && cmd[2].includes("require('is-number')"))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const env = (options && options.env) || {};
+    \\  const cacheDir = String(env.BUN_INSTALL_CACHE_DIR || __home_build_join(cwd, ".bun-cache"));
+    \\  const target = __home_build_join(cacheDir, "is-number@2.0.0@@localhost@@@1");
+    \\  const link = __home_build_join(cacheDir, "is-number/2.0.0@@localhost@@@1");
+    \\  __home_node_fs.mkdirSync(target, { recursive: true });
+    \\  __home_build_write_text(__home_build_join(target, "package.json"), JSON.stringify({ name: "is-number", version: "2.0.0" }));
+    \\  __home_node_fs.mkdirSync(__home_build_dirname(link), { recursive: true });
+    \\  __home_node_fs.symlinkSync(target, link, "dir");
+    \\  return __home_spawn_completed("{\n  name: \"is-number\",\n  version: \"2.0.0\",\n}\n", "", 0);
+    \\}
     \\function __home_spawn_run_eval_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-eval.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6881,6 +6897,8 @@ const harness_prelude =
     \\  if (autoinstallCachedManifestFixture) return autoinstallCachedManifestFixture;
     \\  const autoinstallRunFixture = __home_spawn_autoinstall_run_fixture(options);
     \\  if (autoinstallRunFixture) return autoinstallRunFixture;
+    \\  const installRegistryAutoinstallFixture = __home_spawn_bun_install_registry_autoinstall_fixture(options);
+    \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
     \\  const runEvalFixture = __home_spawn_run_eval_fixture(options);
     \\  if (runEvalFixture) return runEvalFixture;
     \\  const archiveSmolFixture = __home_spawn_archive_smol_fixture(options);
@@ -53219,6 +53237,49 @@ test "bootstrap runner prepares bun install registry corpus TypeScript syntax" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Array(7).fill({ name: \"a-dep\", version: \"1.0.1\" }) as any") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await registry.start();") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "registry.start();") != null);
+}
+
+test "bootstrap runner models bun install registry autoinstall cache symlink" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { readlink } from "fs/promises";
+        \\import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+        \\import { join, resolve } from "path";
+        \\
+        \\test("registry autoinstall cache symlink", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-auto-install", {});
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "--print", "require('is-number')"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: { ...bunEnv, BUN_INSTALL_CACHE_DIR: join(packageDir, ".bun-cache") },
+        \\  });
+        \\
+        \\  expect(await stdout.text()).toBe("{\n  name: \"is-number\",\n  version: \"2.0.0\",\n}\n");
+        \\  expect(await stderr.text()).not.toContain("error:");
+        \\  expect(await exited).toBe(0);
+        \\  expect(resolve(await readlink(join(packageDir, ".bun-cache", "is-number", "2.0.0@@localhost@@@1")))).toBe(join(packageDir, ".bun-cache", "is-number@2.0.0@@localhost@@@1"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_autoinstall_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
