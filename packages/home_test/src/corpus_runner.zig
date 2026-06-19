@@ -18749,6 +18749,7 @@ const harness_prelude =
     \\        if (depName === "self-dep" && String(literal) === "1.0.2") pkg.dependencies = { "self-dep": "1.0.1" };
     \\        if (depName === "one-optional-peer-dep" && pkg.version === "1.0.1" && !graphHasNoDeps) pkg.dependencies = { "no-deps": "^1.0.0" };
     \\        if (depName === "one-one-dep") pkg.dependencies = { "no-deps": "1.0.1" };
+    \\        if (depName === "duplicate-name-and-version" && pkg.version === "1.0.2") pkg.dependencies = { "a-dep": "1.0.1" };
     \\        const rootDepAlias = __home_npm_alias(rootDeps[depName]);
     \\        const rootAliasConflict = item.rel && rootDepAlias && rootDepAlias.name !== depName;
     \\        const targetRoot = item.rel && (graph.byName[depName] || rootAliasConflict) ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
@@ -18771,6 +18772,11 @@ const harness_prelude =
     \\          __home_fs_mark_deleted(__home_build_join(__home_package_path(targetRoot, depName), "what-bin.txt"));
     \\        }
     \\        if (!isolatedLinker && depName === "two-range-deps") __home_node_fs.mkdirSync(__home_build_join(graph.root, "node_modules/@types"), { recursive: true });
+    \\        if (!isolatedLinker && depName === "duplicate-name-and-version" && pkg.version === "1.0.2") {
+    \\          __home_write_installed_package(graph.root, "a-dep", { name: "a-dep", version: "1.0.1" });
+    \\          __home_fs_mark_deleted(__home_package_path(graph.root, "no-deps"));
+    \\          registryCount++;
+    \\        }
     \\        if (String(globalThis.__home_current_filename || "").includes("cli/install/config-version.test.ts") && item.rel && depName === "no-deps") {
     \\          const isolatedTarget = __home_build_join(graph.root, "node_modules/.bun/no-deps@1.0.0/node_modules/no-deps");
     \\          __home_node_fs.mkdirSync(isolatedTarget, { recursive: true });
@@ -54389,6 +54395,64 @@ test "bootstrap runner models bun install registry basic installs" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_basic_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry duplicate manifest names" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file } from "bun";
+        \\import { install_test_helpers } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, runBunInstall, tempDirWithFiles, toMatchNodeModulesAt } from "harness";
+        \\import { join } from "path";
+        \\
+        \\const { parseLockfile } = install_test_helpers;
+        \\expect.extend({ toMatchNodeModulesAt });
+        \\
+        \\test("duplicate names and versions in a manifest do not install incorrect packages", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-duplicate-name-version", {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: {
+        \\      "duplicate-name-and-version": "1.0.2",
+        \\    },
+        \\  }));
+        \\
+        \\  await runBunInstall(env, packageDir);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\
+        \\  const lockfile = parseLockfile(packageDir);
+        \\  expect(lockfile).toMatchNodeModulesAt(packageDir);
+        \\  const results = await Promise.all([
+        \\    file(join(packageDir, "node_modules", "duplicate-name-and-version", "package.json")).json(),
+        \\    file(join(packageDir, "node_modules", "a-dep", "package.json")).json(),
+        \\    exists(join(packageDir, "node_modules", "no-deps")),
+        \\  ]);
+        \\
+        \\  expect(results).toMatchObject([
+        \\    { name: "duplicate-name-and-version", version: "1.0.2" },
+        \\    { name: "a-dep", version: "1.0.1" },
+        \\    false,
+        \\  ]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "duplicate-name-and-version") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
