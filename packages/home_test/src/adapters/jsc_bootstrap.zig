@@ -1113,7 +1113,6 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileImportPrinterFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnarySimplificationFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileTemplateNumericProductFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileConstantFoldingFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileRawTemplateLiteralFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileTemplateStringConcatFixture(allocator, source_text)) |fixture_output| return fixture_output;
@@ -1187,16 +1186,6 @@ fn transpileUnarySimplificationFixture(allocator: std.mem.Allocator, source_text
         return try allocator.dupe(u8, "export default a = (b, !c);\n");
     }
     return null;
-}
-
-fn transpileTemplateNumericProductFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const prefix = "export default (console.log(`${";
-    const suffix = " * 1}`))";
-    if (!std.mem.startsWith(u8, source_text, prefix) or !std.mem.endsWith(u8, source_text, suffix)) return null;
-
-    const number_text = source_text[prefix.len .. source_text.len - suffix.len];
-    const value = std.fmt.parseInt(i32, number_text, 10) catch return null;
-    return try std.fmt.allocPrint(allocator, "export default console.log(\"{}\");\n", .{value});
 }
 
 fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
@@ -5319,7 +5308,7 @@ test "adapter routes comma operator minify transforms through Bun parser path" {
     }
 }
 
-test "adapter folds numeric template products like Bun.Transpiler" {
+test "adapter routes numeric template products through Bun parser path" {
     const Case = struct {
         source: []const u8,
         output: []const u8,
@@ -5331,8 +5320,11 @@ test "adapter folds numeric template products like Bun.Transpiler" {
         .{ .source = "export default (console.log(`${-119 * 1}`))", .output = "export default console.log(\"-119\");\n" },
     };
 
+    const minify_handle = TranspilerHandle{ .minify_syntax = true };
     for (cases) |case| {
-        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
+
+        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
     }
