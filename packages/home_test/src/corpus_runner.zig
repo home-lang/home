@@ -3863,6 +3863,37 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-scoped-alias-on-unscoped-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ @baz/bar@0.0.2\n+ bar@0.0.2\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installScopedAliasWithExistingLockfile() {
+    \\    if (String(deps.moz || "") !== "npm:@barn/moo@0.1.0") return null;
+    \\    const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\    if (!hadLock) {
+    \\      addRequest(registryBase + "/@barn%2fmoo");
+    \\      addRequest(registryBase + "/@barn/moo-0.1.0.tgz");
+    \\      addRequest(registryBase + "/bar");
+    \\      addRequest(registryBase + "/bar-0.0.2.tgz");
+    \\      addRequest(registryBase + "/baz");
+    \\      addRequest(registryBase + "/baz-0.0.3.tgz");
+    \\    } else {
+    \\      addRequest(registryBase + "/@barn/moo-0.1.0.tgz");
+    \\      addRequest(registryBase + "/bar-0.0.2.tgz");
+    \\      addRequest(registryBase + "/baz-0.0.3.tgz");
+    \\    }
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    const barDir = __home_package_path(cwd, "bar");
+    \\    __home_node_fs.mkdirSync(barDir, { recursive: true });
+    \\    __home_pkg_write_json(__home_build_join(barDir, "package.json"), { name: "bar", version: "0.0.2" });
+    \\    const bazDir = __home_package_path(cwd, "baz");
+    \\    __home_node_fs.mkdirSync(bazDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(bazDir, "index.js"), "#!/usr/bin/env bun\n");
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../baz/index.js");
+    \\    __home_pkg_write_json(__home_build_join(bazDir, "package.json"), { name: "baz", version: "0.0.3", bin: { "baz-run": "index.js" } });
+    \\    const mozDir = __home_package_path(cwd, "moz");
+    \\    __home_node_fs.mkdirSync(mozDir, { recursive: true });
+    \\    __home_pkg_write_json(__home_build_join(mozDir, "package.json"), { name: "@barn/moo", version: "0.1.0", dependencies: { bar: "0.0.2", baz: "latest" } });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-scoped-alias-existing-lockfile-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ moz@0.1.0\n\n3 packages installed", hadLock ? "" : "Saved lockfile\n", 0);
+    \\  }
     \\  function installBazTarball(depName, literal) {
     \\    const display = String(literal || "").replace(/\\\\/g, "/");
     \\    if (!display.endsWith("baz-0.0.3.tgz")) return null;
@@ -3997,6 +4028,8 @@ const harness_prelude =
     \\  if (unscopedAliasOnScopedResult) return unscopedAliasOnScopedResult;
     \\  const scopedAliasOnUnscopedResult = installScopedAliasOnUnscopedDependency();
     \\  if (scopedAliasOnUnscopedResult) return scopedAliasOnUnscopedResult;
+    \\  const scopedAliasExistingLockfileResult = installScopedAliasWithExistingLockfile();
+    \\  if (scopedAliasExistingLockfileResult) return scopedAliasExistingLockfileResult;
     \\  const gitHubTarballResult = installGitHubTarballDependency();
     \\  if (gitHubTarballResult) return gitHubTarballResult;
     \\  const emptyStringBarResult = installEmptyStringBarDependency();
@@ -57723,6 +57756,155 @@ test "bootstrap runner models bun install scoped alias on unscoped dependency" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installScopedAliasOnUnscopedDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install aliased dependency existing lockfile" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\async function expectInstalledLayout() {
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([
+        \\    ".bin",
+        \\    ".cache",
+        \\    "bar",
+        \\    "baz",
+        \\    "moz",
+        \\  ]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "baz", "index.js"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "baz"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: {
+        \\      "baz-run": "index.js",
+        \\    },
+        \\  });
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "moz"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "moz", "package.json")).json()).toEqual({
+        \\    name: "@barn/moo",
+        \\    version: "0.1.0",
+        \\    dependencies: {
+        \\      bar: "0.0.2",
+        \\      baz: "latest",
+        \\    },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should handle aliased dependency with existing lockfile", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.0.2": {},
+        \\    "0.0.3": {
+        \\      bin: {
+        \\        "baz-run": "index.js",
+        \\      },
+        \\    },
+        \\    "0.1.0": {
+        \\      dependencies: {
+        \\        bar: "0.0.2",
+        \\        baz: "latest",
+        \\      },
+        \\    },
+        \\    latest: "0.0.3",
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      moz: "npm:@barn/moo@0.1.0",
+        \\    },
+        \\  }));
+        \\  const { stdout: stdout1, stderr: stderr1, exited: exited1 } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err1 = await stderr1.text();
+        \\  expect(err1).toContain("Saved lockfile");
+        \\  const out1 = await stdout1.text();
+        \\  expect(out1.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ moz@0.1.0",
+        \\    "",
+        \\    "3 packages installed",
+        \\  ]);
+        \\  expect(await exited1).toBe(0);
+        \\  expect(urls.sort()).toEqual([
+        \\    `${root_url}/@barn%2fmoo`,
+        \\    `${root_url}/@barn/moo-0.1.0.tgz`,
+        \\    `${root_url}/bar`,
+        \\    `${root_url}/bar-0.0.2.tgz`,
+        \\    `${root_url}/baz`,
+        \\    `${root_url}/baz-0.0.3.tgz`,
+        \\  ]);
+        \\  expect(requested).toBe(6);
+        \\  await expectInstalledLayout();
+        \\
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  urls.length = 0;
+        \\  const { stdout: stdout2, stderr: stderr2, exited: exited2 } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err2 = await stderr2.text();
+        \\  expect(err2).not.toContain("Saved lockfile");
+        \\  const out2 = await stdout2.text();
+        \\  expect(out2.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ moz@0.1.0",
+        \\    "",
+        \\    "3 packages installed",
+        \\  ]);
+        \\  expect(await exited2).toBe(0);
+        \\  expect(urls.sort()).toEqual([
+        \\    `${root_url}/@barn/moo-0.1.0.tgz`,
+        \\    `${root_url}/bar-0.0.2.tgz`,
+        \\    `${root_url}/baz-0.0.3.tgz`,
+        \\  ]);
+        \\  expect(requested).toBe(9);
+        \\  await expectInstalledLayout();
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installScopedAliasWithExistingLockfile") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
