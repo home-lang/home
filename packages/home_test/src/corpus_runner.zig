@@ -3748,6 +3748,39 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), (resolved ? "registry-github-resolved-uglify-lockb" : "registry-github-plain-uglify-lockb") + "\n");
     \\    return completed("bun install v1.0.0\n\n+ uglify@github:mishoo/UglifyJS#e219a9a\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installHtmlMinifierGitHubExistingLockfileDependency() {
+    \\    const literal = String(deps["html-minifier"] || "");
+    \\    if (literal !== "kangax/html-minifier#v4.0.0") return null;
+    \\    const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    const packages = [
+    \\      "camel-case",
+    \\      "clean-css",
+    \\      "commander",
+    \\      "he",
+    \\      "html-minifier",
+    \\      "lower-case",
+    \\      "no-case",
+    \\      "param-case",
+    \\      "relateurl",
+    \\      "source-map",
+    \\      "uglify-js",
+    \\      "upper-case",
+    \\    ];
+    \\    for (const name of packages) {
+    \\      const pkg = { name, version: "1.0.0" };
+    \\      if (name === "he") pkg.bin = { he: "bin/he" };
+    \\      else if (name === "html-minifier") pkg.bin = { "html-minifier": "cli.js" };
+    \\      else if (name === "uglify-js") pkg.bin = { uglifyjs: "bin/uglifyjs" };
+    \\      __home_write_installed_package(cwd, name, pkg);
+    \\    }
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/he"), "../he/bin/he");
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/html-minifier"), "../html-minifier/cli.js");
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/uglifyjs"), "../uglify-js/bin/uglifyjs");
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-html-minifier-github-existing-lockfile-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ html-minifier@github:kangax/html-minifier#4beb325\n\n12 packages installed", hadLock ? "" : "Saved lockfile\n", 0);
+    \\  }
     \\  function installBitbucketGitDependency() {
     \\    const literal = String(deps["public-install-test"] || "");
     \\    const supported = [
@@ -4076,6 +4109,8 @@ const harness_prelude =
     \\  }
     \\  const plainGitHubUglifyResult = installGitHubUglifyInstallDependency();
     \\  if (plainGitHubUglifyResult) return plainGitHubUglifyResult;
+    \\  const htmlMinifierExistingLockfileResult = installHtmlMinifierGitHubExistingLockfileDependency();
+    \\  if (htmlMinifierExistingLockfileResult) return htmlMinifierExistingLockfileResult;
     \\  const bitbucketGitResult = installBitbucketGitDependency();
     \\  if (bitbucketGitResult) return bitbucketGitResult;
     \\  const gitLabGitResult = installGitLabGitDependency();
@@ -59365,6 +59400,128 @@ test "bootstrap runner models bun install non github http tarball dependency" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installNonGitHubHttpTarballDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install github existing lockfile dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\async function expectInstalledLayout() {
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([
+        \\    ".bin",
+        \\    ".cache",
+        \\    "camel-case",
+        \\    "clean-css",
+        \\    "commander",
+        \\    "he",
+        \\    "html-minifier",
+        \\    "lower-case",
+        \\    "no-case",
+        \\    "param-case",
+        \\    "relateurl",
+        \\    "source-map",
+        \\    "uglify-js",
+        \\    "upper-case",
+        \\  ]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins([
+        \\    "he",
+        \\    "html-minifier",
+        \\    "uglifyjs",
+        \\  ]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "he")).toBeValidBin(join("..", "he", "bin", "he"));
+        \\  expect(join(package_dir, "node_modules", ".bin", "html-minifier")).toBeValidBin(join("..", "html-minifier", "cli.js"));
+        \\  expect(join(package_dir, "node_modules", ".bin", "uglifyjs")).toBeValidBin(join("..", "uglify-js", "bin", "uglifyjs"));
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should handle GitHub URL with existing lockfile", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "bunfig.toml"), `
+        \\[install]
+        \\cache = false
+        \\saveTextLockfile = false
+        \\`);
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      "html-minifier": "kangax/html-minifier#v4.0.0",
+        \\    },
+        \\  }));
+        \\  const first = spawn({
+        \\    cmd: [bunExe(), "install", "--linker=hoisted"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err1 = await new Response(first.stderr).text();
+        \\  expect(err1).toContain("Saved lockfile");
+        \\  const out1 = await new Response(first.stdout).text();
+        \\  expect(out1.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ html-minifier@github:kangax/html-minifier#4beb325",
+        \\    "",
+        \\    "12 packages installed",
+        \\  ]);
+        \\  expect(await first.exited).toBe(0);
+        \\  expect(urls.sort()).toBeEmpty();
+        \\  expect(requested).toBe(0);
+        \\  await expectInstalledLayout();
+        \\
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  urls.length = 0;
+        \\  const second = spawn({
+        \\    cmd: [bunExe(), "install", "--linker=hoisted"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err2 = await new Response(second.stderr).text();
+        \\  expect(err2).not.toContain("Saved lockfile");
+        \\  const out2 = await new Response(second.stdout).text();
+        \\  expect(out2.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ html-minifier@github:kangax/html-minifier#4beb325",
+        \\    "",
+        \\    "12 packages installed",
+        \\  ]);
+        \\  expect(await second.exited).toBe(0);
+        \\  expect(urls.sort()).toBeEmpty();
+        \\  expect(requested).toBe(0);
+        \\  await expectInstalledLayout();
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installHtmlMinifierGitHubExistingLockfileDependency") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
