@@ -64437,10 +64437,10 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
     const source =
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { writeFile } from "fs/promises";
+        \\import { access, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe } from "harness";
         \\import { join } from "path";
-        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\import { dummyBeforeEach, package_dir, requested } from "./dummy.registry";
         \\
         \\test("bun add generic git dependency name", async () => {
         \\  for (const dep of [
@@ -64463,6 +64463,8 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
         \\      name: "foo",
         \\      dependencies: { "install-test-3": dep },
         \\    });
+        \\    expect(requested).toBe(0);
+        \\    await access(join(package_dir, "bun.lockb"));
         \\  }
         \\});
         \\
@@ -64483,6 +64485,8 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
         \\    name: "foo",
         \\    dependencies: { "install-test-no-packagejson": dep },
         \\  });
+        \\  expect(requested).toBe(0);
+        \\  await access(join(package_dir, "bun.lockb"));
         \\});
         \\
         \\test("bun add plain GitHub URL dependency name", async () => {
@@ -64502,6 +64506,8 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
         \\    version: "0.0.1",
         \\    dependencies: { "test-repo": "https://github.com/liz3/empty-bun-repo" },
         \\  });
+        \\  expect(requested).toBe(0);
+        \\  await access(join(package_dir, "bun.lockb"));
         \\  const second = spawn({
         \\    cmd: [bunExe(), "add", "https://github.com/liz3/empty-bun-repo"],
         \\    cwd: package_dir,
@@ -64516,6 +64522,8 @@ test "bootstrap runner mirrors bun add generic git dependency name" {
         \\    version: "0.0.1",
         \\    dependencies: { "test-repo": "https://github.com/liz3/empty-bun-repo" },
         \\  });
+        \\  expect(requested).toBe(0);
+        \\  await access(join(package_dir, "bun.lockb"));
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
