@@ -1166,7 +1166,6 @@ fn transpileTypeOnlyExportFixture(allocator: std.mem.Allocator, source_text: []c
         output: []const u8,
     };
     const fixtures = [_]Fixture{
-        .{ .source = "export type {foo, bar as baz}", .output = "" },
         .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
         .{ .source = "export type {foo} from 'bar'\nx", .output = "x;\n" },
         .{ .source = "export type {default} from 'bar'", .output = "" },
@@ -5056,6 +5055,7 @@ test "adapter drops type-only declarations through Bun parser path" {
     const cases = [_][]const u8{
         "type Foo<T> = T extends infer U ? U : never;",
         "export type {foo, bar as baz} from 'bar'",
+        "export type {foo, bar as baz}",
     };
 
     const default_handle = TranspilerHandle{};
@@ -5263,7 +5263,6 @@ test "adapter preserves Bun.Transpiler type-only export fixtures" {
         output: []const u8,
     };
     const cases = [_]Case{
-        .{ .source = "export type {foo, bar as baz}", .output = "" },
         .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
         .{ .source = "export type {foo} from 'bar'\nx", .output = "x;\n" },
         .{ .source = "export type {default} from 'bar'", .output = "" },
