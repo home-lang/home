@@ -3623,11 +3623,13 @@ const harness_prelude =
     \\  }
     \\  function installMooTarballWithRegistryBar() {
     \\    const mooLiteral = String(deps["@barn/moo"] || "").replace(/\\\\/g, "/");
-    \\    if (!/^https?:\/\/.*\/moo-0.1.0\.tgz$/.test(mooLiteral) || !Object.prototype.hasOwnProperty.call(deps, "bar")) return null;
+    \\    if (!/^https?:\/\/.*\/moo-0.1.0\.tgz$/.test(mooLiteral)) return null;
+    \\    const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\    const explicitBar = Object.prototype.hasOwnProperty.call(deps, "bar");
     \\    addRequest(mooLiteral);
-    \\    addRequest(registryBase + "/bar");
+    \\    if (!hadLock) addRequest(registryBase + "/bar");
     \\    addRequest(registryBase + "/bar-0.0.2.tgz");
-    \\    addRequest(registryBase + "/baz");
+    \\    if (!hadLock) addRequest(registryBase + "/baz");
     \\    addRequest(registryBase + "/baz-0.0.3.tgz");
     \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
     \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
@@ -3640,7 +3642,8 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../baz/index.js");
     \\    __home_pkg_write_json(__home_build_join(bazDir, "package.json"), { name: "baz", version: "0.0.3", bin: { "baz-run": "index.js" } });
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-tarball-dedupe-lockb\n");
-    \\    return completed("bun install v1.0.0\n\n+ @barn/moo@" + mooLiteral + "\n+ bar@0.0.2\n\n3 packages installed", "Saved lockfile\n", 0);
+    \\    const barLine = explicitBar ? "\n+ bar@0.0.2" : "";
+    \\    return completed("bun install v1.0.0\n\n+ @barn/moo@" + mooLiteral + barLine + "\n\n3 packages installed", hadLock ? "" : "Saved lockfile\n", 0);
     \\  }
     \\  function installUsesWhatBin() {
     \\    __home_write_installed_package(cwd, "what-bin", { name: "what-bin", version: "1.0.0" });
@@ -55045,6 +55048,132 @@ test "bootstrap runner models bun install tarball deduplication" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installMooTarballWithRegistryBar") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install tarball existing lockfile" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\async function runInstall(expectSavedLockfile) {
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  if (expectSavedLockfile) {
+        \\    expect(err).toContain("Saved lockfile");
+        \\  } else {
+        \\    expect(err).not.toContain("Saved lockfile");
+        \\  }
+        \\  const out = await stdout.text();
+        \\  const mooTarball = `${root_url}/moo-0.1.0.tgz`;
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    `+ @barn/moo@${mooTarball}`,
+        \\    "",
+        \\    "3 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\}
+        \\
+        \\async function expectGraph() {
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "@barn", "bar", "baz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "baz", "index.js"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "@barn"))).toEqual(["moo"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "@barn", "moo"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "@barn", "moo", "package.json")).json()).toEqual({
+        \\    name: "@barn/moo",
+        \\    version: "0.1.0",
+        \\    dependencies: {
+        \\      bar: "0.0.2",
+        \\      baz: "latest",
+        \\    },
+        \\  });
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: {
+        \\      "baz-run": "index.js",
+        \\    },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should handle tarball URL with existing lockfile", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.0.2": {},
+        \\    "0.0.3": {
+        \\      bin: {
+        \\        "baz-run": "index.js",
+        \\      },
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      "@barn/moo": `${root_url}/moo-0.1.0.tgz`,
+        \\    },
+        \\  }));
+        \\  await runInstall(true);
+        \\  expect(urls.sort()).toEqual([
+        \\    `${root_url}/bar`,
+        \\    `${root_url}/bar-0.0.2.tgz`,
+        \\    `${root_url}/baz`,
+        \\    `${root_url}/baz-0.0.3.tgz`,
+        \\    `${root_url}/moo-0.1.0.tgz`,
+        \\  ]);
+        \\  expect(requested).toBe(5);
+        \\  await expectGraph();
+        \\
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  urls.length = 0;
+        \\  await runInstall(false);
+        \\  expect(urls.sort()).toEqual([
+        \\    `${root_url}/bar-0.0.2.tgz`,
+        \\    `${root_url}/baz-0.0.3.tgz`,
+        \\    `${root_url}/moo-0.1.0.tgz`,
+        \\  ]);
+        \\  expect(requested).toBe(8);
+        \\  await expectGraph();
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "hadLock") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
