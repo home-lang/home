@@ -18022,6 +18022,9 @@ const harness_prelude =
     \\    __home_write_what_bin_fixture(nestedRoot, nestedWhatBin, version);
     \\    __home_pkg_write_json(__home_build_join(nestedWhatBin, "package.json"), { name: "what-bin", version, bin: { "what-bin": "what-bin.js" } });
     \\    __home_build_write_text(__home_build_join(packageDir, "what-bin.txt"), "what-bin@" + version);
+    \\  } else if (name === "bin-change-dir") {
+    \\    pkg.bin = { "bin-change-dir": "bin-change-dir.js" };
+    \\    __home_build_write_text(__home_build_join(packageDir, "bin-change-dir.js"), "bin-change-dir@" + String(pkg && pkg.version || "1.0.0") + "\n");
     \\  } else if (name === "electron") {
     \\    pkg.scripts = { preinstall: "bun preinstall.js" };
     \\    __home_build_write_text(__home_build_join(packageDir, "preinstall.txt"), "preinstall!");
@@ -18868,10 +18871,16 @@ const harness_prelude =
     \\  const args = options && options.production ? ["--production"] : [];
     \\  const result = __home_install_workspaces(env, dir, "install", args);
     \\  let out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
+    \\  const rootDeps = Object.assign({}, result.graph.rootPkg.dependencies || {}, result.graph.rootPkg.devDependencies || {});
+    \\  if (Object.prototype.hasOwnProperty.call(rootDeps, "bin-change-dir") && result.graph.rootPkg.scripts && result.graph.rootPkg.scripts.postinstall === "bin-change-dir") {
+    \\    const version = __home_registry_version("bin-change-dir", rootDeps["bin-change-dir"]);
+    \\    __home_build_write_text(__home_build_join(result.graph.root, "bin-" + version + ".txt"), "success!");
+    \\    out = "bun install v1.0.0\n\n+ bin-change-dir@" + version + "\n\n1 package installed";
+    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts") && result.graph.rootPkg && Array.isArray(result.graph.rootPkg.workspaces) && result.graph.rootPkg.devDependencies && result.graph.rootPkg.devDependencies.a1 && result.graph.byName.pkg1 && result.graph.byName.pkg2) {
     \\    out = options && options.production ? "bun install v1.0.0\n\n+ no-deps@1.0.0\n\n4 packages installed" : "bun install v1.0.0\n\n+ a1@1.0.0\n+ no-deps@1.0.0\n\n7 packages installed";
     \\  }
-    \\  const deps = Object.assign({}, result.graph.rootPkg.dependencies || {}, result.graph.rootPkg.devDependencies || {});
+    \\  const deps = rootDeps;
     \\  if (Object.prototype.hasOwnProperty.call(deps, "uses-what-bin") && Object.prototype.hasOwnProperty.call(deps, "what-bin")) {
     \\    const trusted = Array.isArray(result.graph.rootPkg.trustedDependencies) ? result.graph.rootPkg.trustedDependencies.map(String) : [];
     \\    out = "bun install v1.0.0\n\n+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]) + "\n+ what-bin@" + __home_registry_version("what-bin", deps["what-bin"]) + "\n\n3 packages installed" + (trusted.includes("uses-what-bin") ? "" : "\n\nBlocked 1 postinstall. Run `bun pm untrusted` for details.\n");
@@ -54284,7 +54293,7 @@ test "bootstrap runner models bun install registry peer and override cases" {
     const source =
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { mkdir, rm, writeFile } from "fs/promises";
+        \\import { exists, mkdir, rm, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, readdirSorted, runBunInstall, tempDirWithFiles } from "harness";
         \\import { join } from "path";
         \\
@@ -54349,7 +54358,7 @@ test "bootstrap runner models bun install registry basic installs" {
     const source =
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { mkdir, rm, writeFile } from "fs/promises";
+        \\import { exists, mkdir, rm, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, tempDirWithFiles } from "harness";
         \\import { join } from "path";
         \\
@@ -55015,7 +55024,7 @@ test "bootstrap runner models bun install registry binary relinks" {
     const source =
         \\import { file } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { mkdir, rm, writeFile } from "fs/promises";
+        \\import { exists, mkdir, rm, writeFile } from "fs/promises";
         \\import { assertManifestsPopulated, bunEnv as env, runBunInstall, tempDirWithFiles, toBeValidBin } from "harness";
         \\import { join } from "path";
         \\
@@ -55127,6 +55136,64 @@ test "bootstrap runner models bun install registry binary relinks" {
         \\  ]);
         \\  expect(results).toEqual(["what-bin@1.5.0", "what-bin@1.0.0", "what-bin@1.0.0"]);
         \\});
+        \\
+        \\test("binaries are re-linked when package versions update", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-bin-change-dir-update", {});
+        \\  const packageJson = join(packageDir, "package.json");
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "bin-change-dir": "1.0.0",
+        \\    },
+        \\    scripts: {
+        \\      postinstall: "bin-change-dir",
+        \\    },
+        \\  }));
+        \\
+        \\  let { out, err, exited } = await runBunInstall(env, packageDir);
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    expect.stringContaining("+ bin-change-dir@1.0.0"),
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(await file(join(packageDir, "bin-1.0.0.txt")).text()).toEqual("success!");
+        \\  expect(await exists(join(packageDir, "bin-1.0.1.txt"))).toBeFalse();
+        \\
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "bin-change-dir": "1.0.1",
+        \\    },
+        \\    scripts: {
+        \\      postinstall: "bin-change-dir",
+        \\    },
+        \\  }));
+        \\
+        \\  ({ out, err, exited } = await runBunInstall(env, packageDir));
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    expect.stringContaining("+ bin-change-dir@1.0.1"),
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(await file(join(packageDir, "bin-1.0.0.txt")).text()).toEqual("success!");
+        \\  expect(await file(join(packageDir, "bin-1.0.1.txt")).text()).toEqual("success!");
+        \\});
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
@@ -55142,7 +55209,7 @@ test "bootstrap runner models bun install registry binary relinks" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
