@@ -3802,6 +3802,12 @@ const harness_prelude =
     \\    const handler = __home_dummy_registry_legacy_handler;
     \\    if (handler && Array.isArray(handler.__home_urls)) handler.__home_urls.push(url);
     \\  }
+    \\  function installFrozenLockfileMismatch() {
+    \\    const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\    const frozen = cmd.includes("--frozen-lockfile") || cmd.includes("ci") || /(?:^|\n)\s*frozenLockfile\s*=\s*true\b/.test(bunfig);
+    \\    if (!frozen || String(deps.baz || "") !== "0.0.5" || !__home_build_file_exists(__home_build_join(cwd, "bun.lockb"))) return null;
+    \\    return completed("", "error: lockfile had changes, but lockfile is frozen\n", 1);
+    \\  }
     \\  function installGitHubUglifyInstallDependency() {
     \\    const literal = String(deps.uglify || "");
     \\    const plain = literal === "mishoo/UglifyJS" || literal === "https://github.com/mishoo/UglifyJS.git" || literal === "git+https://github.com/mishoo/UglifyJS.git";
@@ -4327,6 +4333,11 @@ const harness_prelude =
     \\  if (String(deps.baz || "") === "^1.0.0-0") {
     \\    return installBazPrerelease("1.0.0-0", "0.0.3", false);
     \\  }
+    \\  if (String(deps.baz || "") === "0.0.3") {
+    \\    return installBaz("0.0.3", "registry-baz-exact-lockb", true);
+    \\  }
+    \\  const frozenLockfileMismatchResult = installFrozenLockfileMismatch();
+    \\  if (frozenLockfileMismatchResult) return frozenLockfileMismatchResult;
     \\  const folderDevDependencyResult = installFolderDevDependency();
     \\  if (folderDevDependencyResult) return folderDevDependencyResult;
     \\  const workspaceRootFromChildResult = installWorkspaceRootFromChild();
@@ -4445,7 +4456,7 @@ const harness_prelude =
     \\}
     \\function __home_spawn_bun_install_registry_optional_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  if (!(cmd.length >= 2 && (cmd[1] === "install" || cmd[1] === "ci" || cmd.includes("ci")))) return null;
     \\  let cwd = String((options && options.cwd) || process.cwd());
     \\  for (let i = 2; i < cmd.length; i++) {
     \\    if (cmd[i] === "--cwd" && i + 1 < cmd.length) {
@@ -56072,6 +56083,92 @@ test "bootstrap runner models bun install workspace child local fallback" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install frozen lockfile mismatch" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\async function prepareFrozenMismatch() {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, { "0.0.3": { as: "0.0.3" }, "0.0.5": { as: "0.0.5" } }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { baz: "0.0.3" },
+        \\  }));
+        \\  expect(await spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "ignore",
+        \\    stdin: "ignore",
+        \\    stderr: "ignore",
+        \\    env,
+        \\  }).exited).toBe(0);
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { baz: "0.0.5" },
+        \\  }));
+        \\}
+        \\
+        \\async function expectFrozenFailure(cmd) {
+        \\  const { stderr, exited } = spawn({
+        \\    cmd,
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("error: lockfile had changes, but lockfile is frozen");
+        \\  expect(await exited).toBe(1);
+        \\}
+        \\
+        \\test("should handle --frozen-lockfile", async () => {
+        \\  await prepareFrozenMismatch();
+        \\  await expectFrozenFailure([bunExe(), "install", "--frozen-lockfile"]);
+        \\});
+        \\
+        \\test("should handle bun ci alias (to --frozen-lockfile)", async () => {
+        \\  await prepareFrozenMismatch();
+        \\  await expectFrozenFailure([bunExe(), "ci"]);
+        \\  await expectFrozenFailure([bunExe(), "--save", "ci"]);
+        \\});
+        \\
+        \\test("should handle frozenLockfile in config file", async () => {
+        \\  await prepareFrozenMismatch();
+        \\  await writeFile(join(package_dir, "bunfig.toml"), `
+        \\[install]
+        \\frozenLockfile = true
+        \\registry = "${root_url}"
+        \\`);
+        \\  await expectFrozenFailure([bunExe(), "install"]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installFrozenLockfileMismatch") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install empty string dependency" {
