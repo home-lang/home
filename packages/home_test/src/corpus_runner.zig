@@ -63698,6 +63698,7 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\    version: "0.0.1",
         \\    dependencies: { uglify: "mishoo/UglifyJS#v3.14.1" },
         \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
