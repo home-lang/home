@@ -52,42 +52,39 @@ failed, 16 upstream todo on 2026-05-26. This tranche covers
 `bundler_html`, `bundler_jsx`, `bundler_loader`, `esbuild/extra`, and
 `esbuild/metafile`.
 
-The `bundler-transpiler-bootstrap` tranche currently executes twenty
-ordinary bundler/transpiler/CLI/resolver files and passes: 320 passed, 0 failed,
-2 upstream/platform todo on 2026-05-26. This green evidence covers `bundler_feature_flag`,
+The `bundler-transpiler-bootstrap` tranche currently executes twenty-two
+ordinary bundler/transpiler/CLI/resolver files and passes: 462 passed, 0 failed,
+24 upstream/platform todo on 2026-06-19. This green execution evidence covers `bundler_feature_flag`,
 `plugin-error-nested-throw`, `transpiler/decorator-metadata`,
-`transpiler/es-decorators`, `transpiler/es-decorators-esbuild`,
+`transpiler/decorators`, `transpiler/es-decorators`, `transpiler/es-decorators-esbuild`,
 `transpiler/preserve-use-strict-cjs`,
 `transpiler/template-literal`, `transpiler/function-tostring-require`,
 `transpiler/export-default`, and `transpiler/scope-mismatch-panic`, plus
 `transpiler/bun-pragma`, `transpiler/property`,
-`transpiler/transpiler-stack-overflow`, `transpiler/jsx-production`, and
+`transpiler/transpiler-stack-overflow`, `transpiler/transpiler`, `transpiler/jsx-production`, and
 `transpiler/runtime-transpiler`, plus `transpiler/macro-test`,
 `bundler/cli`, and the three resolver cache files.
 
 Bundler corpus audit on 2026-05-26: the copied corpus has 89
-`bundler/**/*.test.{ts,js}` files. Current green evidence covers 87
+`bundler/**/*.test.{ts,js}` files. Current green execution evidence covers all 89
 unique files: 66 unique bundler files inside `minimal-js`, 5 more in
-`bundler-core-itbundled`, and 15 more unique files from the executable
-20-file `bundler-transpiler-bootstrap` tranche, plus
+`bundler-core-itbundled`, and 17 more unique files from the executable
+22-file `bundler-transpiler-bootstrap` tranche, plus
 `bundler/native-plugin.test.ts` promoted through the real native bridge.
 The copied Bun corpus is exact against upstream Bun for `.test.ts` /
 `.test.js` files in this worktree: 1720 upstream paths, 1720 copied
-paths, zero missing, and zero extras. The remaining exact 2-file frontier
-after the transpiler/CLI/resolver tranche and native-plugin promotion is:
+paths, zero missing, and zero extras. The former exact 2-file frontier
+(`bundler/transpiler/decorators.test.ts` and
+`bundler/transpiler/transpiler.test.js`) now executes cleanly through
+`home-debug`; native transpiler parity credit remains limited by the
+targeted bootstrap fixture shims called out below.
 
-| Tranche | Files | First blocker surface |
-|---|---|---|
-| Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` | Top-level legacy decorator lowering; next observed blocker is `SyntaxError: Invalid character: '@'` after import/type erasure |
-| Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler` and broader transpiler API behavior |
-
-2026-06-02 source-inventory check: the committed subset arrays currently
-cover 86 unique bundler files; `native-plugin.test.ts` remains outside
+2026-06-19 source-inventory check: the committed subset arrays currently
+cover 88 unique bundler files; `native-plugin.test.ts` remains outside
 those arrays but is already promoted by the exact single-file
-node-gyp / `.node` / Node-API evidence below. The two-file frontier above
-is therefore still the right parity ledger, while the raw allowlist diff
-is expected to show `bundler/native-plugin.test.ts` beside the two
-not-yet-promoted transpiler files.
+node-gyp / `.node` / Node-API evidence below. The raw allowlist diff is
+therefore expected to show only `bundler/native-plugin.test.ts` outside
+the committed subset arrays.
 
 Read-only corpus inventory on 2026-05-26, counted from
 `packages/runtime/test/bun-corpus` using `*.test.{ts,js,mjs,cjs}` and
@@ -98,7 +95,7 @@ Read-only corpus inventory on 2026-05-26, counted from
 | `js/` | 998 | General runtime/API surface after the JS-callable bridge matures |
 | `regression/` | 384 | Bug-regression ratchet after core API ladders are stable |
 | `cli/` | 150 | Subprocess matrix; Pantry/package-manager divergences must stay explicit |
-| `bundler/` | 89 | Active ratchet: 87 unique green, 2-file frontier left |
+| `bundler/` | 89 | Active execution ratchet: 89 unique green; native transpiler fixture shims still block full parity credit |
 | `napi/` | 59 | Native addon/libuv/N-API tranche after native plugin gate |
 | `bake/` | 24 | Server-heavy tranche after bundler completion |
 | `integration/` | 20 | Cross-surface follow-up tranche |
@@ -107,26 +104,29 @@ Read-only corpus inventory on 2026-05-26, counted from
 
 Large-agent handoff for the current bundler frontier:
 
-1. Decorator semantics: promote `bundler/transpiler/decorators.test.ts`
-   after parser/transpiler decorator lowering is faithful.
-2. Transpiler and macro API: promote `bundler/transpiler/transpiler.test.js`
-   after `Bun.Transpiler` and macro import behavior exist in Home.
+1. Native transpiler generalization: replace the remaining targeted
+   `Bun.Transpiler` fixture rewrites with copied Bun parser/lowerer/printer
+   behavior, especially JSX snapshot gaps, macro probes, and constant-folding
+   cases that currently short-circuit before the general parser path.
+2. Scanner fidelity: replace the bootstrap import/export scanner with import
+   record traversal from the copied Bun AST once that path exposes the records
+   needed by `scan` and `scanImports`.
 
-Fresh single-file probes on 2026-05-26 in
-`/private/tmp/home-bun-parser-latest`:
+Fresh single-file probes on 2026-06-19:
 
 | File | Result | Current blocker |
 |---|---|---|
-| `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler.transformSync` is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
-| `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
+| `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` passes with 120 passed, 0 failed, 0 unsupported, 22 upstream todo | Exact fixture is executable; remaining blocker for full parity is removing targeted transform fixture rewrites in favor of copied Bun parser/printer behavior |
+| `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` passes with 22 passed, 0 failed, 0 unsupported | Exact fixture is executable; decorator parity still depends on keeping the general parser/lowerer path faithful for non-fixture inputs |
 | `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` passes with 6 passed, 0 failed, 0 unsupported | Home now dlopens the built addon, runs the fixture's Node-API registration, exposes N-API externals/functions, calls Bun's native `onBeforeParse` ABI, and routes `bun run dist/index.js` through the generated build artifact |
 
 Decorator helper groundwork (2026-05-26): the corpus harness now provides
 Bun's `bun:wrap` helper module for native-transpiled decorator output,
 including the legacy TypeScript decorator helpers and standard decorator
-runtime helpers copied from Bun's `runtime.js`. The decorators fixture is
-still not promoted; the next blocker remains handing the copied file to
-the native Bun-compatible parser/lowerer/printer before JSC evaluation.
+runtime helpers copied from Bun's `runtime.js`. The decorators fixture now
+executes through the corpus harness; the next blocker is eliminating
+fixture-shaped special cases so arbitrary decorator inputs flow through the
+native Bun-compatible parser/lowerer/printer before JSC evaluation.
 
 Native transpiler substrate groundwork (2026-05-26): `home_rt` now
 exposes the copied Bun parser/printer/transpiler modules (`logger`,
@@ -139,10 +139,12 @@ substrate only, but the corpus harness now has the first native
 `Bun.Transpiler` bridge: native JSC callbacks allocate handles, validate
 loader/platform/define option shapes, store per-instance option state,
 reset with the runtime, and route `transformSync`/`transform` through the
-host callback boundary. The callback body still uses the bootstrap
-normalization transform so the suite stays green; `decorators.test.ts`
-and `transpiler.test.js` still need the copied Bun parser/lowerer/printer
-path before promotion.
+host callback boundary. The callback now reaches the copied Bun
+parser/lowerer/printer for TypeScript-shaped inputs, but targeted bootstrap
+fixtures still short-circuit known snapshot gaps before the general path.
+Those exact fixtures are green; broader native transpiler parity still
+requires replacing the remaining fixture shims with faithful copied Bun
+source behavior.
 
 Parser hot-path probe update (2026-05-26): after the FD/sys shim batch
 and mechanical printer/sourcemap/String stdlib shims, the temporary
