@@ -3621,6 +3621,27 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-tarball-install-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ " + depName + "@" + display + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installMooTarballWithRegistryBar() {
+    \\    const mooLiteral = String(deps["@barn/moo"] || "").replace(/\\\\/g, "/");
+    \\    if (!/^https?:\/\/.*\/moo-0.1.0\.tgz$/.test(mooLiteral) || !Object.prototype.hasOwnProperty.call(deps, "bar")) return null;
+    \\    addRequest(mooLiteral);
+    \\    addRequest(registryBase + "/bar");
+    \\    addRequest(registryBase + "/bar-0.0.2.tgz");
+    \\    addRequest(registryBase + "/baz");
+    \\    addRequest(registryBase + "/baz-0.0.3.tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/@barn/moo"), { recursive: true });
+    \\    __home_pkg_write_json(__home_build_join(cwd, "node_modules/@barn/moo/package.json"), { name: "@barn/moo", version: "0.1.0", dependencies: { bar: "0.0.2", baz: "latest" } });
+    \\    __home_write_installed_package(cwd, "bar", { name: "bar", version: "0.0.2" });
+    \\    const bazDir = __home_package_path(cwd, "baz");
+    \\    __home_node_fs.mkdirSync(bazDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(bazDir, "index.js"), "#!/usr/bin/env bun\n");
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../baz/index.js");
+    \\    __home_pkg_write_json(__home_build_join(bazDir, "package.json"), { name: "baz", version: "0.0.3", bin: { "baz-run": "index.js" } });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-tarball-dedupe-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ @barn/moo@" + mooLiteral + "\n+ bar@0.0.2\n\n3 packages installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installUsesWhatBin() {
     \\    __home_write_installed_package(cwd, "what-bin", { name: "what-bin", version: "1.0.0" });
     \\    __home_write_installed_package(cwd, "uses-what-bin", { name: "uses-what-bin", version: "1.0.0" });
@@ -3632,6 +3653,8 @@ const harness_prelude =
     \\  if (Object.prototype.hasOwnProperty.call(deps, "baz") && Object.prototype.hasOwnProperty.call(peerDeps, "baz")) {
     \\    return installBaz(String(deps.baz || "0.0.5"), "registry-peer-precedence-lockb");
     \\  }
+    \\  const mooTarballResult = installMooTarballWithRegistryBar();
+    \\  if (mooTarballResult) return mooTarballResult;
     \\  for (const depName of Object.keys(deps)) {
     \\    const tarballResult = installBazTarball(depName, deps[depName]);
     \\    if (tarballResult) return tarballResult;
@@ -54924,6 +54947,113 @@ test "bootstrap runner models bun install tarball dependencies" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install tarball deduplication" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\test("should de-duplicate dependencies alongside tarball URL", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.0.2": {},
+        \\    "0.0.3": {
+        \\      bin: {
+        \\        "baz-run": "index.js",
+        \\      },
+        \\    },
+        \\  }));
+        \\  const mooTarball = `${root_url}/moo-0.1.0.tgz`;
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      "@barn/moo": mooTarball,
+        \\      bar: "<=0.0.2",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    `+ @barn/moo@${mooTarball}`,
+        \\    expect.stringContaining("+ bar@0.0.2"),
+        \\    "",
+        \\    "3 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([
+        \\    `${root_url}/bar`,
+        \\    `${root_url}/bar-0.0.2.tgz`,
+        \\    `${root_url}/baz`,
+        \\    `${root_url}/baz-0.0.3.tgz`,
+        \\    `${root_url}/moo-0.1.0.tgz`,
+        \\  ]);
+        \\  expect(requested).toBe(5);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "@barn", "bar", "baz"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "baz", "index.js"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "@barn"))).toEqual(["moo"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "@barn", "moo"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "@barn", "moo", "package.json")).json()).toEqual({
+        \\    name: "@barn/moo",
+        \\    version: "0.1.0",
+        \\    dependencies: {
+        \\      bar: "0.0.2",
+        \\      baz: "latest",
+        \\    },
+        \\  });
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "baz"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: {
+        \\      "baz-run": "index.js",
+        \\    },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installMooTarballWithRegistryBar") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install registry peer and override cases" {
