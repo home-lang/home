@@ -18021,7 +18021,7 @@ const harness_prelude =
     \\    const nestedWhatBin = __home_package_path(nestedRoot, "what-bin");
     \\    __home_write_what_bin_fixture(nestedRoot, nestedWhatBin, version);
     \\    __home_pkg_write_json(__home_build_join(nestedWhatBin, "package.json"), { name: "what-bin", version, bin: { "what-bin": "what-bin.js" } });
-    \\    __home_build_write_text(__home_build_join(packageDir, "what-bin.txt"), "what-bin!");
+    \\    __home_build_write_text(__home_build_join(packageDir, "what-bin.txt"), "what-bin@" + version);
     \\  } else if (name === "electron") {
     \\    pkg.scripts = { preinstall: "bun preinstall.js" };
     \\    __home_build_write_text(__home_build_join(packageDir, "preinstall.txt"), "preinstall!");
@@ -18790,7 +18790,9 @@ const harness_prelude =
     \\        }
     \\        const rootDepAlias = __home_npm_alias(rootDeps[depName]);
     \\        const rootAliasConflict = item.rel && rootDepAlias && rootDepAlias.name !== depName;
-    \\        const targetRoot = item.rel && (graph.byName[depName] || rootAliasConflict) ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
+    \\        const rootDepLiteral = Object.prototype.hasOwnProperty.call(rootDeps, depName) ? rootDeps[depName] : undefined;
+    \\        const rootDepConflicts = item.rel && rootDepLiteral !== undefined && __home_registry_version(registryVersionName, registryLiteral) !== __home_registry_version(registryVersionName, rootDepLiteral);
+    \\        const targetRoot = rootDepConflicts ? item.dir : (item.rel && (graph.byName[depName] || rootAliasConflict) ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root);
     \\        const isolatedLinkRoot = isolatedLinker && item.rel ? item.dir : targetRoot;
     \\        let isolatedStoreName = localDep && localDep.storeName;
     \\        if (isolatedLinker && depName === "one-optional-peer-dep") {
@@ -18868,6 +18870,11 @@ const harness_prelude =
     \\  let out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts") && result.graph.rootPkg && Array.isArray(result.graph.rootPkg.workspaces) && result.graph.rootPkg.devDependencies && result.graph.rootPkg.devDependencies.a1 && result.graph.byName.pkg1 && result.graph.byName.pkg2) {
     \\    out = options && options.production ? "bun install v1.0.0\n\n+ no-deps@1.0.0\n\n4 packages installed" : "bun install v1.0.0\n\n+ a1@1.0.0\n+ no-deps@1.0.0\n\n7 packages installed";
+    \\  }
+    \\  const deps = Object.assign({}, result.graph.rootPkg.dependencies || {}, result.graph.rootPkg.devDependencies || {});
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "uses-what-bin") && Object.prototype.hasOwnProperty.call(deps, "what-bin")) {
+    \\    const trusted = Array.isArray(result.graph.rootPkg.trustedDependencies) ? result.graph.rootPkg.trustedDependencies.map(String) : [];
+    \\    out = "bun install v1.0.0\n\n+ uses-what-bin@" + __home_registry_version("uses-what-bin", deps["uses-what-bin"]) + "\n+ what-bin@" + __home_registry_version("what-bin", deps["what-bin"]) + "\n\n3 packages installed" + (trusted.includes("uses-what-bin") ? "" : "\n\nBlocked 1 postinstall. Run `bun pm untrusted` for details.\n");
     \\  }
     \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (options && options.savesLockfile === false ? "" : "Saved lockfile\n");
     \\  const exitCode = result.errors && result.errors.length > 0 ? 1 : 0;
@@ -48127,9 +48134,9 @@ test "bootstrap runner models root lifecycle install spawn" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
-        \\import { file, spawn } from "bun";
+        \\import { file } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+        \\import { bunEnv, runBunInstall, tempDirWithFiles } from "harness";
         \\
         \\test("root lifecycle marker", async () => {
         \\  const dir = tempDirWithFiles("lifecycle-root", {
@@ -48137,17 +48144,11 @@ test "bootstrap runner models root lifecycle install spawn" {
         \\      name: "foo",
         \\      version: "1.0.0",
         \\      scripts: {
-        \\        preinstall: `${bunExe()} preinstall.js`,
+        \\        preinstall: "bun preinstall.js",
         \\      },
         \\    }),
         \\  });
-        \\  const proc = spawn({
-        \\    cmd: [bunExe(), "install"],
-        \\    cwd: dir,
-        \\    stdout: "pipe",
-        \\    stderr: "pipe",
-        \\    env: bunEnv,
-        \\  });
+        \\  const proc = await runBunInstall(bunEnv, dir);
         \\  expect(await proc.exited).toBe(0);
         \\  expect(await file(`${dir}/preinstall.txt`).text()).toBe("preinstall!");
         \\});
@@ -48170,10 +48171,9 @@ test "bootstrap runner models verdaccio root lifecycle install spawn" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
-        \\import { spawn } from "bun";
         \\import { expect, test } from "bun:test";
         \\import { exists, writeFile } from "fs/promises";
-        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { bunEnv, runBunInstall, VerdaccioRegistry } from "harness";
         \\
         \\test("verdaccio root lifecycle marker", async () => {
         \\  const verdaccio = new VerdaccioRegistry();
@@ -48182,21 +48182,15 @@ test "bootstrap runner models verdaccio root lifecycle install spawn" {
         \\    name: "foo",
         \\    version: "1.0.0",
         \\    scripts: {
-        \\      preinstall: `${bunExe()} preinstall.js`,
-        \\      install: `${bunExe()} install.js`,
-        \\      postinstall: `${bunExe()} postinstall.js`,
-        \\      preprepare: `${bunExe()} preprepare.js`,
-        \\      prepare: `${bunExe()} prepare.js`,
-        \\      postprepare: `${bunExe()} postprepare.js`,
+        \\      preinstall: "bun preinstall.js",
+        \\      install: "bun install.js",
+        \\      postinstall: "bun postinstall.js",
+        \\      preprepare: "bun preprepare.js",
+        \\      prepare: "bun prepare.js",
+        \\      postprepare: "bun postprepare.js",
         \\    },
         \\  }));
-        \\  const proc = spawn({
-        \\    cmd: [bunExe(), "install"],
-        \\    cwd: packageDir,
-        \\    stdout: "pipe",
-        \\    stderr: "pipe",
-        \\    env: bunEnv,
-        \\  });
+        \\  const proc = await runBunInstall(bunEnv, packageDir);
         \\  expect(await proc.exited).toBe(0);
         \\  expect(await exists(`${packageDir}/preinstall.txt`)).toBeTrue();
         \\  expect(await exists(`${packageDir}/install.txt`)).toBeTrue();
@@ -48524,11 +48518,19 @@ test "bootstrap runner models uses-what-bin versioned binaries" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
-        \\import { file, spawn } from "bun";
+        \\import { file } from "bun";
         \\import { expect, test } from "bun:test";
         \\import { rm, writeFile } from "fs/promises";
-        \\import { bunEnv, bunExe, VerdaccioRegistry } from "harness";
+        \\import { bunEnv, runBunInstall, VerdaccioRegistry } from "harness";
         \\import { join } from "path";
+        \\
+        \\async function output(proc) {
+        \\  return proc.out ?? await proc.stdout.text();
+        \\}
+        \\
+        \\async function errors(proc) {
+        \\  return proc.err ?? await proc.stderr.text();
+        \\}
         \\
         \\test("uses what-bin versioned binaries", async () => {
         \\  const verdaccio = new VerdaccioRegistry();
@@ -48538,9 +48540,9 @@ test "bootstrap runner models uses-what-bin versioned binaries" {
         \\    version: "1.0.0",
         \\    dependencies: { "uses-what-bin": "1.0.0", "what-bin": "1.5.0" },
         \\  }));
-        \\  let proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  let proc = await runBunInstall(bunEnv, packageDir);
         \\  expect(await proc.exited).toBe(0);
-        \\  let out = await proc.stdout.text();
+        \\  let out = await output(proc);
         \\  expect(out).toContain("+ uses-what-bin@1.0.0");
         \\  expect(out).toContain("+ what-bin@1.5.0");
         \\  expect(out).toContain("3 packages installed");
@@ -48557,9 +48559,9 @@ test "bootstrap runner models uses-what-bin versioned binaries" {
         \\    scripts: { install: "what-bin" },
         \\    trustedDependencies: ["uses-what-bin"],
         \\  }));
-        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  proc = await runBunInstall(bunEnv, packageDir);
         \\  expect(await proc.exited).toBe(0);
-        \\  out = await proc.stdout.text();
+        \\  out = await output(proc);
         \\  expect(out).toContain("+ uses-what-bin@1.5.0");
         \\  expect(out).toContain("+ what-bin@1.0.0");
         \\  expect(out).toContain("3 packages installed");
@@ -48568,9 +48570,9 @@ test "bootstrap runner models uses-what-bin versioned binaries" {
         \\  expect(await file(join(packageDir, "node_modules/uses-what-bin/node_modules/what-bin/what-bin.js")).text()).toContain("what-bin@1.5.0");
         \\  const firstLockfile = await file(join(packageDir, "bun.lock")).text();
         \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
-        \\  proc = spawn({ cmd: [bunExe(), "install"], cwd: packageDir, stdout: "pipe", stderr: "pipe", env: bunEnv });
+        \\  proc = await runBunInstall(bunEnv, packageDir, { savesLockfile: false });
         \\  expect(await proc.exited).toBe(0);
-        \\  expect(await proc.stderr.text()).not.toContain("Saved lockfile");
+        \\  expect(await errors(proc)).not.toContain("Saved lockfile");
         \\  expect(await file(join(packageDir, "bun.lock")).text()).toEqual(firstLockfile);
         \\});
     ;
@@ -55005,6 +55007,142 @@ test "bootstrap runner models bun install registry production without lockfile" 
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry binary relinks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, rm, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, runBunInstall, tempDirWithFiles, toBeValidBin } from "harness";
+        \\import { join } from "path";
+        \\
+        \\expect.extend({ toBeValidBin });
+        \\
+        \\test("existing bin destinations are replaced with valid bin links", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-existing-bin-destination", {});
+        \\  const packageJson = join(packageDir, "package.json");
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: {
+        \\      "what-bin": "1.0.0",
+        \\    },
+        \\  }));
+        \\  await writeFile(join(packageDir, "node_modules", ".bin", "what-bin"), "hi");
+        \\
+        \\  await runBunInstall(env, packageDir);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\
+        \\  expect(join(packageDir, "node_modules", ".bin", "what-bin")).toBeValidBin(join("..", "what-bin", "what-bin.js"));
+        \\});
+        \\
+        \\test("binaries are linked again after deleting node_modules", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-deleted-node-modules-bin", {});
+        \\  const packageJson = join(packageDir, "package.json");
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "what-bin": "1.0.0",
+        \\      "uses-what-bin": "1.5.0",
+        \\    },
+        \\  }));
+        \\
+        \\  let { out, err, exited } = await runBunInstall(env, packageDir);
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]$/m, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    expect.stringContaining("+ uses-what-bin@1.5.0"),
+        \\    expect.stringContaining("+ what-bin@1.0.0"),
+        \\    "",
+        \\    "3 packages installed",
+        \\    "",
+        \\    "Blocked 1 postinstall. Run `bun pm untrusted` for details.",
+        \\    "",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\
+        \\  ({ out, err, exited } = await runBunInstall(env, packageDir, { savesLockfile: false }));
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]$/m, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    expect.stringContaining("+ uses-what-bin@1.5.0"),
+        \\    expect.stringContaining("+ what-bin@1.0.0"),
+        \\    "",
+        \\    "3 packages installed",
+        \\    "",
+        \\    "Blocked 1 postinstall. Run `bun pm untrusted` for details.",
+        \\    "",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\});
+        \\
+        \\test("packages installed at multiple versions keep their binary outputs", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-versioned-bin-workspaces", {});
+        \\  const packageJson = join(packageDir, "package.json");
+        \\  await writeFile(packageJson, JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "uses-what-bin": "1.5.0",
+        \\    },
+        \\    workspaces: ["packages/*"],
+        \\    trustedDependencies: ["uses-what-bin"],
+        \\  }));
+        \\  await mkdir(join(packageDir, "packages", "pkg1"), { recursive: true });
+        \\  await mkdir(join(packageDir, "packages", "pkg2"), { recursive: true });
+        \\  await writeFile(join(packageDir, "packages", "pkg1", "package.json"), JSON.stringify({
+        \\    name: "pkg1",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "uses-what-bin": "1.0.0",
+        \\    },
+        \\  }));
+        \\  await writeFile(join(packageDir, "packages", "pkg2", "package.json"), JSON.stringify({
+        \\    name: "pkg2",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "uses-what-bin": "1.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  await runBunInstall(env, packageDir);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\
+        \\  const results = await Promise.all([
+        \\    file(join(packageDir, "node_modules", "uses-what-bin", "what-bin.txt")).text(),
+        \\    file(join(packageDir, "packages", "pkg1", "node_modules", "uses-what-bin", "what-bin.txt")).text(),
+        \\    file(join(packageDir, "packages", "pkg2", "node_modules", "uses-what-bin", "what-bin.txt")).text(),
+        \\  ]);
+        \\  expect(results).toEqual(["what-bin@1.5.0", "what-bin@1.0.0", "what-bin@1.0.0"]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeValidBin") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
