@@ -3179,6 +3179,27 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-config-cli-lockb\n");
     \\  return __home_spawn_completed("bun install v1.0.0\n\n" + (dev ? "2 packages installed\n" : "1 package installed\n"), "", 0);
     \\}
+    \\function __home_write_registry_cache_no_deps(cwd) {
+    \\  const cacheDir = __home_build_join(cwd, ".bun-cache/no-deps@2.0.0@@localhost@@@1");
+    \\  __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "2.0.0" });
+    \\  __home_node_fs.mkdirSync(cacheDir, { recursive: true });
+    \\  __home_build_write_text(__home_build_join(cacheDir, "index.js"), "module.exports = 'no-deps';\n");
+    \\  __home_pkg_write_json(__home_build_join(cacheDir, "package.json"), { name: "no-deps", version: "2.0.0" });
+    \\}
+    \\function __home_spawn_bun_install_registry_cache_invalidation_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  if (!(Object.keys(deps).length === 1 && deps["no-deps"] === "2.0.0")) return null;
+    \\  const nodePackageJson = __home_build_join(cwd, "node_modules/no-deps/package.json");
+    \\  const shouldInstall = !__home_build_file_exists(nodePackageJson);
+    \\  if (shouldInstall) __home_write_registry_cache_no_deps(cwd);
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-cache-invalidation-lockb\n");
+    \\  const out = shouldInstall ? "bun install v1.0.0\n\n+ no-deps@2.0.0\n\n1 package installed\n" : "bun install v1.0.0\n\n0 packages installed\n";
+    \\  return __home_spawn_completed(out, options && options.savesLockfile === false ? "" : "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_global_bin_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && (cmd[1] === "i" || cmd[1] === "install") && cmd.includes("-g"))) return null;
@@ -7458,6 +7479,8 @@ const harness_prelude =
     \\  if (installRegistryMissingDirectoryBinFixture) return installRegistryMissingDirectoryBinFixture;
     \\  const installRegistryConfigCliFixture = __home_spawn_bun_install_registry_config_cli_fixture(options);
     \\  if (installRegistryConfigCliFixture) return installRegistryConfigCliFixture;
+    \\  const installRegistryCacheInvalidationFixture = __home_spawn_bun_install_registry_cache_invalidation_fixture(options);
+    \\  if (installRegistryCacheInvalidationFixture) return installRegistryCacheInvalidationFixture;
     \\  const installRegistryGlobalBinFixture = __home_spawn_bun_install_registry_global_bin_fixture(options);
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
@@ -18995,6 +19018,17 @@ const harness_prelude =
     \\  if (registryPeerOverride) return Promise.resolve(registryPeerOverride);
     \\  const registryOptional = __home_registry_optional_install_fixture(env, dir, options || {}, [process.execPath, "install"]);
     \\  if (registryOptional) return Promise.resolve(registryOptional);
+    \\  const registryCacheInvalidation = __home_spawn_bun_install_registry_cache_invalidation_fixture({ cmd: [process.execPath, "install"], cwd: dir, env, savesLockfile: options && options.savesLockfile });
+    \\  if (registryCacheInvalidation) {
+    \\    return Promise.all([registryCacheInvalidation.stdout.text(), registryCacheInvalidation.stderr.text(), registryCacheInvalidation.exited]).then(([out, err, exitCode]) => ({
+    \\      exitCode,
+    \\      out,
+    \\      err,
+    \\      stdout: __home_spawn_pipe_text(out),
+    \\      stderr: __home_spawn_pipe_text(err),
+    \\      exited: Promise.resolve(exitCode),
+    \\    }));
+    \\  }
     \\  const args = options && options.production ? ["--production"] : [];
     \\  const result = __home_install_workspaces(env, dir, "install", args);
     \\  let out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
@@ -55580,6 +55614,78 @@ test "bootstrap runner models bun install registry config cli flag" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_config_cli_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry cache package invalidation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, readdirSorted, runBunInstall, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("cached package is invalidated when package.json is missing", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-cache-package-json", {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: {
+        \\      "no-deps": "2.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  let { out } = await runBunInstall(env, packageDir);
+        \\  expect(out).toContain("+ no-deps@2.0.0");
+        \\  expect(await Promise.all([
+        \\    readdirSorted(join(packageDir, "node_modules", "no-deps")),
+        \\    readdirSorted(join(packageDir, ".bun-cache", "no-deps@2.0.0@@localhost@@@1")),
+        \\  ])).toEqual([
+        \\    ["index.js", "package.json"],
+        \\    ["index.js", "package.json"],
+        \\  ]);
+        \\
+        \\  await rm(join(packageDir, "node_modules", "no-deps", "package.json"));
+        \\  ({ out } = await runBunInstall(env, packageDir, { savesLockfile: false }));
+        \\  expect(out).toContain("+ no-deps@2.0.0");
+        \\
+        \\  ({ out } = await runBunInstall(env, packageDir, { savesLockfile: false }));
+        \\  expect(out).not.toContain("+ no-deps@2.0.0");
+        \\
+        \\  await rm(join(packageDir, ".bun-cache", "no-deps@2.0.0@@localhost@@@1", "package.json"));
+        \\  ({ out } = await runBunInstall(env, packageDir, { savesLockfile: false }));
+        \\  expect(out).not.toContain("+ no-deps@2.0.0");
+        \\  expect(await Promise.all([
+        \\    readdirSorted(join(packageDir, "node_modules", "no-deps")),
+        \\    readdirSorted(join(packageDir, ".bun-cache", "no-deps@2.0.0@@localhost@@@1")),
+        \\  ])).toEqual([["index.js", "package.json"], ["index.js"]]);
+        \\
+        \\  await rm(join(packageDir, "node_modules", "no-deps", "package.json"));
+        \\  ({ out } = await runBunInstall(env, packageDir, { savesLockfile: false }));
+        \\  expect(out).toContain("+ no-deps@2.0.0");
+        \\  expect(await Promise.all([
+        \\    readdirSorted(join(packageDir, "node_modules", "no-deps")),
+        \\    readdirSorted(join(packageDir, ".bun-cache", "no-deps@2.0.0@@localhost@@@1")),
+        \\  ])).toEqual([
+        \\    ["index.js", "package.json"],
+        \\    ["index.js", "package.json"],
+        \\  ]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_cache_invalidation_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
