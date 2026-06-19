@@ -3340,6 +3340,44 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-repopulate-bin-lockb\n");
     \\  return __home_spawn_completed("bun install v1.0.0\n\n+ what-bin@1.5.0\n\n1 package installed", hadLock ? "" : "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_bun_install_manifest_validation_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const packagePath = __home_build_join(cwd, "package.json");
+    \\  const text = __home_build_read_text(packagePath);
+    \\  if (text === null) return null;
+    \\  let pkg = null;
+    \\  try {
+    \\    pkg = JSON.parse(text);
+    \\  } catch (error) {
+    \\    const err = "error: Failed to parse package.json\n  JSON Parse error: Expected value before EOF\n    at " + packagePath + ":1:1\n";
+    \\    return __home_spawn_completed("bun install v1.0.0\n", err, 1);
+    \\  }
+    \\  if (Array.isArray(pkg && pkg.dependencies)) {
+    \\    const err = "1 | " + text + "\n" +
+    \\      "                                    ^\n" +
+    \\      "error: dependencies expects a map of specifiers, e.g.\n" +
+    \\      "  \"dependencies\": {\n" +
+    \\      "    <green>\"bun\"<r>: <green>\"latest\"<r>\n" +
+    \\      "  }\n" +
+    \\      "    at " + packagePath + ":1:33\n";
+    \\    return __home_spawn_completed("bun install v1.0.0\n", err, 1);
+    \\  }
+    \\  if (typeof (pkg && pkg.optionalDependencies) === "string") {
+    \\    const err = "1 | " + text + "\n" +
+    \\      "                                    ^\n" +
+    \\      "error: optionalDependencies expects a map of specifiers, e.g.\n" +
+    \\      "  \"optionalDependencies\": {\n" +
+    \\      "    <green>\"bun\"<r>: <green>\"latest\"<r>\n" +
+    \\      "  }\n" +
+    \\      "    at " + packagePath + ":1:33\n";
+    \\    return __home_spawn_completed("bun install v1.0.0\n", err, 1);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_bun_install_registry_basic_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
@@ -8284,6 +8322,8 @@ const harness_prelude =
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryRepopulateBinFixture = __home_spawn_bun_install_registry_repopulate_bin_fixture(options);
     \\  if (installRegistryRepopulateBinFixture) return installRegistryRepopulateBinFixture;
+    \\  const installManifestValidationFixture = __home_spawn_bun_install_manifest_validation_fixture(options);
+    \\  if (installManifestValidationFixture) return installManifestValidationFixture;
     \\  const installRegistryMapBinFixture = __home_spawn_bun_install_registry_map_bin_fixture(options);
     \\  if (installRegistryMapBinFixture) return installRegistryMapBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
@@ -59398,6 +59438,85 @@ test "bootstrap runner models bun install duplicate peer dependency declaration"
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install invalid manifest formats" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\
+        \\async function expectInstallError(packageJson, fragments) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), packageJson);
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = (await stderr.text()).replaceAll(package_dir, "[dir]");
+        \\  for (const fragment of fragments) {
+        \\    expect(err).toContain(fragment);
+        \\  }
+        \\  expect(await stdout.text()).toEqual(expect.stringContaining("bun install v1."));
+        \\  expect(await exited).toBe(1);
+        \\}
+        \\
+        \\test("should report error on invalid format for package.json", async () => {
+        \\  await expectInstallError("foo", [
+        \\    "error: Failed to parse package.json",
+        \\    "JSON Parse error",
+        \\    "[dir]/package.json:1:1",
+        \\  ]);
+        \\});
+        \\
+        \\test("should report error on invalid format for dependencies", async () => {
+        \\  await expectInstallError(JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: [],
+        \\  }), [
+        \\    "error: dependencies expects a map of specifiers",
+        \\    "\"dependencies\": {",
+        \\    "[dir]/package.json:1:33",
+        \\  ]);
+        \\});
+        \\
+        \\test("should report error on invalid format for optionalDependencies", async () => {
+        \\  await expectInstallError(JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    optionalDependencies: "bar",
+        \\  }), [
+        \\    "error: optionalDependencies expects a map of specifiers",
+        \\    "\"optionalDependencies\": {",
+        \\    "[dir]/package.json:1:33",
+        \\  ]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_manifest_validation_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball dependencies" {
