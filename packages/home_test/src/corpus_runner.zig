@@ -3973,6 +3973,20 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-github-tarball-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ when@" + literal + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installNonGitHubHttpTarballDependency() {
+    \\    const literal = String(deps["@vercel/turbopack-node"] || "");
+    \\    if (literal !== "https://gitpkg-fork.vercel.sh/vercel/turbo/crates/turbopack-node/js?turbopack-230922.2") return null;
+    \\    addRequest(literal);
+    \\    addRequest(registryBase + "/loader-runner");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    const packageDir = __home_package_path(cwd, "@vercel/turbopack-node");
+    \\    __home_node_fs.mkdirSync(__home_build_join(packageDir, "src"), { recursive: true });
+    \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "@vercel/turbopack-node", version: "0.0.0", dependencies: { "loader-runner": "4.3.0" } });
+    \\    __home_build_write_text(__home_build_join(packageDir, "tsconfig.json"), "{}\n");
+    \\    __home_write_installed_package(cwd, "loader-runner", { name: "loader-runner", version: "4.3.0" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-non-github-http-tarball-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ @vercel/turbopack-node@" + literal + "\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installEmptyStringBarDependency() {
     \\    if (!Object.prototype.hasOwnProperty.call(deps, "bar") || String(deps.bar) !== "") return null;
     \\    addRequest(registryBase + "/bar");
@@ -4087,6 +4101,8 @@ const harness_prelude =
     \\  if (scopedAliasExistingLockfileResult) return scopedAliasExistingLockfileResult;
     \\  const gitHubTarballResult = installGitHubTarballDependency();
     \\  if (gitHubTarballResult) return gitHubTarballResult;
+    \\  const nonGitHubHttpTarballResult = installNonGitHubHttpTarballDependency();
+    \\  if (nonGitHubHttpTarballResult) return nonGitHubHttpTarballResult;
     \\  const emptyStringBarResult = installEmptyStringBarDependency();
     \\  if (emptyStringBarResult) return emptyStringBarResult;
     \\  const barSemverSuccessResult = installBarSemverSuccessDependency();
@@ -59279,6 +59295,85 @@ test "bootstrap runner models bun install tarball dependencies" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install non github http tarball dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\
+        \\test("should treat non-GitHub http(s) URLs as tarballs (https://some.url/path?stuff)", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "4.3.0": { as: "4.3.0" },
+        \\  }));
+        \\  const literal = "https://gitpkg-fork.vercel.sh/vercel/turbo/crates/turbopack-node/js?turbopack-230922.2";
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      "@vercel/turbopack-node": literal,
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  let out = await stdout.text();
+        \\  out = out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "");
+        \\  out = out.replace(/(github:[^#]+)#[a-f0-9]+/, "$1");
+        \\  expect(out.split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    `+ @vercel/turbopack-node@${literal}`,
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toHaveLength(2);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([
+        \\    ".cache",
+        \\    "@vercel",
+        \\    "loader-runner",
+        \\  ]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "@vercel"))).toEqual(["turbopack-node"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "@vercel", "turbopack-node"))).toEqual([
+        \\    "package.json",
+        \\    "src",
+        \\    "tsconfig.json",
+        \\  ]);
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installNonGitHubHttpTarballDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball deduplication" {
