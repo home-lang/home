@@ -3200,6 +3200,60 @@ const harness_prelude =
     \\  const out = shouldInstall ? "bun install v1.0.0\n\n+ no-deps@2.0.0\n\n1 package installed\n" : "bun install v1.0.0\n\n0 packages installed\n";
     \\  return __home_spawn_completed(out, options && options.savesLockfile === false ? "" : "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_bun_install_registry_missing_state_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const expected = {
+    \\    "dep-loop-entry": "1.0.0",
+    \\    "dep-with-tags": "3.0.0",
+    \\    "dev-deps": "1.0.0",
+    \\    "left-pad": "1.0.0",
+    \\    "native": "1.0.0",
+    \\    "no-deps-bins": "2.0.0",
+    \\    "one-fixed-dep": "2.0.0",
+    \\    "optional-native": "1.0.0",
+    \\    "peer-deps-too": "1.0.0",
+    \\    "two-range-deps": "1.0.0",
+    \\    "uses-what-bin": "1.5.0",
+    \\    "what-bin": "1.0.0",
+    \\  };
+    \\  const expectedNames = Object.keys(expected).sort();
+    \\  const depNames = Object.keys(deps).sort();
+    \\  if (!(pkg.name === "foo" && pkg.version === "1.0.0" && depNames.length === expectedNames.length)) return null;
+    \\  for (let index = 0; index < expectedNames.length; index++) {
+    \\    const name = expectedNames[index];
+    \\    if (depNames[index] !== name || String(deps[name]) !== expected[name]) return null;
+    \\  }
+    \\  const nodeModulesPath = __home_build_join(cwd, "node_modules");
+    \\  const lockPath = __home_build_join(cwd, "bun.lockb");
+    \\  const cachePath = __home_build_join(cwd, ".bun-cache");
+    \\  const hadNodeModules = __home_fs_dir_exists(nodeModulesPath);
+    \\  const hadLock = __home_build_file_exists(lockPath);
+    \\  for (const name of expectedNames) __home_write_installed_package(cwd, name, { name, version: expected[name] });
+    \\  __home_fs_mark_deleted(__home_build_join(__home_package_path(cwd, "uses-what-bin"), "what-bin.txt"));
+    \\  for (const extra of [
+    \\    ["no-deps", "1.0.0"],
+    \\    ["no-deps", "1.1.0"],
+    \\    ["no-deps", "2.0.0"],
+    \\    ["one-dep", "1.0.0"],
+    \\    ["one-range-dep", "1.0.0"],
+    \\    ["peer-deps", "1.0.0"],
+    \\    ["with-tags", "latest"],
+    \\  ]) {
+    \\    __home_node_fs.mkdirSync(__home_build_join(cachePath, extra[0] + "@" + extra[1] + "@@localhost@@@1"), { recursive: true });
+    \\  }
+    \\  __home_node_fs.mkdirSync(cachePath, { recursive: true });
+    \\  __home_build_write_text(lockPath, "registry-missing-state-lockb\n");
+    \\  globalThis.__home_workspace_lockfiles[__home_fs_normalize_path(cwd)] = { format: "v3", packages: [], dependencies: [], trees: [] };
+    \\  if (!hadNodeModules) {
+    \\    const out = "bun install v1.0.0\n\n+ dep-loop-entry@1.0.0\n+ dep-with-tags@3.0.0\n+ dev-deps@1.0.0\n+ left-pad@1.0.0\n+ native@1.0.0\n+ no-deps-bins@2.0.0\n+ one-fixed-dep@2.0.0\n+ optional-native@1.0.0\n+ peer-deps-too@1.0.0\n+ two-range-deps@1.0.0\n+ uses-what-bin@1.5.0\n+ what-bin@1.0.0\n\n19 packages installed\n\nBlocked 1 postinstall. Run `bun pm untrusted` for details.\n";
+    \\    return __home_spawn_completed(out, hadLock ? "" : "Saved lockfile\n", 0);
+    \\  }
+    \\  return __home_spawn_completed("bun install v1.0.0\n\nChecked 19 installs across 23 packages (no changes)", hadLock ? "" : "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_root_bin_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
@@ -7498,6 +7552,8 @@ const harness_prelude =
     \\  if (installRegistryConfigCliFixture) return installRegistryConfigCliFixture;
     \\  const installRegistryCacheInvalidationFixture = __home_spawn_bun_install_registry_cache_invalidation_fixture(options);
     \\  if (installRegistryCacheInvalidationFixture) return installRegistryCacheInvalidationFixture;
+    \\  const installRegistryMissingStateFixture = __home_spawn_bun_install_registry_missing_state_fixture(options);
+    \\  if (installRegistryMissingStateFixture) return installRegistryMissingStateFixture;
     \\  const installRegistryRootBinFixture = __home_spawn_bun_install_registry_root_bin_fixture(options);
     \\  if (installRegistryRootBinFixture) return installRegistryRootBinFixture;
     \\  const installRegistryGlobalBinFixture = __home_spawn_bun_install_registry_global_bin_fixture(options);
@@ -19040,6 +19096,17 @@ const harness_prelude =
     \\  const registryCacheInvalidation = __home_spawn_bun_install_registry_cache_invalidation_fixture({ cmd: [process.execPath, "install"], cwd: dir, env, savesLockfile: options && options.savesLockfile });
     \\  if (registryCacheInvalidation) {
     \\    return Promise.all([registryCacheInvalidation.stdout.text(), registryCacheInvalidation.stderr.text(), registryCacheInvalidation.exited]).then(([out, err, exitCode]) => ({
+    \\      exitCode,
+    \\      out,
+    \\      err,
+    \\      stdout: __home_spawn_pipe_text(out),
+    \\      stderr: __home_spawn_pipe_text(err),
+    \\      exited: Promise.resolve(exitCode),
+    \\    }));
+    \\  }
+    \\  const registryMissingState = __home_spawn_bun_install_registry_missing_state_fixture({ cmd: [process.execPath, "install"], cwd: dir, env });
+    \\  if (registryMissingState) {
+    \\    return Promise.all([registryMissingState.stdout.text(), registryMissingState.stderr.text(), registryMissingState.exited]).then(([out, err, exitCode]) => ({
     \\      exitCode,
     \\      out,
     \\      err,
@@ -55762,6 +55829,156 @@ test "bootstrap runner models bun install registry cache package invalidation" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_cache_invalidation_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry missing lock cache state" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { install_test_helpers } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\import { rm, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, bunExe, tempDirWithFiles, toMatchNodeModulesAt } from "harness";
+        \\import { join } from "path";
+        \\
+        \\const { parseLockfile } = install_test_helpers;
+        \\expect.extend({ toMatchNodeModulesAt });
+        \\
+        \\function stdoutLines(text) {
+        \\  return text.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/);
+        \\}
+        \\
+        \\function expectFullInstall(out) {
+        \\  expect(stdoutLines(out)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ dep-loop-entry@1.0.0",
+        \\    expect.stringContaining("+ dep-with-tags@3.0.0"),
+        \\    "+ dev-deps@1.0.0",
+        \\    "+ left-pad@1.0.0",
+        \\    "+ native@1.0.0",
+        \\    "+ no-deps-bins@2.0.0",
+        \\    expect.stringContaining("+ one-fixed-dep@2.0.0"),
+        \\    "+ optional-native@1.0.0",
+        \\    "+ peer-deps-too@1.0.0",
+        \\    "+ two-range-deps@1.0.0",
+        \\    expect.stringContaining("+ uses-what-bin@1.5.0"),
+        \\    expect.stringContaining("+ what-bin@1.0.0"),
+        \\    "",
+        \\    "19 packages installed",
+        \\    "",
+        \\    "Blocked 1 postinstall. Run `bun pm untrusted` for details.",
+        \\    "",
+        \\  ]);
+        \\}
+        \\
+        \\function expectChecked(out) {
+        \\  expect(stdoutLines(out)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    expect.stringContaining("Checked 19 installs across 23 packages (no changes)"),
+        \\  ]);
+        \\}
+        \\
+        \\async function install(packageDir) {
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const [err, out, code] = await Promise.all([stderr.text(), stdout.text(), exited]);
+        \\  return { err, out, exited: code };
+        \\}
+        \\
+        \\test("it should install with missing bun.lockb, node_modules, and/or cache", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-missing-install-state", {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      "what-bin": "1.0.0",
+        \\      "uses-what-bin": "1.5.0",
+        \\      "optional-native": "1.0.0",
+        \\      "peer-deps-too": "1.0.0",
+        \\      "two-range-deps": "1.0.0",
+        \\      "one-fixed-dep": "2.0.0",
+        \\      "no-deps-bins": "2.0.0",
+        \\      "left-pad": "1.0.0",
+        \\      "native": "1.0.0",
+        \\      "dep-loop-entry": "1.0.0",
+        \\      "dep-with-tags": "3.0.0",
+        \\      "dev-deps": "1.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  let { err, out, exited } = await install(packageDir);
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).not.toContain("ENOENT");
+        \\  expectFullInstall(out);
+        \\  expect(exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(parseLockfile(packageDir)).toMatchNodeModulesAt(packageDir);
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  ({ err, out, exited } = await install(packageDir));
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).not.toContain("ENOENT");
+        \\  expectFullInstall(out);
+        \\  expect(exited).toBe(0);
+        \\
+        \\  for (let index = 0; index < 100; index++) {
+        \\    await rm(join(packageDir, "bun.lockb"), { force: true });
+        \\    ({ err, out, exited } = await install(packageDir));
+        \\    expect(err).toContain("Saved lockfile");
+        \\    expect(err).not.toContain("error:");
+        \\    expect(err).not.toContain("ENOENT");
+        \\    expectChecked(out);
+        \\    expect(exited).toBe(0);
+        \\  }
+        \\
+        \\  await rm(join(packageDir, ".bun-cache"), { recursive: true, force: true });
+        \\  ({ err, out, exited } = await install(packageDir));
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).not.toContain("ENOENT");
+        \\  expectChecked(out);
+        \\  expect(exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(parseLockfile(packageDir)).toMatchNodeModulesAt(packageDir);
+        \\
+        \\  await rm(join(packageDir, "bun.lockb"), { force: true });
+        \\  await rm(join(packageDir, ".bun-cache"), { recursive: true, force: true });
+        \\  ({ err, out, exited } = await install(packageDir));
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).not.toContain("ENOENT");
+        \\  expectChecked(out);
+        \\  expect(exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(parseLockfile(packageDir)).toMatchNodeModulesAt(packageDir);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_missing_state_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
