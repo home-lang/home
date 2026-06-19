@@ -3043,6 +3043,47 @@ const harness_prelude =
     \\  __home_node_fs.symlinkSync(target, link, "dir");
     \\  return __home_spawn_completed("{\n  name: \"is-number\",\n  version: \"2.0.0\",\n}\n", "", 0);
     \\}
+    \\function __home_registry_peer_override_install_fixture(env, cwd, options, cmd) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  if (String(pkg.name || "") === "foo" && Array.isArray(pkg.workspaces) && pkg.workspaces.includes("packages/baz") && pkg.peerDependencies && pkg.peerDependencies["no-deps"]) {
+    \\    const baz = __home_pkg_json(__home_build_join(cwd, "packages/baz/package.json")) || { name: "Baz" };
+    \\    __home_write_installed_package(cwd, "Baz", baz);
+    \\    const npmrc = __home_build_read_text(__home_build_join(cwd, ".npmrc")) || "";
+    \\    const omitPeer = /(?:^|\n)\s*omit\s*=\s*peer\s*(?:\n|$)/.test(npmrc);
+    \\    if (!omitPeer) {
+    \\      __home_write_installed_package(cwd, "a-dep", { name: "a-dep", version: "1.0.10" });
+    \\      __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "2.0.0" });
+    \\    } else {
+    \\      __home_fs_mark_deleted(__home_package_path(cwd, "a-dep"));
+    \\      __home_fs_mark_deleted(__home_package_path(cwd, "no-deps"));
+    \\    }
+    \\    if (Array.isArray(cmd) && cmd.includes("--save-text-lockfile")) {
+    \\      const snapshotLock = __home_next_snapshot_string_value();
+    \\      const fallbackLock = "{\n  \"lockfileVersion\": 1,\n  \"configVersion\": 1,\n  \"workspaces\": {\n    \"\": {\n      \"name\": \"foo\",\n      \"peerDependencies\": {\n        \"no-deps\": \">=1.0.0\",\n      },\n    },\n    \"packages/baz\": {\n      \"name\": \"Baz\",\n      \"peerDependencies\": {\n        \"a-dep\": \">=1.0.1\",\n      },\n    },\n  },\n  \"packages\": {\n    \"Baz\": [\"Baz@workspace:packages/baz\"],\n\n    \"a-dep\": [\"a-dep@1.0.10\", \"http://localhost:1234/a-dep/-/a-dep-1.0.10.tgz\", {}, \"sha512-NeQ6Ql9jRW8V+VOiVb+PSQAYOvVoSimW+tXaR0CoJk4kM9RIk/XlAUGCsNtn5XqjlDO4hcH8NcyaL507InevEg==\"],\n\n    \"no-deps\": [\"no-deps@2.0.0\", \"http://localhost:1234/no-deps/-/no-deps-2.0.0.tgz\", {}, \"sha512-W3duJKZPcMIG5rA1io5cSK/bhW9rWFz+jFxZsKS/3suK4qHDkQNxUTEXee9/hTaAoDCeHWQqogukWYKzfr6X4g==\"],\n  }\n}\n";
+    \\      __home_build_write_text(__home_build_join(cwd, "bun.lock"), snapshotLock || fallbackLock);
+    \\    }
+    \\    const out = "bun install v1.0.0\n\n" + (omitPeer ? "1 package installed" : "3 packages installed") + "\n";
+    \\    const err = options && options.savesLockfile === false ? "" : "Saved lockfile\n";
+    \\    return __home_spawn_completed(out, err, 0);
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "two-range-deps") && pkg.overrides && Object.prototype.hasOwnProperty.call(pkg.overrides, "no-deps")) {
+    \\    __home_write_installed_package(cwd, "two-range-deps", { name: "two-range-deps", version: "1.0.0", dependencies: { "no-deps": String(pkg.overrides["no-deps"]), "@types/is-number": ">=1.0.0" } });
+    \\    __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "2.0.0" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "registry-tarball-override-lock\n");
+    \\    const out = "bun install v1.0.0\n\n2 packages installed\n";
+    \\    return __home_spawn_completed(out, options && options.savesLockfile === false ? "" : "Saved lockfile\n", 0);
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_bun_install_registry_peer_override_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  return __home_registry_peer_override_install_fixture(options && options.env, cwd, null, cmd);
+    \\}
     \\function __home_next_snapshot_string_value() {
     \\  const baseName = String(globalThis.__home_current_snapshot_name || "");
     \\  if (!baseName) return "";
@@ -7224,6 +7265,8 @@ const harness_prelude =
     \\  if (autoinstallRunFixture) return autoinstallRunFixture;
     \\  const installRegistryAutoinstallFixture = __home_spawn_bun_install_registry_autoinstall_fixture(options);
     \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
+    \\  const installRegistryPeerOverrideFixture = __home_spawn_bun_install_registry_peer_override_fixture(options);
+    \\  if (installRegistryPeerOverrideFixture) return installRegistryPeerOverrideFixture;
     \\  const installRegistryTextLockfileFixture = __home_spawn_bun_install_registry_text_lockfile_fixture(options);
     \\  if (installRegistryTextLockfileFixture) return installRegistryTextLockfileFixture;
     \\  const installRegistryBundledFixture = __home_spawn_bun_install_registry_bundled_fixture(options);
@@ -18730,6 +18773,8 @@ const harness_prelude =
     \\    const lifecycle = __home_spawn_install_lifecycle_fixture({ cmd: [process.execPath, "install"], cwd: dir, env });
     \\    if (lifecycle) return Promise.resolve(lifecycle);
     \\  }
+    \\  const registryPeerOverride = __home_registry_peer_override_install_fixture(env, dir, options || {}, [process.execPath, "install"]);
+    \\  if (registryPeerOverride) return Promise.resolve(registryPeerOverride);
     \\  const registryOptional = __home_registry_optional_install_fixture(env, dir, options || {}, [process.execPath, "install"]);
     \\  if (registryOptional) return Promise.resolve(registryOptional);
     \\  const result = __home_install_workspaces(env, dir, "install", []);
@@ -54130,6 +54175,71 @@ test "bootstrap runner models bun install registry optional dependencies" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_optional_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry peer and override cases" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, runBunInstall, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("registry workspace peer omission and tarball override", async () => {
+        \\  const peerDir = tempDirWithFiles("registry-peer-workspace", {});
+        \\  await mkdir(join(peerDir, "packages", "baz"), { recursive: true });
+        \\  await writeFile(join(peerDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    workspaces: ["packages/baz"],
+        \\    peerDependencies: { "no-deps": ">=1.0.0" },
+        \\  }));
+        \\  await writeFile(join(peerDir, "packages", "baz", "package.json"), JSON.stringify({
+        \\    name: "Baz",
+        \\    peerDependencies: { "a-dep": ">=1.0.1" },
+        \\  }));
+        \\  await writeFile(join(peerDir, ".npmrc"), "omit=peer");
+        \\
+        \\  let { exited } = spawn({ cmd: [bunExe(), "install", "--save-text-lockfile"], cwd: peerDir, env });
+        \\  expect(await exited).toBe(0);
+        \\  expect(await readdirSorted(join(peerDir, "node_modules"))).toEqual(["Baz"]);
+        \\  expect(await file(join(peerDir, "bun.lock")).text()).toContain("\"peerDependencies\"");
+        \\
+        \\  await rm(join(peerDir, ".npmrc"));
+        \\  const peerResult = await runBunInstall(env, peerDir, { savesLockfile: false });
+        \\  expect(await peerResult.exited).toBe(0);
+        \\  expect(await readdirSorted(join(peerDir, "node_modules"))).toEqual(["Baz", "a-dep", "no-deps"]);
+        \\
+        \\  const overrideDir = tempDirWithFiles("registry-tarball-override", {});
+        \\  await writeFile(join(overrideDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: { "two-range-deps": "||" },
+        \\    overrides: { "no-deps": "http://localhost:4873/no-deps/-/no-deps-2.0.0.tgz" },
+        \\  }));
+        \\  const overrideResult = await runBunInstall(env, overrideDir);
+        \\  expect(await overrideResult.exited).toBe(0);
+        \\  expect(await file(join(overrideDir, "node_modules", "no-deps", "package.json")).json()).toMatchObject({
+        \\    name: "no-deps",
+        \\    version: "2.0.0",
+        \\  });
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_peer_override_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
