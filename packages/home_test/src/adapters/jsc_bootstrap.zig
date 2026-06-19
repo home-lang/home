@@ -1105,9 +1105,6 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileWrappedDefaultExponentFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultAwaitFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStringQuoteFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileFoldStringAdditionFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileNumericConstantFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileStringLengthFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnicodeImportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
@@ -1717,56 +1714,6 @@ fn transpileStringQuoteFixture(allocator: std.mem.Allocator, source_text: []cons
         .{ .source = "console.log(\"\\u{10334}\" === \"\\uD800\\uDF34\")", .output = "console.log(true);\n" },
         .{ .source = "console.log(\"\\u{10334}\" === \"\\uDF34\\uD800\")", .output = "console.log(false);\n" },
         .{ .source = "console.log(\"abc\" + \"def\")", .output = "console.log(\"abcdef\");\n" },
-    };
-    for (fixtures) |fixture| {
-        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
-    }
-    return null;
-}
-
-fn transpileFoldStringAdditionFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const Fixture = struct {
-        source: []const u8,
-        output: []const u8,
-    };
-    const fixtures = [_]Fixture{
-        .{ .source = "export const foo = \"a\" + \"b\";", .output = "export const foo = \"ab\";\n" },
-        .{ .source = "export const foo = \"F\" + \"0\" + \"F\" + \"0123456789\" + \"ABCDEF\" + \"0123456789ABCDEFF0123456789ABCDEF00\" + \"b\";", .output = "export const foo = \"F0F0123456789ABCDEF0123456789ABCDEFF0123456789ABCDEF00b\";\n" },
-        .{ .source = "export const foo = \"a\" + 1 + \"b\";", .output = "export const foo = \"a1b\";\n" },
-        .{ .source = "export const foo = \"a\" + \"b\" + 1 + \"b\";", .output = "export const foo = \"ab1b\";\n" },
-        .{ .source = "export const foo = \"a\" + \"b\" + 1 + \"b\" + \"c\";", .output = "export const foo = \"ab1bc\";\n" },
-    };
-    for (fixtures) |fixture| {
-        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
-    }
-    return null;
-}
-
-fn transpileNumericConstantFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const Fixture = struct {
-        source: []const u8,
-        output: []const u8,
-    };
-    const fixtures = [_]Fixture{
-        .{ .source = "export const foo = 1 + 2", .output = "export const foo = 3;\n" },
-        .{ .source = "export const foo = 1 - 2", .output = "export const foo = -1;\n" },
-        .{ .source = "export const foo = 1 * 2", .output = "export const foo = 2;\n" },
-    };
-    for (fixtures) |fixture| {
-        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
-    }
-    return null;
-}
-
-fn transpileStringLengthFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const Fixture = struct {
-        source: []const u8,
-        output: []const u8,
-    };
-    const fixtures = [_]Fixture{
-        .{ .source = "export const foo = \"a\".length + \"b\".length;", .output = "export const foo = 2;\n" },
-        .{ .source = "export const foo = (\"a\" + \"b\").length;", .output = "export const foo = 2;\n" },
-        .{ .source = "export const foo = \"\xf0\x9f\x98\x8b Get Emoji \xe2\x80\x94 All Emojis to \xe2\x9c\x82\xef\xb8\x8f Copy and \xf0\x9f\x93\x8b Paste \xf0\x9f\x91\x8c\".length;", .output = "export const foo = 52;\n" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
@@ -5556,49 +5503,67 @@ test "adapter selects string quotes like Bun.Transpiler" {
 }
 
 test "adapter folds string addition like Bun.Transpiler minify syntax" {
-    const simple = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"a\" + \"b\";")).?;
-    defer std.testing.allocator.free(simple);
-    try std.testing.expectEqualStrings("export const foo = \"ab\";\n", simple);
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export const foo = \"a\" + \"b\";", .output = "export const foo = \"ab\";\n" },
+        .{ .source = "export const foo = \"F\" + \"0\" + \"F\" + \"0123456789\" + \"ABCDEF\" + \"0123456789ABCDEFF0123456789ABCDEF00\" + \"b\";", .output = "export const foo = \"F0F0123456789ABCDEF0123456789ABCDEFF0123456789ABCDEF00b\";\n" },
+        .{ .source = "export const foo = \"a\" + 1 + \"b\";", .output = "export const foo = \"a1b\";\n" },
+        .{ .source = "export const foo = \"a\" + \"b\" + 1 + \"b\" + \"c\";", .output = "export const foo = \"ab1bc\";\n" },
+    };
 
-    const long = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"F\" + \"0\" + \"F\" + \"0123456789\" + \"ABCDEF\" + \"0123456789ABCDEFF0123456789ABCDEF00\" + \"b\";")).?;
-    defer std.testing.allocator.free(long);
-    try std.testing.expectEqualStrings("export const foo = \"F0F0123456789ABCDEF0123456789ABCDEFF0123456789ABCDEF00b\";\n", long);
+    const minify_handle = TranspilerHandle{ .minify_syntax = true };
+    for (cases) |case| {
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
-    const mixed_number = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"a\" + 1 + \"b\";")).?;
-    defer std.testing.allocator.free(mixed_number);
-    try std.testing.expectEqualStrings("export const foo = \"a1b\";\n", mixed_number);
-
-    const mixed_chain = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"a\" + \"b\" + 1 + \"b\" + \"c\";")).?;
-    defer std.testing.allocator.free(mixed_chain);
-    try std.testing.expectEqualStrings("export const foo = \"ab1bc\";\n", mixed_chain);
+        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
 }
 
 test "adapter folds numeric constants like Bun.Transpiler minify syntax" {
-    const add = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = 1 + 2")).?;
-    defer std.testing.allocator.free(add);
-    try std.testing.expectEqualStrings("export const foo = 3;\n", add);
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export const foo = 1 + 2", .output = "export const foo = 3;\n" },
+        .{ .source = "export const foo = 1 - 2", .output = "export const foo = -1;\n" },
+        .{ .source = "export const foo = 1 * 2", .output = "export const foo = 2;\n" },
+    };
 
-    const sub = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = 1 - 2")).?;
-    defer std.testing.allocator.free(sub);
-    try std.testing.expectEqualStrings("export const foo = -1;\n", sub);
+    const minify_handle = TranspilerHandle{ .minify_syntax = true };
+    for (cases) |case| {
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
-    const mul = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = 1 * 2")).?;
-    defer std.testing.allocator.free(mul);
-    try std.testing.expectEqualStrings("export const foo = 2;\n", mul);
+        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
 }
 
 test "adapter rewrites string lengths like Bun.Transpiler minify syntax" {
-    const sum = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"a\".length + \"b\".length;")).?;
-    defer std.testing.allocator.free(sum);
-    try std.testing.expectEqualStrings("export const foo = 2;\n", sum);
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "export const foo = \"a\".length + \"b\".length;", .output = "export const foo = 2;\n" },
+        .{ .source = "export const foo = (\"a\" + \"b\").length;", .output = "export const foo = 2;\n" },
+        .{ .source = "export const foo = \"\xf0\x9f\x98\x8b Get Emoji \xe2\x80\x94 All Emojis to \xe2\x9c\x82\xef\xb8\x8f Copy and \xf0\x9f\x93\x8b Paste \xf0\x9f\x91\x8c\".length;", .output = "export const foo = 52;\n" },
+    };
 
-    const rope = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = (\"a\" + \"b\").length;")).?;
-    defer std.testing.allocator.free(rope);
-    try std.testing.expectEqualStrings("export const foo = 2;\n", rope);
+    const minify_handle = TranspilerHandle{ .minify_syntax = true };
+    for (cases) |case| {
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
-    const utf16 = (try transpileEarlyTranspilerFixture(std.testing.allocator, "export const foo = \"\xf0\x9f\x98\x8b Get Emoji \xe2\x80\x94 All Emojis to \xe2\x9c\x82\xef\xb8\x8f Copy and \xf0\x9f\x93\x8b Paste \xf0\x9f\x91\x8c\".length;")).?;
-    defer std.testing.allocator.free(utf16);
-    try std.testing.expectEqualStrings("export const foo = 52;\n", utf16);
+        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
 }
 
 test "adapter applies stored define pairs like Bun.Transpiler" {
