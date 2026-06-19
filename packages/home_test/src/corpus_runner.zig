@@ -64251,7 +64251,19 @@ test "bootstrap runner mirrors bun add transitive dependency precedence" {
         \\  ]);
         \\  expect(await second.exited).toBe(0);
         \\  expect(urls.sort()).toEqual(["http://localhost:4873/bar"]);
+        \\  expect(requested).toBe(3);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: { bar: "^0.0.2" },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
         \\});
         \\
         \\test("re-adding baz as dev preserves existing dependency bucket", async () => {
