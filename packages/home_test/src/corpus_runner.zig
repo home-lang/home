@@ -3108,6 +3108,10 @@ const harness_prelude =
     \\      const saved = !__home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
     \\      return completed("basic-1", "1.0.0", "basic-1", "1.0.0", saved);
     \\    }
+    \\    if (name === "no-deps" && literal === "1.0.0" && cmd.includes("--production")) {
+    \\      __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\      return __home_spawn_completed("bun install v1.0.0\n\n+ no-deps@1.0.0\n\n1 package installed", "", 0);
+    \\    }
     \\  }
     \\  if (names.length === 1 && deps["one-range-dep"] === "1.0.0") {
     \\    __home_write_installed_package(cwd, "one-range-dep", { name: "one-range-dep", version: "1.0.0", dependencies: { "no-deps": "^1.0.0" } });
@@ -54937,6 +54941,61 @@ test "bootstrap runner models bun install registry production workspace dev filt
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "production") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry production without lockfile" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, bunExe, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("production install without lockfile installs package and does not save lockfile", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-production-no-lockfile", {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: {
+        \\      "no-deps": "1.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  const { stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install", "--production"], cwd: packageDir, stdout: "pipe", stdin: "pipe", stderr: "pipe", env });
+        \\  const out = await stdout.text();
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ no-deps@1.0.0",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(await exists(join(packageDir, "node_modules", "no-deps", "index.js"))).toBeTrue();
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_basic_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
