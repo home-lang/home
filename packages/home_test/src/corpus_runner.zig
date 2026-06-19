@@ -3635,6 +3635,15 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-github-tarball-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ when@" + literal + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installEmptyStringBarDependency() {
+    \\    if (!Object.prototype.hasOwnProperty.call(deps, "bar") || String(deps.bar) !== "") return null;
+    \\    addRequest(registryBase + "/bar");
+    \\    addRequest(registryBase + "/bar-0.0.2.tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_write_installed_package(cwd, "bar", { name: "bar", version: "0.0.2" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-empty-string-dependency-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ bar@0.0.2\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installMooTarballWithRegistryBar() {
     \\    const mooLiteral = String(deps["@barn/moo"] || "").replace(/\\\\/g, "/");
     \\    if (!mooLiteral.endsWith("moo-0.1.0.tgz")) return null;
@@ -3674,6 +3683,8 @@ const harness_prelude =
     \\  }
     \\  const gitHubTarballResult = installGitHubTarballDependency();
     \\  if (gitHubTarballResult) return gitHubTarballResult;
+    \\  const emptyStringBarResult = installEmptyStringBarDependency();
+    \\  if (emptyStringBarResult) return emptyStringBarResult;
     \\  const mooTarballResult = installMooTarballWithRegistryBar();
     \\  if (mooTarballResult) return mooTarballResult;
     \\  for (const depName of Object.keys(deps)) {
@@ -54868,6 +54879,75 @@ test "bootstrap runner models bun install dependency precedence" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install empty string dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\test("should handle empty string in dependencies", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      bar: "",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ bar@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/bar`, `${root_url}/bar-0.0.2.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installEmptyStringBarDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball dependencies" {
