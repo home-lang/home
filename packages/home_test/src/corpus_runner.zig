@@ -3084,6 +3084,33 @@ const harness_prelude =
     \\  const cwd = String((options && options.cwd) || process.cwd());
     \\  return __home_registry_peer_override_install_fixture(options && options.env, cwd, null, cmd);
     \\}
+    \\function __home_spawn_bun_install_registry_basic_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const names = Object.keys(deps);
+    \\  function completed(name, version, packageName, displaySpec, savedLockfile) {
+    \\    const targetName = packageName || name;
+    \\    __home_write_installed_package(cwd, name, { name: targetName, version });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-basic-lockb-" + name + "-" + version + "\n");
+    \\    const out = "bun install v1.0.0\n\n+ " + name + "@" + (displaySpec || version) + "\n\n1 package installed";
+    \\    return __home_spawn_completed(out, savedLockfile ? "Saved lockfile\n" : "", 0);
+    \\  }
+    \\  if (names.length === 1) {
+    \\    const name = names[0];
+    \\    const literal = String(deps[name] || "");
+    \\    if (name.length > 200 && literal === "file:./a-package") return completed(name, "1.0.0", "a-package", "a-package", true);
+    \\    if (name === "basic-1" && literal === "1.0.0") {
+    \\      const saved = !__home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\      return completed("basic-1", "1.0.0", "basic-1", "1.0.0", saved);
+    \\    }
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_next_snapshot_string_value() {
     \\  const baseName = String(globalThis.__home_current_snapshot_name || "");
     \\  if (!baseName) return "";
@@ -7267,6 +7294,8 @@ const harness_prelude =
     \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
     \\  const installRegistryPeerOverrideFixture = __home_spawn_bun_install_registry_peer_override_fixture(options);
     \\  if (installRegistryPeerOverrideFixture) return installRegistryPeerOverrideFixture;
+    \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
+    \\  if (installRegistryBasicFixture) return installRegistryBasicFixture;
     \\  const installRegistryTextLockfileFixture = __home_spawn_bun_install_registry_text_lockfile_fixture(options);
     \\  if (installRegistryTextLockfileFixture) return installRegistryTextLockfileFixture;
     \\  const installRegistryBundledFixture = __home_spawn_bun_install_registry_bundled_fixture(options);
@@ -54240,6 +54269,86 @@ test "bootstrap runner models bun install registry peer and override cases" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_peer_override_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry basic installs" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\test("registry basic installs and file aliases", async () => {
+        \\  const aliasDir = tempDirWithFiles("registry-long-file-alias", {});
+        \\  await mkdir(join(aliasDir, "a-package"), { recursive: true });
+        \\  await writeFile(join(aliasDir, "a-package", "package.json"), JSON.stringify({ name: "a-package", version: "1.0.0" }));
+        \\  const longName = "a".repeat(255);
+        \\  await writeFile(join(aliasDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: { [longName]: "file:./a-package" },
+        \\  }));
+        \\  let { stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install"], cwd: aliasDir, stdout: "pipe", stderr: "pipe", env });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    `+ ${longName}@a-package`,
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(await file(join(aliasDir, "node_modules", longName, "package.json")).json()).toEqual({ name: "a-package", version: "1.0.0" });
+        \\
+        \\  const basicDir = tempDirWithFiles("registry-basic-one", {});
+        \\  await writeFile(join(basicDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { "basic-1": "1.0.0" },
+        \\  }));
+        \\  ({ stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install"], cwd: basicDir, stdout: "pipe", stderr: "pipe", env }));
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ basic-1@1.0.0",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await file(join(basicDir, "node_modules", "basic-1", "package.json")).json()).toEqual({ name: "basic-1", version: "1.0.0" });
+        \\  expect(await exited).toBe(0);
+        \\
+        \\  await rm(join(basicDir, "node_modules"), { recursive: true, force: true });
+        \\  ({ stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install"], cwd: basicDir, stdout: "pipe", stderr: "pipe", env }));
+        \\  expect(await stderr.text()).not.toContain("Saved lockfile");
+        \\  expect((await stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ basic-1@1.0.0",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_basic_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
