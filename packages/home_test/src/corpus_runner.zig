@@ -63549,12 +63549,14 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\import { access, readlink, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, readdirSorted, toHaveBins } from "harness";
         \\import { join, resolve } from "path";
-        \\import { dummyBeforeEach, package_dir, requested } from "./dummy.registry";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
         \\
         \\expect.extend({ toHaveBins });
         \\
         \\test("bun add GitHub dependency", async () => {
         \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
         \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
         \\  const { stdout, stderr, exited } = spawn({
         \\    cmd: [bunExe(), "add", "mishoo/UglifyJS#v3.14.1"],
@@ -63573,6 +63575,7 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\    "1 package installed",
         \\  ]);
         \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([]);
         \\  expect(requested).toBe(0);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
@@ -63617,6 +63620,7 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\    " - uglifyjs",
         \\  ]);
         \\  expect(await repeat.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([]);
         \\  expect(requested).toBe(0);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
@@ -63650,6 +63654,8 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\
         \\test("bun add aliased GitHub dependency", async () => {
         \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
         \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
         \\  const { stdout, stderr, exited } = spawn({
         \\    cmd: [bunExe(), "add", "uglify@mishoo/UglifyJS#v3.14.1"],
@@ -63668,6 +63674,7 @@ test "bootstrap runner mirrors bun add GitHub dependency corpus" {
         \\    "1 package installed",
         \\  ]);
         \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([]);
         \\  expect(requested).toBe(0);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
