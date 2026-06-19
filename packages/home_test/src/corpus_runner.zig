@@ -3565,6 +3565,15 @@ const harness_prelude =
     \\  const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
     \\  const graph = __home_workspace_scan(cwd);
     \\  const linked = [];
+    \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
+    \\  const hasQux = Object.prototype.hasOwnProperty.call(deps, "qux");
+    \\  function addRegistryRequest(url) {
+    \\    const module = globalThis.__home_modules["./dummy.registry.js"] || globalThis.__home_modules["./dummy.registry"];
+    \\    if (module) module.requested = (Number(module.requested) || 0) + 1;
+    \\    __home_dummy_registry_requested++;
+    \\    const handler = __home_dummy_registry_legacy_handler;
+    \\    if (handler && Array.isArray(handler.__home_urls)) handler.__home_urls.push(url);
+    \\  }
     \\  if (workspaceSpecifier) {
     \\    for (const depName of Object.keys(pkg.dependencies || {})) {
     \\      const literal = String(pkg.dependencies[depName] || "");
@@ -3580,12 +3589,17 @@ const harness_prelude =
     \\  } else {
     \\    for (const item of graph.workspaces) if (item.rel) linked.push({ name: String(item.pkg.name || ""), rel: item.rel, display: "" });
     \\  }
-    \\  if (!hadLock) __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\  if (!hadLock || hasQux) __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
     \\  for (const item of linked) {
     \\    const linkPath = __home_package_path(cwd, item.name);
     \\    __home_node_fs.mkdirSync(__home_build_dirname(linkPath), { recursive: true });
     \\    const relativeTarget = __home_build_relative(__home_build_dirname(linkPath), __home_build_join(cwd, item.rel)).replace(/\\/g, "/");
     \\    __home_fs_mark_symlink(relativeTarget, linkPath);
+    \\  }
+    \\  if (hasQux) {
+    \\    addRegistryRequest("http://localhost:4873/qux");
+    \\    if (!hadLock) addRegistryRequest("http://localhost:4873/qux-0.0.2.tgz");
+    \\    __home_write_installed_package(cwd, "qux", { name: "qux", version: "0.0.2" });
     \\  }
     \\  const rootInstall = pkg.scripts && typeof pkg.scripts.install === "string" ? pkg.scripts.install : "";
     \\  if (rootInstall.includes("install.js")) __home_build_write_text(__home_build_join(cwd, "foo.txt"), "foo!");
@@ -3597,9 +3611,10 @@ const harness_prelude =
     \\    }
     \\  }
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "workspace-basic-lockb\n");
-    \\  const count = linked.length;
+    \\  const count = linked.length + (hasQux ? 1 : 0);
     \\  const lines = ["bun install v1.0.0", ""];
     \\  if (workspaceSpecifier && linked.length === 1) lines.push("+ " + linked[0].name + "@" + linked[0].display, "");
+    \\  if (hasQux) lines.push("+ qux@0.0.2", "");
     \\  lines.push(String(count) + " package" + (count === 1 ? "" : "s") + " installed");
     \\  return __home_spawn_completed(lines.join("\n"), hadLock ? "" : "Saved lockfile\n", 0);
     \\}
@@ -55400,6 +55415,107 @@ test "bootstrap runner models bun install workspace lifecycle scripts" {
         \\  expect(await file(join(package_dir, "foo.txt")).text()).toBe("foo!");
         \\  expect(await file(join(package_dir, "bar", "bar.txt")).text()).toBe("bar!");
         \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_workspace_basic_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install workspace lifecycle reinstallation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, readlink, readdir, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, toBeWorkspaceLink } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeWorkspaceLink });
+        \\
+        \\async function readdirSorted(path) {
+        \\  return (await readdir(path)).sort();
+        \\}
+        \\
+        \\async function runInstall(args, expectSavedLockfile, expectedRequested) {
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install", ...args],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("error:");
+        \\  if (expectSavedLockfile) {
+        \\    expect(err).toContain("Saved lockfile");
+        \\  } else {
+        \\    expect(err).not.toContain("Saved lockfile");
+        \\  }
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ qux@0.0.2",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(requested).toBe(expectedRequested);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "Bar", "qux"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("bar");
+        \\  expect(await file(join(package_dir, "foo.txt")).text()).toBe("foo!");
+        \\  expect(await file(join(package_dir, "bar", "bar.txt")).text()).toBe("bar!");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should handle life-cycle scripts during re-installation", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    scripts: {
+        \\      install: [bunExe(), "foo-install.js"].join(" "),
+        \\    },
+        \\    dependencies: {
+        \\      qux: "^0.0",
+        \\    },
+        \\    trustedDependencies: ["qux"],
+        \\    workspaces: ["bar"],
+        \\  }));
+        \\  await writeFile(join(package_dir, "foo-install.js"), 'await require("fs/promises").writeFile("foo.txt", "foo!");');
+        \\  await mkdir(join(package_dir, "bar"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({
+        \\    name: "Bar",
+        \\    version: "0.0.2",
+        \\    scripts: {
+        \\      preinstall: [bunExe(), "bar-preinstall.js"].join(" "),
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "bar", "bar-preinstall.js"), 'await require("fs/promises").writeFile("bar.txt", "bar!");');
+        \\  await runInstall([], true, 2);
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  await runInstall([], false, 3);
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  await runInstall(["--production"], false, 4);
+        \\  expect(urls.length).toBe(4);
         \\});
     ;
 
