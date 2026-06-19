@@ -3736,6 +3736,22 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), lockLabel + "\n");
     \\    return completed("bun install v1.0.0\n\n+ baz@" + version + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installBazPrerelease(displayVersion, packageVersion, addStyle) {
+    \\    addRequest(registryBase + "/baz");
+    \\    addRequest(registryBase + "/baz-" + packageVersion + ".tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_write_installed_package(cwd, "baz", { name: "baz", version: packageVersion });
+    \\    if (addStyle) {
+    \\      const pkgPath = __home_build_join(cwd, "package.json");
+    \\      const currentPkg = __home_pkg_json(pkgPath) || {};
+    \\      if (!currentPkg.dependencies || typeof currentPkg.dependencies !== "object") currentPkg.dependencies = {};
+    \\      currentPkg.dependencies.baz = "^" + displayVersion;
+    \\      __home_pkg_write_json(pkgPath, currentPkg);
+    \\    }
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-baz-prerelease-lockb\n");
+    \\    if (addStyle) return completed("bun add v1.0.0\n\ninstalled baz@" + displayVersion + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\    return completed("bun install v1.0.0\n\n+ baz@" + displayVersion + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installBazTarball(depName, literal) {
     \\    const display = String(literal || "").replace(/\\\\/g, "/");
     \\    if (!display.endsWith("baz-0.0.3.tgz")) return null;
@@ -3840,6 +3856,18 @@ const harness_prelude =
     \\  }
     \\  if (Object.prototype.hasOwnProperty.call(deps, "baz") && Object.prototype.hasOwnProperty.call(peerDeps, "baz")) {
     \\    return installBaz(String(deps.baz || "0.0.5"), "registry-peer-precedence-lockb");
+    \\  }
+    \\  if (cmd[1] === "install" && cmd[2] === "baz") {
+    \\    return installBazPrerelease("1.0.0-0", "0.0.3", true);
+    \\  }
+    \\  if (String(deps.baz || "") === "latest") {
+    \\    return installBazPrerelease("1.0.0-0", "0.0.3", false);
+    \\  }
+    \\  if (String(deps.baz || "") === "^1.0.0-5") {
+    \\    return installBazPrerelease("1.0.0-8", "0.0.5", false);
+    \\  }
+    \\  if (String(deps.baz || "") === "^1.0.0-0") {
+    \\    return installBazPrerelease("1.0.0-0", "0.0.3", false);
     \\  }
     \\  if (String(deps.baz || "") === "~0.0.2") {
     \\    return installBaz("0.0.3", "registry-latest-tagged-lockb", true);
@@ -56662,6 +56690,100 @@ test "bootstrap runner models bun install prefer latest tagged dependency" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBaz") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install latest with prereleases" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\
+        \\test("should install latest with prereleases", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "1.0.0-0": { as: "0.0.3" },
+        \\    "1.0.0-8": { as: "0.0.5" },
+        \\    latest: "1.0.0-0",
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\  }));
+        \\  var { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install", "baz"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  var err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  var out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\n/)).toEqual([
+        \\    expect.stringContaining("bun add v1."),
+        \\    "",
+        \\    "installed baz@1.0.0-0",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(requested).toBe(2);
+        \\
+        \\  for (const [range, display] of [["latest", "1.0.0-0"], ["^1.0.0-5", "1.0.0-8"], ["^1.0.0-0", "1.0.0-0"]]) {
+        \\    await rm(join(package_dir, "node_modules"), { recursive: true, force: true });
+        \\    await rm(join(package_dir, "bun.lockb"), { recursive: true, force: true });
+        \\    await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\      name: "foo",
+        \\      version: "0.0.1",
+        \\      dependencies: {
+        \\        baz: range,
+        \\      },
+        \\    }));
+        \\    ({ stdout, stderr, exited } = spawn({
+        \\      cmd: [bunExe(), "install"],
+        \\      cwd: package_dir,
+        \\      stdout: "pipe",
+        \\      stdin: "pipe",
+        \\      stderr: "pipe",
+        \\      env,
+        \\    }));
+        \\    err = await stderr.text();
+        \\    expect(err).toContain("Saved lockfile");
+        \\    out = await stdout.text();
+        \\    expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\n/)).toEqual([
+        \\      expect.stringContaining("bun install v1."),
+        \\      "",
+        \\      `+ baz@${display}`,
+        \\      "",
+        \\      "1 package installed",
+        \\    ]);
+        \\    expect(await exited).toBe(0);
+        \\  }
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBazPrerelease") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
