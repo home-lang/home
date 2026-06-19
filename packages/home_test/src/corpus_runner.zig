@@ -3351,7 +3351,7 @@ const harness_prelude =
     \\  if (text === null) return null;
     \\  let pkg = null;
     \\  try {
-    \\    pkg = JSON.parse(text);
+    \\    pkg = __home_parse_package_json_text(text);
     \\  } catch (error) {
     \\    const err = "error: Failed to parse package.json\n  JSON Parse error: Expected value before EOF\n    at " + packagePath + ":1:1\n";
     \\    return __home_spawn_completed("bun install v1.0.0\n", err, 1);
@@ -19152,7 +19152,7 @@ const harness_prelude =
     \\function __home_pkg_json(path) {
     \\  const text = __home_build_read_text(String(path));
     \\  if (text === null) return null;
-    \\  try { return JSON.parse(text); } catch (error) { return null; }
+    \\  try { return __home_parse_package_json_text(text); } catch (error) { return null; }
     \\}
     \\function __home_pkg_write_json(path, value) {
     \\  __home_build_write_text(String(path), JSON.stringify(value, null, 2));
@@ -57150,6 +57150,71 @@ test "bootstrap runner models bun install invalid network concurrency" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install package json comments" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\test("should not error when package.json has comments and trailing commas", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), `
+        \\    {
+        \\      // Bun accepts comments in package.json
+        \\      "name": "foo",
+        \\      "version": "0.0.1",
+        \\      "dependencies": {
+        \\        "bar": "^1",
+        \\      },
+        \\    }
+        \\  `);
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain('error: No version matching "^1" found for specifier "bar" (but package exists)');
+        \\  expect(await stdout.text()).toEqual(expect.stringContaining("bun install v1."));
+        \\  expect(await exited).toBe(1);
+        \\  expect(urls.sort()).toEqual([`${root_url}/bar`]);
+        \\  expect(requested).toBe(1);
+        \\  try {
+        \\    await access(join(package_dir, "bun.lockb"));
+        \\    expect.unreachable();
+        \\  } catch (err) {
+        \\    expect(err.code).toBe("ENOENT");
+        \\  }
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_parse_package_json_text") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBarSemverMissDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install caret zero dot one dependency miss" {
