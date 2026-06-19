@@ -3727,7 +3727,7 @@ const harness_prelude =
     \\  }
     \\  function installGitHubUglifyInstallDependency() {
     \\    const literal = String(deps.uglify || "");
-    \\    const plain = literal === "mishoo/UglifyJS" || literal === "https://github.com/mishoo/UglifyJS.git";
+    \\    const plain = literal === "mishoo/UglifyJS" || literal === "https://github.com/mishoo/UglifyJS.git" || literal === "git+https://github.com/mishoo/UglifyJS.git";
     \\    const resolved = literal === "mishoo/UglifyJS#e219a9a" || literal === "mishoo/UglifyJS#v3.14.1" || literal === "github:mishoo/UglifyJS#v3.14.1" || literal === "git://github.com/mishoo/UglifyJS.git#e219a9a";
     \\    if (!plain && !resolved) return null;
     \\    const packageDir = __home_package_path(cwd, "uglify");
@@ -58526,6 +58526,90 @@ test "bootstrap runner models bun install github git protocol commit dependency"
         \\  const package_json = await file(join(package_dir, "node_modules", "uglify", "package.json")).json();
         \\  expect(package_json.name).toBe("uglify-js");
         \\  expect(package_json.version).toBe("3.14.1");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installGitHubUglifyInstallDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install github git plus https repo dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\expect.extend({ toHaveBins });
+        \\
+        \\test("should handle GitHub URL in dependencies (git+https://github.com/user/repo.git)", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      uglify: "git+https://github.com/mishoo/UglifyJS.git",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  let out = await stdout.text();
+        \\  out = out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "");
+        \\  out = out.replace(/(github:[^#]+)#[a-f0-9]+/, "$1");
+        \\  expect(out.split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ uglify@github:mishoo/UglifyJS",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toBeEmpty();
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "uglify"))).toEqual([
+        \\    ".bun-tag",
+        \\    ".gitattributes",
+        \\    ".github",
+        \\    ".gitignore",
+        \\    "CONTRIBUTING.md",
+        \\    "LICENSE",
+        \\    "README.md",
+        \\    "bin",
+        \\    "lib",
+        \\    "package.json",
+        \\    "test",
+        \\    "tools",
+        \\  ]);
+        \\  const package_json = await file(join(package_dir, "node_modules", "uglify", "package.json")).json();
+        \\  expect(package_json.name).toBe("uglify-js");
         \\  await access(join(package_dir, "bun.lockb"));
         \\});
     ;
