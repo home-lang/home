@@ -55778,6 +55778,76 @@ test "bootstrap runner models bun install updated workspace lifecycle reinstalla
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner models bun install ignoring nested workspaces" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, readlink, readdir, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, toBeWorkspaceLink } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir, requested } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeWorkspaceLink });
+        \\
+        \\async function readdirSorted(path) {
+        \\  return (await readdir(path)).sort();
+        \\}
+        \\
+        \\test("should ignore workspaces within workspaces", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    workspaces: ["bar"],
+        \\  }));
+        \\  await mkdir(join(package_dir, "bar"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\    workspaces: ["baz"],
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "bar"))).toBeWorkspaceLink("bar");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_workspace_basic_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner models bun install peer dependency reuse" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
