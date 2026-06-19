@@ -3625,9 +3625,10 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(binRoot, binName), "../baz/index.js");
     \\  }
     \\  const rootPeerDeps = pkg.peerDependencies && typeof pkg.peerDependencies === "object" ? pkg.peerDependencies : {};
+    \\  const rootBazPeerRange = String(rootPeerDeps.baz || "");
     \\  const peerHoistBar = graph.byName.bar;
     \\  const peerHoistMoo = graph.byName.moo;
-    \\  if (String(pkg.name || "") === "foo" && String(rootPeerDeps.baz || "") === ">0.0.3" && peerHoistBar && peerHoistMoo && String(peerHoistBar.pkg && peerHoistBar.pkg.dependencies && peerHoistBar.pkg.dependencies.baz || "") === "0.0.3" && String(peerHoistMoo.pkg && peerHoistMoo.pkg.dependencies && peerHoistMoo.pkg.dependencies.baz || "") === "0.0.5") {
+    \\  if (String(pkg.name || "") === "foo" && (rootBazPeerRange === ">0.0.3" || rootBazPeerRange === ">=0.0.3") && peerHoistBar && peerHoistMoo && String(peerHoistBar.pkg && peerHoistBar.pkg.dependencies && peerHoistBar.pkg.dependencies.baz || "") === "0.0.3" && String(peerHoistMoo.pkg && peerHoistMoo.pkg.dependencies && peerHoistMoo.pkg.dependencies.baz || "") === "0.0.5") {
     \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
     \\    addRegistryRequest("http://localhost:4873/baz");
     \\    addRegistryRequest("http://localhost:4873/baz-0.0.3.tgz");
@@ -59212,7 +59213,7 @@ test "bootstrap runner models bun install workspace peer hoisting" {
         \\
         \\expect.extend({ toBeValidBin, toBeWorkspaceLink, toHaveBins });
         \\
-        \\test("should consider peerDependencies during hoisting", async () => {
+        \\async function expectWorkspacePeerHoist(peerRange) {
         \\  await dummyBeforeEach({ linker: "hoisted" });
         \\  const urls = [];
         \\  setHandler(dummyRegistry(urls, {
@@ -59223,7 +59224,7 @@ test "bootstrap runner models bun install workspace peer hoisting" {
         \\    name: "foo",
         \\    version: "0.0.1",
         \\    peerDependencies: {
-        \\      baz: ">0.0.3",
+        \\      baz: peerRange,
         \\    },
         \\    workspaces: ["bar", "moo"],
         \\  }));
@@ -59291,6 +59292,14 @@ test "bootstrap runner models bun install workspace peer hoisting" {
         \\  expect(await readlink(join(package_dir, "node_modules", "moo"))).toBeWorkspaceLink(join("..", "moo"));
         \\  expect(await readdirSorted(join(package_dir, "moo"))).toEqual(["package.json"]);
         \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should consider peerDependencies during hoisting", async () => {
+        \\  await expectWorkspacePeerHoist(">0.0.3");
+        \\});
+        \\
+        \\test("should install peerDependencies when needed", async () => {
+        \\  await expectWorkspacePeerHoist(">=0.0.3");
         \\});
     ;
 
@@ -59307,7 +59316,7 @@ test "bootstrap runner models bun install workspace peer hoisting" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball dependencies" {
