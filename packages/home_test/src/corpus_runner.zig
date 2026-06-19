@@ -3147,6 +3147,52 @@ const harness_prelude =
     \\  const stderr = silent ? "" : (result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (saved ? "Saved lockfile\n" : ""));
     \\  return __home_spawn_completed(stdout, stderr, result.errors && result.errors.length > 0 ? 1 : 0);
     \\}
+    \\function __home_write_registry_bundled_dependency(root, name) {
+    \\  __home_write_installed_package(root, name, { name, version: "1.0.0" });
+    \\  const packageDir = __home_package_path(root, name);
+    \\  if (name === "bundled-1") {
+    \\    __home_write_installed_package(packageDir, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\  } else if (name === "bundled-true") {
+    \\    __home_write_installed_package(packageDir, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\    __home_write_installed_package(packageDir, "one-dep", { name: "one-dep", version: "1.0.0" });
+    \\    __home_write_installed_package(__home_package_path(packageDir, "one-dep"), "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\  } else if (name === "bundled-transitive") {
+    \\    __home_write_installed_package(packageDir, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\    __home_write_installed_package(packageDir, "one-dep", { name: "one-dep", version: "1.0.0" });
+    \\    __home_write_installed_package(__home_package_path(packageDir, "one-dep"), "no-deps", { name: "no-deps", version: "1.0.1" });
+    \\  } else if (name === "install-test1" || name === "install-test2") {
+    \\    __home_write_installed_package(packageDir, "zod", { name: "zod", version: "3.22.4" });
+    \\  }
+    \\}
+    \\function __home_spawn_bun_install_registry_bundled_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const known = ["bundled-1", "bundled-true", "bundled-transitive", "install-test1", "install-test2"];
+    \\  const requested = known.filter(name => Object.prototype.hasOwnProperty.call(deps, name));
+    \\  const workspaceBundled = String(pkg.name || "") === "bundled-workspace";
+    \\  if (requested.length === 0 && !workspaceBundled) return null;
+    \\  for (const name of requested) __home_write_registry_bundled_dependency(cwd, name);
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "no-deps")) __home_write_installed_package(cwd, "no-deps", { name: "a-dep", version: "1.0.2" });
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "one-dep")) __home_write_installed_package(cwd, "one-dep", { name: "a-dep", version: "1.0.3" });
+    \\  if (workspaceBundled) {
+    \\    __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\    __home_write_registry_bundled_dependency(cwd, "bundled-1");
+    \\    const graph = __home_workspace_scan(cwd);
+    \\    const workspace = graph.byName["pkg-one-one-one"];
+    \\    if (workspace) __home_write_installed_package(cwd, "pkg-one-one-one", workspace.pkg);
+    \\    __home_fs_mark_deleted(__home_build_join(cwd, "packages/pkg-one-one-one/node_modules/no-deps"));
+    \\  }
+    \\  const textLockfile = cmd.includes("--save-text-lockfile") || __home_build_file_exists(__home_build_join(cwd, "bun.lock"));
+    \\  if (textLockfile) __home_build_write_text(__home_build_join(cwd, "bun.lock"), "registry-bundled-lock-" + String(pkg.name || "package") + "\n");
+    \\  else __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-bundled-lockb-" + String(pkg.name || "package") + "\n");
+    \\  const count = Math.max(1, requested.length + (workspaceBundled ? 2 : 0));
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n" + String(count) + " package" + (count === 1 ? "" : "s") + " installed\n", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_ca_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
@@ -7127,6 +7173,8 @@ const harness_prelude =
     \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
     \\  const installRegistryTextLockfileFixture = __home_spawn_bun_install_registry_text_lockfile_fixture(options);
     \\  if (installRegistryTextLockfileFixture) return installRegistryTextLockfileFixture;
+    \\  const installRegistryBundledFixture = __home_spawn_bun_install_registry_bundled_fixture(options);
+    \\  if (installRegistryBundledFixture) return installRegistryBundledFixture;
     \\  const installRegistryCaFixture = __home_spawn_bun_install_registry_ca_fixture(options);
     \\  if (installRegistryCaFixture) return installRegistryCaFixture;
     \\  const installRegistryWhoamiFixture = __home_spawn_bun_install_registry_whoami_fixture(options);
@@ -53807,6 +53855,116 @@ test "bootstrap runner models bun install registry text lockfile frozen installs
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_text_lockfile_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry bundled dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function exists(path) {
+        \\  try {
+        \\    await access(path);
+        \\    return true;
+        \\  } catch {
+        \\    return false;
+        \\  }
+        \\}
+        \\
+        \\async function install(dir, textLockfile = false) {
+        \\  const cmd = textLockfile ? [bunExe(), "install", "--save-text-lockfile"] : [bunExe(), "install"];
+        \\  const { exited } = spawn({ cmd, cwd: dir, stdout: "ignore", stderr: "ignore", env });
+        \\  expect(await exited).toBe(0);
+        \\}
+        \\
+        \\test("registry bundled dependencies install in nested package directories", async () => {
+        \\  const bundledTrue = tempDirWithFiles("registry-bundled-true", {});
+        \\  await writeFile(join(bundledTrue, "package.json"), JSON.stringify({
+        \\    name: "bundled-true",
+        \\    dependencies: { "bundled-true": "1.0.0" },
+        \\  }));
+        \\  await install(bundledTrue, true);
+        \\  expect(await Promise.all([
+        \\    exists(join(bundledTrue, "node_modules", "no-deps", "package.json")),
+        \\    exists(join(bundledTrue, "node_modules", "one-dep", "package.json")),
+        \\    exists(join(bundledTrue, "node_modules", "bundled-true", "node_modules", "no-deps", "package.json")),
+        \\    exists(join(bundledTrue, "node_modules", "bundled-true", "node_modules", "one-dep", "package.json")),
+        \\    exists(join(bundledTrue, "node_modules", "bundled-true", "node_modules", "one-dep", "node_modules", "no-deps", "package.json")),
+        \\  ])).toEqual([false, false, true, true, true]);
+        \\
+        \\  const collision = tempDirWithFiles("registry-bundled-collision", {});
+        \\  await writeFile(join(collision, "package.json"), JSON.stringify({
+        \\    name: "bundled-collision",
+        \\    dependencies: {
+        \\      "bundled-transitive": "1.0.0",
+        \\      "no-deps": "npm:a-dep@1.0.2",
+        \\      "one-dep": "npm:a-dep@1.0.3",
+        \\    },
+        \\  }));
+        \\  await install(collision);
+        \\  expect(await Promise.all([
+        \\    file(join(collision, "node_modules", "no-deps", "package.json")).json(),
+        \\    file(join(collision, "node_modules", "bundled-transitive", "node_modules", "no-deps", "package.json")).json(),
+        \\    file(join(collision, "node_modules", "bundled-transitive", "node_modules", "one-dep", "node_modules", "no-deps", "package.json")).json(),
+        \\    exists(join(collision, "node_modules", "bundled-transitive", "node_modules", "one-dep", "package.json")),
+        \\  ])).toEqual([
+        \\    { name: "a-dep", version: "1.0.2" },
+        \\    { name: "no-deps", version: "1.0.0" },
+        \\    { name: "no-deps", version: "1.0.1" },
+        \\    true,
+        \\  ]);
+        \\
+        \\  const bundledGit = tempDirWithFiles("registry-bundled-git", {});
+        \\  await writeFile(join(bundledGit, "package.json"), JSON.stringify({
+        \\    name: "bundled-git",
+        \\    dependencies: {
+        \\      "install-test1": "dylan-conway/bundled-install-test#7824752",
+        \\      "install-test2": "git+ssh://git@github.com/dylan-conway/bundled-install-test#1301309",
+        \\    },
+        \\  }));
+        \\  await install(bundledGit);
+        \\  expect(await Promise.all([
+        \\    exists(join(bundledGit, "node_modules", "zod", "package.json")),
+        \\    exists(join(bundledGit, "node_modules", "install-test1", "node_modules", "zod", "package.json")),
+        \\    exists(join(bundledGit, "node_modules", "install-test2", "node_modules", "zod", "package.json")),
+        \\  ])).toEqual([false, true, true]);
+        \\
+        \\  const workspace = tempDirWithFiles("registry-bundled-workspace", {});
+        \\  await mkdir(join(workspace, "packages", "pkg-one-one-one"), { recursive: true });
+        \\  await writeFile(join(workspace, "package.json"), JSON.stringify({ name: "bundled-workspace", workspaces: ["packages/*"] }));
+        \\  await writeFile(join(workspace, "packages", "pkg-one-one-one", "package.json"), JSON.stringify({
+        \\    name: "pkg-one-one-one",
+        \\    dependencies: { "no-deps": "1.0.0", "bundled-1": "1.0.0" },
+        \\    bundledDependencies: ["no-deps"],
+        \\  }));
+        \\  await install(workspace, true);
+        \\  expect(await Promise.all([
+        \\    exists(join(workspace, "node_modules", "no-deps", "package.json")),
+        \\    exists(join(workspace, "packages", "pkg-one-one-one", "node_modules", "no-deps", "package.json")),
+        \\    exists(join(workspace, "node_modules", "bundled-1", "node_modules", "no-deps", "package.json")),
+        \\  ])).toEqual([true, false, true]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_bundled_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
