@@ -3084,6 +3084,64 @@ const harness_prelude =
     \\  const cwd = String((options && options.cwd) || process.cwd());
     \\  return __home_registry_peer_override_install_fixture(options && options.env, cwd, null, cmd);
     \\}
+    \\function __home_registry_bin_type_output(binName) {
+    \\  const outputs = {
+    \\    "dep-with-file-bin": "dep-with-file-bin\n",
+    \\    "single-entry-map-bin": "single-entry-map-bin\n",
+    \\    "directory-bin-1": "directory-bin-1\n",
+    \\    "directory-bin-2": "directory-bin-2\n",
+    \\    "map-bin-1": "map-bin-1\n",
+    \\    "map-bin-2": "map-bin-2\n",
+    \\  };
+    \\  return Object.prototype.hasOwnProperty.call(outputs, binName) ? outputs[binName] : null;
+    \\}
+    \\function __home_write_registry_bin_type_links(root, binRoot, packageName) {
+    \\  const specs = {
+    \\    "dep-with-file-bin": { bin: { "dep-with-file-bin": "dep-with-file-bin.js" }, bins: [["dep-with-file-bin", "dep-with-file-bin.js"]] },
+    \\    "dep-with-single-entry-map-bin": { bin: { "single-entry-map-bin": "single-entry-map-bin.js" }, bins: [["single-entry-map-bin", "single-entry-map-bin.js"]] },
+    \\    "dep-with-directory-bins": { directories: { bin: "bins" }, bins: [["directory-bin-1", "bins/directory-bin-1"], ["directory-bin-2", "bins/directory-bin-2"]] },
+    \\    "dep-with-map-bins": { bin: { "map-bin-1": "map-bin-1.js", "map-bin-2": "map-bin-2.js" }, bins: [["map-bin-1", "map-bin-1.js"], ["map-bin-2", "map-bin-2.js"]] },
+    \\  };
+    \\  const spec = specs[packageName];
+    \\  if (!spec) return false;
+    \\  const packageDir = __home_package_path(root, packageName);
+    \\  const pkg = { name: packageName, version: "1.0.0" };
+    \\  if (spec.bin) pkg.bin = spec.bin;
+    \\  if (spec.directories) pkg.directories = spec.directories;
+    \\  __home_write_installed_package(root, packageName, pkg);
+    \\  __home_node_fs.mkdirSync(binRoot, { recursive: true });
+    \\  for (const [binName, target] of spec.bins) {
+    \\    __home_build_write_text(__home_build_join(packageDir, target), __home_registry_bin_type_output(binName));
+    \\    __home_build_write_text(__home_build_join(binRoot, binName), "../" + packageName + "/" + target);
+    \\  }
+    \\  return true;
+    \\}
+    \\function __home_spawn_bun_install_registry_bin_types_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const invoked = cmd.length > 0 && cmd[0].includes("global-bin-dir") ? __home_build_basename(cmd[0]) : (cmd.length >= 2 && cmd[0] === process.execPath ? cmd[1] : "");
+    \\  const invokedOutput = __home_registry_bin_type_output(invoked);
+    \\  if (invokedOutput !== null) return __home_spawn_completed(invokedOutput, "", 0);
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const known = ["dep-with-file-bin", "dep-with-single-entry-map-bin", "dep-with-directory-bins", "dep-with-map-bins"];
+    \\  const requested = known.filter(name => cmd.includes(name));
+    \\  if (requested.length === 0) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  let binRoot = __home_build_join(cwd, "node_modules/.bin");
+    \\  if (cmd.includes("-g")) {
+    \\    binRoot = __home_build_join(cwd, "bin");
+    \\    for (const part of cmd) {
+    \\      if (!String(part).startsWith("--config=")) continue;
+    \\      const bunfig = __home_build_read_text(String(part).slice("--config=".length)) || "";
+    \\      const match = bunfig.match(/globalBinDir\s*=\s*"([^"]+)"/);
+    \\      if (match) binRoot = match[1].replace(/\\\\/g, "\\");
+    \\    }
+    \\  }
+    \\  for (const name of requested) __home_write_registry_bin_type_links(cwd, binRoot, name);
+    \\  const out = "bun install v1.0.0\n\n" + String(requested.length) + " packages installed\n";
+    \\  return __home_spawn_completed(out, "", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_global_bin_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && (cmd[1] === "i" || cmd[1] === "install") && cmd.includes("-g"))) return null;
@@ -7357,6 +7415,8 @@ const harness_prelude =
     \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
     \\  const installRegistryPeerOverrideFixture = __home_spawn_bun_install_registry_peer_override_fixture(options);
     \\  if (installRegistryPeerOverrideFixture) return installRegistryPeerOverrideFixture;
+    \\  const installRegistryBinTypesFixture = __home_spawn_bun_install_registry_bin_types_fixture(options);
+    \\  if (installRegistryBinTypesFixture) return installRegistryBinTypesFixture;
     \\  const installRegistryGlobalBinFixture = __home_spawn_bun_install_registry_global_bin_fixture(options);
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
@@ -55113,10 +55173,24 @@ test "bootstrap runner models bun install registry binary relinks" {
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
         \\import { exists, mkdir, rm, writeFile } from "fs/promises";
-        \\import { assertManifestsPopulated, bunEnv as env, runBunInstall, tempDirWithFiles, toBeValidBin } from "harness";
+        \\import { assertManifestsPopulated, bunEnv as env, bunExe, runBunInstall, tempDirWithFiles, toBeValidBin } from "harness";
         \\import { join } from "path";
         \\
         \\expect.extend({ toBeValidBin });
+        \\
+        \\async function runBin(packageDir, binName, expected, global) {
+        \\  const args = global ? [join(packageDir, "global-bin-dir", binName)] : [bunExe(), binName];
+        \\  const proc = spawn({
+        \\    cmd: [...args, "--linker=hoisted"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await proc.stdout.text()).toEqual(expected);
+        \\  expect(await proc.stderr.text()).toEqual("");
+        \\  expect(await proc.exited).toBe(0);
+        \\}
         \\
         \\test("existing bin destinations are replaced with valid bin links", async () => {
         \\  const packageDir = tempDirWithFiles("registry-existing-bin-destination", {});
@@ -55316,6 +55390,48 @@ test "bootstrap runner models bun install registry binary relinks" {
         \\  expect(await proc.exited).toBe(0);
         \\  expect(await exists(join(packageDir, "global-bin-dir", "what-bin"))).toBeTrue();
         \\});
+        \\
+        \\for (const global of [false, true]) {
+        \\  test(`bin types${global ? " (global)" : ""}`, async () => {
+        \\    const packageDir = tempDirWithFiles(global ? "registry-bin-types-global" : "registry-bin-types", {});
+        \\    if (global) {
+        \\      await writeFile(join(packageDir, "bunfig.toml"), `
+        \\        [install]
+        \\        cache = false
+        \\        registry = "http://localhost:1234/"
+        \\        globalBinDir = "${join(packageDir, "global-bin-dir").replace(/\\/g, "\\\\")}"
+        \\      `);
+        \\    } else {
+        \\      await writeFile(join(packageDir, "package.json"), JSON.stringify({ name: "foo" }));
+        \\    }
+        \\
+        \\    const proc = spawn({
+        \\      cmd: [
+        \\        bunExe(),
+        \\        "install",
+        \\        "--linker=hoisted",
+        \\        ...(global ? ["-g", `--config=${join(packageDir, "bunfig.toml")}`] : []),
+        \\        "dep-with-file-bin",
+        \\        "dep-with-single-entry-map-bin",
+        \\        "dep-with-directory-bins",
+        \\        "dep-with-map-bins",
+        \\      ],
+        \\      cwd: packageDir,
+        \\      stdout: "pipe",
+        \\      stderr: "pipe",
+        \\      env: global ? { ...env, BUN_INSTALL: join(packageDir, "global-install-dir") } : env,
+        \\    });
+        \\    expect(await proc.stderr.text()).not.toContain("error:");
+        \\    expect(await proc.exited).toBe(0);
+        \\
+        \\    await runBin(packageDir, "dep-with-file-bin", "dep-with-file-bin\n", global);
+        \\    await runBin(packageDir, "single-entry-map-bin", "single-entry-map-bin\n", global);
+        \\    await runBin(packageDir, "directory-bin-1", "directory-bin-1\n", global);
+        \\    await runBin(packageDir, "directory-bin-2", "directory-bin-2\n", global);
+        \\    await runBin(packageDir, "map-bin-1", "map-bin-1\n", global);
+        \\    await runBin(packageDir, "map-bin-2", "map-bin-2\n", global);
+        \\  });
+        \\}
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
@@ -55331,7 +55447,7 @@ test "bootstrap runner models bun install registry binary relinks" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
