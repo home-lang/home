@@ -64722,7 +64722,7 @@ test "bootstrap runner mirrors bun add local tarball corpus" {
         \\import { access, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
         \\import { join } from "path";
-        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\import { check_npm_auth_type, dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
         \\
         \\expect.extend({ toBeValidBin, toHaveBins });
         \\
@@ -64772,6 +64772,7 @@ test "bootstrap runner mirrors bun add local tarball corpus" {
         \\});
         \\
         \\test("bun add multiple dependencies including an HTTP tarball", async () => {
+        \\  expect(check_npm_auth_type.check).toBe(true);
         \\  await dummyBeforeEach({ linker: "hoisted" });
         \\  const urls = [];
         \\  setHandler(dummyRegistry(urls));
