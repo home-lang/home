@@ -1113,7 +1113,6 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileImportPrinterFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnarySimplificationFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileCommaOperatorFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileTemplateNumericProductFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileConstantFoldingFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileRawTemplateLiteralFixture(allocator, source_text)) |fixture_output| return fixture_output;
@@ -1186,32 +1185,6 @@ fn transpileUnicodeStringArrayFixture(allocator: std.mem.Allocator, handle: *con
 fn transpileUnarySimplificationFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
     if (std.mem.eql(u8, source_text, "export default (a = !(b, c))")) {
         return try allocator.dupe(u8, "export default a = (b, !c);\n");
-    }
-    return null;
-}
-
-fn transpileCommaOperatorFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const Fixture = struct {
-        source: []const u8,
-        output: []const u8,
-    };
-    const fixtures = [_]Fixture{
-        .{ .source = "export default ((0, 1))", .output = "export default 1;\n" },
-        .{ .source = "export default ((0, foo))", .output = "export default foo;\n" },
-        .{ .source = "export default ((sideEffect(), foo))", .output = "export default (sideEffect(), foo);\n" },
-        .{ .source = "export default ((0, obj.method)())", .output = "export default (0, obj.method)();\n" },
-        .{ .source = "export default ((0, obj[key])())", .output = "export default (0, obj[key])();\n" },
-        .{ .source = "export default ((0, obj?.method)())", .output = "export default (0, obj?.method)();\n" },
-        .{ .source = "export default ((0, obj?.[key])())", .output = "export default (0, obj?.[key])();\n" },
-        .{ .source = "export default ((sideEffect(), obj.method)())", .output = "export default (sideEffect(), obj.method)();\n" },
-        .{ .source = "export default ((0, func)())", .output = "export default func();\n" },
-        .{ .source = "export default ((0, getValue())())", .output = "export default getValue()();\n" },
-        .{ .source = "export default ((0, obj.method))", .output = "export default obj.method;\n" },
-        .{ .source = "export default ((0, obj[key]))", .output = "export default obj[key];\n" },
-        .{ .source = "export default ((0, func()))", .output = "export default func();\n" },
-    };
-    for (fixtures) |fixture| {
-        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
     }
     return null;
 }
@@ -5315,7 +5288,7 @@ test "adapter preserves Bun.Transpiler unary simplification fixture" {
     try std.testing.expectEqualStrings("export default a = (b, !c);\n", output);
 }
 
-test "adapter preserves Bun.Transpiler comma operator fixtures" {
+test "adapter routes comma operator minify transforms through Bun parser path" {
     const Case = struct {
         source: []const u8,
         output: []const u8,
@@ -5336,8 +5309,11 @@ test "adapter preserves Bun.Transpiler comma operator fixtures" {
         .{ .source = "export default ((0, func()))", .output = "export default func();\n" },
     };
 
+    const minify_handle = TranspilerHandle{ .minify_syntax = true };
     for (cases) |case| {
-        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
+
+        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
     }
