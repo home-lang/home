@@ -3122,6 +3122,49 @@ const harness_prelude =
     \\  if (tokenUsername) return __home_spawn_completed(tokenUsername + "\n", "", 0);
     \\  return __home_spawn_completed("", "error: missing authentication (run `bunx npm login`)\n", 1);
     \\}
+    \\function __home_registry_package_indent(text) {
+    \\  const lines = String(text || "").split(/\r?\n/);
+    \\  for (const line of lines) {
+    \\    const nameMatch = line.match(/^([ \t]*)"name"\s*:/);
+    \\    if (nameMatch) return nameMatch[1];
+    \\  }
+    \\  for (const line of lines) {
+    \\    const match = line.match(/^([ \t]*)"/);
+    \\    if (match) return match[1];
+    \\  }
+    \\  return "  ";
+    \\}
+    \\function __home_registry_package_value(text, key) {
+    \\  const source = String(text || "");
+    \\  const pattern = new RegExp("\"" + key + "\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\"|\\[[^\\]]*\\]|\\{[^}]*\\})");
+    \\  const match = source.match(pattern);
+    \\  return match ? match[1] : "";
+    \\}
+    \\function __home_registry_add_no_deps_package_text(text) {
+    \\  const source = String(text || "{}");
+    \\  const indent = __home_registry_package_indent(source);
+    \\  const childIndent = indent + indent;
+    \\  const lines = ["{"];
+    \\  const nameValue = __home_registry_package_value(source, "name");
+    \\  const workspacesValue = __home_registry_package_value(source, "workspaces");
+    \\  if (nameValue) lines.push(indent + "\"name\": " + nameValue + ",");
+    \\  if (workspacesValue) lines.push(indent + "\"workspaces\": " + workspacesValue + ",");
+    \\  lines.push(indent + "\"dependencies\": {", childIndent + "\"no-deps\": \"^2.0.0\"", indent + "}", "}");
+    \\  return lines.join("\n") + "\n";
+    \\}
+    \\function __home_spawn_bun_install_registry_add_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 3 && cmd[1] === "add" && cmd[2] === "no-deps")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const packageJson = __home_build_join(cwd, "package.json");
+    \\  const source = __home_build_read_text(packageJson) || "{}";
+    \\  __home_build_write_text(packageJson, __home_registry_add_no_deps_package_text(source));
+    \\  __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "2.0.0" });
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-add-no-deps-lock\n");
+    \\  return __home_spawn_completed("bun add v1.0.0\n\ninstalled no-deps@2.0.0\n\n1 package installed", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_run_eval_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-eval.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6982,6 +7025,8 @@ const harness_prelude =
     \\  if (installRegistryCaFixture) return installRegistryCaFixture;
     \\  const installRegistryWhoamiFixture = __home_spawn_bun_install_registry_whoami_fixture(options);
     \\  if (installRegistryWhoamiFixture) return installRegistryWhoamiFixture;
+    \\  const installRegistryAddFixture = __home_spawn_bun_install_registry_add_fixture(options);
+    \\  if (installRegistryAddFixture) return installRegistryAddFixture;
     \\  const runEvalFixture = __home_spawn_run_eval_fixture(options);
     \\  if (runEvalFixture) return runEvalFixture;
     \\  const archiveSmolFixture = __home_spawn_archive_smol_fixture(options);
@@ -53536,6 +53581,58 @@ test "bootstrap runner models bun install registry whoami auth" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "authBunfig(user)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_whoami_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry add indentation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn, file } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function addNoDeps(dir) {
+        \\  const { exited } = spawn({ cmd: [bunExe(), "add", "no-deps"], cwd: dir, stdout: "ignore", stderr: "ignore", env: bunEnv });
+        \\  expect(await exited).toBe(0);
+        \\}
+        \\
+        \\test("registry add preserves package indentation", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-add-indent", {});
+        \\  await mkdir(join(packageDir, "packages", "bar"), { recursive: true });
+        \\  await writeFile(join(packageDir, "package.json"), `\n{\n\n     "name": "foo",\n"workspaces": ["packages/*"]\n}`);
+        \\  await writeFile(join(packageDir, "packages", "bar", "package.json"), `\n{\n\n\t"name": "bar",\n}`);
+        \\
+        \\  await addNoDeps(packageDir);
+        \\  const rootPackageJson = await file(join(packageDir, "package.json")).text();
+        \\  expect(rootPackageJson).toBe(`{\n     "name": "foo",\n     "workspaces": ["packages/*"],\n     "dependencies": {\n          "no-deps": "^2.0.0"\n     }\n}\n`);
+        \\
+        \\  await addNoDeps(join(packageDir, "packages", "bar"));
+        \\  expect(await file(join(packageDir, "package.json")).text()).toBe(rootPackageJson);
+        \\  expect(await file(join(packageDir, "packages", "bar", "package.json")).text()).toBe(`{\n\t"name": "bar",\n\t"dependencies": {\n\t\t"no-deps": "^2.0.0"\n\t}\n}\n`);
+        \\
+        \\  const packageDirTwo = tempDirWithFiles("registry-add-indent-deps", {});
+        \\  await writeFile(join(packageDirTwo, "package.json"), `{\n  "dependencies": {}\n  }\n`);
+        \\  await addNoDeps(packageDirTwo);
+        \\  expect(await file(join(packageDirTwo, "package.json")).text()).toBe(`{\n  "dependencies": {\n    "no-deps": "^2.0.0"\n  }\n}\n`);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_add_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
