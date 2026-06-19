@@ -988,7 +988,7 @@ fn transpileSourceWithBunParser(
         &source,
         true,
         .{
-            .allocator = allocator,
+            .allocator = ast_allocator,
             .target = runtimeTarget(handle.platform),
             .minify_whitespace = handle.minify_whitespace,
             .minify_syntax = handle.minify_syntax,
@@ -1115,7 +1115,6 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileUnarySimplificationFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileConstantFoldingFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileRawTemplateLiteralFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileTemplateStringConcatFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileDirectiveFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileMacroFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUsingFixture(allocator, source_text)) |fixture_output| return fixture_output;
@@ -1287,21 +1286,18 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "'a' + 'bc'", .output = "\"abc\"" },
         .{ .source = "'ab' + 'c'", .output = "\"abc\"" },
         .{ .source = "x + 'a' + 'b'", .output = "x + \"ab\"" },
-        .{ .source = "x + 'a' + 'bc'", .output = "x + \"abc\"" },
         .{ .source = "x + 'ab' + 'c'", .output = "x + \"abc\"" },
         .{ .source = "'a' + 1", .output = "\"a1\"" },
         .{ .source = "x * 'a' + 'b'", .output = "x * \"a\" + \"b\"" },
         .{ .source = "'a' + ('b' + 'c') + 'd'", .output = "\"abcd\"" },
         .{ .source = "('a' + 'b') + 'c'", .output = "\"abc\"" },
         .{ .source = "'a' + ('b' + 'c')", .output = "\"abc\"" },
-        .{ .source = "'a' + ('b' + ('c' + 'd')) + 'e'", .output = "\"abcde\"" },
         .{ .source = "'a' + ('b' + ('c' + ('d' + 'e')))", .output = "\"abcde\"" },
         .{ .source = "('a' + ('b' + ('c' + 'd'))) + 'e'", .output = "\"abcde\"" },
         .{ .source = "('a' + ('b' + 'c')) + ('d' + 'e')", .output = "\"abcde\"" },
         .{ .source = "('a' + 'b') + ('c' + 'd')", .output = "\"abcd\"" },
         .{ .source = "'a' + ('b' + ('c' + 'd'))", .output = "\"abcd\"" },
         .{ .source = "'string' + `template`", .output = "\"stringtemplate\"" },
-        .{ .source = "`template` + 'string'", .output = "\"templatestring\"" },
         .{ .source = "123 .toString()", .output = "123 .toString()" },
         .{ .source = "-123", .output = "-123" },
         .{ .source = "(-123).toString()", .output = "(-123).toString()" },
@@ -1356,23 +1352,6 @@ fn normalizeTemplateCarriageReturns(allocator: std.mem.Allocator, body: []const 
     }
 
     return try out.toOwnedSlice(allocator);
-}
-
-fn transpileTemplateStringConcatFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const Fixture = struct {
-        source: []const u8,
-        output: []const u8,
-    };
-    const fixtures = [_]Fixture{
-        .{ .source = "const x = `str` + \"``\";", .output = "const x = \"str``\";\n" },
-        .{ .source = "const x = `` + \"`\";", .output = "const x = \"`\";\n" },
-        .{ .source = "const x = `` + \"``\";", .output = "const x = \"``\";\n" },
-        .{ .source = "const x = \"``\" + ``;", .output = "const x = \"``\";\n" },
-    };
-    for (fixtures) |fixture| {
-        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
-    }
-    return null;
 }
 
 fn transpileDirectiveFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
@@ -5332,6 +5311,9 @@ test "adapter folds constant expressions like Bun.Transpiler" {
         .{ .source = "export default (typeof [] === \"object\")", .output = "export default !0;\n" },
         .{ .source = "export default (1 === '1')", .output = "export default 1 === \"1\";\n" },
         .{ .source = "export default ('a' === '\\x61')", .output = "export default !0;\n" },
+        .{ .source = "export default (x + 'a' + 'bc')", .output = "export default x + \"abc\";\n" },
+        .{ .source = "export default ('a' + ('b' + ('c' + 'd')) + 'e')", .output = "export default \"abcde\";\n" },
+        .{ .source = "export default (`template` + 'string')", .output = "export default \"templatestring\";\n" },
         .{ .source = "export default (123)", .output = "export default 123;\n" },
         .{ .source = "export default (NaN === NaN)", .output = "export default !1;\n" },
         .{ .source = "export default (Infinity)", .output = "export default 1 / 0;\n" },
@@ -5343,17 +5325,6 @@ test "adapter folds constant expressions like Bun.Transpiler" {
         try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
         const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
-        defer std.testing.allocator.free(output);
-        try std.testing.expectEqualStrings(case.output, output);
-    }
-
-    const rope_cases = [_]Case{
-        .{ .source = "export default (x + 'a' + 'bc')", .output = "export default x + \"abc\";\n" },
-        .{ .source = "export default ('a' + ('b' + ('c' + 'd')) + 'e')", .output = "export default \"abcde\";\n" },
-        .{ .source = "export default (`template` + 'string')", .output = "export default \"templatestring\";\n" },
-    };
-    for (rope_cases) |case| {
-        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
     }
@@ -5421,8 +5392,11 @@ test "adapter folds template string concatenation like Bun.Transpiler" {
         .{ .source = "const x = \"``\" + ``;", .output = "const x = \"``\";\n" },
     };
 
+    const minify_handle = TranspilerHandle{ .minify_syntax = true };
     for (cases) |case| {
-        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
+
+        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
     }
