@@ -276,7 +276,12 @@ pub const Lowerer = struct {
             },
             .literal_bigint => blk: {
                 const b = hir_mod.literalBigIntOf(self.hir, lit);
-                break :blk self.interner.internBigIntLiteral(b.digits) catch error.OutOfMemory;
+                if (!lt.negative) break :blk self.interner.internBigIntLiteral(b.digits) catch error.OutOfMemory;
+                const digits = self.string_interner.get(b.digits);
+                const signed = try std.fmt.allocPrint(self.gpa, "-{s}", .{digits});
+                defer self.gpa.free(signed);
+                const signed_id = self.string_interner.intern(signed) catch return error.OutOfMemory;
+                break :blk self.interner.internBigIntLiteral(signed_id) catch error.OutOfMemory;
             },
             else => types.Primitive.unknown,
         };

@@ -9847,12 +9847,29 @@ pub const Parser = struct {
                 break :blk try self.parseTemplateLiteralType();
             },
             .minus => blk: {
-                // Negative numeric literal type: `-1`.
+                // Negative numeric/bigint literal type: `-1`, `-1n`.
                 _ = self.advance();
-                const num = try self.expect(.number_literal, "numeric literal after '-' in type");
-                const value = -parseNumericLiteral(self.source[num.span.start..num.span.end]);
-                const lit = try self.builder.addLiteralNumber(tokenSpan(num), value);
-                break :blk try self.builder.addLiteralType(.{ .start = t.span.start, .end = num.span.end }, lit, true);
+                const next = self.peek();
+                switch (next.kind) {
+                    .number_literal => {
+                        const num = self.advance();
+                        const value = parseNumericLiteral(self.source[num.span.start..num.span.end]);
+                        const lit = try self.builder.addLiteralNumber(tokenSpan(num), value);
+                        break :blk try self.builder.addLiteralType(.{ .start = t.span.start, .end = num.span.end }, lit, true);
+                    },
+                    .bigint_literal => {
+                        const big = self.advance();
+                        const slice_with_n = self.source[big.span.start..big.span.end];
+                        const digits_slice = slice_with_n[0 .. slice_with_n.len - 1];
+                        const id = self.interner.intern(digits_slice) catch return error.OutOfMemory;
+                        const lit = try self.builder.addLiteralBigInt(tokenSpan(big), id);
+                        break :blk try self.builder.addLiteralType(.{ .start = t.span.start, .end = big.span.end }, lit, true);
+                    },
+                    else => {
+                        _ = try self.expect(.number_literal, "numeric literal after '-' in type");
+                        break :blk try self.typeRefName("unknown", tokenSpan(t));
+                    },
+                }
             },
             .open_paren => try self.parseParenOrFnType(),
             .open_bracket => try self.parseTupleType(),
@@ -19036,6 +19053,20 @@ test "parser: bigint literal" {
     try T.expectEqual(hir_mod.NodeKind.literal_bigint, s.hir.kindOf(top));
     const bi = hir_mod.literalBigIntOf(&s.hir, top);
     try T.expectEqualStrings("9007199254740993", s.interner.get(bi.digits));
+}
+
+test "parser: negative bigint literal type" {
+    var s = try newTestSetup("type T = -42n;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const alias = hir_mod.typeAliasOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.type_literal, s.hir.kindOf(alias.aliased));
+    const lt = hir_mod.literalTypeOf(&s.hir, alias.aliased);
+    try T.expect(lt.negative);
+    try T.expectEqual(hir_mod.NodeKind.literal_bigint, s.hir.kindOf(lt.literal));
+    const bi = hir_mod.literalBigIntOf(&s.hir, lt.literal);
+    try T.expectEqualStrings("42", s.interner.get(bi.digits));
 }
 
 test "parser: ASI — return on its own line" {
