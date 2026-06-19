@@ -3621,6 +3621,20 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-tarball-install-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ " + depName + "@" + display + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installGitHubTarballDependency() {
+    \\    const literal = String(deps.when || "");
+    \\    if (literal !== "https://github.com/cujojs/when/tarball/1.0.2") return null;
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    const packageDir = __home_package_path(cwd, "when");
+    \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
+    \\    for (const file of [".gitignore", ".gitmodules", "LICENSE.txt", "README.md", "apply.js", "cancelable.js", "delay.js", "timed.js", "timeout.js", "when.js"]) {
+    \\      __home_build_write_text(__home_build_join(packageDir, file), "");
+    \\    }
+    \\    __home_node_fs.mkdirSync(__home_build_join(packageDir, "test"), { recursive: true });
+    \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "when", version: "1.0.2" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-github-tarball-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ when@" + literal + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installMooTarballWithRegistryBar() {
     \\    const mooLiteral = String(deps["@barn/moo"] || "").replace(/\\\\/g, "/");
     \\    if (!mooLiteral.endsWith("moo-0.1.0.tgz")) return null;
@@ -3658,6 +3672,8 @@ const harness_prelude =
     \\  if (Object.prototype.hasOwnProperty.call(deps, "baz") && Object.prototype.hasOwnProperty.call(peerDeps, "baz")) {
     \\    return installBaz(String(deps.baz || "0.0.5"), "registry-peer-precedence-lockb");
     \\  }
+    \\  const gitHubTarballResult = installGitHubTarballDependency();
+    \\  if (gitHubTarballResult) return gitHubTarballResult;
     \\  const mooTarballResult = installMooTarballWithRegistryBar();
     \\  if (mooTarballResult) return mooTarballResult;
     \\  for (const depName of Object.keys(deps)) {
@@ -54917,6 +54933,59 @@ test "bootstrap runner models bun install tarball dependencies" {
         \\  await access(join(package_dir, "bun.lockb"));
         \\}
         \\
+        \\async function expectGitHubTarballInstall(extraEnv = {}) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  const tarball = "https://github.com/cujojs/when/tarball/1.0.2";
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      when: tarball,
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env: { ...env, ...extraEnv },
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").replace(/(github:[^#]+)#[a-f0-9]+/, "$1").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    `+ when@${tarball}`,
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([]);
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "when"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "when"))).toEqual([
+        \\    ".gitignore",
+        \\    ".gitmodules",
+        \\    "LICENSE.txt",
+        \\    "README.md",
+        \\    "apply.js",
+        \\    "cancelable.js",
+        \\    "delay.js",
+        \\    "package.json",
+        \\    "test",
+        \\    "timed.js",
+        \\    "timeout.js",
+        \\    "when.js",
+        \\  ]);
+        \\  const package_json = await file(join(package_dir, "node_modules", "when", "package.json")).json();
+        \\  expect(package_json.name).toBe("when");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
         \\test("should handle tarball URL", async () => {
         \\  const tarball = `${root_url}/baz-0.0.3.tgz`;
         \\  await expectTarballInstall("baz", tarball, [tarball]);
@@ -54936,6 +55005,14 @@ test "bootstrap runner models bun install tarball dependencies" {
         \\  const tarball = join(package_dir, "baz-0.0.3.tgz");
         \\  await expectTarballInstall("bar", tarball, []);
         \\});
+        \\
+        \\test("should handle GitHub tarball URL in dependencies (https://github.com/user/repo/tarball/ref)", async () => {
+        \\  await expectGitHubTarballInstall();
+        \\});
+        \\
+        \\test("should handle GitHub tarball URL in dependencies (https://github.com/user/repo/tarball/ref) with custom GITHUB_API_URL", async () => {
+        \\  await expectGitHubTarballInstall({ GITHUB_API_URL: "https://example.com/github/api" });
+        \\});
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
@@ -54951,7 +55028,7 @@ test "bootstrap runner models bun install tarball dependencies" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball deduplication" {
