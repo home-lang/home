@@ -53347,6 +53347,28 @@ test "bootstrap runner respects Transpiler trimUnusedImports in scans" {
         \\    { path: "./Component", kind: "import-statement" },
         \\  ]);
         \\});
+        \\
+        \\test("scan reports copied transpiler import and export summary", () => {
+        \\  const transpiler = new Bun.Transpiler({ loader: "tsx" });
+        \\  const code = `
+        \\    import { json } from "remix";
+        \\    import type { LoaderFunction } from "mod";
+        \\    import * as React from "react";
+        \\    export const loader: LoaderFunction = async () => json({});
+        \\    export const action = async () => json({});
+        \\    export default function PostRoute() {
+        \\      return <main />;
+        \\    }
+        \\  `;
+        \\  const imports = transpiler.scanImports(code, "tsx");
+        \\  expect(imports.filter(({ path }) => path === "remix")).toHaveLength(1);
+        \\  expect(imports.filter(({ path }) => path === "mod")).toHaveLength(0);
+        \\  expect(imports.filter(({ path }) => path === "react")).toHaveLength(1);
+        \\  expect(imports).toHaveLength(2);
+        \\  const result = transpiler.scan(code, "tsx");
+        \\  expect(result.imports).toEqual(imports);
+        \\  expect(result.exports).toEqual(["action", "default", "loader"]);
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/13251.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -53358,7 +53380,7 @@ test "bootstrap runner respects Transpiler trimUnusedImports in scans" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors unsupported runnable file errors" {
