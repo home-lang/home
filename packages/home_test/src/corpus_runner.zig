@@ -3361,6 +3361,23 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_bun_install_registry_absolute_folder_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const pkg0Literal = String(deps.pkg0 || "").replace(/\\/g, "/");
+    \\  const pkg1Literal = String(deps.pkg1 || "").replace(/\\/g, "/");
+    \\  if (!(pkg.name === "foo" && pkg0Literal.startsWith("file:/") && pkg1Literal.startsWith("/"))) return null;
+    \\  if (!__home_pkg_json(__home_build_join(pkg0Literal.slice("file:".length), "package.json"))) return null;
+    \\  if (!__home_pkg_json(__home_build_join(pkg1Literal, "package.json"))) return null;
+    \\  __home_install_workspaces(options && options.env, cwd, "install", cmd.slice(2));
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-absolute-folder-lockb\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n+ pkg0@pkg0\n+ pkg1@pkg1\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\}
     \\function __home_next_snapshot_string_value() {
     \\  const baseName = String(globalThis.__home_current_snapshot_name || "");
     \\  if (!baseName) return "";
@@ -7560,6 +7577,8 @@ const harness_prelude =
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
     \\  if (installRegistryBasicFixture) return installRegistryBasicFixture;
+    \\  const installRegistryAbsoluteFolderFixture = __home_spawn_bun_install_registry_absolute_folder_fixture(options);
+    \\  if (installRegistryAbsoluteFolderFixture) return installRegistryAbsoluteFolderFixture;
     \\  const installRegistryTextLockfileFixture = __home_spawn_bun_install_registry_text_lockfile_fixture(options);
     \\  if (installRegistryTextLockfileFixture) return installRegistryTextLockfileFixture;
     \\  const installRegistryBundledFixture = __home_spawn_bun_install_registry_bundled_fixture(options);
@@ -18413,6 +18432,17 @@ const harness_prelude =
     \\  const storeSuffix = rel === "" ? "root" : "file+" + rel.replace(/\//g, "+");
     \\  return { dir: targetDir, pkg, storeName: String(pkg.name || linkName).replace("/", "+") + "@" + storeSuffix };
     \\}
+    \\function __home_local_absolute_dep(root, linkName, literal) {
+    \\  const raw = String(literal || "").replace(/\\/g, "/");
+    \\  if (!(raw.startsWith("/") || /^[A-Za-z]:\//.test(raw))) return null;
+    \\  const targetDir = __home_fs_normalize_path(raw);
+    \\  const localPkg = __home_pkg_json(__home_build_join(targetDir, "package.json"));
+    \\  if (!localPkg) return null;
+    \\  const pkg = Object.assign({ name: linkName, version: "1.0.0" }, localPkg);
+    \\  const rel = __home_workspace_rel(root, targetDir).replace(/^\.\//, "").replace(/\/+$/, "");
+    \\  const storeSuffix = rel === "" ? "root" : "path+" + rel.replace(/\//g, "+");
+    \\  return { dir: targetDir, pkg, storeName: String(pkg.name || linkName).replace("/", "+") + "@" + storeSuffix };
+    \\}
     \\function __home_link_protocol_dep(root, ownerDir, linkName, literal) {
     \\  const raw = String(literal || "").slice("link:".length).replace(/\\/g, "/");
     \\  globalThis.__home_linked_packages = globalThis.__home_linked_packages || Object.create(null);
@@ -18988,7 +19018,7 @@ const harness_prelude =
     \\          }
     \\        }
     \\      } else {
-    \\        const fileDep = String(literal).startsWith("file:") ? __home_local_file_dep(graph.root, item.dir, depName, literal) : null;
+    \\        const fileDep = String(literal).startsWith("file:") ? __home_local_file_dep(graph.root, item.dir, depName, literal) : __home_local_absolute_dep(graph.root, depName, literal);
     \\        const linkDep = String(literal).startsWith("link:") ? __home_link_protocol_dep(graph.root, item.dir, depName, literal) : null;
     \\        const localDep = fileDep || linkDep;
     \\        const depAlias = __home_npm_alias(literal);
@@ -55979,6 +56009,91 @@ test "bootstrap runner models bun install registry missing lock cache state" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_missing_state_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry absolute folder dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, bunExe, readdirSorted, tempDirWithFiles } from "harness";
+        \\import { join, resolve } from "path";
+        \\
+        \\test("it should install folder dependencies with absolute paths", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-absolute-folder-deps", {});
+        \\  async function writePackages(num) {
+        \\    for (let i = 0; i < num; i++) {
+        \\      await mkdir(join(packageDir, `pkg${i}`));
+        \\      await writeFile(join(packageDir, `pkg${i}`, "package.json"), JSON.stringify({
+        \\        name: `pkg${i}`,
+        \\        version: "1.1.1",
+        \\      }));
+        \\    }
+        \\  }
+        \\
+        \\  await writePackages(2);
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: {
+        \\      pkg0: `file:${resolve(packageDir, "pkg0").replace(/\\/g, "\\\\")}`,
+        \\      pkg1: `${resolve(packageDir, "pkg1").replace(/\\/g, "\\\\")}`,
+        \\    },
+        \\  }));
+        \\
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    stdin: "pipe",
+        \\    env,
+        \\  });
+        \\
+        \\  const err = await stderr.text();
+        \\  const out = await stdout.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).not.toContain("panic:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ pkg0@pkg0",
+        \\    "+ pkg1@pkg1",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(await readdirSorted(join(packageDir, "node_modules"))).toEqual(["pkg0", "pkg1"]);
+        \\  expect(await file(join(packageDir, "node_modules", "pkg0", "package.json")).json()).toEqual({
+        \\    name: "pkg0",
+        \\    version: "1.1.1",
+        \\  });
+        \\  expect(await file(join(packageDir, "node_modules", "pkg1", "package.json")).json()).toEqual({
+        \\    name: "pkg1",
+        \\    version: "1.1.1",
+        \\  });
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_absolute_folder_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
