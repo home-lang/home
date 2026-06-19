@@ -3193,6 +3193,59 @@ const harness_prelude =
     \\  const count = Math.max(1, requested.length + (workspaceBundled ? 2 : 0));
     \\  return __home_spawn_completed("bun install v1.0.0\n\n" + String(count) + " package" + (count === 1 ? "" : "s") + " installed\n", "Saved lockfile\n", 0);
     \\}
+    \\function __home_registry_optional_install_fixture(env, cwd, options, cmd) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const optionalDeps = Object.assign({}, pkg.optionalDependencies || {});
+    \\  function completed(stdout, stderr, code) {
+    \\    const result = __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\    result.err = String(stderr || "");
+    \\    result.out = String(stdout || "");
+    \\    return result;
+    \\  }
+    \\  function installUsesWhatBin() {
+    \\    __home_write_installed_package(cwd, "what-bin", { name: "what-bin", version: "1.0.0" });
+    \\    __home_write_installed_package(cwd, "uses-what-bin", { name: "uses-what-bin", version: "1.0.0" });
+    \\  }
+    \\  const registryBase = "http://localhost:4873";
+    \\  const hasMissingTarball = Object.prototype.hasOwnProperty.call(deps, "missing-tarball") || Object.prototype.hasOwnProperty.call(optionalDeps, "missing-tarball");
+    \\  if (hasMissingTarball) {
+    \\    installUsesWhatBin();
+    \\    const optional = Object.prototype.hasOwnProperty.call(optionalDeps, "missing-tarball");
+    \\    const level = optional ? "warn" : "error";
+    \\    return completed("", level + ": GET " + registryBase + "/missing-tarball/-/missing-tarball-1.0.0.tgz - 404\n", optional ? 0 : 1);
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(optionalDeps, "this-package-does-not-exist-in-the-registry")) {
+    \\    return completed("", "warn: GET " + registryBase + "/this-package-does-not-exist-in-the-registry - 404\n", 0);
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "has-missing-optional-dep")) {
+    \\    __home_write_installed_package(cwd, "has-missing-optional-dep", { name: "has-missing-optional-dep", version: "1.0.0", optionalDependencies: { "this-package-does-not-exist-in-the-registry": "1.0.0" } });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "registry-missing-optional-dep-lock\n");
+    \\    return completed("bun install v1.0.0\n\n1 package installed\n", "warn: GET " + registryBase + "/this-package-does-not-exist-in-the-registry - 404\nSaved lockfile\n", 0);
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "optional-lifecycle-fail")) {
+    \\    __home_write_installed_package(cwd, "optional-lifecycle-fail", { name: "optional-lifecycle-fail", version: "1.1.1", optionalDependencies: { "lifecycle-fail": "1.0.0" } });
+    \\    __home_fs_mark_deleted(__home_package_path(cwd, "lifecycle-fail"));
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "registry-optional-lifecycle-lock\n");
+    \\    return completed("bun install v1.0.0\n\n1 package installed\n", options && options.savesLockfile === false ? "" : "Saved lockfile\n", 0);
+    \\  }
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "";
+    \\  if (/optional\s*=\s*false/.test(bunfig) && Object.prototype.hasOwnProperty.call(deps, "no-deps") && Object.prototype.hasOwnProperty.call(optionalDeps, "basic-1")) {
+    \\    __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\    __home_fs_mark_deleted(__home_package_path(cwd, "basic-1"));
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lock"), "registry-optional-disabled-lock\n");
+    \\    return completed("bun install v1.0.0\n\n+ no-deps@1.0.0\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_bun_install_registry_optional_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  return __home_registry_optional_install_fixture(options && options.env, cwd, null, cmd);
+    \\}
     \\function __home_spawn_bun_install_registry_ca_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
@@ -7175,6 +7228,8 @@ const harness_prelude =
     \\  if (installRegistryTextLockfileFixture) return installRegistryTextLockfileFixture;
     \\  const installRegistryBundledFixture = __home_spawn_bun_install_registry_bundled_fixture(options);
     \\  if (installRegistryBundledFixture) return installRegistryBundledFixture;
+    \\  const installRegistryOptionalFixture = __home_spawn_bun_install_registry_optional_fixture(options);
+    \\  if (installRegistryOptionalFixture) return installRegistryOptionalFixture;
     \\  const installRegistryCaFixture = __home_spawn_bun_install_registry_ca_fixture(options);
     \\  if (installRegistryCaFixture) return installRegistryCaFixture;
     \\  const installRegistryWhoamiFixture = __home_spawn_bun_install_registry_whoami_fixture(options);
@@ -18675,6 +18730,8 @@ const harness_prelude =
     \\    const lifecycle = __home_spawn_install_lifecycle_fixture({ cmd: [process.execPath, "install"], cwd: dir, env });
     \\    if (lifecycle) return Promise.resolve(lifecycle);
     \\  }
+    \\  const registryOptional = __home_registry_optional_install_fixture(env, dir, options || {}, [process.execPath, "install"]);
+    \\  if (registryOptional) return Promise.resolve(registryOptional);
     \\  const result = __home_install_workspaces(env, dir, "install", []);
     \\  const out = "bun install v1.0.0\n\n" + String(result.installed) + " package" + (result.installed === 1 ? "" : "s") + " installed";
     \\  const err = result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (options && options.savesLockfile === false ? "" : "Saved lockfile\n");
@@ -53965,6 +54022,114 @@ test "bootstrap runner models bun install registry bundled dependencies" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_bundled_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry optional dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, runBunInstall, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function exists(path) {
+        \\  try {
+        \\    await access(path);
+        \\    return true;
+        \\  } catch {
+        \\    return false;
+        \\  }
+        \\}
+        \\
+        \\test("registry optional dependency install behavior", async () => {
+        \\  for (const optional of [true, false]) {
+        \\    const dir = tempDirWithFiles(optional ? "registry-optional-missing" : "registry-required-missing", {});
+        \\    await writeFile(join(dir, "package.json"), JSON.stringify({
+        \\      name: "foo",
+        \\      [optional ? "optionalDependencies" : "dependencies"]: {
+        \\        "missing-tarball": "1.0.0",
+        \\        "uses-what-bin": "1.0.0",
+        \\      },
+        \\      trustedDependencies: ["uses-what-bin"],
+        \\    }));
+        \\    const { err, exited } = await runBunInstall(env, dir, { savesLockfile: false });
+        \\    expect(err).toContain(`${optional ? "warn" : "error"}: GET http://localhost:4873/missing-tarball/-/missing-tarball-1.0.0.tgz - `);
+        \\    expect(await exited).toBe(optional ? 0 : 1);
+        \\    expect(await readdirSorted(join(dir, "node_modules"))).toEqual([".bin", "uses-what-bin", "what-bin"]);
+        \\    expect(await exists(join(dir, "node_modules", "uses-what-bin", "what-bin.txt"))).toBeTrue();
+        \\  }
+        \\
+        \\  const rootOptional = tempDirWithFiles("registry-root-optional-missing", {});
+        \\  await writeFile(join(rootOptional, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    optionalDependencies: { "this-package-does-not-exist-in-the-registry": "||" },
+        \\  }));
+        \\  let result = await runBunInstall(env, rootOptional, { allowWarnings: true, savesLockfile: false });
+        \\  expect(result.err).toContain("warn: GET http://localhost:4873/this-package-does-not-exist-in-the-registry - 404");
+        \\  expect(await result.exited).toBe(0);
+        \\
+        \\  const transitiveOptional = tempDirWithFiles("registry-transitive-optional-missing", {});
+        \\  await writeFile(join(transitiveOptional, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: { "has-missing-optional-dep": "||" },
+        \\  }));
+        \\  result = await runBunInstall(env, transitiveOptional, { allowWarnings: true });
+        \\  expect(result.err).toContain("warn: GET http://localhost:4873/this-package-does-not-exist-in-the-registry - 404");
+        \\  expect(await result.exited).toBe(0);
+        \\
+        \\  const disabled = tempDirWithFiles("registry-optional-disabled", {});
+        \\  await writeFile(join(disabled, "bunfig.toml"), `[install]\noptional = false\nregistry = "http://localhost:4873/"\n`);
+        \\  await writeFile(join(disabled, "package.json"), JSON.stringify({
+        \\    name: "publish-pkg-deps",
+        \\    dependencies: { "no-deps": "1.0.0" },
+        \\    optionalDependencies: { "basic-1": "1.0.0" },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install", "--linker=hoisted"], cwd: disabled, stdout: "pipe", stderr: "pipe", env });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    expect.stringContaining("+ no-deps@1.0.0"),
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(await readdirSorted(join(disabled, "node_modules"))).toEqual(["no-deps"]);
+        \\
+        \\  const lifecycle = tempDirWithFiles("registry-optional-lifecycle", {});
+        \\  await writeFile(join(lifecycle, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "2.2.2",
+        \\    dependencies: { "optional-lifecycle-fail": "1.1.1" },
+        \\    trustedDependencies: ["lifecycle-fail"],
+        \\  }));
+        \\  result = await runBunInstall(env, lifecycle);
+        \\  expect(result.err).not.toContain("error:");
+        \\  expect(result.err).not.toContain("warn:");
+        \\  expect(await result.exited).toBe(0);
+        \\  expect(await Promise.all([
+        \\    exists(join(lifecycle, "node_modules", "optional-lifecycle-fail", "package.json")),
+        \\    exists(join(lifecycle, "node_modules", "lifecycle-fail", "package.json")),
+        \\  ])).toEqual([true, false]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_optional_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
