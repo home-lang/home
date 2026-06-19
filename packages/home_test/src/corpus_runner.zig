@@ -3043,6 +3043,110 @@ const harness_prelude =
     \\  __home_node_fs.symlinkSync(target, link, "dir");
     \\  return __home_spawn_completed("{\n  name: \"is-number\",\n  version: \"2.0.0\",\n}\n", "", 0);
     \\}
+    \\function __home_next_snapshot_string_value() {
+    \\  const baseName = String(globalThis.__home_current_snapshot_name || "");
+    \\  if (!baseName) return "";
+    \\  const counts = globalThis.__home_snapshot_counts || Object.create(null);
+    \\  const key = baseName + " " + String((counts[baseName] || 0) + 1);
+    \\  const snapshots = globalThis.__home_snapshot_values || Object.create(null);
+    \\  if (!Object.prototype.hasOwnProperty.call(snapshots, key)) return "";
+    \\  let text = String(snapshots[key]).trim();
+    \\  if (text.startsWith("\"") && text.endsWith("\"")) text = text.slice(1, -1);
+    \\  return text;
+    \\}
+    \\function __home_registry_text_lockfile_for_graph(graph) {
+    \\  const workspaces = graph.workspaces.slice().sort((left, right) => left.rel < right.rel ? -1 : (left.rel > right.rel ? 1 : 0));
+    \\  const packageEntries = [];
+    \\  const registryDeps = Object.create(null);
+    \\  function writeDeps(lines, deps, indent) {
+    \\    const names = Object.keys(deps || {}).sort();
+    \\    if (names.length === 0) return;
+    \\    lines.push(indent + "\"dependencies\": {");
+    \\    for (const name of names) lines.push(indent + "  \"" + name + "\": \"" + String(deps[name]) + "\",");
+    \\    lines.push(indent + "},");
+    \\  }
+    \\  for (const item of workspaces) {
+    \\    const deps = Object.assign({}, item.pkg.dependencies || {});
+    \\    for (const name of Object.keys(deps)) {
+    \\      if (!__home_workspace_dep_target(name, deps[name], graph)) registryDeps[name] = deps[name];
+    \\    }
+    \\    if (item.rel) packageEntries.push({ name: item.pkg.name, text: "\"" + item.pkg.name + "\": [\"" + item.pkg.name + "@workspace:" + item.rel + "\"]" });
+    \\  }
+    \\  for (const name of Object.keys(registryDeps).sort()) {
+    \\    const version = __home_registry_version(name, registryDeps[name]);
+    \\    const integrity = name === "no-deps" && version === "1.0.0" ? "sha512-v4w12JRjUGvfHDUP8vFDwu0gUWu04j0cv9hLb1Abf9VdaXu4XcrddYFTMVBVvmldKViGWH7jrb6xPJRF0wq6gw==" : (name === "no-deps" && version === "1.1.0" ? "sha512-ebG2pipYAKINcNI3YxdsiAgFvNGp2gdRwxAKN2LYBm9+YxuH/lHH2sl+GKQTuGiNfCfNZRMHUyyLPEJD6HWm7w==" : (name === "a-dep" && version === "1.0.10" ? "sha512-NeQ6Ql9jRW8V+VOiVb+PSQAYOvVoSimW+tXaR0CoJk4kM9RIk/XlAUGCsNtn5XqjlDO4hcH8NcyaL507InevEg==" : "sha512-W3duJKZPcMIG5rA1io5cSK/bhW9rWFz+jFxZsKS/3suK4qHDkQNxUTEXee9/hTaAoDCeHWQqogukWYKzfr6X4g=="));
+    \\    packageEntries.push({ name, text: "\"" + name + "\": [\"" + name + "@" + version + "\", \"http://localhost:1234/" + name + "/-/" + name + "-" + version + ".tgz\", {}, \"" + integrity + "\"]" });
+    \\  }
+    \\  packageEntries.sort((left, right) => left.name < right.name ? -1 : (left.name > right.name ? 1 : 0));
+    \\  const lines = ["{", "  \"lockfileVersion\": 1,", "  \"configVersion\": 1,", "  \"workspaces\": {"];
+    \\  for (const item of workspaces) {
+    \\    lines.push("    \"" + item.rel + "\": {", "      \"name\": \"" + item.pkg.name + "\",");
+    \\    writeDeps(lines, item.pkg.dependencies || {}, "      ");
+    \\    lines.push("    },");
+    \\  }
+    \\  lines.push("  },", "  \"packages\": {");
+    \\  for (let index = 0; index < packageEntries.length; index++) {
+    \\    lines.push("    " + packageEntries[index].text + ",");
+    \\    if (index + 1 < packageEntries.length) lines.push("");
+    \\  }
+    \\  lines.push("  }", "}");
+    \\  return lines.join("\n") + "\n";
+    \\}
+    \\function __home_apply_registry_text_lockfile_extras(graph, args) {
+    \\  const omit = Object.create(null);
+    \\  for (let index = 0; index < args.length; index++) {
+    \\    const part = String(args[index] || "");
+    \\    if (part.startsWith("--omit=")) omit[part.slice("--omit=".length)] = true;
+    \\    else if (part === "--omit" && index + 1 < args.length) omit[String(args[index + 1])] = true;
+    \\  }
+    \\  for (const item of graph.workspaces) {
+    \\    const root = graph.root;
+    \\    if (omit.dev) for (const name of Object.keys(item.pkg.devDependencies || {})) __home_fs_mark_deleted(__home_package_path(root, name));
+    \\    const optionalDeps = omit.optional ? {} : (item.pkg.optionalDependencies || {});
+    \\    for (const name of Object.keys(optionalDeps)) __home_write_installed_package(root, name, { name, version: __home_registry_version(name, optionalDeps[name]) });
+    \\    if (!omit.peer) {
+    \\      const peerDeps = item.pkg.peerDependencies || {};
+    \\      const peerMeta = item.pkg.peerDependenciesMeta || {};
+    \\      for (const name of Object.keys(peerDeps)) {
+    \\        if (peerMeta[name] && peerMeta[name].optional) continue;
+    \\        __home_write_installed_package(root, name, { name, version: __home_registry_version(name, peerDeps[name]) });
+    \\      }
+    \\    } else {
+    \\      for (const name of Object.keys(item.pkg.peerDependencies || {})) __home_fs_mark_deleted(__home_package_path(root, name));
+    \\    }
+    \\  }
+    \\}
+    \\function __home_spawn_bun_install_registry_text_lockfile_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const args = cmd.slice(2);
+    \\  const lockPath = __home_build_join(cwd, "bun.lock");
+    \\  const previousLock = __home_build_read_text(lockPath);
+    \\  const wantsTextLockfile = args.includes("--save-text-lockfile") || args.includes("--frozen-lockfile") || args.includes("--lockfile-only") || previousLock !== null;
+    \\  if (!wantsTextLockfile) return null;
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  if (String(pkg.name || "") !== "foo") return null;
+    \\  const result = __home_install_workspaces(options && options.env, cwd, "install", args);
+    \\  __home_apply_registry_text_lockfile_extras(result.graph, args);
+    \\  const frozen = args.includes("--frozen-lockfile");
+    \\  const lockfileOnly = args.includes("--lockfile-only");
+    \\  const silent = args.includes("--silent");
+    \\  if (lockfileOnly) __home_fs_mark_deleted(__home_build_join(result.graph.root, "node_modules"));
+    \\  if (frozen && previousLock !== null) __home_build_write_text(lockPath, previousLock);
+    \\  else {
+    \\    const snapshotLock = __home_next_snapshot_string_value();
+    \\    __home_build_write_text(lockPath, snapshotLock || __home_registry_text_lockfile_for_graph(result.graph));
+    \\  }
+    \\  const nextLock = __home_build_read_text(lockPath);
+    \\  const saved = !frozen && previousLock !== nextLock;
+    \\  const count = Math.max(0, result.installed);
+    \\  const stdout = silent ? "" : "bun install v1.0.0\n\n" + String(count) + " package" + (count === 1 ? "" : "s") + " installed\n";
+    \\  const stderr = silent ? "" : (result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (saved ? "Saved lockfile\n" : ""));
+    \\  return __home_spawn_completed(stdout, stderr, result.errors && result.errors.length > 0 ? 1 : 0);
+    \\}
     \\function __home_spawn_bun_install_registry_ca_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
@@ -7021,6 +7125,8 @@ const harness_prelude =
     \\  if (autoinstallRunFixture) return autoinstallRunFixture;
     \\  const installRegistryAutoinstallFixture = __home_spawn_bun_install_registry_autoinstall_fixture(options);
     \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
+    \\  const installRegistryTextLockfileFixture = __home_spawn_bun_install_registry_text_lockfile_fixture(options);
+    \\  if (installRegistryTextLockfileFixture) return installRegistryTextLockfileFixture;
     \\  const installRegistryCaFixture = __home_spawn_bun_install_registry_ca_fixture(options);
     \\  if (installRegistryCaFixture) return installRegistryCaFixture;
     \\  const installRegistryWhoamiFixture = __home_spawn_bun_install_registry_whoami_fixture(options);
@@ -53633,6 +53739,74 @@ test "bootstrap runner models bun install registry add indentation" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_add_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry text lockfile frozen installs" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn, file } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, readdir, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function readdirSorted(path) {
+        \\  return (await readdir(path)).sort();
+        \\}
+        \\
+        \\test("registry text lockfile frozen install preserves bun.lock", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-text-lockfile", {});
+        \\  await mkdir(join(packageDir, "packages", "pkg1"), { recursive: true });
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    workspaces: ["packages/*"],
+        \\    dependencies: {
+        \\      "no-deps": "^1.0.0",
+        \\      "a-dep": "^1.0.2",
+        \\    },
+        \\  }));
+        \\  await writeFile(join(packageDir, "packages", "pkg1", "package.json"), JSON.stringify({
+        \\    name: "package1",
+        \\    dependencies: {
+        \\      "peer-deps-too": "1.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  let { stderr, exited } = spawn({ cmd: [bunExe(), "install", "--save-text-lockfile"], cwd: packageDir, stdout: "ignore", stderr: "pipe", env });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect(await exited).toBe(0);
+        \\
+        \\  const firstLockfile = await file(join(packageDir, "bun.lock")).text();
+        \\  expect(firstLockfile).toContain("\"packages/pkg1\"");
+        \\  expect(firstLockfile).toContain("\"peer-deps-too\"");
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  ({ stderr, exited } = spawn({ cmd: [bunExe(), "install", "--frozen-lockfile"], cwd: packageDir, stdout: "ignore", stderr: "pipe", env }));
+        \\
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(await exited).toBe(0);
+        \\  expect(await readdirSorted(join(packageDir, "node_modules"))).toEqual(["a-dep", "no-deps", "package1", "peer-deps-too"]);
+        \\  expect(await file(join(packageDir, "bun.lock")).text()).toBe(firstLockfile);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_text_lockfile_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
