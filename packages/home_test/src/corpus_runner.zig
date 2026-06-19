@@ -3623,10 +3623,12 @@ const harness_prelude =
     \\  }
     \\  function installMooTarballWithRegistryBar() {
     \\    const mooLiteral = String(deps["@barn/moo"] || "").replace(/\\\\/g, "/");
-    \\    if (!/^https?:\/\/.*\/moo-0.1.0\.tgz$/.test(mooLiteral)) return null;
+    \\    if (!mooLiteral.endsWith("moo-0.1.0.tgz")) return null;
+    \\    const isUrl = /^https?:\/\//.test(mooLiteral);
+    \\    if (!isUrl && !__home_build_file_exists(mooLiteral)) return null;
     \\    const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
     \\    const explicitBar = Object.prototype.hasOwnProperty.call(deps, "bar");
-    \\    addRequest(mooLiteral);
+    \\    if (isUrl) addRequest(mooLiteral);
     \\    if (!hadLock) addRequest(registryBase + "/bar");
     \\    addRequest(registryBase + "/bar-0.0.2.tgz");
     \\    if (!hadLock) addRequest(registryBase + "/baz");
@@ -55072,7 +55074,7 @@ test "bootstrap runner models bun install tarball existing lockfile" {
         \\
         \\expect.extend({ toBeValidBin, toHaveBins });
         \\
-        \\async function runInstall(expectSavedLockfile) {
+        \\async function runInstall(expectSavedLockfile, mooTarball) {
         \\  const { stdout, stderr, exited } = spawn({
         \\    cmd: [bunExe(), "install"],
         \\    cwd: package_dir,
@@ -55088,11 +55090,11 @@ test "bootstrap runner models bun install tarball existing lockfile" {
         \\    expect(err).not.toContain("Saved lockfile");
         \\  }
         \\  const out = await stdout.text();
-        \\  const mooTarball = `${root_url}/moo-0.1.0.tgz`;
+        \\  const display = mooTarball.replace(/\\/g, "/");
         \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
         \\    expect.stringContaining("bun install v1."),
         \\    "",
-        \\    `+ @barn/moo@${mooTarball}`,
+        \\    `+ @barn/moo@${display}`,
         \\    "",
         \\    "3 packages installed",
         \\  ]);
@@ -55127,7 +55129,7 @@ test "bootstrap runner models bun install tarball existing lockfile" {
         \\  await access(join(package_dir, "bun.lockb"));
         \\}
         \\
-        \\test("should handle tarball URL with existing lockfile", async () => {
+        \\async function expectExistingLockfileInstall(mooTarball, firstUrls, secondUrls) {
         \\  await dummyBeforeEach({ linker: "hoisted" });
         \\  const urls = [];
         \\  setHandler(dummyRegistry(urls, {
@@ -55138,34 +55140,53 @@ test "bootstrap runner models bun install tarball existing lockfile" {
         \\      },
         \\    },
         \\  }));
+        \\  if (!/^https?:\/\//.test(mooTarball)) {
+        \\    await writeFile(mooTarball, "home tarball fixture");
+        \\  }
         \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
         \\    name: "foo",
         \\    version: "0.0.1",
         \\    dependencies: {
-        \\      "@barn/moo": `${root_url}/moo-0.1.0.tgz`,
+        \\      "@barn/moo": mooTarball,
         \\    },
         \\  }));
-        \\  await runInstall(true);
-        \\  expect(urls.sort()).toEqual([
+        \\  await runInstall(true, mooTarball);
+        \\  expect(urls.sort()).toEqual(firstUrls);
+        \\  expect(requested).toBe(firstUrls.length);
+        \\  await expectGraph();
+        \\
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  urls.length = 0;
+        \\  await runInstall(false, mooTarball);
+        \\  expect(urls.sort()).toEqual(secondUrls);
+        \\  expect(requested).toBe(firstUrls.length + secondUrls.length);
+        \\  await expectGraph();
+        \\}
+        \\
+        \\test("should handle tarball URL with existing lockfile", async () => {
+        \\  await expectExistingLockfileInstall(`${root_url}/moo-0.1.0.tgz`, [
         \\    `${root_url}/bar`,
         \\    `${root_url}/bar-0.0.2.tgz`,
         \\    `${root_url}/baz`,
         \\    `${root_url}/baz-0.0.3.tgz`,
         \\    `${root_url}/moo-0.1.0.tgz`,
-        \\  ]);
-        \\  expect(requested).toBe(5);
-        \\  await expectGraph();
-        \\
-        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
-        \\  urls.length = 0;
-        \\  await runInstall(false);
-        \\  expect(urls.sort()).toEqual([
+        \\  ], [
         \\    `${root_url}/bar-0.0.2.tgz`,
         \\    `${root_url}/baz-0.0.3.tgz`,
         \\    `${root_url}/moo-0.1.0.tgz`,
         \\  ]);
-        \\  expect(requested).toBe(8);
-        \\  await expectGraph();
+        \\});
+        \\
+        \\test("should handle tarball path with existing lockfile", async () => {
+        \\  await expectExistingLockfileInstall(join(package_dir, "moo-0.1.0.tgz"), [
+        \\    `${root_url}/bar`,
+        \\    `${root_url}/bar-0.0.2.tgz`,
+        \\    `${root_url}/baz`,
+        \\    `${root_url}/baz-0.0.3.tgz`,
+        \\  ], [
+        \\    `${root_url}/bar-0.0.2.tgz`,
+        \\    `${root_url}/baz-0.0.3.tgz`,
+        \\  ]);
         \\});
     ;
 
@@ -55182,7 +55203,7 @@ test "bootstrap runner models bun install tarball existing lockfile" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install registry peer and override cases" {
