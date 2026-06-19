@@ -3774,13 +3774,15 @@ const harness_prelude =
     \\    return completed("bun install v1.0.0\n\n+ bar@0.0.2\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
     \\  function installBarSemverSuccessDependency() {
-    \\    if (!Object.prototype.hasOwnProperty.call(deps, "bar") || !["^0", "^0.0", "^0.0.2"].includes(String(deps.bar))) return null;
+    \\    const range = String(deps.bar || "");
+    \\    if (!Object.prototype.hasOwnProperty.call(deps, "bar") || !["^0", "^0.0", "^0.0.2", "^0.0.2-rc"].includes(range)) return null;
+    \\    const displayVersion = range === "^0.0.2-rc" ? "0.0.2-rc" : "0.0.2";
     \\    addRequest(registryBase + "/bar");
     \\    addRequest(registryBase + "/bar-0.0.2.tgz");
     \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
     \\    __home_write_installed_package(cwd, "bar", { name: "bar", version: "0.0.2" });
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-bar-semver-success-lockb\n");
-    \\    return completed("bun install v1.0.0\n\n+ bar@0.0.2\n\n1 package installed", "Saved lockfile\n", 0);
+    \\    return completed("bun install v1.0.0\n\n+ bar@" + displayVersion + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
     \\  function installBarSemverMissDependency() {
     \\    const range = String(deps.bar || "");
@@ -56266,6 +56268,76 @@ test "bootstrap runner models bun install caret zero dot zero dot two dependency
         \\    expect.stringContaining("bun install v1."),
         \\    "",
         \\    "+ bar@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/bar`, `${root_url}/bar-0.0.2.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBarSemverSuccessDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install caret zero dot zero dot two rc dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\test("should handle ^0.0.2-rc in dependencies", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, { "0.0.2-rc": { as: "0.0.2" } }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      bar: "^0.0.2-rc",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("error:");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ bar@0.0.2-rc",
         \\    "",
         \\    "1 package installed",
         \\  ]);
