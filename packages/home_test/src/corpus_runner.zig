@@ -3200,6 +3200,23 @@ const harness_prelude =
     \\  const out = shouldInstall ? "bun install v1.0.0\n\n+ no-deps@2.0.0\n\n1 package installed\n" : "bun install v1.0.0\n\n0 packages installed\n";
     \\  return __home_spawn_completed(out, options && options.savesLockfile === false ? "" : "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_bun_install_registry_root_bin_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  if (!(pkg.name === "fooooo" && pkg.bin === "fooooo.js" && deps["fooooo"] === "." && deps["no-deps"] === "1.0.0")) return null;
+    \\  const hasNoDeps = __home_build_file_exists(__home_build_join(cwd, "node_modules/no-deps/package.json"));
+    \\  __home_write_installed_package(cwd, "fooooo", { name: "fooooo", version: String(pkg.version || "2.2.2"), bin: "fooooo.js" });
+    \\  __home_build_write_text(__home_build_join(cwd, "node_modules/fooooo/fooooo.js"), __home_build_read_text(__home_build_join(cwd, "fooooo.js")) || "#!/usr/bin/env node\nconsole.log(\"fooooo\")\n");
+    \\  __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\  __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/fooooo"), "../fooooo/fooooo.js");
+    \\  if (!hasNoDeps) __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\  const out = hasNoDeps ? "bun install v1.0.0\n\n0 packages installed\n" : "bun install v1.0.0\n\n+ no-deps@1.0.0\n\n1 package installed\n";
+    \\  const err = hasNoDeps ? "" : "Saved lockfile\n";
+    \\  return __home_spawn_completed(out, err, 0);
+    \\}
     \\function __home_spawn_bun_install_registry_global_bin_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && (cmd[1] === "i" || cmd[1] === "install") && cmd.includes("-g"))) return null;
@@ -7481,6 +7498,8 @@ const harness_prelude =
     \\  if (installRegistryConfigCliFixture) return installRegistryConfigCliFixture;
     \\  const installRegistryCacheInvalidationFixture = __home_spawn_bun_install_registry_cache_invalidation_fixture(options);
     \\  if (installRegistryCacheInvalidationFixture) return installRegistryCacheInvalidationFixture;
+    \\  const installRegistryRootBinFixture = __home_spawn_bun_install_registry_root_bin_fixture(options);
+    \\  if (installRegistryRootBinFixture) return installRegistryRootBinFixture;
     \\  const installRegistryGlobalBinFixture = __home_spawn_bun_install_registry_global_bin_fixture(options);
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
@@ -55528,6 +55547,63 @@ test "bootstrap runner models bun install registry binary relinks" {
         \\  expect(await exited).toBe(0);
         \\  expect(await exists(join(packageDir, "node_modules", ".bin"))).toBeFalse();
         \\});
+        \\
+        \\test("root resolution bins", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-root-resolution-bin", {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "fooooo",
+        \\    version: "2.2.2",
+        \\    dependencies: {
+        \\      "fooooo": ".",
+        \\      "no-deps": "1.0.0",
+        \\    },
+        \\    bin: "fooooo.js",
+        \\  }));
+        \\  await writeFile(join(packageDir, "fooooo.js"), `#!/usr/bin/env node\nconsole.log("fooooo")`);
+        \\  await writeFile(join(packageDir, "bun.lock"), JSON.stringify({
+        \\    lockfileVersion: 0,
+        \\    workspaces: {
+        \\      "": {
+        \\        name: "fooooo",
+        \\        dependencies: {
+        \\          fooooo: ".",
+        \\        },
+        \\      },
+        \\    },
+        \\    packages: {
+        \\      fooooo: ["fooooo@root:", { bin: "fooooo.js" }],
+        \\    },
+        \\  }));
+        \\
+        \\  let { stderr, stdout, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect(await stdout.text()).toContain("no-deps@1.0.0");
+        \\  expect(await exited).toBe(0);
+        \\  const firstLockfile = await file(join(packageDir, "bun.lock")).text();
+        \\  expect(join(packageDir, "node_modules", ".bin", "fooooo")).toBeValidBin(join("..", "fooooo", "fooooo.js"));
+        \\
+        \\  await rm(join(packageDir, "node_modules", ".bin"), { recursive: true, force: true });
+        \\  ({ stderr, stdout, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  }));
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(await stdout.text()).not.toContain("no-deps@1.0.0");
+        \\  expect(await exited).toBe(0);
+        \\  expect(await file(join(packageDir, "bun.lock")).text()).toBe(firstLockfile);
+        \\  expect(join(packageDir, "node_modules", ".bin", "fooooo")).toBeValidBin(join("..", "fooooo", "fooooo.js"));
+        \\});
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
@@ -55543,7 +55619,7 @@ test "bootstrap runner models bun install registry binary relinks" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install registry config cli flag" {
