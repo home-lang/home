@@ -3142,6 +3142,19 @@ const harness_prelude =
     \\  const out = "bun install v1.0.0\n\n" + String(requested.length) + " packages installed\n";
     \\  return __home_spawn_completed(out, "", 0);
     \\}
+    \\function __home_spawn_bun_install_registry_missing_directory_bin_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  if (!Object.prototype.hasOwnProperty.call(deps, "missing-directory-bin")) return null;
+    \\  __home_write_installed_package(cwd, "missing-directory-bin", { name: "missing-directory-bin", version: "1.1.1", directories: { bin: "missing-bin-directory" } });
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-missing-directory-bin-lockb\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n+ missing-directory-bin@1.1.1\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_global_bin_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && (cmd[1] === "i" || cmd[1] === "install") && cmd.includes("-g"))) return null;
@@ -7417,6 +7430,8 @@ const harness_prelude =
     \\  if (installRegistryPeerOverrideFixture) return installRegistryPeerOverrideFixture;
     \\  const installRegistryBinTypesFixture = __home_spawn_bun_install_registry_bin_types_fixture(options);
     \\  if (installRegistryBinTypesFixture) return installRegistryBinTypesFixture;
+    \\  const installRegistryMissingDirectoryBinFixture = __home_spawn_bun_install_registry_missing_directory_bin_fixture(options);
+    \\  if (installRegistryMissingDirectoryBinFixture) return installRegistryMissingDirectoryBinFixture;
     \\  const installRegistryGlobalBinFixture = __home_spawn_bun_install_registry_global_bin_fixture(options);
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
@@ -55432,6 +55447,27 @@ test "bootstrap runner models bun install registry binary relinks" {
         \\    await runBin(packageDir, "map-bin-2", "map-bin-2\n", global);
         \\  });
         \\}
+        \\
+        \\test("directories.bin missing folder is skipped without errors", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-missing-directory-bin", {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: {
+        \\      "missing-directory-bin": "file:missing-directory-bin-1.1.1.tgz",
+        \\    },
+        \\  }));
+        \\
+        \\  const { stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await stderr.text()).not.toContain("error:");
+        \\  expect(await exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "node_modules", ".bin"))).toBeFalse();
+        \\});
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
@@ -55447,7 +55483,7 @@ test "bootstrap runner models bun install registry binary relinks" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
