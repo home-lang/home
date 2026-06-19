@@ -55664,6 +55664,120 @@ test "bootstrap runner models bun install updated root lifecycle reinstallation"
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner models bun install updated workspace lifecycle reinstallation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, readlink, readdir, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, toBeWorkspaceLink } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir, requested } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeWorkspaceLink });
+        \\
+        \\async function readdirSorted(path) {
+        \\  return (await readdir(path)).sort();
+        \\}
+        \\
+        \\async function runInstall(args, expectSavedLockfile) {
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install", ...args],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("error:");
+        \\  if (expectSavedLockfile) {
+        \\    expect(err).toContain("Saved lockfile");
+        \\  } else {
+        \\    expect(err).not.toContain("Saved lockfile");
+        \\  }
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "Bar"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("bar");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should use updated life-cycle scripts in dependency during re-installation", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    scripts: {
+        \\      install: [bunExe(), "foo-install.js"].join(" "),
+        \\    },
+        \\    workspaces: ["bar"],
+        \\  }));
+        \\  await writeFile(join(package_dir, "foo-install.js"), "await require('fs/promises').writeFile('foo.txt', 'foo!');");
+        \\  await mkdir(join(package_dir, "bar"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({
+        \\    name: "Bar",
+        \\    scripts: {
+        \\      preinstall: [bunExe(), "bar-preinstall.js"].join(" "),
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "bar", "bar-preinstall.js"), 'await require("fs/promises").writeFile("bar.txt", "bar!");');
+        \\  await runInstall([], true);
+        \\  expect(await file(join(package_dir, "foo.txt")).text()).toBe("foo!");
+        \\  expect(await file(join(package_dir, "bar", "bar.txt")).text()).toBe("bar!");
+        \\
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  await rm(join(package_dir, "foo.txt"));
+        \\  await rm(join(package_dir, "bar", "bar.txt"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({
+        \\    name: "Bar",
+        \\    scripts: {
+        \\      preinstall: [bunExe(), "bar-preinstall.js"].join(" "),
+        \\      postinstall: [bunExe(), "bar-postinstall.js"].join(" "),
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "bar", "bar-preinstall.js"), 'await require("fs/promises").writeFile("bar-preinstall.txt", "bar preinstall!");');
+        \\  await writeFile(join(package_dir, "bar", "bar-postinstall.js"), 'await require("fs/promises").writeFile("bar-postinstall.txt", "bar postinstall!");');
+        \\  await runInstall([], true);
+        \\  expect(await file(join(package_dir, "foo.txt")).text()).toBe("foo!");
+        \\  expect(await file(join(package_dir, "bar", "bar-preinstall.txt")).text()).toBe("bar preinstall!");
+        \\  expect(await file(join(package_dir, "bar", "bar-postinstall.txt")).text()).toBe("bar postinstall!");
+        \\
+        \\  const bunLockb = await file(join(package_dir, "bun.lockb")).arrayBuffer();
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  await rm(join(package_dir, "foo.txt"));
+        \\  await rm(join(package_dir, "bar", "bar-preinstall.txt"));
+        \\  await rm(join(package_dir, "bar", "bar-postinstall.txt"));
+        \\  await runInstall(["--production"], false);
+        \\  expect(await file(join(package_dir, "bun.lockb")).arrayBuffer()).toEqual(bunLockb);
+        \\  expect(await file(join(package_dir, "foo.txt")).text()).toBe("foo!");
+        \\  expect(await file(join(package_dir, "bar", "bar-preinstall.txt")).text()).toBe("bar preinstall!");
+        \\  expect(await file(join(package_dir, "bar", "bar-postinstall.txt")).text()).toBe("bar postinstall!");
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_workspace_basic_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner models bun install peer dependency reuse" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
