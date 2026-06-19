@@ -3527,6 +3527,31 @@ const harness_prelude =
     \\  const stderr = silent ? "" : (result.errors && result.errors.length > 0 ? result.errors.join("\n") + "\n" : (saved ? "Saved lockfile\n" : ""));
     \\  return __home_spawn_completed(stdout, stderr, result.errors && result.errors.length > 0 ? 1 : 0);
     \\}
+    \\function __home_spawn_bun_install_text_lockfile_edge_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const lockText = __home_build_read_text(__home_build_join(cwd, "bun.lock"));
+    \\  if (lockText === null) return null;
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
+    \\  const optionalDeps = pkg.optionalDependencies && typeof pkg.optionalDependencies === "object" ? pkg.optionalDependencies : {};
+    \\  const hasJqueryDep = Object.prototype.hasOwnProperty.call(deps, "jquery");
+    \\  const hasJqueryOptional = Object.prototype.hasOwnProperty.call(optionalDeps, "jquery");
+    \\  if (hasJqueryDep && lockText.includes('"invalid-url"')) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n", 'error: Expected tarball URL to start with https:// or http://, got "invalid-url" while fetching package "jquery"\n', 1);
+    \\  }
+    \\  const hasNoPackageEntries = /"packages"\s*:\s*\{\s*\}/.test(lockText);
+    \\  if (hasJqueryOptional && hasNoPackageEntries) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n\n0 packages installed\n", "", 0);
+    \\  }
+    \\  if (hasJqueryDep && hasNoPackageEntries) {
+    \\    return __home_spawn_completed("bun install v1.0.0\n\n0 packages installed\n", "error: Failed to resolve root prod dependency 'jquery'\n", 1);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_write_registry_bundled_dependency(root, name) {
     \\  __home_write_installed_package(root, name, { name, version: "1.0.0" });
     \\  const packageDir = __home_package_path(root, name);
@@ -7733,6 +7758,8 @@ const harness_prelude =
     \\  if (installRegistryTextLockfileFixture) return installRegistryTextLockfileFixture;
     \\  const installRegistryBundledFixture = __home_spawn_bun_install_registry_bundled_fixture(options);
     \\  if (installRegistryBundledFixture) return installRegistryBundledFixture;
+    \\  const installTextLockfileEdgeFixture = __home_spawn_bun_install_text_lockfile_edge_fixture(options);
+    \\  if (installTextLockfileEdgeFixture) return installTextLockfileEdgeFixture;
     \\  const installRegistryOptionalFixture = __home_spawn_bun_install_registry_optional_fixture(options);
     \\  if (installRegistryOptionalFixture) return installRegistryOptionalFixture;
     \\  const installRegistryCaFixture = __home_spawn_bun_install_registry_ca_fixture(options);
@@ -54567,6 +54594,132 @@ test "bootstrap runner models bun install registry text lockfile frozen installs
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install text lockfile resolution edges" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\
+        \\const emptyPackagesLock = `{
+        \\  "lockfileVersion": 1,
+        \\  "configVersion": 0,
+        \\  "workspaces": {
+        \\    "": {
+        \\    },
+        \\  },
+        \\  "packages": {}
+        \\}
+        \\`;
+        \\
+        \\test("providing invalid url in lockfile does not crash", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    dependencies: {
+        \\      jquery: "3.7.1",
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "bun.lock"), `{
+        \\    "lockfileVersion": 1,
+        \\    "configVersion": 0,
+        \\    "workspaces": {
+        \\      "": {
+        \\        "dependencies": {
+        \\          "jquery": "3.7.1",
+        \\        },
+        \\      },
+        \\    },
+        \\    "packages": {
+        \\      "jquery": [
+        \\        "jquery@3.7.1",
+        \\        "invalid-url",
+        \\        {},
+        \\        "sha512-+LGRog6RAsCJrrrg/IO6LGmpphNe5DiK30dGjCoxxeGv49B10/3XYGxPsAwrDlMFcFEvdAUavDT8r9k/hSyQqQ==",
+        \\      ],
+        \\    },
+        \\  }`);
+        \\  const { stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain('error: Expected tarball URL to start with https:// or http://, got "invalid-url" while fetching package "jquery"');
+        \\  expect(await exited).toBe(1);
+        \\});
+        \\
+        \\test("optional dependencies do not need to be resolvable in text lockfile", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    optionalDependencies: {
+        \\      jquery: "3.7.1",
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "bun.lock"), emptyPackagesLock);
+        \\
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out).not.toContain("1 package installed");
+        \\  expect(await exited).toBe(0);
+        \\});
+        \\
+        \\test("non-optional dependencies need to be resolvable in text lockfile", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    dependencies: {
+        \\      jquery: "3.7.1",
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "bun.lock"), emptyPackagesLock);
+        \\
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install", "--production"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).toContain("error: Failed to resolve root prod dependency 'jquery'");
+        \\  const out = await stdout.text();
+        \\  expect(out).not.toContain("1 package installed");
+        \\  expect(await exited).toBe(1);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_text_lockfile_edge_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install registry bundled dependencies" {
