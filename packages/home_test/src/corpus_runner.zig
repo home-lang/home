@@ -18736,6 +18736,7 @@ const harness_prelude =
     \\        const registryLiteral = depAlias ? depAlias.range : literal;
     \\        const registryVersionName = depAlias ? depAlias.name : depName;
     \\        const pkg = localDep ? localDep.pkg : { name: registryName, version: __home_registry_version(registryVersionName, registryLiteral) };
+    \\        const peerReplacementDep = depName === "1-peer-dep-a" || depName === "1-peer-dep-b" || depName === "2-peer-deps-c";
     \\        if (depName === "bar" && literal === "0.0.7") pkg.description = "not a workspace";
     \\        if (depName === "two-range-deps") {
     \\          const rootOverrides = graph.rootPkg.overrides && typeof graph.rootPkg.overrides === "object" ? graph.rootPkg.overrides : {};
@@ -18750,6 +18751,7 @@ const harness_prelude =
     \\        if (depName === "one-optional-peer-dep" && pkg.version === "1.0.1" && !graphHasNoDeps) pkg.dependencies = { "no-deps": "^1.0.0" };
     \\        if (depName === "one-one-dep") pkg.dependencies = { "no-deps": "1.0.1" };
     \\        if (depName === "duplicate-name-and-version" && pkg.version === "1.0.2") pkg.dependencies = { "a-dep": "1.0.1" };
+    \\        if (peerReplacementDep && pkg.version === "1.0.0") pkg.peerDependencies = { "no-deps": "1.0.0" };
     \\        const rootDepAlias = __home_npm_alias(rootDeps[depName]);
     \\        const rootAliasConflict = item.rel && rootDepAlias && rootDepAlias.name !== depName;
     \\        const targetRoot = item.rel && (graph.byName[depName] || rootAliasConflict) ? __home_build_join(graph.root, "node_modules", item.pkg.name) : graph.root;
@@ -18775,6 +18777,11 @@ const harness_prelude =
     \\        if (!isolatedLinker && depName === "duplicate-name-and-version" && pkg.version === "1.0.2") {
     \\          __home_write_installed_package(graph.root, "a-dep", { name: "a-dep", version: "1.0.1" });
     \\          __home_fs_mark_deleted(__home_package_path(graph.root, "no-deps"));
+    \\          registryCount++;
+    \\        }
+    \\        if (!isolatedLinker && peerReplacementDep && pkg.version === "1.0.0") {
+    \\          __home_write_installed_package(graph.root, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\          __home_fs_mark_deleted(__home_package_path(__home_package_path(graph.root, depName), "no-deps"));
     \\          registryCount++;
     \\        }
     \\        if (String(globalThis.__home_current_filename || "").includes("cli/install/config-version.test.ts") && item.rel && depName === "no-deps") {
@@ -54453,6 +54460,83 @@ test "bootstrap runner models bun install registry duplicate manifest names" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "duplicate-name-and-version") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry peer replacement matrix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file } from "bun";
+        \\import { install_test_helpers } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\import { exists, rm, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, runBunInstall, tempDirWithFiles, toMatchNodeModulesAt } from "harness";
+        \\import { join } from "path";
+        \\
+        \\const { parseLockfile } = install_test_helpers;
+        \\expect.extend({ toMatchNodeModulesAt });
+        \\
+        \\test("peer dependency replacement matrix keeps root peer resolution", async () => {
+        \\  const dependencies = ["1-peer-dep-a", "1-peer-dep-b", "2-peer-deps-c"];
+        \\  for (const firstDep of dependencies) {
+        \\    for (const secondDep of dependencies) {
+        \\      if (firstDep === secondDep) continue;
+        \\      const packageDir = tempDirWithFiles(`registry-peer-replace-${firstDep}-${secondDep}`, {});
+        \\      const packageJson = join(packageDir, "package.json");
+        \\      await writeFile(packageJson, JSON.stringify({ name: "foo", dependencies: { [firstDep]: "1.0.0" } }));
+        \\
+        \\      await runBunInstall(env, packageDir);
+        \\      assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\      expect(parseLockfile(packageDir)).toMatchNodeModulesAt(packageDir);
+        \\      let results = await Promise.all([
+        \\        file(join(packageDir, "node_modules", "no-deps", "package.json")).json(),
+        \\        file(join(packageDir, "node_modules", firstDep, "package.json")).json(),
+        \\        exists(join(packageDir, "node_modules", firstDep, "node_modules", "no-deps")),
+        \\      ]);
+        \\      expect(results).toMatchObject([
+        \\        { name: "no-deps", version: "1.0.0" },
+        \\        { name: firstDep, version: "1.0.0" },
+        \\        false,
+        \\      ]);
+        \\
+        \\      await Promise.all([
+        \\        rm(join(packageDir, "node_modules"), { recursive: true, force: true }),
+        \\        rm(join(packageDir, ".bun-cache"), { recursive: true, force: true }),
+        \\        writeFile(packageJson, JSON.stringify({ name: "foo", dependencies: { [secondDep]: "1.0.0" } })),
+        \\      ]);
+        \\
+        \\      await runBunInstall(env, packageDir);
+        \\      assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\      expect(parseLockfile(packageDir)).toMatchNodeModulesAt(packageDir);
+        \\      results = await Promise.all([
+        \\        file(join(packageDir, "node_modules", "no-deps", "package.json")).json(),
+        \\        file(join(packageDir, "node_modules", secondDep, "package.json")).json(),
+        \\        exists(join(packageDir, "node_modules", secondDep, "node_modules", "no-deps")),
+        \\      ]);
+        \\      expect(results).toMatchObject([
+        \\        { name: "no-deps", version: "1.0.0" },
+        \\        { name: secondDep, version: "1.0.0" },
+        \\        false,
+        \\      ]);
+        \\    }
+        \\  }
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "1-peer-dep-a") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
