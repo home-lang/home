@@ -63471,6 +63471,20 @@ test "bootstrap runner mirrors bun add local file corpus" {
         \\    dependencies: { bar: "^0.0.2" },
         \\  });
         \\  expect(await file(join(package_dir, "bun.lockb")).text()).toBe("home-bun-add-lock");
+        \\  urls.length = 0;
+        \\  const second = spawn({
+        \\    cmd: [bunExe(), "add", "bar", "--only-missing"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await second.stderr.text()).toBe("");
+        \\  expect((await second.stdout.text()).split("\n").filter(Boolean)).toStrictEqual([
+        \\    expect.stringContaining("bun add v" + Bun.version.replaceAll("-debug", "")),
+        \\  ]);
+        \\  expect(await second.exited).toBe(0);
+        \\  expect(urls).toEqual([]);
         \\});
         \\
         \\test("bun add local file from workspace child", async () => {
