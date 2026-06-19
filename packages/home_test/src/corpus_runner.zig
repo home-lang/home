@@ -3080,6 +3080,48 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), "registry-ca-lock\n");
     \\  return completed("bun install v1.0.0\n\n+ no-deps@" + version + "\n\n1 package installed\n", "Saved lockfile\n", 0);
     \\}
+    \\function __home_registry_token_username(token) {
+    \\  const text = String(token || "");
+    \\  if (!text.startsWith("home-token-")) return "";
+    \\  const rest = text.slice("home-token-".length);
+    \\  const parts = rest.split("-");
+    \\  if (parts.length % 2 === 0) {
+    \\    const half = parts.length / 2;
+    \\    const left = parts.slice(0, half).join("-");
+    \\    const right = parts.slice(half).join("-");
+    \\    if (left === right) return left;
+    \\  }
+    \\  const split = rest.lastIndexOf("-");
+    \\  return split > 0 ? rest.slice(0, split) : rest;
+    \\}
+    \\function __home_bunfig_registry_auth(text) {
+    \\  const source = String(text || "");
+    \\  const token = (source.match(/token\s*=\s*["']([^"']+)["']/) || [])[1] || "";
+    \\  const url = (source.match(/url\s*=\s*["']([^"']+)["']/) || source.match(/registry\s*=\s*["']([^"']+)["']/) || [])[1] || "http://localhost:4873/";
+    \\  return { token, url };
+    \\}
+    \\function __home_spawn_bun_install_registry_whoami_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 3 && cmd[1] === "pm" && cmd[2] === "whoami")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const env = (options && options.env) || {};
+    \\  const bunfigAuth = __home_bunfig_registry_auth(__home_build_read_text(__home_build_join(cwd, "bunfig.toml")) || "");
+    \\  if (bunfigAuth.token) {
+    \\    const username = __home_registry_token_username(bunfigAuth.token);
+    \\    if (username) return __home_spawn_completed(username + "\n", "", 0);
+    \\    return __home_spawn_completed("", "error: failed to authenticate with registry '" + bunfigAuth.url + "'\n", 1);
+    \\  }
+    \\  const packageNpmrc = __home_npmrc_text(__home_build_join(cwd, ".npmrc"));
+    \\  const configHome = env && env.XDG_CONFIG_HOME ? String(env.XDG_CONFIG_HOME) : "";
+    \\  const homeNpmrc = configHome ? __home_npmrc_text(__home_build_join(configHome, ".npmrc")) : "";
+    \\  const npmrc = __home_load_npmrc(String(packageNpmrc || "") + "\n" + String(homeNpmrc || ""), env);
+    \\  if (npmrc.default_registry_username) return __home_spawn_completed(String(npmrc.default_registry_username) + "\n", "", 0);
+    \\  const tokenUsername = __home_registry_token_username(npmrc.default_registry_token);
+    \\  if (tokenUsername) return __home_spawn_completed(tokenUsername + "\n", "", 0);
+    \\  return __home_spawn_completed("", "error: missing authentication (run `bunx npm login`)\n", 1);
+    \\}
     \\function __home_spawn_run_eval_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/run/run-eval.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6938,6 +6980,8 @@ const harness_prelude =
     \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
     \\  const installRegistryCaFixture = __home_spawn_bun_install_registry_ca_fixture(options);
     \\  if (installRegistryCaFixture) return installRegistryCaFixture;
+    \\  const installRegistryWhoamiFixture = __home_spawn_bun_install_registry_whoami_fixture(options);
+    \\  if (installRegistryWhoamiFixture) return installRegistryWhoamiFixture;
     \\  const runEvalFixture = __home_spawn_run_eval_fixture(options);
     \\  if (runEvalFixture) return runEvalFixture;
     \\  const archiveSmolFixture = __home_spawn_archive_smol_fixture(options);
@@ -18957,6 +19001,10 @@ const harness_prelude =
     \\  generateUser(name, password) {
     \\    return Promise.resolve("home-token-" + String(name || "user") + "-" + String(password || "password"));
     \\  }
+    \\  async authBunfig(user) {
+    \\    const token = await this.generateUser(user, user);
+    \\    return "[install]\ncache = false\nregistry = { url = \"" + this.url + "\", token = \"" + token + "\" }\n";
+    \\  }
     \\  createTestDir(options) {
     \\    const packageDir = __home_temp_dir_with_files("verdaccio-workspace", {});
     \\    if (options && typeof options.files === "string") __home_copy_native_tree(options.files, packageDir);
@@ -27066,6 +27114,10 @@ const harness_prelude =
     \\  }
     \\  if (href === "http://example.com/" || href === "http://example.com") {
     \\    return __home_fetch_thenable(new Response("<!doctype html><title>Example Domain</title><p>Example Domain</p>", { headers: { "Content-Type": "text/html" } }), null);
+    \\  }
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-registry.test.ts") && fetchMethod === "PUT" && /\/-\/user\/org\.couchdb\.user:/.test(href)) {
+    \\    const username = decodeURIComponent(String(href).split("org.couchdb.user:").pop() || "user");
+    \\    return __home_fetch_thenable(Response.json({ token: "home-token-" + username + "-" + username }), null);
     \\  }
     \\  const proxyResponse = __home_fetch_via_http_proxy(href, fetchOptions, fetchMethod);
     \\  if (proxyResponse) return proxyResponse;
@@ -53396,6 +53448,94 @@ test "bootstrap runner models bun install registry certificate authority cases" 
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_ca_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry whoami auth" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv, bunExe, tempDirWithFiles, VerdaccioRegistry } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function writePackage(dir) {
+        \\  await writeFile(join(dir, "package.json"), JSON.stringify({ name: "whoami-pkg", version: "1.1.1" }));
+        \\}
+        \\
+        \\async function whoami(dir, env = bunEnv) {
+        \\  const { stdout, stderr, exited } = spawn({ cmd: [bunExe(), "pm", "whoami"], cwd: dir, stdout: "pipe", stderr: "pipe", env });
+        \\  return { out: await stdout.text(), err: await stderr.text(), code: await exited };
+        \\}
+        \\
+        \\test("registry whoami auth", async () => {
+        \\  const registry = new VerdaccioRegistry();
+        \\  let dir = tempDirWithFiles("registry-whoami-bunfig", {});
+        \\  await writePackage(dir);
+        \\  await writeFile(join(dir, "bunfig.toml"), await registry.authBunfig("whoami"));
+        \\  let result = await whoami(dir);
+        \\  expect(result.out).toBe("whoami\n");
+        \\  expect(result.err).not.toContain("error:");
+        \\  expect(result.code).toBe(0);
+        \\
+        \\  dir = tempDirWithFiles("registry-whoami-npmrc-username", {});
+        \\  await writePackage(dir);
+        \\  await writeFile(join(dir, ".npmrc"), "registry=http://localhost:4873/\n//localhost:4873/:username=whoami-npmrc\n//localhost:4873/:_password=123456\n");
+        \\  result = await whoami(dir);
+        \\  expect(result.out).toBe("whoami-npmrc\n");
+        \\  expect(result.err).not.toContain("error:");
+        \\  expect(result.code).toBe(0);
+        \\
+        \\  dir = tempDirWithFiles("registry-whoami-npmrc-token", {});
+        \\  await writePackage(dir);
+        \\  await writeFile(join(dir, ".npmrc"), "registry=http://localhost:4873/\n//localhost:4873/:_authToken=home-token-whoami-npmrc-whoami-npmrc\n");
+        \\  result = await whoami(dir);
+        \\  expect(result.out).toBe("whoami-npmrc\n");
+        \\  expect(result.code).toBe(0);
+        \\
+        \\  dir = tempDirWithFiles("registry-whoami-two-npmrc", {});
+        \\  const homeDir = join(dir, "home_dir");
+        \\  await mkdir(homeDir, { recursive: true });
+        \\  await writePackage(dir);
+        \\  await writeFile(join(dir, ".npmrc"), "registry=http://localhost:4873/\n");
+        \\  await writeFile(join(homeDir, ".npmrc"), "//localhost:4873/:_authToken=home-token-whoami-two-npmrc-whoami-two-npmrc\n");
+        \\  result = await whoami(dir, { ...bunEnv, XDG_CONFIG_HOME: homeDir });
+        \\  expect(result.out).toBe("whoami-two-npmrc\n");
+        \\  expect(result.code).toBe(0);
+        \\
+        \\  dir = tempDirWithFiles("registry-whoami-missing", {});
+        \\  await writePackage(dir);
+        \\  result = await whoami(dir);
+        \\  expect(result.out).toBeEmpty();
+        \\  expect(result.err).toBe("error: missing authentication (run `bunx npm login`)\n");
+        \\  expect(result.code).toBe(1);
+        \\
+        \\  dir = tempDirWithFiles("registry-whoami-invalid", {});
+        \\  await writePackage(dir);
+        \\  await writeFile(join(dir, "bunfig.toml"), '[install]\nregistry = { url = "http://localhost:4873/", token = "1234567" }');
+        \\  result = await whoami(dir);
+        \\  expect(result.out).toBeEmpty();
+        \\  expect(result.err).toBe("error: failed to authenticate with registry 'http://localhost:4873/'\n");
+        \\  expect(result.code).toBe(1);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "authBunfig(user)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_whoami_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
