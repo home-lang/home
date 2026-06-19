@@ -54033,12 +54033,21 @@ test "bootstrap runner models bun install registry text lockfile frozen installs
     const source =
         \\import { spawn, file } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { mkdir, readdir, rm, writeFile } from "fs/promises";
+        \\import { access, mkdir, readdir, rm, writeFile } from "fs/promises";
         \\import { bunEnv as env, bunExe, tempDirWithFiles } from "harness";
         \\import { join } from "path";
         \\
         \\async function readdirSorted(path) {
         \\  return (await readdir(path)).sort();
+        \\}
+        \\
+        \\async function exists(path) {
+        \\  try {
+        \\    await access(path);
+        \\    return true;
+        \\  } catch {
+        \\    return false;
+        \\  }
         \\}
         \\
         \\test("registry text lockfile frozen install preserves bun.lock", async () => {
@@ -54077,6 +54086,59 @@ test "bootstrap runner models bun install registry text lockfile frozen installs
         \\  expect(await readdirSorted(join(packageDir, "node_modules"))).toEqual(["a-dep", "no-deps", "package1", "peer-deps-too"]);
         \\  expect(await file(join(packageDir, "bun.lock")).text()).toBe(firstLockfile);
         \\});
+        \\
+        \\test("registry lockfile-only writes text lockfile without node_modules", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-lockfile-only", {});
+        \\  await mkdir(join(packageDir, "packages", "pkg1"), { recursive: true });
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    workspaces: ["packages/*"],
+        \\    dependencies: {
+        \\      "no-deps": "^1.0.0",
+        \\    },
+        \\  }));
+        \\  await writeFile(join(packageDir, "packages", "pkg1", "package.json"), JSON.stringify({
+        \\    name: "package1",
+        \\    dependencies: {
+        \\      "two-range-deps": "1.0.0",
+        \\    },
+        \\  }));
+        \\
+        \\  let { exited } = spawn({
+        \\    cmd: [bunExe(), "install", "--save-text-lockfile", "--lockfile-only"],
+        \\    cwd: packageDir,
+        \\    stdout: "ignore",
+        \\    stderr: "ignore",
+        \\    env,
+        \\  });
+        \\  expect(await exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "node_modules"))).toBeFalse();
+        \\  const firstLockfile = await file(join(packageDir, "bun.lock")).text();
+        \\  expect(firstLockfile).toContain("\"packages/pkg1\"");
+        \\  expect(firstLockfile).toContain("\"two-range-deps\"");
+        \\
+        \\  ({ exited } = spawn({
+        \\    cmd: [bunExe(), "install", "--lockfile-only"],
+        \\    cwd: packageDir,
+        \\    stdout: "ignore",
+        \\    stderr: "ignore",
+        \\    env,
+        \\  }));
+        \\  expect(await exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "node_modules"))).toBeFalse();
+        \\  expect(await file(join(packageDir, "bun.lock")).text()).toBe(firstLockfile);
+        \\
+        \\  const { stdout, stderr, exited: silentExited } = spawn({
+        \\    cmd: [bunExe(), "install", "--lockfile-only", "--silent"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await silentExited).toBe(0);
+        \\  expect(await stdout.text()).toBe("");
+        \\  expect(await stderr.text()).toBe("");
+        \\});
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
@@ -54092,7 +54154,7 @@ test "bootstrap runner models bun install registry text lockfile frozen installs
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install registry bundled dependencies" {
