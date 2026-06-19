@@ -1112,7 +1112,6 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "var c = Math.random() ? ({ ...{} }) : ({ ...{} })", .output = "var c = Math.random() ? { ...{} } : { ...{} };\n" },
         .{ .source = "type X<> = never;var x: X", .output = "var x;\n" },
         .{ .source = "interface X<> {};var x: X", .output = "var x;\n" },
-        .{ .source = "type Foo<T> = T extends infer U ? U : never;", .output = "" },
         .{ .source = "var foo: Foo extends string | infer Foo extends string ? Foo : never", .output = "var foo;\n" },
         .{ .source = "var foo: Foo extends string & infer Foo extends string ? Foo : never", .output = "var foo;\n" },
         .{ .source = "a as any ? async () => b : c;", .output = "a || c;\n" },
@@ -5052,6 +5051,16 @@ test "adapter routes TypeScript transforms through the native parser path" {
 
     const tree_shaking_handle = TranspilerHandle{ .tree_shaking = true };
     try std.testing.expect(!shouldUseBunParserForTranspile("export function loader() {}", .jsx, &tree_shaking_handle));
+}
+
+test "adapter drops type-only conditional alias through Bun parser path" {
+    const source = "type Foo<T> = T extends infer U ? U : never;";
+    try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, source)) == null);
+
+    const default_handle = TranspilerHandle{};
+    const output = try transpileSource(std.testing.allocator, &default_handle, source, .ts);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("", output);
 }
 
 test "adapter preserves Bun.Transpiler async conditional type fixture" {
