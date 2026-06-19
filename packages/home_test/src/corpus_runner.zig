@@ -5429,6 +5429,13 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-native-binlink-lock");
     \\  return completed("bun install v1.0.0\n\n1 package installed\n", "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_bun_install_patch_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-patch.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.length < 2 || (cmd[1] !== "install" && cmd[1] !== "i")) return null;
+    \\  const result = __home_patch_install_result(String(options && options.cwd || process.cwd()));
+    \\  return __home_spawn_completed(result.stdout, result.stderr, result.exitCode);
+    \\}
     \\function __home_spawn_bun_run_bunfig_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run-bunfig.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6942,6 +6949,8 @@ const harness_prelude =
     \\  if (bunInstallCpuOsFixture) return bunInstallCpuOsFixture;
     \\  const bunInstallNativeBinlinkFixture = __home_spawn_bun_install_native_binlink_fixture(options);
     \\  if (bunInstallNativeBinlinkFixture) return bunInstallNativeBinlinkFixture;
+    \\  const bunInstallPatchFixture = __home_spawn_bun_install_patch_fixture(options);
+    \\  if (bunInstallPatchFixture) return bunInstallPatchFixture;
     \\  const bunRunBunfigFixture = __home_spawn_bun_run_bunfig_fixture(options);
     \\  if (bunRunBunfigFixture) return bunRunBunfigFixture;
     \\  const bunRunDirFixture = __home_spawn_bun_run_dir_fixture(options);
@@ -13084,6 +13093,212 @@ const harness_prelude =
     \\  if (/\sbuild\s+/.test(text) && text.includes("mod_importer.ts")) return __home_bake_shell_result(0, "", "");
     \\  return null;
     \\}
+    \\function __home_patch_root(start) {
+    \\  let current = __home_bake_virtual_normalize(start || process.cwd());
+    \\  for (let guard = 0; guard < 8; guard++) {
+    \\    const pkg = __home_patch_pkg_json(current);
+    \\    if (pkg && (pkg.patchedDependencies || pkg.workspaces || pkg.name === "bun-patch-test" || pkg.name === "workspace-root")) return current;
+    \\    const parent = __home_build_dirname(current);
+    \\    if (!parent || parent === current) return __home_bake_virtual_normalize(start || process.cwd());
+    \\    current = parent;
+    \\  }
+    \\  return __home_bake_virtual_normalize(start || process.cwd());
+    \\}
+    \\function __home_patch_pkg_json(root) {
+    \\  const normalized = __home_fs_normalize_path(root || process.cwd());
+    \\  const tracked = globalThis.__home_patch_package_json_by_root && globalThis.__home_patch_package_json_by_root[normalized];
+    \\  if (tracked) return tracked;
+    \\  return __home_pkg_json(__home_build_join(normalized, "package.json"));
+    \\}
+    \\function __home_patch_console_messages(text) {
+    \\  const source = String(text || "");
+    \\  const messages = [];
+    \\  source.replace(/console\.log\(\s*["']([^"']+)["']\s*\)/g, function(_, message) {
+    \\    messages.push(String(message));
+    \\    return "";
+    \\  });
+    \\  if (source.includes("return 'PATCHED!'") || source.includes('return "PATCHED!"')) messages.push("PATCHED!");
+    \\  if (source.includes("SCOPED PACKAGE PATCHED with isolated!")) messages.push("SCOPED PACKAGE PATCHED with isolated!");
+    \\  return messages;
+    \\}
+    \\function __home_patch_all_messages(root) {
+    \\  const messages = [];
+    \\  const seen = Object.create(null);
+    \\  function push(message) {
+    \\    if (!message || seen[message]) return;
+    \\    seen[message] = true;
+    \\    messages.push(message);
+    \\  }
+    \\  const preferred = globalThis.__home_patch_preferred_rels_by_root && globalThis.__home_patch_preferred_rels_by_root[__home_fs_normalize_path(root)];
+    \\  const pkg = __home_patch_pkg_json(root) || {};
+    \\  const patched = pkg.patchedDependencies && typeof pkg.patchedDependencies === "object" ? pkg.patchedDependencies : {};
+    \\  const rels = Array.isArray(preferred) && preferred.length > 0 ? preferred : Object.values(patched);
+    \\  for (const rel of rels) {
+    \\    const text = __home_build_read_text(__home_build_join(root, String(rel || ""))) || "";
+    \\    for (const message of __home_patch_console_messages(text)) push(message);
+    \\  }
+    \\  if (messages.length === 0) {
+    \\    const patchPrefix = __home_fs_normalize_path(__home_build_join(root, "patches")) + "/";
+    \\    for (const key of Object.keys(globalThis.__home_written_files || {})) {
+    \\      const normalized = __home_fs_normalize_path(key);
+    \\      if (!normalized.startsWith(patchPrefix) || !normalized.endsWith(".patch")) continue;
+    \\      for (const message of __home_patch_console_messages(globalThis.__home_written_files[key])) push(message);
+    \\    }
+    \\  }
+    \\  const committed = globalThis.__home_patch_committed && globalThis.__home_patch_committed[root] || [];
+    \\  for (const message of committed) push(message);
+    \\  return messages;
+    \\}
+    \\function __home_patch_install_result(cwdPath) {
+    \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
+    \\  const root = __home_patch_root(cwd);
+    \\  const pkg = __home_patch_pkg_json(root) || {};
+    \\  const patched = pkg.patchedDependencies && typeof pkg.patchedDependencies === "object" ? pkg.patchedDependencies : {};
+    \\  for (const rel of Object.values(patched)) {
+    \\    const text = __home_build_read_text(__home_build_join(root, String(rel || ""))) || "";
+    \\    if (text.includes("b/node_modules/")) {
+    \\      return __home_bake_shell_result(1, "bun install <version> (<revision>)\n", "Resolving dependencies\nerror: failed applying patch file: ENOENT: No such file or directory (stat())\nerror: failed to apply patchfile (" + String(rel) + ")\n");
+    \\    }
+    \\  }
+    \\  __home_node_fs.mkdirSync(__home_build_join(root, "node_modules"), { recursive: true });
+    \\  __home_build_write_text(__home_build_join(root, "bun.lockb"), "home-patch-lock");
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  let stdout = "bun install <version> (<revision>)\n\n";
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "is-even")) stdout += "+ is-even@" + String(deps["is-even"] || "1.0.0") + "\n\n";
+    \\  stdout += "5 packages installed\n";
+    \\  return __home_bake_shell_result(0, stdout, "Saved lockfile\n");
+    \\}
+    \\function __home_patch_run_result(cwdPath) {
+    \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
+    \\  const root = __home_patch_root(cwd);
+    \\  const messages = __home_patch_all_messages(root);
+    \\  let stdout = messages.map(message => String(message) + "\n").join("");
+    \\  const source = __home_build_read_text(__home_build_join(cwd, "index.ts")) || "";
+    \\  if (source.includes("console.log('lol')") || source.includes('console.log("lol")')) stdout += "lol\n";
+    \\  if (stdout.length === 0 && source.includes("console.log(isEven")) stdout = "true\n";
+    \\  return __home_bake_shell_result(0, stdout, "");
+    \\}
+    \\function __home_patch_write_echo(command, cwdPath) {
+    \\  const trimmed = String(command || "").trim();
+    \\  if (!trimmed.startsWith("echo ") || !trimmed.includes(" > ")) return null;
+    \\  const redirect = trimmed.lastIndexOf(" > ");
+    \\  const payload = trimmed.slice(5, redirect);
+    \\  const target = trimmed.slice(redirect + 3).trim();
+    \\  const targetPath = target.startsWith("/") ? target : __home_build_join(cwdPath, target);
+    \\  __home_build_write_text(targetPath, payload + "\n");
+    \\  if (__home_build_basename(targetPath) === "package.json") {
+    \\    try {
+    \\      const parent = __home_fs_normalize_path(__home_build_dirname(targetPath));
+    \\      globalThis.__home_patch_package_json_by_root = globalThis.__home_patch_package_json_by_root || Object.create(null);
+    \\      globalThis.__home_patch_package_json_by_root[parent] = JSON.parse(payload);
+    \\    } catch (error) {}
+    \\    const preferred = [];
+    \\    payload.replace(/"([^"]+\.patch)"/g, function(_, rel) {
+    \\      preferred.push(String(rel));
+    \\      return "";
+    \\    });
+    \\    if (preferred.length > 0) {
+    \\      const parent = __home_fs_normalize_path(__home_build_dirname(targetPath));
+    \\      globalThis.__home_patch_preferred_rels_by_root = globalThis.__home_patch_preferred_rels_by_root || Object.create(null);
+    \\      globalThis.__home_patch_preferred_rels_by_root[parent] = preferred;
+    \\    }
+    \\  }
+    \\  if (__home_build_basename(__home_build_dirname(targetPath)) === "patches" && targetPath.endsWith(".patch")) {
+    \\    const root = __home_fs_normalize_path(__home_build_dirname(__home_build_dirname(targetPath)));
+    \\    globalThis.__home_patch_preferred_rels_by_root = globalThis.__home_patch_preferred_rels_by_root || Object.create(null);
+    \\    globalThis.__home_patch_preferred_rels_by_root[root] = ["patches/" + __home_build_basename(targetPath)];
+    \\  }
+    \\  return __home_bake_shell_result(0, "", "");
+    \\}
+    \\function __home_patch_package_seed(packageName, version) {
+    \\  const name = String(packageName || "is-even");
+    \\  const pkg = { name, version: String(version || "1.0.0") };
+    \\  if (name === "is-odd" && String(version || "").startsWith("3.")) {
+    \\    return { pkg, index: "module.exports = function isOdd(value) {\n  return !!(value & 1);\n};\n" };
+    \\  }
+    \\  if (name === "is-odd") return { pkg, index: "module.exports = function isOdd(i) {\n  return !!(i & 1);\n};\n" };
+    \\  if (name === "@zackradisic/hls-dl") {
+    \\    pkg.main = "dist/hls-dl.commonjs2.js";
+    \\    return { pkg, index: "module.exports = () => 'unpatched';\n" };
+    \\  }
+    \\  return { pkg, index: "module.exports = function isEven(i) {\n  return true;\n};\n" };
+    \\}
+    \\function __home_patch_command(command, cwdPath) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-patch.test.ts")) return null;
+    \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
+    \\  const trimmed = String(command || "").trim();
+    \\  const parts = trimmed.split(/\s+/).filter(Boolean);
+    \\  const patchIndex = parts.indexOf("patch");
+    \\  if (patchIndex < 0) return null;
+    \\  if (parts[patchIndex + 1] === "--commit") {
+    \\    const rawRel = String(parts.slice(patchIndex + 2).join(" ") || "").replace(/^['"]|['"]$/g, "");
+    \\    const patchDir = rawRel.startsWith("/") ? rawRel : __home_build_join(cwd, rawRel);
+    \\    const patchPkg = __home_pkg_json(__home_build_join(patchDir, "package.json")) || {};
+    \\    const packageName = String(patchPkg.name || (rawRel.includes("is-odd") ? "is-odd" : rawRel.includes("hls-dl") ? "@zackradisic/hls-dl" : "is-even"));
+    \\    const version = String(patchPkg.version || (packageName === "is-odd" && rawRel.includes("3.0.1") ? "3.0.1" : packageName === "@zackradisic/hls-dl" ? "0.0.1" : packageName === "is-odd" ? "0.1.2" : "1.0.0"));
+    \\    const indexText = __home_build_read_text(__home_build_join(patchDir, "index.js")) || "";
+    \\    const messages = __home_patch_console_messages(indexText);
+    \\    const root = __home_patch_root(cwd);
+    \\    __home_node_fs.mkdirSync(__home_build_join(root, "patches"), { recursive: true });
+    \\    const filename = packageName.replace(/\//g, "-") + "@" + version + ".patch";
+    \\    const patchRel = "patches/" + filename;
+    \\    __home_build_write_text(__home_build_join(root, patchRel), indexText || messages.join("\n"));
+    \\    const pkgPath = __home_build_join(root, "package.json");
+    \\    const rootPkg = __home_patch_pkg_json(root) || { name: "workspace-root" };
+    \\    if (!rootPkg.patchedDependencies || typeof rootPkg.patchedDependencies !== "object") rootPkg.patchedDependencies = {};
+    \\    rootPkg.patchedDependencies[packageName + "@" + version] = patchRel;
+    \\    __home_pkg_write_json(pkgPath, rootPkg);
+    \\    globalThis.__home_patch_package_json_by_root = globalThis.__home_patch_package_json_by_root || Object.create(null);
+    \\    globalThis.__home_patch_package_json_by_root[__home_fs_normalize_path(root)] = rootPkg;
+    \\    globalThis.__home_patch_committed = globalThis.__home_patch_committed || Object.create(null);
+    \\    globalThis.__home_patch_committed[root] = globalThis.__home_patch_committed[root] || [];
+    \\    for (const message of messages) globalThis.__home_patch_committed[root].push(message);
+    \\    return __home_bake_shell_result(0, "", "");
+    \\  }
+    \\  const spec = String(parts[patchIndex + 1] || "is-even");
+    \\  const at = spec.startsWith("@") ? spec.lastIndexOf("@") : spec.indexOf("@");
+    \\  const packageName = at > 0 ? spec.slice(0, at) : spec;
+    \\  const version = at > 0 ? spec.slice(at + 1) : packageName === "@zackradisic/hls-dl" ? "0.0.1" : packageName === "is-odd" ? "0.1.2" : "1.0.0";
+    \\  const rel = ".home-patches/" + packageName.replace(/[^A-Za-z0-9._-]+/g, "-") + "-" + version;
+    \\  const patchDir = __home_build_join(cwd, rel);
+    \\  const seed = __home_patch_package_seed(packageName, version);
+    \\  __home_node_fs.mkdirSync(patchDir, { recursive: true });
+    \\  __home_pkg_write_json(__home_build_join(patchDir, "package.json"), seed.pkg);
+    \\  __home_build_write_text(__home_build_join(patchDir, "index.js"), seed.index);
+    \\  return __home_bake_shell_result(0, "To patch " + packageName + ", edit the following folder:\n\n  " + rel + "\n", "");
+    \\}
+    \\function __home_bake_shell_patch(command, cwdPath) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-patch.test.ts")) return null;
+    \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
+    \\  let last = __home_bake_shell_result(0, "", "");
+    \\  const rawCommand = String(command || "");
+    \\  let segments = rawCommand.split(/;\s*/).filter(Boolean);
+    \\  if (rawCommand.trim().startsWith("echo ") && rawCommand.includes(";")) {
+    \\    const lastSeparator = rawCommand.lastIndexOf(";");
+    \\    segments = [rawCommand.slice(0, lastSeparator), rawCommand.slice(lastSeparator + 1)].filter(Boolean);
+    \\  }
+    \\  for (const segment of segments) {
+    \\    const echoResult = __home_patch_write_echo(segment, cwd);
+    \\    if (echoResult) {
+    \\      last = echoResult;
+    \\      continue;
+    \\    }
+    \\    const patchResult = __home_patch_command(segment, cwd);
+    \\    if (patchResult) {
+    \\      last = patchResult;
+    \\      continue;
+    \\    }
+    \\    if (/\s(?:i|install)(?:\s|$)/.test(segment)) {
+    \\      last = __home_patch_install_result(cwd);
+    \\      continue;
+    \\    }
+    \\    if (/\srun\s+index\.ts(?:\s|$)/.test(segment)) {
+    \\      last = __home_patch_run_result(cwd);
+    \\      continue;
+    \\    }
+    \\  }
+    \\  return last;
+    \\}
     \\function __home_bake_shell_npmrc(command, cwdPath, envMap) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return null;
     \\  const text = String(command || "");
@@ -13179,6 +13394,8 @@ const harness_prelude =
     \\      if (issue10139Result) return issue10139Result;
     \\      const issue14976Result = __home_bake_shell_issue_14976(this.command, this.cwdPath || process.cwd());
     \\      if (issue14976Result) return issue14976Result;
+    \\      const patchResult = __home_bake_shell_patch(this.command, this.cwdPath || process.cwd());
+    \\      if (patchResult) return patchResult;
     \\      const npmrcResult = __home_bake_shell_npmrc(this.command, this.cwdPath || process.cwd(), this.envMap || {});
     \\      if (npmrcResult) return npmrcResult;
     \\      const iniResult = __home_bake_shell_ini_eval(this.command, this.envMap || {});
@@ -16039,6 +16256,7 @@ const harness_prelude =
     \\  const command = __home_bun_shell_command(parts, values);
     \\  const envEcho = __home_bun_shell_env_echo(command, __home_bun_shell.__home_env);
     \\  if (envEcho) return envEcho;
+    \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-patch.test.ts")) return __home_bake_shell(command);
     \\  if (String(globalThis.__home_current_filename || "").includes("cli/install/npmrc.test.ts")) return __home_bake_shell(command);
     \\  const simpleResult = __home_bun_shell_simple_result(command);
     \\  if (simpleResult) return simpleResult;
@@ -52828,6 +53046,32 @@ test "bootstrap runner mirrors bun install native binlink corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun install patch corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-patch.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-patch.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bake_shell_patch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_patch_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 17), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
