@@ -3848,6 +3848,21 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-unscoped-alias-on-scoped-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ @barn/moo@0.1.0\n+ moo@0.1.0\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installScopedAliasOnUnscopedDependency() {
+    \\    if (String(deps["@baz/bar"] || "") !== "npm:bar" || String(deps.bar || "") !== "latest") return null;
+    \\    addRequest(registryBase + "/bar");
+    \\    addRequest(registryBase + "/bar-0.0.2.tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    const manifest = { name: "bar", version: "0.0.2" };
+    \\    const scopedDir = __home_package_path(cwd, "@baz/bar");
+    \\    const directDir = __home_package_path(cwd, "bar");
+    \\    __home_node_fs.mkdirSync(scopedDir, { recursive: true });
+    \\    __home_node_fs.mkdirSync(directDir, { recursive: true });
+    \\    __home_pkg_write_json(__home_build_join(scopedDir, "package.json"), manifest);
+    \\    __home_pkg_write_json(__home_build_join(directDir, "package.json"), manifest);
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-scoped-alias-on-unscoped-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ @baz/bar@0.0.2\n+ bar@0.0.2\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installBazTarball(depName, literal) {
     \\    const display = String(literal || "").replace(/\\\\/g, "/");
     \\    if (!display.endsWith("baz-0.0.3.tgz")) return null;
@@ -3980,6 +3995,8 @@ const harness_prelude =
     \\  }
     \\  const unscopedAliasOnScopedResult = installUnscopedAliasOnScopedDependency();
     \\  if (unscopedAliasOnScopedResult) return unscopedAliasOnScopedResult;
+    \\  const scopedAliasOnUnscopedResult = installScopedAliasOnUnscopedDependency();
+    \\  if (scopedAliasOnUnscopedResult) return scopedAliasOnUnscopedResult;
     \\  const gitHubTarballResult = installGitHubTarballDependency();
     \\  if (gitHubTarballResult) return gitHubTarballResult;
     \\  const emptyStringBarResult = installEmptyStringBarDependency();
@@ -57629,6 +57646,83 @@ test "bootstrap runner models bun install unscoped alias on scoped dependency" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installUnscopedAliasOnScopedDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install scoped alias on unscoped dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\test("should handle scoped alias on unscoped dependency", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      "@baz/bar": "npm:bar",
+        \\      bar: "latest",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ @baz/bar@0.0.2",
+        \\    "+ bar@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/bar`, `${root_url}/bar-0.0.2.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "@baz", "bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "@baz"))).toEqual(["bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "@baz", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "@baz", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installScopedAliasOnUnscopedDependency") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
