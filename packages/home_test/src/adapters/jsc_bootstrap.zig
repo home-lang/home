@@ -2585,6 +2585,11 @@ fn scanTranspilerImports(
 ) !void {
     var index: usize = 0;
     while (index < source_text.len) : (index += 1) {
+        const skipped = skipNonCode(source_text, index);
+        if (skipped != index) {
+            index = skipped;
+            if (index >= source_text.len) break;
+        }
         if (isIdentifierKeywordAt(source_text, index, "import")) {
             if (scanImportKeyword(allocator, source_text, index, trim_unused_imports, imports)) |next_index| {
                 index = next_index;
@@ -5739,6 +5744,33 @@ test "adapter scan ignores all-type named import specifiers" {
     try std.testing.expect(!importSpecifiersHaveValue("{ type if as yy }"));
     try std.testing.expect(importSpecifiersHaveValue("React, { type ReactNode, Component }"));
     try std.testing.expect(importSpecifiersHaveValue("{ type }"));
+}
+
+test "adapter scan ignores import-like text in comments and strings" {
+    const source =
+        \\const text = "import stringy from 'stringy'";
+        \\// import commented from "commented";
+        \\/* require("blocked"); import blocked from "blocked"; */
+        \\import real from "real";
+        \\const dyn = import("dyn");
+        \\const req = require("req");
+        \\
+    ;
+
+    var scan_imports: std.ArrayList(TranspilerImport) = .empty;
+    defer scan_imports.deinit(std.testing.allocator);
+    try scanTranspilerImports(std.testing.allocator, source, false, false, &scan_imports);
+    try std.testing.expectEqual(@as(usize, 2), scan_imports.items.len);
+    try std.testing.expectEqualStrings("real", scan_imports.items[0].path);
+    try std.testing.expectEqualStrings("dyn", scan_imports.items[1].path);
+
+    var scan_imports_with_require: std.ArrayList(TranspilerImport) = .empty;
+    defer scan_imports_with_require.deinit(std.testing.allocator);
+    try scanTranspilerImports(std.testing.allocator, source, true, false, &scan_imports_with_require);
+    try std.testing.expectEqual(@as(usize, 3), scan_imports_with_require.items.len);
+    try std.testing.expectEqualStrings("real", scan_imports_with_require.items[0].path);
+    try std.testing.expectEqualStrings("dyn", scan_imports_with_require.items[1].path);
+    try std.testing.expectEqualStrings("req", scan_imports_with_require.items[2].path);
 }
 
 test "adapter scan reports sorted export names like Bun.Transpiler" {
