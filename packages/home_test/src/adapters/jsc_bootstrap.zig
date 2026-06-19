@@ -1166,7 +1166,6 @@ fn transpileTypeOnlyExportFixture(allocator: std.mem.Allocator, source_text: []c
         output: []const u8,
     };
     const fixtures = [_]Fixture{
-        .{ .source = "export { x, type y as if }; let x", .output = "export { x };\nlet x;\n" },
         .{ .source = "export { type x };", .output = "" },
     };
     for (fixtures) |fixture| {
@@ -5060,6 +5059,7 @@ test "adapter routes type export declarations through Bun parser path" {
         .{ .source = "export { x, \\u0074ype y }; let x, y", .output = "export { x };\nlet x, y;\n" },
         .{ .source = "export { x, \\u0074ype y } from 'mod'", .output = "export { x } from \"mod\";\n" },
         .{ .source = "export { x, type if } from 'mod'", .output = "export { x } from \"mod\";\n" },
+        .{ .source = "export { x, type y as if }; let x", .output = "export { x };\nlet x;\n" },
     };
 
     const default_handle = TranspilerHandle{};
@@ -5267,7 +5267,6 @@ test "adapter preserves Bun.Transpiler type-only export fixtures" {
         output: []const u8,
     };
     const cases = [_]Case{
-        .{ .source = "export { x, type y as if }; let x", .output = "export { x };\nlet x;\n" },
         .{ .source = "export { type x };", .output = "" },
     };
 
