@@ -1166,7 +1166,6 @@ fn transpileTypeOnlyExportFixture(allocator: std.mem.Allocator, source_text: []c
         output: []const u8,
     };
     const fixtures = [_]Fixture{
-        .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
         .{ .source = "export type {foo} from 'bar'\nx", .output = "x;\n" },
         .{ .source = "export { type } from 'mod'; type", .output = "export { type } from \"mod\";\ntype;\n" },
         .{ .source = "export { type, as } from 'mod'", .output = "export { type, as } from \"mod\";\n" },
@@ -5051,20 +5050,25 @@ test "adapter routes TypeScript transforms through the native parser path" {
 }
 
 test "adapter drops type-only declarations through Bun parser path" {
-    const cases = [_][]const u8{
-        "type Foo<T> = T extends infer U ? U : never;",
-        "export type {foo, bar as baz} from 'bar'",
-        "export type {foo, bar as baz}",
-        "export type {default} from 'bar'",
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "type Foo<T> = T extends infer U ? U : never;", .output = "" },
+        .{ .source = "export type {foo, bar as baz} from 'bar'", .output = "" },
+        .{ .source = "export type {foo, bar as baz}", .output = "" },
+        .{ .source = "export type {default} from 'bar'", .output = "" },
+        .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
     };
 
     const default_handle = TranspilerHandle{};
-    for (cases) |source| {
-        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, source)) == null);
+    for (cases) |case| {
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
-        const output = try transpileSource(std.testing.allocator, &default_handle, source, .ts);
+        const output = try transpileSource(std.testing.allocator, &default_handle, case.source, .ts);
         defer std.testing.allocator.free(output);
-        try std.testing.expectEqualStrings("", output);
+        try std.testing.expectEqualStrings(case.output, output);
     }
 }
 
@@ -5263,7 +5267,6 @@ test "adapter preserves Bun.Transpiler type-only export fixtures" {
         output: []const u8,
     };
     const cases = [_]Case{
-        .{ .source = "export type {foo} from 'bar'; x", .output = "x;\n" },
         .{ .source = "export type {foo} from 'bar'\nx", .output = "x;\n" },
         .{ .source = "export { type } from 'mod'; type", .output = "export { type } from \"mod\";\ntype;\n" },
         .{ .source = "export { type, as } from 'mod'", .output = "export { type, as } from \"mod\";\n" },
