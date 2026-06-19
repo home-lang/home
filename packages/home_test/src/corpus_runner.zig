@@ -3295,6 +3295,22 @@ const harness_prelude =
     \\  }
     \\  return __home_spawn_completed("bun add v1.0.0\n\ninstalled " + packageName + "@1.5.0\n", "", 0);
     \\}
+    \\function __home_spawn_bun_install_registry_repopulate_bin_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const names = Object.keys(deps);
+    \\  if (!(pkg.name === "foo" && names.length === 1 && deps["what-bin"] === "1.5.0")) return null;
+    \\  const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\  __home_write_installed_package(cwd, "what-bin", { name: "what-bin", version: "1.5.0" });
+    \\  __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/what-bin"), "what-bin@1.5.0\n");
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-repopulate-bin-lockb\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n+ what-bin@1.5.0\n\n1 package installed", hadLock ? "" : "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_basic_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
@@ -7575,6 +7591,8 @@ const harness_prelude =
     \\  if (installRegistryRootBinFixture) return installRegistryRootBinFixture;
     \\  const installRegistryGlobalBinFixture = __home_spawn_bun_install_registry_global_bin_fixture(options);
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
+    \\  const installRegistryRepopulateBinFixture = __home_spawn_bun_install_registry_repopulate_bin_fixture(options);
+    \\  if (installRegistryRepopulateBinFixture) return installRegistryRepopulateBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
     \\  if (installRegistryBasicFixture) return installRegistryBasicFixture;
     \\  const installRegistryAbsoluteFolderFixture = __home_spawn_bun_install_registry_absolute_folder_fixture(options);
@@ -11891,8 +11909,19 @@ const harness_prelude =
     \\  pathToFileURL(path) {
     \\    return __home_url_path_to_file_url(path);
     \\  },
-    \\  which(command) {
+    \\  which(command, options) {
     \\    const name = String(command || "");
+    \\    const pathValue = options && typeof options === "object" && options.PATH !== undefined ? String(options.PATH) : "";
+    \\    if (pathValue) {
+    \\      const suffixes = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
+    \\      for (const part of pathValue.split(process.platform === "win32" ? ";" : ":")) {
+    \\        if (!part) continue;
+    \\        for (const suffix of suffixes) {
+    \\          const candidate = __home_build_join(part, name + suffix);
+    \\          if (__home_build_file_exists(candidate)) return candidate;
+    \\        }
+    \\      }
+    \\    }
     \\    if (name === "sleep") return "/bin/sleep";
     \\    if (name === "bun" || name === "home") return process.execPath;
     \\    if (name === "node") return "/usr/bin/node";
@@ -56094,6 +56123,100 @@ test "bootstrap runner models bun install registry absolute folder dependencies"
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_absolute_folder_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry repopulates bin folder" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { rm, writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, bunExe, tempDirWithFiles, toBeValidBin } from "harness";
+        \\import { join } from "path";
+        \\
+        \\expect.extend({ toBeValidBin });
+        \\
+        \\async function install(packageDir) {
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    stderr: "pipe",
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    env,
+        \\  });
+        \\  const [err, out, code] = await Promise.all([stderr.text(), stdout.text(), exited]);
+        \\  return { err, out, exited: code };
+        \\}
+        \\
+        \\function expectInstallOutput(out) {
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ what-bin@1.5.0",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\}
+        \\
+        \\async function expectBin(packageDir) {
+        \\  const bin = process.platform === "win32" ? "what-bin.exe" : "what-bin";
+        \\  expect(Bun.which("what-bin", { PATH: join(packageDir, "node_modules", ".bin") })).toBe(join(packageDir, "node_modules", ".bin", bin));
+        \\  if (process.platform === "win32") {
+        \\    expect(join(packageDir, "node_modules", ".bin", "what-bin")).toBeValidBin(join("..", "what-bin", "what-bin.js"));
+        \\  } else {
+        \\    expect(await file(join(packageDir, "node_modules", ".bin", bin)).text()).toContain("what-bin@1.5.0");
+        \\  }
+        \\}
+        \\
+        \\test("it should re-populate .bin folder if package is reinstalled", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-repopulate-bin", {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: {
+        \\      "what-bin": "1.5.0",
+        \\    },
+        \\  }));
+        \\
+        \\  let { err, out, exited } = await install(packageDir);
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expectInstallOutput(out);
+        \\  expect(exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  await expectBin(packageDir);
+        \\
+        \\  await rm(join(packageDir, "node_modules", ".bin"), { recursive: true, force: true });
+        \\  await rm(join(packageDir, "node_modules", "what-bin", "package.json"), { recursive: true, force: true });
+        \\
+        \\  ({ err, out, exited } = await install(packageDir));
+        \\  expect(err).not.toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expectInstallOutput(out);
+        \\  expect(exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  await expectBin(packageDir);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_repopulate_bin_fixture") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "which(command, options)") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
