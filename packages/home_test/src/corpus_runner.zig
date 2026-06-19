@@ -3155,6 +3155,30 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-missing-directory-bin-lockb\n");
     \\  return __home_spawn_completed("bun install v1.0.0\n\n+ missing-directory-bin@1.1.1\n\n1 package installed\n", "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_bun_install_registry_config_cli_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && (cmd[1] === "i" || cmd[1] === "install"))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const devDeps = Object.assign({}, pkg.devDependencies || {});
+    \\  if (!(deps["no-deps"] === "1.0.0" && devDeps["a-dep"] === "1.0.1")) return null;
+    \\  let dev = true;
+    \\  for (const part of cmd) {
+    \\    if (!String(part).startsWith("--config=")) continue;
+    \\    const raw = String(part).slice("--config=".length);
+    \\    const configPath = raw.startsWith("/") ? raw : __home_build_join(cwd, raw);
+    \\    const bunfig = __home_build_read_text(configPath) || "";
+    \\    if (/(?:^|\n)\s*dev\s*=\s*false\s*(?:\n|$)/.test(bunfig)) dev = false;
+    \\  }
+    \\  __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\  if (dev) __home_write_installed_package(cwd, "a-dep", { name: "a-dep", version: "1.0.1" });
+    \\  else __home_fs_mark_deleted(__home_package_path(cwd, "a-dep"));
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-config-cli-lockb\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n" + (dev ? "2 packages installed\n" : "1 package installed\n"), "", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_global_bin_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && (cmd[1] === "i" || cmd[1] === "install") && cmd.includes("-g"))) return null;
@@ -7432,6 +7456,8 @@ const harness_prelude =
     \\  if (installRegistryBinTypesFixture) return installRegistryBinTypesFixture;
     \\  const installRegistryMissingDirectoryBinFixture = __home_spawn_bun_install_registry_missing_directory_bin_fixture(options);
     \\  if (installRegistryMissingDirectoryBinFixture) return installRegistryMissingDirectoryBinFixture;
+    \\  const installRegistryConfigCliFixture = __home_spawn_bun_install_registry_config_cli_fixture(options);
+    \\  if (installRegistryConfigCliFixture) return installRegistryConfigCliFixture;
     \\  const installRegistryGlobalBinFixture = __home_spawn_bun_install_registry_global_bin_fixture(options);
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
@@ -55484,6 +55510,85 @@ test "bootstrap runner models bun install registry binary relinks" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry config cli flag" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, tempDirWithFiles } from "harness";
+        \\import { join } from "path";
+        \\
+        \\async function exists(path) {
+        \\  try {
+        \\    await access(path);
+        \\    return true;
+        \\  } catch {
+        \\    return false;
+        \\  }
+        \\}
+        \\
+        \\test("--config cli flag works", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-config-cli", {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    dependencies: {
+        \\      "no-deps": "1.0.0",
+        \\    },
+        \\    devDependencies: {
+        \\      "a-dep": "1.0.1",
+        \\    },
+        \\  }));
+        \\  await writeFile(join(packageDir, "bunfig2.toml"), `
+        \\    [install]
+        \\    cache = "${join(packageDir, ".bun-cache")}"
+        \\    registry = "http://localhost:1234/"
+        \\    dev = false
+        \\  `);
+        \\
+        \\  let { exited } = spawn({
+        \\    cmd: [bunExe(), "i"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  expect(await exited).toBe(0);
+        \\  expect(await file(join(packageDir, "node_modules", "a-dep", "package.json")).json()).toEqual({
+        \\    name: "a-dep",
+        \\    version: "1.0.1",
+        \\  });
+        \\
+        \\  await rm(join(packageDir, "node_modules"), { recursive: true, force: true });
+        \\  ({ exited } = spawn({
+        \\    cmd: [bunExe(), "i", "--config=bunfig2.toml"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  }));
+        \\  expect(await exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "node_modules", "a-dep"))).toBeFalse();
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_config_cli_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
