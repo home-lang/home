@@ -31170,6 +31170,24 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
         .{ .needle = "const err = e as AggregateError;", .replacement = "const err = e;" },
         .{ .needle = "type AdditionalFile = {\n    name: string;\n    contents: BunFile | string;\n    loader: Loader;\n  };\n", .replacement = "" },
         .{ .needle = "const additional_files: AdditionalFile[] = [", .replacement = "const additional_files = [" },
+        .{ .needle = "var registry: VerdaccioRegistry;", .replacement = "var registry;" },
+        .{ .needle = "var port: number;", .replacement = "var port;" },
+        .{ .needle = "var packageDir: string;", .replacement = "var packageDir;" },
+        .{ .needle = "var packageJson: string;", .replacement = "var packageJson;" },
+        .{ .needle = "let users: Record<string, string> = {};", .replacement = "let users = {};" },
+        .{ .needle = "async function generateRegistryUser(username: string, password: string): Promise<string>", .replacement = "async function generateRegistryUser(username, password)" },
+        .{ .needle = "const mockRegistryFetch = function (opts?: any): (req: Request) => Promise<Response>", .replacement = "const mockRegistryFetch = function (opts)" },
+        .{ .needle = "return async function (req: Request)", .replacement = "return async function (req)" },
+        .{ .needle = "var tests: any = [", .replacement = "var tests = [" },
+        .{ .needle = "var peerTests: any = [", .replacement = "var peerTests = [" },
+        .{ .needle = "const json: any = {", .replacement = "const json = {" },
+        .{ .needle = "async function runBin(binName: string, expected: string, global: boolean)", .replacement = "async function runBin(binName, expected, global)" },
+        .{ .needle = "async function writePackages(num: number)", .replacement = "async function writePackages(num)" },
+        .{ .needle = "async function check(version: string)", .replacement = "async function check(version)" },
+        .{ .needle = "async function runBunOutdated(env: any, cwd: string, ...args: string[]): Promise<string>", .replacement = "async function runBunOutdated(env, cwd, ...args)" },
+        .{ .needle = "...(Array(7).fill({ name: \"a-dep\", version: \"1.0.1\" }) as any)", .replacement = "...Array(7).fill({ name: \"a-dep\", version: \"1.0.1\" })" },
+        .{ .needle = "[] as string[]", .replacement = "[]" },
+        .{ .needle = "await registry.start();", .replacement = "registry.start();" },
     };
     for (global_replacements) |entry| {
         if (std.mem.indexOf(u8, source, entry.needle)) |_| {
@@ -53174,6 +53192,33 @@ test "bootstrap runner loads docker-gated bun install proxy corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+}
+
+test "bootstrap runner prepares bun install registry corpus TypeScript syntax" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-registry.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "var registry:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Record<string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Promise<string>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "opts?: any") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "runBin(binName:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "writePackages(num:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "check(version:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "runBunOutdated(env:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "[] as string[]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Array(7).fill({ name: \"a-dep\", version: \"1.0.1\" }) as any") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await registry.start();") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "registry.start();") != null);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
