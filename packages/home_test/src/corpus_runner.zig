@@ -64093,15 +64093,17 @@ test "bootstrap runner mirrors bun add SCP Git URL dependency" {
     const source =
         \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
-        \\import { writeFile } from "fs/promises";
-        \\import { bunEnv as env, bunExe, readdirSorted, toHaveBins } from "harness";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
         \\import { join } from "path";
-        \\import { dummyBeforeEach, package_dir } from "./dummy.registry";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
         \\
-        \\expect.extend({ toHaveBins });
+        \\expect.extend({ toBeValidBin, toHaveBins });
         \\
         \\test("bun add SCP Git URL dependency", async () => {
         \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
         \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({ name: "foo", version: "0.0.1" }));
         \\  const first = spawn({
         \\    cmd: [bunExe(), "add", "bun@github.com:mishoo/UglifyJS.git"],
@@ -64120,8 +64122,11 @@ test "bootstrap runner mirrors bun add SCP Git URL dependency" {
         \\    "1 package installed",
         \\  ]);
         \\  expect(await first.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([]);
+        \\  expect(requested).toBe(0);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify-js"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "uglifyjs")).toBeValidBin(join("..", "uglify-js", "bin", "uglifyjs"));
         \\  expect(await readdirSorted(join(package_dir, "node_modules", ".cache"))).toEqual(["9d05c118f06c3b4c.git"]);
         \\  expect((await file(join(package_dir, "node_modules", "uglify-js", "package.json")).json()).name).toBe("uglify-js");
         \\  expect(await file(join(package_dir, "package.json")).json()).toEqual({
@@ -64129,6 +64134,7 @@ test "bootstrap runner mirrors bun add SCP Git URL dependency" {
         \\    version: "0.0.1",
         \\    dependencies: { "uglify-js": "bun@github.com:mishoo/UglifyJS.git" },
         \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
         \\  const second = spawn({
         \\    cmd: [bunExe(), "install"],
         \\    cwd: package_dir,
@@ -64143,6 +64149,8 @@ test "bootstrap runner mirrors bun add SCP Git URL dependency" {
         \\    "Checked 1 install across 2 packages (no changes)",
         \\  ]);
         \\  expect(await second.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([]);
+        \\  expect(requested).toBe(0);
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-add.test.ts");
