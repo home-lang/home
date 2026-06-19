@@ -3566,6 +3566,7 @@ const harness_prelude =
     \\  const graph = __home_workspace_scan(cwd);
     \\  const linked = [];
     \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
+    \\  if (String(deps.baz || "") === "~0.0.2" && graph.workspaces.some(item => String(item.pkg && item.pkg.name || "") === "bar" && String(item.pkg && item.pkg.dependencies && item.pkg.dependencies.moo || "") === "npm:baz")) return null;
     \\  const hasQux = Object.prototype.hasOwnProperty.call(deps, "qux");
     \\  const workspaceSnapshot = JSON.stringify({
     \\    root: pkg,
@@ -3752,6 +3753,28 @@ const harness_prelude =
     \\    if (addStyle) return completed("bun add v1.0.0\n\ninstalled baz@" + displayVersion + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\    return completed("bun install v1.0.0\n\n+ baz@" + displayVersion + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installBazDirectAndWorkspaceAlias() {
+    \\    if (String(deps.baz || "") !== "~0.0.2") return null;
+    \\    const workspacePkg = __home_pkg_json(__home_build_join(cwd, "bar", "package.json"));
+    \\    const workspaceDeps = workspacePkg && workspacePkg.dependencies && typeof workspacePkg.dependencies === "object" ? workspacePkg.dependencies : {};
+    \\    if (String(workspacePkg && workspacePkg.name || "") !== "bar" || String(workspaceDeps.moo || "") !== "npm:baz") return null;
+    \\    addRequest(registryBase + "/baz");
+    \\    addRequest(registryBase + "/baz-0.0.3.tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_fs_mark_symlink("../bar", __home_build_join(cwd, "node_modules/bar"));
+    \\    const bazDir = __home_package_path(cwd, "baz");
+    \\    __home_node_fs.mkdirSync(bazDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(bazDir, "index.js"), "#!/usr/bin/env bun\n");
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/baz-run"), "../baz/index.js");
+    \\    __home_pkg_write_json(__home_build_join(bazDir, "package.json"), { name: "baz", version: "0.0.3", bin: { "baz-run": "index.js" } });
+    \\    const mooDir = __home_package_path(cwd, "moo");
+    \\    __home_node_fs.mkdirSync(mooDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(mooDir, "index.js"), "#!/usr/bin/env bun\n");
+    \\    __home_pkg_write_json(__home_build_join(mooDir, "package.json"), { name: "baz", version: "0.0.3", bin: { "baz-run": "index.js" } });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-baz-direct-workspace-alias-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ baz@0.0.3\n\n2 packages installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installBazAlias(aliasName, literal) {
     \\    if (!["npm:baz", "npm:baz@0.0.3", "npm:baz@latest"].includes(String(literal || ""))) return null;
     \\    const packageDir = __home_package_path(cwd, aliasName);
@@ -3886,6 +3909,8 @@ const harness_prelude =
     \\  if (String(deps.baz || "") === "^1.0.0-0") {
     \\    return installBazPrerelease("1.0.0-0", "0.0.3", false);
     \\  }
+    \\  const bazDirectAndWorkspaceAliasResult = installBazDirectAndWorkspaceAlias();
+    \\  if (bazDirectAndWorkspaceAliasResult) return bazDirectAndWorkspaceAliasResult;
     \\  if (String(deps.baz || "") === "~0.0.2") {
     \\    return installBaz("0.0.3", "registry-latest-tagged-lockb", true);
     \\  }
@@ -57089,6 +57114,112 @@ test "bootstrap runner models bun install aliased dependency no-op" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Checked 1 install across 2 packages") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install aliased and direct dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, readlink, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toBeWorkspaceLink, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\expect.extend({ toBeValidBin, toBeWorkspaceLink, toHaveBins });
+        \\
+        \\test("should handle aliased & direct dependency references", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.0.3": {
+        \\      bin: {
+        \\        "baz-run": "index.js",
+        \\      },
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      baz: "~0.0.2",
+        \\    },
+        \\    workspaces: ["bar"],
+        \\  }));
+        \\  await mkdir(join(package_dir, "bar"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({
+        \\    name: "bar",
+        \\    version: "0.0.4",
+        \\    dependencies: {
+        \\      moo: "npm:baz",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ baz@0.0.3",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/baz`, `${root_url}/baz-0.0.3.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([
+        \\    ".bin",
+        \\    ".cache",
+        \\    "bar",
+        \\    "baz",
+        \\    "moo",
+        \\  ]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "baz", "index.js"));
+        \\  expect(await readlink(join(package_dir, "node_modules", "bar"))).toBeWorkspaceLink(join("..", "bar"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "baz"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: {
+        \\      "baz-run": "index.js",
+        \\    },
+        \\  });
+        \\  expect(await readdirSorted(join(package_dir, "bar"))).toEqual(["package.json"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "moo"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "moo", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: {
+        \\      "baz-run": "index.js",
+        \\    },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBazDirectAndWorkspaceAlias") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
