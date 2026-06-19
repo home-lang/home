@@ -1087,7 +1087,6 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileStaticImportAssertionFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileWrappedDefaultRegExpFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileImportPrinterFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileTypeOnlyExportFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileClassStaticBlockFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnarySimplificationFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileCommaOperatorFixture(allocator, source_text)) |fixture_output| return fixture_output;
@@ -1156,20 +1155,6 @@ fn transpileUnicodeStringArrayFixture(allocator: std.mem.Allocator, handle: *con
             .bun => try allocator.dupe(u8, "let list = [\"\\u2022\", \"-\", \"\\u25E6\", \"\\u25AA\", \"\\u25AB\"];\n"),
             else => try allocator.dupe(u8, "let list = [\"•\", \"-\", \"◦\", \"▪\", \"▫\"];\n"),
         };
-    }
-    return null;
-}
-
-fn transpileTypeOnlyExportFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const Fixture = struct {
-        source: []const u8,
-        output: []const u8,
-    };
-    const fixtures = [_]Fixture{
-        .{ .source = "export { type x };", .output = "" },
-    };
-    for (fixtures) |fixture| {
-        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
     }
     return null;
 }
@@ -5060,6 +5045,7 @@ test "adapter routes type export declarations through Bun parser path" {
         .{ .source = "export { x, \\u0074ype y } from 'mod'", .output = "export { x } from \"mod\";\n" },
         .{ .source = "export { x, type if } from 'mod'", .output = "export { x } from \"mod\";\n" },
         .{ .source = "export { x, type y as if }; let x", .output = "export { x };\nlet x;\n" },
+        .{ .source = "export { type x };", .output = "" },
     };
 
     const default_handle = TranspilerHandle{};
@@ -5259,22 +5245,6 @@ test "adapter preserves UTF-8 string array characters like Bun.Transpiler" {
     const bun_output = (try transpileUnicodeStringArrayFixture(std.testing.allocator, &bun_handle, "let list = [\"•\", \"-\", \"◦\", \"▪\", \"▫\"];")).?;
     defer std.testing.allocator.free(bun_output);
     try std.testing.expectEqualStrings("let list = [\"\\u2022\", \"-\", \"\\u25E6\", \"\\u25AA\", \"\\u25AB\"];\n", bun_output);
-}
-
-test "adapter preserves Bun.Transpiler type-only export fixtures" {
-    const Case = struct {
-        source: []const u8,
-        output: []const u8,
-    };
-    const cases = [_]Case{
-        .{ .source = "export { type x };", .output = "" },
-    };
-
-    for (cases) |case| {
-        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
-        defer std.testing.allocator.free(output);
-        try std.testing.expectEqualStrings(case.output, output);
-    }
 }
 
 test "adapter preserves Bun.Transpiler class static block fixtures" {
