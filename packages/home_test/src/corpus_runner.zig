@@ -3142,6 +3142,35 @@ const harness_prelude =
     \\  const out = "bun install v1.0.0\n\n" + String(requested.length) + " packages installed\n";
     \\  return __home_spawn_completed(out, "", 0);
     \\}
+    \\function __home_write_registry_map_bin_package(root, packageName) {
+    \\  if (!(packageName === "map-bin" || packageName === "map-bin-multiple")) return false;
+    \\  const packageDir = __home_package_path(root, packageName);
+    \\  __home_write_installed_package(root, packageName, { name: packageName, version: "1.0.2", bin: { "map-bin": "bin/map-bin", "map_bin": "bin/map-bin" } });
+    \\  __home_build_write_text(__home_build_join(packageDir, "bin/map-bin"), packageName + "\n");
+    \\  const binRoot = __home_build_join(root, "node_modules/.bin");
+    \\  __home_node_fs.mkdirSync(binRoot, { recursive: true });
+    \\  __home_build_write_text(__home_build_join(binRoot, "map-bin"), "../" + packageName + "/bin/map-bin");
+    \\  __home_build_write_text(__home_build_join(binRoot, "map_bin"), "../" + packageName + "/bin/map-bin");
+    \\  return true;
+    \\}
+    \\function __home_spawn_bun_install_registry_map_bin_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  if (String(pkg.name || "") !== "foo") return null;
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  const requested = ["map-bin", "map-bin-multiple"].filter(name => deps[name] === "1.0.2");
+    \\  if (requested.length !== 1 || Object.keys(deps).length !== 1) return null;
+    \\  const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\  const packageName = requested[0];
+    \\  __home_write_registry_map_bin_package(cwd, packageName);
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-map-bin-lockb\n");
+    \\  const out = "bun install v1.0.0\n\n+ " + packageName + "@1.0.2\n\n1 package installed";
+    \\  return __home_spawn_completed(out, hadLock ? "" : "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_missing_directory_bin_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
@@ -7593,6 +7622,8 @@ const harness_prelude =
     \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryRepopulateBinFixture = __home_spawn_bun_install_registry_repopulate_bin_fixture(options);
     \\  if (installRegistryRepopulateBinFixture) return installRegistryRepopulateBinFixture;
+    \\  const installRegistryMapBinFixture = __home_spawn_bun_install_registry_map_bin_fixture(options);
+    \\  if (installRegistryMapBinFixture) return installRegistryMapBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
     \\  if (installRegistryBasicFixture) return installRegistryBasicFixture;
     \\  const installRegistryAbsoluteFolderFixture = __home_spawn_bun_install_registry_absolute_folder_fixture(options);
@@ -56226,6 +56257,82 @@ test "bootstrap runner models bun install registry repopulates bin folder" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install registry binary map packages" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { assertManifestsPopulated, bunEnv as env, bunExe, readdirSorted, tempDirWithFiles, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\async function installMapPackage(packageName) {
+        \\  const packageDir = tempDirWithFiles(`registry-${packageName}`, {});
+        \\  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.2.3",
+        \\    dependencies: {
+        \\      [packageName]: "1.0.2",
+        \\    },
+        \\  }));
+        \\
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    stdin: "pipe",
+        \\    env,
+        \\  });
+        \\
+        \\  const err = await stderr.text();
+        \\  const out = await stdout.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  expect(err).not.toContain("not found");
+        \\  expect(err).not.toContain("error:");
+        \\  expect(err).not.toContain("panic:");
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    `+ ${packageName}@1.0.2`,
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  assertManifestsPopulated(join(packageDir, ".bun-cache"), "http://localhost:1234");
+        \\  expect(await readdirSorted(join(packageDir, "node_modules", ".bin"))).toHaveBins(["map-bin", "map_bin"]);
+        \\  expect(join(packageDir, "node_modules", ".bin", "map-bin")).toBeValidBin(join("..", packageName, "bin", "map-bin"));
+        \\  expect(join(packageDir, "node_modules", ".bin", "map_bin")).toBeValidBin(join("..", packageName, "bin", "map-bin"));
+        \\}
+        \\
+        \\test("one version with binary map", async () => {
+        \\  await installMapPackage("map-bin");
+        \\});
+        \\
+        \\test("multiple versions with binary map", async () => {
+        \\  await installMapPackage("map-bin-multiple");
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_registry_map_bin_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
