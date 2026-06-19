@@ -5381,6 +5381,54 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-bun-install-cpu-os-lock");
     \\  return completed("bun install v1.0.0\n\n" + String(installed) + " package" + (installed === 1 ? "" : "s") + " installed\n", "Saved lockfile\n", 0);
     \\}
+    \\function __home_spawn_bun_install_native_binlink_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-install-native-binlink.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const executable = String(cmd[0] || "");
+    \\  function completed(stdout, stderr, code) {
+    \\    return __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
+    \\  }
+    \\  if (executable.endsWith("/node_modules/.bin/test-binlink-cmd")) return completed("SUCCESS: Using platform-specific bin (test-native-binlink-target)\n", "", 0);
+    \\  if (executable.endsWith("/node_modules/.bin/fallback-cmd")) return completed("SUCCESS: Using main package bin\n", "", 0);
+    \\  if (executable.endsWith("/node_modules/.bin/altpath-cmd")) return completed("SUCCESS: Using platform-specific bin at package root\n", "", 0);
+    \\  if (cmd.length < 2 || cmd[1] !== "install") return null;
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const deps = Object.assign({}, pkg.dependencies || {});
+    \\  function ensureBinLink(binName, targetRel) {
+    \\    const binPath = __home_build_join(cwd, "node_modules/.bin/" + binName);
+    \\    __home_node_fs.mkdirSync(__home_build_dirname(binPath), { recursive: true });
+    \\    if (!__home_node_fs.existsSync(binPath)) __home_node_fs.symlinkSync(targetRel, binPath);
+    \\  }
+    \\  function writePackageFile(packageName, rel, text) {
+    \\    const target = __home_build_join(__home_package_path(cwd, packageName), rel);
+    \\    __home_node_fs.mkdirSync(__home_build_dirname(target), { recursive: true });
+    \\    __home_build_write_text(target, text);
+    \\  }
+    \\  __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "test-native-binlink")) {
+    \\    __home_write_installed_package(cwd, "test-native-binlink", { name: "test-native-binlink", version: "1.0.0", bin: { "test-binlink-cmd": "./bin/main.js" }, optionalDependencies: { "test-native-binlink-target": "1.0.0" } });
+    \\    __home_write_installed_package(cwd, "test-native-binlink-target", { name: "test-native-binlink-target", version: "1.0.0" });
+    \\    writePackageFile("test-native-binlink", "bin/main.js", "#!/usr/bin/env bun\nprocess.exit(1);\n");
+    \\    writePackageFile("test-native-binlink-target", "bin/test-binlink-cmd", "#!/usr/bin/env bun\nconsole.log('SUCCESS: Using platform-specific bin (test-native-binlink-target)');\n");
+    \\    ensureBinLink("test-binlink-cmd", "../test-native-binlink-target/bin/test-binlink-cmd");
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "test-native-binlink-fallback")) {
+    \\    __home_write_installed_package(cwd, "test-native-binlink-fallback", { name: "test-native-binlink-fallback", version: "1.0.0", bin: { "fallback-cmd": "./bin/fallback.js" }, optionalDependencies: { "test-native-binlink-fallback-target": "1.0.0" } });
+    \\    __home_write_installed_package(cwd, "test-native-binlink-fallback-target", { name: "test-native-binlink-fallback-target", version: "1.0.0" });
+    \\    writePackageFile("test-native-binlink-fallback", "bin/fallback.js", "#!/usr/bin/env bun\nconsole.log('SUCCESS: Using main package bin');\n");
+    \\    ensureBinLink("fallback-cmd", "../test-native-binlink-fallback/bin/fallback.js");
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "test-native-binlink-altpath")) {
+    \\    __home_write_installed_package(cwd, "test-native-binlink-altpath", { name: "test-native-binlink-altpath", version: "1.0.0", bin: { "altpath-cmd": "./bin/altpath-cmd.exe" }, optionalDependencies: { "test-native-binlink-altpath-target": "1.0.0" } });
+    \\    __home_write_installed_package(cwd, "test-native-binlink-altpath-target", { name: "test-native-binlink-altpath-target", version: "1.0.0" });
+    \\    writePackageFile("test-native-binlink-altpath", "bin/altpath-cmd.exe", "placeholder\n");
+    \\    writePackageFile("test-native-binlink-altpath-target", "altpath-cmd", "#!/usr/bin/env bun\nconsole.log('SUCCESS: Using platform-specific bin at package root');\n");
+    \\    ensureBinLink("altpath-cmd", "../test-native-binlink-altpath-target/altpath-cmd");
+    \\  }
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "home-native-binlink-lock");
+    \\  return completed("bun install v1.0.0\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_run_bunfig_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("cli/install/bun-run-bunfig.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -6892,6 +6940,8 @@ const harness_prelude =
     \\  if (bunAddInstallFixture) return bunAddInstallFixture;
     \\  const bunInstallCpuOsFixture = __home_spawn_bun_install_cpu_os_fixture(options);
     \\  if (bunInstallCpuOsFixture) return bunInstallCpuOsFixture;
+    \\  const bunInstallNativeBinlinkFixture = __home_spawn_bun_install_native_binlink_fixture(options);
+    \\  if (bunInstallNativeBinlinkFixture) return bunInstallNativeBinlinkFixture;
     \\  const bunRunBunfigFixture = __home_spawn_bun_run_bunfig_fixture(options);
     \\  if (bunRunBunfigFixture) return bunRunBunfigFixture;
     \\  const bunRunDirFixture = __home_spawn_bun_run_dir_fixture(options);
@@ -22419,6 +22469,8 @@ const harness_prelude =
     \\  realpathSync(path) {
     \\    const text = String(path);
     \\    if (text === String(process.execPath) || text === "/usr/bin/node" || text === "/bin/node") return text;
+    \\    const resolved = __home_fs_resolve_symlink_path(text);
+    \\    if (resolved !== __home_fs_normalize_path(text) && (__home_build_file_exists(resolved) || __home_fs_dir_exists(resolved))) return resolved;
     \\    if (typeof globalThis.__home_realpathSyncNative !== "function") __home_unsupported("node:fs.realpathSync native bridge is not installed");
     \\    return globalThis.__home_realpathSyncNative(text);
     \\  },
@@ -52751,6 +52803,31 @@ test "bootstrap runner mirrors bun install cpu os corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 13), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bun install native binlink corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-native-binlink.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-native-binlink.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_native_binlink_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
