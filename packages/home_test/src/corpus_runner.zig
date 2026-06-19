@@ -6334,6 +6334,23 @@ const harness_prelude =
     \\    writeLockfile();
     \\    return completed(stdoutHeader + "\n\ninstalled publicinstalltest@git+ssh://" + text + "#79265e2d9754c60b60f97cc8d859fb6da073b5d2\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installGitLabGitAddDependency(rawSpec) {
+    \\    const text = String(rawSpec || "");
+    \\    const supported = [
+    \\      "gitlab:dylan-conway/public-install-test",
+    \\      "gitlab.com:dylan-conway/public-install-test",
+    \\    ];
+    \\    if (!supported.includes(text)) return null;
+    \\    const pkg = readPackageJson(cwd);
+    \\    const bucket = dependencyBucket();
+    \\    if (!pkg[bucket] || typeof pkg[bucket] !== "object") pkg[bucket] = {};
+    \\    pkg[bucket]["public-install-test"] = text;
+    \\    writePackageJson(cwd, pkg);
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_write_installed_package(cwd, "public-install-test", { name: "public-install-test", version: "1.0.0" });
+    \\    writeLockfile();
+    \\    return completed(stdoutHeader + "\n\ninstalled public-install-test@git+ssh://" + text + "#93f3aa4ec9ca8a0bacc010776db48bfcd915c44c\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installGenericGitDependency(rawSpec) {
     \\    const text = String(rawSpec || "");
     \\    let depName = "";
@@ -6508,6 +6525,8 @@ const harness_prelude =
     \\  if (gitHubResult) return gitHubResult;
     \\  const bitbucketGitResult = installBitbucketGitAddDependency(spec);
     \\  if (bitbucketGitResult) return bitbucketGitResult;
+    \\  const gitLabGitResult = installGitLabGitAddDependency(spec);
+    \\  if (gitLabGitResult) return gitLabGitResult;
     \\  const genericGitResult = installGenericGitDependency(spec);
     \\  if (genericGitResult) return genericGitResult;
     \\  const localTarballResult = installLocalTarball(spec);
@@ -58453,6 +58472,70 @@ test "bootstrap runner models bun install gitlab git dependencies" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installGitLabGitDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models bun add gitlab git dependencies" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, setHandler } from "./dummy.registry";
+        \\
+        \\const deps = ["gitlab:dylan-conway/public-install-test", "gitlab.com:dylan-conway/public-install-test"];
+        \\
+        \\for (const dep of deps) {
+        \\  test(`add ${dep}`, async () => {
+        \\    await dummyBeforeEach({ linker: "hoisted" });
+        \\    const urls = [];
+        \\    setHandler(dummyRegistry(urls));
+        \\    await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\      name: "foo",
+        \\      version: "0.0.1",
+        \\    }));
+        \\
+        \\    const { stdout, stderr, exited } = spawn({
+        \\      cmd: [bunExe(), "add", dep],
+        \\      cwd: package_dir,
+        \\      stdout: "pipe",
+        \\      stdin: "pipe",
+        \\      stderr: "pipe",
+        \\      env,
+        \\    });
+        \\
+        \\    const err = await stderr.text();
+        \\    expect(err).toContain("Saved lockfile");
+        \\    const out = await stdout.text();
+        \\    expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\      expect.stringContaining("bun add v1."),
+        \\      "",
+        \\      `installed public-install-test@git+ssh://${dep}#93f3aa4ec9ca8a0bacc010776db48bfcd915c44c`,
+        \\      "",
+        \\      expect.stringContaining("installed"),
+        \\    ]);
+        \\    expect(await exited).toBe(0);
+        \\    await access(join(package_dir, "bun.lockb"));
+        \\  });
+        \\}
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installGitLabGitAddDependency") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
