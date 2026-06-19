@@ -3883,6 +3883,25 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_bun_install_git_dependency_edit_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 3 && (cmd[1] === "i" || cmd[1] === "install"))) return null;
+    \\  const spec = cmd.slice(2).find(part => !String(part).startsWith("-"));
+    \\  const supported = ["dylan-conway/install-test2", "dylan-conway/install-test2#HEAD", "github:dylan-conway/install-test2", "github:dylan-conway/install-test2#HEAD"];
+    \\  if (!supported.includes(String(spec || ""))) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkgPath = __home_build_join(cwd, "package.json");
+    \\  const pkg = __home_pkg_json(pkgPath) || {};
+    \\  if (!pkg.dependencies || typeof pkg.dependencies !== "object") pkg.dependencies = {};
+    \\  pkg.dependencies["install-test2"] = String(spec);
+    \\  __home_pkg_write_json(pkgPath, pkg);
+    \\  __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\  __home_write_installed_package(cwd, "install-test2", { name: "install-test2", version: "1.0.0" });
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "git-dependency-edit-lockb\n");
+    \\  return __home_spawn_completed("bun install v1.0.0\n\n+ install-test2@" + String(spec) + "\n\n1 package installed\n", "Saved lockfile\n", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_optional_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
@@ -7899,6 +7918,8 @@ const harness_prelude =
     \\  if (installTextLockfileEdgeFixture) return installTextLockfileEdgeFixture;
     \\  const installWorkspaceBasicFixture = __home_spawn_bun_install_workspace_basic_fixture(options);
     \\  if (installWorkspaceBasicFixture) return installWorkspaceBasicFixture;
+    \\  const installGitDependencyEditFixture = __home_spawn_bun_install_git_dependency_edit_fixture(options);
+    \\  if (installGitDependencyEditFixture) return installGitDependencyEditFixture;
     \\  const installRegistryOptionalFixture = __home_spawn_bun_install_registry_optional_fixture(options);
     \\  if (installRegistryOptionalFixture) return installRegistryOptionalFixture;
     \\  const installRegistryCaFixture = __home_spawn_bun_install_registry_ca_fixture(options);
@@ -56339,6 +56360,74 @@ test "bootstrap runner models bun install matching workspace dependencies" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_workspace_basic_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install git dependency package edits" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, setHandler } from "./dummy.registry";
+        \\
+        \\test("should edit package json correctly with git dependencies", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  const package_json = JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {},
+        \\  });
+        \\  for (const spec of [
+        \\    "dylan-conway/install-test2",
+        \\    "dylan-conway/install-test2#HEAD",
+        \\    "github:dylan-conway/install-test2",
+        \\    "github:dylan-conway/install-test2#HEAD",
+        \\  ]) {
+        \\    await writeFile(join(package_dir, "package.json"), package_json);
+        \\    const { stdout, stderr, exited } = spawn({
+        \\      cmd: [bunExe(), "i", spec],
+        \\      cwd: package_dir,
+        \\      stdout: "pipe",
+        \\      stdin: "pipe",
+        \\      stderr: "pipe",
+        \\      env,
+        \\    });
+        \\    const err = await stderr.text();
+        \\    expect(err).toContain("Saved lockfile");
+        \\    expect(err).not.toContain("error:");
+        \\    await stdout.text();
+        \\    expect(await exited).toBe(0);
+        \\    expect(await file(join(package_dir, "package.json")).json()).toEqual({
+        \\      name: "foo",
+        \\      version: "0.0.1",
+        \\      dependencies: {
+        \\        "install-test2": spec,
+        \\      },
+        \\    });
+        \\  }
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_git_dependency_edit_fixture") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
