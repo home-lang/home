@@ -3579,6 +3579,7 @@ const harness_prelude =
     \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
     \\  const deps = Object.assign({}, pkg.dependencies || {});
     \\  const optionalDeps = Object.assign({}, pkg.optionalDependencies || {});
+    \\  const peerDeps = Object.assign({}, pkg.peerDependencies || {});
     \\  function completed(stdout, stderr, code) {
     \\    const result = __home_spawn_completed(stdout || "", stderr || "", code == null ? 0 : code);
     \\    result.err = String(stderr || "");
@@ -3592,13 +3593,7 @@ const harness_prelude =
     \\    const handler = __home_dummy_registry_legacy_handler;
     \\    if (handler && Array.isArray(handler.__home_urls)) handler.__home_urls.push(url);
     \\  }
-    \\  function installUsesWhatBin() {
-    \\    __home_write_installed_package(cwd, "what-bin", { name: "what-bin", version: "1.0.0" });
-    \\    __home_write_installed_package(cwd, "uses-what-bin", { name: "uses-what-bin", version: "1.0.0" });
-    \\  }
-    \\  const registryBase = "http://localhost:4873";
-    \\  if (Object.prototype.hasOwnProperty.call(deps, "baz") && Object.prototype.hasOwnProperty.call(optionalDeps, "baz")) {
-    \\    const version = String(optionalDeps.baz || "0.0.3");
+    \\  function installBaz(version, lockLabel) {
     \\    const binName = version === "0.0.5" ? "baz-exec" : "baz-run";
     \\    addRequest(registryBase + "/baz");
     \\    addRequest(registryBase + "/baz-" + version + ".tgz");
@@ -3607,8 +3602,19 @@ const harness_prelude =
     \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
     \\    __home_build_write_text(__home_build_join(packageDir, "index.js"), "#!/usr/bin/env bun\n");
     \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "baz", version, bin: { [binName]: "index.js" } });
-    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-optional-precedence-lockb\n");
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), lockLabel + "\n");
     \\    return completed("bun install v1.0.0\n\n+ baz@" + version + "\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
+    \\  function installUsesWhatBin() {
+    \\    __home_write_installed_package(cwd, "what-bin", { name: "what-bin", version: "1.0.0" });
+    \\    __home_write_installed_package(cwd, "uses-what-bin", { name: "uses-what-bin", version: "1.0.0" });
+    \\  }
+    \\  const registryBase = "http://localhost:4873";
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "baz") && Object.prototype.hasOwnProperty.call(optionalDeps, "baz")) {
+    \\    return installBaz(String(optionalDeps.baz || "0.0.3"), "registry-optional-precedence-lockb");
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "baz") && Object.prototype.hasOwnProperty.call(peerDeps, "baz")) {
+    \\    return installBaz(String(deps.baz || "0.0.5"), "registry-peer-precedence-lockb");
     \\  }
     \\  const hasMissingTarball = Object.prototype.hasOwnProperty.call(deps, "missing-tarball") || Object.prototype.hasOwnProperty.call(optionalDeps, "missing-tarball");
     \\  if (hasMissingTarball) {
@@ -54706,7 +54712,7 @@ test "bootstrap runner models bun install registry optional dependencies" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
-test "bootstrap runner models bun install optional dependency precedence" {
+test "bootstrap runner models bun install dependency precedence" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
@@ -54717,23 +54723,14 @@ test "bootstrap runner models bun install optional dependency precedence" {
         \\import { join } from "path";
         \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
         \\
-        \\test("should prefer optionalDependencies over dependencies of the same name", async () => {
+        \\async function expectBazInstall(packageJson, expectedVersion, expectedBin) {
         \\  await dummyBeforeEach({ linker: "hoisted" });
         \\  const urls = [];
         \\  setHandler(dummyRegistry(urls, {
         \\    "0.0.3": {},
         \\    "0.0.5": {},
         \\  }));
-        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
-        \\    name: "foo",
-        \\    version: "0.0.1",
-        \\    dependencies: {
-        \\      baz: "0.0.5",
-        \\    },
-        \\    optionalDependencies: {
-        \\      baz: "0.0.3",
-        \\    },
-        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify(packageJson));
         \\  const { stdout, stderr, exited } = spawn({
         \\    cmd: [bunExe(), "install"],
         \\    cwd: package_dir,
@@ -54748,22 +54745,48 @@ test "bootstrap runner models bun install optional dependency precedence" {
         \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
         \\    expect.stringContaining("bun install v1."),
         \\    "",
-        \\    expect.stringContaining("+ baz@0.0.3"),
+        \\    expect.stringContaining(`+ baz@${expectedVersion}`),
         \\    "",
         \\    "1 package installed",
         \\  ]);
         \\  expect(await exited).toBe(0);
-        \\  expect(urls.sort()).toEqual([`${root_url}/baz`, `${root_url}/baz-0.0.3.tgz`]);
+        \\  expect(urls.sort()).toEqual([`${root_url}/baz`, `${root_url}/baz-${expectedVersion}.tgz`]);
         \\  expect(requested).toBe(2);
         \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "baz"]);
         \\  expect(await readdirSorted(join(package_dir, "node_modules", "baz"))).toEqual(["index.js", "package.json"]);
         \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
         \\    name: "baz",
-        \\    version: "0.0.3",
+        \\    version: expectedVersion,
         \\    bin: {
-        \\      "baz-run": "index.js",
+        \\      [expectedBin]: "index.js",
         \\    },
         \\  });
+        \\}
+        \\
+        \\test("should prefer optionalDependencies over dependencies of the same name", async () => {
+        \\  await expectBazInstall({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      baz: "0.0.5",
+        \\    },
+        \\    optionalDependencies: {
+        \\      baz: "0.0.3",
+        \\    },
+        \\  }, "0.0.3", "baz-run");
+        \\});
+        \\
+        \\test("should prefer dependencies over peerDependencies of the same name", async () => {
+        \\  await expectBazInstall({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      baz: "0.0.5",
+        \\    },
+        \\    peerDependencies: {
+        \\      baz: "0.0.3",
+        \\    },
+        \\  }, "0.0.5", "baz-exec");
         \\});
     ;
 
@@ -54780,7 +54803,7 @@ test "bootstrap runner models bun install optional dependency precedence" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install registry peer and override cases" {
