@@ -3725,6 +3725,20 @@ const harness_prelude =
     \\    const handler = __home_dummy_registry_legacy_handler;
     \\    if (handler && Array.isArray(handler.__home_urls)) handler.__home_urls.push(url);
     \\  }
+    \\  function installPlainGitHubUglifyDependency() {
+    \\    if (String(deps.uglify || "") !== "mishoo/UglifyJS") return null;
+    \\    const packageDir = __home_package_path(cwd, "uglify");
+    \\    __home_node_fs.mkdirSync(packageDir, { recursive: true });
+    \\    for (const entry of [".bun-tag", ".gitattributes", ".gitignore", "CONTRIBUTING.md", "LICENSE", "README.md"]) __home_build_write_text(__home_build_join(packageDir, entry), "");
+    \\    for (const dir of [".github", "bin", "lib", "test", "tools"]) __home_node_fs.mkdirSync(__home_build_join(packageDir, dir), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(packageDir, "bin/uglifyjs"), "#!/usr/bin/env bun\n");
+    \\    __home_pkg_write_json(__home_build_join(packageDir, "package.json"), { name: "uglify-js", version: "3.14.1", bin: { uglifyjs: "bin/uglifyjs" } });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
+    \\    __home_build_write_text(__home_build_join(cwd, "node_modules/.bin/uglifyjs"), "../uglify/bin/uglifyjs");
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-github-plain-uglify-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ uglify@github:mishoo/UglifyJS#e219a9a\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installBaz(version, lockLabel, writeBin) {
     \\    const binName = version === "0.0.5" ? "baz-exec" : "baz-run";
     \\    addRequest(registryBase + "/baz");
@@ -4011,6 +4025,8 @@ const harness_prelude =
     \\  if (String(deps.baz || "") === "^1.0.0-0") {
     \\    return installBazPrerelease("1.0.0-0", "0.0.3", false);
     \\  }
+    \\  const plainGitHubUglifyResult = installPlainGitHubUglifyDependency();
+    \\  if (plainGitHubUglifyResult) return plainGitHubUglifyResult;
     \\  const bazDirectAndWorkspaceAliasResult = installBazDirectAndWorkspaceAlias();
     \\  if (bazDirectAndWorkspaceAliasResult) return bazDirectAndWorkspaceAliasResult;
     \\  const aliasNameCollisionResult = installAliasNameCollisionWithWorkspace();
@@ -57905,6 +57921,90 @@ test "bootstrap runner models bun install aliased dependency existing lockfile" 
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installScopedAliasWithExistingLockfile") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install github user repo dependency" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, setHandler } from "./dummy.registry";
+        \\expect.extend({ toHaveBins });
+        \\
+        \\test("should handle GitHub URL in dependencies (user/repo)", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      uglify: "mishoo/UglifyJS",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  let out = await stdout.text();
+        \\  out = out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "");
+        \\  out = out.replace(/(github:[^#]+)#[a-f0-9]+/, "$1");
+        \\  expect(out.split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ uglify@github:mishoo/UglifyJS",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toBeEmpty();
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "uglify"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["uglifyjs"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "uglify"))).toEqual([
+        \\    ".bun-tag",
+        \\    ".gitattributes",
+        \\    ".github",
+        \\    ".gitignore",
+        \\    "CONTRIBUTING.md",
+        \\    "LICENSE",
+        \\    "README.md",
+        \\    "bin",
+        \\    "lib",
+        \\    "package.json",
+        \\    "test",
+        \\    "tools",
+        \\  ]);
+        \\  const package_json = await file(join(package_dir, "node_modules", "uglify", "package.json")).json();
+        \\  expect(package_json.name).toBe("uglify-js");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installPlainGitHubUglifyDependency") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
