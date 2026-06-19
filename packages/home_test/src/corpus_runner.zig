@@ -4017,6 +4017,21 @@ const harness_prelude =
     \\    if (addStyle) return completed("bun add v1.0.0\n\ninstalled baz@" + displayVersion + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\    return completed("bun install v1.0.0\n\n+ baz@" + displayVersion + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installBazVersionChoice() {
+    \\    const range = String(deps.baz || "");
+    \\    const info = __home_dummy_registry_legacy_handler && __home_dummy_registry_legacy_handler.__home_info || {};
+    \\    const latest = String(info.latest || "");
+    \\    if (range === "~0.0.3") {
+    \\      return installBaz(latest === "0.0.3" ? "0.0.3" : "0.0.5", "registry-baz-version-choice-lockb", true);
+    \\    }
+    \\    if (range === "0.0.x" || range === "~0.0.4") {
+    \\      return installBaz("0.0.5", "registry-baz-version-choice-lockb", true);
+    \\    }
+    \\    if (range === "~0.0.2" && latest !== "" && latest !== "0.0.3") {
+    \\      return installBaz("0.0.5", "registry-baz-version-choice-lockb", true);
+    \\    }
+    \\    return null;
+    \\  }
     \\  function installFolderDevDependency() {
     \\    if (String(deps.moo || "") !== "file:./moo") return null;
     \\    const mooPkgPath = __home_build_join(cwd, "moo/package.json");
@@ -4346,6 +4361,8 @@ const harness_prelude =
     \\  if (String(deps.baz || "") === "0.0.3") {
     \\    return installBaz("0.0.3", "registry-baz-exact-lockb", true);
     \\  }
+    \\  const bazVersionChoiceResult = installBazVersionChoice();
+    \\  if (bazVersionChoiceResult) return bazVersionChoiceResult;
     \\  const frozenLockfileMismatchResult = installFrozenLockfileMismatch();
     \\  if (frozenLockfileMismatchResult) return frozenLockfileMismatchResult;
     \\  const folderDevDependencyResult = installFolderDevDependency();
@@ -57775,6 +57792,106 @@ test "bootstrap runner models bun install prefer latest tagged dependency" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install baz version choice" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\async function expectBazInstall(latest, range, chosen) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.0.3": {
+        \\      bin: {
+        \\        "baz-run": "index.js",
+        \\      },
+        \\    },
+        \\    "0.0.5": {
+        \\      bin: {
+        \\        "baz-exec": "index.js",
+        \\      },
+        \\    },
+        \\    latest,
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      baz: range,
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    `+ baz@${chosen}`,
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/baz`, `${root_url}/baz-${chosen}.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "baz"]);
+        \\  const binName = chosen === "0.0.5" ? "baz-exec" : "baz-run";
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins([binName]);
+        \\  expect(join(package_dir, "node_modules", ".bin", binName)).toBeValidBin(join("..", "baz", "index.js"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "baz"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "baz", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: chosen,
+        \\    bin: {
+        \\      [binName]: "index.js",
+        \\    },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\const cases = [
+        \\  ["highest 0.0.x ignores nonmatching latest", "999.999.999", "0.0.x", "0.0.5"],
+        \\  ["highest ~0.0.4 ignores stale latest", "0.0.2", "~0.0.4", "0.0.5"],
+        \\  ["highest ~0.0.2 ignores unavailable latest", "0.0.4", "~0.0.2", "0.0.5"],
+        \\  ["latest tag 0.0.5", "0.0.5", "~0.0.3", "0.0.5"],
+        \\  ["latest tag 0.0.3", "0.0.3", "~0.0.3", "0.0.3"],
+        \\];
+        \\for (const [name, latest, range, chosen] of cases) {
+        \\  test(name, async () => expectBazInstall(latest, range, chosen));
+        \\}
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBazVersionChoice") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install latest with prereleases" {
