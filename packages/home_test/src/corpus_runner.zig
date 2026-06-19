@@ -4038,6 +4038,16 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(root, "bun.lockb"), "registry-workspace-root-from-child-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ bar@0.0.2\n\n2 packages installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installWorkspaceChildLocally() {
+    \\    if (__home_build_basename(cwd) !== "moo") return null;
+    \\    if (String(pkg.name || "") !== "moo" || String(deps.bar || "") !== "^0.0.2") return null;
+    \\    addRequest(registryBase + "/bar");
+    \\    addRequest(registryBase + "/bar-0.0.2.tgz");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_write_installed_package(cwd, "bar", { name: "bar", version: "0.0.2" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-workspace-child-local-lockb\n");
+    \\    return completed("bun install v1.0.0\n\n+ bar@0.0.2\n\n1 package installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installBazDirectAndWorkspaceAlias() {
     \\    if (String(deps.baz || "") !== "~0.0.2") return null;
     \\    const workspacePkg = __home_pkg_json(__home_build_join(cwd, "bar", "package.json"));
@@ -4321,6 +4331,8 @@ const harness_prelude =
     \\  if (folderDevDependencyResult) return folderDevDependencyResult;
     \\  const workspaceRootFromChildResult = installWorkspaceRootFromChild();
     \\  if (workspaceRootFromChildResult) return workspaceRootFromChildResult;
+    \\  const workspaceChildLocalResult = installWorkspaceChildLocally();
+    \\  if (workspaceChildLocalResult) return workspaceChildLocalResult;
     \\  const plainGitHubUglifyResult = installGitHubUglifyInstallDependency();
     \\  if (plainGitHubUglifyResult) return plainGitHubUglifyResult;
     \\  const gitHttpsUglifyJsResult = installGitHttpsUglifyJsDependency();
@@ -4434,7 +4446,13 @@ const harness_prelude =
     \\function __home_spawn_bun_install_registry_optional_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
-    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  let cwd = String((options && options.cwd) || process.cwd());
+    \\  for (let i = 2; i < cmd.length; i++) {
+    \\    if (cmd[i] === "--cwd" && i + 1 < cmd.length) {
+    \\      cwd = __home_build_normalize(__home_build_join(cwd, cmd[i + 1]));
+    \\      break;
+    \\    }
+    \\  }
     \\  return __home_registry_optional_install_fixture(options && options.env, cwd, null, cmd);
     \\}
     \\function __home_spawn_bun_install_registry_ca_fixture(options) {
@@ -55938,6 +55956,113 @@ test "bootstrap runner models bun install workspace root from child" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installWorkspaceRootFromChild") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install workspace child local fallback" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { mkdir, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\
+        \\async function prepareChild(rootPackage) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  const foo_package = JSON.stringify(rootPackage);
+        \\  await writeFile(join(package_dir, "package.json"), foo_package);
+        \\  await mkdir(join(package_dir, "moo"));
+        \\  await writeFile(join(package_dir, "moo", "bunfig.toml"), await file(join(package_dir, "bunfig.toml")).text());
+        \\  const moo_package = JSON.stringify({
+        \\    name: "moo",
+        \\    version: "0.2.0",
+        \\    dependencies: {
+        \\      bar: "^0.0.2",
+        \\    },
+        \\  });
+        \\  await writeFile(join(package_dir, "moo", "package.json"), moo_package);
+        \\  return { foo_package, moo_package, urls };
+        \\}
+        \\
+        \\async function expectChildLocalInstall(run, foo_package, moo_package, urls) {
+        \\  expect(await run.stderr.text()).toContain("Saved lockfile");
+        \\  expect((await run.stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ bar@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await run.exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/bar`, `${root_url}/bar-0.0.2.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(package_dir)).toEqual(["bunfig.toml", "moo", "package.json"]);
+        \\  expect(await file(join(package_dir, "package.json")).text()).toEqual(foo_package);
+        \\  expect(await readdirSorted(join(package_dir, "moo"))).toEqual([
+        \\    "bun.lockb",
+        \\    "bunfig.toml",
+        \\    "node_modules",
+        \\    "package.json",
+        \\  ]);
+        \\  expect(await file(join(package_dir, "moo", "package.json")).text()).toEqual(moo_package);
+        \\  expect(await readdirSorted(join(package_dir, "moo", "node_modules"))).toEqual([".cache", "bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "moo", "node_modules", "bar"))).toEqual(["package.json"]);
+        \\  expect(await file(join(package_dir, "moo", "node_modules", "bar", "package.json")).json()).toEqual({
+        \\    name: "bar",
+        \\    version: "0.0.2",
+        \\  });
+        \\}
+        \\
+        \\test("should ignore invalid workspaces from parent directory", async () => {
+        \\  const { foo_package, moo_package, urls } = await prepareChild({
+        \\    name: "foo",
+        \\    version: "0.1.0",
+        \\    workspaces: ["moz"],
+        \\  });
+        \\  await expectChildLocalInstall(spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: join(package_dir, "moo"),
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  }), foo_package, moo_package, urls);
+        \\});
+        \\
+        \\test("should handle --cwd", async () => {
+        \\  const { foo_package, moo_package, urls } = await prepareChild({
+        \\    name: "foo",
+        \\    version: "0.1.0",
+        \\  });
+        \\  await expectChildLocalInstall(spawn({
+        \\    cmd: [bunExe(), "install", "--cwd", "moo"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  }), foo_package, moo_package, urls);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installWorkspaceChildLocally") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
