@@ -55185,6 +55185,40 @@ test "bootstrap runner models bun install workspace basics" {
         \\  expect(requested).toBe(0);
         \\}
         \\
+        \\async function writeInterdependentWorkspacePackages(field) {
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    workspaces: ["bar", "packages/baz"],
+        \\  }));
+        \\  await mkdir(join(package_dir, "bar"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({
+        \\    name: "Bar",
+        \\    version: "0.0.2",
+        \\    [field]: {
+        \\      Baz: "0.0.3",
+        \\    },
+        \\  }));
+        \\  await mkdir(join(package_dir, "packages", "baz"), { recursive: true });
+        \\  await writeFile(join(package_dir, "packages", "baz", "package.json"), JSON.stringify({
+        \\    name: "Baz",
+        \\    version: "0.0.3",
+        \\    [field]: {
+        \\      Bar: "0.0.2",
+        \\    },
+        \\  }));
+        \\}
+        \\
+        \\async function expectInterdependentWorkspaceInstall(field) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeInterdependentWorkspacePackages(field);
+        \\  await runInstall(true, [expect.stringContaining("bun install v1."), "", "2 packages installed"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "Bar", "Baz"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("bar");
+        \\  expect(await readlink(join(package_dir, "node_modules", "Baz"))).toBeWorkspaceLink("packages/baz");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
         \\test("should handle workspaces", async () => {
         \\  await dummyBeforeEach({ linker: "hoisted" });
         \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
@@ -55255,6 +55289,18 @@ test "bootstrap runner models bun install workspace basics" {
         \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("bar");
         \\  await access(join(package_dir, "bun.lockb"));
         \\});
+        \\
+        \\test("should handle inter-dependency between workspaces", async () => {
+        \\  await expectInterdependentWorkspaceInstall("dependencies");
+        \\});
+        \\
+        \\test("should handle inter-dependency between workspaces (devDependencies)", async () => {
+        \\  await expectInterdependentWorkspaceInstall("devDependencies");
+        \\});
+        \\
+        \\test("should handle inter-dependency between workspaces (optionalDependencies)", async () => {
+        \\  await expectInterdependentWorkspaceInstall("optionalDependencies");
+        \\});
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
@@ -55270,7 +55316,7 @@ test "bootstrap runner models bun install workspace basics" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball dependencies" {
