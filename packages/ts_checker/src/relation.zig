@@ -1200,7 +1200,10 @@ pub const Engine = struct {
         if (self.interner.objectNumberIndex(target) != Primitive.none) return false;
         if (self.interner.objectSymbolIndex(target) != Primitive.none) return false;
         const sf = self.pool().flagsOf(source);
-        const is_string = source == Primitive.string_t or (sf.is_literal and sf.is_string);
+        const is_string = source == Primitive.string_t or
+            (sf.is_literal and sf.is_string) or
+            sf.is_template_literal or
+            sf.is_string_mapping;
         const is_number = source == Primitive.number_t or (sf.is_literal and sf.is_number);
         // `boolean`, `true`, and `false` are all boxable into `Boolean`,
         // so the apparent-type check must accept them too. The `Boolean`
