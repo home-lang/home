@@ -3552,6 +3552,48 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_bun_install_workspace_basic_fixture(options) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/install/bun-install.test.ts")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && cmd[1] === "install")) return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  const pkg = __home_pkg_json(__home_build_join(cwd, "package.json")) || {};
+    \\  const hasWorkspaces = Array.isArray(pkg.workspaces) || (pkg.workspaces && typeof pkg.workspaces === "object" && Array.isArray(pkg.workspaces.packages));
+    \\  const workspaceSpecifier = pkg.dependencies && typeof pkg.dependencies === "object" && Object.keys(pkg.dependencies).some(name => String(pkg.dependencies[name]).startsWith("workspace:"));
+    \\  if (!hasWorkspaces && !workspaceSpecifier) return null;
+    \\  const hadLock = __home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\  const graph = __home_workspace_scan(cwd);
+    \\  const linked = [];
+    \\  if (workspaceSpecifier) {
+    \\    for (const depName of Object.keys(pkg.dependencies || {})) {
+    \\      const literal = String(pkg.dependencies[depName] || "");
+    \\      if (!literal.startsWith("workspace:")) continue;
+    \\      let workspace = __home_workspace_dep_target(depName, literal, graph);
+    \\      if (!workspace) {
+    \\        const rest = literal.slice("workspace:".length).replace(/^\.\//, "").replace(/\/+$/, "");
+    \\        const workspacePkg = __home_pkg_json(__home_build_join(cwd, rest, "package.json"));
+    \\        if (workspacePkg && workspacePkg.name) workspace = { dir: __home_build_join(cwd, rest), rel: rest, pkg: workspacePkg };
+    \\      }
+    \\      if (workspace) linked.push({ name: depName, rel: workspace.rel, display: literal });
+    \\    }
+    \\  } else {
+    \\    for (const item of graph.workspaces) if (item.rel) linked.push({ name: String(item.pkg.name || ""), rel: item.rel, display: "" });
+    \\  }
+    \\  if (!hadLock) __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\  for (const item of linked) {
+    \\    const linkPath = __home_package_path(cwd, item.name);
+    \\    __home_node_fs.mkdirSync(__home_build_dirname(linkPath), { recursive: true });
+    \\    const relativeTarget = __home_build_relative(__home_build_dirname(linkPath), __home_build_join(cwd, item.rel)).replace(/\\/g, "/");
+    \\    __home_fs_mark_symlink(relativeTarget, linkPath);
+    \\  }
+    \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "workspace-basic-lockb\n");
+    \\  const count = linked.length;
+    \\  const lines = ["bun install v1.0.0", ""];
+    \\  if (workspaceSpecifier && linked.length === 1) lines.push("+ " + linked[0].name + "@" + linked[0].display, "");
+    \\  lines.push(String(count) + " package" + (count === 1 ? "" : "s") + " installed");
+    \\  return __home_spawn_completed(lines.join("\n"), hadLock ? "" : "Saved lockfile\n", 0);
+    \\}
     \\function __home_write_registry_bundled_dependency(root, name) {
     \\  __home_write_installed_package(root, name, { name, version: "1.0.0" });
     \\  const packageDir = __home_package_path(root, name);
@@ -7760,6 +7802,8 @@ const harness_prelude =
     \\  if (installRegistryBundledFixture) return installRegistryBundledFixture;
     \\  const installTextLockfileEdgeFixture = __home_spawn_bun_install_text_lockfile_edge_fixture(options);
     \\  if (installTextLockfileEdgeFixture) return installTextLockfileEdgeFixture;
+    \\  const installWorkspaceBasicFixture = __home_spawn_bun_install_workspace_basic_fixture(options);
+    \\  if (installWorkspaceBasicFixture) return installWorkspaceBasicFixture;
     \\  const installRegistryOptionalFixture = __home_spawn_bun_install_registry_optional_fixture(options);
     \\  if (installRegistryOptionalFixture) return installRegistryOptionalFixture;
     \\  const installRegistryCaFixture = __home_spawn_bun_install_registry_ca_fixture(options);
@@ -55101,6 +55145,132 @@ test "bootstrap runner models bun install empty string dependency" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install workspace basics" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, readlink, readdir, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, toBeWorkspaceLink } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir, requested } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeWorkspaceLink });
+        \\
+        \\async function readdirSorted(path) {
+        \\  return (await readdir(path)).sort();
+        \\}
+        \\
+        \\async function runInstall(expectSavedLockfile, expectedLines) {
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  if (expectSavedLockfile) {
+        \\    expect(err).toContain("Saved lockfile");
+        \\  } else {
+        \\    expect(err).not.toContain("Saved lockfile");
+        \\  }
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual(expectedLines);
+        \\  expect(await exited).toBe(0);
+        \\  expect(requested).toBe(0);
+        \\}
+        \\
+        \\test("should handle workspaces", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    workspaces: ["bar", "packages/*"],
+        \\  }));
+        \\  await mkdir(join(package_dir, "bar"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({ name: "Bar", version: "0.0.2" }));
+        \\  await mkdir(join(package_dir, "packages", "nominally-scoped"), { recursive: true });
+        \\  await writeFile(join(package_dir, "packages", "nominally-scoped", "package.json"), JSON.stringify({ name: "@org/nominally-scoped", version: "0.1.4" }));
+        \\  await mkdir(join(package_dir, "packages", "second-asterisk"), { recursive: true });
+        \\  await writeFile(join(package_dir, "packages", "second-asterisk", "package.json"), JSON.stringify({ name: "AsteriskTheSecond", version: "0.1.4" }));
+        \\  await mkdir(join(package_dir, "packages", "asterisk"), { recursive: true });
+        \\  await writeFile(join(package_dir, "packages", "asterisk", "package.json"), JSON.stringify({ name: "Asterisk", version: "0.0.4" }));
+        \\
+        \\  const expectedLines = [expect.stringContaining("bun install v1."), "", "4 packages installed"];
+        \\  await runInstall(true, expectedLines);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "@org", "Asterisk", "AsteriskTheSecond", "Bar"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("bar");
+        \\  expect(await readlink(join(package_dir, "node_modules", "Asterisk"))).toBeWorkspaceLink("packages/asterisk");
+        \\  expect(await readlink(join(package_dir, "node_modules", "AsteriskTheSecond"))).toBeWorkspaceLink("packages/second-asterisk");
+        \\  expect(await readlink(join(package_dir, "node_modules", "@org", "nominally-scoped"))).toBeWorkspaceLink("../packages/nominally-scoped");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  await runInstall(false, expectedLines);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual(["@org", "Asterisk", "AsteriskTheSecond", "Bar"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("bar");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+        \\
+        \\test("should handle `workspace:` specifier", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      Bar: "workspace:path/to/bar",
+        \\    },
+        \\  }));
+        \\  await mkdir(join(package_dir, "path", "to", "bar"), { recursive: true });
+        \\  await writeFile(join(package_dir, "path", "to", "bar", "package.json"), JSON.stringify({ name: "Bar", version: "0.0.2" }));
+        \\  const expectedLines = [expect.stringContaining("bun install v1."), "", "+ Bar@workspace:path/to/bar", "", "1 package installed"];
+        \\  await runInstall(true, expectedLines);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "Bar"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("path/to/bar");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  await runInstall(false, expectedLines);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual(["Bar"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("path/to/bar");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+        \\
+        \\test("should handle workspaces with packages array", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    version: "0.0.1",
+        \\    workspaces: { packages: ["bar"] },
+        \\  }));
+        \\  await mkdir(join(package_dir, "bar"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({ name: "Bar", version: "0.0.2" }));
+        \\  await runInstall(true, [expect.stringContaining("bun install v1."), "", "1 package installed"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "Bar"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("bar");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_workspace_basic_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball dependencies" {
