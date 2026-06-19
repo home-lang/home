@@ -3109,6 +3109,14 @@ const harness_prelude =
     \\      return completed("basic-1", "1.0.0", "basic-1", "1.0.0", saved);
     \\    }
     \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(deps, "one-range-dep") && deps["one-range-dep"] === "1.0.0" && deps["no-deps"] === "1.0.0") {
+    \\    const saved = !__home_build_file_exists(__home_build_join(cwd, "bun.lockb"));
+    \\    __home_write_installed_package(cwd, "no-deps", { name: "no-deps", version: "1.0.0" });
+    \\    __home_write_installed_package(cwd, "one-range-dep", { name: "one-range-dep", version: "1.0.0", dependencies: { "no-deps": "^1.0.0" } });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-basic-lockb-one-range-dep\n");
+    \\    const out = "bun install v1.0.0\n\n+ no-deps@1.0.0\n+ one-range-dep@1.0.0\n\n2 packages installed";
+    \\    return __home_spawn_completed(out, saved ? "Saved lockfile\n" : "", 0);
+    \\  }
     \\  return null;
     \\}
     \\function __home_next_snapshot_string_value() {
@@ -54339,6 +54347,38 @@ test "bootstrap runner models bun install registry basic installs" {
         \\    "+ basic-1@1.0.0",
         \\    "",
         \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\
+        \\  const rangeDir = tempDirWithFiles("registry-one-range-dep", {});
+        \\  await writeFile(join(rangeDir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "1.0.0",
+        \\    dependencies: { "one-range-dep": "1.0.0", "no-deps": "1.0.0" },
+        \\  }));
+        \\  ({ stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install"], cwd: rangeDir, stdout: "pipe", stderr: "pipe", env }));
+        \\  expect(await stderr.text()).toContain("Saved lockfile");
+        \\  expect((await stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ no-deps@1.0.0",
+        \\    "+ one-range-dep@1.0.0",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\  expect(await file(join(rangeDir, "node_modules", "no-deps", "package.json")).json()).toEqual({ name: "no-deps", version: "1.0.0" });
+        \\  expect(await exited).toBe(0);
+        \\
+        \\  await rm(join(rangeDir, "node_modules"), { recursive: true, force: true });
+        \\  ({ stdout, stderr, exited } = spawn({ cmd: [bunExe(), "install"], cwd: rangeDir, stdout: "pipe", stderr: "pipe", env }));
+        \\  expect(await stderr.text()).not.toContain("Saved lockfile");
+        \\  expect((await stdout.text()).replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ no-deps@1.0.0",
+        \\    "+ one-range-dep@1.0.0",
+        \\    "",
+        \\    "2 packages installed",
         \\  ]);
         \\  expect(await exited).toBe(0);
         \\});
