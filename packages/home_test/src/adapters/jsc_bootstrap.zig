@@ -1213,14 +1213,12 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         output: []const u8,
     };
     const fixtures = [_]Fixture{
-        .{ .source = "1 && 2", .output = "2" },
         .{ .source = "1 || 2", .output = "1" },
         .{ .source = "0 && 1", .output = "0" },
         .{ .source = "0 || 1", .output = "1" },
         .{ .source = "null ?? 1", .output = "1" },
         .{ .source = "undefined ?? 1", .output = "1" },
         .{ .source = "0 ?? 1", .output = "0" },
-        .{ .source = "false ?? 1", .output = "!1" },
         .{ .source = "\"\" ?? 1", .output = "\"\"" },
         .{ .source = "typeof undefined", .output = "\"undefined\"" },
         .{ .source = "typeof null", .output = "\"object\"" },
@@ -1229,7 +1227,6 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "typeof 123", .output = "\"number\"" },
         .{ .source = "typeof 123n", .output = "\"bigint\"" },
         .{ .source = "typeof 'abc'", .output = "\"string\"" },
-        .{ .source = "typeof function() {}", .output = "\"function\"" },
         .{ .source = "typeof (() => {})", .output = "\"function\"" },
         .{ .source = "typeof {}", .output = "\"object\"" },
         .{ .source = "typeof {foo: 123}", .output = "\"object\"" },
@@ -1237,7 +1234,6 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "typeof [0]", .output = "\"object\"" },
         .{ .source = "typeof [null]", .output = "\"object\"" },
         .{ .source = "typeof ['boolean']", .output = "\"object\"" },
-        .{ .source = "typeof [] === \"object\"", .output = "!0" },
         .{ .source = "typeof {foo: 123} === typeof {bar: 123}", .output = "!0" },
         .{ .source = "typeof {foo: 123} !== typeof 123", .output = "!0" },
         .{ .source = "undefined === undefined", .output = "!0" },
@@ -1262,7 +1258,6 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "true != false", .output = "!0" },
         .{ .source = "1 === 1", .output = "!0" },
         .{ .source = "1 === 2", .output = "!1" },
-        .{ .source = "1 === '1'", .output = "1 === \"1\"" },
         .{ .source = "1 == 1", .output = "!0" },
         .{ .source = "1 == 2", .output = "!1" },
         .{ .source = "1 == '1'", .output = "1 == \"1\"" },
@@ -1277,7 +1272,6 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "1234n == 1234n", .output = "!0" },
         .{ .source = "0x00n == 0n", .output = "0x00n == 0n" },
         .{ .source = "1n == 2n", .output = "1n == 2n" },
-        .{ .source = "'a' === '\\x61'", .output = "!0" },
         .{ .source = "'a' === '\\x62'", .output = "!1" },
         .{ .source = "'a' === 'abc'", .output = "!1" },
         .{ .source = "'a' !== '\\x61'", .output = "!1" },
@@ -1308,7 +1302,6 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "'a' + ('b' + ('c' + 'd'))", .output = "\"abcd\"" },
         .{ .source = "'string' + `template`", .output = "\"stringtemplate\"" },
         .{ .source = "`template` + 'string'", .output = "\"templatestring\"" },
-        .{ .source = "123", .output = "123" },
         .{ .source = "123 .toString()", .output = "123 .toString()" },
         .{ .source = "-123", .output = "-123" },
         .{ .source = "(-123).toString()", .output = "(-123).toString()" },
@@ -1317,13 +1310,10 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         .{ .source = "-0 === 0", .output = "!0" },
         .{ .source = "NaN", .output = "NaN" },
         .{ .source = "NaN.toString()", .output = "NaN.toString()" },
-        .{ .source = "NaN === NaN", .output = "!1" },
-        .{ .source = "Infinity", .output = "1 / 0" },
         .{ .source = "Infinity.toString()", .output = "(1 / 0).toString()" },
         .{ .source = "(-Infinity).toString()", .output = "(-1 / 0).toString()" },
         .{ .source = "Infinity === Infinity", .output = "!0" },
         .{ .source = "Infinity === -Infinity", .output = "!1" },
-        .{ .source = "123n === 1_2_3n", .output = "!0" },
     };
     for (fixtures) |fixture| {
         if (std.mem.eql(u8, expression, fixture.source)) {
@@ -5342,16 +5332,27 @@ test "adapter folds constant expressions like Bun.Transpiler" {
         .{ .source = "export default (typeof [] === \"object\")", .output = "export default !0;\n" },
         .{ .source = "export default (1 === '1')", .output = "export default 1 === \"1\";\n" },
         .{ .source = "export default ('a' === '\\x61')", .output = "export default !0;\n" },
-        .{ .source = "export default (x + 'a' + 'bc')", .output = "export default x + \"abc\";\n" },
-        .{ .source = "export default ('a' + ('b' + ('c' + 'd')) + 'e')", .output = "export default \"abcde\";\n" },
-        .{ .source = "export default (`template` + 'string')", .output = "export default \"templatestring\";\n" },
         .{ .source = "export default (123)", .output = "export default 123;\n" },
         .{ .source = "export default (NaN === NaN)", .output = "export default !1;\n" },
         .{ .source = "export default (Infinity)", .output = "export default 1 / 0;\n" },
         .{ .source = "export default (123n === 1_2_3n)", .output = "export default !0;\n" },
     };
 
+    const minify_handle = TranspilerHandle{ .minify_syntax = true };
     for (cases) |case| {
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
+
+        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+
+    const rope_cases = [_]Case{
+        .{ .source = "export default (x + 'a' + 'bc')", .output = "export default x + \"abc\";\n" },
+        .{ .source = "export default ('a' + ('b' + ('c' + 'd')) + 'e')", .output = "export default \"abcde\";\n" },
+        .{ .source = "export default (`template` + 'string')", .output = "export default \"templatestring\";\n" },
+    };
+    for (rope_cases) |case| {
         const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
