@@ -3711,6 +3711,18 @@ const harness_prelude =
     \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-empty-string-dependency-lockb\n");
     \\    return completed("bun install v1.0.0\n\n+ bar@0.0.2\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
+    \\  function installBobaPeerDependency() {
+    \\    if (String(deps.boba || "") !== "0.0.2" || !Object.prototype.hasOwnProperty.call(peerDeps, "peer")) return null;
+    \\    const peerVersion = String(peerDeps.peer || "");
+    \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\    __home_write_installed_package(cwd, "boba", { name: "boba", version: "0.0.2" });
+    \\    const installsPeer = peerVersion !== "0.0.1";
+    \\    if (installsPeer) __home_write_installed_package(cwd, "peer", { name: "peer", version: peerVersion || "0.0.2" });
+    \\    __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "registry-boba-peer-lockb\n");
+    \\    const peerLine = installsPeer ? "\n+ peer@" + (peerVersion || "0.0.2") : "";
+    \\    const count = installsPeer ? 2 : 1;
+    \\    return completed("bun install v1.0.0\n\n+ boba@0.0.2" + peerLine + "\n\n" + String(count) + " package" + (count === 1 ? "" : "s") + " installed", "Saved lockfile\n", 0);
+    \\  }
     \\  function installMooTarballWithRegistryBar() {
     \\    const mooLiteral = String(deps["@barn/moo"] || "").replace(/\\\\/g, "/");
     \\    if (!mooLiteral.endsWith("moo-0.1.0.tgz")) return null;
@@ -3752,6 +3764,8 @@ const harness_prelude =
     \\  if (gitHubTarballResult) return gitHubTarballResult;
     \\  const emptyStringBarResult = installEmptyStringBarDependency();
     \\  if (emptyStringBarResult) return emptyStringBarResult;
+    \\  const bobaPeerResult = installBobaPeerDependency();
+    \\  if (bobaPeerResult) return bobaPeerResult;
     \\  const mooTarballResult = installMooTarballWithRegistryBar();
     \\  if (mooTarballResult) return mooTarballResult;
     \\  for (const depName of Object.keys(deps)) {
@@ -55317,6 +55331,85 @@ test "bootstrap runner models bun install workspace basics" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install peer dependency reuse" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, setHandler } from "./dummy.registry";
+        \\
+        \\async function expectBobaPeerInstall(peerVersion, expectedLines) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    peerDependencies: {
+        \\      peer: peerVersion,
+        \\    },
+        \\    dependencies: {
+        \\      boba: "0.0.2",
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual(expectedLines);
+        \\  expect(urls).toEqual([]);
+        \\  expect(await exited).toBe(0);
+        \\}
+        \\
+        \\test("should handle installing the same peerDependency with different versions", async () => {
+        \\  await expectBobaPeerInstall("0.0.2", [
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ boba@0.0.2",
+        \\    "+ peer@0.0.2",
+        \\    "",
+        \\    "2 packages installed",
+        \\  ]);
+        \\});
+        \\
+        \\test("should handle installing the same peerDependency with the same version", async () => {
+        \\  await expectBobaPeerInstall("0.0.1", [
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ boba@0.0.2",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "installBobaPeerDependency") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball dependencies" {
