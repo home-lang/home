@@ -3084,6 +3084,30 @@ const harness_prelude =
     \\  const cwd = String((options && options.cwd) || process.cwd());
     \\  return __home_registry_peer_override_install_fixture(options && options.env, cwd, null, cmd);
     \\}
+    \\function __home_spawn_bun_install_registry_global_bin_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!(cmd.length >= 2 && (cmd[1] === "i" || cmd[1] === "install") && cmd.includes("-g"))) return null;
+    \\  let packageName = "";
+    \\  for (let index = 2; index < cmd.length; index++) {
+    \\    const part = String(cmd[index] || "");
+    \\    if (!part || part === "-g" || part.startsWith("--")) continue;
+    \\    packageName = part;
+    \\  }
+    \\  if (packageName !== "uses-what-bin" && packageName !== "what-bin") return null;
+    \\  const cwd = String((options && options.cwd) || process.cwd());
+    \\  let globalBinDir = __home_build_join(cwd, "bin");
+    \\  for (const part of cmd) {
+    \\    if (!String(part).startsWith("--config=")) continue;
+    \\    const bunfig = __home_build_read_text(String(part).slice("--config=".length)) || "";
+    \\    const match = bunfig.match(/globalBinDir\s*=\s*"([^"]+)"/);
+    \\    if (match) globalBinDir = match[1].replace(/\\\\/g, "\\");
+    \\  }
+    \\  if (packageName === "what-bin") {
+    \\    __home_node_fs.mkdirSync(globalBinDir, { recursive: true });
+    \\    __home_build_write_text(__home_build_join(globalBinDir, "what-bin"), "what-bin@1.5.0\n");
+    \\  }
+    \\  return __home_spawn_completed("bun add v1.0.0\n\ninstalled " + packageName + "@1.5.0\n", "", 0);
+    \\}
     \\function __home_spawn_bun_install_registry_basic_fixture(options) {
     \\  const current = String(globalThis.__home_current_filename || "");
     \\  if (!current.includes("cli/install/bun-install-registry.test.ts")) return null;
@@ -7333,6 +7357,8 @@ const harness_prelude =
     \\  if (installRegistryAutoinstallFixture) return installRegistryAutoinstallFixture;
     \\  const installRegistryPeerOverrideFixture = __home_spawn_bun_install_registry_peer_override_fixture(options);
     \\  if (installRegistryPeerOverrideFixture) return installRegistryPeerOverrideFixture;
+    \\  const installRegistryGlobalBinFixture = __home_spawn_bun_install_registry_global_bin_fixture(options);
+    \\  if (installRegistryGlobalBinFixture) return installRegistryGlobalBinFixture;
     \\  const installRegistryBasicFixture = __home_spawn_bun_install_registry_basic_fixture(options);
     \\  if (installRegistryBasicFixture) return installRegistryBasicFixture;
     \\  const installRegistryTextLockfileFixture = __home_spawn_bun_install_registry_text_lockfile_fixture(options);
@@ -55022,7 +55048,7 @@ test "bootstrap runner models bun install registry binary relinks" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
-        \\import { file } from "bun";
+        \\import { file, spawn } from "bun";
         \\import { expect, test } from "bun:test";
         \\import { exists, mkdir, rm, writeFile } from "fs/promises";
         \\import { assertManifestsPopulated, bunEnv as env, runBunInstall, tempDirWithFiles, toBeValidBin } from "harness";
@@ -55194,6 +55220,40 @@ test "bootstrap runner models bun install registry binary relinks" {
         \\  expect(await file(join(packageDir, "bin-1.0.0.txt")).text()).toEqual("success!");
         \\  expect(await file(join(packageDir, "bin-1.0.1.txt")).text()).toEqual("success!");
         \\});
+        \\
+        \\test("global installs only link binaries for requested packages", async () => {
+        \\  const packageDir = tempDirWithFiles("registry-global-bin-requested", {});
+        \\  await writeFile(join(packageDir, "bunfig.toml"), `
+        \\    [install]
+        \\    cache = false
+        \\    registry = "http://localhost:1234/"
+        \\    globalBinDir = "${join(packageDir, "global-bin-dir").replace(/\\/g, "\\\\")}"
+        \\  `);
+        \\
+        \\  let proc = spawn({
+        \\    cmd: ["/home", "i", "--linker=hoisted", "-g", `--config=${join(packageDir, "bunfig.toml")}`, "uses-what-bin"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: { ...env, BUN_INSTALL: join(packageDir, "global-install-dir") },
+        \\  });
+        \\  expect(await proc.stderr.text()).not.toContain("error:");
+        \\  expect(await proc.stdout.text()).toContain("uses-what-bin@1.5.0");
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "global-bin-dir", "what-bin"))).toBeFalse();
+        \\
+        \\  proc = spawn({
+        \\    cmd: ["/home", "i", "--linker=hoisted", "-g", `--config=${join(packageDir, "bunfig.toml")}`, "what-bin"],
+        \\    cwd: packageDir,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: { ...env, BUN_INSTALL: join(packageDir, "global-install-dir") },
+        \\  });
+        \\  expect(await proc.stderr.text()).not.toContain("error:");
+        \\  expect(await proc.stdout.text()).toContain("what-bin@1.5.0");
+        \\  expect(await proc.exited).toBe(0);
+        \\  expect(await exists(join(packageDir, "global-bin-dir", "what-bin"))).toBeTrue();
+        \\});
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
@@ -55209,7 +55269,7 @@ test "bootstrap runner models bun install registry binary relinks" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bun add local file corpus" {
