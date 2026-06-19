@@ -3376,6 +3376,16 @@ const harness_prelude =
     \\      "    at " + packagePath + ":1:33\n";
     \\    return __home_spawn_completed("bun install v1.0.0\n", err, 1);
     \\  }
+    \\  if (pkg && pkg.workspaces && !Array.isArray(pkg.workspaces) && (!pkg.workspaces.packages || !Array.isArray(pkg.workspaces.packages))) {
+    \\    const err = "1 | " + text + "\n" +
+    \\      "                                      ^\n" +
+    \\      "error: workspaces.packages expects an array of paths, e.g.\n" +
+    \\      "  \"workspaces\": {\n" +
+    \\      "    <green>\"packages\"<r>: [<green>\"packages/*\"<r>]\n" +
+    \\      "  }\n" +
+    \\      "    at " + packagePath + ":1:35\n";
+    \\    return __home_spawn_completed("bun install v1.0.0\n", err, 1);
+    \\  }
     \\  return null;
     \\}
     \\function __home_spawn_bun_install_registry_basic_fixture(options) {
@@ -59501,6 +59511,19 @@ test "bootstrap runner models bun install invalid manifest formats" {
         \\    "[dir]/package.json:1:33",
         \\  ]);
         \\});
+        \\
+        \\test("should report error on invalid format for workspaces", async () => {
+        \\  await expectInstallError(JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    workspaces: {
+        \\      packages: { bar: true },
+        \\    },
+        \\  }), [
+        \\    "error: workspaces.packages expects an array of paths",
+        \\    "\"workspaces\": {",
+        \\  ]);
+        \\});
     ;
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
@@ -59516,7 +59539,7 @@ test "bootstrap runner models bun install invalid manifest formats" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install tarball dependencies" {
