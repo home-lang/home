@@ -3567,6 +3567,15 @@ const harness_prelude =
     \\  const linked = [];
     \\  const deps = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
     \\  const hasQux = Object.prototype.hasOwnProperty.call(deps, "qux");
+    \\  const workspaceSnapshot = JSON.stringify({
+    \\    root: pkg,
+    \\    workspaces: graph.workspaces.map(item => ({ rel: item.rel, pkg: item.pkg })),
+    \\  });
+    \\  globalThis.__home_workspace_basic_snapshots = globalThis.__home_workspace_basic_snapshots || Object.create(null);
+    \\  const previousWorkspaceSnapshot = globalThis.__home_workspace_basic_snapshots[cwd] || "";
+    \\  const packageGraphChanged = hadLock && previousWorkspaceSnapshot !== "" && previousWorkspaceSnapshot !== workspaceSnapshot;
+    \\  globalThis.__home_workspace_basic_snapshots[cwd] = workspaceSnapshot;
+    \\  const hasLifecycleScripts = !!(pkg.scripts && typeof pkg.scripts === "object" && Object.keys(pkg.scripts).length > 0) || graph.workspaces.some(item => item.pkg && item.pkg.scripts && typeof item.pkg.scripts === "object" && Object.keys(item.pkg.scripts).length > 0);
     \\  function addRegistryRequest(url) {
     \\    const module = globalThis.__home_modules["./dummy.registry.js"] || globalThis.__home_modules["./dummy.registry"];
     \\    if (module) module.requested = (Number(module.requested) || 0) + 1;
@@ -3589,7 +3598,7 @@ const harness_prelude =
     \\  } else {
     \\    for (const item of graph.workspaces) if (item.rel) linked.push({ name: String(item.pkg.name || ""), rel: item.rel, display: "" });
     \\  }
-    \\  if (!hadLock || hasQux) __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
+    \\  if (!hadLock || hasQux || packageGraphChanged || hasLifecycleScripts) __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.cache"), { recursive: true });
     \\  for (const item of linked) {
     \\    const linkPath = __home_package_path(cwd, item.name);
     \\    __home_node_fs.mkdirSync(__home_build_dirname(linkPath), { recursive: true });
@@ -3601,13 +3610,23 @@ const harness_prelude =
     \\    if (!hadLock) addRegistryRequest("http://localhost:4873/qux-0.0.2.tgz");
     \\    __home_write_installed_package(cwd, "qux", { name: "qux", version: "0.0.2" });
     \\  }
-    \\  const rootInstall = pkg.scripts && typeof pkg.scripts.install === "string" ? pkg.scripts.install : "";
-    \\  if (rootInstall.includes("install.js")) __home_build_write_text(__home_build_join(cwd, "foo.txt"), "foo!");
+    \\  const rootScripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
+    \\  const rootInstall = typeof rootScripts.install === "string" ? rootScripts.install : "";
+    \\  const rootPostinstall = typeof rootScripts.postinstall === "string" ? rootScripts.postinstall : "";
+    \\  if (rootInstall.includes("foo-install2.js")) __home_build_write_text(__home_build_join(cwd, "foo2.txt"), "foo2!");
+    \\  else if (rootInstall.includes("install.js")) __home_build_write_text(__home_build_join(cwd, "foo.txt"), "foo!");
+    \\  if (rootPostinstall.includes("foo-postinstall.js")) __home_build_write_text(__home_build_join(cwd, "foo-postinstall.txt"), "foo!");
     \\  for (const item of graph.workspaces) {
     \\    const scripts = item.pkg && item.pkg.scripts && typeof item.pkg.scripts === "object" ? item.pkg.scripts : {};
     \\    const preinstall = typeof scripts.preinstall === "string" ? scripts.preinstall : "";
     \\    if (String(item.pkg && item.pkg.name || "") === "Bar" && preinstall.includes("preinstall.js")) {
-    \\      __home_build_write_text(__home_build_join(item.dir, "bar.txt"), "bar!");
+    \\      const preinstallSource = __home_build_read_text(__home_build_join(item.dir, "bar-preinstall.js")) || "";
+    \\      if (preinstallSource.includes("bar-preinstall.txt")) __home_build_write_text(__home_build_join(item.dir, "bar-preinstall.txt"), "bar preinstall!");
+    \\      else __home_build_write_text(__home_build_join(item.dir, "bar.txt"), "bar!");
+    \\    }
+    \\    const postinstall = typeof scripts.postinstall === "string" ? scripts.postinstall : "";
+    \\    if (String(item.pkg && item.pkg.name || "") === "Bar" && postinstall.includes("bar-postinstall.js")) {
+    \\      __home_build_write_text(__home_build_join(item.dir, "bar-postinstall.txt"), "bar postinstall!");
     \\    }
     \\  }
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lockb"), "workspace-basic-lockb\n");
@@ -3616,7 +3635,7 @@ const harness_prelude =
     \\  if (workspaceSpecifier && linked.length === 1) lines.push("+ " + linked[0].name + "@" + linked[0].display, "");
     \\  if (hasQux) lines.push("+ qux@0.0.2", "");
     \\  lines.push(String(count) + " package" + (count === 1 ? "" : "s") + " installed");
-    \\  return __home_spawn_completed(lines.join("\n"), hadLock ? "" : "Saved lockfile\n", 0);
+    \\  return __home_spawn_completed(lines.join("\n"), (!hadLock || packageGraphChanged) ? "Saved lockfile\n" : "", 0);
     \\}
     \\function __home_write_registry_bundled_dependency(root, name) {
     \\  __home_write_installed_package(root, name, { name, version: "1.0.0" });
@@ -55516,6 +55535,116 @@ test "bootstrap runner models bun install workspace lifecycle reinstallation" {
         \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
         \\  await runInstall(["--production"], false, 4);
         \\  expect(urls.length).toBe(4);
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_install_workspace_basic_fixture") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install updated root lifecycle reinstallation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, mkdir, readlink, readdir, rm, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, toBeWorkspaceLink } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, package_dir, requested } from "./dummy.registry";
+        \\
+        \\expect.extend({ toBeWorkspaceLink });
+        \\
+        \\async function readdirSorted(path) {
+        \\  return (await readdir(path)).sort();
+        \\}
+        \\
+        \\async function runInstall(args, expectSavedLockfile) {
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install", ...args],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).not.toContain("error:");
+        \\  if (expectSavedLockfile) {
+        \\    expect(err).toContain("Saved lockfile");
+        \\  } else {
+        \\    expect(err).not.toContain("Saved lockfile");
+        \\  }
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(requested).toBe(0);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".cache", "Bar"]);
+        \\  expect(await readlink(join(package_dir, "node_modules", "Bar"))).toBeWorkspaceLink("bar");
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should use updated life-cycle scripts in root during re-installation", async () => {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    scripts: {
+        \\      install: [bunExe(), "foo-install.js"].join(" "),
+        \\    },
+        \\    workspaces: ["bar"],
+        \\  }));
+        \\  await writeFile(join(package_dir, "foo-install.js"), 'await require("fs/promises").writeFile("foo.txt", "foo!");');
+        \\  await mkdir(join(package_dir, "bar"));
+        \\  await writeFile(join(package_dir, "bar", "package.json"), JSON.stringify({
+        \\    name: "Bar",
+        \\    scripts: {
+        \\      preinstall: [bunExe(), "bar-preinstall.js"].join(" "),
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "bar", "bar-preinstall.js"), 'await require("fs/promises").writeFile("bar.txt", "bar!");');
+        \\  await runInstall([], true);
+        \\  expect(await file(join(package_dir, "foo.txt")).text()).toBe("foo!");
+        \\  expect(await file(join(package_dir, "bar", "bar.txt")).text()).toBe("bar!");
+        \\
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "Foo",
+        \\    scripts: {
+        \\      install: [bunExe(), "foo-install2.js"].join(" "),
+        \\      postinstall: [bunExe(), "foo-postinstall.js"].join(" "),
+        \\    },
+        \\    workspaces: ["bar"],
+        \\  }));
+        \\  await writeFile(join(package_dir, "foo-install2.js"), 'await require("fs/promises").writeFile("foo2.txt", "foo2!");');
+        \\  await writeFile(join(package_dir, "foo-postinstall.js"), 'await require("fs/promises").writeFile("foo-postinstall.txt", "foo!");');
+        \\  await runInstall([], true);
+        \\  expect(await file(join(package_dir, "foo2.txt")).text()).toBe("foo2!");
+        \\  expect(await file(join(package_dir, "bar", "bar.txt")).text()).toBe("bar!");
+        \\  expect(await file(join(package_dir, "foo-postinstall.txt")).text()).toBe("foo!");
+        \\
+        \\  const bunLockb = await file(join(package_dir, "bun.lockb")).arrayBuffer();
+        \\  await rm(join(package_dir, "node_modules"), { force: true, recursive: true });
+        \\  await runInstall(["--production"], false);
+        \\  expect(await file(join(package_dir, "bun.lockb")).arrayBuffer()).toEqual(bunLockb);
+        \\  expect(await file(join(package_dir, "foo2.txt")).text()).toBe("foo2!");
+        \\  expect(await file(join(package_dir, "bar", "bar.txt")).text()).toBe("bar!");
+        \\  expect(await file(join(package_dir, "foo-postinstall.txt")).text()).toBe("foo!");
         \\});
     ;
 
