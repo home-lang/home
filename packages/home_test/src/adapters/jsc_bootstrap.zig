@@ -85,6 +85,8 @@ const NativeBeforeParseResult = NativePluginABI.OnBeforeParseResult(NativeBefore
 const NativeBeforeParseFn = *const fn (*const NativeBeforeParseArgs, *NativeBeforeParseResult) callconv(.c) void;
 
 var home_eval_counter: usize = 0;
+var native_parser_log: home_rt.logger.Log = undefined;
+var native_parser_transpiler: ?home_rt.Transpiler = null;
 
 pub const Runtime = struct {
     engine: home_rt.jsc.engine.Engine,
@@ -932,12 +934,17 @@ fn transpileSourceWithBunParser(
     parser_options.warn_about_unbundled_modules = handle.platform != .bun;
     parser_options.features.emit_decorator_metadata = handle.emit_decorator_metadata;
     parser_options.features.standard_decorators = !runtime_loader.isTypeScript() or !(handle.experimental_decorators or handle.emit_decorator_metadata);
-    parser_options.features.trim_unused_imports = runtime_loader.isTypeScript() or handle.trim_unused_imports;
+    parser_options.features.trim_unused_imports = handle.trim_unused_imports;
     parser_options.features.no_macros = true;
     parser_options.features.top_level_await = true;
     parser_options.features.minify_syntax = handle.minify_syntax;
     parser_options.features.minify_identifiers = handle.minify_identifiers;
     parser_options.features.dead_code_elimination = handle.dead_code_elimination or handle.minify_syntax or handle.tree_shaking or handle.eliminate_exports.items.len > 0;
+    const macro_transpiler = try nativeParserTranspiler();
+    if (macro_transpiler.macro_context == null) {
+        macro_transpiler.macro_context = home_rt.ast.Macro.MacroContext.init(macro_transpiler);
+    }
+    parser_options.macro_context = &macro_transpiler.macro_context.?;
     if (handle.eliminate_exports.items.len > 0) {
         var replace_exports = @TypeOf(parser_options.features.replace_exports){};
         try replace_exports.ensureTotalCapacity(ast_allocator, handle.eliminate_exports.items.len);
@@ -1073,6 +1080,24 @@ fn runtimeTarget(platform: TranspilerPlatform) home_rt.options.Target {
         .bun => .bun,
         .node => .node,
     };
+}
+
+fn nativeParserTranspiler() !*home_rt.Transpiler {
+    if (native_parser_transpiler == null) {
+        native_parser_log = home_rt.logger.Log.init(std.heap.smp_allocator);
+        var transform_options = std.mem.zeroes(home_rt.schema.api.TransformOptions);
+        transform_options.disable_hmr = true;
+        transform_options.target = home_rt.schema.api.Target.browser;
+
+        var transpiler = home_rt.Transpiler.init(std.heap.smp_allocator, &native_parser_log, transform_options, null) catch
+            return error.NativeParserTranspilerInitFailed;
+        transpiler.options.no_macros = true;
+        transpiler.configureLinkerWithAutoJSX(false);
+        transpiler.options.env.behavior = .disable;
+        transpiler.configureDefines() catch return error.NativeParserTranspilerInitFailed;
+        native_parser_transpiler = transpiler;
+    }
+    return &native_parser_transpiler.?;
 }
 
 fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
@@ -5060,6 +5085,16 @@ test "adapter routes class static blocks through Bun parser path" {
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
     }
+}
+
+test "adapter routes value imports through Bun parser path" {
+    const source = "import {foo} from 'bar'; foo";
+    try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, source)) == null);
+
+    const default_handle = TranspilerHandle{};
+    const output = try transpileSource(std.testing.allocator, &default_handle, source, .ts);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings("import { foo } from \"bar\";\nfoo;\n", output);
 }
 
 test "adapter preserves Bun.Transpiler async conditional type fixture" {
