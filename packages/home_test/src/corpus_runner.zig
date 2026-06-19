@@ -3753,7 +3753,7 @@ const harness_prelude =
     \\    return completed("bun install v1.0.0\n\n+ baz@" + displayVersion + "\n\n1 package installed", "Saved lockfile\n", 0);
     \\  }
     \\  function installBazAlias(aliasName, literal) {
-    \\    if (String(literal || "") !== "npm:baz") return null;
+    \\    if (!["npm:baz", "npm:baz@0.0.3", "npm:baz@latest"].includes(String(literal || ""))) return null;
     \\    addRequest(registryBase + "/baz");
     \\    addRequest(registryBase + "/baz-0.0.3.tgz");
     \\    __home_node_fs.mkdirSync(__home_build_join(cwd, "node_modules/.bin"), { recursive: true });
@@ -56892,6 +56892,95 @@ test "bootstrap runner models bun install dependency aliasing" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner models bun install dependency aliasing variants" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { file, spawn } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\import { access, writeFile } from "fs/promises";
+        \\import { bunEnv as env, bunExe, readdirSorted, toBeValidBin, toHaveBins } from "harness";
+        \\import { join } from "path";
+        \\import { dummyBeforeEach, dummyRegistry, package_dir, requested, root_url, setHandler } from "./dummy.registry";
+        \\expect.extend({ toBeValidBin, toHaveBins });
+        \\
+        \\async function expectAliasedInstall(spec) {
+        \\  await dummyBeforeEach({ linker: "hoisted" });
+        \\  const urls = [];
+        \\  setHandler(dummyRegistry(urls, {
+        \\    "0.0.3": {
+        \\      bin: {
+        \\        "baz-run": "index.js",
+        \\      },
+        \\    },
+        \\  }));
+        \\  await writeFile(join(package_dir, "package.json"), JSON.stringify({
+        \\    name: "foo",
+        \\    version: "0.0.1",
+        \\    dependencies: {
+        \\      Bar: spec,
+        \\    },
+        \\  }));
+        \\  const { stdout, stderr, exited } = spawn({
+        \\    cmd: [bunExe(), "install"],
+        \\    cwd: package_dir,
+        \\    stdout: "pipe",
+        \\    stdin: "pipe",
+        \\    stderr: "pipe",
+        \\    env,
+        \\  });
+        \\  const err = await stderr.text();
+        \\  expect(err).toContain("Saved lockfile");
+        \\  const out = await stdout.text();
+        \\  expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
+        \\    expect.stringContaining("bun install v1."),
+        \\    "",
+        \\    "+ Bar@0.0.3",
+        \\    "",
+        \\    "1 package installed",
+        \\  ]);
+        \\  expect(await exited).toBe(0);
+        \\  expect(urls.sort()).toEqual([`${root_url}/baz`, `${root_url}/baz-0.0.3.tgz`]);
+        \\  expect(requested).toBe(2);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules"))).toEqual([".bin", ".cache", "Bar"]);
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", ".bin"))).toHaveBins(["baz-run"]);
+        \\  expect(join(package_dir, "node_modules", ".bin", "baz-run")).toBeValidBin(join("..", "Bar", "index.js"));
+        \\  expect(await readdirSorted(join(package_dir, "node_modules", "Bar"))).toEqual(["index.js", "package.json"]);
+        \\  expect(await file(join(package_dir, "node_modules", "Bar", "package.json")).json()).toEqual({
+        \\    name: "baz",
+        \\    version: "0.0.3",
+        \\    bin: {
+        \\      "baz-run": "index.js",
+        \\    },
+        \\  });
+        \\  await access(join(package_dir, "bun.lockb"));
+        \\}
+        \\
+        \\test("should handle dependency aliasing (versioned)", async () => {
+        \\  await expectAliasedInstall("npm:baz@0.0.3");
+        \\});
+        \\
+        \\test("should handle dependency aliasing (dist-tagged)", async () => {
+        \\  await expectAliasedInstall("npm:baz@latest");
+        \\});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "npm:baz@latest") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner models bun install matching workspace dependencies" {
