@@ -1111,7 +1111,6 @@ fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []
     if (try transpileImportPrinterFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUnarySimplificationFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileConstantFoldingFixture(allocator, source_text)) |fixture_output| return fixture_output;
-    if (try transpileRawTemplateLiteralFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileDirectiveFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileMacroFixture(allocator, source_text)) |fixture_output| return fixture_output;
     if (try transpileUsingFixture(allocator, source_text)) |fixture_output| return fixture_output;
@@ -1314,41 +1313,6 @@ fn transpileConstantFoldingFixture(allocator: std.mem.Allocator, source_text: []
         }
     }
     return null;
-}
-
-fn transpileRawTemplateLiteralFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
-    const expression = wrappedDefaultExpression(source_text) orelse return null;
-    const prefix = "String.raw`";
-    if (!std.mem.startsWith(u8, expression, prefix) or !std.mem.endsWith(u8, expression, "`")) return null;
-
-    const body = expression[prefix.len .. expression.len - 1];
-    const normalized = try normalizeTemplateCarriageReturns(allocator, body);
-    defer allocator.free(normalized);
-
-    return try std.fmt.allocPrint(allocator, "export default String.raw`{s}`;\n", .{normalized});
-}
-
-fn normalizeTemplateCarriageReturns(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try out.ensureTotalCapacity(allocator, body.len);
-
-    var index: usize = 0;
-    while (index < body.len) {
-        switch (body[index]) {
-            '\r' => {
-                try out.append(allocator, '\n');
-                index += 1;
-                if (index < body.len and body[index] == '\n') index += 1;
-            },
-            else => {
-                try out.append(allocator, body[index]);
-                index += 1;
-            },
-        }
-    }
-
-    return try out.toOwnedSlice(allocator);
 }
 
 fn transpileDirectiveFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
@@ -5298,8 +5262,11 @@ test "adapter normalizes raw template literal contents like Bun.Transpiler" {
         .{ .source = "export default (String.raw`\n\r`)", .output = "export default String.raw`\n\n`;\n" },
     };
 
+    const handle = TranspilerHandle{};
     for (cases) |case| {
-        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
+
+        const output = try transpileSource(std.testing.allocator, &handle, case.source, .ts);
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
     }
@@ -5313,7 +5280,9 @@ test "adapter normalizes raw template literal contents like Bun.Transpiler" {
         \\      </head>
         \\    `)
     ;
-    const multiline_output = (try transpileEarlyTranspilerFixture(std.testing.allocator, multiline_source)).?;
+    try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, multiline_source)) == null);
+
+    const multiline_output = try transpileSource(std.testing.allocator, &handle, multiline_source, .ts);
     defer std.testing.allocator.free(multiline_output);
     try std.testing.expectEqualStrings(
         \\export default String.raw`
