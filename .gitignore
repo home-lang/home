@@ -90,3 +90,5 @@ packages/runtime/test/bun-corpus/node_modules/
 /.zig-cache*
 /bun-test-scratch
 /.zig-global-cache
+js/web/html/form-data-fixture.txt
+app-with-resources
