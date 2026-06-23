@@ -422,8 +422,13 @@ pub fn AstMaybe(
                             // Inline import.meta.path (full path)
                             return p.newExpr(E.String.init(p.source.path.text), name_loc);
                         } else if (strings.eqlComptime(name, "url")) {
-                            // Inline import.meta.url as file:// URL
-                            const url = std.fmt.allocPrint(p.allocator, "file://{s}", .{p.source.path.text}) catch unreachable;
+                            // Inline import.meta.url as a file:// URL via the real
+                            // file-URL builder (percent-encoding + Windows path
+                            // handling) — faithful to Bun, not a naive
+                            // "file://" ++ path concatenation.
+                            const bunstr = bun.String.fromBytes(p.source.path.text);
+                            defer bunstr.deref();
+                            const url = std.fmt.allocPrint(p.allocator, "{f}", .{jsc.URL.fileURLFromString(bunstr)}) catch unreachable;
                             return p.newExpr(E.String.init(url), name_loc);
                         }
                     }
@@ -691,6 +696,7 @@ pub fn AstMaybe(
 const string = []const u8;
 
 const bun = @import("bun");
+const jsc = bun.jsc;
 const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const assert = bun.assert;
