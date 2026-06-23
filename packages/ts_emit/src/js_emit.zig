@@ -1819,7 +1819,10 @@ pub const Printer = struct {
                     // else `=> { … }` parses as a block, not a returned object.
                     const needs_parens = self.hir.kindOf(f.body) == .object_literal;
                     if (needs_parens) try self.write("(");
-                    try self.printExpression(f.body);
+                    // Concise body is an AssignmentExpression — print at
+                    // `.comma` so a top-level sequence wraps (`() => (a, b)`),
+                    // otherwise `() => a, b` parses as `(() => a), b`.
+                    try self.printExpr(f.body, .comma);
                     if (needs_parens) try self.write(")");
                 }
             }
@@ -12689,6 +12692,14 @@ test "emit: arrow block body" {
     const out = try emit("let f = (x) => { return x; };");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "(x) => {") != null);
+}
+
+test "emit: arrow concise body wraps a comma sequence" {
+    // `() => a, b` parses as `(() => a), b`, so the sequence body must stay
+    // parenthesized — the concise body is printed at the `.comma` level.
+    const out = try emit("const f = () => (a, b);");
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("const f = () => (a, b);", out);
 }
 
 test "emit: async arrow" {
