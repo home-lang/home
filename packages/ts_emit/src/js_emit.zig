@@ -1065,10 +1065,11 @@ pub const Printer = struct {
         try self.write(kw);
         try self.write(" ");
         if (v.name != hir_mod.none_node_id) try self.printBindingName(v.name);
-        // Type annotation erases at runtime.
+        // Type annotation erases at runtime. The initializer is printed at
+        // `.comma` so a top-level sequence wraps (`x = (a, b)`).
         if (v.init != hir_mod.none_node_id) {
             try self.write(" = ");
-            try self.printExpression(v.init);
+            try self.printExpr(v.init, .comma);
         }
         try self.writeSemi();
     }
@@ -1105,7 +1106,7 @@ pub const Printer = struct {
         if (v.name != hir_mod.none_node_id) try self.printBindingName(v.name);
         if (include_init and v.init != hir_mod.none_node_id) {
             try self.write(" = ");
-            try self.printExpression(v.init);
+            try self.printExpr(v.init, .comma);
         }
     }
 
@@ -7407,7 +7408,18 @@ pub const Printer = struct {
 
     // ----- Expressions ----------------------------------------------------
 
+    /// Print `node` as an expression in a context that does not need
+    /// parentheses for any operator (statement position, after `=` /
+    /// `return`, etc.). Equivalent to the lowest precedence level.
     fn printExpression(self: *Printer, node: NodeId) anyerror!void {
+        try self.printExpr(node, .lowest);
+    }
+
+    /// Print `node` as an expression embedded in a surrounding context of
+    /// precedence `level`. Precedence-sensitive forms (binary / logical /
+    /// conditional / assignment / unary) consult `level` to decide whether
+    /// to wrap themselves in parentheses, mirroring Bun's `printExpr`.
+    fn printExpr(self: *Printer, node: NodeId, level: Level) anyerror!void {
         const kind = self.hir.kindOf(node);
         switch (kind) {
             .identifier => {
@@ -7447,24 +7459,28 @@ pub const Printer = struct {
             .literal_null => try self.write("null"),
             .literal_undefined => try self.write("undefined"),
             .literal_regex => try self.printLiteralRegex(node),
-            .binary_op => try self.printBinop(node),
-            .unary_op => try self.printUnary(node),
-            .logical_op => try self.printLogical(node),
-            .conditional => try self.printConditional(node),
-            .assignment => try self.printAssignment(node),
+            .binary_op => try self.printBinop(node, level),
+            .unary_op => try self.printUnary(node, level),
+            .logical_op => try self.printLogical(node, level),
+            .conditional => try self.printConditional(node, level),
+            .assignment => try self.printAssignment(node, level),
             .call_expr => try self.printCall(node),
             .new_expr => try self.printNew(node),
             // Spread element in a call-arg / new-arg position (array and
             // object literals handle their own spread). Native `...expr`.
             .spread => {
                 try self.write("...");
-                try self.printExpression(hir_mod.spreadOf(self.hir, node).expression);
+                // Spread takes an AssignmentExpression; print at `.comma`
+                // so only a top-level sequence wraps.
+                try self.printExpr(hir_mod.spreadOf(self.hir, node).expression, .comma);
             },
             .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
                 // Type assertions and `expr!` non-null assertions
-                // erase at runtime — print the inner expression only.
+                // erase at runtime — print the inner expression only,
+                // forwarding the surrounding precedence so the erased
+                // wrapper doesn't change parenthesization.
                 const a = hir_mod.asExpressionOf(self.hir, node);
-                try self.printExpression(a.expr);
+                try self.printExpr(a.expr, level);
             },
             .member_access => try self.printMember(node),
             .element_access => try self.printElement(node),
@@ -7498,7 +7514,11 @@ pub const Printer = struct {
                     }
                     try self.write("await ");
                 }
-                try self.printExpression(a.expr);
+                // `await` binds like a unary prefix operator, so its
+                // operand is printed one level below `.prefix` — a binary
+                // operand keeps its parens (`await (a + b)`), while a
+                // member/call does not (`await a.b`).
+                try self.printExpr(a.expr, Level.sub(.prefix, 1));
             },
             .yield_expr => {
                 const y = hir_mod.yieldExprOf(self.hir, node);
@@ -7854,28 +7874,55 @@ pub const Printer = struct {
         try self.write("/./");
     }
 
-    fn printBinop(self: *Printer, node: NodeId) !void {
+    fn printBinop(self: *Printer, node: NodeId, level: Level) !void {
         const p = hir_mod.binopOf(self.hir, node);
-        try self.write("(");
-        try self.printExpression(p.lhs);
-        try self.write(" ");
-        try self.write(binOpString(p.op));
-        try self.write(" ");
-        try self.printExpression(p.rhs);
-        try self.write(")");
+        const e_level = binOpLevel(p.op);
+        const wrap = level.gte(e_level);
+        if (wrap) try self.write("(");
+
+        // Left-associative ops let a same-precedence child sit on the left
+        // unparenthesized (left_level = e_level - 1) and force parens on
+        // the right (right_level = e_level). `**` is right-associative, so
+        // the sides flip. Comma is non-associative — both sides at e-1.
+        var left_level = e_level.sub(1);
+        var right_level = e_level.sub(1);
+        if (p.op == .pow) {
+            left_level = e_level;
+            // `**` cannot directly contain a unary expression on its left:
+            // `-2 ** 3` is a SyntaxError, so force `(-2) ** 3`. (Bun forces
+            // the left operand to `.call` for unary/await/signed-number
+            // left operands; Home models a signed number as a unary.)
+            if (self.hir.kindOf(p.lhs) == .unary_op) left_level = .call;
+        } else if (p.op != .comma) {
+            right_level = e_level;
+        }
+
+        try self.printExpr(p.lhs, left_level);
+        if (p.op == .comma) {
+            try self.write(", ");
+        } else {
+            try self.write(" ");
+            try self.write(binOpString(p.op));
+            try self.write(" ");
+        }
+        try self.printExpr(p.rhs, right_level);
+        if (wrap) try self.write(")");
     }
 
-    fn printUnary(self: *Printer, node: NodeId) !void {
+    fn printUnary(self: *Printer, node: NodeId, level: Level) !void {
         const p = hir_mod.unaryOf(self.hir, node);
+        const wrap = level.gte(.prefix);
+        if (wrap) try self.write("(");
         const op_str = unaryOpString(p.op);
         // `typeof`/`void`/`delete` need a space before the operand.
         const needs_space = (p.op == .typeof or p.op == .void_ or p.op == .delete);
         try self.write(op_str);
         if (needs_space) try self.write(" ");
-        try self.printExpression(p.operand);
+        try self.printExpr(p.operand, Level.sub(.prefix, 1));
+        if (wrap) try self.write(")");
     }
 
-    fn printLogical(self: *Printer, node: NodeId) !void {
+    fn printLogical(self: *Printer, node: NodeId, level: Level) !void {
         const p = hir_mod.logicalOf(self.hir, node);
         // Downlevel `a ?? b` to `(a !== null && a !== undefined ? a : b)`
         // when targeting below ES2020. The single-evaluation rule
@@ -7896,8 +7943,19 @@ pub const Printer = struct {
             try self.write(")");
             return;
         }
-        try self.write("(");
-        try self.printExpression(p.lhs);
+        const e_level = logicalLevel(p.op);
+        const wrap = level.gte(e_level);
+        if (wrap) try self.write("(");
+        // Logical ops are left-associative.
+        var left_level = e_level.sub(1);
+        var right_level = e_level;
+        // "??" cannot directly contain "||" or "&&" without parentheses,
+        // so force those operands to wrap (matching Bun's printBinary).
+        if (p.op == .nullish) {
+            if (self.logicalChildIsAndOr(p.lhs)) left_level = .prefix;
+            if (self.logicalChildIsAndOr(p.rhs)) right_level = .prefix;
+        }
+        try self.printExpr(p.lhs, left_level);
         try self.write(" ");
         try self.write(switch (p.op) {
             .@"and" => "&&",
@@ -7905,22 +7963,31 @@ pub const Printer = struct {
             .nullish => "??",
         });
         try self.write(" ");
-        try self.printExpression(p.rhs);
-        try self.write(")");
+        try self.printExpr(p.rhs, right_level);
+        if (wrap) try self.write(")");
     }
 
-    fn printConditional(self: *Printer, node: NodeId) !void {
+    /// True when `node` is a `&&` / `||` logical expression — the operands
+    /// that must be parenthesized when nested directly inside `??`.
+    fn logicalChildIsAndOr(self: *const Printer, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .logical_op) return false;
+        const op = hir_mod.logicalOf(self.hir, node).op;
+        return op == .@"and" or op == .@"or";
+    }
+
+    fn printConditional(self: *Printer, node: NodeId, level: Level) !void {
         const p = hir_mod.conditionalOf(self.hir, node);
-        try self.write("(");
-        try self.printExpression(p.cond);
+        const wrap = level.gte(.conditional);
+        if (wrap) try self.write("(");
+        try self.printExpr(p.cond, .conditional);
         try self.write(" ? ");
-        try self.printExpression(p.then_branch);
+        try self.printExpr(p.then_branch, .yield);
         try self.write(" : ");
-        try self.printExpression(p.else_branch);
-        try self.write(")");
+        try self.printExpr(p.else_branch, .yield);
+        if (wrap) try self.write(")");
     }
 
-    fn printAssignment(self: *Printer, node: NodeId) !void {
+    fn printAssignment(self: *Printer, node: NodeId, level: Level) !void {
         const p = hir_mod.assignmentOf(self.hir, node);
         // Logical assignment (`a ||= b`) below ES2021 downlevels to the
         // short-circuit form `(a || (a = b))` (re-evaluating the target,
@@ -7946,9 +8013,15 @@ pub const Printer = struct {
                 }
             }
         }
-        try self.printExpression(p.target);
+        // Assignment is right-associative at `.assign`: the target sits at
+        // `.assign` and the value one level below, so `a = b = c` nests
+        // without parens while a looser value (a sequence) wraps.
+        const wrap = level.gte(.assign);
+        if (wrap) try self.write("(");
+        try self.printExpr(p.target, .assign);
         try self.write(if (p.op != null) compoundOpString(p.op.?) else " = ");
-        try self.printExpression(p.value);
+        try self.printExpr(p.value, Level.sub(.assign, 1));
+        if (wrap) try self.write(")");
     }
 
     /// Escape cooked template text for emission inside a `` ` `` literal:
@@ -8074,21 +8147,24 @@ pub const Printer = struct {
                 try self.write("))");
                 return;
             }
-            try self.printExpression(p.callee);
+            try self.printExpr(p.callee, .postfix);
             try self.write("?.(");
             for (args, 0..) |a, i| {
                 if (i > 0) try self.write(", ");
-                try self.printExpression(a);
+                try self.printExpr(a, .comma);
             }
             try self.write(")");
             return;
         }
-        try self.printExpression(p.callee);
+        // The call target binds at `.postfix`, so a looser callee is
+        // parenthesized (`(a || b)()`, `(a, b)()`). Arguments are printed at
+        // `.comma` so only a top-level sequence argument wraps.
+        try self.printExpr(p.callee, .postfix);
         try self.write("(");
         const args = hir_mod.callArgs(self.hir, node);
         for (args, 0..) |a, i| {
             if (i > 0) try self.write(", ");
-            try self.printExpression(a);
+            try self.printExpr(a, .comma);
         }
         try self.write(")");
     }
@@ -8096,12 +8172,13 @@ pub const Printer = struct {
     fn printNew(self: *Printer, node: NodeId) !void {
         const p = hir_mod.callOf(self.hir, node);
         try self.write("new ");
-        try self.printExpression(p.callee);
+        // The constructor target binds at `.new`; arguments at `.comma`.
+        try self.printExpr(p.callee, .new);
         try self.write("(");
         const args = hir_mod.callArgs(self.hir, node);
         for (args, 0..) |a, i| {
             if (i > 0) try self.write(", ");
-            try self.printExpression(a);
+            try self.printExpr(a, .comma);
         }
         try self.write(")");
     }
@@ -8148,7 +8225,9 @@ pub const Printer = struct {
             try self.write(")");
             return;
         }
-        try self.printExpression(p.object);
+        // The member target binds at `.postfix`, so a looser object (binary,
+        // conditional, …) is parenthesized: `(a + b).c`, `(a ? b : c).d`.
+        try self.printExpr(p.object, .postfix);
         try self.write(if (p.optional) "?." else ".");
         try self.write(self.interner.get(p.name));
     }
@@ -8167,7 +8246,9 @@ pub const Printer = struct {
             try self.write("])");
             return;
         }
-        try self.printExpression(p.object);
+        // Element target binds at `.postfix` like member access; the index
+        // sits inside `[ ]` so it needs no precedence wrapping.
+        try self.printExpr(p.object, .postfix);
         try self.write(if (p.optional) "?.[" else "[");
         try self.printExpression(p.index);
         try self.write("]");
@@ -8199,9 +8280,9 @@ pub const Printer = struct {
             } else if (self.hir.kindOf(e) == .spread) {
                 const sp = hir_mod.spreadOf(self.hir, e);
                 try self.write("...");
-                try self.printExpression(sp.expression);
+                try self.printExpr(sp.expression, .comma);
             } else {
-                try self.printExpression(e);
+                try self.printExpr(e, .comma);
             }
         }
         try self.write("]");
@@ -8219,7 +8300,7 @@ pub const Printer = struct {
             // Object spread `{ ...rest }` (native at ES2018+).
             if (self.hir.kindOf(p) == .spread) {
                 try self.write("...");
-                try self.printExpression(hir_mod.spreadOf(self.hir, p).expression);
+                try self.printExpr(hir_mod.spreadOf(self.hir, p).expression, .comma);
                 continue;
             }
             if (self.hir.kindOf(p) != .object_property) {
@@ -8266,7 +8347,7 @@ pub const Printer = struct {
                     try self.printExpression(op.key);
                 }
                 try self.write(": ");
-                try self.printExpression(op.value);
+                try self.printExpr(op.value, .comma);
             }
         }
         try self.write(" }");
@@ -8406,6 +8487,77 @@ fn binOpString(op: hir_mod.BinOp) []const u8 {
     };
 }
 
+/// Operator-precedence level, mirroring Bun's `Op.Level`
+/// (`~/Code/bun/src/ast/op.zig`). Higher binds tighter. The printer
+/// threads the *surrounding* level into each expression and wraps it in
+/// parentheses only when the expression's own level is looser than the
+/// context requires — yielding Bun/tsc-style minimal parenthesization
+/// instead of the historical "always wrap every binop" baseline.
+const Level = enum(u8) {
+    lowest,
+    comma,
+    spread,
+    yield,
+    assign,
+    conditional,
+    nullish_coalescing,
+    logical_or,
+    logical_and,
+    bitwise_or,
+    bitwise_xor,
+    bitwise_and,
+    equals,
+    compare,
+    shift,
+    add,
+    multiply,
+    exponentiation,
+    prefix,
+    postfix,
+    new,
+    call,
+    member,
+
+    fn gte(self: Level, other: Level) bool {
+        return @intFromEnum(self) >= @intFromEnum(other);
+    }
+
+    /// `level - n`, saturating at `.lowest` so `.lowest.sub(1)` stays
+    /// `.lowest` rather than wrapping the unsigned tag.
+    fn sub(self: Level, n: u8) Level {
+        const v = @intFromEnum(self);
+        return @enumFromInt(if (v > n) v - n else 0);
+    }
+};
+
+/// Precedence level of a binary operator, mirroring Bun's `Op.Table`.
+fn binOpLevel(op: hir_mod.BinOp) Level {
+    return switch (op) {
+        .comma => .comma,
+        .nullish_coalesce => .nullish_coalescing,
+        .logical_or => .logical_or,
+        .logical_and => .logical_and,
+        .bit_or => .bitwise_or,
+        .bit_xor => .bitwise_xor,
+        .bit_and => .bitwise_and,
+        .eq, .neq, .eq_strict, .neq_strict => .equals,
+        .lt, .le, .gt, .ge, .in, .instanceof => .compare,
+        .shl, .shr, .shr_unsigned => .shift,
+        .add, .sub => .add,
+        .mul, .div, .mod => .multiply,
+        .pow => .exponentiation,
+    };
+}
+
+/// Precedence level of a logical operator (`logical_op` node).
+fn logicalLevel(op: hir_mod.LogicalOp) Level {
+    return switch (op) {
+        .nullish => .nullish_coalescing,
+        .@"or" => .logical_or,
+        .@"and" => .logical_and,
+    };
+}
+
 fn unaryOpString(op: hir_mod.UnaryOp) []const u8 {
     return switch (op) {
         .neg => "-",
@@ -8524,9 +8676,39 @@ test "emit: string literal" {
 test "emit: arithmetic with parens for precedence" {
     const out = try emit("1 + 2 * 3;");
     defer T.allocator.free(out);
-    // Always-parenthesized binop emit (Phase 4.1 baseline) yields the
-    // grouped form. Phase 4 follow-up: precedence-aware paren elision.
-    try T.expectEqualStrings("(1 + (2 * 3));", out);
+    // Precedence-aware paren elision (matches tsc / Bun): `*` binds tighter
+    // than `+`, so no parentheses are needed.
+    try T.expectEqualStrings("1 + 2 * 3;", out);
+}
+
+test "emit: precedence — only required parens are emitted" {
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        // Grouping that overrides precedence is preserved.
+        .{ .src = "(1 + 2) * 3;", .want = "(1 + 2) * 3;" },
+        // Left-associative `-` keeps the right side parenthesized only when
+        // the source grouped it.
+        .{ .src = "1 - 2 - 3;", .want = "1 - 2 - 3;" },
+        .{ .src = "1 - (2 - 3);", .want = "1 - (2 - 3);" },
+        // `**` is right-associative.
+        .{ .src = "2 ** 3 ** 4;", .want = "2 ** 3 ** 4;" },
+        .{ .src = "(2 ** 3) ** 4;", .want = "(2 ** 3) ** 4;" },
+        // `-2 ** 3` is a SyntaxError — the unary left operand must wrap.
+        .{ .src = "(-2) ** 3;", .want = "(-2) ** 3;" },
+        // `??` cannot be mixed with `||`/`&&` without parens.
+        .{ .src = "(a || b) ?? c;", .want = "(a || b) ?? c;" },
+        // A looser expression as a member target / call callee wraps.
+        .{ .src = "(a + b).c;", .want = "(a + b).c;" },
+        .{ .src = "(f || g)();", .want = "(f || g)();" },
+        // Unary operand wraps a comparison.
+        .{ .src = "!(a < b);", .want = "!(a < b);" },
+        // Right-associative assignment nests without parens.
+        .{ .src = "a = b = c;", .want = "a = b = c;" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
 }
 
 test "emit: identifier reference" {
@@ -8539,7 +8721,7 @@ test "emit: function declaration" {
     const out = try emit("function add(a, b) { return a + b; }");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "function add(a, b)") != null);
-    try T.expect(std.mem.indexOf(u8, out, "return (a + b);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return a + b;") != null);
 }
 
 test "emit: if/else" {
@@ -10092,7 +10274,7 @@ test "emit: generator with multiple yield bindings sequences cases correctly" {
     try T.expect(std.mem.indexOf(u8, out, "case 1: var a = _a.sent();") != null);
     try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 2: var b = _a.sent();") != null);
-    try T.expect(std.mem.indexOf(u8, out, "return [2, (a + b)]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [2, a + b]") != null);
 }
 
 test "emit: generator with non-yielding if lowers as inline if" {
@@ -10409,9 +10591,9 @@ test "emit: generator with multi-yield for body lowers to N+3 cases" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
     try T.expect(std.mem.indexOf(u8, out, "var i = 0;") != null);
     // Header case 1: cond + first yield. exit is case 5.
-    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 5]; return [4, i];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(i < 3)) return [3, 5]; return [4, i];") != null);
     // Resumption case 2: sent + second yield.
-    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [4, (i + 1)]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [4, i + 1]") != null);
     // Resumption case 3: sent.
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
     // Continue case 4: update + loopback.
@@ -10489,7 +10671,7 @@ test "emit: generator with for-loop-yield lowers to 4-case loop with continue ca
     // Init emitted in case 0 (before fall-through to header).
     try T.expect(std.mem.indexOf(u8, out, "var i = 0;") != null);
     // Header case 1: cond + yield. exit now case 4.
-    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 4];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(i < 3)) return [3, 4];") != null);
     try T.expect(std.mem.indexOf(u8, out, "return [4, i]") != null);
     // Resume case 2: sent (falls through to continue case).
     try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
@@ -10669,7 +10851,7 @@ test "emit: generator with multi-stmt for body splits pre/post around yield" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
     try T.expect(std.mem.indexOf(u8, out, "var i = 0;") != null);
     // Header case 1: cond check + pre() + yield. exit now case 4.
-    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 4]; pre(); return [4, i];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(i < 3)) return [3, 4]; pre(); return [4, i];") != null);
     // Resume case 2: sent + post() (falls through to continue).
     try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post();") != null);
     // Continue case 3: update + loopback.
@@ -12382,13 +12564,13 @@ test "emit: compound assignment" {
 test "emit: logical operators" {
     const out = try emit("a && b;");
     defer T.allocator.free(out);
-    try T.expectEqualStrings("(a && b);", out);
+    try T.expectEqualStrings("a && b;", out);
 }
 
 test "emit: ternary" {
     const out = try emit("a ? 1 : 2;");
     defer T.allocator.free(out);
-    try T.expectEqualStrings("(a ? 1 : 2);", out);
+    try T.expectEqualStrings("a ? 1 : 2;", out);
 }
 
 test "emit: optional chaining" {
@@ -12444,7 +12626,7 @@ test "emit: declaration without initializer" {
 test "emit: arrow expression body" {
     const out = try emit("let f = x => x + 1;");
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "(x) => (x + 1)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "(x) => x + 1") != null);
 }
 
 test "emit: arrow block body" {

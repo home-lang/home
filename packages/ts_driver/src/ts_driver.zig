@@ -3414,7 +3414,7 @@ test "driver: arrow function" {
         c.deinit();
         T.allocator.destroy(c);
     }
-    try T.expect(std.mem.indexOf(u8, c.js, "let inc = (n) => (n + 1);") != null);
+    try T.expect(std.mem.indexOf(u8, c.js, "let inc = (n) => n + 1;") != null);
 }
 
 test "driver: interfaces erase, classes don't" {
