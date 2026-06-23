@@ -368,6 +368,25 @@ pub const Printer = struct {
         return self.out.toOwnedSlice(self.gpa);
     }
 
+    /// The most recently emitted byte, or null if nothing's been written.
+    fn lastOutByte(self: *const Printer) ?u8 {
+        if (self.out.items.len == 0) return null;
+        return self.out.items[self.out.items.len - 1];
+    }
+
+    /// Emit a prefix operator (`-`, `+`, `++`, `--`, `!`, `~`, …), inserting
+    /// a separating space when it would otherwise merge with the preceding
+    /// byte into a different token — `-(-a)` must print `- -a`, not `--a`
+    /// (a decrement), and likewise for `+ +a`, `- --a`, `+ ++a`.
+    fn writePrefixOp(self: *Printer, op: []const u8) !void {
+        if (op.len > 0 and (op[0] == '+' or op[0] == '-')) {
+            if (self.lastOutByte()) |lb| {
+                if (lb == op[0]) try self.write(" ");
+            }
+        }
+        try self.write(op);
+    }
+
     fn write(self: *Printer, s: []const u8) !void {
         try self.out.appendSlice(self.gpa, s);
         for (s) |c| {
@@ -7525,12 +7544,19 @@ pub const Printer = struct {
             },
             .yield_expr => {
                 const y = hir_mod.yieldExprOf(self.hir, node);
+                // `yield` is an AssignmentExpression production: it must be
+                // parenthesized when used where assign-or-tighter binds, e.g.
+                // `(yield a) + 1` (else `yield a + 1` yields `a + 1`). Mirrors
+                // Bun's `level.gte(.assign)`; the operand prints at `.yield`.
+                const wrap = level.gte(.assign);
+                if (wrap) try self.write("(");
                 try self.write("yield");
                 if (y.type_node != hir_mod.none_node_id) try self.write("*");
                 if (y.expr != hir_mod.none_node_id) {
                     try self.write(" ");
-                    try self.printExpression(y.expr);
+                    try self.printExpr(y.expr, .yield);
                 }
+                if (wrap) try self.write(")");
             },
             else => return error.UnsupportedNode,
         }
@@ -7919,7 +7945,7 @@ pub const Printer = struct {
         const op_str = unaryOpString(p.op);
         // `typeof`/`void`/`delete` need a space before the operand.
         const needs_space = (p.op == .typeof or p.op == .void_ or p.op == .delete);
-        try self.write(op_str);
+        try self.writePrefixOp(op_str);
         if (needs_space) try self.write(" ");
         try self.printExpr(p.operand, Level.sub(.prefix, 1));
         if (wrap) try self.write(")");
@@ -8023,7 +8049,7 @@ pub const Printer = struct {
             const wrap = level.gte(my_level);
             if (wrap) try self.write("(");
             if (u.is_prefix) {
-                try self.write(op_str);
+                try self.writePrefixOp(op_str);
                 try self.printExpr(p.target, Level.sub(.prefix, 1));
             } else {
                 try self.printExpr(p.target, Level.sub(.postfix, 1));
@@ -10734,6 +10760,35 @@ test "emit: postfix i++ round-trips as i++ (not i += 1)" {
     try T.expect(std.mem.indexOf(u8, out, "i++;") != null);
     try T.expect(std.mem.indexOf(u8, out, "i += 1") == null);
     try T.expect(std.mem.indexOf(u8, out, "i += ++") == null);
+}
+
+test "emit: nested unary operators don't merge into ++/--" {
+    // `-(-a)` must not collapse to `--a` (a decrement); a separating space
+    // is required. `-(+a)` is fine without one.
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        .{ .src = "const x = - -a;", .want = "const x = - -a;" },
+        .{ .src = "const x = + +a;", .want = "const x = + +a;" },
+        .{ .src = "const x = - +a;", .want = "const x = -+a;" },
+        .{ .src = "const x = -(--a);", .want = "const x = - --a;" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
+}
+
+test "emit: yield is parenthesized by surrounding precedence" {
+    // `(yield a) + 1` must keep its parens (else `yield a + 1` yields a+1);
+    // a bare `yield a + 1` statement and `const x = yield a` do not.
+    const wrapped = try emit("function* g() { return (yield a) + 1; }");
+    defer T.allocator.free(wrapped);
+    try T.expect(std.mem.indexOf(u8, wrapped, "return (yield a) + 1;") != null);
+
+    const bare = try emit("function* g() { yield a + 1; }");
+    defer T.allocator.free(bare);
+    try T.expect(std.mem.indexOf(u8, bare, "yield a + 1;") != null);
+    try T.expect(std.mem.indexOf(u8, bare, "(yield") == null);
 }
 
 test "emit: increment/decrement preserve update semantics" {
