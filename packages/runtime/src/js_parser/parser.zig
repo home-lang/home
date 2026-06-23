@@ -127,7 +127,7 @@ const MacroRefData = struct {
     name: ?string = null,
 };
 
-const MacroRefs = std.AutoHashMap(Ref, MacroRefData);
+const MacroRefs = bun.AutoArrayHashMap(Ref, MacroRefData);
 
 pub const Substitution = union(enum) {
     success: Expr,
@@ -918,13 +918,13 @@ pub const ImportItemForNamespaceMap = bun.StringArrayHashMap(LocRef);
 pub const MacroState = struct {
     refs: MacroRefs,
     prepend_stmts: *ListManaged(Stmt) = undefined,
-    imports: std.AutoHashMap(i32, Ref),
+    imports: bun.AutoArrayHashMap(i32, Ref),
 
     pub fn init(allocator: Allocator) MacroState {
         return MacroState{
             .refs = MacroRefs.init(allocator),
             .prepend_stmts = undefined,
-            .imports = std.AutoHashMap(i32, Ref).init(allocator),
+            .imports = bun.AutoArrayHashMap(i32, Ref).init(allocator),
         };
     }
 };
