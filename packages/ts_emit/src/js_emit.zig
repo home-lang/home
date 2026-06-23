@@ -1295,6 +1295,18 @@ pub const Printer = struct {
             .continue_stmt => try self.printBreakOrContinue(node, "continue"),
             .throw_stmt => try self.printThrow(node),
             .var_decl, .let_decl, .const_decl => try self.printVarDecl(node),
+            // Declaration forms carry no statement terminator (a `;` after
+            // `function f(){}` / `class C{}` is a spurious empty statement
+            // that neither tsc nor Bun emit). This path is reached for
+            // `export default function …` / `export default class …`,
+            // including the anonymous `function (){}` / `class {}` forms,
+            // which the grammar still treats as declarations. An
+            // `arrow_fn` is an expression and keeps its `;`, so it stays
+            // in the `else` branch below.
+            .fn_decl, .fn_expr => try self.printFnDecl(node),
+            .class_decl, .class_expr => try self.printClassDecl(node),
+            .enum_decl => try self.printEnum(node),
+            .namespace_decl => try self.printNamespace(node),
             else => {
                 try self.printExpression(node);
                 try self.writeSemi();
@@ -12389,6 +12401,24 @@ test "emit: export default function" {
     const out = try emit("export default function f() {}");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "export default function f") != null);
+}
+
+test "emit: export default declaration carries no trailing semicolon" {
+    // A function/class declaration is not an expression statement, so no
+    // `;` follows it — neither tsc nor Bun emit one. (`export default
+    // function f() {};` would be a spurious empty statement.)
+    const fn_out = try emit("export default function f() {}");
+    defer T.allocator.free(fn_out);
+    try T.expect(std.mem.indexOf(u8, fn_out, "{};") == null);
+
+    const cls_out = try emit("export default class C {}");
+    defer T.allocator.free(cls_out);
+    try T.expect(std.mem.indexOf(u8, cls_out, "{};") == null);
+
+    // An arrow / expression default export *is* an expression and keeps `;`.
+    const arrow_out = try emit("export default () => 1;");
+    defer T.allocator.free(arrow_out);
+    try T.expect(std.mem.indexOf(u8, arrow_out, "=> 1;") != null);
 }
 
 test "emit: let / const / var distinct" {
