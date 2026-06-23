@@ -768,7 +768,18 @@ pub fn build(b: *std.Build) void {
     home_test_pkg.addImport("build_options", build_options_module);
     home_rt_pkg.link_libc = true;
     if (target.result.os.tag == .macos) {
-        home_rt_pkg.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+        const hb_io = std.Io.Threaded.global_single_threaded.io();
+        if (std.Io.Dir.cwd().access(hb_io, "/opt/homebrew/lib", .{})) |_| {
+            home_rt_pkg.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+        } else |_| {}
+    }
+    // Also search `$HOME/.local/{lib,include}` for the native deps
+    // (z / brotli / zstd / uv). Machines without Homebrew can install
+    // them there (build from source → `--prefix=$HOME/.local`); a
+    // missing path is harmless to the linker. Keeps the build portable.
+    if (b.graph.environ_map.get("HOME")) |home_dir| {
+        home_rt_pkg.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ home_dir, ".local", "lib" }) });
+        home_rt_pkg.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ home_dir, ".local", "include" }) });
     }
     home_rt_pkg.linkSystemLibrary("z", .{});
     home_rt_pkg.linkSystemLibrary("brotlidec", .{});
