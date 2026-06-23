@@ -8322,6 +8322,14 @@ pub const Printer = struct {
         }
         // The member target binds at `.postfix`, so a looser object (binary,
         // conditional, …) is parenthesized: `(a + b).c`, `(a ? b : c).d`.
+        //
+        // KNOWN LIMITATION: `(a?.b).c` is emitted as `a?.b.c`. These differ
+        // when `a` is nullish (`(a?.b).c` throws; `a?.b.c` short-circuits to
+        // undefined), but the HIR collapses both to the same shape — it has
+        // no optional-chain-boundary marker (Bun's `optional_chain`
+        // start/continue + `has_non_optional_chain_parent`). Fixing it needs
+        // that marker threaded through the parser's postfix loop and the
+        // member/element/call payloads; deferred as a rare case.
         try self.printExpr(p.object, .postfix);
         try self.write(if (p.optional) "?." else ".");
         try self.write(self.interner.get(p.name));
