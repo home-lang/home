@@ -7987,8 +7987,48 @@ pub const Printer = struct {
         if (wrap) try self.write(")");
     }
 
+    /// The parser lowers `++`/`--` to a compound assignment `target += 1` /
+    /// `target -= 1` whose synthesized `1` literal carries the 2-char
+    /// operator-token span (a real `1` is 1 char). This mirrors the
+    /// checker's `assignmentIsSynthesizedUpdate` so the printer can rebuild
+    /// the original update expression — lowering to `+= 1` would be wrong for
+    /// a *postfix* `x++` in value position (it yields the new value, not the
+    /// old). Returns `{ is_inc, is_prefix }` when `node` is such an update.
+    fn synthUpdateOf(self: *const Printer, node: NodeId, p: hir_mod.AssignmentPayload) ?struct { is_inc: bool, is_prefix: bool } {
+        const op = p.op orelse return null;
+        if (op != .add and op != .sub) return null;
+        if (self.hir.kindOf(p.value) != .literal_number) return null;
+        if (hir_mod.literalNumberOf(self.hir, p.value) != 1.0) return null;
+        const value_span = self.hir.spanOf(p.value);
+        if (value_span.end - value_span.start != 2) return null;
+        const target_span = self.hir.spanOf(p.target);
+        const node_span = self.hir.spanOf(node);
+        const is_prefix_shape = value_span.start == node_span.start and
+            value_span.end <= target_span.start;
+        const is_postfix_shape = value_span.end == node_span.end and
+            value_span.start >= target_span.end;
+        if (!is_prefix_shape and !is_postfix_shape) return null;
+        return .{ .is_inc = (op == .add), .is_prefix = is_prefix_shape };
+    }
+
     fn printAssignment(self: *Printer, node: NodeId, level: Level) !void {
         const p = hir_mod.assignmentOf(self.hir, node);
+        // Reconstruct `++`/`--` lowered to `+= 1` / `-= 1` by the parser.
+        if (self.synthUpdateOf(node, p)) |u| {
+            const op_str = if (u.is_inc) "++" else "--";
+            const my_level: Level = if (u.is_prefix) .prefix else .postfix;
+            const wrap = level.gte(my_level);
+            if (wrap) try self.write("(");
+            if (u.is_prefix) {
+                try self.write(op_str);
+                try self.printExpr(p.target, Level.sub(.prefix, 1));
+            } else {
+                try self.printExpr(p.target, Level.sub(.postfix, 1));
+                try self.write(op_str);
+            }
+            if (wrap) try self.write(")");
+            return;
+        }
         // Logical assignment (`a ||= b`) below ES2021 downlevels to the
         // short-circuit form `(a || (a = b))` (re-evaluating the target,
         // matching the printer's other downlevels). At ES2021+ it's native.
@@ -9637,7 +9677,7 @@ test "emit: for-stmt with destructuring init lowers via temp + chained decl at e
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "for (var _arr = arr, a = _arr[0], b = _arr[1]; cond; i += 1)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "for (var _arr = arr, a = _arr[0], b = _arr[1]; cond; i++)") != null);
 }
 
 test "emit: for-of with object destructuring target lowers via _e temp at es5" {
@@ -10478,7 +10518,7 @@ test "emit: generator with continue targeting lowered for rewrites to [3, contin
     // Continue case is case 3 (between resume 2 and exit 4).
     try T.expect(std.mem.indexOf(u8, out, "if (other) return [3, 3];") != null);
     // Continue case body: update + loopback to header.
-    try T.expect(std.mem.indexOf(u8, out, "case 3: i += 1; return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: i++; return [3, 1];") != null);
 }
 
 test "emit: generator with continue targeting lowered do-while rewrites to [3, continue]" {
@@ -10597,7 +10637,7 @@ test "emit: generator with multi-yield for body lowers to N+3 cases" {
     // Resumption case 3: sent.
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
     // Continue case 4: update + loopback.
-    try T.expect(std.mem.indexOf(u8, out, "case 4: i += 1; return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: i++; return [3, 1];") != null);
     // Exit case 5.
     try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
 }
@@ -10676,22 +10716,38 @@ test "emit: generator with for-loop-yield lowers to 4-case loop with continue ca
     // Resume case 2: sent (falls through to continue case).
     try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
     // Continue case 3: update (i++ lowers to i += 1) + loopback.
-    try T.expect(std.mem.indexOf(u8, out, "case 3: i += 1; return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: i++; return [3, 1];") != null);
     // Exit case 4.
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
-test "emit: postfix i++ in expression statement emits i += 1" {
-    // Regression: the synthetic `1` literal from `i++`'s parser
-    // lowering carries the `++` token span. `printLiteralNumber`
-    // must validate the slice looks like a number before reusing
-    // source bytes — otherwise the emit reproduces `++` instead
-    // of `1` and the output becomes `i += ++`.
+test "emit: postfix i++ round-trips as i++ (not i += 1)" {
+    // The parser lowers `i++` to a synthetic `i += 1` whose `1` literal
+    // carries the 2-char `++` token span; the printer detects that shape
+    // and rebuilds the update. Lowering to `i += 1` would be wrong for a
+    // postfix update used as a value (`const x = i++`).
     const out = try emit("function f() { let i = 0; i++; }");
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "i += 1;") != null);
-    try T.expect(std.mem.indexOf(u8, out, "++ ++") == null);
+    try T.expect(std.mem.indexOf(u8, out, "i++;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "i += 1") == null);
     try T.expect(std.mem.indexOf(u8, out, "i += ++") == null);
+}
+
+test "emit: increment/decrement preserve update semantics" {
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        // Postfix in value position must NOT become `i += 1` (different value).
+        .{ .src = "const x = i++;", .want = "const x = i++;" },
+        .{ .src = "const y = i--;", .want = "const y = i--;" },
+        .{ .src = "const z = ++i;", .want = "const z = ++i;" },
+        .{ .src = "const w = --i;", .want = "const w = --i;" },
+        .{ .src = "arr[i++] = 1;", .want = "arr[i++] = 1;" },
+        .{ .src = "obj.k++;", .want = "obj.k++;" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
 }
 
 test "emit: generator with bare-for-yield (no init/cond/update) lowers as infinite loop" {
@@ -10732,7 +10788,7 @@ test "emit: generator with for-loop + yield-in-init peels yield-decl into pre-lo
     // Resume is case 3.
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
     // Continue is case 4 — update + jump back to header.
-    try T.expect(std.mem.indexOf(u8, out, "case 4: x += 1; return [3, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: x++; return [3, 2];") != null);
     // Exit is case 5.
     try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
 }
@@ -10752,7 +10808,7 @@ test "emit: generator with for-loop + yield-in-init + multi-yield body lowers" {
     try T.expect(std.mem.indexOf(u8, out, "case 2: if (!(cond)) return [3, 5]; pre(); return [4, x];") != null);
     // Resume runs post() and falls through to continue.
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); post();") != null);
-    try T.expect(std.mem.indexOf(u8, out, "case 4: x += 1; return [3, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: x++; return [3, 2];") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
 }
 
@@ -10791,7 +10847,7 @@ test "emit: generator with for-loop + yield-in-cond lowers to 5-case loop" {
     // body-resume (case 3) sent + falls through.
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
     // continue (case 4) update + loopback.
-    try T.expect(std.mem.indexOf(u8, out, "case 4: i += 1; return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: i++; return [3, 1];") != null);
     // exit (case 5).
     try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
 }
@@ -10855,7 +10911,7 @@ test "emit: generator with multi-stmt for body splits pre/post around yield" {
     // Resume case 2: sent + post() (falls through to continue).
     try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post();") != null);
     // Continue case 3: update + loopback.
-    try T.expect(std.mem.indexOf(u8, out, "case 3: i += 1; return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: i++; return [3, 1];") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
