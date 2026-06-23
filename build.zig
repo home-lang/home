@@ -375,7 +375,10 @@ pub fn build(b: *std.Build) void {
     const zig_dtsx_source: std.Build.LazyPath = if (std.Io.Dir.cwd().access(zig_dtsx_io, "pantry/zig-dtsx/src/zig_dtsx.zig", .{})) |_|
         b.path("pantry/zig-dtsx/src/zig_dtsx.zig")
     else |_|
-        .{ .cwd_relative = "/Users/chrisbreuer/Code/Home/lang/pantry/zig-dtsx/src/zig_dtsx.zig" };
+        // pantry/ is gitignored, so fresh checkouts / machines without
+        // `pantry add @stacksjs/zig-dtsx` fall back to the committed
+        // local stub (empty .d.ts output) so the build stays portable.
+        b.path("packages/ts_emit/vendor/zig_dtsx_stub.zig");
     const dtsx_pkg = b.createModule(.{
         .root_source_file = zig_dtsx_source,
         .target = target,
