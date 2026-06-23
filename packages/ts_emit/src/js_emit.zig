@@ -279,6 +279,14 @@ pub const Printer = struct {
     /// to `_super.prototype.x`. Outside this scope `super` is printed
     /// verbatim (preserved at ES2015+ where the keyword is legal).
     in_es5_super_lowering: bool,
+    /// Set while printing the *target* (constructor) spine of a `new`
+    /// expression. A call reached on that spine must be parenthesized so
+    /// `new` applies to the call result, not its callee — `new (f())()`
+    /// must not print as `new f()()` (which parses as `(new f())()`).
+    /// Mirrors Bun's `ExprFlag.forbid_call`. Only ever set inside
+    /// `printNew` (and restored), and read in `printCall`, so it has no
+    /// effect outside `new`-target printing.
+    forbid_call: bool = false,
     /// Function-nesting depth — bumped on entry to any function body
     /// (decl/expr/arrow/method/ctor) and restored on exit. Used by the
     /// `.await_expr` printer to detect *top-level* await: at depth 0
@@ -7443,6 +7451,13 @@ pub const Printer = struct {
     /// to wrap themselves in parentheses, mirroring Bun's `printExpr`.
     fn printExpr(self: *Printer, node: NodeId, level: Level) anyerror!void {
         const kind = self.hir.kindOf(node);
+        // `forbid_call` only propagates down the `new`-target call spine
+        // (member/element object, call callee). Any other expression form is
+        // a fresh context, so clear it — the leftmost atom of a spine clears
+        // it before any argument/index is printed.
+        if (kind != .member_access and kind != .element_access and kind != .call_expr) {
+            self.forbid_call = false;
+        }
         switch (kind) {
             .identifier => {
                 const id = hir_mod.identifierOf(self.hir, node);
@@ -8135,6 +8150,11 @@ pub const Printer = struct {
 
     fn printCall(self: *Printer, node: NodeId) !void {
         const p = hir_mod.callOf(self.hir, node);
+        // A call reached on a `new`-target spine must be parenthesized
+        // (`new (f())()`). Consume the flag so the callee/args (fresh
+        // contexts) don't inherit it.
+        const wrap_call = self.forbid_call;
+        self.forbid_call = false;
         // Tagged template `tag`…`` — re-render natively.
         if (p.is_tagged_template) {
             try self.printTaggedTemplate(node, p);
@@ -8228,6 +8248,7 @@ pub const Printer = struct {
         // The call target binds at `.postfix`, so a looser callee is
         // parenthesized (`(a || b)()`, `(a, b)()`). Arguments are printed at
         // `.comma` so only a top-level sequence argument wraps.
+        if (wrap_call) try self.write("(");
         try self.printExpr(p.callee, .postfix);
         try self.write("(");
         const args = hir_mod.callArgs(self.hir, node);
@@ -8236,13 +8257,18 @@ pub const Printer = struct {
             try self.printExpr(a, .comma);
         }
         try self.write(")");
+        if (wrap_call) try self.write(")");
     }
 
     fn printNew(self: *Printer, node: NodeId) !void {
         const p = hir_mod.callOf(self.hir, node);
         try self.write("new ");
         // The constructor target binds at `.new`; arguments at `.comma`.
+        // `forbid_call` parenthesizes any call reached on the target spine.
+        const prev_forbid = self.forbid_call;
+        self.forbid_call = true;
         try self.printExpr(p.callee, .new);
+        self.forbid_call = prev_forbid;
         try self.write("(");
         const args = hir_mod.callArgs(self.hir, node);
         for (args, 0..) |a, i| {
@@ -10770,6 +10796,24 @@ test "emit: nested unary operators don't merge into ++/--" {
         .{ .src = "const x = + +a;", .want = "const x = + +a;" },
         .{ .src = "const x = - +a;", .want = "const x = -+a;" },
         .{ .src = "const x = -(--a);", .want = "const x = - --a;" },
+    };
+    for (cases) |c| {
+        const out = try emit(c.src);
+        defer T.allocator.free(out);
+        try T.expectEqualStrings(c.want, out);
+    }
+}
+
+test "emit: call on a new-target spine is parenthesized" {
+    // `new (f())()` must not print as `new f()()` (which parses as
+    // `(new f())()`). The call on the constructor spine is wrapped, while
+    // arguments and ordinary calls are unaffected.
+    const cases = [_]struct { src: []const u8, want: []const u8 }{
+        .{ .src = "const a = new (getClass())();", .want = "const a = new (getClass())();" },
+        .{ .src = "const a = new (f().C)();", .want = "const a = new (f()).C();" },
+        .{ .src = "const a = new C();", .want = "const a = new C();" },
+        .{ .src = "const a = new C.x();", .want = "const a = new C.x();" },
+        .{ .src = "new Foo(bar(), baz());", .want = "new Foo(bar(), baz());" },
     };
     for (cases) |c| {
         const out = try emit(c.src);
