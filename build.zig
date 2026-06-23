@@ -70,8 +70,13 @@ fn dependOnTest(
 // Paths point at a local Bun release build (`bun scripts/build.ts --profile=release`).
 // Gated: if the artifacts are absent we fall back to the system framework so the
 // non-native build still works. Only exercised once the home_rt module compiles.
-const bun_obj_root = "/Users/chrisbreuer/Code/bun/build/release/obj";
-const bun_webkit_lib = "/Users/chrisbreuer/.bun/build-cache/webkit-5488984d20e0dbfe-arm64/lib";
+// Default locations for Bun's compiled C++ binding objects and the WebKit
+// static libs. These are machine-specific; override at build time with the
+// HOME_BUN_OBJ_ROOT / HOME_BUN_WEBKIT_LIB environment variables (see
+// linkBunNative). When neither the env var nor this path exists, the build
+// falls back to the system JavaScriptCore framework (no Bun bindings).
+const bun_obj_root_default = "/Users/chrisbreuer/Code/bun/build/release/obj";
+const bun_webkit_lib_default = "/Users/chrisbreuer/.bun/build-cache/webkit-5488984d20e0dbfe-arm64/lib";
 const link_bun_rust_archive = false;
 
 const native_vendor_roots = [_][]const u8{
@@ -118,6 +123,11 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     if (target.result.os.tag == .macos) {
         m.linkSystemLibrary("icucore", .{});
     }
+
+    // Resolve Bun's object dir + WebKit lib dir, env-overridable so the build
+    // is portable across machines (point these at a locally-built Bun).
+    const bun_obj_root = b.graph.environ_map.get("HOME_BUN_OBJ_ROOT") orelse bun_obj_root_default;
+    const bun_webkit_lib = b.graph.environ_map.get("HOME_BUN_WEBKIT_LIB") orelse bun_webkit_lib_default;
 
     // Fork std: filesystem moved to `std.Io.Dir` (io-parameterized).
     const io = std.Io.Threaded.global_single_threaded.io();
