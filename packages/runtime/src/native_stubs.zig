@@ -73,8 +73,6 @@ comptime {
         "Bun__WebSocketHTTPClient__connect",
         "Bun__WebSocketHTTPSClient__cancel",
         "Bun__WebSocketHTTPSClient__connect",
-        "Bun__WebSocket__freeSSLConfig",
-        "Bun__WebSocket__parseSSLConfig",
         "Bun__ensureSignalHandler",
         "Bun__eventLoop__incrementRefConcurrently",
         "Bun__onPosixSignal",
@@ -98,7 +96,6 @@ comptime {
         "ResolvePath__joinAbsStringBufCurrentPlatformBunString",
         "Resolver__nodeModulePathsForJS",
         "Resolver__nodeModulePathsJSValue",
-        "WebSocketProxyTunnel__setConnectedWebSocket",
     }) |name| {
         @export(&noop, .{ .name = name });
     }
