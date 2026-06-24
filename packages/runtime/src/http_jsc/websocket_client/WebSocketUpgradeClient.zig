@@ -1283,13 +1283,16 @@ fn buildConnectRequest(
     target_port: u16,
     proxy_authorization: ?[]const u8,
     proxy_headers: ?Headers,
-) std.mem.Allocator.Error![]u8 {
+) ![]u8 {
     const allocator = bun.default_allocator;
 
     // Calculate size for the CONNECT request
-    var buf = std.array_list.Managed(u8).init(allocator);
-    errdefer buf.deinit();
-    const writer = buf.writer();
+    // Zig-0.17: Managed ArrayList lost `.writer()`; render through an
+    // Allocating writer over an unmanaged list and sync back.
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf_aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &buf);
+    errdefer buf_aw.deinit();
+    const writer = &buf_aw.writer;
 
     // CONNECT host:port HTTP/1.1\r\n
     try writer.print("CONNECT {s}:{d} HTTP/1.1\r\n", .{ target_host, target_port });
@@ -1323,7 +1326,8 @@ fn buildConnectRequest(
     // End of headers
     try writer.writeAll("\r\n");
 
-    return buf.toOwnedSlice();
+    buf = buf_aw.toArrayList();
+    return buf.toOwnedSlice(allocator);
 }
 
 const BuildRequestResult = struct {
@@ -1344,7 +1348,7 @@ fn buildRequestBody(
     /// `perMessageDeflate: false`). When true, send the default extension
     /// offer `permessage-deflate; client_max_window_bits`.
     offer_permessage_deflate: bool,
-) std.mem.Allocator.Error!BuildRequestResult {
+) !BuildRequestResult {
     const allocator = bun.default_allocator;
 
     // Check for user overrides
@@ -1410,10 +1414,13 @@ fn buildRequestBody(
     const headers_ = static_headers[0 .. 1 + @as(usize, @intFromBool(protocol.len > 0))];
     const pico_headers = PicoHTTP.Headers{ .headers = headers_ };
 
-    // Build extra headers string, skipping the ones we handle
-    var extra_headers_buf = std.array_list.Managed(u8).init(allocator);
-    defer extra_headers_buf.deinit();
-    const writer = extra_headers_buf.writer();
+    // Build extra headers string, skipping the ones we handle.
+    // Zig-0.17: Managed ArrayList lost `.writer()`; write through an
+    // Allocating writer and sync back before reading `.items`.
+    var extra_headers_buf: std.ArrayListUnmanaged(u8) = .empty;
+    var extra_headers_aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &extra_headers_buf);
+    errdefer extra_headers_aw.deinit();
+    const writer = &extra_headers_aw.writer;
 
     // Add Authorization header from URL credentials if user didn't provide one
     if (!user_authorization) {
@@ -1435,6 +1442,9 @@ fn buildRequestBody(
         }
         try writer.print("{s}: {s}\r\n", .{ name_slice, value });
     }
+
+    extra_headers_buf = extra_headers_aw.toArrayList();
+    defer extra_headers_buf.deinit(allocator);
 
     const extensions_line: []const u8 = if (offer_permessage_deflate)
         "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"

@@ -18,31 +18,12 @@ pub const WebSocketHTTPSClient = upgrade_client.NewHTTPUpgradeClient(true);
 pub const WebSocketClient = websocket_client.NewWebSocketClient(false);
 pub const WebSocketClientTLS = websocket_client.NewWebSocketClient(true);
 
-/// Parked stubs — the JSC-coupled implementations live in
-/// `../http_jsc/websocket_client/WebSocketUpgradeClient.zig` and
-/// `../http_jsc/websocket_client.zig` upstream. The factories produce
-/// `*ActiveSocket` variants the HTTPContext dispatchers union over, so for
-/// now an `enum(u8) { tls, plain }` discriminant + opaque body keeps the
-/// `*WebSocketHTTPClient` field-type spelling stable downstream.
-const upgrade_client = struct {
-    pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
-        return opaque {
-            pub const is_ssl: bool = ssl;
-
-            pub fn exportAll() void {}
-        };
-    }
-};
-
-const websocket_client = struct {
-    pub fn NewWebSocketClient(comptime ssl: bool) type {
-        return opaque {
-            pub const is_ssl: bool = ssl;
-
-            pub fn exportAll() void {}
-        };
-    }
-};
+// Real JSC-coupled implementations (no longer parked): the upgrade client
+// (pre-101 handshake) and the frame client (post-101). Their `exportAll()`
+// emits the `Bun__WebSocket{,HTTP}Client*__*` C ABI the C++ WebSocket binding
+// calls; previously these were empty stubs, so every WS native call no-op'd.
+const upgrade_client = @import("../http_jsc/websocket_client/WebSocketUpgradeClient.zig");
+const websocket_client = @import("../http_jsc/websocket_client.zig");
 
 const std = @import("std");
 

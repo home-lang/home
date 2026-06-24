@@ -20,10 +20,6 @@ fn abortingPanic(_: [*]u8, _: usize) callconv(.c) noreturn {
 comptime {
     @export(&abortingPanic, .{ .name = "Bun__crashHandler" });
     @export(&noopInt, .{ .name = "Bun__doesMacOSVersionSupportSendRecvMsgX" });
-    @export(&noopSize, .{ .name = "Bun__WebSocketClient__memoryCost" });
-    @export(&noopSize, .{ .name = "Bun__WebSocketClientTLS__memoryCost" });
-    @export(&noopSize, .{ .name = "Bun__WebSocketHTTPClient__memoryCost" });
-    @export(&noopSize, .{ .name = "Bun__WebSocketHTTPSClient__memoryCost" });
     @export(&noopSize, .{ .name = "NetworkSink__memoryCost" });
 
     for ([_][]const u8{
@@ -56,23 +52,6 @@ comptime {
         "Bun__HTTPRequestContext__onResolveStream",
         "Bun__InspectorBunFrontendDevServerAgent__setEnabled",
         "Bun__Secrets__scheduleJob",
-        "Bun__WebSocketClientTLS__cancel",
-        "Bun__WebSocketClientTLS__close",
-        "Bun__WebSocketClientTLS__finalize",
-        "Bun__WebSocketClientTLS__init",
-        "Bun__WebSocketClientTLS__writeBinaryData",
-        "Bun__WebSocketClientTLS__writeString",
-        "Bun__WebSocketClient__cancel",
-        "Bun__WebSocketClient__close",
-        "Bun__WebSocketClient__finalize",
-        "Bun__WebSocketClient__init",
-        "Bun__WebSocketClient__initWithTunnel",
-        "Bun__WebSocketClient__writeBinaryData",
-        "Bun__WebSocketClient__writeString",
-        "Bun__WebSocketHTTPClient__cancel",
-        "Bun__WebSocketHTTPClient__connect",
-        "Bun__WebSocketHTTPSClient__cancel",
-        "Bun__WebSocketHTTPSClient__connect",
         "Bun__ensureSignalHandler",
         "Bun__eventLoop__incrementRefConcurrently",
         "Bun__onPosixSignal",

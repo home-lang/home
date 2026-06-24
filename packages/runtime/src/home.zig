@@ -94,6 +94,11 @@ comptime {
         _ = @import("sourcemap_jsc/CodeCoverage.zig");
         _ = @import("native_stubs.zig");
         _ = @import("runtime/socket/uws_dispatch.zig");
+        // Force webcore's `comptime { WebSocket*.exportAll(); }` so the real
+        // Bun__WebSocket{,HTTP}Client__* exports are emitted (they replace the
+        // former native_stubs no-ops). Without an explicit force the block is
+        // lazily skipped and the WS native API silently no-ops.
+        _ = @import("runtime/webcore.zig");
         _ = @import("jsc/js2native_workarounds.zig");
     }
 }
