@@ -214,7 +214,9 @@ comptime {
     _ = &@import("./jsc/bindings/GeneratedJS2Native.zig");
     _ = &gen; // reference bindings
     // Exports `us_dispatch_*` for loop.c — nothing in Zig calls them, but the
-    // C event loop link-depends on them.
+    // C event loop link-depends on them. Forced in home.zig alongside the
+    // other link-only modules (this `&uws.dispatch` ref alone does not emit
+    // the file's `export fn`s under this Zig).
     _ = &uws.dispatch;
 }
 

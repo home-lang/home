@@ -256,18 +256,6 @@ comptime {
         "lol_html_text_chunk_is_removed",
         "lol_html_text_chunk_remove",
         "lol_html_text_chunk_replace",
-        "us_dispatch_close",
-        "us_dispatch_connect_error",
-        "us_dispatch_connecting_error",
-        "us_dispatch_data",
-        "us_dispatch_end",
-        "us_dispatch_fd",
-        "us_dispatch_handshake",
-        "us_dispatch_long_timeout",
-        "us_dispatch_open",
-        "us_dispatch_ssl_raw_tap",
-        "us_dispatch_timeout",
-        "us_dispatch_writable",
     }) |name| {
         @export(&noop, .{ .name = name });
     }

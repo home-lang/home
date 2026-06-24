@@ -1,17 +1,3 @@
-// Copied from bun/src/uws_sys/vtable.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// Imports rewritten: upstream resolves `ConnectingSocket` / `us_socket_t` /
-// `VTable` via `bun.uws`. Home's uws_sys aggregator only exposes the QUIC
-// subtree today; `ConnectingSocket` is already ported as a sibling so we
-// import it directly. `us_socket_t` and `us_bun_verify_error_t` are
-// forward-declared as local opaques (same pattern as ConnectingSocket.zig
-// uses for `SocketGroup` and `Loop`). The local `VTable` lives in
-// `SocketGroup.zig` upstream; until that file lands here, we declare a
-// pointer-identical mirror locally — `make()` returns `*const VTable` and
-// callers only ever store/forward the pointer, so the opaque cohabits
-// with the future `SocketGroup.VTable` export.
-
 //! Comptime `us_socket_vtable_t` generator. Given a Zig handler type and the
 //! ext payload type, emits a single static-const `VTable` whose entries are
 //! `callconv(.c)` trampolines that recover the typed ext from the raw socket
@@ -118,96 +104,15 @@ pub fn Trampolines(comptime H: type) type {
             H.onConnectingError(cs, code);
             return cs;
         }
-        pub fn on_handshake(s: *us_socket_t, ok: c_int, err: us_bun_verify_error_t, _: ?*anyopaque) callconv(.c) void {
+        pub fn on_handshake(s: *us_socket_t, ok: c_int, err: uws.us_bun_verify_error_t, _: ?*anyopaque) callconv(.c) void {
             call(s, H.onHandshake, .{ ok != 0, err });
         }
     };
 }
 
-const ConnectingSocket = @import("./ConnectingSocket.zig").ConnectingSocket;
+const bun = @import("bun");
 
-/// Placeholder forward-declaration. Replaced when `uws_sys/us_socket_t.zig`
-/// ports (it pulls in the full SocketKind switch + jsc.EventLoopHandle).
-/// Trampolines only ever take/return `*us_socket_t` — the actual
-/// `ext`/`group`/`localAddress` methods are not used in this file, so the
-/// opaque is sufficient for compiling `vtable.make`. Once the full
-/// `us_socket_t.zig` lands, this placeholder collapses (same opaque ABI).
-pub const us_socket_t = opaque {
-    /// Trampolines call `s.ext(T)` to recover the typed payload. Mirrors the
-    /// future `us_socket_t.ext(comptime T: type) *T` accessor; until that
-    /// lands we forward to the upstream `us_socket_ext` extern so handler
-    /// trampolines can still typecheck and (with a live loop) execute.
-    pub fn ext(this: *us_socket_t, comptime T: type) *T {
-        return @ptrCast(@alignCast(c.us_socket_ext(0, this).?));
-    }
-};
-
-/// Placeholder forward-declaration. Replaced when the broader TLS surface
-/// lands (`us_bun_verify_error_t` lives alongside `us_bun_ssl_options` in
-/// upstream `libusockets.h`). Field-compatible with the C struct — handlers
-/// only read it as an opaque payload here.
-pub const us_bun_verify_error_t = extern struct {
-    error_no: c_int = 0,
-    code: [*:0]const u8 = "",
-    reason: [*:0]const u8 = "",
-};
-
-/// Layout-compatible mirror of `us_socket_vtable_t` in libusockets.h. Will
-/// be re-exported from `uws_sys/SocketGroup.zig` once that file ports;
-/// `make()` and `Trampolines(H)` reference it through the local alias so
-/// callers can swap to `SocketGroup.VTable` without source churn.
-pub const VTable = extern struct {
-    on_open: ?*const fn (*us_socket_t, c_int, [*c]u8, c_int) callconv(.c) ?*us_socket_t = null,
-    on_data: ?*const fn (*us_socket_t, [*c]u8, c_int) callconv(.c) ?*us_socket_t = null,
-    on_fd: ?*const fn (*us_socket_t, c_int) callconv(.c) ?*us_socket_t = null,
-    on_writable: ?*const fn (*us_socket_t) callconv(.c) ?*us_socket_t = null,
-    on_close: ?*const fn (*us_socket_t, c_int, ?*anyopaque) callconv(.c) ?*us_socket_t = null,
-    on_timeout: ?*const fn (*us_socket_t) callconv(.c) ?*us_socket_t = null,
-    on_long_timeout: ?*const fn (*us_socket_t) callconv(.c) ?*us_socket_t = null,
-    on_end: ?*const fn (*us_socket_t) callconv(.c) ?*us_socket_t = null,
-    on_connect_error: ?*const fn (*us_socket_t, c_int) callconv(.c) ?*us_socket_t = null,
-    on_connecting_error: ?*const fn (*ConnectingSocket, c_int) callconv(.c) ?*ConnectingSocket = null,
-    on_handshake: ?*const fn (*us_socket_t, c_int, us_bun_verify_error_t, ?*anyopaque) callconv(.c) void = null,
-};
-
-const c = struct {
-    extern fn us_socket_ext(ssl: c_int, s: *us_socket_t) ?*anyopaque;
-};
-
-test "vtable.make synthesises a const VTable from a handler type" {
-    const std = @import("std");
-
-    // Handler with a single hook — every other slot must be null, proving the
-    // `@hasDecl` filter works.
-    const H = struct {
-        pub fn onOpen(_: *us_socket_t, _: bool, _: []const u8) void {}
-    };
-
-    const vt: *const VTable = make(H);
-    try std.testing.expect(vt.on_open != null);
-    try std.testing.expect(vt.on_data == null);
-    try std.testing.expect(vt.on_close == null);
-    try std.testing.expect(vt.on_handshake == null);
-    try std.testing.expect(vt.on_connecting_error == null);
-}
-
-test "vtable.make returns the same pointer for the same handler type" {
-    const std = @import("std");
-
-    const H = struct {
-        pub fn onClose(_: *us_socket_t, _: i32, _: ?*anyopaque) void {}
-    };
-    const a = make(H);
-    const b = make(H);
-    // Two calls to `make(H)` resolve to the same .rodata address — the
-    // comptime struct is unique per type, so this also doubles as a sanity
-    // check that the produced VTable is in fact rodata.
-    try std.testing.expectEqual(a, b);
-    try std.testing.expect(a.on_close != null);
-}
-
-test "VTable layout matches us_socket_vtable_t" {
-    const std = @import("std");
-    // 11 function pointers. Layout-locked to the C side via `extern struct`.
-    try std.testing.expectEqual(@as(usize, 11 * @sizeOf(*anyopaque)), @sizeOf(VTable));
-}
+const uws = bun.uws;
+const ConnectingSocket = uws.ConnectingSocket;
+const us_socket_t = uws.us_socket_t;
+const VTable = uws.SocketGroup.VTable;

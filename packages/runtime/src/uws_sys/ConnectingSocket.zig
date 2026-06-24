@@ -83,16 +83,12 @@ const c = struct {
     pub extern fn us_connecting_socket_get_loop(s: *ConnectingSocket) *Loop;
 };
 
-const SocketKind = @import("./SocketKind.zig").SocketKind;
+const bun = @import("bun");
 
-/// Placeholder forward-declaration. Replaced when `uws_sys/SocketGroup.zig`
-/// ports (it pulls in jsc.EventLoopHandle + the vtable substrate, so it
-/// can't be a leaf today).
-pub const SocketGroup = opaque {};
-
-/// Placeholder forward-declaration. Replaced when `uws_sys/Loop.zig` ports
-/// (it pulls in `InternalLoopData` + `jsc.EventLoopHandle`).
-pub const Loop = opaque {};
+const uws = bun.uws;
+const SocketGroup = uws.SocketGroup;
+const Loop = uws.Loop;
+const SocketKind = uws.SocketKind;
 
 test "ConnectingSocket exposes the us_connecting_socket_t API surface" {
     const std = @import("std");

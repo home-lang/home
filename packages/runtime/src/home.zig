@@ -93,6 +93,7 @@ comptime {
         _ = @import("runtime/webcore/streams.zig").HTTPSResponseSink.JSSink;
         _ = @import("sourcemap_jsc/CodeCoverage.zig");
         _ = @import("native_stubs.zig");
+        _ = @import("runtime/socket/uws_dispatch.zig");
         _ = @import("jsc/js2native_workarounds.zig");
     }
 }

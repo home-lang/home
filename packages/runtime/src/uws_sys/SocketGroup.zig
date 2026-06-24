@@ -230,14 +230,10 @@ pub const ListenSocket = @import("./ListenSocket.zig").ListenSocket;
 /// TLS context pointer owned by BoringSSL/libusockets.
 pub const SslCtx = @import("../boringssl_sys/boringssl.zig").SSL_CTX;
 
-/// Layout-compatible mirror of `us_bun_verify_error_t`. Re-exported here so
-/// `VTable.on_handshake` carries the same struct shape as the C side; matches
-/// `vtable.zig`'s local mirror exactly.
-pub const us_bun_verify_error_t = extern struct {
-    error_no: c_int = 0,
-    code: [*:0]const u8 = "",
-    reason: [*:0]const u8 = "",
-};
+/// Canonical `us_bun_verify_error_t` lives in `uws.zig`; alias it so
+/// `VTable.on_handshake` shares one type identity with `vtable.zig`'s
+/// trampolines (which reference `uws.us_bun_verify_error_t`).
+pub const us_bun_verify_error_t = @import("../uws/uws.zig").us_bun_verify_error_t;
 
 /// `LIBUS_SOCKET_DESCRIPTOR` is `int` on POSIX and `SOCKET` (`uintptr_t`) on
 /// Windows. Home is POSIX-only for now; widen this once Windows support

@@ -178,7 +178,7 @@ pub fn enqueue(this: *ClientSession, client: *HTTPClient) void {
 fn drainPending(this: *ClientSession) void {
     if (!this.settings_received or this.pending_attach.items.len == 0) return;
     var waiters = this.pending_attach;
-    this.pending_attach = .{};
+    this.pending_attach = .empty;
     defer waiters.deinit(bun.default_allocator);
     for (waiters.items) |client| {
         if (this.fatal_error) |err| {
