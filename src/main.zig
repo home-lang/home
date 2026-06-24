@@ -4195,9 +4195,43 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // Implicit run: `home [runtime-flags] <file.js|.ts|…> [script-args]`
+    // (Bun's default — `bun --expose-gc x.js` runs x.js). Only engages when a
+    // runnable JS/TS file is present, so bare flags like `--help` are
+    // unaffected. Leading runtime flags (e.g. --expose-gc) are accepted and
+    // skipped here; the native run path doesn't need them to execute.
+    {
+        var has_file = false;
+        for (args[1..]) |a| {
+            if (looksLikeRunnableFile(a)) {
+                has_file = true;
+                break;
+            }
+        }
+        if (has_file and (std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
+            var i: usize = 1;
+            while (i < args.len) : (i += 1) {
+                if (looksLikeRunnableFile(args[i])) {
+                    try runCommand(allocator, args[i], args[i + 1 ..]);
+                    return;
+                }
+            }
+        }
+    }
+
     std.debug.print("{s}Error:{s} Unknown command '{s}'\n\n", .{ Color.Red.code(), Color.Reset.code(), command });
     printUsage();
     std.process.exit(1);
+}
+
+/// True if `s` names a JS/TS module by extension (used to recognize an
+/// implicit `home <file>` run invocation).
+fn looksLikeRunnableFile(s: []const u8) bool {
+    const exts = [_][]const u8{ ".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx" };
+    for (exts) |e| {
+        if (std.mem.endsWith(u8, s, e)) return true;
+    }
+    return false;
 }
 
 fn pkgCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
