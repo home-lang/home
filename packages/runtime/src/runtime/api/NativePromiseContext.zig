@@ -213,49 +213,18 @@ const jsc = struct {
 // Each Tag variant needs its own nominal type (Zig switch-on-type rejects
 // duplicates), so each struct is declared inline rather than via a generic
 // helper — generics memoize and produce one type.
-const server = struct {
-    pub const HTTPServer = struct {
-        pub const RequestContext = extern struct {
-            _pad: u64 = 0,
-            pub fn deref(_: *@This()) void {}
-        };
-    };
-    pub const HTTPSServer = struct {
-        pub const RequestContext = extern struct {
-            _pad: u64 = 0,
-            pub fn deref(_: *@This()) void {}
-        };
-        pub const H3RequestContext = extern struct {
-            _pad: u64 = 0,
-            pub fn deref(_: *@This()) void {}
-        };
-    };
-    pub const DebugHTTPServer = struct {
-        pub const RequestContext = extern struct {
-            _pad: u64 = 0,
-            pub fn deref(_: *@This()) void {}
-        };
-    };
-    pub const DebugHTTPSServer = struct {
-        pub const RequestContext = extern struct {
-            _pad: u64 = 0,
-            pub fn deref(_: *@This()) void {}
-        };
-        pub const H3RequestContext = extern struct {
-            _pad: u64 = 0,
-            pub fn deref(_: *@This()) void {}
-        };
-    };
-};
-const StubRequest = server.HTTPServer.RequestContext;
+// Re-attached 2026-06-24: the real server.zig is now ported, so getTag must
+// switch on the real NewServer(...).RequestContext / H3RequestContext types
+// (the ones create() is actually called with). The earlier inline stubs made
+// every real request-context type fall to the @compileError else-branch.
+const server = @import("../server/server.zig");
+const webcore = @import("../webcore.zig");
 
-const webcore = struct {
-    pub const Body = struct {
-        pub const ValueBufferer = extern struct {
-            _pad: u64 = 0,
-            ctx: ?*anyopaque = null,
-        };
-    };
+// Local stand-in used only by the test blocks (not compiled into the exe). The
+// real RequestContext has required fields and isn't `.{}`-constructible.
+const StubRequest = extern struct {
+    _pad: u64 = 0,
+    pub fn deref(_: *@This()) void {}
 };
 
 const HTMLRewriter = struct {

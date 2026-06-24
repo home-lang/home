@@ -400,7 +400,7 @@ pub fn fromGenerated(
         generated.reject_unauthorized orelse vm.getTLSRejectUnauthorized(),
     );
     result.request_cert = @intFromBool(generated.request_cert);
-    result.secure_options = generated.secure_options;
+    result.secure_options = @bitCast(generated.secure_options); // generated bindings type i32; field is u32 (bitmask)
     any = any or
         result.low_memory_mode or
         generated.reject_unauthorized != null or

@@ -732,7 +732,7 @@ pub fn transpileSourceCode(
                 return error.NotSupported;
             }
 
-            const html_bundle = try jsc.API.HTMLBundle.init(jsc_vm.allocator, path.text);
+            const html_bundle = try jsc.API.HTMLBundle.init(globalObject.?, path.text);
             _ = html_bundle;
             return ResolvedSource{
                 .allocator = &jsc_vm.allocator,

@@ -497,7 +497,7 @@ pub fn tickQueueWithCount(this: *EventLoop, virtual_machine: *VirtualMachine, co
             },
             @field(Task.Tag, @typeName(ServerAllConnectionsClosedTask)) => {
                 var any: *ServerAllConnectionsClosedTask = task.get(ServerAllConnectionsClosedTask).?;
-                any.runFromJSThread(virtual_machine);
+                try any.runFromJSThread(virtual_machine);
             },
             @field(Task.Tag, @typeName(bun.bundle_v2.DeferredBatchTask)) => {
                 var any: *bun.bundle_v2.DeferredBatchTask = task.get(bun.bundle_v2.DeferredBatchTask).?;

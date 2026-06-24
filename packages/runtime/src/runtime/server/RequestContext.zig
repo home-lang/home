@@ -452,9 +452,12 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             if (comptime fmt.len > 0) Output.prettyErrorln(fmt, args);
             Output.flush();
 
-            // Explicitly use `this.allocator` and *not* the arena
-            var bb = std.array_list.Managed(u8).init(this.allocator);
-            const bb_writer = bb.writer();
+            // Explicitly use `this.allocator` and *not* the arena.
+            // Zig-0.17: Managed ArrayList lost `.writer()`; render through an
+            // Allocating writer over an unmanaged list and sync back.
+            var bb: std.ArrayListUnmanaged(u8) = .empty;
+            var bb_aw: std.Io.Writer.Allocating = .fromArrayList(this.allocator, &bb);
+            const bb_writer = &bb_aw.writer;
 
             Fallback.renderBackend(
                 arena_allocator,
@@ -462,8 +465,9 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 @TypeOf(bb_writer),
                 bb_writer,
             ) catch unreachable;
+            bb = bb_aw.toArrayList();
             if (this.resp == null or this.resp.?.tryEnd(bb.items, bb.items.len, this.shouldCloseConnection())) {
-                bb.clearAndFree();
+                bb.clearAndFree(this.allocator);
                 this.detachResponse();
                 this.endRequestStreamingAndDrain();
                 this.finalizeWithoutDeinit();
@@ -1738,9 +1742,10 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                                 },
                             };
 
-                            var bb = std.array_list.Managed(u8).init(allocator);
-                            defer bb.clearAndFree();
-                            const bb_writer = bb.writer();
+                            var bb: std.ArrayListUnmanaged(u8) = .empty;
+                            defer bb.deinit(allocator);
+                            var bb_aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &bb);
+                            const bb_writer = &bb_aw.writer;
 
                             Fallback.renderBackend(
                                 allocator,
@@ -1748,6 +1753,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                                 @TypeOf(bb_writer),
                                 bb_writer,
                             ) catch unreachable;
+                            bb = bb_aw.toArrayList();
 
                             if (req.resp) |resp| {
                                 _ = resp.write(bb.items);
@@ -2489,7 +2495,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                         };
                         // }
                     }
-                    this.request_body_buf = .{};
+                    this.request_body_buf = .empty;
 
                     if (old == .Locked) {
                         var loop = vm.eventLoop();
@@ -2519,7 +2525,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             // This means we have received part of the body but not the whole thing
             if (this.request_body_buf.items.len > 0) {
                 var emptied = this.request_body_buf;
-                this.request_body_buf = .{};
+                this.request_body_buf = .empty;
                 return .{
                     .owned = .{
                         .list = emptied.toManaged(this.allocator),
@@ -2561,7 +2567,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
         pub fn onRequestBodyReadableStreamAvailable(ptr: *anyopaque, globalThis: *jsc.JSGlobalObject, readable: jsc.WebCore.ReadableStream) void {
             var this = bun.cast(*RequestContext, ptr);
-            bun.debugAssert(this.request_body_readable_stream_ref.held.impl == null);
+            bun.debugAssert(!this.request_body_readable_stream_ref.held.has());
             this.request_body_readable_stream_ref = jsc.WebCore.ReadableStream.Strong.init(readable, globalThis);
         }
 

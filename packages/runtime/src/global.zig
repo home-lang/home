@@ -9,6 +9,18 @@ const std = @import("std");
 pub const package_json_version = "0.0.0";
 pub const package_json_version_with_sha = package_json_version;
 pub const package_json_version_with_revision = package_json_version;
+
+/// `Bun.Global.BunInfo` — used by the server's `/bun:info` route generator.
+/// Full version embeds analytics platform info (not ported); Home returns a
+/// minimal object so the route compiles. The endpoint isn't exercised by basic
+/// Bun.serve({fetch}).
+pub const BunInfo = struct {
+    pub fn generate(comptime Bundler: type, _: Bundler, allocator: std.mem.Allocator) !@import("home").ast.Expr {
+        _ = allocator;
+        const home = @import("home");
+        return home.ast.Expr.init(home.ast.E.Object, .{}, home.logger.Loc.Empty);
+    }
+};
 pub const user_agent = "Home/0.0.0";
 
 pub fn exit(code: u8) noreturn {

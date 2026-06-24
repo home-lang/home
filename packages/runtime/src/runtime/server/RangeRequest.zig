@@ -97,6 +97,17 @@ inline fn trim(s: []const u8, comptime chars: []const u8) []const u8 {
     return std.mem.trim(u8, s, chars);
 }
 
+/// Re-attached 2026-06-24 (uws is now available): the request-header wrappers.
+pub fn fromRequest(req: home_rt.uws.AnyRequest, total: u64) Result {
+    const h = req.header("range") orelse return .none;
+    return parse(h, total);
+}
+
+pub fn rawFromRequest(req: home_rt.uws.AnyRequest) Raw {
+    const h = req.header("range") orelse return .none;
+    return parseRaw(h);
+}
+
 const std = @import("std");
 const home_rt = @import("home");
 

@@ -213,6 +213,10 @@ pub fn ArrayHashMap(
             return self.unmanaged.sort(sort_ctx);
         }
 
+        pub fn reIndex(self: *Self) Allocator.Error!void {
+            return self.unmanaged.reIndex(self.allocator);
+        }
+
         pub fn sortUnstable(self: *Self, sort_ctx: anytype) void {
             return self.unmanaged.sortUnstable(sort_ctx);
         }

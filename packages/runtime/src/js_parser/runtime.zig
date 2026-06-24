@@ -18,12 +18,16 @@ pub const Fallback = struct {
         msg: *const api.FallbackMessageContainer,
         allocator: std.mem.Allocator,
         pub fn format(this: Base64FallbackMessage, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-            var bb = std.array_list.Managed(u8).init(this.allocator);
-            defer bb.deinit();
-            const bb_writer = bb.writer();
+            // Zig-0.17: Managed ArrayList lost `.writer()`; encode through an
+            // Allocating writer over an unmanaged list and sync back.
+            var bb: std.ArrayListUnmanaged(u8) = .empty;
+            defer bb.deinit(this.allocator);
+            var bb_aw: std.Io.Writer.Allocating = .fromArrayList(this.allocator, &bb);
+            const bb_writer = &bb_aw.writer;
             const Encoder = schema.Writer(@TypeOf(bb_writer));
             var encoder = Encoder.init(bb_writer);
             this.msg.encode(&encoder) catch {};
+            bb = bb_aw.toArrayList();
 
             Base64Encoder.encode(bb.items, @TypeOf(writer), writer) catch {};
         }

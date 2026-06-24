@@ -30,8 +30,6 @@ comptime {
         "Bake__bundleNewRouteJSFunctionImpl",
         "Bake__getNewRouteParamsJSFunctionImpl",
         "Bun__dns_internal_registerQuic",
-        "BunServe__onRejectPlugins",
-        "BunServe__onResolvePlugins",
         "Bun__HTTPRequestContextDebugH3__onReject",
         "Bun__HTTPRequestContextDebugH3__onRejectStream",
         "Bun__HTTPRequestContextDebugH3__onResolve",
@@ -100,10 +98,6 @@ comptime {
         "ResolvePath__joinAbsStringBufCurrentPlatformBunString",
         "Resolver__nodeModulePathsForJS",
         "Resolver__nodeModulePathsJSValue",
-        "Server__setAppFlags",
-        "Server__setIdleTimeout",
-        "Server__setMaxHTTPHeaderSize",
-        "Server__setOnClientError",
         "WebSocketProxyTunnel__setConnectedWebSocket",
     }) |name| {
         @export(&noop, .{ .name = name });

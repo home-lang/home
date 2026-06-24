@@ -1071,6 +1071,46 @@ pub fn transpileTypeScriptForEval(allocator: std.mem.Allocator, source_text: []c
 }
 pub const bake = struct {
     pub const FrameworkRouter = @import("runtime/bake/FrameworkRouter.zig");
+
+    /// Faithful copy of upstream `bake.StringRefList` (self-contained) — used by
+    /// `AnyRoute.ServerInitContext.js_string_allocations` in the Bun.serve config.
+    pub const StringRefList = struct {
+        strings: std.ArrayListUnmanaged(@import("jsc/ZigString.zig").ZigString.Slice),
+
+        pub const empty: StringRefList = .{ .strings = .empty };
+
+        pub fn track(al: *StringRefList, str: @import("jsc/ZigString.zig").ZigString.Slice) []const u8 {
+            handleOom(al.strings.append(default_allocator, str));
+            return str.slice();
+        }
+
+        pub fn free(al: *StringRefList) void {
+            for (al.strings.items) |item| item.deinit();
+            al.strings.clearAndFree(default_allocator);
+        }
+    };
+
+    /// Compile-only stubs for the dev-server/bundler serve config. The full
+    /// versions pull in the bundler (not ported). Both code paths that would
+    /// construct a UserOptions are gated and throw "not implemented" in Home
+    /// (the HMR branch and `UserOptions.fromJS` for `app:`), so these only need
+    /// to type-check — they are never instantiated at runtime.
+    pub const SplitBundlerOptions = struct {};
+
+    pub const UserOptions = struct {
+        arena: std.heap.ArenaAllocator,
+        allocations: StringRefList,
+        root: [:0]const u8,
+        framework: Framework,
+        bundler_options: SplitBundlerOptions,
+
+        pub fn deinit(_: *UserOptions) void {}
+
+        pub fn fromJS(_: anytype, global: anytype) JSError!UserOptions {
+            return global.throwInvalidArguments("Bun.serve({{ app }}) / FrameworkRouter serve is not yet implemented in the native Home runtime", .{});
+        }
+    };
+
     pub const production = struct {
         pub const PerThread = opaque {};
     };
@@ -1089,6 +1129,32 @@ pub const bake = struct {
     };
     pub const DevServer = struct {
         pub const asset_prefix = "/_bun";
+
+        // Compile-only DevServer surface the ported server.zig references
+        // throughout. config.bake is always null in Home (the HMR config branch
+        // throws "not implemented"), so this.dev_server is always null and none
+        // of these run — they only need to type-check. (Fields html_router /
+        // inspector_server_id live with the other fields below.)
+        pub const HtmlRouter = struct {
+            fallback: ?*anyopaque = null,
+            pub fn clear(_: *HtmlRouter) void {}
+            pub fn put(_: *HtmlRouter, _: std.mem.Allocator, _: anytype, _: anytype) error{OutOfMemory}!void {}
+        };
+
+        pub fn onPluginsResolved(_: *DevServer, _: anytype) error{OutOfMemory}!void {}
+        pub fn onPluginsRejected(_: *DevServer) error{OutOfMemory}!void {}
+        pub fn init(_: anytype) error{OutOfMemory}!*DevServer {
+            unreachable; // config.bake is always null in Home; DevServer is never constructed
+        }
+        pub fn deinit(_: *DevServer) void {}
+        pub fn memoryCost(_: *DevServer) usize {
+            return 0;
+        }
+        pub fn setRoutes(_: *DevServer, _: anytype) error{OutOfMemory}!bool {
+            return false;
+        }
+        pub fn respondForHTMLBundle(_: *DevServer, _: anytype, _: anytype, _: anytype) error{OutOfMemory}!void {}
+
         pub const DirectoryWatchStore = @import("runtime/bake/DevServer/DirectoryWatchStore.zig");
         // Faithful to upstream `bun.bake.DevServer.DevAllocator`
         // (`src/runtime/bake/DevServer.zig:754-755`):
@@ -1175,6 +1241,9 @@ pub const bake = struct {
         };
 
         allocator_: std.mem.Allocator = default_allocator,
+        html_router: HtmlRouter = .{},
+        inspector_server_id: @import("jsc/Debugger.zig").DebuggerId = .init(0),
+        root: [:0]const u8 = "",
         dev_allocator_scope: DevAllocationScope = DevAllocationScope.init(.{}),
         magic: Magic = .valid,
         directory_watchers: DirectoryWatchStore = DirectoryWatchStore.empty,
@@ -2378,6 +2447,15 @@ pub const jsc = struct {
         /// re-exported here so ported code (Bun.JSON5/YAML stringify) resolves verbatim.
         pub const StringBuilder = @import("jsc/StringBuilder.zig").StringBuilder;
 
+        /// WTF HTTP-date formatter (used by static-file Last-Modified headers).
+        extern fn Bun__writeHTTPDate(buffer: *[32]u8, length: usize, timestampMs: u64) c_int;
+        pub fn writeHTTPDate(buffer: *[32]u8, timestampMs: u64) []u8 {
+            if (timestampMs == 0) return buffer[0..0];
+            const res = Bun__writeHTTPDate(buffer, 32, timestampMs);
+            if (res < 1) return buffer[0..0];
+            return buffer[0..@intCast(res)];
+        }
+
         pub fn releaseFastMallocFreeMemoryForThisThread() void {}
         pub fn parseDouble(input: []const u8) !f64 {
             return @import("home").parseDouble(input);
@@ -3146,6 +3224,7 @@ pub const meta = struct {
     pub const ConcatArgs2 = @import("meta/meta.zig").ConcatArgs2;
     pub const isSimpleEqlType = @import("meta/meta.zig").isSimpleEqlType;
     pub const isSimpleCopyType = @import("meta/meta.zig").isSimpleCopyType;
+    pub const useAllFields = @import("meta/meta.zig").useAllFields;
     pub const looksLikeListContainerType = @import("meta/meta.zig").looksLikeListContainerType;
     // `std.meta.intToEnum` was removed in Zig 0.17; faithful drop-in replacement.
     pub fn intToEnum(comptime Enum: type, tag_int: anytype) error{InvalidEnumTag}!Enum {
@@ -3570,6 +3649,8 @@ pub const string = struct {
     pub const HashedString = @import("string/HashedString.zig");
     pub const escapeRegExp = @import("string/escapeRegExp.zig").escapeRegExp;
     pub const escapeRegExpForPackageNameMatching = @import("string/escapeRegExp.zig").escapeRegExpForPackageNameMatching;
+    pub const WTFStringImpl = @import("string/string.zig").WTFStringImpl;
+    pub const WTFStringImplStruct = @import("string/string.zig").WTFStringImplStruct;
 };
 
 // Upstream `bun.StringBuilder` aliases `string.StringBuilder` — the pure-Zig

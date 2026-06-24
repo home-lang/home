@@ -142,6 +142,9 @@ pub fn trimmedPrecision(value: f64, comptime precision: usize) TrimmedPrecisionF
     return Formatter{ .num = value, .precision = precision };
 }
 
+/// Re-export of the URL formatter (bun.fmt.URLFormatter) for server code.
+pub const URLFormatter = @import("bun_core/fmt.zig").URLFormatter;
+
 pub fn hexIntUpper(value: anytype) HexIntFormatter(@TypeOf(value), false) {
     const Formatter = HexIntFormatter(@TypeOf(value), false);
     return Formatter{ .value = value };
