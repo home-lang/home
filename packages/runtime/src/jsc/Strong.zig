@@ -20,25 +20,10 @@ const Strong = @This();
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2. Carries the same
-// shape upstream code expects: an `i64`-backed enum with `.zero` and
-// `.js_undefined` sentinels.
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa, // matches JSC::JSValue::ValueUndefined sentinel
-    _,
-
-    pub fn ensureStillAlive(self: JSValue) void {
-        std.mem.doNotOptimizeAway(self);
-    }
-
-    pub fn call(self: JSValue, global: *JSGlobalObject, args: []const JSValue) JSValue {
-        _ = self;
-        _ = global;
-        _ = args;
-        return .zero;
-    }
-};
+// JSC bridge now wired: use the canonical JSValue so Strong handles hold the
+// same type the rest of the runtime passes around (and so the GC-protecting
+// Bun__StrongRef__* path actually receives the real EncodedJSValue).
+pub const JSValue = home_rt.jsc.JSValue;
 
 inline fn markBinding(src: std.builtin.SourceLocation) void {
     _ = src;
@@ -158,7 +143,22 @@ pub const Optional = struct {
         };
         ref.set(global, value);
     }
+
+    /// Alias of `get()` — some call sites use `.tryGet()` on the optional.
+    pub fn tryGet(this: *const Optional) ?JSValue {
+        return this.get();
+    }
+
+    /// Set a strong reference (creating one if absent). Mirrors the inline
+    /// stub's surface that this type replaced.
+    pub fn setStrong(this: *Optional, value: JSValue, global: *JSGlobalObject) void {
+        this.set(global, value);
+    }
 };
+
+/// `jsc.Strong.Deprecated` — the legacy strong wrapper a few subsystems still
+/// reference (test runner, etc.).
+pub const Deprecated = @import("./DeprecatedStrong.zig");
 
 // Test-only weak stubs so that the four `Bun__StrongRef__*` externs link
 // when this file is run as a test root. The real symbols live in C++;

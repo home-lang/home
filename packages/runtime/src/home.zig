@@ -2577,65 +2577,12 @@ pub const jsc = struct {
     pub const ErrorableResolvedSource = Errorable(ResolvedSource);
     pub const DeferredError = @import("jsc/DeferredError.zig").DeferredError;
     pub const DecodedJSValue = @import("jsc/DecodedJSValue.zig").DecodedJSValue;
-    pub const Strong = struct {
-        pub const Deprecated = @import("jsc/DeprecatedStrong.zig");
-        pub const Optional = struct {
-            value: JSValue = .zero,
-
-            pub const empty: Optional = .{};
-
-            pub fn create(value: JSValue, globalThis: *JSGlobalObject) Optional {
-                _ = globalThis;
-                return .{ .value = value };
-            }
-
-            pub fn has(this: *const Optional) bool {
-                return this.value != .zero;
-            }
-
-            pub fn deinit(this: *Optional) void {
-                this.* = .empty;
-            }
-
-            pub fn clearWithoutDeallocation(this: *Optional) void {
-                this.value = .zero;
-            }
-
-            pub fn call(this: *Optional, globalThis: *JSGlobalObject, args: []const JSValue) JSValue {
-                _ = globalThis;
-                _ = args;
-                return this.swap();
-            }
-
-            pub fn get(this: *const Optional) ?JSValue {
-                return if (this.value == .zero) null else this.value;
-            }
-
-            pub fn swap(this: *Optional) JSValue {
-                const value = this.value;
-                this.value = .zero;
-                return value;
-            }
-
-            pub fn trySwap(this: *Optional) ?JSValue {
-                const value = this.swap();
-                return if (value == .zero) null else value;
-            }
-
-            pub fn tryGet(this: *const Optional) ?JSValue {
-                return this.get();
-            }
-
-            pub fn set(this: *Optional, globalThis: *JSGlobalObject, value: JSValue) void {
-                _ = globalThis;
-                this.value = value;
-            }
-
-            pub fn setStrong(this: *Optional, value: JSValue, globalThis: *JSGlobalObject) void {
-                this.set(globalThis, value);
-            }
-        };
-    };
+    // Real JSC strong references (Bun__StrongRef__* → JSC HandleSet), so a
+    // value held only by native code is a GC root and survives collection.
+    // The previous inline struct stored the JSValue in a plain field with no
+    // GC protection, so timer/WebSocket JS objects were finalized before their
+    // callbacks ran.
+    pub const Strong = @import("jsc/Strong.zig");
     pub const CPUProfiler = @import("jsc/BunCPUProfiler.zig").CPUProfiler;
     pub const CPUProfilerConfig = @import("jsc/BunCPUProfiler.zig").CPUProfilerConfig;
     pub const HeapProfiler = @import("jsc/BunHeapProfiler.zig").HeapProfiler;
