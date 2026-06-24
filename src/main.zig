@@ -1827,8 +1827,16 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
 /// files/filters (positionals[1..]). Flag parsing is not wired yet, so test
 /// flags are currently ignored. globalExit inside exec makes this noreturn on
 /// success. Gated behind HOME_NATIVE_VM=1.
-fn runTestsViaVM(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
+    _ = allocator_unused;
+    // Bun's test runner runs on `default_allocator` (mimalloc). Home's main
+    // uses a leak-checking DebugAllocator, but the JSC string machinery
+    // (ZigString.Slice.intoOwnedSlice) has a fast no-copy path gated on the
+    // allocator being `default_allocator`; with any other allocator it takes
+    // the slow copy+deinit path, which double-frees JSC-borrowed bytes. Match
+    // Bun and run the VM test runner on default_allocator.
+    const allocator = home_rt.default_allocator;
 
     const log = try allocator.create(home_rt.logger.Log);
     log.* = home_rt.logger.Log.init(allocator);
