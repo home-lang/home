@@ -5384,6 +5384,9 @@ pub const glob = struct {
     /// `BunGlobWalkerZ = GlobWalker_(null, SyscallAccessor, sentinel=true)`).
     pub const walk = @import("glob/GlobWalker.zig");
     pub const BunGlobWalkerZ = @import("glob/GlobWalker.zig").GlobWalker_(null, @import("glob/GlobWalker.zig").SyscallAccessor, true);
+    /// Non-sentinel walker (upstream `BunGlobWalker = GlobWalker_(null,
+    /// SyscallAccessor, false)`) — used by the `Bun.Glob.scan`/`scanSync` bridge.
+    pub const BunGlobWalker = @import("glob/GlobWalker.zig").GlobWalker_(null, @import("glob/GlobWalker.zig").SyscallAccessor, false);
     pub const GlobWalker = @import("glob/GlobWalker.zig").GlobWalker_;
 };
 

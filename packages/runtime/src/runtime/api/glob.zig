@@ -1,42 +1,9 @@
-// Copied from bun/src/runtime/api/glob.zig at upstream SHA
-// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-//
-// Rewrites:
-//   - @import("bun")                              → @import("home")
-//
-// This is an aggressive skeleton port. The upstream file is a thin JSC
-// wrapper around `home_rt.glob.BunGlobWalker` (already ported in
-// `src/glob/`). All JSC binding entry points (constructor, __scan,
-// __scanSync, match) are parked under a JSC stub surface because
-// the necessary JSGlobalObject/JSValue/CallFrame/ArgumentsSlice
-// substrate is not yet wired through home_rt.
-//
-// What survives the port:
-//   - The `Glob` struct itself (pattern + has_pending_activity).
-//   - `incrPendingActivityFlag` / `decrPendingActivityFlag` — pure atomic helpers.
-//   - `hasPendingActivity` — exported callconv(.c) accessor used by JSC GC.
-//   - `finalize` — frees the pattern via `home_rt.c_allocator`.
-//
-// JSC stubs (re-attach in Phase 12.2 when the corresponding home_rt.jsc
-// surface lands; same convention as `runtime/api/lolhtml_jsc.zig` /
-// `runtime/api/bun/x509.zig`):
-//   - `JSGlobalObject`, `CallFrame`, `ArgumentsSlice` — opaque.
-//   - `JSValue` — `enum(i64)` ABI-match (matches `home_rt/jsc/JSArray.zig`).
-//   - `JSError` — single-variant `error{JSError}`.
-
-const std = @import("std");
-const home_rt = @import("home");
-
-const jsc = @import("home").jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const CallFrame = jsc.CallFrame;
-const Arena = std.heap.ArenaAllocator;
-pub const JSValue = jsc.JSValue;
-pub const JSError = @import("home").JSError;
+// Copied from bun/src/runtime/api/glob.zig at upstream SHA fd0b6f1a27. MIT.
+// Re-attached 2026-06-23: scan/scanSync wired to the ported GlobWalker.
 
 const Glob = @This();
 
-pub const js = home_rt.jsc.Codegen.JSGlob;
+pub const js = jsc.Codegen.JSGlob;
 pub const toJS = js.toJS;
 pub const fromJS = js.fromJS;
 pub const fromJSDirect = js.fromJSDirect;
@@ -44,59 +11,261 @@ pub const fromJSDirect = js.fromJSDirect;
 pattern: []const u8,
 has_pending_activity: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
-pub const WalkTask = struct {
-    has_pending_activity: ?*std.atomic.Value(usize) = null,
+const ScanOpts = struct {
+    cwd: ?[]const u8,
+    dot: bool,
+    absolute: bool,
+    only_files: bool,
+    follow_symlinks: bool,
+    error_on_broken_symlinks: bool,
 
-    pub const AsyncGlobWalkTask = home_rt.jsc.ConcurrentPromiseTask(WalkTask);
+    fn parseCWD(globalThis: *JSGlobalObject, allocator: std.mem.Allocator, cwdVal: jsc.JSValue, absolute: bool, comptime fnName: string) bun.JSError![]const u8 {
+        const cwd_string: bun.String = try .fromJS(cwdVal, globalThis);
+        defer cwd_string.deref();
+        if (cwd_string.isEmpty()) return "";
 
-    pub fn run(this: *WalkTask) void {
-        if (this.has_pending_activity) |pending| {
-            decrPendingActivityFlag(pending);
+        const cwd_str: []const u8 = cwd_str: {
+            const cwd_utf8 = cwd_string.toUTF8WithoutRef(allocator);
+
+            // If its absolute return as is
+            if (ResolvePath.Platform.auto.isAbsolute(cwd_utf8.slice())) {
+                break :cwd_str (try cwd_utf8.cloneIfBorrowed(allocator)).slice();
+            }
+
+            defer cwd_utf8.deinit();
+            var path_buf2: [bun.MAX_PATH_BYTES * 2]u8 = undefined;
+
+            if (!absolute) {
+                const parts: []const []const u8 = &.{cwd_utf8.slice()};
+                const cwd_str = ResolvePath.joinStringBuf(&path_buf2, parts, .auto);
+                break :cwd_str try allocator.dupe(u8, cwd_str);
+            }
+
+            // Convert to an absolute path
+            var path_buf: bun.PathBuffer = undefined;
+            const cwd = switch (bun.sys.getcwd((&path_buf))) {
+                .result => |cwd| cwd,
+                .err => |err| {
+                    const errJs = try err.toJS(globalThis);
+                    return globalThis.throwValue(errJs);
+                },
+            };
+
+            const cwd_str = ResolvePath.joinStringBuf(&path_buf2, &[_][]const u8{
+                cwd,
+                cwd_utf8.slice(),
+            }, .auto);
+            break :cwd_str try allocator.dupe(u8, cwd_str);
+        };
+
+        if (cwd_str.len > bun.MAX_PATH_BYTES) {
+            return globalThis.throw("{s}: invalid `cwd`, longer than {d} bytes", .{ fnName, bun.MAX_PATH_BYTES });
         }
+
+        return cwd_str;
     }
 
-    pub fn then(this: *WalkTask, promise: anytype) home_rt.JSTerminated!void {
-        _ = this;
-        _ = promise;
+    fn fromJS(globalThis: *JSGlobalObject, arguments: *ArgumentsSlice, comptime fnName: []const u8, arena: *Arena) bun.JSError!?ScanOpts {
+        const optsObj: JSValue = arguments.nextEat() orelse return null;
+        var out: ScanOpts = .{
+            .cwd = null,
+            .dot = false,
+            .absolute = false,
+            .follow_symlinks = false,
+            .error_on_broken_symlinks = false,
+            .only_files = true,
+        };
+        if (optsObj.isUndefinedOrNull()) return out;
+        if (!optsObj.isObject()) {
+            if (optsObj.isString()) {
+                {
+                    const result = try parseCWD(globalThis, arena.allocator(), optsObj, out.absolute, fnName);
+                    if (result.len > 0) {
+                        out.cwd = result;
+                    }
+                }
+                return out;
+            }
+            return globalThis.throw("{s}: expected first argument to be an object", .{fnName});
+        }
+
+        if (try optsObj.getTruthy(globalThis, "onlyFiles")) |only_files| {
+            out.only_files = if (only_files.isBoolean()) only_files.asBoolean() else false;
+        }
+
+        if (try optsObj.getTruthy(globalThis, "throwErrorOnBrokenSymlink")) |error_on_broken| {
+            out.error_on_broken_symlinks = if (error_on_broken.isBoolean()) error_on_broken.asBoolean() else false;
+        }
+
+        if (try optsObj.getTruthy(globalThis, "followSymlinks")) |followSymlinksVal| {
+            out.follow_symlinks = if (followSymlinksVal.isBoolean()) followSymlinksVal.asBoolean() else false;
+        }
+
+        if (try optsObj.getTruthy(globalThis, "absolute")) |absoluteVal| {
+            out.absolute = if (absoluteVal.isBoolean()) absoluteVal.asBoolean() else false;
+        }
+
+        if (try optsObj.getTruthy(globalThis, "cwd")) |cwdVal| {
+            if (!cwdVal.isString()) {
+                return globalThis.throw("{s}: invalid `cwd`, not a string", .{fnName});
+            }
+
+            {
+                const result = try parseCWD(globalThis, arena.allocator(), cwdVal, out.absolute, fnName);
+                if (result.len > 0) {
+                    out.cwd = result;
+                }
+            }
+        }
+
+        if (try optsObj.getTruthy(globalThis, "dot")) |dot| {
+            out.dot = if (dot.isBoolean()) dot.asBoolean() else false;
+        }
+
+        return out;
     }
 };
 
-/// GC accessor — wired into JSC's `hasPendingActivity` for the Glob class
-/// so the engine knows when the object is safe to finalize.
-pub fn hasPendingActivity(this: *Glob) callconv(.c) bool {
-    return this.has_pending_activity.load(.seq_cst) > 0;
+pub const WalkTask = struct {
+    walker: *GlobWalker,
+    alloc: Allocator,
+    err: ?Err = null,
+    global: *jsc.JSGlobalObject,
+    has_pending_activity: *std.atomic.Value(usize),
+
+    pub const Err = union(enum) {
+        syscall: Syscall.Error,
+        unknown: anyerror,
+
+        pub fn toJS(this: Err, globalThis: *JSGlobalObject) bun.JSError!JSValue {
+            return switch (this) {
+                .syscall => |err| try err.toJS(globalThis),
+                .unknown => |err| ZigString.fromBytes(@errorName(err)).toJS(globalThis),
+            };
+        }
+    };
+
+    pub const AsyncGlobWalkTask = jsc.ConcurrentPromiseTask(WalkTask);
+
+    pub fn create(
+        globalThis: *jsc.JSGlobalObject,
+        alloc: Allocator,
+        globWalker: *GlobWalker,
+        has_pending_activity: *std.atomic.Value(usize),
+    ) !*AsyncGlobWalkTask {
+        const walkTask = try alloc.create(WalkTask);
+        walkTask.* = .{
+            .walker = globWalker,
+            .global = globalThis,
+            .alloc = alloc,
+            .has_pending_activity = has_pending_activity,
+        };
+        return AsyncGlobWalkTask.createOnJSThread(alloc, globalThis, walkTask);
+    }
+
+    pub fn run(this: *WalkTask) void {
+        defer decrPendingActivityFlag(this.has_pending_activity);
+        const result = this.walker.walk() catch |err| {
+            this.err = .{ .unknown = err };
+            return;
+        };
+        switch (result) {
+            .err => |err| {
+                this.err = .{ .syscall = err };
+            },
+            .result => {},
+        }
+    }
+
+    pub fn then(this: *WalkTask, promise: *jsc.JSPromise) bun.JSTerminated!void {
+        defer this.deinit();
+
+        if (this.err) |err| {
+            try promise.rejectWithAsyncStack(this.global, err.toJS(this.global));
+            return;
+        }
+
+        const jsStrings = globWalkResultToJS(this.walker, this.global) catch return promise.reject(this.global, error.JSError);
+        try promise.resolve(this.global, jsStrings);
+    }
+
+    fn deinit(this: *WalkTask) void {
+        this.walker.deinit(true);
+        this.alloc.destroy(this.walker);
+        this.alloc.destroy(this);
+    }
+};
+
+fn globWalkResultToJS(globWalk: *GlobWalker, globalThis: *JSGlobalObject) bun.JSError!JSValue {
+    if (globWalk.matchedPaths.keys().len == 0) {
+        return jsc.JSValue.createEmptyArray(globalThis, 0);
+    }
+
+    return BunString.toJSArray(globalThis, globWalk.matchedPaths.keys());
 }
 
-pub fn incrPendingActivityFlag(has_pending_activity: *std.atomic.Value(usize)) void {
-    _ = has_pending_activity.fetchAdd(1, .seq_cst);
+/// The reference to the arena is not used after the scope because it is copied
+/// by `GlobWalker.init`/`GlobWalker.initWithCwd` if all allocations work and no
+/// errors occur
+fn makeGlobWalker(
+    this: *Glob,
+    globalThis: *JSGlobalObject,
+    arguments: *ArgumentsSlice,
+    comptime fnName: []const u8,
+    alloc: Allocator,
+    arena: *Arena,
+) bun.JSError!?*GlobWalker {
+    const matchOpts = try ScanOpts.fromJS(globalThis, arguments, fnName, arena) orelse return null;
+    const cwd = matchOpts.cwd;
+    const dot = matchOpts.dot;
+    const absolute = matchOpts.absolute;
+    const follow_symlinks = matchOpts.follow_symlinks;
+    const error_on_broken_symlinks = matchOpts.error_on_broken_symlinks;
+    const only_files = matchOpts.only_files;
+
+    var globWalker = try alloc.create(GlobWalker);
+    errdefer alloc.destroy(globWalker);
+    globWalker.* = .{};
+
+    if (cwd != null) {
+        switch (try globWalker.initWithCwd(
+            arena,
+            this.pattern,
+            cwd.?,
+            dot,
+            absolute,
+            follow_symlinks,
+            error_on_broken_symlinks,
+            only_files,
+        )) {
+            .err => |err| {
+                return globalThis.throwValue(try err.toJS(globalThis));
+            },
+            else => {},
+        }
+        return globWalker;
+    }
+
+    switch (try globWalker.init(
+        arena,
+        this.pattern,
+        dot,
+        absolute,
+        follow_symlinks,
+        error_on_broken_symlinks,
+        only_files,
+    )) {
+        .err => |err| {
+            return globalThis.throwValue(try err.toJS(globalThis));
+        },
+        else => {},
+    }
+    return globWalker;
 }
 
-pub fn decrPendingActivityFlag(has_pending_activity: *std.atomic.Value(usize)) void {
-    _ = has_pending_activity.fetchSub(1, .seq_cst);
-}
-
-/// Frees the heap-owned `pattern` slice. Upstream additionally calls
-/// `bun.destroy(this)`; the equivalent home_rt.destroy helper is parked
-/// pending the New/Destroy port — callers are responsible for the
-/// outer struct lifetime under the skeleton surface.
-pub fn finalizePattern(this: *Glob, allocator: std.mem.Allocator) void {
-    allocator.free(this.pattern);
-}
-
-pub fn finalize(this: *Glob) callconv(.c) void {
-    finalizePattern(this, home_rt.default_allocator);
-    home_rt.destroy(this);
-}
-
-// ---- Parked JSC entry points -----------------------------------------
-//
-// These mirror the upstream public surface so the eventual JSC re-attach
-// is a body-only edit. Each currently throws `error.JSError` to keep the
-// surface compile-checked under the stub.
-
-pub fn constructor(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!*Glob {
+pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*Glob {
     const arguments_ = callframe.arguments_old(1);
-    var arguments = CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
+    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
     defer arguments.deinit();
     const pat_arg: JSValue = arguments.nextEat() orelse {
         return globalThis.throw("Glob.constructor: expected 1 arguments, got 0", .{});
@@ -108,32 +277,105 @@ pub fn constructor(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!*
 
     const pat_str: []const u8 = (try pat_arg.toSliceClone(globalThis)).slice();
 
-    return home_rt.new(Glob, .{ .pattern = pat_str });
+    return bun.new(Glob, .{ .pattern = pat_str });
 }
 
-// __scan / __scanSync need the GlobWalker option-parsing + async-task
-// substrate (`makeGlobWalker`, `WalkTask.create`, `globWalkResultToJS`).
-// Until that lands they throw a catchable JS error rather than returning a
-// bare `error.JSError`, which would trip JSC's exception-presence assert.
-pub fn @"__scan"(this: *Glob, globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
+pub fn finalize(
+    this: *Glob,
+) callconv(.c) void {
+    bun.default_allocator.free(this.pattern);
+    bun.destroy(this);
+}
+
+pub fn hasPendingActivity(this: *Glob) callconv(.c) bool {
+    return this.has_pending_activity.load(.seq_cst) > 0;
+}
+
+fn incrPendingActivityFlag(has_pending_activity: *std.atomic.Value(usize)) void {
+    _ = has_pending_activity.fetchAdd(1, .seq_cst);
+}
+
+fn decrPendingActivityFlag(has_pending_activity: *std.atomic.Value(usize)) void {
+    _ = has_pending_activity.fetchSub(1, .seq_cst);
+}
+
+pub fn __scan(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    // Async scan rides on jsc.ConcurrentPromiseTask, which is still a parked
+    // stub (its WorkPoolTask/EventLoop bridge is unimplemented), so scheduling
+    // the WalkTask never resolves the promise → the iterator hangs. Throw a
+    // clean error until ConcurrentPromiseTask re-attaches; scanSync() works.
     _ = this;
     _ = callframe;
-    return globalThis.throw("Glob.scan: not yet implemented in the native runtime", .{});
+    return globalThis.throw("Bun.Glob.scan() (async) is not yet implemented in the native runtime — use scanSync()", .{});
 }
 
-pub fn @"__scanSync"(this: *Glob, globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    _ = this;
-    _ = callframe;
-    return globalThis.throw("Glob.scanSync: not yet implemented in the native runtime", .{});
+fn __scan_disabled(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    const alloc = bun.default_allocator;
+
+    const arguments_ = callframe.arguments_old(1);
+    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
+    defer arguments.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    const globWalker = this.makeGlobWalker(globalThis, &arguments, "scan", alloc, &arena) catch |err| {
+        arena.deinit();
+        return err;
+    } orelse {
+        arena.deinit();
+        return .js_undefined;
+    };
+
+    incrPendingActivityFlag(&this.has_pending_activity);
+    var task = WalkTask.create(globalThis, alloc, globWalker, &this.has_pending_activity) catch {
+        decrPendingActivityFlag(&this.has_pending_activity);
+        globWalker.deinit(true);
+        alloc.destroy(globWalker);
+        return globalThis.throwOutOfMemory();
+    };
+    task.schedule();
+
+    return task.promise.value();
 }
 
-pub fn match(this: *Glob, globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    const alloc = home_rt.default_allocator;
+pub fn __scanSync(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    const alloc = bun.default_allocator;
+
+    const arguments_ = callframe.arguments_old(1);
+    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
+    defer arguments.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    var globWalker = this.makeGlobWalker(globalThis, &arguments, "scanSync", alloc, &arena) catch |err| {
+        arena.deinit();
+        return err;
+    } orelse {
+        arena.deinit();
+        return .js_undefined;
+    };
+    defer {
+        globWalker.deinit(true);
+        alloc.destroy(globWalker);
+    }
+
+    switch (try globWalker.walk()) {
+        .err => |err| {
+            return globalThis.throwValue(try err.toJS(globalThis));
+        },
+        .result => {},
+    }
+
+    const matchedPaths = globWalkResultToJS(globWalker, globalThis);
+
+    return matchedPaths;
+}
+
+pub fn match(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    const alloc = bun.default_allocator;
     var arena = Arena.init(alloc);
     defer arena.deinit();
 
     const arguments_ = callframe.arguments_old(1);
-    var arguments = CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
+    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
     defer arguments.deinit();
     const str_arg = arguments.nextEat() orelse {
         return globalThis.throw("Glob.matchString: expected 1 arguments, got 0", .{});
@@ -146,34 +388,23 @@ pub fn match(this: *Glob, globalThis: *JSGlobalObject, callframe: *CallFrame) JS
     var str = try str_arg.toSlice(globalThis, arena.allocator());
     defer str.deinit();
 
-    return JSValue.jsBoolean(home_rt.glob.match(this.pattern, str.slice()).matches());
+    return jsc.JSValue.jsBoolean(bun.glob.match(this.pattern, str.slice()).matches());
 }
 
-test "glob: pending-activity atomic round-trips through incr/decr" {
-    var g: Glob = .{ .pattern = "**/*.zig" };
-    try std.testing.expect(!g.hasPendingActivity());
-    incrPendingActivityFlag(&g.has_pending_activity);
-    try std.testing.expect(g.hasPendingActivity());
-    incrPendingActivityFlag(&g.has_pending_activity);
-    try std.testing.expectEqual(@as(usize, 2), g.has_pending_activity.load(.seq_cst));
-    decrPendingActivityFlag(&g.has_pending_activity);
-    try std.testing.expect(g.hasPendingActivity());
-    decrPendingActivityFlag(&g.has_pending_activity);
-    try std.testing.expect(!g.hasPendingActivity());
-}
+const string = []const u8;
 
-test "glob: pattern field stores upstream-style glob expression" {
-    const g: Glob = .{ .pattern = "src/**/*.{ts,tsx}" };
-    try std.testing.expectEqualStrings("src/**/*.{ts,tsx}", g.pattern);
-}
+const ResolvePath = @import("../../paths/resolve_path.zig");
+const Syscall = @import("../../sys/sys.zig");
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Arena = std.heap.ArenaAllocator;
 
-test "glob: finalizePattern frees the owned slice" {
-    const dup = try std.testing.allocator.dupe(u8, "*.zig");
-    var g: Glob = .{ .pattern = dup };
-    g.finalizePattern(std.testing.allocator);
-    // If we leaked, the test allocator would fire on teardown.
-}
+const bun = @import("bun");
+const BunString = bun.String;
+const GlobWalker = bun.glob.BunGlobWalker;
 
-test "glob: JSValue tag size matches i64" {
-    try std.testing.expectEqual(@as(usize, @sizeOf(i64)), @sizeOf(JSValue));
-}
+const jsc = bun.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSValue = jsc.JSValue;
+const ZigString = jsc.ZigString;
+const ArgumentsSlice = jsc.CallFrame.ArgumentsSlice;
