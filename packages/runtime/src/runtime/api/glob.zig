@@ -300,16 +300,6 @@ fn decrPendingActivityFlag(has_pending_activity: *std.atomic.Value(usize)) void 
 }
 
 pub fn __scan(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    // Async scan rides on jsc.ConcurrentPromiseTask, which is still a parked
-    // stub (its WorkPoolTask/EventLoop bridge is unimplemented), so scheduling
-    // the WalkTask never resolves the promise → the iterator hangs. Throw a
-    // clean error until ConcurrentPromiseTask re-attaches; scanSync() works.
-    _ = this;
-    _ = callframe;
-    return globalThis.throw("Bun.Glob.scan() (async) is not yet implemented in the native runtime — use scanSync()", .{});
-}
-
-fn __scan_disabled(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
     const alloc = bun.default_allocator;
 
     const arguments_ = callframe.arguments_old(1);
