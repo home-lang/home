@@ -183,6 +183,20 @@ pub fn nodeHttpClient(
     return fetchImpl(true, ctx, callframe);
 }
 
+/// Normalize a request URL from a `bun.String`. Mirrors upstream
+/// `URL.fromString` (which lives in url.zig there, but can't here — Home's
+/// url.zig is a leaf module without `jsc`): run the JSC URL parser to
+/// canonicalize, then parse into a ZigURL. The previous url.zig `fromString`
+/// was a generic placeholder that returned an empty URL for `bun.String`
+/// (no `slice` decl → `fromUTF8("")`), which made every fetch connect to the
+/// default port of an empty host.
+fn parseRequestURL(allocator: std.mem.Allocator, input: bun.String) !ZigURL {
+    var href = jsc.URL.hrefFromString(input);
+    if (href.tag == .Dead) return error.InvalidURL;
+    defer href.deref();
+    return ZigURL.parse(try href.toOwnedSlice(allocator));
+}
+
 /// Shared implementation of fetch
 fn fetchImpl(
     comptime allow_get_body: bool,
@@ -365,7 +379,7 @@ fn fetchImpl(
         return dataURLResponse(data_url, globalThis, allocator);
     }
 
-    url = ZigURL.fromString(allocator, url_str) catch {
+    url = parseRequestURL(allocator, url_str) catch {
         const err = ctx.toTypeError(.INVALID_URL, "fetch() URL is invalid", .{});
         is_error = true;
         return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(
