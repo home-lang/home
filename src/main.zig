@@ -1748,6 +1748,70 @@ const VmRunState = struct {
 /// `loadExtraEnvAndSourceCodePrinter`, the main-thread-VM flag, and — critically —
 /// ran loadEntryPoint OUTSIDE the API lock. Doing all of Run.boot's setup makes it
 /// deterministic. Gated behind HOME_NATIVE_VM=1 while validated end-to-end.
+/// Handle Bun-style inline-eval CLI invocations through the full VM:
+/// `home [runtime-flags] (--print|-p) <expr>` and `home [runtime-flags]
+/// (-e|--eval) <code>`. Returns true if it handled the args (in which case the
+/// VM globalExits, so this never actually returns true), false otherwise.
+/// `--expose-gc` exposes `globalThis.gc` (aliased to `Bun.gc`). The code runs
+/// through `runFileViaVM` (real Bun globals) via a temp module, matching
+/// `bun --print` / `bun -e`.
+fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !bool {
+    if (comptime !build_options.enable_jsc) return false;
+    var code: ?[]const u8 = null;
+    var print_mode = false;
+    var expose_gc = false;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--print") or std.mem.eql(u8, a, "-p")) {
+            print_mode = true;
+            if (i + 1 < args.len) {
+                code = args[i + 1];
+                i += 1;
+            }
+        } else if (std.mem.eql(u8, a, "-e") or std.mem.eql(u8, a, "--eval")) {
+            if (i + 1 < args.len) {
+                code = args[i + 1];
+                i += 1;
+            }
+        } else if (std.mem.eql(u8, a, "--expose-gc")) {
+            expose_gc = true;
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            // Other leading runtime flags are accepted and ignored.
+        } else if (code == null) {
+            // A bare positional before any eval flag isn't ours (let the file
+            // path / command handlers deal with it).
+            return false;
+        }
+    }
+    if (code == null) return false;
+
+    // Assemble the module source: optional gc alias, then either the raw code
+    // (`-e`) or a `console.log(<expr>)` wrapper (`--print`).
+    var src: std.ArrayListUnmanaged(u8) = .empty;
+    defer src.deinit(allocator);
+    if (expose_gc) try src.appendSlice(allocator, "try { globalThis.gc = Bun.gc; } catch {}\n");
+    if (print_mode) {
+        try src.appendSlice(allocator, "console.log(");
+        try src.appendSlice(allocator, code.?);
+        try src.appendSlice(allocator, ");\n");
+    } else {
+        try src.appendSlice(allocator, code.?);
+        try src.appendSlice(allocator, "\n");
+    }
+
+    // Write to a temp module and run it through the full VM.
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.js", .{std.c.getpid()}) catch
+        return false;
+    Io.Dir.cwd().writeFile(g_io, .{ .sub_path = tmp_path, .data = src.items }) catch return false;
+    runFileViaVM(allocator, tmp_path) catch |err| {
+        std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+        std.process.exit(1);
+    };
+    return true;
+}
+
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
@@ -4193,6 +4257,13 @@ pub fn main(init: std.process.Init) !void {
 
         try pkgCommand(allocator, args[2..]);
         return;
+    }
+
+    // `home [runtime-flags] (--print|-p) <expr>` / `(-e|--eval) <code>` —
+    // Bun-style inline eval through the full VM (real globals). Handled before
+    // the file-based implicit run since these take an expression, not a file.
+    if (build_options.enable_jsc) {
+        if (try tryEvalFlagRun(allocator, args)) return;
     }
 
     // Implicit run: `home [runtime-flags] <file.js|.ts|…> [script-args]`
