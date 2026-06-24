@@ -466,13 +466,17 @@ const JSValue = opaques.JSValue;
 const JSContextRef = opaques.JSContextRef;
 const JSObject = opaques.JSObject;
 
+// NOTE (2026-06-24): the bake-static / HTML-route serve test harness below was
+// built on the OLD ServerJSStub mock (mock `server.Server`, value-based
+// HTMLBundle with init(allocator,path)/route(), HTMLBundle.References/
+// buildClientScript, applyHTMLRouteToDevServer). The real pin server replaced
+// those, so this harness's mock-only entry points (serveNative,
+// buildBakeStaticClientScriptNative) now throw "not implemented" and no
+// ServeHandle is ever created. The struct keeps only the fields the (now-dead)
+// HMR-socket helpers reference so everything still compiles.
 const ServeHandle = struct {
     id: usize,
     dev: home_rt.runtime.bake.DevServer,
-    server: home_rt.runtime.server.Server,
-    server_config: ?home_rt.runtime.server.ServerConfig.ServerConfig = null,
-    html_bundle: ?home_rt.runtime.server.HTMLBundle.HTMLBundle = null,
-    html_route: ?home_rt.runtime.server.HTMLBundle.Route = null,
     next_hmr_socket_id: usize = 1,
     hmr_sockets: std.AutoHashMapUnmanaged(usize, *home_rt.runtime.bake.HmrSocket) = .empty,
 };
@@ -2594,69 +2598,15 @@ fn serveNative(
 ) callconv(.c) ?*JSValue {
     _ = function;
     _ = this;
+    _ = argument_count;
+    _ = arguments;
     const actual_ctx = ctx.?;
-
-    if (argument_count < 1 or arguments[0] == null) {
-        setException(actual_ctx, exception, "Bun.serve() requires an options object");
-        return null;
-    }
-
-    const allocator = std.heap.smp_allocator;
-    const options = extern_fns.JSValueToObject(actual_ctx, arguments[0], exception) orelse return null;
-    var serve_shape = validateBakeHtmlServeOptions(allocator, actual_ctx, options, exception) catch |err| {
-        if (err == error.NativeException) return null;
-        setExceptionFmt(actual_ctx, exception, "Bun.serve() failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    defer serve_shape.deinit(allocator);
-
-    const handle = allocator.create(ServeHandle) catch {
-        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
-        return null;
-    };
-    errdefer allocator.destroy(handle);
-
-    const id = next_serve_id;
-    next_serve_id +|= 1;
-    handle.* = .{
-        .id = id,
-        .dev = home_rt.runtime.bake.DevServer.init(allocator),
-        .server = home_rt.runtime.server.Server.init(),
-    };
-    errdefer handle.dev.deinit();
-    handle.server.listener_active = true;
-    handle.server.attachDevServer(&handle.dev);
-
-    handle.html_bundle = home_rt.runtime.server.HTMLBundle.HTMLBundle.init(allocator, serve_shape.html_path) catch {
-        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
-        return null;
-    };
-    errdefer handle.html_bundle.?.deinit();
-
-    handle.html_route = handle.html_bundle.?.route();
-    errdefer handle.html_route.?.deinit(allocator);
-
-    handle.server_config = home_rt.runtime.server.ServerConfig.ServerConfig.init(allocator);
-    handle.server_config.?.appendHTMLRoute(serve_shape.route_path, &handle.html_route.?) catch {
-        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
-        return null;
-    };
-    home_rt.runtime.server.server_module.applyHTMLRouteToDevServer(&handle.dev, serve_shape.route_path, &handle.html_route.?) catch {
-        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
-        return null;
-    };
-
-    serve_handles.put(allocator, id, handle) catch {
-        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
-        return null;
-    };
-    return makeServeHandleResult(actual_ctx, id) catch |err| {
-        _ = serve_handles.remove(id);
-        handle.dev.deinit();
-        allocator.destroy(handle);
-        setExceptionFmt(actual_ctx, exception, "Bun.serve() failed: {s}", .{@errorName(err)});
-        return null;
-    };
+    // This test-harness serve path mocked the OLD ServerJSStub for bake-static /
+    // HTML-route + HMR testing. The real pin server replaced that API and does
+    // not yet support HTML-route serve, so this entry point now throws. (The
+    // real Bun.serve({fetch}) lives in BunObject.serve, not here.)
+    setException(actual_ctx, exception, "Bun.serve() HTML-route test harness is not available with the native server (bake-static/HMR not yet ported)");
+    return null;
 }
 
 fn stopServeNative(
@@ -2691,7 +2641,7 @@ fn beginServeRequestNative(
     const actual_ctx = ctx.?;
     const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
     if (serve_handles.get(id)) |handle| {
-        handle.server.beginRequest();
+        _ = handle; // serve handles are never created (HTML-route harness disabled)
     }
     return extern_fns.JSValueMakeUndefined(actual_ctx);
 }
@@ -2710,7 +2660,6 @@ fn endServeRequestNative(
     const actual_ctx = ctx.?;
     const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
     if (serve_handles.get(id)) |handle| {
-        handle.server.endRequest();
         destroyStoppedServeHandleIfIdle(id, handle);
     }
     return extern_fns.JSValueMakeUndefined(actual_ctx);
@@ -2880,73 +2829,15 @@ fn buildBakeStaticClientScriptNative(
 ) callconv(.c) ?*JSValue {
     _ = function;
     _ = this;
+    _ = argument_count;
+    _ = arguments;
     const actual_ctx = ctx.?;
-    if (argument_count < 3 or arguments[0] == null or arguments[1] == null or arguments[2] == null) {
-        setException(actual_ctx, exception, "Bake static client script requires html, script, and bunfig inputs");
-        return null;
-    }
-
-    const allocator = std.heap.smp_allocator;
-    const has_script_path = argument_count >= 4 and arguments[3] != null;
-    const html = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch {
-        setException(actual_ctx, exception, "Bake static client script failed to read html");
-        return null;
-    };
-    defer allocator.free(html);
-    const script_path = if (has_script_path)
-        valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch {
-            setException(actual_ctx, exception, "Bake static client script failed to read script path");
-            return null;
-        }
-    else
-        allocator.dupe(u8, "index.ts") catch {
-            setException(actual_ctx, exception, "Bake static client script failed to index default script path");
-            return null;
-        };
-    defer allocator.free(script_path);
-    const script_source_argument = if (has_script_path) arguments[2].? else arguments[1].?;
-    const script = valueToOwnedString(allocator, actual_ctx, script_source_argument, exception) catch {
-        setException(actual_ctx, exception, "Bake static client script failed to read script");
-        return null;
-    };
-    defer allocator.free(script);
-    const bunfig_argument = if (has_script_path) arguments[3].? else arguments[2].?;
-    const bunfig = valueToOwnedString(allocator, actual_ctx, bunfig_argument, exception) catch {
-        setException(actual_ctx, exception, "Bake static client script failed to read bunfig");
-        return null;
-    };
-    defer allocator.free(bunfig);
-
-    var refs = home_rt.runtime.server.HTMLBundle.References.parse(allocator, html) catch {
-        setException(actual_ctx, exception, "Bake static client script failed to parse html");
-        return null;
-    };
-    defer refs.deinit(allocator);
-
-    var files = std.StringHashMap([]const u8).init(allocator);
-    defer files.deinit();
-    files.put(script_path, script) catch {
-        setException(actual_ctx, exception, "Bake static client script failed to index script");
-        return null;
-    };
-
-    var define: home_rt.runtime.bake.DefineMap = .{};
-    defer define.deinit(allocator);
-    home_rt.runtime.bake.parseServeStaticDefineFromBunfig(allocator, bunfig, &define) catch {
-        setException(actual_ctx, exception, "Bake static client script failed to parse serve.static.define");
-        return null;
-    };
-
-    const output = home_rt.runtime.server.HTMLBundle.buildClientScript(allocator, &refs, &files, &define) catch {
-        setException(actual_ctx, exception, "Bake static client script failed to build");
-        return null;
-    };
-    defer allocator.free(output);
-
-    return makeStringValue(actual_ctx, output) catch {
-        setException(actual_ctx, exception, "Bake static client script failed to return output");
-        return null;
-    };
+    // The bake-static client-script builder relied on Home-specific
+    // HTMLBundle.References/buildClientScript helpers on the OLD mock HTMLBundle,
+    // which the real pin HTMLBundle doesn't have. Disabled until the bundler-
+    // backed bake-static pipeline is ported.
+    setException(actual_ctx, exception, "Bake static client script builder is not available with the native server (bundler not yet ported)");
+    return null;
 }
 
 fn serveIdFromArguments(ctx: *JSContextRef, argument_count: usize, arguments: [*c]const ?*JSValue) ?usize {
@@ -3037,44 +2928,25 @@ fn cleanupServeHandles() void {
 }
 
 fn stopServeHandle(id: usize, abrupt: bool) void {
+    _ = abrupt;
     const handle = serve_handles.get(id) orelse return;
-    handle.server.stopListening(abrupt);
     destroyStoppedServeHandleIfIdle(id, handle);
 }
 
 fn destroyStoppedServeHandleIfIdle(id: usize, handle: *ServeHandle) void {
-    if (handle.server.dev_server != null or handle.server.pending_requests != 0) return;
     _ = serve_handles.remove(id);
     deinitHmrSockets(handle);
     handle.hmr_sockets.deinit(std.heap.smp_allocator);
-    deinitServeHandleCarriers(handle);
     std.heap.smp_allocator.destroy(handle);
 }
 
 fn destroyServeHandle(id: usize, abrupt: bool) void {
+    _ = abrupt;
     const allocator = std.heap.smp_allocator;
     const handle = serve_handles.fetchRemove(id) orelse return;
-    handle.value.server.stopListening(abrupt);
     deinitHmrSockets(handle.value);
     handle.value.hmr_sockets.deinit(allocator);
-    deinitServeHandleCarriers(handle.value);
     allocator.destroy(handle.value);
-}
-
-fn deinitServeHandleCarriers(handle: *ServeHandle) void {
-    const allocator = std.heap.smp_allocator;
-    if (handle.server_config) |*config| {
-        config.deinit();
-        handle.server_config = null;
-    }
-    if (handle.html_route) |*route| {
-        route.deinit(allocator);
-        handle.html_route = null;
-    }
-    if (handle.html_bundle) |*bundle| {
-        bundle.deinit();
-        handle.html_bundle = null;
-    }
 }
 
 fn closeHmrSocket(handle: *ServeHandle, socket_id: usize) void {
