@@ -1886,6 +1886,10 @@ pub fn compileSource(
     checker.setModule(c.module);
     checker.setSource(source);
     checker.setIsDeclarationFile(is_declaration_file);
+    // tsc/tsgo suppress every grammar diagnostic (`grammarErrorOnNode`)
+    // once the source file has any parse error. Mirror that by telling
+    // the checker whether the parser produced syntactic diagnostics.
+    checker.setHasParseDiagnostics(parser.diagnostics.items.len > 0);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
     checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
     checker.setJsxFragmentFactoryContext(
