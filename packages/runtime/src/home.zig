@@ -873,6 +873,12 @@ pub const deprecated = struct {
     /// test body still trips the pinned Zig 0.17.0-dev.263 `**` tokenizer bug,
     /// so importing it would eagerly parse that file).
     pub const SinglyLinkedList = @import("bun_core/singly_linked_list.zig").SinglyLinkedList;
+
+    /// Same rationale as `SinglyLinkedList`: `RapidHash` is extracted to its own
+    /// module so `Bun.hash.rapidhash` can use it without importing
+    /// `bun_core/deprecated.zig` whole (whose RapidHash test trips the pinned
+    /// Zig `**` tokenizer bug).
+    pub const RapidHash = @import("bun_core/rapidhash.zig").RapidHash;
 };
 
 pub fn DebugOnlyDisabler(comptime Type: type) type {
