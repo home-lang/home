@@ -2374,6 +2374,10 @@ pub const jsc = struct {
     // links the libc-backed allocator shim where WTF FastMalloc is not the
     // active heap, so this is a faithful no-op until the C++ binding lands.
     pub const wtf = struct {
+        /// WTF::StringBuilder bridge. Upstream reaches it as `jsc.wtf.StringBuilder`;
+        /// re-exported here so ported code (Bun.JSON5/YAML stringify) resolves verbatim.
+        pub const StringBuilder = @import("jsc/StringBuilder.zig").StringBuilder;
+
         pub fn releaseFastMallocFreeMemoryForThisThread() void {}
         pub fn parseDouble(input: []const u8) !f64 {
             return @import("home").parseDouble(input);

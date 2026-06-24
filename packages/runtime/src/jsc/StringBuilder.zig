@@ -21,15 +21,12 @@ const std = @import("std");
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = @import("home").jsc.JSValue;
 
-// `bun.String` C ABI stub: `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
-// See upstream src/string/BunString.h.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-};
+// The real `bun.String` (C ABI extern struct). Re-attached 2026-06-23 — the
+// earlier local `{tag, _padding, impl}` stub matched the C++ layout but isn't
+// the same Zig type the stringify callers pass, so use bun.String directly.
+const String = @import("home").String;
 
-const StringBuilder = @This();
+pub const StringBuilder = @This();
 
 const size = 24;
 const alignment = 8;
@@ -97,10 +94,19 @@ extern fn StringBuilder__appendLChar(*anyopaque, c: u8) void;
 extern fn StringBuilder__appendUChar(*anyopaque, c: u16) void;
 extern fn StringBuilder__appendQuotedJsonString(*anyopaque, str: String) void;
 
-// `toString` upstream wraps the extern with a `jsc.TopExceptionScope`
-// roundtrip; that scope type isn't ported yet (Phase 12.2). The raw C
-// entrypoint stays available as `StringBuilder__toString` for callers
-// willing to do the exception check themselves.
+// `toString` wraps the extern with a `jsc.TopExceptionScope` roundtrip,
+// matching upstream. Re-attached 2026-06-23 now that TopExceptionScope is
+// ported; used by `Bun.JSON5.stringify` / `Bun.YAML.stringify`.
+pub fn toString(this: *StringBuilder, global: *JSGlobalObject) @import("home").JSError!JSValue {
+    const jsc = @import("home").jsc;
+    var scope: jsc.TopExceptionScope = undefined;
+    scope.init(global, @src());
+    defer scope.deinit();
+
+    const result = StringBuilder__toString(&this.bytes, global);
+    try scope.returnIfException();
+    return result;
+}
 extern fn StringBuilder__toString(*anyopaque, global: *JSGlobalObject) JSValue;
 
 pub fn ensureUnusedCapacity(this: *StringBuilder, additional: usize) void {
