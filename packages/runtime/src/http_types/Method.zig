@@ -102,7 +102,7 @@ pub const Method = enum(u8) {
         @export(&fromNative, .{ .name = "Bun__HTTPMethod__from" });
     }
 
-    const Map = ComptimeStringMap(Method, .{
+    const Map = home_rt.ComptimeStringMap(Method, .{
         .{ "ACL", Method.ACL },
         .{ "BIND", Method.BIND },
         .{ "CHECKOUT", Method.CHECKOUT },
@@ -182,11 +182,11 @@ pub const Method = enum(u8) {
         return Map.get(str);
     }
 
-    pub fn fromJS(globalThis: *@import("home").jsc.JSGlobalObject, value: @import("home").jsc.JSValue) @import("home").JSError!?Method {
-        _ = globalThis;
-        _ = value;
-        return null;
-    }
+    /// Faithful to upstream `pub const fromJS = Map.fromJS` — a case-sensitive
+    /// ComptimeStringMap lookup of the JS string against the uppercase method
+    /// table. Was a stub returning null, so `new Request(url, {method:"POST"})`
+    /// silently defaulted to GET.
+    pub const fromJS = Map.fromJS;
 
     pub fn toJS(this: Method, globalThis: *home_rt.jsc.JSGlobalObject) home_rt.jsc.JSValue {
         return home_rt.jsc.ZigString.init(@tagName(this)).toJS(globalThis);
@@ -246,13 +246,5 @@ test "Method.isIdempotent matches RFC 7231" {
 const std = @import("std");
 const home_rt = @import("home");
 
-fn ComptimeStringMap(comptime V: type, comptime kvs_list: anytype) type {
-    return struct {
-        pub fn get(input: []const u8) ?V {
-            inline for (kvs_list) |kv| {
-                if (std.mem.eql(u8, kv.@"0", input)) return kv.@"1";
-            }
-            return null;
-        }
-    };
-}
+// (Local pure-Zig ComptimeStringMap removed — Method now uses the full
+// home_rt.ComptimeStringMap, which adds the JSC `fromJS` bridge.)
