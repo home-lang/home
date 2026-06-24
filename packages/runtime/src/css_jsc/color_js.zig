@@ -219,7 +219,10 @@ pub fn jsFunctionColor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFram
         }
 
         input = try args[0].toSlice(globalThis, bun.default_allocator);
-        return .null;
+
+        var parser_input = css.ParserInput.new(allocator, input.slice());
+        var parser = css.Parser.new(&parser_input, null, .{}, null);
+        break :brk css.CssColor.parse(&parser);
     };
 
     switch (parsed_color) {
@@ -401,7 +404,27 @@ pub fn jsFunctionColor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFram
                 return str.transferToJS(globalThis);
             }
 
-            return .null;
+            // Fallback to CSS string output (the `.css` format and any other
+            // path that `break :formatted`).
+            var dest = std.Io.Writer.Allocating.init(allocator);
+            const writer = &dest.writer;
+
+            const symbols = bun.ast.Symbol.Map{};
+            var printer = css.Printer.new(
+                allocator,
+                std.array_list.Managed(u8).init(allocator),
+                writer,
+                css.PrinterOptions.default(),
+                null,
+                null,
+                &symbols,
+            );
+
+            result.toCss(&printer) catch |err| {
+                return globalThis.throw("color() internal error: {s}", .{@errorName(err)});
+            };
+
+            return bun.String.createUTF8ForJS(globalThis, dest.written());
         },
     }
 }
