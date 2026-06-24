@@ -37,13 +37,9 @@ pub const isRelease = !isDebug;
 pub const allow_assert = isDebug;
 pub const enable_asan = false;
 /// Upstream `bun_core/env.zig:60` ties this to `build_options.enable_tinycc`.
-/// FUTURE UNLOCK for `bun:ffi` cc()/dlopen(): flip to true AND add
-/// "vendor/tinycc/" to native_vendor_roots in build.zig (Bun's release build
-/// compiles TinyCC, so the objects link). That pulls Home's ffi.zig CompileC
-/// path, which still needs ~5 Zig-0.17 drift fixes (keyIterator→keys(),
-/// `.{}`→`.empty`, jsc.ModuleLoader.resolveEmbeddedFile export, and the
-/// `.writer()`→std.Io.Writer.Allocating transition for the callback codegen).
-pub const enable_tinycc = false;
+/// On — `bun:ffi` cc()/dlopen(). Bun's release build compiles TinyCC
+/// (vendor/tinycc/*.o, linked via native_vendor_roots in build.zig).
+pub const enable_tinycc = true;
 pub const dump_source = false;
 pub const isKqueue = isMac or isFreeBSD;
 

@@ -37,6 +37,21 @@ fn dangerouslyRunWithoutJitProtections(R: type, func: anytype, args: anytype) R 
     return @call(bun.callmod_inline, func, args);
 }
 
+/// Run-once guard replacing the removed `std.once` (Zig 0.17). Not
+/// thread-safe; the FFI lazy-init sites that use it run during single-threaded
+/// startup/first-use, matching how Bun invokes them.
+fn Once(comptime f: fn () void) type {
+    return struct {
+        done: bool = false,
+        fn call(self: *@This()) void {
+            if (!self.done) {
+                f();
+                self.done = true;
+            }
+        }
+    };
+}
+
 const Offsets = extern struct {
     JSArrayBufferView__offsetOfLength: u32,
     JSArrayBufferView__offsetOfByteOffset: u32,
@@ -48,7 +63,7 @@ const Offsets = extern struct {
     fn loadOnce() void {
         Bun__FFI__ensureOffsetsAreLoaded();
     }
-    var once = std.once(loadOnce);
+    var once = Once(loadOnce){};
     pub fn get() *const Offsets {
         once.call();
         return &Bun__FFI__offsets;
@@ -244,7 +259,7 @@ pub const FFI = struct {
 
         var cached_default_system_include_dir: [:0]const u8 = "";
         var cached_default_system_library_dir: [:0]const u8 = "";
-        var cached_default_system_include_dir_once = std.once(getSystemRootDirOnce);
+        var cached_default_system_include_dir_once = Once(getSystemRootDirOnce){};
         fn getSystemRootDirOnce() void {
             if (Environment.isMac) {
                 var which_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
@@ -450,8 +465,7 @@ pub const FFI = struct {
 
             try this.errorCheck();
 
-            var symbol_iter = this.symbols.map.valueIterator();
-            while (symbol_iter.next()) |symbol| {
+            for (this.symbols.map.values()) |*symbol| {
                 if (symbol.needsNapiEnv()) {
                     state.addSymbol("Bun__thisFFIModuleNapiEnv", globalThis.makeNapiEnvForFFI()) catch return error.DeferredErrors;
                     break;
@@ -548,9 +562,8 @@ pub const FFI = struct {
     const SymbolsMap = struct {
         map: bun.StringArrayHashMapUnmanaged(Function) = .{},
         pub fn deinit(this: *SymbolsMap) void {
-            var iter = this.map.keyIterator();
-            while (iter.next()) |key| {
-                bun.default_allocator.free(@constCast(key.*));
+            for (this.map.keys()) |key| {
+                bun.default_allocator.free(@constCast(key));
             }
             this.map.clearAndFree(bun.default_allocator);
         }
@@ -736,7 +749,7 @@ pub const FFI = struct {
 
         if (try object.getOwn(globalThis, "source")) |source_value| {
             if (source_value.isArray()) {
-                compile_c.source = .{ .files = .{} };
+                compile_c.source = .{ .files = .empty };
                 var iter = try source_value.arrayIterator(globalThis);
                 while (try iter.next()) |value| {
                     if (!value.isString()) {
@@ -760,16 +773,16 @@ pub const FFI = struct {
         var tcc_state: ?*TCC.State = compile_c.compile(globalThis) catch |err| {
             switch (err) {
                 error.DeferredErrors => {
-                    var combined = std.array_list.Managed(u8).init(bun.default_allocator);
+                    var combined = std.Io.Writer.Allocating.init(bun.default_allocator);
                     defer combined.deinit();
-                    var writer = combined.writer();
+                    const writer = &combined.writer;
                     bun.handleOom(writer.print("{d} errors while compiling {s}\n", .{ compile_c.deferred_errors.items.len, if (compile_c.current_file_for_errors.len > 0) compile_c.current_file_for_errors else compile_c.source.first() }));
 
                     for (compile_c.deferred_errors.items) |deferred_error| {
                         bun.handleOom(writer.print("{s}\n", .{deferred_error}));
                     }
 
-                    return globalThis.throw("{s}", .{combined.items});
+                    return globalThis.throw("{s}", .{combined.written()});
                 },
                 error.JSError => |e| return e,
                 error.OutOfMemory => |e| return e,
@@ -783,8 +796,7 @@ pub const FFI = struct {
         const napi_env = makeNapiEnvIfNeeded(&compile_c.symbols.map, globalThis);
 
         var obj = jsc.JSValue.createEmptyObject(globalThis, compile_c.symbols.map.count());
-        var function_iter = compile_c.symbols.map.valueIterator();
-        while (function_iter.next()) |function| {
+        for (compile_c.symbols.map.values()) |*function| {
             const function_name = function.base_name.?;
 
             function.compile(napi_env) catch |err| {
@@ -1032,7 +1044,7 @@ pub const FFI = struct {
         var filepath_buf = bun.path_buffer_pool.get();
         defer bun.path_buffer_pool.put(filepath_buf);
         const name = brk: {
-            if (jsc.ModuleLoader.resolveEmbeddedFile(
+            if (@import("../../jsc/ModuleLoader.zig").resolveEmbeddedFile(
                 vm,
                 filepath_buf,
                 name_slice.slice(),
@@ -1057,12 +1069,10 @@ pub const FFI = struct {
         var symbols = bun.StringArrayHashMapUnmanaged(Function){};
         if (generateSymbols(global, bun.default_allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
-            var key_iter = symbols.keyIterator();
-            while (key_iter.next()) |key| {
-                bun.default_allocator.free(@constCast(key.*));
+            for (symbols.keys()) |key| {
+                bun.default_allocator.free(@constCast(key));
             }
-            var function_iter = symbols.valueIterator();
-            while (function_iter.next()) |function_| {
+            for (symbols.values()) |*function_| {
                 function_.arg_types.deinit(bun.default_allocator);
             }
             symbols.clearAndFree(bun.default_allocator);
@@ -1109,16 +1119,14 @@ pub const FFI = struct {
 
         const napi_env = makeNapiEnvIfNeeded(&symbols, global);
 
-        var function_iter = symbols.valueIterator();
-        while (function_iter.next()) |function| {
+        for (symbols.values()) |*function| {
             const function_name = function.base_name.?;
 
             // optional if the user passed "ptr"
             if (function.symbol_from_dynamic_library == null) {
                 const resolved_symbol = dylib.lookup(*anyopaque, function_name) orelse {
                     const ret = global.toInvalidArguments("Symbol \"{s}\" not found in \"{s}\"", .{ bun.asByteSlice(function_name), name });
-                    var cleanup_iter = symbols.valueIterator();
-                    while (cleanup_iter.next()) |value| {
+                    for (symbols.values()) |*value| {
                         bun.default_allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
                         value.arg_types.clearAndFree(bun.default_allocator);
                     }
@@ -1136,8 +1144,7 @@ pub const FFI = struct {
                     bun.asByteSlice(function_name),
                     name,
                 });
-                var cleanup_iter = symbols.valueIterator();
-                while (cleanup_iter.next()) |value| {
+                for (symbols.values()) |*value| {
                     value.deinit(global);
                 }
                 symbols.clearAndFree(bun.default_allocator);
@@ -1147,8 +1154,7 @@ pub const FFI = struct {
             switch (function.step) {
                 .failed => |err| {
                     defer {
-                        var cleanup_iter = symbols.valueIterator();
-                        while (cleanup_iter.next()) |other_function| {
+                        for (symbols.values()) |*other_function| {
                             other_function.deinit(global);
                         }
                     }
@@ -1159,8 +1165,7 @@ pub const FFI = struct {
                     return res;
                 },
                 .pending => {
-                    var cleanup_iter = symbols.valueIterator();
-                    while (cleanup_iter.next()) |other_function| {
+                    for (symbols.values()) |*other_function| {
                         other_function.deinit(global);
                     }
                     symbols.clearAndFree(bun.default_allocator);
@@ -1212,12 +1217,10 @@ pub const FFI = struct {
         var symbols = bun.StringArrayHashMapUnmanaged(Function){};
         if (generateSymbols(global, allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
             // an error while validating symbols
-            var key_iter = symbols.keyIterator();
-            while (key_iter.next()) |key| {
-                allocator.free(@constCast(key.*));
+            for (symbols.keys()) |key| {
+                allocator.free(@constCast(key));
             }
-            var function_iter = symbols.valueIterator();
-            while (function_iter.next()) |function_| {
+            for (symbols.values()) |*function_| {
                 function_.arg_types.deinit(allocator);
             }
             symbols.clearAndFree(allocator);
@@ -1233,14 +1236,12 @@ pub const FFI = struct {
 
         const napi_env = makeNapiEnvIfNeeded(&symbols, global);
 
-        var function_iter = symbols.valueIterator();
-        while (function_iter.next()) |function| {
+        for (symbols.values()) |*function| {
             const function_name = function.base_name.?;
 
             if (function.symbol_from_dynamic_library == null) {
                 const ret = global.toInvalidArguments("Symbol \"{s}\" is missing a \"ptr\" field. When using linkSymbols() or CFunction(), you must provide a \"ptr\" field with the memory address of the native function.", .{bun.asByteSlice(function_name)});
-                var cleanup_iter = symbols.valueIterator();
-                while (cleanup_iter.next()) |value| {
+                for (symbols.values()) |*value| {
                     allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
                     value.arg_types.clearAndFree(allocator);
                 }
@@ -1253,8 +1254,7 @@ pub const FFI = struct {
                     bun.asByteSlice(@errorName(err)),
                     bun.asByteSlice(function_name),
                 });
-                var cleanup_iter = symbols.valueIterator();
-                while (cleanup_iter.next()) |value| {
+                for (symbols.values()) |*value| {
                     value.deinit(global);
                 }
                 symbols.clearAndFree(allocator);
@@ -1262,8 +1262,7 @@ pub const FFI = struct {
             };
             switch (function.step) {
                 .failed => |err| {
-                    var cleanup_iter = symbols.valueIterator();
-                    while (cleanup_iter.next()) |value| {
+                    for (symbols.values()) |*value| {
                         allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
                         value.arg_types.clearAndFree(allocator);
                     }
@@ -1274,8 +1273,7 @@ pub const FFI = struct {
                     return res;
                 },
                 .pending => {
-                    var cleanup_iter = symbols.valueIterator();
-                    while (cleanup_iter.next()) |value| {
+                    for (symbols.values()) |*value| {
                         allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
                         value.arg_types.clearAndFree(allocator);
                     }
@@ -1588,7 +1586,7 @@ pub const FFI = struct {
 
             CompilerRT.define(state);
 
-            state.compileString(@ptrCast(source_code.written().ptr)) catch {
+            state.compileString(@ptrCast(source_code.written())) catch {
                 this.fail("Failed to compile source code");
                 return;
             };
@@ -1625,22 +1623,17 @@ pub const FFI = struct {
             is_threadsafe: bool,
         ) !void {
             jsc.markBinding(@src());
-            var source_code = std.array_list.Managed(u8).init(this.allocator);
-            var source_code_writer = source_code.writer();
+            var source_code = std.Io.Writer.Allocating.init(this.allocator);
+            defer source_code.deinit();
+            const source_code_writer = &source_code.writer;
             const ffi_wrapper = Bun__createFFICallbackFunction(js_context, js_function);
-            try this.printCallbackSourceCode(js_context, ffi_wrapper, &source_code_writer);
+            try this.printCallbackSourceCode(js_context, ffi_wrapper, source_code_writer);
 
-            if (comptime Environment.isDebug and Environment.isPosix) {
-                debug_write: {
-                    const fd = std.posix.open("/tmp/bun-ffi-callback-source.c", .{ .CREAT = true, .ACCMODE = .WRONLY }, 0o644) catch break :debug_write;
-                    _ = std.posix.write(fd, source_code.items) catch break :debug_write;
-                    std.posix.ftruncate(fd, source_code.items.len) catch break :debug_write;
-                    std.posix.close(fd);
-                }
-            }
+            // (Bun dumps the generated callback C to /tmp here in debug builds
+            // via std.posix.open; dropped — that posix API isn't in the forked
+            // std and the dump is debug-only convenience.)
 
-            try source_code.append(0);
-            // defer source_code.deinit();
+            try source_code.writer.writeByte(0);
 
             const state = TCC.State.init(Function, .{
                 .options = tcc_options,
@@ -1670,7 +1663,7 @@ pub const FFI = struct {
 
             CompilerRT.define(state);
 
-            state.compileString(@ptrCast(source_code.items)) catch {
+            state.compileString(@ptrCast(source_code.written())) catch {
                 this.fail("Failed to compile source code");
                 return;
             };
@@ -2357,13 +2350,14 @@ const CompilerRT = struct {
     };
 
     fn createCompilerRTDir() void {
+        const io = std.Io.Threaded.global_single_threaded.io();
         const tmpdir = Fs.FileSystem.instance.tmpdir() catch return;
-        var bunCC = tmpdir.makeOpenPath("bun-cc", .{}) catch return;
-        defer bunCC.close();
+        var bunCC = tmpdir.createDirPathOpen(io, "bun-cc", .{}) catch return;
+        defer bunCC.close(io);
 
         inline for (comptime std.meta.declarations(compiler_rt_sources)) |decl| {
             const source = @field(compiler_rt_sources, decl.name);
-            bunCC.writeFile(.{
+            bunCC.writeFile(io, .{
                 .sub_path = decl.name,
                 .data = source,
             }) catch {};
@@ -2371,7 +2365,7 @@ const CompilerRT = struct {
         var path_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
         compiler_rt_dir = bun.handleOom(bun.default_allocator.dupeZ(u8, bun.getFdPath(.fromStdDir(bunCC), &path_buf) catch return));
     }
-    var create_compiler_rt_dir_once = std.once(createCompilerRTDir);
+    var create_compiler_rt_dir_once = Once(createCompilerRTDir){};
 
     pub fn dir() ?[:0]const u8 {
         create_compiler_rt_dir_once.call();
@@ -2449,8 +2443,7 @@ const CompilerRT = struct {
 pub const Bun__FFI__cc = FFI.Bun__FFI__cc;
 
 fn makeNapiEnvIfNeeded(functions: *const bun.StringArrayHashMapUnmanaged(FFI.Function), globalThis: *JSGlobalObject) ?*napi.NapiEnv {
-    var iter = functions.valueIterator();
-    while (iter.next()) |function| {
+    for (functions.values()) |*function| {
         if (function.needsNapiEnv()) {
             return globalThis.makeNapiEnvForFFI();
         }
