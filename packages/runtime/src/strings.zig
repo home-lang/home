@@ -470,18 +470,18 @@ pub fn eqlComptimeCheckLenWithType(
     return true;
 }
 
-/// Case-insensitive equality that ignores the length difference (upstream
-/// behavior: callers ensure the length matches at the call site). Mirrors
-/// `bun.strings.eqlComptimeIgnoreLen` — but Home's copy is conservative
-/// and still checks length, since the only caller is the comptime-map
-/// lowercase path which has already established length parity.
+/// Case-SENSITIVE byte equality. Upstream `eqlComptimeIgnoreLen` is
+/// `eqlComptimeCheckLenWithType(u8, self, alt, false)` — the "ignore len" only
+/// means it skips a redundant length recheck, NOT that it folds case. An earlier
+/// Home copy folded case here, which silently made every `ComptimeStringMap.fromJS`
+/// lookup (and `ZigString.eqlComptime`) case-insensitive — e.g. `Bun.color(x,"hex")`
+/// resolving to the `HEX` (uppercase) format, and TOML `TRUE` parsing as `true`.
+/// The case-insensitive map paths (`getCaseInsensitiveWithEql`) lowercase their
+/// input before calling this against lowercase keys, so they still work.
 pub fn eqlComptimeIgnoreLen(a: anytype, comptime b: []const u8) bool {
     if (a.len != b.len) return false;
     inline for (b, 0..) |c, i| {
-        const ac = a[i];
-        const lower_ac: u8 = if (ac >= 'A' and ac <= 'Z') ac + 32 else ac;
-        const lower_b: u8 = if (c >= 'A' and c <= 'Z') c + 32 else c;
-        if (lower_ac != lower_b) return false;
+        if (a[i] != c) return false;
     }
     return true;
 }
@@ -1036,9 +1036,10 @@ test "eqlComptimeCheckLenWithType matches identical strings" {
     try std.testing.expect(!eqlComptimeCheckLenWithType(u8, "hi", "hello", true));
 }
 
-test "eqlComptimeIgnoreLen is case-insensitive" {
-    try std.testing.expect(eqlComptimeIgnoreLen("HELLO", "hello"));
-    try std.testing.expect(eqlComptimeIgnoreLen("Hello", "hello"));
+test "eqlComptimeIgnoreLen is case-sensitive (matches upstream byte compare)" {
+    try std.testing.expect(eqlComptimeIgnoreLen("hello", "hello"));
+    try std.testing.expect(!eqlComptimeIgnoreLen("HELLO", "hello"));
+    try std.testing.expect(!eqlComptimeIgnoreLen("Hello", "hello"));
     try std.testing.expect(!eqlComptimeIgnoreLen("world", "hello"));
 }
 
