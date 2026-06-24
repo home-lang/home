@@ -80,6 +80,7 @@ const bun_webkit_lib_default = "/Users/chrisbreuer/.bun/build-cache/webkit-54889
 const link_bun_rust_archive = false;
 
 const native_vendor_roots = [_][]const u8{
+    // "vendor/tinycc/",  // enable together with environment.enable_tinycc for bun:ffi
     "vendor/boringssl/",
     "vendor/cares/",
     "vendor/hdrhistogram/",
