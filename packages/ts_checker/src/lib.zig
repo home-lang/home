@@ -35,6 +35,10 @@ pub const LibCache = struct {
     /// `Number.prototype` shape — common formatting/conversion
     /// methods on the primitive `number` receiver.
     number_proto: TypeId = types.Primitive.none,
+    /// `Symbol` global-object (boxed) shape — the apparent type of the
+    /// `symbol` primitive. Built once and reused so `var x: Symbol`
+    /// resolves (instead of `unknown`) and `symbol` boxes into it.
+    symbol_proto: TypeId = types.Primitive.none,
     /// `Object` global — `keys / values / entries / assign`. Built
     /// once on first access.
     object_global: TypeId = types.Primitive.none,
@@ -337,6 +341,35 @@ pub fn numberProto(
     };
     cache.number_proto = try ti.internObjectType(&m);
     return cache.number_proto;
+}
+
+/// Build (or fetch from cache) the boxed `Symbol` shape — the apparent
+/// type of the `symbol` primitive. tsc's `Symbol` interface exposes
+/// `toString(): string`, `valueOf(): symbol`, and (es2019) a
+/// `description: string | undefined`. `description` is modeled optional
+/// so the `symbol`→`Symbol` boxing check — which only requires the
+/// universal `toString`/`valueOf` — succeeds, matching tsc (`symbol` is
+/// assignable to `Symbol`, but `Symbol` is not assignable to `symbol`).
+pub fn symbolProto(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.symbol_proto != types.Primitive.none) return cache.symbol_proto;
+
+    const string_t = types.Primitive.string_t;
+    const symbol_t = types.Primitive.symbol_t;
+    const string_or_undefined_t = try ti.internUnion(&[_]TypeId{ string_t, types.Primitive.undefined_t });
+    const sig_void_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
+    const sig_void_symbol = try ti.internSignature(&[_]TypeId{}, symbol_t, false);
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("toString"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("valueOf"), .type = sig_void_symbol, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("description"), .type = string_or_undefined_t, .is_optional = true, .is_readonly = true, .is_method = false },
+    };
+    cache.symbol_proto = try ti.internObjectType(&m);
+    return cache.symbol_proto;
 }
 
 /// Build (or fetch from cache) the `Array<T>.prototype` member shape

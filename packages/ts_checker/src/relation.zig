@@ -1214,7 +1214,12 @@ pub const Engine = struct {
         const is_boolean = source == Primitive.boolean_t or
             source == Primitive.true_lit or
             source == Primitive.false_lit;
-        if (!is_string and !is_number and !is_boolean) return false;
+        // `symbol` boxes into the `Symbol` interface (apparent type). The
+        // `Symbol` shape's required members are only the universal
+        // `toString`/`valueOf` (`description` is optional), so the member
+        // loop below accepts it. Pins `symbolType15` (`var x: Symbol = sym`).
+        const is_symbol = source == Primitive.symbol_t;
+        if (!is_string and !is_number and !is_boolean and !is_symbol) return false;
         for (self.interner.objectMembers(target)) |member| {
             if (member.is_optional) continue;
             if (!self.primitiveApparentHasMember(member.name, is_string, is_number)) return false;
