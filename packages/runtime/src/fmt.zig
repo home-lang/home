@@ -73,23 +73,42 @@ pub fn githubActionWriter(writer: *std.Io.Writer, text: []const u8) std.Io.Write
     };
 }
 
+const lower_hex_table = [_]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+const upper_hex_table = [_]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+
 /// Lowercase / uppercase hex-int formatter. Used by Bun's source as
-/// `bun.fmt.hexIntLower(value)` to print things like ETag hashes.
-pub const HexIntFormatter = struct {
-    value: u64,
-    upper: bool = false,
+/// `bun.fmt.hexIntLower(value)` to print things like ETag hashes, npm cache
+/// keys, and sourcemap debug IDs. Faithful to upstream `bun_core/fmt.zig` —
+/// zero-pads to the value type's full nibble width (`@bitSizeOf(Int)/4`), which
+/// the earlier Home `{x}`/`{X}` shim did NOT, breaking e.g. `Bun.color(x,"hex")`
+/// (u8 → 2 digits) and 32-char sourcemap debug IDs with leading zeros.
+pub fn HexIntFormatter(comptime Int: type, comptime lower: bool) type {
+    return struct {
+        value: Int,
 
-    pub fn format(self: HexIntFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        if (self.upper) {
-            try writer.print("{X}", .{self.value});
-        } else {
-            try writer.print("{x}", .{self.value});
+        const table = if (lower) lower_hex_table else upper_hex_table;
+
+        const BufType = [@bitSizeOf(Int) / 4]u8;
+
+        fn getOutBuf(value: Int) BufType {
+            var buf: BufType = undefined;
+            inline for (&buf, 0..) |*c, i| {
+                // value relative to the current nibble
+                c.* = table[@as(u8, @as(u4, @truncate(value >> comptime ((buf.len - i - 1) * 4)))) & 0xF];
+            }
+            return buf;
         }
-    }
-};
 
-pub fn hexIntLower(value: anytype) HexIntFormatter {
-    return .{ .value = @intCast(value), .upper = false };
+        pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+            const value = self.value;
+            try writer.writeAll(&getOutBuf(value));
+        }
+    };
+}
+
+pub fn hexIntLower(value: anytype) HexIntFormatter(@TypeOf(value), true) {
+    const Formatter = HexIntFormatter(@TypeOf(value), true);
+    return Formatter{ .value = value };
 }
 
 /// Equivalent to `{d:.<precision>}` but trims trailing zeros from the
@@ -123,8 +142,9 @@ pub fn trimmedPrecision(value: f64, comptime precision: usize) TrimmedPrecisionF
     return Formatter{ .num = value, .precision = precision };
 }
 
-pub fn hexIntUpper(value: anytype) HexIntFormatter {
-    return .{ .value = @intCast(value), .upper = true };
+pub fn hexIntUpper(value: anytype) HexIntFormatter(@TypeOf(value), false) {
+    const Formatter = HexIntFormatter(@TypeOf(value), false);
+    return Formatter{ .value = value };
 }
 
 pub const DurationOneDecimalFormatter = struct {
@@ -565,7 +585,8 @@ test "hexIntUpper prints uppercase hex" {
     var buf: [32]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
     try writer.print("{f}", .{hexIntUpper(@as(u32, 0xCAFE))});
-    try std.testing.expectEqualStrings("CAFE", writer.buffered());
+    // Zero-padded to the u32 nibble width (8 digits), matching upstream.
+    try std.testing.expectEqualStrings("0000CAFE", writer.buffered());
 }
 
 test "quote escapes the standard control characters" {
