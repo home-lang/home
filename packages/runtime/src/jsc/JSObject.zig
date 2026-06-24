@@ -85,11 +85,19 @@ pub const JSObject = opaque {
         }
     }
 
+    extern fn JSC__JSObject__getIndex(this: home_rt.jsc.JSValue, globalThis: *home_rt.jsc.JSGlobalObject, i: u32) home_rt.jsc.JSValue;
+
     pub fn getIndex(value: home_rt.jsc.JSValue, globalThis: *home_rt.jsc.JSGlobalObject, index: u32) home_rt.JSError!home_rt.jsc.JSValue {
-        _ = value;
-        _ = globalThis;
-        _ = index;
-        return .js_undefined;
+        // Don't use fromJSHostCall — the underlying getter can legitimately
+        // return `undefined` together with a pending exception, which that
+        // helper would assert against. Mirror Bun's JSObject.getIndex.
+        var scope: home_rt.jsc.TopExceptionScope = undefined;
+        scope.init(globalThis, @src());
+        defer scope.deinit();
+        const result = JSC__JSObject__getIndex(value, globalThis, index);
+        try scope.returnIfException();
+        home_rt.assert(result != .zero);
+        return result;
     }
 
     pub fn createWithInitializer(
