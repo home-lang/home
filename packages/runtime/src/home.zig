@@ -4882,9 +4882,11 @@ pub const sys = struct {
     pub const recvNonBlock = @import("sys/sys.zig").recvNonBlock;
     pub const readNonblocking = @import("sys/sys.zig").readNonblocking;
 
-    pub fn setFileOffset(_: FD, _: usize) Maybe(void) {
-        return .success;
-    }
+    // Faithful to upstream: the real lseek-backed implementation lives in
+    // `sys/sys.zig`. The earlier no-op stub silently dropped the seek, so
+    // `Bun.file().slice(n)` (and tarball/fs reads) ignored their byte offset
+    // and read from 0. Re-export the real one.
+    pub const setFileOffset = @import("sys/sys.zig").setFileOffset;
 
     fn pathBytes(path_: anytype) []const u8 {
         const PathType = @TypeOf(path_);
