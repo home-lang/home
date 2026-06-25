@@ -154,7 +154,7 @@ pub const SubscriptionCtx = struct {
     }
 
     pub fn getCallbacks(this: *Self, globalObject: *jsc.JSGlobalObject, channelName: JSValue) bun.JSError!?JSValue {
-        const result = try this.subscriptionCallbackMap().get(globalObject, channelName);
+        const result = this.subscriptionCallbackMap().get(globalObject, channelName);
         if (result == .js_undefined) {
             return null;
         }
