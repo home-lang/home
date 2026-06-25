@@ -101,6 +101,7 @@ pub const whitespace_chars = @import("string/immutable.zig").whitespace_chars;
 pub const grapheme = @import("string/immutable.zig").grapheme;
 pub const isValidUTF8 = @import("string/immutable.zig").isValidUTF8;
 pub const indexOfAny16 = @import("string/immutable.zig").indexOfAny16;
+pub const decodeHexToBytes = @import("string/immutable.zig").decodeHexToBytes;
 pub const decodeHexToBytesTruncate = @import("string/immutable.zig").decodeHexToBytesTruncate;
 pub const trim = @import("string/immutable.zig").trim;
 pub const copyLatin1IntoUTF16 = @import("string/immutable.zig").copyLatin1IntoUTF16;

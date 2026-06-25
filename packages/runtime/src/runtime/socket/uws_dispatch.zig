@@ -59,6 +59,9 @@ const tables = blk: {
     //   .mysql(_tls)             -> handlers.MySQL
     //   .valkey(_tls)            -> handlers.Valkey
 
+    t.set(.postgres, vtable.make(handlers.Postgres(false)));
+    t.set(.postgres_tls, vtable.make(handlers.Postgres(true)));
+
     // IPC
     t.set(.spawn_ipc, vtable.make(handlers.SpawnIPC));
 

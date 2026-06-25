@@ -247,7 +247,9 @@ pub const Tag = enum(short) {
         };
     }
 
-    // JSC-bridge `toJSTypedArrayType` / `toJS` omitted — re-lands in Phase 12.2.
+    // JSC-bridge re-export (sql_jsc/postgres is now wired).
+    pub const toJSTypedArrayType = @import("../../../sql_jsc/postgres/types/tag_jsc.zig").toJSTypedArrayType;
+
     pub fn fromJS(globalObject: *home_rt.jsc.JSGlobalObject, value: home_rt.jsc.JSValue) home_rt.JSError!Tag {
         if (value.isEmptyOrUndefinedOrNull()) return .numeric;
 

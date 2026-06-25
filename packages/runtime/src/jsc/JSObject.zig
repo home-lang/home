@@ -119,13 +119,10 @@ pub const JSObject = opaque {
         tag: u8 = 0,
         value: extern union {
             index: u32,
-            // Upstream stores `bun.String` (3 × usize) here. We mirror with a
-            // raw `[3]usize` so the size + alignment matches in this leaf —
-            // when `bun.String` lands we swap the type and remove the cast.
-            name: [3]usize,
+            name: home_rt.String,
         },
 
-        pub fn string(this: *ExternColumnIdentifier) ?*[3]usize {
+        pub fn string(this: *ExternColumnIdentifier) ?*home_rt.String {
             return switch (this.tag) {
                 2 => &this.value.name,
                 else => null,
@@ -134,6 +131,12 @@ pub const JSObject = opaque {
 
         pub fn deinit(_: *ExternColumnIdentifier) void {}
     };
+
+    extern fn JSC__createStructure(global: *home_rt.jsc.JSGlobalObject, owner: *home_rt.jsc.JSCell, length: u32, names: [*]ExternColumnIdentifier) home_rt.jsc.JSValue;
+
+    pub fn createStructure(global: *home_rt.jsc.JSGlobalObject, owner: home_rt.jsc.JSValue, length: u32, names: [*]ExternColumnIdentifier) home_rt.jsc.JSValue {
+        return JSC__createStructure(global, owner.asCell(), length, names);
+    }
 };
 
 test "JSObject is an opaque type" {
@@ -145,9 +148,9 @@ test "JSObject is an opaque type" {
 
 test "ExternColumnIdentifier tag dispatch" {
     var id_index = JSObject.ExternColumnIdentifier{ .tag = 1, .value = .{ .index = 42 } };
-    try std.testing.expectEqual(@as(?*[3]usize, null), id_index.string());
+    try std.testing.expectEqual(@as(?*home_rt.String, null), id_index.string());
 
-    var id_name = JSObject.ExternColumnIdentifier{ .tag = 2, .value = .{ .name = .{ 0, 0, 0 } } };
+    var id_name = JSObject.ExternColumnIdentifier{ .tag = 2, .value = .{ .name = home_rt.String.dead } };
     try std.testing.expect(id_name.string() != null);
 }
 

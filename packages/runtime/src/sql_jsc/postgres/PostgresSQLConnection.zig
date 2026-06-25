@@ -1836,7 +1836,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @TypeOf(.enum_lite
                 defer {
                     err.deinit();
                 }
-                this.failWithJSValue(err.toJS(this.globalObject));
+                this.failWithJSValue(err.toJS(this.globalObject) catch return);
 
                 // it shouldn't enqueue any requests while connecting
                 bun.assert(this.requests.count == 0);

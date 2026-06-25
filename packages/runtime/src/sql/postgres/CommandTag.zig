@@ -53,6 +53,10 @@ pub const CommandTag = union(enum) {
         pub const Map = home_rt.ComptimeEnumMap(KnownCommand);
     };
 
+    /// JSC-bridge re-exports (now that sql_jsc/postgres is wired).
+    pub const toJSTag = @import("../../sql_jsc/postgres/command_tag_jsc.zig").toJSTag;
+    pub const toJSNumber = @import("../../sql_jsc/postgres/command_tag_jsc.zig").toJSNumber;
+
     pub fn init(tag: []const u8) CommandTag {
         const first_space_index = home_rt.strings.indexOfChar(tag, ' ') orelse return .{ .other = tag };
         const cmd = KnownCommand.Map.get(tag[0..first_space_index]) orelse return .{
