@@ -1579,7 +1579,7 @@ fn runJsLikeFile(allocator: std.mem.Allocator, file_path: []const u8, extra_args
     // home_rt.jsc.VirtualMachine directly (no bun.js.zig CLI cone). Experimental,
     // isolated behind its own flag while validated against the standalone binary.
     if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
-        runFileViaVM(allocator, file_path) catch |err| {
+        runFileViaVM(allocator, file_path, extra_args) catch |err| {
             std.debug.print("{s}error:{s} native VM run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
             std.process.exit(1);
         };
@@ -1805,14 +1805,14 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.js", .{std.c.getpid()}) catch
         return false;
     Io.Dir.cwd().writeFile(g_io, .{ .sub_path = tmp_path, .data = src.items }) catch return false;
-    runFileViaVM(allocator, tmp_path) catch |err| {
+    runFileViaVM(allocator, tmp_path, &.{}) catch |err| {
         std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
         std.process.exit(1);
     };
     return true;
 }
 
-fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
+fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1860,6 +1860,18 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
     var b = &vm.transpiler;
     vm.arena = &arena;
     vm.allocator = arena.allocator();
+
+    // `process.argv` is built as [execPath, scriptPath, ...vm.argv]; vm.argv holds
+    // the user's script arguments. Without this, `home file.js a b c` (and the
+    // Bun.spawn(cmd:[bunExe(),script,arg]) shape Bun's tests use) would see an
+    // argv missing every trailing arg — e.g. `process.argv.at(-1)` returns the
+    // script path, so `Bun.sleep(parseFloat(arg))` becomes `sleep(NaN)`. Copy
+    // the [:0]const u8 args into the []const u8 slice vm.argv expects.
+    if (extra_args.len > 0) {
+        const argv_slice = try allocator.alloc([]const u8, extra_args.len);
+        for (extra_args, argv_slice) |src, *dst| dst.* = src;
+        vm.argv = argv_slice;
+    }
 
     // Resolver/transpiler config mirrored from Run.boot (defaults for the install
     // knobs since there's no CLI context here).
