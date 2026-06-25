@@ -975,7 +975,41 @@ pub const Parser = struct {
         // infer_type node and verifies its position via the parent
         // chain. See `validateInferTypePositions` for the algorithm.
         try self.validateInferTypePositions();
+        self.suppressWithUnsupportedWhenFileHasParseErrors();
         return root;
+    }
+
+    /// TS2410 ("the 'with' statement is not supported") is a checker
+    /// diagnostic that tsc gates on `hasParseDiagnostics` — it is dropped
+    /// whenever the source file has any true SYNTACTIC parse error,
+    /// leaving only the unconditional grammar errors. Home emits TS2410
+    /// from the parser, so mirror that gate: once parsing is done, if any
+    /// diagnostic other than the grammar errors that legitimately
+    /// co-occur with TS2410 (TS1036 ambient-statement, TS1101 strict-mode
+    /// `with`) and TS2410 itself was recorded, remove every TS2410. Those
+    /// excluded codes are grammar errors (added like tsc's
+    /// `grammarErrorOnNode`), NOT `parseDiagnostics`, so they don't
+    /// suppress TS2410. Covers `plainJSBinderErrors` (syntactic errors ->
+    /// TS1101 only) and `missingCloseParenStatements` (malformed `with (`
+    /// -> TS1101 only) while keeping the ambient `with` (TS1036+TS2410)
+    /// and clean strict `with` (TS1101+TS2410) cases intact.
+    fn suppressWithUnsupportedWhenFileHasParseErrors(self: *Parser) void {
+        var has_other_error = false;
+        for (self.diagnostics.items) |d| {
+            if (d.code != 1036 and d.code != 1101 and d.code != 2410) {
+                has_other_error = true;
+                break;
+            }
+        }
+        if (!has_other_error) return;
+        var i: usize = 0;
+        while (i < self.diagnostics.items.len) {
+            if (self.diagnostics.items[i].code == 2410) {
+                _ = self.diagnostics.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Post-parse walk that emits TS1338 for every `infer N` node not
