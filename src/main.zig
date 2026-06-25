@@ -1894,6 +1894,15 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8) !void {
 fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
     _ = allocator_unused;
+    // Bun stamps `bun.start_time` at process entry (its own main.zig); the test
+    // runner's "Ran N tests across M files. [Xms]" summary measures elapsed from
+    // it. The Home binary has a different entry point, so that var is still 0
+    // here — printStartEnd would then report the whole monotonic clock (~days).
+    // Stamp it now so the summary reports the actual test-run duration. Use the
+    // exact same clock source the runner's summary reads for `end`
+    // (getRoughTickCount(.force_real_time), a monotonic tick) — nanoTimestamp()
+    // here is CLOCK.REALTIME (epoch) and would make end-start wildly negative.
+    home_rt.start_time = home_rt.getRoughTickCount(.force_real_time).ns();
     // Bun's test runner runs on `default_allocator` (mimalloc). Home's main
     // uses a leak-checking DebugAllocator, but the JSC string machinery
     // (ZigString.Slice.intoOwnedSlice) has a fast no-copy path gated on the
