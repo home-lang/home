@@ -3464,24 +3464,35 @@ pub const Parser = struct {
 
     fn parseWithStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // with
+        // tsc emits TS2410 ("the 'with' statement is not supported") for
+        // the outermost `with` in EVERY mode, and ADDITIONALLY the grammar
+        // error TS1101 ("not allowed in strict mode") when in strict mode.
+        // TS1101 is emitted during parsing; TS2410 is a checker-phase
+        // diagnostic gated on a parse-clean header, so a malformed
+        // `with (` missing its close paren gets only TS1101
+        // (`missingCloseParenStatements`). We mirror that by deferring
+        // TS2410 in strict mode until after the header parses cleanly.
+        // Targeting ES2015+ alone is NOT strict (see
+        // `arrowFunctionContexts(alwaysstrict=false)`), so the bare-script
+        // case still takes the non-strict TS2410 branch.
+        var defer_ts2410_if_clean = false;
         if (self.isAmbientContextAt(start.span.start)) {
             try self.reportCodeAt(start.span.start, start.line, 1036, "Statements are not allowed in ambient contexts.");
             try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         } else if (self.strict_mode) {
-            // tsc only emits TS1101 when the source is genuinely in
-            // strict mode (either an explicit `"use strict"`, an ES
-            // module top-level, or `alwaysStrict`/`strict` is on).
-            // Targeting ES2015+ alone is NOT enough to fire TS1101 —
-            // the upstream baseline for fixtures like
-            // `arrowFunctionContexts(alwaysstrict=false).errors.txt`
-            // emits TS2410 only.
             try self.reportCodeAt(start.span.start, start.line, 1101, "'with' statements are not allowed in strict mode.");
+            defer_ts2410_if_clean = self.unsupported_with_body_depth == 0;
         } else if (self.unsupported_with_body_depth == 0) {
             try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         }
+        const open_clean = self.peek().kind == .open_paren;
         const with_open = try self.expect(.open_paren, "'(' after 'with'");
         const object_expr = try self.parseExpression();
+        const close_clean = self.peek().kind == .close_paren;
         _ = try self.expectClosingMatch(.close_paren, "')' after with expression", with_open.span.start, "(", ")");
+        if (defer_ts2410_if_clean and open_clean and close_clean) {
+            try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
+        }
         self.unsupported_with_body_depth += 1;
         defer self.unsupported_with_body_depth -= 1;
         const body = try self.parseNestedStatement();
@@ -24991,22 +25002,29 @@ test "parser: invalid later binary and octal digits in var initializers report c
     try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[1].message);
 }
 
-test "parser: with statement in strict mode suppresses unsupported diagnostic" {
-    // tsc reserves TS1101 ("'with' statements are not allowed in
-    // strict mode.") for genuinely strict sources — a `"use strict"`
-    // directive or the always-strict harness setting. Targeting
-    // ES2015+ alone does not flip the source into strict mode for
-    // diagnostic purposes (see baseline
-    // `arrowFunctionContexts(alwaysstrict=false).errors.txt`).
+test "parser: well-formed with statement in strict mode emits both TS1101 and TS2410" {
+    // A `with` in genuinely strict code (an explicit `"use strict"`
+    // directive, an ES module, or `alwaysStrict`) draws BOTH the grammar
+    // error TS1101 ("not allowed in strict mode") and the checker error
+    // TS2410 ("not supported"). tsc emits both for every well-formed
+    // strict `with` (e.g. `withStatement`, `parserStrictMode14`); only a
+    // malformed `with (` missing its close paren drops TS2410. Targeting
+    // ES2015+ alone is NOT strict (see
+    // `arrowFunctionContexts(alwaysstrict=false)`), so the bare-script
+    // case still takes the non-strict TS2410-only path.
     var s = try newTestSetup("\"use strict\"; with (1) return;");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expect(s.parser.diagnostics.items.len >= 1);
     try T.expectEqual(@as(u32, 1101), s.parser.diagnostics.items[0].code);
+    var saw_1101 = false;
+    var saw_2410 = false;
     for (s.parser.diagnostics.items) |d| {
-        try T.expect(d.code != 2410);
+        if (d.code == 1101) saw_1101 = true;
+        if (d.code == 2410) saw_2410 = true;
     }
+    try T.expect(saw_1101);
+    try T.expect(saw_2410);
 }
 
 test "parser: nested non-strict with body suppresses redundant unsupported diagnostic" {
