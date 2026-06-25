@@ -35,25 +35,96 @@ fn castPtr(comptime T: type, p: *anyopaque) T {
 }
 
 pub const AbortSignal = opaque {
-    /// Marker type for timeout-backed abort signals (used by EventLoopTimer's
-    /// comptime owner dispatch). Full port pending; minimal struct so
-    /// @fieldParentPtr resolves.
+    /// Backs `AbortSignal.timeout(ms)`: an EventLoopTimer that fires the signal
+    /// with a `TimeoutError` reason after `ms`. Re-attached 2026-06-25 now that
+    /// `jsc.API.Timer`, `bun.timespec`, and `jsc.VirtualMachine` exist — the
+    /// earlier stub allocated an empty Timeout and never scheduled it, so the
+    /// signal never aborted (`AbortSignal.timeout(0).reason` stayed undefined).
+    /// Mirrors upstream `src/jsc/AbortSignal.zig` `Timeout`.
     pub const Timeout = struct {
-        event_loop_timer: jsc.API.Timer.EventLoopTimer = .initPaused(.AbortSignalTimeout),
+        event_loop_timer: jsc.API.Timer.EventLoopTimer,
+
+        /// The `Timeout`'s lifetime is owned by the AbortSignal, but the C++
+        /// side holds a ref-count increment that `signal()` releases once the
+        /// abort completes.
+        signal: *AbortSignal,
+
+        /// Reused for the EventLoopTimer's "epoch" bookkeeping (see
+        /// `EventLoopTimer.jsTimerInternalsFlags`).
         flags: @import("../runtime/timer/TimerObjectInternals.zig").Flags = .{},
 
-        pub fn run(_: *Timeout, _: *jsc.VirtualMachine) void {}
+        /// See `swapGlobalForTestIsolation`: a timer left over from a prior
+        /// isolated test file must not fire its abort handler against the new
+        /// global.
+        generation: u32 = 0,
 
-        pub fn create(_: *jsc.VirtualMachine, _: *AbortSignal, _: u64) callconv(.c) *Timeout {
-            return bun.new(Timeout, .{});
+        fn init(vm: *jsc.VirtualMachine, signal_: *AbortSignal, milliseconds: u64) *Timeout {
+            const this = bun.new(Timeout, .{
+                .signal = signal_,
+                .generation = vm.test_isolation_generation,
+                .event_loop_timer = .{
+                    .next = bun.timespec.now(.allow_mocked_time).addMs(@intCast(milliseconds)),
+                    .tag = .AbortSignalTimeout,
+                    .state = .CANCELLED,
+                },
+            });
+
+            // We default to not keeping the event loop alive with this timeout.
+            vm.timer.insert(&this.event_loop_timer);
+
+            return this;
+        }
+
+        fn cancel(this: *Timeout, vm: *jsc.VirtualMachine) void {
+            if (this.event_loop_timer.state == .ACTIVE) {
+                vm.timer.remove(&this.event_loop_timer);
+            }
+        }
+
+        pub fn run(this: *Timeout, vm: *jsc.VirtualMachine) void {
+            this.event_loop_timer.state = .FIRED;
+            this.cancel(vm);
+
+            // The signal and its handlers belong to a previous isolated test
+            // file's global; firing now would run them against the new global.
+            // Drop the extra ref that `signal()` would otherwise release.
+            if (this.generation != vm.test_isolation_generation) {
+                this.signal.unref();
+                return;
+            }
+
+            // Dispatching the signal may cause the Timeout to get freed.
+            dispatch(vm, this.signal);
+        }
+
+        fn dispatch(vm: *jsc.VirtualMachine, signal_ptr: *AbortSignal) void {
+            const loop = vm.eventLoop();
+            loop.enter();
+            defer loop.exit();
+            // `signal()` releases the extra ref taken when the timeout was
+            // created after all abort work completes, so we must not unref here.
+            signal_ptr.signal(vm.global, .Timeout);
+        }
+
+        /// Caller is expected to have already ref'd the AbortSignal.
+        pub fn create(vm: *jsc.VirtualMachine, signal_: *AbortSignal, milliseconds: u64) callconv(.c) *Timeout {
+            return Timeout.init(vm, signal_, milliseconds);
+        }
+
+        pub fn runFromC(this: *Timeout, vm: *jsc.VirtualMachine) callconv(.c) void {
+            this.run(vm);
         }
 
         pub fn deinit(this: *Timeout) callconv(.c) void {
+            // Called from ~AbortSignal() / cancelTimer(). Resolve the VM via the
+            // threadlocal since the AbortSignal's context may be a dead global.
+            this.cancel(jsc.VirtualMachine.get());
             bun.default_allocator.destroy(this);
         }
 
         comptime {
             @export(&Timeout.create, .{ .name = "AbortSignal__Timeout__create" });
+            @export(&Timeout.runFromC, .{ .name = "AbortSignal__Timeout__run" });
             @export(&Timeout.deinit, .{ .name = "AbortSignal__Timeout__deinit" });
         }
     };
