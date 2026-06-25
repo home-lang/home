@@ -70,24 +70,39 @@ pub const ZigStackTrace = extern struct {
 
     pub const SourceLineIterator = struct {
         trace: *const ZigStackTrace,
-        index: usize = 0,
+        // Index of the next line to yield. Counts DOWN from the last valid line
+        // to 0. `source_lines_ptr[0]` is the divot/error line (highest line
+        // number); higher indices are the context lines above it. Counting down
+        // therefore yields lines in ascending display order, with the error line
+        // (index 0) emitted last by `next()` for the divot — matching upstream.
+        i: i32,
 
         pub fn untilLast(this: *SourceLineIterator) ?SourceLine {
-            if (this.index >= this.trace.source_lines_len) return null;
-            defer this.index += 1;
-            return .{
-                .line = this.trace.source_lines_numbers[this.index],
-                .text = this.trace.source_lines_ptr[this.index].toUTF8(bun.default_allocator),
-            };
+            if (this.i < 1) return null;
+            return this.next();
         }
 
         pub fn next(this: *SourceLineIterator) ?SourceLine {
-            return this.untilLast();
+            if (this.i < 0) return null;
+
+            const source_line = this.trace.source_lines_ptr[@as(usize, @intCast(this.i))];
+            const result = SourceLine{
+                .line = this.trace.source_lines_numbers[@as(usize, @intCast(this.i))],
+                .text = source_line.toUTF8(bun.default_allocator),
+            };
+            this.i -= 1;
+            return result;
         }
     };
 
     pub fn sourceLineIterator(this: *const ZigStackTrace) SourceLineIterator {
-        return .{ .trace = this };
+        var i: i32 = -1;
+        for (this.source_lines_numbers[0..this.source_lines_len], 0..) |num, j| {
+            if (num >= 0) {
+                i = @max(@as(i32, @intCast(j)), i);
+            }
+        }
+        return .{ .trace = this, .i = i };
     }
 };
 
