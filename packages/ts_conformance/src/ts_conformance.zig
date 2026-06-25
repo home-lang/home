@@ -54603,7 +54603,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     // once a slice ratchets clean), but 200 gives the exact-baseline
     // ratchet enough surface to pattern-match across categories
     // without re-running the whole slice for each new fail bucket.
-    const fail_cap: u32 = if (want_exact) 600 else 20;
+    const fail_cap: u32 = @intCast(envUsize("HOME_TS_CONFORMANCE_FAIL_CAP", if (want_exact) 600 else 20));
     var printed: u32 = 0;
     for (results.items) |r| {
         if (r.outcome != .failed) continue;
