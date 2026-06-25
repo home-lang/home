@@ -63,14 +63,23 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn prettyln(comptime fmt: []const u8, args: anytype) void {
-    // Home strips Bun's `<r>`/`<red>`/etc. markup at copy time; the
-    // pretty layer renders them through the upstream macro. Until the
-    // ansi parser lands here we emit plain text.
-    std.debug.print(fmt ++ "\n", args);
+    // Expand Bun's `<r>`/`<red>`/etc. markup through prettyFmt — emitting ANSI
+    // when stdout colors are enabled, stripping the tags otherwise. Mirrors
+    // upstream `bun_core/output.zig` prettyWithPrinter; without this the literal
+    // `<green>`-style tags leak into output (e.g. the test runner summary).
+    if (enable_ansi_colors_stdout) {
+        std.debug.print(comptime prettyFmt(fmt ++ "\n", true), args);
+    } else {
+        std.debug.print(comptime prettyFmt(fmt ++ "\n", false), args);
+    }
 }
 
 pub fn prettyErrorln(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt ++ "\n", args);
+    if (enable_ansi_colors_stderr) {
+        std.debug.print(comptime prettyFmt(fmt ++ "\n", true), args);
+    } else {
+        std.debug.print(comptime prettyFmt(fmt ++ "\n", false), args);
+    }
 }
 
 pub fn printError(comptime fmt: []const u8, args: anytype) void {
@@ -279,11 +288,19 @@ pub fn note(comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn pretty(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt, args);
+    if (enable_ansi_colors_stdout) {
+        std.debug.print(comptime prettyFmt(fmt, true), args);
+    } else {
+        std.debug.print(comptime prettyFmt(fmt, false), args);
+    }
 }
 
 pub fn prettyError(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt, args);
+    if (enable_ansi_colors_stderr) {
+        std.debug.print(comptime prettyFmt(fmt, true), args);
+    } else {
+        std.debug.print(comptime prettyFmt(fmt, false), args);
+    }
 }
 
 /// `Output.command` — echoes a command line before running it. Bun renders
