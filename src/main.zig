@@ -3342,12 +3342,23 @@ const TestOptions = struct {
     package: ?[]const u8 = null,
 };
 
-fn isJsLikeTestProject() bool {
+fn isJsLikeTestProject(args: []const [:0]const u8) bool {
     // Heuristic: presence of `package.json` in the cwd routes `home test`
     // through the JS runtime so existing Bun test suites keep working.
     // Home-native projects without package.json keep the Zig-backed runner.
-    Io.Dir.cwd().access(g_io, "package.json", .{}) catch return false;
-    return true;
+    if (Io.Dir.cwd().access(g_io, "package.json", .{})) |_| {
+        return true;
+    } else |_| {}
+    // Also route when an explicit JS/TS test file is named, even without a
+    // package.json — e.g. a spawned `home test foo.test.js` in a temp dir
+    // (Bun's own test fixtures do exactly this). `.js`/`.ts` belong to the
+    // bun:test runner, not the Home-language (`.home`/`.hm`) runner, which
+    // would otherwise try to parse the JS as Home source (EP0001 errors).
+    for (args) |a| {
+        if (a.len == 0 or a[0] == '-') continue;
+        if (isJsLikeCorpusFile(a)) return true;
+    }
+    return false;
 }
 
 const bun_corpus_marker = "packages/runtime/test/bun-corpus";
@@ -3737,7 +3748,7 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     // Phase 12 routing: if the cwd looks like a JS/TS project, delegate
     // `home test` to the bun-compatible runtime path. `--home` or `--zig`
     // overrides forces the native Home/Zig runner.
-    if (isJsLikeTestProject()) {
+    if (isJsLikeTestProject(args)) {
         var force_native = false;
         for (args) |a| {
             if (std.mem.eql(u8, a, "--home") or std.mem.eql(u8, a, "--zig")) {
