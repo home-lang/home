@@ -61,11 +61,18 @@ pub inline fn onlyWindows() void {
 /// assertions, so this stays off here; it does not change ported behavior.
 pub const enableAllocScopes = false;
 pub const export_cpp_apis = if (build_options.override_no_export_cpp_apis) false else (builtin.output_mode == .Obj or builtin.is_test);
-/// Faithful to upstream `bun_core/env.zig:50-52` (`git_sha = build_options.sha`).
-/// Home's gate has no embedded SHA, so these are the empty-SHA branch.
-pub const git_sha: [:0]const u8 = "";
-pub const git_sha_short: [:0]const u8 = "";
-pub const git_sha_shorter: [:0]const u8 = "";
+/// Upstream sets `git_sha = build_options.sha` (the build's git commit). Home
+/// has no per-build SHA injected, and an EMPTY `git_sha` is not harmless: the
+/// bun:test harness's `normalizeBunSnapshot` does `replaceAll(Bun.revision,
+/// "<revision>")`, and `String.replaceAll("", x)` inserts `x` between every
+/// character — corrupting EVERY snapshot that goes through it. Use a stable,
+/// non-empty revision: the pinned Bun engine SHA Home is built against (the
+/// objects linked from `$HOME_BUN_OBJ_ROOT`). Stable → no per-commit rebuild
+/// churn; a valid 40-hex revision; never appears in test snapshot content.
+/// Short/shorter mirror upstream's `sha[0..9]` / `sha[0..6]`.
+pub const git_sha: [:0]const u8 = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
+pub const git_sha_short: [:0]const u8 = "fd0b6f1a2";
+pub const git_sha_shorter: [:0]const u8 = "fd0b6f";
 pub const enable_logs = false;
 pub const is_canary = false;
 pub const ci_assert = false;
