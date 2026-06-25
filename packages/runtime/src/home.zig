@@ -94,6 +94,10 @@ comptime {
         _ = @import("sourcemap_jsc/CodeCoverage.zig");
         _ = @import("native_stubs.zig");
         _ = @import("runtime/socket/uws_dispatch.zig");
+        // prompt.zig's WebCore__alert/confirm/prompt exports are gated behind
+        // `export_cpp_apis` in webcore.zig (off in the .Exe build); force them
+        // here so alert()/confirm()/prompt() work instead of the old no-ops.
+        _ = @import("runtime/webcore/prompt.zig");
         // Force webcore's `comptime { WebSocket*.exportAll(); }` so the real
         // Bun__WebSocket{,HTTP}Client__* exports are emitted (they replace the
         // former native_stubs no-ops). Without an explicit force the block is

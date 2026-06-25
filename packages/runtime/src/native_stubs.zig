@@ -87,13 +87,9 @@ comptime {
         // unconditionally; the noops silently broke every sink JS `.write()/.end()`
         // in the `.Exe` runtime build (e.g. subprocess `stdin:"pipe"` writes never
         // reached the child). Re-adding any of them here would be a duplicate symbol.
-        for ([_][]const u8{
-            "WebCore__alert",
-            "WebCore__confirm",
-            "WebCore__prompt",
-        }) |name| {
-            @export(&noop, .{ .name = name });
-        }
+        // WebCore__alert/confirm/prompt are NO LONGER noop-stubbed: prompt.zig
+        // now exports its real Zig implementations (force-linked from home.zig)
+        // so `alert()/confirm()/prompt()` actually work in the `.Exe` build.
     }
 
     for ([_][]const u8{
