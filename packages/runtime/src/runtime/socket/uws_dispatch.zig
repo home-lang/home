@@ -49,18 +49,11 @@ const tables = blk: {
     t.set(.ws_client, vtable.make(handlers.WSClient(false)));
     t.set(.ws_client_tls, vtable.make(handlers.WSClient(true)));
 
-    // TODO(port): the following kinds reference subsystems still mid-port to
-    // Zig 0.17 (sql/postgres + sql/mysql drift, mysql/AuthMethod is an explicit
-    // @compileError "not yet ported", valkey error-union drift). Instantiating
-    // their handlers here forces analysis of those unported trees and breaks
-    // the build. They stay null until ported; `Bun.serve` (uses the C++
-    // per-group vtable, not this table) and the kinds above are unaffected.
-    //   .postgres(_tls)          -> handlers.Postgres
-    //   .mysql(_tls)             -> handlers.MySQL
-    //   .valkey(_tls)            -> handlers.Valkey
-
+    // SQL drivers
     t.set(.postgres, vtable.make(handlers.Postgres(false)));
     t.set(.postgres_tls, vtable.make(handlers.Postgres(true)));
+    t.set(.mysql, vtable.make(handlers.MySQL(false)));
+    t.set(.mysql_tls, vtable.make(handlers.MySQL(true)));
     t.set(.valkey, vtable.make(handlers.Valkey(false)));
     t.set(.valkey_tls, vtable.make(handlers.Valkey(true)));
 
