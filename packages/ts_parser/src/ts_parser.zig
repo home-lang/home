@@ -7391,6 +7391,11 @@ pub const Parser = struct {
         var named: std.ArrayListUnmanaged(NodeId) = .empty;
         defer named.deinit(self.gpa);
         var default_binding_had_comma = false;
+        // Whether a `{ ... }` named-imports clause was actually present
+        // (even if empty). An empty `import foo, {} from "m"` is valid —
+        // distinct from `import foo, from "m"` (no clause), which needs
+        // the TS1005 "'{' expected" recovery below.
+        var saw_named_imports_brace = false;
 
         // Deferred import modifier: `import defer * as ns from "m"`. `defer`
         // is contextual, so disambiguate exactly as tsc's
@@ -7579,6 +7584,7 @@ pub const Parser = struct {
         }
         // Named imports: `{ a, b as c, type d }`?
         else if (self.peek().kind == .open_brace) {
+            saw_named_imports_brace = true;
             const named_imports_open = self.advance();
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
@@ -7675,6 +7681,7 @@ pub const Parser = struct {
         if (default_binding_had_comma and
             namespace_binding == hir_mod.none_node_id and
             named.items.len == 0 and
+            !saw_named_imports_brace and
             self.peek().kind == .kw_from)
         {
             const from_tok = self.peek();
