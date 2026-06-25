@@ -275,6 +275,10 @@ pub fn lastIndexOfChar(slice: []const u8, char: u8) ?usize {
 }
 
 pub fn indexOf(haystack: []const u8, needle: []const u8) ?usize {
+    // Match upstream bun.strings.indexOf (string/immutable.zig): an empty
+    // needle is "not found" (null), NOT index 0 like std.mem.indexOf returns.
+    // Several call sites rely on this (e.g. expect().toContainEqual("")).
+    if (needle.len == 0) return null;
     return std.mem.indexOf(u8, haystack, needle);
 }
 
