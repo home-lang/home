@@ -2163,6 +2163,99 @@ fn appendMissingImportedHelperDiagnostics(
         }
         search_from = decorated.at_pos + 1;
     }
+
+    // Stage-3 decorators on class MEMBERS (`@dec static #foo() {}`) also need
+    // the decorator emit helpers, but the scan above only matches decorators
+    // on the class itself. When the source has no class decorator yet does
+    // decorate a member, emit the missing-helper diagnostic for that member
+    // too. The `tslib has helper` guard keeps fixtures with a complete tslib
+    // clean, and gating to "no class decorator" avoids disturbing the
+    // class-decorator exact baselines. Mirrors tsc emitting TS2343 per
+    // required helper on the decorated member (e.g. the
+    // `esDecorators-classDeclaration-missingEmitHelpers-*` fixtures, whose
+    // `tslib.d.ts` is empty).
+    if (findStage3DecoratedClassExpression(source, 0) == null) {
+        if (findStage3DecoratedMember(source, 0)) |member| {
+            const helpers = [_][]const u8{ "__esDecorate", "__runInitializers", "__setFunctionName" };
+            for (helpers) |helper| {
+                if (std.mem.indexOf(u8, tslib_source, helper) != null) continue;
+                const msg = try std.fmt.allocPrint(
+                    gpa,
+                    "This syntax requires an imported helper named '{s}' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.",
+                    .{helper},
+                );
+                try c.diagnostics.append(gpa, .{
+                    .phase = .bind,
+                    .pos = @intCast(member.at_pos),
+                    .line = 0,
+                    .span_len = @intCast(member.span_len),
+                    .code = 2343,
+                    .message = msg,
+                });
+                c.has_errors = true;
+            }
+        }
+    }
+}
+
+const DecoratedMember = struct {
+    at_pos: usize,
+    span_len: usize,
+};
+
+/// Finds a stage-3 decorator applied to a class *member* (`@dec static #foo`),
+/// as opposed to the class itself. Used to flag missing decorator emit helpers
+/// under `importHelpers`. A match requires an `@name` decorator that is not a
+/// class decorator (no nearby `class` keyword) and that sits inside a class
+/// body (some `class` keyword precedes it). Conservative on purpose — callers
+/// are already gated on `importHelpers && !experimentalDecorators`.
+fn findStage3DecoratedMember(source: []const u8, start: usize) ?DecoratedMember {
+    var i = start;
+    while (std.mem.indexOfScalarPos(u8, source, i, '@')) |at| {
+        if (positionInLineComment(source, at) or positionInBlockComment(source, at)) {
+            i = at + 1;
+            continue;
+        }
+        const name_start = skipTrivia(source, at + 1);
+        if (name_start >= source.len or !isIdentifierStart(source[name_start])) {
+            i = at + 1;
+            continue;
+        }
+        // Class decorators are handled by findStage3DecoratedClassExpression.
+        if (findKeywordNearby(source, at + 1, "class") != null) {
+            i = at + 1;
+            continue;
+        }
+        // Only a member decorator if it appears inside a class body.
+        if (lastClassKeywordBefore(source, at) == null) {
+            i = at + 1;
+            continue;
+        }
+        var name_end = name_start;
+        while (name_end < source.len and isIdentifierContinue(source[name_end])) name_end += 1;
+        return .{ .at_pos = at, .span_len = name_end - at };
+    }
+    return null;
+}
+
+/// Position of the last `class` keyword (as a whole word, not in a comment)
+/// strictly before `pos`, or null if none.
+fn lastClassKeywordBefore(source: []const u8, pos: usize) ?usize {
+    var search: usize = 0;
+    var found: ?usize = null;
+    while (std.mem.indexOfPos(u8, source, search, "class")) |c| {
+        if (c >= pos) break;
+        const before_ok = c == 0 or !isIdentifierContinue(source[c - 1]);
+        const after = c + "class".len;
+        const after_ok = after >= source.len or !isIdentifierContinue(source[after]);
+        if (before_ok and after_ok and
+            !positionInLineComment(source, c) and !positionInBlockComment(source, c))
+        {
+            found = c;
+        }
+        search = c + 1;
+    }
+    return found;
 }
 
 fn appendImportedPrivateHelperArityDiagnostics(
