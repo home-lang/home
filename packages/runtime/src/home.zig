@@ -4988,10 +4988,19 @@ pub const sys = struct {
     // Home keeps the POSIX-only implementation the rest of this namespace
     // uses; downstream `sys.File` read paths (resolver/fs.zig) want these.
     pub fn read(fd: FD, buf: []u8) Maybe(usize) {
-        const rc = std.posix.read(fd.native(), buf) catch |err| {
-            return .{ .err = errnoFromPosix(.read, err).withFd(fd) };
-        };
-        return .{ .result = rc };
+        // Use the raw syscall + real errno rather than std.posix.read, which
+        // asserts EBADF `unreachable` and so loses bad-fd / other errnos
+        // (read of an invalid fd must report EBADF, not EINVAL). Mirrors the
+        // pin's sys/sys.zig read.
+        while (true) {
+            const rc = std.c.read(fd.native(), buf.ptr, buf.len);
+            if (rc < 0) {
+                const e = std.c.errno(rc);
+                if (e == .INTR) continue;
+                return .{ .err = errFromE(.read, e).withFd(fd) };
+            }
+            return .{ .result = @intCast(rc) };
+        }
     }
 
     pub fn readAll(fd: FD, buf: []u8) Maybe(usize) {
