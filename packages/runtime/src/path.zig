@@ -55,15 +55,13 @@ pub fn dirname(path: []const u8, style: anytype) []const u8 {
     return std.fs.path.dirname(path) orelse "";
 }
 
-pub fn join(parts: []const []const u8, sep: anytype) []const u8 {
-    _ = sep;
-    // Bun's `path.join(parts, .auto)` returns a comptime-flattened slice
-    // that lives in a process-arena. Until the arena substrate lands we
-    // expose a buffer-less variant — callers that already pass in a
-    // stable storage slice keep working. Future: route through the
-    // process arena once Phase 12.3 lands the event loop.
-    if (parts.len == 0) return "";
-    return parts[0]; // placeholder for the simplest call site
+pub fn join(parts: []const []const u8, comptime sep: Platform) []const u8 {
+    // Join + normalize into the thread-local `join_buf`, matching upstream
+    // `bun.path.join`. The previous placeholder returned `parts[0]` and dropped
+    // every other component, so e.g. `join("/a/b", "c/d.txt")` returned "/a/b" —
+    // which broke recursive `readdirSync(dir, {withFileTypes:true, recursive:
+    // true})` (every Dirent.parentPath collapsed to dirname(root)).
+    return joinStringBuf(&join_buf, parts, sep);
 }
 
 pub fn relativeAlloc(allocator: std.mem.Allocator, from: []const u8, to: []const u8) ![]u8 {
