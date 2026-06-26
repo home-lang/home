@@ -559,11 +559,17 @@ pub const FormatDouble = struct {
 
     pub fn dtoa(buf: *[124]u8, number: f64) []const u8 {
         // JS `Number.prototype.toString` representation of the non-finite
-        // values — Zig's `{d}` prints "nan"/"inf"/"-inf", but JS (and Node's
-        // error messages) use "NaN"/"Infinity"/"-Infinity".
+        // values — JS (and Node's error messages) use "NaN"/"Infinity"/
+        // "-Infinity".
         if (std.math.isNan(number)) return "NaN";
         if (std.math.isInf(number)) return if (number < 0) "-Infinity" else "Infinity";
-        return std.fmt.bufPrint(buf[0..], "{d}", .{number}) catch unreachable;
+        // Finite numbers go through WebKit's `WTF::dtoa` (the same shortest
+        // round-trip + ECMAScript exponential formatting JSC uses for
+        // `Number.prototype.toString`), matching upstream `bun_core/fmt.zig`.
+        // Zig's `{d}` instead expands `1.7976931348623157e+308` and `5e-324`
+        // to hundreds of digits, diverging from JS/Bun.
+        const len = bun.cpp.WTF__dtoa(&buf.ptr[0], number);
+        return buf[0..len];
     }
 
     pub fn dtoaWithNegativeZero(buf: *[124]u8, number: f64) []const u8 {
