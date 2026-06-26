@@ -2679,12 +2679,17 @@ pub const Parser = struct {
             .kw_namespace,
             .kw_module,
             .kw_type,
-            .kw_var,
             .kw_let,
             .kw_const,
             .kw_export,
             .kw_import,
             => true,
+            // A `var` declaration is a VariableStatement, which IS a valid
+            // LabelledItem per the grammar — `foo: var x;` only errors in
+            // strict mode (tsgo's `checkStrictModeLabeledStatement`). Firing
+            // it unconditionally false-positived TS1344 on non-strict
+            // fixtures like `labeledStatementDeclarationListInLoopNoCrash2`.
+            .kw_var => self.strict_mode,
             .kw_abstract => self.peekAt(1).kind == .kw_class,
             else => false,
         };
@@ -16516,6 +16521,27 @@ pub const Parser = struct {
         return self.source[tag_span.start..tag_span.end];
     }
 
+    /// Compares two JSX tag-name texts byte-for-byte while skipping ASCII
+    /// whitespace in both. A qualified name (`A.B.C`) may be written with
+    /// whitespace around its dots in the closing tag — `</A . B . C>` — and
+    /// still corresponds to `<A.B.C>`. Identifier runs themselves cannot
+    /// contain interior whitespace, so dropping all whitespace yields the
+    /// canonical comparison form without conflating distinct names.
+    fn jsxTagNamesEqualIgnoringWhitespace(a: []const u8, b: []const u8) bool {
+        var i: usize = 0;
+        var j: usize = 0;
+        while (true) {
+            while (i < a.len and std.ascii.isWhitespace(a[i])) i += 1;
+            while (j < b.len and std.ascii.isWhitespace(b[j])) j += 1;
+            const a_done = i >= a.len;
+            const b_done = j >= b.len;
+            if (a_done or b_done) return a_done and b_done;
+            if (a[i] != b[j]) return false;
+            i += 1;
+            j += 1;
+        }
+    }
+
     fn lineForPos(self: *const Parser, pos: u32) u32 {
         var line: u32 = 1;
         var i: usize = 0;
@@ -16854,7 +16880,12 @@ pub const Parser = struct {
         if (close_name_span) |close_span| {
             const open_text = self.jsxTagText(tag);
             const close_text = self.source[close_span.start..close_span.end];
-            if (!std.mem.eql(u8, open_text, close_text)) {
+            // A qualified JSX tag name may carry whitespace around its dots
+            // (`</A . B . C.D>`); tsc matches the opening tag structurally,
+            // so compare ignoring insignificant whitespace rather than by
+            // raw source slice — otherwise `tsxOpeningClosingNames` false-
+            // fires TS17002 on `<A.B.C.D>…</A . B . C.D>`.
+            if (!jsxTagNamesEqualIgnoringWhitespace(open_text, close_text)) {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Expected corresponding JSX closing tag for '{s}'.",
@@ -19525,8 +19556,11 @@ test "parser: label before declaration reports TS1344" {
     try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[2].code);
 }
 
-test "parser: label before var in block reports TS1344 and later break TS1107" {
-    var s = try newTestSetup("function f() { for (;;) { label: var x = 1; break label; } }");
+test "parser: label before var in strict block reports TS1344 and later break TS1107" {
+    // `foo: var x` is a labeled VariableStatement — valid grammar, so it
+    // only errors in strict mode (tsgo's checkStrictModeLabeledStatement).
+    // The `'use strict'` prologue puts the parser in strict mode.
+    var s = try newTestSetup("'use strict'; function f() { for (;;) { label: var x = 1; break label; } }");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
@@ -19538,6 +19572,17 @@ test "parser: label before var in block reports TS1344 and later break TS1107" {
     }
     try T.expect(saw_1344);
     try T.expect(saw_1107);
+}
+
+test "parser: label before var in sloppy mode is allowed (no TS1344)" {
+    // Non-strict: a labeled `var` is legal per the ECMAScript grammar.
+    var s = try newTestSetup("for (;;) { label: var x = 1; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1344);
+    }
 }
 
 test "parser: label before namespace reports TS1344 + TS1235" {

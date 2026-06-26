@@ -1773,7 +1773,9 @@ pub fn compileSource(
     // ------ Parse ------
     var parser = ts_parser.Parser.init(gpa, &c.hir, &c.interner, source, c.tokens.items);
     parser.setTsx(options.is_tsx);
-    const is_declaration_file = options.is_declaration_file or pathIsDeclarationLike(options.importer_path);
+    const is_declaration_file = options.is_declaration_file or
+        (pathIsDeclarationLike(options.importer_path) and
+            !sourceHasNonDeclarationVirtualSection(source));
     parser.setDeclarationFile(is_declaration_file);
     parser.setJavaScriptFile(pathIsJsLike(options.importer_path));
     parser.setStrictMode(options.always_strict);
@@ -2753,6 +2755,46 @@ fn pathIsDeclarationLike(path: []const u8) bool {
     if (std.mem.endsWith(u8, path, ".d.hm")) return true;
     if (std.mem.endsWith(u8, path, ".d.home")) return true;
     return std.mem.endsWith(u8, path, ".ts") and std.mem.indexOf(u8, path, ".d.") != null;
+}
+
+/// True when the source is a multi-file fixture (`// @filename:` virtual
+/// sections) and at least one section names a non-declaration code file
+/// (`.ts`/`.tsx`/`.js`/`.jsx`/`.mts`/`.cts`/`.mjs`/`.cjs`/`.hm`/`.home`).
+///
+/// The whole-buffer `is_declaration_file` parse flag is derived from
+/// `importer_path`, which for a multi-file fixture only describes the FIRST
+/// virtual section. When that first section is a `.d.ts` neighbour but a
+/// later section is real `.tsx`/`.ts` code (e.g. `tsxDynamicTagName8`:
+/// `react.d.ts` then `app.tsx`), treating the concatenated buffer as ambient
+/// falsely fires parse/check diagnostics like TS1039 on class-field
+/// initializers in the non-ambient section. Per-section declaration-ness is
+/// already handled downstream by the checker's `@filename:` scan, so suppress
+/// the whole-file override in that case.
+fn sourceHasNonDeclarationVirtualSection(source: []const u8) bool {
+    var line_start: usize = 0;
+    while (line_start < source.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, source, line_start, '\n') orelse source.len;
+        const line = source[line_start..line_end];
+        const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+            std.mem.indexOf(u8, line, "@Filename:");
+        if (marker) |m| {
+            const name = std.mem.trim(u8, line[m + "@filename:".len ..], " \t\r");
+            if ((pathIsJsLike(name) or
+                std.mem.endsWith(u8, name, ".ts") or
+                std.mem.endsWith(u8, name, ".tsx") or
+                std.mem.endsWith(u8, name, ".mts") or
+                std.mem.endsWith(u8, name, ".cts") or
+                std.mem.endsWith(u8, name, ".hm") or
+                std.mem.endsWith(u8, name, ".home")) and
+                !pathIsDeclarationLike(name))
+            {
+                return true;
+            }
+        }
+        if (line_end >= source.len) break;
+        line_start = line_end + 1;
+    }
+    return false;
 }
 
 fn virtualPathIsNodeModules(path: []const u8) bool {
