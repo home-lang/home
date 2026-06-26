@@ -4850,8 +4850,38 @@ pub const sys = struct {
         return .{ .errno = @intFromEnum(E.INVAL), .syscall = tag };
     }
 
-    fn errnoFromPosix(comptime tag: Tag, _: anyerror) Error {
-        return unexpected(tag);
+    /// Map a Zig std.posix error back to the corresponding errno. The earlier
+    /// stub discarded the error and ALWAYS returned `unexpected` (EINVAL), so
+    /// every std.posix-backed syscall in this namespace (openat/read/readlink)
+    /// reported EINVAL regardless of the real failure — e.g. opening a missing
+    /// directory in recursive `fs.readdirSync` surfaced EINVAL instead of
+    /// ENOENT, and the error wrongly propagated as a non-graceful failure.
+    fn errnoFromPosix(comptime tag: Tag, err: anyerror) Error {
+        const mapped: E = switch (err) {
+            error.FileNotFound => .NOENT,
+            error.AccessDenied, error.PermissionDenied => .ACCES,
+            error.IsDir => .ISDIR,
+            error.NotDir => .NOTDIR,
+            error.NameTooLong => .NAMETOOLONG,
+            error.SymLinkLoop => .LOOP,
+            error.ProcessFdQuotaExceeded => .MFILE,
+            error.SystemFdQuotaExceeded => .NFILE,
+            error.SystemResources => .NOMEM,
+            error.NoSpaceLeft => .NOSPC,
+            error.ReadOnlyFileSystem => .ROFS,
+            error.DeviceBusy, error.FileBusy => .BUSY,
+            error.PathAlreadyExists => .EXIST,
+            error.FileTooBig => .FBIG,
+            error.InputOutput, error.FileSystem => .IO,
+            error.WouldBlock => .AGAIN,
+            error.NoDevice => .NXIO,
+            error.BrokenPipe => .PIPE,
+            error.NotOpenForReading, error.NotOpenForWriting => .BADF,
+            error.ConnectionResetByPeer => .CONNRESET,
+            error.BadPathName, error.InvalidUtf8, error.InvalidWtf8 => .INVAL,
+            else => return unexpected(tag),
+        };
+        return .{ .errno = @intFromEnum(mapped), .syscall = tag };
     }
 
     pub fn openat(dir: FD, path_: [:0]const u8, flags: i32, mode: Mode) Maybe(FD) {
