@@ -1828,6 +1828,30 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     return true;
 }
 
+/// Run `home -e <code>` (no `--print`) through the FULL VirtualMachine — the
+/// same faithful path as a `.ts`/`.js` file run — instead of the reduced
+/// `evalCommand` shim engine. `bun -e` treats inline source as TypeScript by
+/// default, so the code is written to a `.ts` temp and the VM's real transpiler
+/// strips the types. This gives inline eval the complete Bun runtime (real
+/// globals) and, crucially, the faithful uncaught-error printer (source preview
+/// + stack + version footer, lone-surrogate-safe) rather than the shim's bare
+/// `error: <message>` line. `extra_args` become `process.argv[2..]`.
+/// globalExits on success (noreturn via runFileViaVM), so it never returns true.
+fn runInlineEvalViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args: []const [:0]const u8) !void {
+    if (comptime !build_options.enable_jsc) return error.JscDisabled;
+
+    var src: std.ArrayListUnmanaged(u8) = .empty;
+    defer src.deinit(allocator);
+    try src.appendSlice(allocator, code);
+    try src.appendSlice(allocator, "\n");
+
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.ts", .{std.c.getpid()}) catch
+        return error.NameTooLong;
+    try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = tmp_path, .data = src.items });
+    try runFileViaVM(allocator, tmp_path, extra_args);
+}
+
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
@@ -3978,7 +4002,7 @@ pub fn main(init: std.process.Init) !void {
         // `bun -e '<code>' a b` → process.argv = [exe, a, b]. Tests spawn
         // `bunExe() -e '...process.argv[1]...' <path>`, so dropping them left
         // process.argv missing the path (read as undefined).
-        var extra: std.ArrayListUnmanaged([]const u8) = .empty;
+        var extra: std.ArrayListUnmanaged([:0]const u8) = .empty;
         defer extra.deinit(allocator);
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
@@ -3995,7 +4019,20 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home --eval <code> [--print|-p]\n", .{});
             std.process.exit(1);
         }
-        try evalCommand(allocator, code.?, print_result, extra.items);
+        // Without `--print`, run through the full VM (faithful globals + error
+        // printer). `--print` stays on the eval shim, which formats the result
+        // value. globalExits on success.
+        if (build_options.enable_jsc and !print_result) {
+            runInlineEvalViaVM(allocator, code.?, extra.items) catch |err| {
+                std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+                std.process.exit(1);
+            };
+            return;
+        }
+        var extra8: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer extra8.deinit(allocator);
+        for (extra.items) |a| try extra8.append(allocator, a);
+        try evalCommand(allocator, code.?, print_result, extra8.items);
         return;
     }
 
