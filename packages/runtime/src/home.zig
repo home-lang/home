@@ -4787,13 +4787,15 @@ pub const sys = struct {
         return exists(path_);
     }
 
-    pub fn fcopyfile(_: FD, _: FD, _: anytype) Maybe(void) {
-        return .success;
-    }
-
-    pub fn clonefile(_: anytype, _: anytype) Maybe(void) {
-        return .success;
-    }
+    // The real macOS clonefile/fcopyfile syscalls live in sys/sys.zig. These
+    // were no-op stubs returning `.success`, so `Bun.write(dest, Bun.file(src))`
+    // (the file<>file copy fast path in webcore/blob/copy_file.zig) reported the
+    // source size as bytes-written but never created the destination. Re-export
+    // the real impls (same pattern as setFileOffset). Only reached under
+    // `comptime Environment.isMac` in the caller, so the macOS-only @compileError
+    // in those bodies is never hit on other targets.
+    pub const fcopyfile = @import("sys/sys.zig").fcopyfile;
+    pub const clonefile = @import("sys/sys.zig").clonefile;
 
     pub fn mkdirat(dir_fd: FD, file_path: []const u8, mode: Mode) Maybe(void) {
         const path_z = std.posix.toPosixPath(file_path) catch {
