@@ -3243,6 +3243,46 @@ pub fn remapZigException(
         exception.collectSourceLines(error_instance, this.global);
     }
 
+    // JSC reports a stack frame's column as the bytecode DIVOT, which for a
+    // `new X(...)` expression points at the `new` keyword rather than the
+    // callee. The formatted `.stack` getter resolves it to the callee, but
+    // `toZigException` (the path Bun.inspect uses) leaves it on `new`, so the
+    // `:line:col` and the source-preview caret landed `"new ".len` too far left.
+    // If the collected top-frame source line shows `new` + whitespace at the
+    // divot, advance the column past it to the callee (preserves the frame's
+    // code_type/name, unlike materializing the lazy `.stack`).
+    if (!top.position.isInvalid() and exception.stack.source_lines_len > 0) {
+        const top_line_no = top.position.line.zeroBased();
+        const n: usize = exception.stack.source_lines_len;
+        var li: ?usize = null;
+        var si: usize = 0;
+        while (si < n) : (si += 1) {
+            if (exception.stack.source_lines_numbers[si] == top_line_no) {
+                li = si;
+                break;
+            }
+        }
+        if (li) |line_idx| {
+            const line_utf8 = exception.stack.source_lines_ptr[line_idx].toUTF8(bun.default_allocator);
+            defer line_utf8.deinit();
+            const raw = line_utf8.slice();
+            // The collected source line can carry a leading newline boundary;
+            // the column is relative to the actual line content.
+            var content_start: usize = 0;
+            while (content_start < raw.len and (raw[content_start] == '\n' or raw[content_start] == '\r')) content_start += 1;
+            const line = raw[content_start..];
+            const col0: usize = @intCast(@max(top.position.column.zeroBased(), 0));
+            if (col0 + 3 < line.len and
+                std.mem.eql(u8, line[col0 .. col0 + 3], "new") and
+                (line[col0 + 3] == ' ' or line[col0 + 3] == '\t'))
+            {
+                var c = col0 + 3;
+                while (c < line.len and (line[c] == ' ' or line[c] == '\t')) c += 1;
+                top.position.column = bun.Ordinal.fromZeroBased(@intCast(c));
+            }
+        }
+    }
+
     if (frames.len > 1) {
         for (frames) |*frame| {
             if (frame == top or frame.position.isInvalid()) continue;
