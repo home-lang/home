@@ -459,11 +459,23 @@ fn reportDeprecatedOptionDirectives(
         } else "";
         const effective_classic_resolution = if (module_resolution_raw.len > 0)
             std.ascii.eqlIgnoreCase(module_resolution_raw, "classic")
-        else
-            !std.ascii.eqlIgnoreCase(module_raw, "commonjs") and
-                !std.ascii.eqlIgnoreCase(module_raw, "node16") and
-                !std.ascii.eqlIgnoreCase(module_raw, "node18") and
-                !std.ascii.eqlIgnoreCase(module_raw, "nodenext");
+        else blk_classic: {
+            // No explicit moduleResolution → it follows `module`. An
+            // unspecified `module` defaults to commonjs (node resolution),
+            // and commonjs/node* modules all use node resolution, so the
+            // classic-only TS5070 must not fire for them. Only an explicit
+            // non-node module kind (amd/system/umd/es*, etc.) falls back to
+            // classic. Mirrors `jsDeclarationsPackageJson`/`nonTSExtensions`.
+            if (module_raw.len == 0) break :blk_classic false;
+            // `@module` may list several kinds (`node18,node20,nodenext`);
+            // classify by the first, which is the configuration run here.
+            const first_module = std.mem.trim(u8, firstCsvField(module_raw), " \t");
+            break :blk_classic !(std.ascii.eqlIgnoreCase(first_module, "commonjs") or
+                std.ascii.eqlIgnoreCase(first_module, "node16") or
+                std.ascii.eqlIgnoreCase(first_module, "node18") or
+                std.ascii.eqlIgnoreCase(first_module, "node20") or
+                std.ascii.eqlIgnoreCase(first_module, "nodenext"));
+        };
         if (effective_classic_resolution) {
             try c.diagnostics.append(gpa, .{
                 .phase = .parse,
@@ -2888,6 +2900,11 @@ fn sourceHasNonDeclarationVirtualSection(source: []const u8) bool {
         line_start = line_end + 1;
     }
     return false;
+}
+
+fn firstCsvField(s: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, s, ',')) |c| return s[0..c];
+    return s;
 }
 
 fn virtualPathIsNodeModules(path: []const u8) bool {
