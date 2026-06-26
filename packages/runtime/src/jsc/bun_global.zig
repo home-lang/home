@@ -358,6 +358,16 @@ const install_glue =
     \\  var sleepFn = globalThis.__home_sleep_sync;
     \\  var widthFn = globalThis.__home_string_width;
     \\
+    \\  // The C++ GlobalObject already exposes a complete NATIVE `Bun` (with the
+    \\  // real WebCore Blob-returning `file`, `write`, etc.) — the same object the
+    \\  // bun:test runner uses. We're about to replace globalThis.Bun with this
+    \\  // bring-up shim, so capture the native methods first and prefer them when
+    \\  // present. This gives `home -e`/`home run` the native `Bun.file()` (a real
+    \\  // Blob with slice/stream/writer) instead of the reduced JS `BunFile`.
+    \\  var __nativeBun = globalThis.Bun;
+    \\  var __nbFile = (__nativeBun && typeof __nativeBun.file === "function") ? __nativeBun.file.bind(__nativeBun) : null;
+    \\  var __nbWrite = (__nativeBun && typeof __nativeBun.write === "function") ? __nativeBun.write.bind(__nativeBun) : null;
+    \\
     \\  function toBytes(data) {
     \\    if (typeof data === "string") return new TextEncoder().encode(data);
     \\    if (data && data._bytes instanceof Uint8Array) return data._bytes;
@@ -375,6 +385,13 @@ const install_glue =
     \\    arrayBuffer() { var b = readFn(this._path); var p = this._path; return b === null ? Promise.reject(new Error("ENOENT: no such file: " + p)) : Promise.resolve(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); }
     \\    text() { var b = readFn(this._path); var p = this._path; return b === null ? Promise.reject(new Error("ENOENT: no such file: " + p)) : Promise.resolve(new TextDecoder().decode(b)); }
     \\    json() { return this.text().then(JSON.parse); }
+    \\    // slice()/stream() delegate to the native Blob (available in this realm
+    \\    // even though the native `Bun` object is not) so eval-mode Bun.file()
+    \\    // supports the common file-blob operations. Eager-reads the file; the
+    \\    // native VM path uses the real lazy file-backed Blob.
+    \\    _blob() { var b = readFn(this._path); if (b === null) throw new Error("ENOENT: no such file: " + this._path); return this.type ? new Blob([b], { type: this.type }) : new Blob([b]); }
+    \\    slice(start, end, contentType) { return this._blob().slice(start, end, contentType); }
+    \\    stream() { return this._blob().stream(); }
     \\  }
     \\
     \\  function bunDeepEquals(a, b, strict) {
@@ -399,8 +416,9 @@ const install_glue =
     \\  var htmlEsc = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;" };
     \\  globalThis.Bun = {
     \\    version: __HOME_BUN_VERSION__,
-    \\    file: function(path, options) { return new BunFile(path, options); },
+    \\    file: function(path, options) { return __nbFile ? __nbFile(path, options) : new BunFile(path, options); },
     \\    write: function(path, data) {
+    \\      if (__nbWrite) return __nbWrite(path, data);
     \\      var dest = (path && path._path) ? path._path : String(path);
     \\      var n = writeFn(dest, toBytes(data));
     \\      if (n < 0) return Promise.reject(new Error("Bun.write failed: " + dest));
