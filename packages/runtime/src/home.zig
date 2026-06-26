@@ -4576,10 +4576,17 @@ pub const c = struct {
     pub extern fn mkdtemp(template: [*]u8) ?[*:0]u8;
     pub extern fn truncate(path: [*:0]const u8, length: std.c.off_t) c_int;
     pub extern fn isatty(fd: fd_t) c_int;
+    // macOS <copyfile.h> bit values (CommandLineTools SDK). The DATA/EXCL/
+    // NOFOLLOW_SRC values were wrong (1<<1, 1<<2, 1<<23) — those collide with
+    // STAT/XATTR/UNPACK — so `fs.cp` of a symlink followed the link (ENOENT /
+    // not copied as a symlink) and EXCL never took effect.
     pub const COPYFILE_ACL: u32 = 1 << 0;
-    pub const COPYFILE_DATA: u32 = 1 << 1;
-    pub const COPYFILE_EXCL: u32 = 1 << 2;
-    pub const COPYFILE_NOFOLLOW_SRC: u32 = 1 << 23;
+    pub const COPYFILE_STAT: u32 = 1 << 1;
+    pub const COPYFILE_XATTR: u32 = 1 << 2;
+    pub const COPYFILE_DATA: u32 = 1 << 3;
+    pub const COPYFILE_EXCL: u32 = 1 << 17;
+    pub const COPYFILE_NOFOLLOW_SRC: u32 = 1 << 18;
+    pub const COPYFILE_NOFOLLOW_DST: u32 = 1 << 19;
     pub fn chown(file_path: [:0]const u8, uid: anytype, gid: anytype) c_int {
         _ = file_path;
         _ = uid;
