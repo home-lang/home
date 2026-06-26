@@ -4856,6 +4856,12 @@ pub const sys = struct {
     /// reported EINVAL regardless of the real failure — e.g. opening a missing
     /// directory in recursive `fs.readdirSync` surfaced EINVAL instead of
     /// ENOENT, and the error wrongly propagated as a non-graceful failure.
+    /// Build an Error from a known errno value (as returned by `std.c.errno`),
+    /// instead of discarding it and reporting EINVAL like `unexpected`.
+    fn errFromE(comptime tag: Tag, e: E) Error {
+        return .{ .errno = @intFromEnum(e), .syscall = tag };
+    }
+
     fn errnoFromPosix(comptime tag: Tag, err: anyerror) Error {
         const mapped: E = switch (err) {
             error.FileNotFound => .NOENT,
@@ -4949,7 +4955,7 @@ pub const sys = struct {
                 std.c.pwrite(fd.native(), bytes.ptr, bytes.len, @intCast(offset))
             else
                 std.c.write(fd.native(), bytes.ptr, bytes.len);
-            if (std.c.errno(rc) != .SUCCESS) return .{ .err = unexpected(.pwritev).withFd(fd) };
+            { const e = std.c.errno(rc); if (e != .SUCCESS) return .{ .err = errFromE(.pwritev, e).withFd(fd) }; }
             const written: usize = @intCast(rc);
             total += written;
             if (offset >= 0) offset += @intCast(written);
@@ -4959,7 +4965,8 @@ pub const sys = struct {
     }
 
     pub fn unlinkat(dir: FD, path_: anytype) Maybe(void) {
-        if (std.c.errno(std.c.unlinkat(dir.native(), path_.ptr, 0)) != .SUCCESS) return .{ .err = unexpected(.unlink).withFd(dir) };
+        const e = std.c.errno(std.c.unlinkat(dir.native(), path_.ptr, 0));
+        if (e != .SUCCESS) return .{ .err = errFromE(.unlink, e).withFd(dir) };
         return .success;
     }
 
@@ -5005,8 +5012,9 @@ pub const sys = struct {
 
     pub fn fstat(fd: FD) Maybe(std.c.Stat) {
         var stat_: std.c.Stat = std.mem.zeroes(std.c.Stat);
-        if (std.c.errno(std.c.fstat(fd.native(), &stat_)) != .SUCCESS) {
-            return .{ .err = unexpected(.fstat).withFd(fd) };
+        const e = std.c.errno(std.c.fstat(fd.native(), &stat_));
+        if (e != .SUCCESS) {
+            return .{ .err = errFromE(.fstat, e).withFd(fd) };
         }
         return .{ .result = stat_ };
     }

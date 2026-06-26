@@ -5811,7 +5811,7 @@ pub const NodeFS = struct {
                     // '/', '*', '?', '"', '<', '>', '|'
                     error.BadPathName => .INVAL,
 
-                    error.FileNotFound => brk: {
+                    error.FileNotFound, error.ENOENT => brk: {
                         if (args.force) {
                             return .success;
                         }
@@ -5846,7 +5846,7 @@ pub const NodeFS = struct {
                         error.SystemResources => .NOMEM,
                         error.ReadOnlyFileSystem => .ROFS,
                         error.FileBusy => .BUSY,
-                        error.FileNotFound => brk: {
+                        error.FileNotFound, error.ENOENT => brk: {
                             if (args.force) {
                                 return .success;
                             }
@@ -5877,7 +5877,7 @@ pub const NodeFS = struct {
                     error.InvalidUtf8 => .INVAL,
                     error.InvalidWtf8 => .INVAL,
                     error.BadPathName => .INVAL,
-                    error.FileNotFound => brk: {
+                    error.FileNotFound, error.ENOENT => brk: {
                         if (args.force) {
                             return .success;
                         }
