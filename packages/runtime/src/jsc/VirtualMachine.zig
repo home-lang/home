@@ -3032,6 +3032,21 @@ fn remapOneFrameSlow(this: *VirtualMachine, frame: *jsc.ZigStackFrame, path: []c
     frame.remapped = true;
 }
 
+/// The native (host-function) error constructors whose `new X(...)` construct
+/// divot JSC resolves to the callee in a materialized stack trace. User-defined
+/// `Error` subclasses are NOT here — their divot stays on `new`.
+fn isBuiltinErrorConstructorName(name: []const u8) bool {
+    const names = [_][]const u8{
+        "Error",          "EvalError",   "RangeError",     "ReferenceError",
+        "SyntaxError",    "TypeError",   "URIError",       "AggregateError",
+        "SuppressedError",
+    };
+    for (names) |n| {
+        if (std.mem.eql(u8, name, n)) return true;
+    }
+    return false;
+}
+
 pub fn remapZigException(
     this: *VirtualMachine,
     exception: *ZigException,
@@ -3278,7 +3293,16 @@ pub fn remapZigException(
             {
                 var c = col0 + 3;
                 while (c < line.len and (line[c] == ' ' or line[c] == '\t')) c += 1;
-                top.position.column = bun.Ordinal.fromZeroBased(@intCast(c));
+                // JSC resolves a construct divot to the callee only for NATIVE
+                // error constructors (`new Error()`, `new TypeError()`, …); a
+                // user-defined subclass (`new NamedError()`) keeps the divot on
+                // `new`. Only advance when the callee names a builtin error
+                // constructor, matching the materialized `.stack` getter.
+                var e = c;
+                while (e < line.len and (std.ascii.isAlphanumeric(line[e]) or line[e] == '_' or line[e] == '$')) e += 1;
+                if (isBuiltinErrorConstructorName(line[c..e])) {
+                    top.position.column = bun.Ordinal.fromZeroBased(@intCast(c));
+                }
             }
         }
     }
