@@ -10,6 +10,12 @@ pub const package_json_version = "0.0.0";
 pub const package_json_version_with_sha = package_json_version;
 pub const package_json_version_with_revision = package_json_version;
 
+/// The `Bun v<version> (<os> <arch>)` footer printed to stderr after a run that
+/// left an unhandled error (mirrors Bun's `bun_core/Global.zig`). The native VM
+/// runner in `src/main.zig` emits this; tests strip it (the last two output
+/// lines), so the exact version is irrelevant — only that the line is present.
+pub const unhandled_error_bun_version_string = @import("bun_core/Global.zig").unhandled_error_bun_version_string;
+
 /// `Bun.Global.BunInfo` — used by the server's `/bun:info` route generator.
 /// Full version embeds analytics platform info (not ported); Home returns a
 /// minimal object so the route compiles. The endpoint isn't exercised by basic

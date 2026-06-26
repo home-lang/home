@@ -1701,6 +1701,20 @@ const VmRunState = struct {
     /// the non-watch, non-eval branch of `Run.start` (bun.js.zig:310-560): load the
     /// entry point as a module, report a rejected top-level promise, then drain the
     /// event loop until no async work remains, and tear down. globalExit is noreturn.
+    /// After a run that left an unhandled error (an uncaught throw, an unhandled
+    /// rejection, or a `reportError`), Bun prints a `\nBun v<version> (<os>
+    /// <arch>)` footer to stderr. The bun.js.zig `Run.start` does this via
+    /// `any_unhandled`; the native runner mirrors it so the trailing two lines
+    /// (blank + version) are present — Bun's tests strip exactly those two lines,
+    /// so omitting them shifts real content into the stripped window.
+    fn printUnhandledFooterIfNeeded(vm: *home_rt.jsc.VirtualMachine) void {
+        if (vm.unhandled_error_counter == 0) return;
+        vm.exit_handler.exit_code = 1;
+        home_rt.jsc.SavedSourceMap.MissingSourceMapNoteInfo.print();
+        home_rt.Output.prettyErrorln("<r>\n<d>{s}<r>", .{home_rt.Global.unhandled_error_bun_version_string});
+        home_rt.Output.flush();
+    }
+
     fn start(this: *VmRunState) void {
         const vm = this.vm;
 
@@ -1710,6 +1724,7 @@ const VmRunState = struct {
                 promise.setHandled();
                 vm.exit_handler.exit_code = 1;
                 home_rt.Output.flush();
+                printUnhandledFooterIfNeeded(vm);
                 vm.onExit();
                 vm.globalExit();
             }
@@ -1732,6 +1747,7 @@ const VmRunState = struct {
         vm.global.handleRejectedPromises();
         // Flush buffered stdout/stderr (console.log) before the noreturn exit.
         home_rt.Output.flush();
+        printUnhandledFooterIfNeeded(vm);
         vm.onExit();
         vm.globalExit();
     }
