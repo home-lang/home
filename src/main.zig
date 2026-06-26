@@ -2038,7 +2038,7 @@ fn runFileNative(allocator: std.mem.Allocator, file_path: []const u8, extra_args
 /// Faithful to `bun eval` / `bun -e`: the result is not auto-printed. Pass
 /// `--print`/`-p` (mirroring `bun --print`) to render the last value. A thrown
 /// exception is reported to stderr and produces a non-zero exit code.
-fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: bool) !void {
+fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: bool, extra_args: []const []const u8) !void {
     if (comptime !build_options.enable_jsc) {
         std.debug.print("{s}error:{s} 'eval' requires a JSC-enabled build (build with -Denable_jsc=true)\n", .{ Color.Red.code(), Color.Reset.code() });
         std.process.exit(1);
@@ -2051,7 +2051,12 @@ fn evalCommand(allocator: std.mem.Allocator, code: []const u8, print_result: boo
 
         const ctx = engine.currentContext();
         const global = engine.currentGlobalObject();
-        installRealmGlobals(allocator, ctx, global, &[_][]const u8{"home"});
+        // process.argv = [exe, ...extra_args] (bun -e parity: no script path).
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer argv.deinit(allocator);
+        argv.append(allocator, "home") catch {};
+        for (extra_args) |a| argv.append(allocator, a) catch {};
+        installRealmGlobals(allocator, ctx, global, argv.items);
 
         // `bun -e` treats inline source as TypeScript by default — strip types
         // through the real Bun parser so `home -e "const x: number = 1"` runs.
@@ -3953,12 +3958,20 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "--eval") or std.mem.eql(u8, command, "-e")) {
         var code: ?[]const u8 = null;
         var print_result = false;
+        // Positional args AFTER the code become process.argv[1..], matching
+        // `bun -e '<code>' a b` → process.argv = [exe, a, b]. Tests spawn
+        // `bunExe() -e '...process.argv[1]...' <path>`, so dropping them left
+        // process.argv missing the path (read as undefined).
+        var extra: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer extra.deinit(allocator);
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             if (std.mem.eql(u8, args[i], "--print") or std.mem.eql(u8, args[i], "-p")) {
                 print_result = true;
             } else if (code == null) {
                 code = args[i];
+            } else {
+                try extra.append(allocator, args[i]);
             }
         }
         if (code == null) {
@@ -3966,7 +3979,7 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home --eval <code> [--print|-p]\n", .{});
             std.process.exit(1);
         }
-        try evalCommand(allocator, code.?, print_result);
+        try evalCommand(allocator, code.?, print_result, extra.items);
         return;
     }
 
@@ -3977,7 +3990,7 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home --print <code>\n", .{});
             std.process.exit(1);
         }
-        try evalCommand(allocator, args[2], true);
+        try evalCommand(allocator, args[2], true, &.{});
         return;
     }
 
@@ -4147,7 +4160,7 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("usage: home eval <code> [--print|-p]\n", .{});
             std.process.exit(1);
         }
-        try evalCommand(allocator, code.?, print_result);
+        try evalCommand(allocator, code.?, print_result, &.{});
         return;
     }
 
