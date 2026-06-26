@@ -31,8 +31,11 @@ pub const DOMURL = opaque {
     }
 
     pub fn cast(value: JSValue) ?*DOMURL {
-        _ = value;
-        return null;
+        // Re-attached: resolve the JSC VM via the threadlocal VirtualMachine so
+        // `JSValue.as(DOMURL)` actually recognizes a `new URL(...)` argument
+        // (the earlier stub returned null, so fs APIs rejected URL paths with
+        // "path must be a string or a file descriptor").
+        return cast_(value, @import("home").jsc.VirtualMachine.get().global.vm());
     }
 
     extern fn WebCore__DOMURL__href_(this: *DOMURL, out: *ZigString) void;
