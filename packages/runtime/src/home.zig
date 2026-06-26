@@ -4568,7 +4568,7 @@ pub const c = struct {
     pub extern fn renameatx_np(from_dir_fd: c_int, from: [*:0]const u8, to_dir_fd: c_int, to: [*:0]const u8, flags: u32) c_int;
     pub const RENAME_SWAP: u32 = 0x00000002;
     pub const RENAME_EXCL: u32 = 0x00000004;
-    pub const RENAME_NOFOLLOW_ANY: u32 = 0x00000020;
+    pub const RENAME_NOFOLLOW_ANY: u32 = 0x00000010; // <sys/stdio.h>: was 0x20 (RENAME_RESERVED-range)
     pub const RENAME_EXCHANGE: u32 = 0x2;
     pub const RENAME_NOREPLACE: u32 = 0x1;
     pub extern fn lchmod(path: [*:0]const u8, mode: std.c.mode_t) c_int;
