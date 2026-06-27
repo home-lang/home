@@ -2696,8 +2696,31 @@ pub const jsc = struct {
         pub const BinaryType = enum { arraybuffer, buffer, uint8array };
 
         pub const MaybeString = struct {
-            pub fn get(_: MaybeString) ?WTFStringImpl {
-                return null;
+            value: ?WTFStringImpl = null,
+            pub fn get(this: MaybeString) ?WTFStringImpl {
+                return this.value;
+            }
+            pub fn deinit(this: *MaybeString) void {
+                if (this.value) |v| {
+                    v.deref();
+                    this.value = null;
+                }
+            }
+            pub fn fromJS(globalObject: *JSGlobalObject, value_: JSValue) JSError!MaybeString {
+                if (value_.isUndefinedOrNull() or !value_.isString()) return .{};
+                var s = try value_.toBunString(globalObject);
+                if (s.isEmpty()) {
+                    s.deref();
+                    return .{};
+                }
+                s.toWTF();
+                if (s.tag == .WTFStringImpl) {
+                    // Transfer the +1 ref from `s` into the returned MaybeString;
+                    // its deinit() derefs.
+                    return .{ .value = s.value.WTFStringImpl };
+                }
+                s.deref();
+                return .{};
             }
         };
 
@@ -2784,8 +2807,28 @@ pub const jsc = struct {
             onError: JSValue = .zero,
             onHandshake: JSValue = .zero,
 
-            pub fn fromJS(_: *JSGlobalObject, _: JSValue) JSError!SocketConfigHandlers {
-                return .{};
+            pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) JSError!SocketConfigHandlers {
+                // Read the socket handler callbacks from the `socket` options
+                // object (`Bun.listen/connect({ socket: { open, data, ... } })`,
+                // and node:net via that). The vendored bindgen codegen isn't
+                // present, so hand-mirror it. JS name → Zig field; the JSValues
+                // are borrowed (fromGenerated protects them). binary_type stays
+                // `.buffer` (the node:net default).
+                var result: SocketConfigHandlers = .{};
+                if (!value.isObject()) return result;
+                const pairs = .{
+                    .{ "open", "onOpen" },       .{ "close", "onClose" },
+                    .{ "data", "onData" },       .{ "drain", "onWritable" },
+                    .{ "timeout", "onTimeout" }, .{ "connectError", "onConnectError" },
+                    .{ "end", "onEnd" },         .{ "error", "onError" },
+                    .{ "handshake", "onHandshake" },
+                };
+                inline for (pairs) |pair| {
+                    if (try value.get(globalObject, pair[0])) |v| {
+                        if (!v.isUndefinedOrNull()) @field(result, pair[1]) = v;
+                    }
+                }
+                return result;
             }
 
             pub fn deinit(_: *SocketConfigHandlers) void {}
@@ -2804,11 +2847,42 @@ pub const jsc = struct {
             reuse_port: bool = false,
             ipv6_only: bool = false,
 
-            pub fn fromJS(_: *JSGlobalObject, _: JSValue) JSError!SocketConfig {
-                return .{};
+            pub fn fromJS(globalObject: *JSGlobalObject, opts: JSValue) JSError!SocketConfig {
+                // Hand-mirror of the (un-emitted) socket-config bindgen for the
+                // listen/connect path (node:net servers route through here). TLS
+                // is left `.none` — the TLS branch isn't ported via this stub.
+                var result: SocketConfig = .{};
+                errdefer result.deinit();
+                if (!opts.isObject()) return result;
+                if (try opts.get(globalObject, "socket")) |sock| {
+                    result.handlers = try SocketConfigHandlers.fromJS(globalObject, sock);
+                }
+                if (try opts.get(globalObject, "hostname")) |h| {
+                    result.hostname = try MaybeString.fromJS(globalObject, h);
+                }
+                if (try opts.get(globalObject, "unix")) |u| {
+                    result.unix_ = try MaybeString.fromJS(globalObject, u);
+                }
+                if (try opts.get(globalObject, "port")) |p| {
+                    if (p.isNumber()) result.port = @truncate(@as(u32, @bitCast(p.toInt32())));
+                }
+                if (try opts.get(globalObject, "fd")) |fd| {
+                    if (fd.isNumber()) result.fd = fd.toInt32();
+                }
+                if (try opts.get(globalObject, "data")) |d| {
+                    result.data = d;
+                }
+                if (try opts.get(globalObject, "exclusive")) |v| result.exclusive = v.toBoolean();
+                if (try opts.get(globalObject, "allowHalfOpen")) |v| result.allow_half_open = v.toBoolean();
+                if (try opts.get(globalObject, "reusePort")) |v| result.reuse_port = v.toBoolean();
+                if (try opts.get(globalObject, "ipv6Only")) |v| result.ipv6_only = v.toBoolean();
+                return result;
             }
 
-            pub fn deinit(_: *SocketConfig) void {}
+            pub fn deinit(this: *SocketConfig) void {
+                this.unix_.deinit();
+                this.hostname.deinit();
+            }
         };
     };
     // Faithful to upstream jsc/jsc.zig:101.
