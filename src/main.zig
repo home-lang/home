@@ -1856,6 +1856,11 @@ fn runInlineEvalViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args
 /// command line; consumed by runFileViaVMOpts (set into `vm.preload`).
 var g_user_preloads: []const []const u8 = &.{};
 
+/// Custom export/import conditions named via `--conditions=<name>` on the
+/// implicit-run command line; appended to the resolver's ESM condition set in
+/// runFileViaVMOpts so `package.json` "exports"/"imports" match them.
+var g_user_conditions: []const []const u8 = &.{};
+
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
     return runFileViaVMOpts(allocator, file_path, extra_args, false);
 }
@@ -1955,6 +1960,17 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
     // knobs since there's no CLI context here).
     b.resolver.env_loader = b.env;
     b.options.env.behavior = .load_all_without_inlining;
+
+    // Custom `--conditions=<name>` from the command line: append to the ESM
+    // condition set so package.json "exports"/"imports" match them (mirrors
+    // build_command appending "development"/"react-server").
+    if (g_user_conditions.len > 0) {
+        // The resolver carries its OWN copy of the options (b.resolver.opts is not
+        // b.options), so the condition maps must be appended on the resolver's
+        // copy — that's the set consulted during exports/imports matching.
+        b.resolver.opts.conditions.appendSlice(g_user_conditions) catch {};
+        b.options.conditions.appendSlice(g_user_conditions) catch {};
+    }
 
     b.configureDefines() catch return error.ConfigureDefinesFailed;
 
@@ -2060,13 +2076,38 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
     if (cfg_preloads.len > 0) ctx.preloads = cfg_preloads;
 
     // positionals[0] is the command name; [1..] are file/dir paths or filters.
+    // `--conditions=<name>` (and `--conditions <name>`) add custom package.json
+    // "exports"/"imports" conditions; the test transpiler reads ctx.args.conditions.
     var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
     try positionals.append(allocator, "test");
-    for (args) |a| {
-        if (a.len > 0 and a[0] == '-') continue; // skip flags (not parsed yet)
+    var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
+    var ai: usize = 0;
+    while (ai < args.len) : (ai += 1) {
+        const a = args[ai];
+        if (std.mem.eql(u8, a, "--conditions")) {
+            if (ai + 1 < args.len) {
+                var it = std.mem.splitScalar(u8, args[ai + 1], ',');
+                while (it.next()) |part| {
+                    const t = std.mem.trim(u8, part, " \t");
+                    if (t.len > 0) try conditions.append(allocator, t);
+                }
+                ai += 1;
+            }
+            continue;
+        }
+        if (std.mem.startsWith(u8, a, "--conditions=")) {
+            var it = std.mem.splitScalar(u8, a["--conditions=".len..], ',');
+            while (it.next()) |part| {
+                const t = std.mem.trim(u8, part, " \t");
+                if (t.len > 0) try conditions.append(allocator, t);
+            }
+            continue;
+        }
+        if (a.len > 0 and a[0] == '-') continue; // skip other flags (not parsed yet)
         try positionals.append(allocator, a);
     }
     ctx.positionals = try positionals.toOwnedSlice(allocator);
+    if (conditions.items.len > 0) ctx.args.conditions = try conditions.toOwnedSlice(allocator);
 
     try home_rt.cli.TestCommand.exec(ctx);
 }
@@ -4466,6 +4507,19 @@ pub fn main(init: std.process.Init) !void {
             // choosing the entry (otherwise the first one is picked as the file
             // to run and the real main never executes).
             var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
+            // `--conditions=<name>` (and `--conditions <name>`) add custom
+            // package.json "exports"/"imports" conditions (comma-separated values
+            // and repeated flags both accepted, matching Bun).
+            var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
+            const addConditions = struct {
+                fn call(list: *std.ArrayListUnmanaged([]const u8), alloc: std.mem.Allocator, csv: []const u8) void {
+                    var it = std.mem.splitScalar(u8, csv, ',');
+                    while (it.next()) |part| {
+                        const trimmed = std.mem.trim(u8, part, " \t");
+                        if (trimmed.len > 0) list.append(alloc, trimmed) catch {};
+                    }
+                }
+            }.call;
             var i: usize = 1;
             while (i < args.len) : (i += 1) {
                 const a = args[i];
@@ -4484,8 +4538,20 @@ pub fn main(init: std.process.Init) !void {
                     preloads.append(allocator, a["--preload=".len..]) catch {};
                     continue;
                 }
+                if (std.mem.eql(u8, a, "--conditions")) {
+                    if (i + 1 < args.len) {
+                        addConditions(&conditions, allocator, args[i + 1]);
+                        i += 1;
+                    }
+                    continue;
+                }
+                if (std.mem.startsWith(u8, a, "--conditions=")) {
+                    addConditions(&conditions, allocator, a["--conditions=".len..]);
+                    continue;
+                }
                 if (looksLikeRunnableFile(a)) {
                     g_user_preloads = preloads.items;
+                    g_user_conditions = conditions.items;
                     try runCommand(allocator, a, args[i + 1 ..]);
                     return;
                 }
