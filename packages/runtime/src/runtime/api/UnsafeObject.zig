@@ -80,9 +80,28 @@ pub fn gcAggressionLevel(globalThis: *JSGlobalObject, callframe: *CallFrame) JSE
 // Upstream body, parked. Walks `jsc.ArrayBuffer.fromTypedArray` →
 // `ZigString.markUTF16` / `ZigString.toJS`.
 pub fn arrayBufferToString(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    _ = globalThis;
-    _ = callframe;
-    return .js_undefined;
+    const jsc = home_rt.jsc;
+    const args = callframe.arguments_old(2).slice();
+    if (args.len < 1 or !args[0].isCell() or !args[0].jsType().isTypedArrayOrArrayBuffer()) {
+        return globalThis.throwInvalidArguments("Expected an ArrayBuffer", .{});
+    }
+
+    const array_buffer = jsc.ArrayBuffer.fromTypedArray(globalThis, args[0]);
+    switch (array_buffer.typed_array_type) {
+        // 16-bit views are reinterpreted as a UTF-16 string view (`.len` is the
+        // element/code-unit count, not bytes).
+        .Uint16Array, .Int16Array => {
+            const ptr = array_buffer.ptr orelse return jsc.ZigString.init("").toJS(globalThis);
+            var zig_str = jsc.ZigString.init("");
+            zig_str._unsafe_ptr_do_not_use = @ptrCast(ptr);
+            zig_str.len = array_buffer.len;
+            zig_str.markUTF16();
+            return zig_str.toJS(globalThis);
+        },
+        else => {
+            return jsc.ZigString.init(array_buffer.slice()).toJS(globalThis);
+        },
+    }
 }
 
 // Upstream body, parked. Calls `globalThis.bunVM().arena.dumpStats()` plus
