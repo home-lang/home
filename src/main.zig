@@ -1852,6 +1852,10 @@ fn runInlineEvalViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args
     try runFileViaVMOpts(allocator, tmp_path, extra_args, true);
 }
 
+/// Preload modules named via `--require`/`-r`/`--preload` on the implicit-run
+/// command line; consumed by runFileViaVMOpts (set into `vm.preload`).
+var g_user_preloads: []const []const u8 = &.{};
+
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
     return runFileViaVMOpts(allocator, file_path, extra_args, false);
 }
@@ -1924,18 +1928,22 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
     // unaffected. Only sets names not already global (keeps the real
     // console/process/crypto/Buffer). loadEntryPoint runs preloads when
     // `vm.preload` is non-empty.
-    if (inject_node_globals) {
-        const boot =
-            \\const N=["assert","async_hooks","buffer","child_process","cluster","console","constants","crypto","dgram","diagnostics_channel","dns","domain","events","fs","http","http2","https","inspector","net","os","path","perf_hooks","process","punycode","querystring","readline","stream","string_decoder","sys","timers","tls","trace_events","tty","url","util","v8","vm","wasi","worker_threads","zlib"];
-            \\for(const n of N){try{if(typeof globalThis[n]==="undefined")globalThis[n]=require("node:"+n);}catch{}}
-        ;
-        var pre_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const pre_path = std.fmt.bufPrint(&pre_buf, "/tmp/home-eval-globals-{d}.js", .{std.c.getpid()}) catch
-            return error.NameTooLong;
-        try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = pre_path, .data = boot });
-        const preloads = try allocator.alloc([]const u8, 1);
-        preloads[0] = try allocator.dupe(u8, pre_path);
-        vm.preload = preloads;
+    {
+        var preload_list: std.ArrayListUnmanaged([]const u8) = .empty;
+        if (inject_node_globals) {
+            const boot =
+                \\const N=["assert","async_hooks","buffer","child_process","cluster","console","constants","crypto","dgram","diagnostics_channel","dns","domain","events","fs","http","http2","https","inspector","net","os","path","perf_hooks","process","punycode","querystring","readline","stream","string_decoder","sys","timers","tls","trace_events","tty","url","util","v8","vm","wasi","worker_threads","zlib"];
+                \\for(const n of N){try{if(typeof globalThis[n]==="undefined")globalThis[n]=require("node:"+n);}catch{}}
+            ;
+            var pre_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const pre_path = std.fmt.bufPrint(&pre_buf, "/tmp/home-eval-globals-{d}.js", .{std.c.getpid()}) catch
+                return error.NameTooLong;
+            try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = pre_path, .data = boot });
+            try preload_list.append(allocator, try allocator.dupe(u8, pre_path));
+        }
+        // User `--require`/`-r`/`--preload` modules (run before the entry).
+        for (g_user_preloads) |user_preload| try preload_list.append(allocator, user_preload);
+        if (preload_list.items.len > 0) vm.preload = try preload_list.toOwnedSlice(allocator);
     }
 
     // Resolver/transpiler config mirrored from Run.boot (defaults for the install
@@ -4403,10 +4411,32 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (has_file and (std.mem.startsWith(u8, command, "-") or looksLikeRunnableFile(command))) {
+            // `--require`/`-r`/`--preload <file>` (and `--require=<file>`) name
+            // PRELOAD modules, not the entry. Collect them and skip them when
+            // choosing the entry (otherwise the first one is picked as the file
+            // to run and the real main never executes).
+            var preloads: std.ArrayListUnmanaged([]const u8) = .empty;
             var i: usize = 1;
             while (i < args.len) : (i += 1) {
-                if (looksLikeRunnableFile(args[i])) {
-                    try runCommand(allocator, args[i], args[i + 1 ..]);
+                const a = args[i];
+                if (std.mem.eql(u8, a, "--require") or std.mem.eql(u8, a, "-r") or std.mem.eql(u8, a, "--preload")) {
+                    if (i + 1 < args.len) {
+                        preloads.append(allocator, args[i + 1]) catch {};
+                        i += 1;
+                    }
+                    continue;
+                }
+                if (std.mem.startsWith(u8, a, "--require=")) {
+                    preloads.append(allocator, a["--require=".len..]) catch {};
+                    continue;
+                }
+                if (std.mem.startsWith(u8, a, "--preload=")) {
+                    preloads.append(allocator, a["--preload=".len..]) catch {};
+                    continue;
+                }
+                if (looksLikeRunnableFile(a)) {
+                    g_user_preloads = preloads.items;
+                    try runCommand(allocator, a, args[i + 1 ..]);
                     return;
                 }
             }
