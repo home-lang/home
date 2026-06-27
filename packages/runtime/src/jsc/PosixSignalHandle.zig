@@ -3,19 +3,20 @@
 //
 // Single-producer / single-consumer lock-free ring buffer for posix signals.
 // The signal handler enqueues on the SIGNAL stack; the JS thread drains them
-// later through `dequeue()` / `drain()`. We keep the pure-Zig ring buffer +
-// the `PosixSignalTask` plain-data carrier; the upstream `drain` /
-// `Bun__onPosixSignal` / `Bun__ensureSignalHandler` exports cross into the
-// event loop (`VirtualMachine.getMainThreadVM().?.eventLoop().signal_handler`,
-// `jsc.Task.init(...)`), so they re-land once `VirtualMachine` + `EventLoop`
-// + `Task` re-attach in Phase 12.2.
-
-const std = @import("std");
-const home_rt = @import("home");
+// later through `dequeue()` / `drain()`.
+//
+// Re-attached (was Phase 12.2 stub): `VirtualMachine` + `EventLoop` + `Task`
+// have landed, so the upstream `drain` / `Bun__onPosixSignal` /
+// `Bun__ensureSignalHandler` exports now wire the real path. The OS sigaction
+// is installed by the linked C++ (`BunProcess.cpp`), whose handler calls
+// `Bun__onPosixSignal` → `enqueue` → `wakeup`; the JS thread then `drain`s the
+// ring into `PosixSignalTask`s that call back into C++ `Bun__onSignalForJS`.
 
 const PosixSignalHandle = @This();
 
 const buffer_size = 8192;
+
+pub const new = bun.TrivialNew(@This());
 
 signals: [buffer_size]u8 = undefined,
 
@@ -26,11 +27,6 @@ head: std.atomic.Value(u16) = std.atomic.Value(u16).init(0),
 
 /// Called by the signal handler (single producer).
 /// Returns `true` if enqueued successfully, or `false` if the ring is full.
-///
-/// Note: the upstream version also wakes the main-thread event loop via
-/// `VirtualMachine.getMainThreadVM().?.eventLoop().wakeup()`. That hook
-/// re-lands alongside the JS event loop in Phase 12.2; until then the ring
-/// buffer enqueue itself is the only thing carrying state forward.
 pub fn enqueue(this: *PosixSignalHandle, signal: u8) bool {
     // Read the current tail and head (Acquire to ensure we have up‐to‐date values).
     const old_tail = this.tail.load(.acquire);
@@ -53,7 +49,23 @@ pub fn enqueue(this: *PosixSignalHandle, signal: u8) bool {
     // Publish the new tail (Release so that the consumer sees the updated tail).
     this.tail.store(old_tail +% 1, .release);
 
+    // Wake the main-thread event loop so it `drain`s the ring promptly.
+    // Guarded so the unit tests below (which run without a VM) don't trip
+    // the null unwrap; in real signal-handler context the VM is always set.
+    if (VirtualMachine.getMainThreadVM()) |vm| {
+        vm.eventLoop().wakeup();
+    }
+
     return true;
+}
+
+/// This is the signal handler entry point. Calls enqueue on the ring buffer.
+/// Note: Must be minimal logic here. Only do atomics & signal‐safe calls.
+export fn Bun__onPosixSignal(number: i32) void {
+    if (comptime Environment.isPosix) {
+        const vm = VirtualMachine.getMainThreadVM().?;
+        _ = vm.eventLoop().signal_handler.?.enqueue(@intCast(number));
+    }
 }
 
 /// Called by the main thread (single consumer).
@@ -78,17 +90,49 @@ pub fn dequeue(this: *PosixSignalHandle) ?u8 {
     return signal;
 }
 
-pub fn drain(this: *PosixSignalHandle, event_loop: anytype) void {
-    _ = event_loop;
-    while (this.dequeue() != null) {}
+/// Drain as many signals as possible and enqueue them as tasks in the event
+/// loop. Called by the main thread. The signal number is packed into the
+/// task's pointer slot (zero-allocation), matching the upstream carrier.
+pub fn drain(this: *PosixSignalHandle, event_loop: *jsc.EventLoop) void {
+    while (this.dequeue()) |signal| {
+        var posix_signal_task: PosixSignalTask = undefined;
+        var task = jsc.Task.init(&posix_signal_task);
+        task.setUintptr(signal);
+        event_loop.enqueueTask(task);
+    }
 }
 
-/// Plain-data carrier emitted by `drain()` once it re-lands. The upstream
-/// extern `Bun__onSignalForJS(number: i32, globalObject: *JSGlobalObject)`
-/// is the runtime callback; the data struct itself has no JSC dependencies.
+/// Plain-data carrier emitted by `drain()`. The signal number rides in the
+/// task pointer slot; `runFromJSThread` reads it back and crosses into the
+/// linked C++ runtime callback to fire the JS `process.on(signal)` listeners.
 pub const PosixSignalTask = struct {
     number: u8,
+    extern "c" fn Bun__onSignalForJS(number: i32, globalObject: *jsc.JSGlobalObject) void;
+
+    pub const new = bun.TrivialNew(@This());
+    pub fn runFromJSThread(number: u8, globalObject: *jsc.JSGlobalObject) void {
+        Bun__onSignalForJS(number, globalObject);
+    }
 };
+
+export fn Bun__ensureSignalHandler() void {
+    if (comptime Environment.isPosix) {
+        if (VirtualMachine.getMainThreadVM()) |vm| {
+            const this = vm.eventLoop();
+            if (this.signal_handler == null) {
+                this.signal_handler = PosixSignalHandle.new(.{});
+                @memset(&this.signal_handler.?.signals, 0);
+            }
+        }
+    }
+}
+
+comptime {
+    if (Environment.isPosix) {
+        _ = &Bun__ensureSignalHandler;
+        _ = &Bun__onPosixSignal;
+    }
+}
 
 test "PosixSignalHandle is empty after init" {
     var ring = PosixSignalHandle{};
@@ -125,6 +169,10 @@ test "PosixSignalTask carries the signal number" {
     try std.testing.expectEqual(@as(u8, 9), t.number);
 }
 
-comptime {
-    _ = home_rt;
-}
+const std = @import("std");
+
+const bun = @import("bun");
+const Environment = bun.Environment;
+
+const jsc = bun.jsc;
+const VirtualMachine = jsc.VirtualMachine;
