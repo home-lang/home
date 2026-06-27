@@ -1821,7 +1821,7 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.js", .{std.c.getpid()}) catch
         return false;
     Io.Dir.cwd().writeFile(g_io, .{ .sub_path = tmp_path, .data = src.items }) catch return false;
-    runFileViaVM(allocator, tmp_path, &.{}) catch |err| {
+    runFileViaVMOpts(allocator, tmp_path, &.{}, true) catch |err| {
         std.debug.print("{s}error:{s} eval failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
         std.process.exit(1);
     };
@@ -1849,10 +1849,14 @@ fn runInlineEvalViaVM(allocator: std.mem.Allocator, code: []const u8, extra_args
     const tmp_path = std.fmt.bufPrint(&tmp_buf, "/tmp/home-eval-{d}.ts", .{std.c.getpid()}) catch
         return error.NameTooLong;
     try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = tmp_path, .data = src.items });
-    try runFileViaVM(allocator, tmp_path, extra_args);
+    try runFileViaVMOpts(allocator, tmp_path, extra_args, true);
 }
 
 fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    return runFileViaVMOpts(allocator, file_path, extra_args, false);
+}
+
+fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8, inject_node_globals: bool) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
 
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1911,6 +1915,27 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args:
         const argv_slice = try allocator.alloc([]const u8, extra_args.len);
         for (extra_args, argv_slice) |src, *dst| dst.* = src;
         vm.argv = argv_slice;
+    }
+
+    // `bun -e`/`--eval` exposes the node builtin modules as globals (Node-REPL
+    // style), so inline snippets can use bare `fs`/`assert`/`path`/… ; file runs
+    // do NOT. Bind them via a PRELOAD module — it runs in the entry's realm
+    // before the entry, so the user code's error line/column numbers are
+    // unaffected. Only sets names not already global (keeps the real
+    // console/process/crypto/Buffer). loadEntryPoint runs preloads when
+    // `vm.preload` is non-empty.
+    if (inject_node_globals) {
+        const boot =
+            \\const N=["assert","async_hooks","buffer","child_process","cluster","console","constants","crypto","dgram","diagnostics_channel","dns","domain","events","fs","http","http2","https","inspector","net","os","path","perf_hooks","process","punycode","querystring","readline","stream","string_decoder","sys","timers","tls","trace_events","tty","url","util","v8","vm","wasi","worker_threads","zlib"];
+            \\for(const n of N){try{if(typeof globalThis[n]==="undefined")globalThis[n]=require("node:"+n);}catch{}}
+        ;
+        var pre_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const pre_path = std.fmt.bufPrint(&pre_buf, "/tmp/home-eval-globals-{d}.js", .{std.c.getpid()}) catch
+            return error.NameTooLong;
+        try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = pre_path, .data = boot });
+        const preloads = try allocator.alloc([]const u8, 1);
+        preloads[0] = try allocator.dupe(u8, pre_path);
+        vm.preload = preloads;
     }
 
     // Resolver/transpiler config mirrored from Run.boot (defaults for the install
