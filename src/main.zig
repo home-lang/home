@@ -3961,10 +3961,14 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
             }
         }
         if (!force_native) {
-            // Native bun:test runner (HOME_NATIVE_VM=1): run through Home's own
-            // TestCommand.exec (sets up the Jest runner + VM) instead of
-            // delegating to system bun. Experimental, gated.
-            if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+            // Native bun:test runner: run through Home's own TestCommand.exec
+            // (Jest runner + full VM + module loader: describe/test/expect/
+            // lifecycle/snapshots all work). This is the default whenever JSC is
+            // linked — it removes the dependency on a system `bun` and is the
+            // native-first direction. `HOME_NATIVE_VM` is still honored for
+            // back-compat but no longer required. Falls back to bun delegation
+            // only when JSC is unavailable (non-enable_jsc builds).
+            if (build_options.enable_jsc) {
                 runTestsViaVM(allocator, args) catch |err| {
                     std.debug.print("{s}error:{s} native test run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
                     std.process.exit(1);
