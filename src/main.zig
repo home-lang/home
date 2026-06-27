@@ -1892,6 +1892,32 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
     args.target = home_rt.schema.api.Target.bun;
     args.absolute_working_dir = allocator.dupeZ(u8, cwd) catch null;
 
+    // Build the preload list and WRITE any temp preload file to disk BEFORE the
+    // VM (and its resolver) is initialized. `bun -e`/`--eval` exposes the node
+    // builtin modules as globals (Node-REPL style) via a PRELOAD module — it
+    // runs in the entry's realm before the entry, so user error line/column
+    // numbers are unaffected; file runs do NOT inject these. The temp MUST be on
+    // disk before init: VM init enumerates and caches the cwd's directory
+    // listing, and if the node-globals temp is written afterward while the cwd
+    // is itself the temp's directory (e.g. `home -e` run from /tmp, which is
+    // /private/tmp), the freshly-written file is absent from that cached listing
+    // and the resolver reports "Cannot find module". The `vm.preload` assignment
+    // (which needs `vm`) stays after init.
+    var preload_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    if (inject_node_globals) {
+        const boot =
+            \\const N=["assert","async_hooks","buffer","child_process","cluster","console","constants","crypto","dgram","diagnostics_channel","dns","domain","events","fs","http","http2","https","inspector","net","os","path","perf_hooks","process","punycode","querystring","readline","stream","string_decoder","sys","timers","tls","trace_events","tty","url","util","v8","vm","wasi","worker_threads","zlib"];
+            \\for(const n of N){try{if(typeof globalThis[n]==="undefined")globalThis[n]=require("node:"+n);}catch{}}
+        ;
+        var pre_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const pre_path = std.fmt.bufPrint(&pre_buf, "/tmp/home-eval-globals-{d}.js", .{std.c.getpid()}) catch
+            return error.NameTooLong;
+        try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = pre_path, .data = boot });
+        try preload_list.append(allocator, try allocator.dupe(u8, pre_path));
+    }
+    // User `--require`/`-r`/`--preload` modules (run before the entry).
+    for (g_user_preloads) |user_preload| try preload_list.append(allocator, user_preload);
+
     // Engine code (e.g. ConsoleObject) reads the process-global Command.Context
     // via `Command.get()`. We boot the VM directly (not through Command.start),
     // so initialize that context with defaults first or those reads dereference
@@ -1921,30 +1947,9 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
         vm.argv = argv_slice;
     }
 
-    // `bun -e`/`--eval` exposes the node builtin modules as globals (Node-REPL
-    // style), so inline snippets can use bare `fs`/`assert`/`path`/… ; file runs
-    // do NOT. Bind them via a PRELOAD module — it runs in the entry's realm
-    // before the entry, so the user code's error line/column numbers are
-    // unaffected. Only sets names not already global (keeps the real
-    // console/process/crypto/Buffer). loadEntryPoint runs preloads when
-    // `vm.preload` is non-empty.
-    {
-        var preload_list: std.ArrayListUnmanaged([]const u8) = .empty;
-        if (inject_node_globals) {
-            const boot =
-                \\const N=["assert","async_hooks","buffer","child_process","cluster","console","constants","crypto","dgram","diagnostics_channel","dns","domain","events","fs","http","http2","https","inspector","net","os","path","perf_hooks","process","punycode","querystring","readline","stream","string_decoder","sys","timers","tls","trace_events","tty","url","util","v8","vm","wasi","worker_threads","zlib"];
-                \\for(const n of N){try{if(typeof globalThis[n]==="undefined")globalThis[n]=require("node:"+n);}catch{}}
-            ;
-            var pre_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const pre_path = std.fmt.bufPrint(&pre_buf, "/tmp/home-eval-globals-{d}.js", .{std.c.getpid()}) catch
-                return error.NameTooLong;
-            try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = pre_path, .data = boot });
-            try preload_list.append(allocator, try allocator.dupe(u8, pre_path));
-        }
-        // User `--require`/`-r`/`--preload` modules (run before the entry).
-        for (g_user_preloads) |user_preload| try preload_list.append(allocator, user_preload);
-        if (preload_list.items.len > 0) vm.preload = try preload_list.toOwnedSlice(allocator);
-    }
+    // Preloads were built and written to disk above (before VM init).
+    // loadEntryPoint runs them when `vm.preload` is non-empty.
+    if (preload_list.items.len > 0) vm.preload = try preload_list.toOwnedSlice(allocator);
 
     // Resolver/transpiler config mirrored from Run.boot (defaults for the install
     // knobs since there's no CLI context here).
