@@ -2346,7 +2346,18 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
             }
             NewHTTPContext(is_ssl).closeSocket(socket);
         }
+    }
 
+    // Run the callback (which copies the response body out of `body_out_str`)
+    // BEFORE `state.reset`. reset frees the buffer `body_out_str`/`result.body`
+    // points at, and the shallow `body = out_str.*` save only preserves the
+    // struct (a dangling pointer post-free) — so resetting first left the
+    // callback reading poisoned (0xAA) memory and every fetched body decoded to
+    // U+FFFD. Consume first, then reset.
+    result.body.?.* = body;
+    callback.run(@fieldParentPtr("client", this), result);
+
+    if (is_done) {
         this.state.reset(this.allocator);
         this.state.response_stage = .done;
         this.state.request_stage = .done;
@@ -2354,9 +2365,6 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
         this.flags.proxy_tunneling = false;
         log("done", .{});
     }
-
-    result.body.?.* = body;
-    callback.run(@fieldParentPtr("client", this), result);
 
     if (comptime print_every > 0) {
         print_every_i += 1;
@@ -2382,14 +2390,18 @@ fn sendProgressUpdateMultiplexed(this: *HTTPClient) void {
     const callback = this.result_callback;
     if (is_done) {
         this.unregisterAbortTracker();
+    }
+    // Consume the body (callback copies it out) BEFORE state.reset frees it —
+    // see the matching note in the H1 progressUpdate path.
+    result.body.?.* = body;
+    callback.run(@fieldParentPtr("client", this), result);
+    if (is_done) {
         this.state.reset(this.allocator);
         this.state.response_stage = .done;
         this.state.request_stage = .done;
         this.state.stage = .done;
         this.flags.proxy_tunneling = false;
     }
-    result.body.?.* = body;
-    callback.run(@fieldParentPtr("client", this), result);
 }
 
 /// `doRedirect` minus the per-request socket release/close. The session
