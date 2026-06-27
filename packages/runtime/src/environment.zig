@@ -185,12 +185,16 @@ else if (isAarch64)
 else
     @compileError("Please add your architecture to Environment.Architecture");
 
+// Home emulates Bun's engine pinned at git_sha fd0b6f1a27 (= Bun 1.3.14). Report
+// that version so `Bun.version`/`process.versions.bun`/the `bun test` header and
+// version-gated tests match the pin; "0.0.0" made literal `v1.` checks fail and
+// version-gated `it.if` blocks behave differently than upstream.
 pub const version: std.SemanticVersion = .{
-    .major = 0,
-    .minor = 0,
-    .patch = 0,
+    .major = 1,
+    .minor = 3,
+    .patch = 14,
 };
-pub const version_string = "0.0.0";
+pub const version_string = "1.3.14";
 pub const reported_nodejs_version = "20.0.0";
 
 test "environment flags are mutually consistent" {
