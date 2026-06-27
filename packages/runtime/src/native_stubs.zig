@@ -133,7 +133,7 @@ comptime {
         "JS2Zig___src_runtime_bake_FrameworkRouter_zig__JSFrameworkRouter_getBindings_workaround",
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
         "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",
-        "JS2Zig___src_runtime_node_node_http_binding_zig__getBunServerAllClosedPromise",
+        // getBunServerAllClosedPromise now has a real export in js2native_workarounds.zig.
         "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_disabledOnThisPlatform",
         "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellLex",
         "JS2Zig___src_runtime_shell_shell_zig__TestingAPIs_shellParse",

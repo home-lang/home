@@ -105,6 +105,10 @@ comptime {
     @export(&host_fn.toJSHostFn(node_parse_args.parseArgs), .{ .name = "JS2Zig___src_runtime_node_util_parse_args_zig__parseArgs" });
     @export(&host_fn.toJSHostFn(node_http_binding.getMaxHTTPHeaderSize), .{ .name = "JS2Zig___src_runtime_node_node_http_binding_zig__getMaxHTTPHeaderSize" });
     @export(&host_fn.toJSHostFn(node_http_binding.setMaxHTTPHeaderSize), .{ .name = "JS2Zig___src_runtime_node_node_http_binding_zig__setMaxHTTPHeaderSize" });
+    // node:http's server close path awaits this promise; without the real export
+    // it was a native_stubs noop (returned undefined) and `.@then` threw, failing
+    // ~60 node-http.test.ts cases at once.
+    @export(&host_fn.toJSHostFn(node_http_binding.getBunServerAllClosedPromise), .{ .name = "JS2Zig___src_runtime_node_node_http_binding_zig__getBunServerAllClosedPromise" });
     // Self-contained pure-function bindings (were noop).
     @export(&host_fn.toJSHostFn(bun.String.jsGetStringWidth), .{ .name = "JS2Zig___src_string_string_zig__String_jsGetStringWidth" });
     @export(&host_fn.toJSHostFn(Timer.internal_bindings.timerClockMs), .{ .name = "JS2Zig___src_runtime_timer_Timer_zig__internal_bindings_timerClockMs" });
