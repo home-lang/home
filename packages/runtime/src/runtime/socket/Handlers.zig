@@ -150,7 +150,11 @@ pub fn fromGenerated(
     };
     inline for (callback_fields) |field| {
         const value = @field(generated, field);
-        if (value.isUndefinedOrNull()) {} else if (!value.isCallable()) {
+        // `.zero` (the EMPTY JSValue) means the field wasn't provided — treat it
+        // like undefined/null. Without this, `isCallable(.zero)` dereferences a
+        // null cell and SIGSEGVs (e.g. node:net createServer, whose socket-config
+        // bindgen currently defaults all handler fields to `.zero`).
+        if (value == .zero or value.isUndefinedOrNull()) {} else if (!value.isCallable()) {
             return globalObject.throwInvalidArguments(
                 "Expected \"{s}\" callback to be a function",
                 .{field},
