@@ -42,10 +42,8 @@ pub const WebsocketHeader = packed struct(u16) {
         // lets check it worked right
         if (comptime Environment.allow_assert) {
             var buf_ = [2]u8{ 0, 0 };
-            var stream = std.io.fixedBufferStream(&buf_);
-            stream.writer().writeInt(u16, @as(u16, @bitCast(header)), .big) catch unreachable;
-            stream.pos = 0;
-            const casted = stream.reader().readInt(u16, .big) catch unreachable;
+            std.mem.writeInt(u16, &buf_, @as(u16, @bitCast(header)), .big);
+            const casted = std.mem.readInt(u16, &buf_, .big);
             home_rt.assert(casted == @as(u16, @bitCast(header)));
             home_rt.assert(std.meta.eql(@as(WebsocketHeader, @bitCast(casted)), header));
         }
