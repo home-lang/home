@@ -1267,7 +1267,10 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
             // we have to clone the request headers here since they will soon belong to a different request
             if (!request_object.hasFetchHeaders()) {
-                if (comptime !http3) request_object.setFetchHeaders(.createFromUWS(req));
+                // Build via the Zig enumerator (Request.fetchHeadersFromReqZig),
+                // NOT FetchHeaders.createFromUWS — the C++ one mangles header
+                // VALUES to U+FFFD per byte (its String::createUninitialized path).
+                if (comptime !http3) request_object.setFetchHeaders(Request.fetchHeadersFromReqZig(req));
             }
 
             // This object dies after the stack frame is popped

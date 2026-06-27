@@ -942,6 +942,24 @@ pub fn setFetchHeaders(
 /// Returns the headers of the request. If the headers are not already cached, it will create a new FetchHeaders object.
 /// If the headers are empty, it will look at request_context to get the headers.
 /// If the headers are empty and request_context is null, it will create an empty FetchHeaders object.
+/// Build a FetchHeaders from a live uWS request by enumerating its headers in
+/// Zig and appending each (name, value). The C++ `FetchHeaders.createFromUWS`
+/// mangles header VALUES (each byte → U+FFFD) via its String::createUninitialized
+/// path, while `forEachHeader` reads the bytes correctly and `append` (the same
+/// path the fetch client uses) stores them correctly.
+pub fn fetchHeadersFromReqZig(req: *uws.Request) *FetchHeaders {
+    const headers = FetchHeaders.createEmpty();
+    const Ctx = struct { h: *FetchHeaders, g: *jsc.JSGlobalObject };
+    var ctx = Ctx{ .h = headers, .g = jsc.VirtualMachine.get().global };
+    req.forEachHeader(Ctx, &ctx, struct {
+        fn cb(c: *Ctx, name: []const u8, value: []const u8) void {
+            if (name.len == 0) return;
+            c.h.append(&ZigString.init(name), &ZigString.init(value), c.g);
+        }
+    }.cb);
+    return headers;
+}
+
 pub fn ensureFetchHeaders(
     this: *Request,
     globalThis: *jsc.JSGlobalObject,
@@ -953,7 +971,7 @@ pub fn ensureFetchHeaders(
 
     if (this.request_context.getRequest()) |req| {
         // we have a request context, so we can get the headers from it
-        this._headers = FetchHeaders.createFromUWS(req);
+        this._headers = fetchHeadersFromReqZig(req);
     } else {
         // we don't have a request context, so we need to create an empty headers object
         this._headers = FetchHeaders.createEmpty();
@@ -982,7 +1000,7 @@ pub fn getFetchHeadersUnlessEmpty(
     if (this._headers == null) {
         if (this.request_context.getRequest()) |req| {
             // we have a request context, so we can get the headers from it
-            this._headers = FetchHeaders.createFromUWS(req);
+            this._headers = fetchHeadersFromReqZig(req);
         }
     }
 
@@ -1011,7 +1029,7 @@ pub fn getHeaders(
 pub fn cloneHeaders(this: *Request, globalThis: *JSGlobalObject) bun.JSError!?*FetchHeaders {
     if (this._headers == null) {
         if (this.request_context.getRequest()) |uws_req| {
-            this._headers = FetchHeaders.createFromUWS(uws_req);
+            this._headers = fetchHeadersFromReqZig(uws_req);
         }
     }
 

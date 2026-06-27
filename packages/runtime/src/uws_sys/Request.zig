@@ -78,6 +78,17 @@ pub const Request = opaque {
         var ptr: [*]const u8 = undefined;
         return ptr[0..c.uws_req_get_parameter(req, @as(c_ushort, @intCast(index)), &ptr)];
     }
+    /// Enumerate all request headers (name+value byte ranges into the live
+    /// request buffer; only valid for the duration of the call).
+    pub fn forEachHeader(req: *Request, comptime Ctx: type, ctx: *Ctx, comptime cb: fn (*Ctx, name: []const u8, value: []const u8) void) void {
+        const Wrap = struct {
+            fn each(name_ptr: [*c]const u8, name_len: usize, val_ptr: [*c]const u8, val_len: usize, ud: ?*anyopaque) callconv(.c) void {
+                const c2: *Ctx = @ptrCast(@alignCast(ud.?));
+                cb(c2, if (name_len > 0) name_ptr[0..name_len] else "", if (val_len > 0) val_ptr[0..val_len] else "");
+            }
+        };
+        c.uws_req_for_each_header(req, &Wrap.each, ctx);
+    }
 };
 
 const c = struct {
@@ -89,6 +100,7 @@ const c = struct {
     pub extern fn uws_req_get_header(res: *Request, lower_case_header: [*]const u8, lower_case_header_length: usize, dest: *[*]const u8) usize;
     pub extern fn uws_req_get_query(res: *Request, key: [*c]const u8, key_length: usize, dest: *[*]const u8) usize;
     pub extern fn uws_req_get_parameter(res: *Request, index: c_ushort, dest: *[*]const u8) usize;
+    pub extern fn uws_req_for_each_header(res: *Request, handler: *const fn ([*c]const u8, usize, [*c]const u8, usize, ?*anyopaque) callconv(.c) void, user_data: ?*anyopaque) void;
 };
 
 const std = @import("std");
