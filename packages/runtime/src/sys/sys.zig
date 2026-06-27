@@ -3108,7 +3108,11 @@ pub fn mmapFile(path: [:0]const u8, flags: std.c.MAP, wanted_size: ?usize, offse
 
     if (wanted_size) |size_| size = @min(size, size_);
 
-    const map = switch (mmap(null, size, posix.PROT.READ | posix.PROT.WRITE, flags, fd, offset)) {
+    // `std.posix.PROT` is `macho.vm_prot_t` (a packed struct) on Darwin — its
+    // READ/WRITE are struct fields, not OR-able constants, so the old
+    // `PROT.READ | PROT.WRITE` didn't compile (latent because mmapFile was
+    // stubbed and never instantiated). Construct the flags struct directly.
+    const map = switch (mmap(null, size, .{ .READ = true, .WRITE = true }, flags, fd, offset)) {
         .result => |map| map,
 
         .err => |err| {

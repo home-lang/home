@@ -4915,9 +4915,9 @@ pub const sys = struct {
         return openatA(.cwd(), path_, flags, mode);
     }
 
-    pub fn mmapFile(_: [:0]const u8, _: std.c.MAP, _: ?usize, _: usize) Maybe([]align(std.heap.page_size_min) u8) {
-        return .{ .err = unexpected(.mmap) };
-    }
+    // The real mmap-a-file impl lives in sys/sys.zig (open → fstat → mmap).
+    // This was a stub returning EINVAL, so `Bun.mmap(path)` always failed.
+    pub const mmapFile = @import("sys/sys.zig").mmapFile;
 
     // Faithful to upstream: the real socket/pipe non-blocking readers live in
     // `sys/sys.zig` (`recv`→`recvfrom$NOCANCEL`, `readNonblocking`→`read` on
