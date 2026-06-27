@@ -93,6 +93,12 @@ comptime {
         _ = @import("runtime/webcore/streams.zig").HTTPSResponseSink.JSSink;
         _ = @import("sourcemap_jsc/CodeCoverage.zig");
         _ = @import("native_stubs.zig");
+        // Force the real ResolvePath__joinAbsStringBufCurrentPlatformBunString
+        // export (jsc/resolve_path_jsc.zig) into the .Exe build — its no-op was
+        // removed from native_stubs, and bun.zig's force-link block isn't
+        // analyzed here, so without this the C++ pathToFileURL caller would hit
+        // an undefined symbol.
+        _ = @import("jsc/resolve_path_jsc.zig");
         _ = @import("runtime/socket/uws_dispatch.zig");
         // prompt.zig's WebCore__alert/confirm/prompt exports are gated behind
         // `export_cpp_apis` in webcore.zig (off in the .Exe build); force them

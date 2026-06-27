@@ -460,7 +460,9 @@ pub fn normalizeStringBufT(
     const had_trailing_slash = str.len > root_len and platform.isSeparatorT(T, str[str.len - 1]);
     var out: usize = 0;
     if (root_len > 0) {
-        @memcpy(buf[0..root_len], str[0..root_len]);
+        // `str` may alias `buf` (in-place normalize from joinStringBufT); a
+        // self-`@memcpy` would overlap, so skip it when they share storage.
+        if (@intFromPtr(str.ptr) != @intFromPtr(buf.ptr)) @memcpy(buf[0..root_len], str[0..root_len]);
         if (platform == .windows) {
             for (buf[0..root_len]) |*char| {
                 if (char.* == '/') char.* = '\\';
@@ -469,8 +471,18 @@ pub fn normalizeStringBufT(
         out = root_len;
     }
 
-    var parts: [256][]const T = undefined;
-    var parts_len: usize = 0;
+    // Trim a trailing separator the root may have left before appending
+    // segments (the pre-write trim from the original parts-array version).
+    if (root_len > 0 and out > 1 and platform.isSeparatorT(T, buf[out - 1])) {
+        out -= 1;
+    }
+
+    // Write normalized segments straight into `buf`, popping on `..` by
+    // scanning back to the previous separator. The previous version collected
+    // segment slices into a fixed `[256]` array and @panic'd past it, which
+    // crashed on pathologically deep relative paths (e.g. resolving thousands
+    // of `..` for `pathToFileURL` of a >PATH_MAX path).
+    const seg_base = out;
     var i = root_len;
     while (i <= str.len) {
         while (i < str.len and platform.isSeparatorT(T, str[i])) i += 1;
@@ -480,25 +492,38 @@ pub fn normalizeStringBufT(
         const part = str[start..i];
         if (part.len == 1 and part[0] == '.') continue;
         if (part.len == 2 and part[0] == '.' and part[1] == '.') {
-            if (parts_len > 0 and !isDotDot(T, parts[parts_len - 1])) {
-                parts_len -= 1;
+            if (out > seg_base) {
+                // Find the start of the last written segment.
+                var s = out;
+                while (s > seg_base and !platform.isSeparatorT(T, buf[s - 1])) s -= 1;
+                if (isDotDot(T, buf[s..out])) {
+                    // Can't pop a `..`; keep it and append another (above-root
+                    // relative paths only — a rooted path never leads with `..`).
+                    if (allow_above_root and root_len == 0) {
+                        if (out != 0 and !platform.isSeparatorT(T, buf[out - 1])) {
+                            buf[out] = sep;
+                            out += 1;
+                        }
+                        buf[out] = '.';
+                        buf[out + 1] = '.';
+                        out += 2;
+                    }
+                } else {
+                    // Pop the segment, plus the joining separator before it
+                    // unless that separator belongs to the root.
+                    out = if (s > seg_base) s - 1 else seg_base;
+                }
             } else if (allow_above_root and root_len == 0) {
-                if (parts_len >= parts.len) @panic("too many path components");
-                parts[parts_len] = part;
-                parts_len += 1;
+                if (out != 0 and !platform.isSeparatorT(T, buf[out - 1])) {
+                    buf[out] = sep;
+                    out += 1;
+                }
+                buf[out] = '.';
+                buf[out + 1] = '.';
+                out += 2;
             }
-        } else {
-            if (parts_len >= parts.len) @panic("too many path components");
-            parts[parts_len] = part;
-            parts_len += 1;
+            continue;
         }
-    }
-
-    if (root_len > 0 and out > 1 and platform.isSeparatorT(T, buf[out - 1])) {
-        out -= 1;
-    }
-
-    for (parts[0..parts_len]) |part| {
         if (out != 0 and !platform.isSeparatorT(T, buf[out - 1])) {
             buf[out] = sep;
             out += 1;
@@ -587,23 +612,28 @@ pub fn joinStringBufZ(buf: []u8, parts: anytype, comptime platform: Platform) [:
 }
 
 pub fn joinStringBufT(comptime T: type, buf: []T, parts: anytype, comptime platform: Platform) []const T {
-    var temp: [MAX_PATH_BYTES * 2]T = undefined;
+    // Concatenate the parts directly into the caller's `buf`, then normalize
+    // in place. The previous version concatenated into a fixed
+    // `[MAX_PATH_BYTES * 2]` stack buffer, which OVERFLOWED for inputs longer
+    // than ~2*PATH_MAX (e.g. resolving a >PATH_MAX path for `pathToFileURL`).
+    // `normalizeStringBufT` only ever shrinks (its write index never passes the
+    // read index), so normalizing `buf` into `buf` is safe.
     var written: usize = 0;
     const sep: T = @intCast(platform.separator());
     for (parts) |part| {
         if (part.len == 0) continue;
-        if (written != 0 and !platform.isSeparatorT(T, temp[written - 1])) {
-            temp[written] = sep;
+        if (written != 0 and !platform.isSeparatorT(T, buf[written - 1])) {
+            buf[written] = sep;
             written += 1;
         }
-        @memcpy(temp[written..][0..part.len], part);
+        @memcpy(buf[written..][0..part.len], part);
         written += part.len;
     }
     if (written == 0) {
         buf[0] = '.';
         return buf[0..1];
     }
-    return normalizeStringBufT(T, temp[0..written], buf, true, platform, true);
+    return normalizeStringBufT(T, buf[0..written], buf, true, platform, true);
 }
 
 pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime platform: Platform) []const u8 {
