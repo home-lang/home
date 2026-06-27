@@ -1981,6 +1981,41 @@ fn runFileViaVMOpts(allocator: std.mem.Allocator, file_path: []const u8, extra_a
 /// files/filters (positionals[1..]). Flag parsing is not wired yet, so test
 /// flags are currently ignored. globalExit inside exec makes this noreturn on
 /// success. Gated behind HOME_NATIVE_VM=1.
+/// Minimal bunfig.toml `preload` extractor for the native test runner. Reads
+/// the `preload = "<path>"` / `preload = ["a", "b"]` assignment(s) (top-level
+/// and any `[test]` section) and returns the paths. Intentionally NOT a full
+/// TOML/bunfig parse — Bunfig.parse pulls in unported install/process code.
+fn readBunfigPreloads(allocator: std.mem.Allocator) []const []const u8 {
+    const content = Io.Dir.cwd().readFileAlloc(g_io, "bunfig.toml", allocator, std.Io.Limit.limited(1 << 20)) catch return &.{};
+    defer allocator.free(content);
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#' or line[0] == '[') continue;
+        if (!std.mem.startsWith(u8, line, "preload")) continue;
+        var rest = std.mem.trim(u8, line["preload".len..], " \t");
+        if (rest.len == 0 or rest[0] != '=') continue;
+        rest = std.mem.trim(u8, rest[1..], " \t");
+        if (rest.len == 0) continue;
+        // Collect every quoted string on the value side (covers both the single
+        // string and the inline-array forms).
+        var i: usize = 0;
+        while (i < rest.len) : (i += 1) {
+            const q = rest[i];
+            if (q != '"' and q != '\'') continue;
+            i += 1;
+            const start = i;
+            while (i < rest.len and rest[i] != q) i += 1;
+            if (i > start) {
+                const dup = allocator.dupe(u8, rest[start..i]) catch continue;
+                list.append(allocator, dup) catch {};
+            }
+        }
+    }
+    return list.toOwnedSlice(allocator) catch &.{};
+}
+
 fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
     _ = allocator_unused;
@@ -2013,6 +2048,16 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         const cwd = std.mem.span(@as([*:0]u8, @ptrCast(p)));
         ctx.args.absolute_working_dir = allocator.dupeZ(u8, cwd) catch null;
     }
+
+    // Honor bunfig.toml's `preload` the way `bun test` does: the runner sets
+    // `vm.preload = ctx.preloads` (test_command.zig), but booting the Context
+    // directly skips bunfig parsing, so a bunfig that preloads a setup module
+    // (e.g. Bun's test harness, which registers custom matchers like `toRun`)
+    // had no effect on test files that don't import it. The full Bunfig parser
+    // drags in unported install/process subsystems, so extract just the
+    // `preload` value here.
+    const cfg_preloads = readBunfigPreloads(allocator);
+    if (cfg_preloads.len > 0) ctx.preloads = cfg_preloads;
 
     // positionals[0] is the command name; [1..] are file/dir paths or filters.
     var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
