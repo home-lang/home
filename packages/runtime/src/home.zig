@@ -4853,9 +4853,20 @@ pub const sys = struct {
         kind: std.Io.File.Kind = .file,
     };
 
+    // The real lstat (NOT following symlinks) lives in sys/sys.zig. This was a
+    // no-op stub returning a default `.file` kind, so EVERY symlink was
+    // misclassified as a regular file. That broke importing packages installed
+    // as symlinks (bun's isolated node_modules layout) when they have no
+    // package.json "exports" field: the resolver took them as a file and the
+    // loader hit EISDIR on the package directory. The real impl is macOS-only
+    // (Windows uses GetFileAttributes in resolver/fs.zig and never reaches
+    // here), so the Windows arm is compiled out via the `comptime` guard.
     pub fn lstat_absolute(path_: [:0]const u8) !LStat {
-        _ = path_;
-        return .{};
+        if (comptime Environment.isWindows) return .{};
+        return switch (lstat(path_)) {
+            .result => |st| .{ .kind = kindFromMode(@intCast(st.mode)) },
+            .err => error.FileNotFound,
+        };
     }
 
     fn unexpected(comptime tag: Tag) Error {
