@@ -8,6 +8,7 @@
 // re-attaches in Phase 12.2 alongside the JSC engine bring-up.
 
 const std = @import("std");
+const bun_rt = @import("bun");
 
 // JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
@@ -40,10 +41,14 @@ const WorkPool = struct {
 // JSC bridge markBinding stubbed — re-attaches in Phase 12.2.
 fn markBinding(_: std.builtin.SourceLocation) void {}
 
-// JSC bridge bun.cpp.Bun__performTask stubbed — re-attaches in Phase 12.2.
+// Re-attached (was a Phase-12 no-op): call the linked C++
+// `EventLoopTask::performTask`. Without this, every cross-thread CppTask was
+// silently discarded — e.g. a Worker's `'open'`/`postMessage`, which crosses
+// to the parent via `Bun__queueTaskConcurrently` → the parent's concurrent
+// queue → `Task` dispatch → `CppTask.run` → here. `bun_rt.cpp.Bun__performTask`
+// is the generated wrapper over the real extern (`.generated/cpp.zig`).
 fn Bun__performTask(global: *JSGlobalObject, this: *CppTask) JSError!void {
-    _ = global;
-    _ = this;
+    return bun_rt.cpp.Bun__performTask(global, this);
 }
 
 // JSC bridge bun.destroy stubbed — re-attaches in Phase 12.2.
