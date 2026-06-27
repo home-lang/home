@@ -129,7 +129,7 @@ fn UnsupportedEVPHasher(comptime digest_size: comptime_int, comptime name: []con
 pub const EVP = struct {
     pub const SHA1 = NewStdEVP(std.crypto.hash.Sha1);
     pub const MD5 = NewStdEVP(std.crypto.hash.Md5);
-    pub const MD4 = UnsupportedEVPHasher(16, "MD4");
+    pub const MD4 = NewStdEVP(@import("md4.zig").Md4);
     pub const SHA224 = NewStdEVP(std.crypto.hash.sha2.Sha224);
     pub const SHA512 = NewStdEVP(std.crypto.hash.sha2.Sha512);
     pub const SHA384 = NewStdEVP(std.crypto.hash.sha2.Sha384);
