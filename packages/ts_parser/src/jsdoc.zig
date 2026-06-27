@@ -165,6 +165,14 @@ fn parseLine(line: []const u8) ?Tag {
             name_text = rest[1..close];
             rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
         } else {
+            // `@template const T` — `const` is a const-type-parameter
+            // modifier, not the parameter name. Skip it so the real name
+            // (`T`) is read (jsdocTemplateTag6).
+            if (kind == .template_tag and std.mem.startsWith(u8, rest, "const") and
+                rest.len > 5 and (rest[5] == ' ' or rest[5] == '\t'))
+            {
+                rest = std.mem.trimStart(u8, rest[5..], " \t");
+            }
             var m: usize = 0;
             while (m < rest.len and isIdentChar(rest[m])) m += 1;
             name_text = rest[0..m];
