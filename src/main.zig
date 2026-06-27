@@ -4114,6 +4114,21 @@ pub fn main(init: std.process.Init) !void {
 
     const command = args[1];
 
+    // `bun --version`/`-v` prints the version (e.g. "1.3.14") to stdout and exits;
+    // `--revision` prints the version+sha. Tests and tooling spawn
+    // `bunExe() --version`, so accept it at the top level (it previously errored
+    // "Unknown command").
+    if (std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
+        const stdout_file = std.Io.File.stdout();
+        stdout_file.writeStreamingAll(g_io, home_rt.Global.package_json_version ++ "\n") catch {};
+        return;
+    }
+    if (std.mem.eql(u8, command, "--revision")) {
+        const stdout_file = std.Io.File.stdout();
+        stdout_file.writeStreamingAll(g_io, home_rt.Global.package_json_version_with_revision ++ "\n") catch {};
+        return;
+    }
+
     // Faithful to `bun --eval <code>` / `bun -e <code>`: a top-level flag (not a
     // subcommand) that evaluates an inline source string. Many bun-corpus tests
     // re-spawn the runtime as `bunExe() --eval "..."`, so this must be accepted
