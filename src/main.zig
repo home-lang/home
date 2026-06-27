@@ -1609,6 +1609,20 @@ fn runJsLikeFile(allocator: std.mem.Allocator, file_path: []const u8, extra_args
     // TODO(phase-12-2): Replace this delegation with the native Home runtime
     // once `packages/runtime/src/jsc/` is populated.
     const bun_path = findBunBinary() catch {
+        // No system `bun` (the Phase-12 delegation crutch is unavailable).
+        // Fall back to Home's OWN VirtualMachine, which now runs ESM + CJS +
+        // TS via JSC's native module loader (same path as `HOME_NATIVE_VM=1`
+        // and `home -e`). This is the native-first direction; the bun
+        // delegation above remains only for environments that still have a
+        // `bun` on PATH, so this fallback is a strict improvement (it never
+        // changes behavior when bun is present).
+        if (build_options.enable_jsc) {
+            runFileViaVM(allocator, file_path, extra_args) catch |err| {
+                std.debug.print("{s}error:{s} native VM run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
+                std.process.exit(1);
+            };
+            return;
+        }
         std.debug.print("{s}Error:{s} `home run {s}`: no native JS/TS runtime yet (Phase 12 in progress) and the system `bun` binary was not found in pantry/global paths.\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
         std.process.exit(1);
     };
