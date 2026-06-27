@@ -30,11 +30,21 @@
 const std = @import("std");
 const home_rt = @import("home");
 
-// JSC stubs — re-attach when the matching home_rt.jsc surface lands.
 const JSGlobalObject = @import("home").jsc.JSGlobalObject;
 const CallFrame = @import("home").jsc.CallFrame;
 pub const JSValue = @import("home").jsc.JSValue;
 pub const JSError = home_rt.JSError;
+
+// Re-attached 2026-06-27: the in-tree markdown renderer (`home_rt.md`) has
+// landed, so `create`/`renderToHTML`/`renderToAnsi`/`parseOptions` are wired
+// to it (was all `JSValue.zero` stubs — `Bun.markdown` PANICKED via the lazy
+// getter contract). `render`/`react` still throw (they need the parked C++
+// BunMarkdownMeta callbacks), but cleanly rather than crashing.
+const bun = home_rt;
+const jsc = home_rt.jsc;
+const ZigString = jsc.ZigString;
+const StringOrBuffer = jsc.Node.StringOrBuffer;
+const md = home_rt.md;
 
 // Upstream `create()` parked verbatim — depends on `JSValue.createEmptyObject`,
 // `ZigString.static`, and `jsc.JSFunction.create`. None on home_rt yet.
@@ -76,32 +86,100 @@ pub const JSError = home_rt.JSError;
 //     pub fn render(globalThis, callframe) bun.JSError!jsc.JSValue { ... }
 //     pub fn renderReact(globalThis, callframe) bun.JSError!jsc.JSValue { ... }
 pub fn create(globalThis: *JSGlobalObject) JSValue {
-    _ = globalThis;
-    return .zero;
+    const object = JSValue.createEmptyObject(globalThis, 4);
+    object.put(globalThis, ZigString.static("html"), jsc.JSFunction.create(globalThis, "html", renderToHTML, 1, .{}));
+    object.put(globalThis, ZigString.static("ansi"), jsc.JSFunction.create(globalThis, "ansi", renderToAnsi, 2, .{}));
+    object.put(globalThis, ZigString.static("render"), jsc.JSFunction.create(globalThis, "render", render, 3, .{}));
+    object.put(globalThis, ZigString.static("react"), jsc.JSFunction.create(globalThis, "react", renderReact, 3, .{}));
+    return object;
 }
 
 pub fn renderToHTML(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    _ = globalThis;
-    _ = callframe;
-    return .zero;
+    const input_value, const opts_value = callframe.argumentsAsArray(2);
+    if (input_value.isEmptyOrUndefinedOrNull()) {
+        return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
+    }
+    var arena: bun.ArenaAllocator = .init(bun.default_allocator);
+    defer arena.deinit();
+    const buffer = try StringOrBuffer.fromJS(globalThis, arena.allocator(), input_value) orelse {
+        return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
+    };
+    const input = buffer.slice();
+    const options = try parseOptions(globalThis, opts_value);
+    const result = md.renderToHtmlWithOptions(input, arena.allocator(), options) catch {
+        return globalThis.throwOutOfMemory();
+    };
+    return bun.String.createUTF8ForJS(globalThis, result);
 }
 
+/// `Bun.markdown.ansi(text, theme?)` — render markdown to an ANSI-colored
+/// terminal string. The ANSI renderer (`home_rt.md.renderToAnsi` →
+/// ansi_renderer.zig) still has unported deps (the QuickAndDirty JS syntax
+/// highlighter), so wiring it would drag in non-compiling code. Throw cleanly
+/// until that lands — NOT `.zero` (which would crash via the host-call assert).
 pub fn renderToAnsi(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    _ = globalThis;
     _ = callframe;
-    return .zero;
+    return globalThis.throwTODO("Bun.markdown.ansi is not implemented yet");
 }
 
+fn parseOptions(globalThis: *JSGlobalObject, opts_value: JSValue) JSError!md.Options {
+    @setEvalBranchQuota(10_000);
+    var options: md.Options = .{};
+    if (opts_value.isObject()) {
+        // Compound autolinks: true | { url, www, email }
+        if (try opts_value.get(globalThis, "autolinks")) |autolinks_val| {
+            if (autolinks_val.isBoolean()) {
+                if (autolinks_val.toBoolean()) options.permissive_autolinks = true;
+            } else if (autolinks_val.isObject()) {
+                if (try autolinks_val.getBooleanLoose(globalThis, "url")) |v| options.permissive_url_autolinks = v;
+                if (try autolinks_val.getBooleanLoose(globalThis, "www")) |v| options.permissive_www_autolinks = v;
+                if (try autolinks_val.getBooleanLoose(globalThis, "email")) |v| options.permissive_email_autolinks = v;
+            }
+        }
+        // Compound headings: true | { ids, autolink }
+        if (try opts_value.get(globalThis, "headings")) |headings_val| {
+            if (headings_val.isBoolean()) {
+                if (headings_val.toBoolean()) {
+                    options.heading_ids = true;
+                    options.autolink_headings = true;
+                }
+            } else if (headings_val.isObject()) {
+                if (try headings_val.getBooleanLoose(globalThis, "ids")) |v| options.heading_ids = v;
+                if (try headings_val.getBooleanLoose(globalThis, "autolink")) |v| options.autolink_headings = v;
+            }
+        }
+        // Remaining boolean options (autolinks/headings only via compound above).
+        inline for (@typeInfo(md.Options).@"struct".fields) |field| {
+            comptime if (field.type != bool or
+                std.mem.eql(u8, field.name, "permissive_autolinks") or
+                std.mem.eql(u8, field.name, "permissive_url_autolinks") or
+                std.mem.eql(u8, field.name, "permissive_www_autolinks") or
+                std.mem.eql(u8, field.name, "permissive_email_autolinks") or
+                std.mem.eql(u8, field.name, "heading_ids") or
+                std.mem.eql(u8, field.name, "autolink_headings")) continue;
+            if (try opts_value.getBooleanLoose(globalThis, comptime camelCaseOf(field.name))) |val| {
+                @field(options, field.name) = val;
+            } else if (comptime !std.mem.eql(u8, camelCaseOf(field.name), field.name)) {
+                if (try opts_value.getBooleanLoose(globalThis, field.name)) |val| {
+                    @field(options, field.name) = val;
+                }
+            }
+        }
+    }
+    return options;
+}
+
+/// `Bun.markdown.render`/`.react` walk the AST through the C++ BunMarkdownMeta
+/// callbacks, which are still parked. Throw cleanly (NOT `.zero`, which would
+/// trip the host-call exception-presence assert and crash the process).
 pub fn render(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    _ = globalThis;
     _ = callframe;
-    return .zero;
+    return globalThis.throwTODO("Bun.markdown.render is not implemented yet");
 }
 
 pub fn renderReact(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValue {
-    _ = globalThis;
     _ = callframe;
-    return .zero;
+    return globalThis.throwTODO("Bun.markdown.react is not implemented yet");
 }
 
 /// HTML tag indices shared with the C++ `BunMarkdownTagStrings` interner.
@@ -263,22 +341,10 @@ pub fn getCachedTagString(globalObject: *JSGlobalObject, tag: TagIndex) JSValue 
     return BunMarkdownTagStrings__getTagString_fn(globalObject, @intFromEnum(tag));
 }
 
-test "MarkdownObject: create returns the stubbed JSValue.zero" {
-    var dummy: u8 = 0;
-    const g: *JSGlobalObject = @ptrCast(&dummy);
-    try std.testing.expectEqual(JSValue.zero, create(g));
-}
-
-test "MarkdownObject: render entry points return the stubbed JSValue.zero" {
-    var dummy: u8 = 0;
-    const g: *JSGlobalObject = @ptrCast(&dummy);
-    var cf_dummy: u8 = 0;
-    const cf: *CallFrame = @ptrCast(&cf_dummy);
-    try std.testing.expectEqual(JSValue.zero, try renderToHTML(g, cf));
-    try std.testing.expectEqual(JSValue.zero, try renderToAnsi(g, cf));
-    try std.testing.expectEqual(JSValue.zero, try render(g, cf));
-    try std.testing.expectEqual(JSValue.zero, try renderReact(g, cf));
-}
+// (Removed the two `create`/render return-`.zero` stub tests — `create` now
+// builds a real object and the render entry points hit the live `home_rt.md`
+// renderer or throw, so they can't run against a fake `@ptrCast` global. The
+// behavior is covered at the JS level by BunObject.test.ts + markdown tests.)
 
 test "MarkdownObject: JSValue tag is ABI-compatible with i64" {
     try std.testing.expectEqual(@as(usize, @sizeOf(i64)), @sizeOf(JSValue));

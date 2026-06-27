@@ -5893,6 +5893,7 @@ pub const md = struct {
     pub const renderToHtmlWithOptions = @import("md/root.zig").renderToHtmlWithOptions;
     pub const renderWithRenderer = @import("md/root.zig").renderWithRenderer;
     pub const renderToAnsi = @import("md/root.zig").renderToAnsi;
+    pub const detectLightBackground = @import("md/root.zig").detectLightBackground;
     pub const unicode = @import("md/unicode.zig");
     pub const entity = @import("md/entity.zig");
 };
