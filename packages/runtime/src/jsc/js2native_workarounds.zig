@@ -46,6 +46,7 @@ const sql_postgres = @import("../sql_jsc/postgres.zig");
 const sql_mysql = @import("../sql_jsc/mysql.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
+const error_jsc = @import("../sys_jsc/error_jsc.zig");
 
 /// Wrap a `fn(*GlobalObject) JSValue` lazy binding as a C-ABI thunk.
 fn lazy(comptime f: fn (*JSGlobalObject) callconv(.auto) JSValue) fn (*JSGlobalObject) callconv(jsc.conv) JSValue {
@@ -136,4 +137,15 @@ comptime {
     @export(&host_fn.toJSHostFn(fetch.nodeHttpClient), .{ .name = "JS2Zig___src_runtime_webcore_fetch_zig__nodeHttpClient" });
     @export(&host_fn.toJSHostFn(node_zlib_binding.crc32), .{ .name = "JS2Zig___src_runtime_node_node_zlib_binding_zig__crc__" });
     @export(&host_fn.toJSHostFn(node_fs_binding.createMemfdForTesting), .{ .name = "JS2Zig___src_runtime_node_node_fs_binding_zig__createMemfdForTesting" });
+    // bun:internal-for-testing sys helpers. Were noop in native_stubs.zig, so
+    // calling them returned `.zero` WITHOUT a pending exception — which trips
+    // `toJSHostCall`'s `assertExceptionPresenceMatches` and PANICS the process
+    // (translate-uv-error-windows.test.ts crashed on the first call). The real
+    // impls live in error_jsc.TestingAPIs (off-Windows no-ops return undefined).
+    @export(&host_fn.toJSHostFn(error_jsc.TestingAPIs.translateUVErrorToE), .{ .name = "JS2Zig___src_sys_sys_zig__TestingAPIs_translateUVErrorToE" });
+    @export(&host_fn.toJSHostFn(error_jsc.TestingAPIs.sysErrorNameFromLibuv), .{ .name = "JS2Zig___src_sys_Error_zig__TestingAPIs_sysErrorNameFromLibuv" });
+    // NOTE: sigactionLayout stays a native_stubs noop — its POSIX body uses
+    // `home.sys.sigemptyset`, which isn't ported yet, so @export-ing it would
+    // force that path to compile and fail. It has no crashing test depending on
+    // it (its own test would just see undefined), unlike translateUVErrorToE.
 }
