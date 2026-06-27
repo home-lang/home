@@ -86,13 +86,13 @@ pub const SystemError = extern struct {
     /// Like `toErrorInstance` but populates the error's stack trace with async
     /// frames from the given promise's await chain. Use when creating an error
     /// from native code at the top of the event loop (threadpool callback) to
-    /// reject a promise — otherwise the error will have an empty stack.
-    ///
-    /// (The upstream `attachAsyncStackFromPromise` call goes through the full
-    /// JSValue API; it re-lands in Phase 12.2. For now `_promise` is unused.)
-    pub fn toErrorInstanceWithAsyncStack(this: *const SystemError, global: *JSGlobalObject, _promise: *JSPromise) JSValue {
-        _ = _promise;
-        return this.toErrorInstance(global);
+    /// reject a promise — otherwise the error has an empty stack (e.g.
+    /// `await Bun.file("/nope").text()` had `err.stack === undefined`).
+    pub fn toErrorInstanceWithAsyncStack(this: *const SystemError, global: *JSGlobalObject, promise: *JSPromise) JSValue {
+        defer this.deref();
+        const err = SystemError__toErrorInstance(this, global);
+        err.attachAsyncStackFromPromise(global, promise);
+        return err;
     }
 
     /// This constructs the ERR_SYSTEM_ERROR error object, which has an `info`
