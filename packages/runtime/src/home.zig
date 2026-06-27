@@ -2767,6 +2767,35 @@ pub const jsc = struct {
             buffer: BufferValue,
             file: BlobValue,
             array: GeneratedList(SSLConfigSingleFile),
+
+            /// A cert/key/ca value: an inline PEM string, or a `Bun.file()`
+            /// BunFile (Blob). Buffers/arrays aren't handled by this hand-mirror
+            /// yet (fall through to `.none`). The string variant owns a WTF ref
+            /// (deinit derefs); the file variant borrows the *Blob (alive for the
+            /// duration of SSLConfig.fromJS).
+            pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) JSError!SSLConfigFile {
+                if (value.isUndefinedOrNull()) return .none;
+                if (value.isString()) {
+                    var s = try value.toBunString(globalObject);
+                    if (s.isEmpty()) {
+                        s.deref();
+                        return .none;
+                    }
+                    s.toWTF();
+                    if (s.tag == .WTFStringImpl) return .{ .string = .{ .value = s.value.WTFStringImpl } };
+                    s.deref();
+                    return .none;
+                }
+                if (value.as(WebCore.Blob)) |blob| return .{ .file = .{ .value = blob } };
+                return .none;
+            }
+
+            pub fn deinit(this: *SSLConfigFile) void {
+                if (this.* == .string) {
+                    this.string.value.deref();
+                    this.* = .none;
+                }
+            }
         };
 
         pub const SSLConfig = struct {
@@ -2788,11 +2817,49 @@ pub const jsc = struct {
             client_renegotiation_limit: u32 = 0,
             client_renegotiation_window: u32 = 0,
 
-            pub fn fromJS(_: *JSGlobalObject, _: JSValue) JSError!SSLConfig {
-                return .{};
+            pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) JSError!SSLConfig {
+                // Hand-mirror of the un-emitted SSLConfig bindgen. fromGenerated
+                // (socket/SSLConfig.zig) reads these and returns non-null when any
+                // is set, which is what flips a server to https. Covers the common
+                // cert/key/ca (string or Bun.file) + passphrase/serverName/ciphers
+                // + scalar options; buffer/array cert forms and ALPN are left
+                // default (.none) for now.
+                var result: SSLConfig = .{};
+                errdefer result.deinit();
+                if (!value.isObject()) return result;
+                if (try value.get(globalObject, "cert")) |v| result.cert = try SSLConfigFile.fromJS(globalObject, v);
+                if (try value.get(globalObject, "key")) |v| result.key = try SSLConfigFile.fromJS(globalObject, v);
+                if (try value.get(globalObject, "ca")) |v| result.ca = try SSLConfigFile.fromJS(globalObject, v);
+                if (try value.get(globalObject, "passphrase")) |v| result.passphrase = try MaybeString.fromJS(globalObject, v);
+                if (try value.get(globalObject, "serverName")) |v| result.server_name = try MaybeString.fromJS(globalObject, v);
+                if (try value.get(globalObject, "dhParamsFile")) |v| result.dh_params_file = try MaybeString.fromJS(globalObject, v);
+                if (try value.get(globalObject, "keyFile")) |v| result.key_file = try MaybeString.fromJS(globalObject, v);
+                if (try value.get(globalObject, "certFile")) |v| result.cert_file = try MaybeString.fromJS(globalObject, v);
+                if (try value.get(globalObject, "caFile")) |v| result.ca_file = try MaybeString.fromJS(globalObject, v);
+                if (try value.get(globalObject, "ciphers")) |v| result.ciphers = try MaybeString.fromJS(globalObject, v);
+                if (try value.get(globalObject, "lowMemoryMode")) |v| result.low_memory_mode = v.toBoolean();
+                if (try value.get(globalObject, "requestCert")) |v| result.request_cert = v.toBoolean();
+                if (try value.get(globalObject, "rejectUnauthorized")) |v| {
+                    if (!v.isUndefinedOrNull()) result.reject_unauthorized = v.toBoolean();
+                }
+                if (try value.get(globalObject, "secureOptions")) |v| {
+                    if (v.isNumber()) result.secure_options = v.toInt32();
+                }
+                return result;
             }
 
-            pub fn deinit(_: *SSLConfig) void {}
+            pub fn deinit(this: *SSLConfig) void {
+                this.passphrase.deinit();
+                this.dh_params_file.deinit();
+                this.server_name.deinit();
+                this.key_file.deinit();
+                this.cert_file.deinit();
+                this.ca_file.deinit();
+                this.ciphers.deinit();
+                this.ca.deinit();
+                this.cert.deinit();
+                this.key.deinit();
+            }
         };
 
         pub const SocketConfigHandlers = struct {
