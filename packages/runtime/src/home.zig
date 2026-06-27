@@ -2943,12 +2943,20 @@ pub const jsc = struct {
                 if (try opts.get(globalObject, "allowHalfOpen")) |v| result.allow_half_open = v.toBoolean();
                 if (try opts.get(globalObject, "reusePort")) |v| result.reuse_port = v.toBoolean();
                 if (try opts.get(globalObject, "ipv6Only")) |v| result.ipv6_only = v.toBoolean();
+                if (try opts.get(globalObject, "tls")) |tls_val| {
+                    if (tls_val.isBoolean()) {
+                        result.tls = .{ .boolean = tls_val.toBoolean() };
+                    } else if (tls_val.isObject()) {
+                        result.tls = .{ .object = try SSLConfig.fromJS(globalObject, tls_val) };
+                    }
+                }
                 return result;
             }
 
             pub fn deinit(this: *SocketConfig) void {
                 this.unix_.deinit();
                 this.hostname.deinit();
+                if (this.tls == .object) this.tls.object.deinit();
             }
         };
     };
