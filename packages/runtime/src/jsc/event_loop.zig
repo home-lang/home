@@ -639,11 +639,16 @@ pub fn wakeup(this: *EventLoop) void {
     }
 }
 pub fn enqueueTaskConcurrent(this: *EventLoop, task: *ConcurrentTask) void {
-    if (comptime Environment.allow_assert) {
-        if (this.virtual_machine.has_terminated) {
-            @panic("EventLoop.enqueueTaskConcurrent: VM has terminated");
-        }
-    }
+    // A late cross-thread post to an already-terminated VM is a legitimate
+    // teardown race — e.g. a Worker posting its 'close'/exit cleanup to the
+    // parent just as the parent `process.exit()`s, both reachable now that
+    // cross-thread CppTasks actually run. `has_terminated` is set at the very
+    // end of teardown, so the target loop is genuinely dead: the upstream
+    // RELEASE binary lets this fall through (the task enqueues onto the dead
+    // queue and simply never drains); we drop it instead, which is the same
+    // observable result without leaking. The debug-only `@panic` this replaces
+    // turned that tolerated race into a crash.
+    if (this.virtual_machine.has_terminated) return;
 
     if (comptime Environment.isDebug) {
         log("enqueueTaskConcurrent({s})", .{task.task.typeName() orelse "[unknown]"});
@@ -654,11 +659,9 @@ pub fn enqueueTaskConcurrent(this: *EventLoop, task: *ConcurrentTask) void {
 }
 
 pub fn enqueueTaskConcurrentBatch(this: *EventLoop, batch: ConcurrentTask.Queue.Batch) void {
-    if (comptime Environment.allow_assert) {
-        if (this.virtual_machine.has_terminated) {
-            @panic("EventLoop.enqueueTaskConcurrent: VM has terminated");
-        }
-    }
+    // See enqueueTaskConcurrent: drop a late batch posted to an already
+    // terminated VM (teardown race) rather than crashing the debug build.
+    if (this.virtual_machine.has_terminated) return;
 
     if (comptime Environment.isDebug) {
         log("enqueueTaskConcurrentBatch({d})", .{batch.count});
