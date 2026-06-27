@@ -72,11 +72,11 @@ comptime {
         "NetworkSink__start",
         "NetworkSink__updateRef",
         "NetworkSink__write",
-        // ResolvePath__joinAbsStringBufCurrentPlatformBunString now has its real
-        // export in jsc/resolve_path_jsc.zig (force-linked via bun.zig) — the
-        // no-op here made relative Bun.pathToFileURL collapse to file:///.
-        "Resolver__nodeModulePathsForJS",
-        "Resolver__nodeModulePathsJSValue",
+        // ResolvePath__joinAbsStringBufCurrentPlatformBunString +
+        // Resolver__nodeModulePaths{ForJS,JSValue} now have their real exports in
+        // jsc/resolve_path_jsc.zig + jsc/resolver_jsc.zig (force-linked from
+        // home.zig). The no-ops made relative Bun.pathToFileURL collapse to
+        // file:/// and require.resolve.paths()/_nodeModulePaths return garbage.
     }) |name| {
         @export(&noop, .{ .name = name });
     }

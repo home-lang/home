@@ -99,6 +99,10 @@ comptime {
         // analyzed here, so without this the C++ pathToFileURL caller would hit
         // an undefined symbol.
         _ = @import("jsc/resolve_path_jsc.zig");
+        // Real Resolver__nodeModulePaths{ForJS,JSValue}/propForRequireMainPaths
+        // exports (require.resolve.paths / Module._nodeModulePaths) — force them
+        // into the .Exe build for the same reason as resolve_path_jsc above.
+        _ = @import("jsc/resolver_jsc.zig");
         _ = @import("runtime/socket/uws_dispatch.zig");
         // prompt.zig's WebCore__alert/confirm/prompt exports are gated behind
         // `export_cpp_apis` in webcore.zig (off in the .Exe build); force them

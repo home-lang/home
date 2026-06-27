@@ -1,66 +1,92 @@
 // Copied from bun/src/jsc/resolver_jsc.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-//! Host fns / C++ exports for `node:module` `_nodeModulePaths`. Extracted
-//! from `resolver/resolver.zig` so `resolver/` has no JSC references.
-//
-// Upstream wires up three symbols:
-//   * `nodeModulePathsForJS` — host fn taking a path string and returning
-//     an array of resolved `node_modules` paths.
-//   * `Resolver__propForRequireMainPaths` — equivalent for `require.main`.
-//   * `nodeModulePathsJSValue` — the core helper both call into.
-//
-// The body needs `bun.jsc.JSGlobalObject`, `bun.jsc.JSValue`, `bun.jsc.CallFrame`,
-// `bun.String.toJSArray`, `bun.path_buffer_pool`, `bun.fs.FileSystem.instance`,
-// `bun.path.joinAbsStringBuf`, and the `markBinding`/`@export` codegen
-// glue. None of that has landed yet, so the implementations are parked.
-// We expose extern declarations of the C++-visible symbols so callers can
-// spell them; the Zig-side host fn wrapper re-attaches in Phase 12.2.
+//! Host fns / C++ exports for `node:module` `_nodeModulePaths`. Extracted from
+//! `resolver/resolver.zig` so `resolver/` has no JSC references. These were
+//! parked (extern decls + a native_stubs no-op), so `require.resolve.paths()`
+//! returned `undefined` and `Module._nodeModulePaths()` returned garbage.
+
+pub fn nodeModulePathsForJS(globalThis: *bun.jsc.JSGlobalObject, callframe: *bun.jsc.CallFrame) bun.JSError!jsc.JSValue {
+    bun.jsc.markBinding(@src());
+    const argument: bun.jsc.JSValue = callframe.argument(0);
+
+    if (argument == .zero or !argument.isString()) {
+        return globalThis.throwInvalidArgumentType("nodeModulePaths", "path", "string");
+    }
+
+    const in_str = try argument.toBunString(globalThis);
+    defer in_str.deref();
+    return nodeModulePathsJSValue(in_str, globalThis, false);
+}
+
+pub export fn Resolver__propForRequireMainPaths(globalThis: *bun.jsc.JSGlobalObject) callconv(.c) jsc.JSValue {
+    bun.jsc.markBinding(@src());
+
+    const in_str = bun.String.init(".");
+    return nodeModulePathsJSValue(in_str, globalThis, false);
+}
+
+pub fn nodeModulePathsJSValue(in_str: bun.String, globalObject: *bun.jsc.JSGlobalObject, use_dirname: bool) callconv(.c) bun.jsc.JSValue {
+    var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var list = std.array_list.Managed(bun.String).init(alloc);
+    defer list.deinit();
+
+    const sliced = in_str.toUTF8(bun.default_allocator);
+    defer sliced.deinit();
+    const base_path = if (use_dirname) std.fs.path.dirname(sliced.slice()) orelse sliced.slice() else sliced.slice();
+    const buf = bun.path_buffer_pool.get();
+    defer bun.path_buffer_pool.put(buf);
+
+    const full_path = bun.path.joinAbsStringBuf(
+        bun.fs.FileSystem.instance.top_level_dir,
+        buf,
+        &.{base_path},
+        .auto,
+    );
+    const root_index = switch (bun.Environment.os) {
+        .windows => bun.path.windowsFilesystemRoot(full_path).len,
+        else => 1,
+    };
+    var root_path: []const u8 = full_path[0..root_index];
+    if (full_path.len > root_path.len) {
+        var it = std.mem.splitBackwardsScalar(u8, full_path[root_index..], std.fs.path.sep);
+        while (it.next()) |part| {
+            if (strings.eqlComptime(part, "node_modules"))
+                continue;
+
+            list.append(bun.String.createFormat(
+                "{s}{s}" ++ std.fs.path.sep_str ++ "node_modules",
+                .{
+                    root_path,
+                    it.buffer[0 .. (if (it.index) |i| i + 1 else 0) + part.len],
+                },
+            ) catch |err| bun.handleOom(err)) catch |err| bun.handleOom(err);
+        }
+    }
+
+    while (root_path.len > 0 and bun.path.Platform.auto.isSeparator(root_path[root_path.len - 1])) {
+        root_path.len -= 1;
+    }
+
+    list.append(bun.String.createFormat(
+        "{s}" ++ std.fs.path.sep_str ++ "node_modules",
+        .{root_path},
+    ) catch |err| bun.handleOom(err)) catch |err| bun.handleOom(err);
+
+    return bun.String.toJSArray(globalObject, list.items) catch .zero;
+}
+
+comptime {
+    _ = Resolver__propForRequireMainPaths;
+    @export(&jsc.toJSHostFn(nodeModulePathsForJS), .{ .name = "Resolver__nodeModulePathsForJS" });
+    @export(&nodeModulePathsJSValue, .{ .name = "Resolver__nodeModulePathsJSValue" });
+}
 
 const std = @import("std");
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-const JSValue = @import("home").jsc.JSValue;
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-};
-
-// C++-visible export: returns a JS array of resolved `node_modules`
-// search paths for `require.main`.
-pub extern fn Resolver__propForRequireMainPaths(globalThis: *JSGlobalObject) callconv(.c) JSValue;
-
-// C++-visible export: the core helper. Takes the input string + global +
-// whether to take dirname of the input. Both `nodeModulePathsForJS` and
-// `Resolver__propForRequireMainPaths` route through this in the real impl.
-pub extern fn Resolver__nodeModulePathsJSValue(
-    in_str: String,
-    globalObject: *JSGlobalObject,
-    use_dirname: bool,
-) callconv(.c) JSValue;
-
-// C++-visible export: host fn shape (takes a *CallFrame, returns a
-// JSValue, may throw). The Zig wrapper around this re-attaches with
-// `jsc.toJSHostFn` in Phase 12.2.
-const CallFrame = @import("home").jsc.CallFrame;
-pub extern fn Resolver__nodeModulePathsForJS(
-    globalThis: *JSGlobalObject,
-    callframe: *CallFrame,
-) callconv(.c) JSValue;
-
-test "resolver_jsc: extern signatures match upstream shape" {
-    try std.testing.expectEqual(
-        @TypeOf(Resolver__propForRequireMainPaths),
-        fn (*JSGlobalObject) callconv(.c) JSValue,
-    );
-    try std.testing.expectEqual(
-        @TypeOf(Resolver__nodeModulePathsJSValue),
-        fn (String, *JSGlobalObject, bool) callconv(.c) JSValue,
-    );
-    try std.testing.expectEqual(
-        @TypeOf(Resolver__nodeModulePathsForJS),
-        fn (*JSGlobalObject, *CallFrame) callconv(.c) JSValue,
-    );
-}
+const bun = @import("bun");
+const jsc = bun.jsc;
+const strings = bun.strings;
