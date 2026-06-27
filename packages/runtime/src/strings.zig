@@ -767,8 +767,15 @@ pub fn toUTF16AllocForReal(
 
         const decoded = decodeUTF8Codepoint(bytes[i..]) catch |err| {
             if (comptime fail_if_invalid) return err;
+            // Emit ONE U+FFFD per "maximal subpart of an ill-formed subsequence"
+            // (Unicode 3.9 / WHATWG UTF-8 decode), NOT one per byte. A truncated
+            // but valid-so-far multibyte sequence at EOF (e.g. `E1 8B`, `F0 90`)
+            // is a single ill-formed subsequence → one replacement that consumes
+            // all of its bytes; an invalid continuation (e.g. `ED A0`) stops the
+            // subpart at the bad byte so it is reprocessed. Advancing by 1 always
+            // over-counted replacements for the truncated case.
+            i += utf8MaximalIllFormedLen(bytes[i..]);
             out.appendAssumeCapacity(0xFFFD);
-            i += 1;
             continue;
         };
         i += decoded.len;
@@ -845,6 +852,41 @@ fn decodeUTF8Codepoint(bytes: []const u8) error{InvalidByteSequence}!DecodedCode
     }
 
     return .{ .code_point = code_point, .len = len };
+}
+
+/// Length (>=1) of the "maximal subpart of an ill-formed subsequence" starting
+/// at `bytes[0]`, per Unicode 3.9 / the WHATWG UTF-8 decoder. This is how many
+/// bytes a single U+FFFD substitution consumes when `decodeUTF8Codepoint`
+/// rejected the input. The maximal subpart is the longest initial run of bytes
+/// that could begin a valid sequence: a valid lead followed by continuation
+/// bytes that fall in the lead-specific allowed range (E0/ED/F0/F4 restrict the
+/// FIRST continuation; later continuations are 0x80..0xBF). It stops at EOF
+/// (truncated → consume what's present) or at the first byte outside the range
+/// (invalid → that byte starts a new subpart).
+fn utf8MaximalIllFormedLen(bytes: []const u8) usize {
+    if (bytes.len == 0) return 1;
+    const first = bytes[0];
+    // Invalid lead byte (continuation byte, 0xC0/0xC1 overlong leads, or > 0xF4):
+    // the subpart is just this byte.
+    if (first < 0xC2 or first > 0xF4) return 1;
+
+    const expected: usize = if (first <= 0xDF) 2 else if (first <= 0xEF) 3 else 4;
+
+    // Allowed range for the FIRST continuation depends on the lead byte.
+    const lo: u8, const hi: u8 = switch (first) {
+        0xE0 => .{ 0xA0, 0xBF },
+        0xED => .{ 0x80, 0x9F },
+        0xF0 => .{ 0x90, 0xBF },
+        0xF4 => .{ 0x80, 0x8F },
+        else => .{ 0x80, 0xBF },
+    };
+
+    if (bytes.len < 2 or bytes[1] < lo or bytes[1] > hi) return 1;
+    var len: usize = 2;
+    while (len < expected) : (len += 1) {
+        if (bytes.len <= len or bytes[len] < 0x80 or bytes[len] > 0xBF) break;
+    }
+    return len;
 }
 
 /// Convert a UTF-16 (Little Endian) code-unit slice to an owned
