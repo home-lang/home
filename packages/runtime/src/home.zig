@@ -1889,8 +1889,20 @@ pub const RuntimeEmbedRoot = enum {
 };
 
 pub fn runtimeEmbedFile(comptime root: RuntimeEmbedRoot, comptime sub_path: []const u8) [:0]const u8 {
-    _ = root;
-    _ = sub_path;
+    // Bun's real runtimeEmbedFile reads these files from a hardcoded ABSOLUTE
+    // source path at runtime (the non-portable `codegen_embed = false` debug
+    // path), which doesn't exist outside the original dev tree — so this was a
+    // no-op stub returning "". That broke `bun:ffi` `dlopen`/`cc`: the generated
+    // FFI C trampoline omitted the `runtime/ffi/FFI.h` header (int32_t/void*/
+    // EncodedJSValue/JSFunctionCall…), so TinyCC failed at the first declaration
+    // with `';' expected (got '<symbol>')`. The `.src` root maps to
+    // packages/runtime/src — this file's own directory — so embed those at
+    // compile time (portable). The `.codegen` root points at generated output
+    // not reachable relative to here; those callers (bun-error assets,
+    // runtime.out.js, node_fallbacks) keep the empty-string behavior.
+    if (comptime root == .src or root == .src_eager) {
+        return @embedFile(sub_path);
+    }
     return "";
 }
 
