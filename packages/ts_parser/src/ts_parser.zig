@@ -9669,10 +9669,14 @@ pub const Parser = struct {
                     return try self.parseArrayTypePostfix(typeof_t);
                 }
                 const ref_start = switch (self.peek().kind) {
-                    .identifier, .kw_default, .kw_undefined, .kw_super, .kw_this => self.advance(),
+                    .identifier, .kw_default, .kw_undefined, .kw_super, .kw_this, .kw_function => self.advance(),
                     else => if (self.peek().kind.isPrimitiveTypeKeyword()) self.advance() else {
-                        try self.report("expected ", "identifier after typeof");
-                        return error.UnexpectedToken;
+                        const bad = self.peek();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                        const ref = try self.recoverInvalidTypeofTypeOperand(bad);
+                        const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(ref).end };
+                        const typeof_t = try self.builder.addTypeofType(sp, ref);
+                        return try self.parseArrayTypePostfix(typeof_t);
                     },
                 };
                 var ref_name_end = ref_start.span.end;
@@ -9689,6 +9693,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(dot.span.end, dot.line, 1003, "Identifier expected.");
                 }
                 var ref_end = ref_name_end;
+                const recover_function_tail = ref_start.kind == .kw_function;
                 if (self.peek().kind == .less_than) {
                     const args = try self.parseTypeArgumentList();
                     self.gpa.free(args);
@@ -9698,6 +9703,7 @@ pub const Parser = struct {
                 const ref = try self.builder.addIdentifier(.{ .start = ref_start.span.start, .end = ref_end }, ref_id);
                 const sp: Span = .{ .start = t.span.start, .end = ref_end };
                 const typeof_t = try self.builder.addTypeofType(sp, ref);
+                if (recover_function_tail) try self.recoverInvalidTypeofFunctionTail();
                 return try self.parseArrayTypePostfix(typeof_t);
             },
             .kw_infer => {
@@ -9778,6 +9784,91 @@ pub const Parser = struct {
             }
         }
         return true;
+    }
+
+    fn recoverInvalidTypeofTypeOperand(self: *Parser, bad: Token) ParseError!NodeId {
+        switch (bad.kind) {
+            .open_paren => {
+                _ = self.advance();
+                if (self.peek().kind == .close_paren) _ = self.advance();
+                if (self.peek().kind == .colon) {
+                    _ = self.advance();
+                    self.skipUntilStatementTerminator();
+                    const anchor = self.peek();
+                    try self.reportCodeAt(anchor.span.start, anchor.line, 1005, "'=>' expected.");
+                }
+            },
+            .open_brace, .open_bracket => try self.skipBalancedInvalidTypeofOperand(),
+            .number_literal,
+            .bigint_literal,
+            .string_literal,
+            .regex_literal,
+            .no_substitution_template,
+            .template_head,
+            => {
+                _ = self.advance();
+            },
+            else => {
+                _ = self.advance();
+            },
+        }
+        return try self.typeRefName("unknown", tokenSpan(bad));
+    }
+
+    fn recoverInvalidTypeofFunctionTail(self: *Parser) ParseError!void {
+        if (self.peek().kind == .identifier) {
+            const name = self.advance();
+            try self.reportCodeAt(name.span.start, name.line, 1005, "',' expected.");
+        }
+        if (self.peek().kind == .open_paren) {
+            const open = self.advance();
+            try self.reportCodeAt(open.span.start, open.line, 1005, "',' expected.");
+            var depth: u32 = 1;
+            while (self.peek().kind != .eof and depth > 0) {
+                const k = self.peek().kind;
+                if (k == .open_paren) depth += 1;
+                if (k == .close_paren) depth -= 1;
+                _ = self.advance();
+            }
+        }
+        if (self.peek().kind == .open_brace) {
+            const brace = self.peek();
+            try self.reportCodeAt(brace.span.start, brace.line, 1005, "'=>' expected.");
+            try self.skipBalancedInvalidTypeofOperand();
+        }
+    }
+
+    fn skipBalancedInvalidTypeofOperand(self: *Parser) ParseError!void {
+        const open = self.advance();
+        const close_kind: TokenKind = switch (open.kind) {
+            .open_brace => .close_brace,
+            .open_bracket => .close_bracket,
+            .open_paren => .close_paren,
+            else => return,
+        };
+        var depth: u32 = 1;
+        while (self.peek().kind != .eof) {
+            const k = self.peek().kind;
+            if (k == open.kind) {
+                depth += 1;
+                _ = self.advance();
+                continue;
+            }
+            if (k == close_kind) {
+                _ = self.advance();
+                depth -= 1;
+                if (depth == 0) return;
+                continue;
+            }
+            if (k == .semicolon and depth == 1) return;
+            _ = self.advance();
+        }
+    }
+
+    fn skipUntilStatementTerminator(self: *Parser) void {
+        while (self.peek().kind != .eof and self.peek().kind != .semicolon) {
+            _ = self.advance();
+        }
     }
 
     fn parseArrayType(self: *Parser) ParseError!NodeId {
@@ -22373,6 +22464,32 @@ test "parser: type annotation — typeof default parses for checker resolution" 
     const alias = hir_mod.typeAliasOf(&s.hir, ex.decl);
     try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(alias.aliased));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: invalid typeof type operands recover across declarations" {
+    var s = try newTestSetup(
+        \\var x1: typeof {};
+        \\var x2: typeof (): void;
+        \\var x3: typeof 1;
+        \\var x4: typeof '';
+        \\var x5: typeof [];
+        \\var x8: typeof /123/;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    var identifier_expected: usize = 0;
+    var arrow_expected = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1003 and std.mem.eql(u8, d.message, "Identifier expected.")) {
+            identifier_expected += 1;
+        }
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'=>' expected.")) {
+            arrow_expected = true;
+        }
+    }
+    try T.expectEqual(@as(usize, 6), identifier_expected);
+    try T.expect(arrow_expected);
 }
 
 test "parser: type annotation — typeof qualified reserved property" {
