@@ -2049,6 +2049,14 @@ fn readBunfigPreloads(allocator: std.mem.Allocator) []const []const u8 {
 fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
     _ = allocator_unused;
+    // `home test` IS a test context, so allow `bun:internal-for-testing` (Bun's
+    // `bun test` enables it for the same reason). In debug builds
+    // `Environment.isDebug` already bypasses the gate, but release builds return
+    // null without this — which broke the test harness's
+    // `String.prototype.isUTF16/isLatin1` (→ toBeUTF16String etc., ENOENT on
+    // `bun:internal-for-testing`) across many tests. Set the real ModuleLoader
+    // flag directly (the env-var route isn't honored from `home test`).
+    home_rt.allowInternalForTestingAPIs();
     // Bun stamps `bun.start_time` at process entry (its own main.zig); the test
     // runner's "Ran N tests across M files. [Xms]" summary measures elapsed from
     // it. The Home binary has a different entry point, so that var is still 0

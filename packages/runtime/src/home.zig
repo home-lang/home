@@ -2014,6 +2014,14 @@ pub inline fn destroy(pointer: anytype) void {
     default_allocator.destroy(pointer);
 }
 
+/// Allow the `bun:internal-for-testing` module to load in non-debug builds.
+/// `home test` calls this so the test harness's `String.prototype.isUTF16/
+/// isLatin1` (and other jscInternals helpers) work in release. Sets the real
+/// `jsc/ModuleLoader.zig` gate (home.zig's inline `jsc.ModuleLoader` is a stub).
+pub fn allowInternalForTestingAPIs() void {
+    @import("jsc/ModuleLoader.zig").is_allowed_to_use_internal_testing_apis = true;
+}
+
 // Comptime string map (copied from Bun, JSC methods stripped — they'll
 // be re-added under src/jsc/ once Phase 12.2 lands).
 const comptime_string_map = @import("collections/comptime_string_map.zig");
