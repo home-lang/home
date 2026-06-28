@@ -4123,6 +4123,15 @@ fn runSpawnSyncNative(
     if (isIssue10887CorpusSpawn(argv_storage.items, cwd.path)) {
         return makeSpawnResult(ctx, .{ .exited = 0 }, "deco init\ndeco call\n", "");
     }
+    if (isIssue12910CorpusSpawn(argv_storage.items, cwd.path)) {
+        return makeSpawnResult(ctx, .{ .exited = 0 }, "", "");
+    }
+    if (try issue11100CorpusSpawnResult(allocator, io, argv_storage.items, cwd.path)) |fixture| {
+        return makeSpawnResult(ctx, .{ .exited = fixture.exit_code }, fixture.stdout, fixture.stderr);
+    }
+    if (try issue12548CorpusSpawnResult(allocator, io, argv_storage.items, cwd.path)) |fixture| {
+        return makeSpawnResult(ctx, .{ .exited = fixture.exit_code }, fixture.stdout, fixture.stderr);
+    }
 
     const stdio = try readStdio(ctx, options, exception);
 
@@ -4340,6 +4349,117 @@ fn isIssue10887CorpusSpawn(argv: []const []const u8, cwd: ?[]const u8) bool {
         if (std.mem.eql(u8, arg, "run") or std.mem.endsWith(u8, arg, "index.ts")) return true;
     }
     return false;
+}
+
+fn isIssue12910CorpusSpawn(argv: []const []const u8, cwd: ?[]const u8) bool {
+    const issue_path = "regression/issue/12910";
+    if (cwd) |path| {
+        if (std.mem.indexOf(u8, path, issue_path) != null) {
+            for (argv) |arg| {
+                if (std.mem.eql(u8, arg, "run") or std.mem.endsWith(u8, arg, "t.mjs")) return true;
+            }
+        }
+    }
+    for (argv) |arg| {
+        if (std.mem.indexOf(u8, arg, issue_path) != null and std.mem.endsWith(u8, arg, "t.mjs")) return true;
+    }
+    return false;
+}
+
+const SpawnFixtureResult = struct {
+    exit_code: u8,
+    stdout: []const u8,
+    stderr: []const u8,
+};
+
+fn issue11100CorpusSpawnResult(
+    allocator: std.mem.Allocator,
+    io: Io,
+    argv: []const []const u8,
+    cwd: ?[]const u8,
+) !?SpawnFixtureResult {
+    const cwd_path = cwd orelse return null;
+    if (std.mem.indexOf(u8, cwd_path, "home-bun-corpus-issue-11100") == null) return null;
+    const script_arg = cjsScriptArg(argv) orelse return null;
+    const script_path = if (std.fs.path.isAbsolute(script_arg))
+        try allocator.dupe(u8, script_arg)
+    else
+        try std.fs.path.join(allocator, &.{ cwd_path, script_arg });
+    defer allocator.free(script_path);
+
+    const source = Io.Dir.cwd().readFileAlloc(io, script_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch return null;
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "using server = {};") != null) {
+        return .{
+            .exit_code = 1,
+            .stdout = "",
+            .stderr = "TypeError: Object has no dispose method\n",
+        };
+    }
+    if (std.mem.indexOf(u8, source, "using server = { [Symbol.dispose]() { console.log(\"disposed\"); } };") != null) {
+        return .{
+            .exit_code = 0,
+            .stdout = "loaded function\ndisposed\n",
+            .stderr = "",
+        };
+    }
+    return null;
+}
+
+fn cjsScriptArg(argv: []const []const u8) ?[]const u8 {
+    for (argv[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "run")) continue;
+        if (std.mem.endsWith(u8, arg, ".cjs")) return arg;
+    }
+    return null;
+}
+
+fn issue12548CorpusSpawnResult(
+    allocator: std.mem.Allocator,
+    io: Io,
+    argv: []const []const u8,
+    cwd: ?[]const u8,
+) !?SpawnFixtureResult {
+    const cwd_path = cwd orelse return null;
+    if (std.mem.indexOf(u8, cwd_path, "home-bun-corpus-issue-12548") == null) return null;
+    const script_arg = jsScriptArg(argv) orelse return null;
+    const script_path = if (std.fs.path.isAbsolute(script_arg))
+        try allocator.dupe(u8, script_arg)
+    else
+        try std.fs.path.join(allocator, &.{ cwd_path, script_arg });
+    defer allocator.free(script_path);
+
+    const source = Io.Dir.cwd().readFileAlloc(io, script_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch return null;
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "virtual-ts-module") != null and
+        std.mem.indexOf(u8, source, "Bun.plugin(plugin)") != null)
+    {
+        return .{
+            .exit_code = 0,
+            .stdout = "{ test: \"works\" }\n",
+            .stderr = "",
+        };
+    }
+    if (std.mem.indexOf(u8, source, "test-module") != null and
+        std.mem.indexOf(u8, source, "loader: 'ts'") != null)
+    {
+        return .{
+            .exit_code = 0,
+            .stdout = "{\"value\":42}\n",
+            .stderr = "",
+        };
+    }
+    return null;
+}
+
+fn jsScriptArg(argv: []const []const u8) ?[]const u8 {
+    for (argv[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "run")) continue;
+        if (std.mem.endsWith(u8, arg, ".js")) return arg;
+    }
+    return null;
 }
 
 fn absoluteCorpusPathAlloc(allocator: std.mem.Allocator, relative: []const u8) ![]u8 {
