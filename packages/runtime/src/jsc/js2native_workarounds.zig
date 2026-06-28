@@ -47,6 +47,7 @@ const sql_mysql = @import("../sql_jsc/mysql.zig");
 const node_types = @import("../runtime/node/types.zig");
 const Stat = @import("../runtime/node/Stat.zig");
 const error_jsc = @import("../sys_jsc/error_jsc.zig");
+const secure_context = @import("../runtime/api/bun/SecureContext.zig");
 
 /// Wrap a `fn(*GlobalObject) JSValue` lazy binding as a C-ABI thunk.
 fn lazy(comptime f: fn (*JSGlobalObject) callconv(.auto) JSValue) fn (*JSGlobalObject) callconv(jsc.conv) JSValue {
@@ -144,6 +145,12 @@ comptime {
     // impls live in error_jsc.TestingAPIs (off-Windows no-ops return undefined).
     @export(&host_fn.toJSHostFn(error_jsc.TestingAPIs.translateUVErrorToE), .{ .name = "JS2Zig___src_sys_sys_zig__TestingAPIs_translateUVErrorToE" });
     @export(&host_fn.toJSHostFn(error_jsc.TestingAPIs.sysErrorNameFromLibuv), .{ .name = "JS2Zig___src_sys_Error_zig__TestingAPIs_sysErrorNameFromLibuv" });
+    // node:tls SecureContext: `NativeSecureContext = $zig("SecureContext.zig",
+    // "js.getConstructor")` + the jsLiveCount churn-test helper. Were noop in
+    // native_stubs → NativeSecureContext undefined → `.intern` undefined → ~80
+    // node-tls tests failed.
+    @export(&lazy(secure_context.js.getConstructor), .{ .name = "JS2Zig___src_runtime_api_bun_SecureContext_zig__js_getConstructor_workaround" });
+    @export(&host_fn.toJSHostFn(secure_context.jsLiveCount), .{ .name = "JS2Zig___src_runtime_api_bun_SecureContext_zig__jsLiveCount" });
     // NOTE: sigactionLayout stays a native_stubs noop — its POSIX body uses
     // `home.sys.sigemptyset`, which isn't ported yet, so @export-ing it would
     // force that path to compile and fail. It has no crashing test depending on
