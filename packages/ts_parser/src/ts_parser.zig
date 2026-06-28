@@ -5545,6 +5545,17 @@ pub const Parser = struct {
                     if (mods.is_async) self.async_function_depth -= 1;
                     defer self.gpa.free(params);
                     var return_type: NodeId = hir_mod.none_node_id;
+                    var invalid_post_params_optional = false;
+                    if (self.peek().kind == .question) {
+                        const question_tok = self.advance();
+                        invalid_post_params_optional = true;
+                        try self.reportCodeAt(question_tok.span.start, question_tok.line, 1144, "'{' or ';' expected.");
+                        if (self.peek().kind == .colon) {
+                            const colon_tok = self.advance();
+                            try self.reportCodeAt(colon_tok.span.start, colon_tok.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
+                            _ = self.parseTypeAnnotation() catch {};
+                        }
+                    }
                     if (self.match(.colon)) {
                         return_type = try self.parseReturnTypeAnnotation(params);
                         // TS1093 — a constructor cannot carry a return-type
@@ -5557,7 +5568,9 @@ pub const Parser = struct {
                         }
                     }
                     var body: NodeId = hir_mod.none_node_id;
-                    if (self.peek().kind == .open_brace) {
+                    if (invalid_post_params_optional) {
+                        _ = self.match(.semicolon);
+                    } else if (self.peek().kind == .open_brace) {
                         const body_start = self.peek();
                         const prev_generator_depth = self.generator_depth;
                         self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
@@ -5680,6 +5693,7 @@ pub const Parser = struct {
                             .is_override = mods.is_override,
                             .is_abstract = mods.is_abstract,
                             .is_optional = is_optional_member,
+                            .has_errant_arrow = invalid_post_params_optional,
                         },
                     );
                     try members.append(self.gpa, fn_node);
@@ -11097,6 +11111,36 @@ pub const Parser = struct {
                 const params = try self.parseTypeParameterList();
                 defer self.gpa.free(params);
                 var ret: NodeId = hir_mod.none_node_id;
+                if (self.peek().kind == .question) {
+                    const question_tok = self.advance();
+                    try self.reportCodeAt(question_tok.span.start, question_tok.line, 1005, "';' expected.");
+                    if (self.peek().kind == .colon) {
+                        const colon_tok = self.advance();
+                        try self.reportCodeAt(colon_tok.span.start, colon_tok.line, 1131, "Property or signature expected.");
+                        _ = self.parseTypeAnnotation() catch {};
+                    }
+                    _ = self.match(.semicolon);
+                    _ = self.match(.comma);
+                    const fn_t = try self.builder.addFnType(
+                        .{ .start = name_span.start, .end = self.tokens[self.cursor - 1].span.end },
+                        type_params,
+                        params,
+                        ret,
+                        false,
+                        false,
+                    );
+                    const member = try self.builder.addInterfaceMember(
+                        name_span,
+                        name_id,
+                        fn_t,
+                        is_optional,
+                        is_readonly,
+                        true,
+                        is_override,
+                    );
+                    try out.append(self.gpa, member);
+                    continue;
+                }
                 if (self.match(.colon)) ret = try self.parseReturnTypeAnnotation(params);
                 const fn_t = try self.builder.addFnType(
                     .{ .start = name_span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -17681,9 +17725,31 @@ pub const Parser = struct {
                 if (method_is_async) self.async_function_depth -= 1;
                 defer self.gpa.free(params);
                 var return_type: NodeId = hir_mod.none_node_id;
+                var invalid_post_params_optional = false;
+                if (self.peek().kind == .question) {
+                    const question_tok = self.advance();
+                    invalid_post_params_optional = true;
+                    try self.reportCodeAt(question_tok.span.start, question_tok.line, 1005, "'{' expected.");
+                    if (self.peek().kind == .colon) {
+                        const colon_tok = self.advance();
+                        try self.reportCodeAt(colon_tok.span.start, colon_tok.line, 1136, "Property assignment expected.");
+                        while (self.peek().kind != .close_brace and
+                            self.peek().kind != .comma and
+                            self.peek().kind != .eof)
+                        {
+                            _ = self.advance();
+                        }
+                        if (self.peek().kind == .close_brace) {
+                            const close_tok = self.peek();
+                            try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "':' expected.");
+                        }
+                    }
+                }
                 if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
                 var body: NodeId = hir_mod.none_node_id;
-                if (self.peek().kind == .open_brace) {
+                if (invalid_post_params_optional) {
+                    // Diagnostics above recover the malformed tail.
+                } else if (self.peek().kind == .open_brace) {
                     const prev_generator_depth = self.generator_depth;
                     self.generator_depth = if (method_is_generator) prev_generator_depth + 1 else 0;
                     defer self.generator_depth = prev_generator_depth;

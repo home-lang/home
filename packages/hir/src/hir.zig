@@ -554,12 +554,11 @@ pub const FnFlags = packed struct(u16) {
     /// methods do NOT require a subsequent implementation; the
     /// checker uses this to suppress TS2389 mismatches.
     is_optional: bool = false,
-    /// Parser-recovery marker: `function f(...) => …` — saw an
-    /// errant `=>` instead of a body / `;`. Used by the checker to
-    /// suppress TS2391 ("Function implementation is missing …") on
-    /// these declarations, since tsc treats the `=>` as the
-    /// already-flagged shape and does not double-emit. Mirrors
-    /// `parserErrantEqualsGreaterThanAfterFunction{1,2}`.
+    /// Parser-recovery marker for an already-diagnosed malformed tail
+    /// after a signature (for example `function f(...) => ...` or
+    /// `class C { m()?: T }`). Used by the checker to suppress TS2391
+    /// ("Function implementation is missing ...") on these declarations,
+    /// since tsc treats the parser diagnostic as covering the broken shape.
     has_errant_arrow: bool = false,
     _pad: u2 = 0,
 };
