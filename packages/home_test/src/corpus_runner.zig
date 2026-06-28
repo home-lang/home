@@ -27964,6 +27964,21 @@ const harness_prelude =
     \\  error.input = value;
     \\  return error;
     \\}
+    \\function __home_url_parse_query_object(value) {
+    \\  const query = Object.create(null);
+    \\  const params = new URLSearchParams(String(value || ""));
+    \\  for (const pair of params.entries()) {
+    \\    const key = String(pair[0]);
+    \\    const item = String(pair[1]);
+    \\    if (Object.prototype.hasOwnProperty.call(query, key)) {
+    \\      if (Array.isArray(query[key])) query[key].push(item);
+    \\      else query[key] = [query[key], item];
+    \\    } else {
+    \\      query[key] = item;
+    \\    }
+    \\  }
+    \\  return query;
+    \\}
     \\function __home_url_validate_ipv6_host(host, source) {
     \\  const open = host.indexOf("[");
     \\  const close = host.indexOf("]");
@@ -28067,7 +28082,7 @@ const harness_prelude =
     \\      this.pathname = simplePath[1];
     \\      if (simplePath[2]) {
     \\        this.search = simplePath[2];
-    \\        this.query = parseQueryString ? new URLSearchParams(this.search.slice(1)).toJSON() : this.search.slice(1);
+    \\        this.query = parseQueryString ? __home_url_parse_query_object(this.search.slice(1)) : this.search.slice(1);
     \\      } else if (parseQueryString) {
     \\        this.search = null;
     \\        this.query = Object.create(null);
@@ -28149,11 +28164,11 @@ const harness_prelude =
     \\  if (qm !== -1) {
     \\    this.search = rest.substring(qm);
     \\    this.query = rest.substring(qm + 1);
-    \\    if (parseQueryString) this.query = new URLSearchParams(this.query).toJSON();
+    \\    if (parseQueryString) this.query = __home_url_parse_query_object(this.query);
     \\    rest = rest.slice(0, qm);
     \\  } else if (parseQueryString) {
     \\    this.search = null;
-    \\    this.query = {};
+    \\    this.query = Object.create(null);
     \\  }
     \\  if (rest) this.pathname = rest;
     \\  if (__home_url_slashed_protocol[lowerProto] && this.hostname && !this.pathname) this.pathname = "/";
@@ -33481,6 +33496,16 @@ fn rewriteGlobMatchCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u
     );
 }
 
+fn rewriteUrlParseQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(
+        u8,
+        allocator,
+        source,
+        "test.todo(\"with query string\", () => {",
+        "test(\"with query string\", () => {",
+    );
+}
+
 fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -36057,6 +36082,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteCssSmallListGrowCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
         try rewriteGlobMatchCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
+        try rewriteUrlParseQueryCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve async iterable body streaming matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-cookies.test.ts"))
@@ -40514,6 +40541,28 @@ test "bootstrap runner mirrors issue 26632 missing Bun.file corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors node url parse query corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-parse-query.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-parse-query.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {
