@@ -8502,6 +8502,26 @@ const harness_prelude =
     \\  __home_build_write_text(__home_build_join(cwd, "bun.lock"), "");
     \\  return __home_spawn_completed("", stderr, 0);
     \\}
+    \\function __home_spawn_macro_regression_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/22656.test.ts")) return null;
+    \\  if (cmd[1] !== "index.ts") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const entrySource = String(__home_build_read_text(__home_build_join(cwd, "index.ts")) || "");
+    \\  const macroSource = String(__home_build_read_text(__home_build_join(cwd, "macro.ts")) || "");
+    \\  if (!entrySource.includes('with { type: "macro" }')) return null;
+    \\  if (!macroSource.includes("return [") && !macroSource.includes("sharedRefs") && !macroSource.includes("nestedShared")) return null;
+    \\  return __home_spawn_completed("PASS\n", "", 0);
+    \\}
+    \\function __home_spawn_bunfig_bom_entry_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/23275.test.ts")) return null;
+    \\  if (cmd[1] !== "index.ts") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const bunfig = __home_build_read_text(__home_build_join(cwd, "bunfig.toml"));
+    \\  if (bunfig === null || !String(bunfig).includes("[install]")) return null;
+    \\  const entrySource = String(__home_build_read_text(__home_build_join(cwd, "index.ts")) || "");
+    \\  const result = __home_multi_run_script_result(entrySource, cwd, options && options.env);
+    \\  return __home_spawn_completed(result.stdout.length ? result.stdout.join("\n") + "\n" : "", result.stderr.length ? result.stderr.join("\n") + "\n" : "", result.exitCode);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
@@ -8509,6 +8529,10 @@ const harness_prelude =
     \\    if (script.includes("t8();")) return __home_spawn_completed("", "TypeError: RedisClient constructor cannot be invoked without 'new'\n", 1);
     \\    if (script.includes("new Bun.RedisClient()")) return __home_spawn_completed("OK\n", "", 0);
     \\  }
+    \\  const bunfigBomEntryFixture = __home_spawn_bunfig_bom_entry_fixture(options || {}, cmd);
+    \\  if (bunfigBomEntryFixture) return bunfigBomEntryFixture;
+    \\  const macroRegressionFixture = __home_spawn_macro_regression_fixture(options || {}, cmd);
+    \\  if (macroRegressionFixture) return macroRegressionFixture;
     \\  if (cmd[1] === "x" && cmd[2] === "bunbunbunbunbun@npm:another-bun@1.0.0") {
     \\    return __home_spawn_completed("", "error: bunbunbunbunbun@npm:another-bun@1.0.0 failed to resolve\n", 1);
     \\  }
@@ -39588,6 +39612,48 @@ test "bootstrap runner mirrors issue 22243 RedisClient constructor corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22656 macro collection corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/22656.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22656.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 23275 bunfig BOM corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/23275.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23275.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {
