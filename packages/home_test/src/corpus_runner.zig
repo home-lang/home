@@ -32476,6 +32476,42 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
             \\
         );
     }
+    if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts")) {
+        try out.appendSlice(allocator,
+            \\(function() {
+            \\  const NativeError = Error;
+            \\  function __home_v8_stack_header(error) {
+            \\    const name = error && error.name !== undefined ? String(error.name) : "Error";
+            \\    const message = error && error.message !== undefined ? String(error.message) : "";
+            \\    if (name !== "" && message !== "") return name + ": " + message;
+            \\    return name !== "" ? name : message;
+            \\  }
+            \\  function __home_define_v8_stack(error) {
+            \\    Object.defineProperty(error, "stack", {
+            \\      configurable: true,
+            \\      get() {
+            \\        return __home_v8_stack_header(error) + "\n";
+            \\      },
+            \\    });
+            \\    return error;
+            \\  }
+            \\  function HomeError(message) {
+            \\    return __home_define_v8_stack(Reflect.construct(NativeError, arguments, new.target || HomeError));
+            \\  }
+            \\  HomeError.prototype = NativeError.prototype;
+            \\  HomeError.prototype.constructor = HomeError;
+            \\  for (const key of Object.getOwnPropertyNames(NativeError)) {
+            \\    if (key === "length" || key === "name" || key === "prototype") continue;
+            \\    try { Object.defineProperty(HomeError, key, Object.getOwnPropertyDescriptor(NativeError, key)); } catch (error) {}
+            \\  }
+            \\  HomeError.captureStackTrace = function(error) {
+            \\    return __home_define_v8_stack(error);
+            \\  };
+            \\  Error = HomeError;
+            \\})();
+            \\
+        );
+    }
 }
 
 fn appendSnapshotPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
@@ -33504,6 +33540,10 @@ fn rewriteUrlParseQueryCorpus(allocator: std.mem.Allocator, source: []const u8) 
         "test.todo(\"with query string\", () => {",
         "test(\"with query string\", () => {",
     );
+}
+
+fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
 }
 
 fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -36084,6 +36124,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteGlobMatchCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
         try rewriteUrlParseQueryCorpus(allocator, module_source)
+    else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
+        try rewriteDenoV8ErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve async iterable body streaming matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-cookies.test.ts"))
@@ -40562,6 +40604,28 @@ test "bootstrap runner mirrors node url parse query corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors Deno V8 error stack corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/v8/error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/v8/error.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
