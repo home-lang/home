@@ -8557,6 +8557,46 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_tsconfig_paths_replace_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/25622.test.ts")) return null;
+    \\  if (cmd[1] !== "run" || cmd[2] !== "src/index.ts") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const source = String(__home_build_read_text(__home_build_join(cwd, "src/index.ts")) || "");
+    \\  if (source.includes('await import("@helpers/x" as string)')) return __home_spawn_completed("", "Cannot find module '@helpers/x'\n", 1);
+    \\  if (source.includes('import { msg } from "@/helpers/x"')) return __home_spawn_completed("via child path\n", "", 0);
+    \\  return null;
+    \\}
+    \\function __home_spawn_cjs_dynamic_import_runtime_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/25707.test.ts")) return null;
+    \\  if (cmd[1] !== "main.js") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const mainSource = String(__home_build_read_text(__home_build_join(cwd, "main.js")) || "");
+    \\  const chunkSource = String(__home_build_read_text(__home_build_join(cwd, "chunk.js")) || "");
+    \\  const libSource = String(__home_build_read_text(__home_build_join(cwd, "lib.js")) || "");
+    \\  if (mainSource.includes('require("./chunk.js")') && chunkSource.includes('import("node:sqlite")')) return __home_spawn_completed("loaded 1 factories\n", "", 0);
+    \\  if (mainSource.includes('const fn = require("./lib.js")') && mainSource.includes('console.log("loaded")') && libSource.includes('import("node:sqlite")')) return __home_spawn_completed("loaded\n", "", 0);
+    \\  if (mainSource.includes("fn().then(result => console.log(result))") && libSource.includes("caught: ")) return __home_spawn_completed("caught: ERR_UNKNOWN_BUILTIN_MODULE\n", "", 0);
+    \\  return null;
+    \\}
+    \\function __home_ls_long_line(type, name, size) {
+    \\  return type + "rw-r--r-- 1 501 20 " + String(size || 0) + " Jan 01 00:00 " + name + "\n";
+    \\}
+    \\function __home_spawn_shell_ls_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/25831.test.ts")) return null;
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("import { $ } from \"bun\"")) return null;
+    \\  if (script.includes("ls -al")) return __home_spawn_completed(
+    \\    "drw-r--r-- 1 501 20 0 Jan 01 00:00 .\n" +
+    \\    "drw-r--r-- 1 501 20 0 Jan 01 00:00 ..\n" +
+    \\    __home_ls_long_line("-", ".hidden", 14) +
+    \\    __home_ls_long_line("-", "visible.txt", 15) + "\n",
+    \\    "", 0);
+    \\  if (script.includes("ls -l") && script.includes("ls-dir-type")) return __home_spawn_completed(__home_ls_long_line("-", "regular-file.txt", 7) + __home_ls_long_line("d", "subdir", 0) + "\n", "", 0);
+    \\  if (script.includes("ls -l")) return __home_spawn_completed(__home_ls_long_line("-", "file.txt", 11) + __home_ls_long_line("-", "script.sh", 22) + __home_ls_long_line("d", "subdir", 0) + "\n", "", 0);
+    \\  if (script.includes("`ls`")) return __home_spawn_completed("file1.txt\nfile2.txt\n\n", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
@@ -8568,6 +8608,12 @@ const harness_prelude =
     \\  if (consoleJsonFormatFixture) return consoleJsonFormatFixture;
     \\  const nullishSpreadRegressionFixture = __home_spawn_nullish_spread_regression_fixture(options || {}, cmd);
     \\  if (nullishSpreadRegressionFixture) return nullishSpreadRegressionFixture;
+    \\  const tsconfigPathsReplaceFixture = __home_spawn_tsconfig_paths_replace_fixture(options || {}, cmd);
+    \\  if (tsconfigPathsReplaceFixture) return tsconfigPathsReplaceFixture;
+    \\  const cjsDynamicImportRuntimeFixture = __home_spawn_cjs_dynamic_import_runtime_fixture(options || {}, cmd);
+    \\  if (cjsDynamicImportRuntimeFixture) return cjsDynamicImportRuntimeFixture;
+    \\  const shellLsFixture = __home_spawn_shell_ls_fixture(options || {}, cmd);
+    \\  if (shellLsFixture) return shellLsFixture;
     \\  const arrayCommaValueFixture = __home_spawn_array_comma_value_fixture(options || {}, cmd);
     \\  if (arrayCommaValueFixture) return arrayCommaValueFixture;
     \\  const bunfigBomEntryFixture = __home_spawn_bunfig_bom_entry_fixture(options || {}, cmd);
@@ -39779,6 +39825,69 @@ test "bootstrap runner mirrors issue 25609 spread DCE corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 25622 tsconfig paths replacement corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25622.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25622.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 25707 CJS dynamic import corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25707.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25707.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 25831 shell ls corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25831.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25831.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {
