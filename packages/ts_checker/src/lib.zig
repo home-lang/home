@@ -167,6 +167,7 @@ pub fn stringProto(
     const string_t = types.Primitive.string_t;
     const number_t = types.Primitive.number_t;
     const boolean_t = types.Primitive.boolean_t;
+    const any_t = types.Primitive.any;
 
     // `string[]` for `split`'s return.
     const string_arr = try ti.internArrayType(sint, string_t);
@@ -190,8 +191,10 @@ pub fn stringProto(
     const sig_str_num = try ti.internSignature(&[_]TypeId{ string_t, optional_number_t }, number_t, false);
     // `(i: number): string`
     const sig_num_string = try ti.internSignature(&[_]TypeId{number_t}, string_t, false);
-    // `(sep: string): string[]`
-    const sig_split = try ti.internSignature(&[_]TypeId{string_t}, string_arr, false);
+    // `split(separator?: string | RegExp, limit?: number): string[]`.
+    // The separator accepts both `string` and `RegExp`; model it as `any`
+    // like `match`/`replace` so regex literals don't spuriously fail.
+    const sig_split = try ti.internSignature(&[_]TypeId{ any_t, optional_number_t }, string_arr, false);
     // `(start: number, end?: number): string`.
     const sig_slice = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t }, string_t, false);
     // `concat(...strs: string[]): string` — rest accepting any number
@@ -204,7 +207,6 @@ pub fn stringProto(
     // UTF-16 code unit at the given index, NaN if out of range).
     const sig_num_num = try ti.internSignature(&[_]TypeId{number_t}, number_t, false);
 
-    const any_t = types.Primitive.any;
     const undef_t = types.Primitive.undefined_t;
     const string_or_undefined_t = try ti.internUnion(&[_]TypeId{ string_t, undef_t });
     const number_or_undefined_t = optional_number_t;
