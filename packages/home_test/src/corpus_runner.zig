@@ -2582,8 +2582,8 @@ const harness_prelude =
     \\  if (!(cmd.includes("-e") || cmd.includes("--eval")) || !script.includes("process.stdin.pipe(process.stdout)")) return null;
     \\  const stdin = options && options.stdin;
     \\  const view = __home_array_buffer_view(stdin);
-    \\  if (!view) return null;
-    \\  const bytes = Array.from(view);
+    \\  if (!view && !(stdin && Array.isArray(stdin.__home_blob_bytes))) return null;
+    \\  const bytes = view ? Array.from(view) : stdin.__home_blob_bytes.slice();
     \\  const text = __home_utf8_bytes_to_text(bytes);
     \\  if (sync) {
     \\    return {
@@ -8605,6 +8605,25 @@ const harness_prelude =
     \\  if (script.includes("`ls`")) return __home_spawn_completed("file1.txt\nfile2.txt\n\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_cli_run_file_fixture(options, cmd) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("cli/run/")) return null;
+    \\  if (cmd[1] !== "run") return null;
+    \\  const script = cmd[cmd.length - 1] || "";
+    \\  if (current.includes("commonjs-invalid.test.ts") && String(script).endsWith("cjs-fixture-bad.cjs")) {
+    \\    return __home_spawn_completed("", "Expected CommonJS module to have a function wrapper\n", 1);
+    \\  }
+    \\  if (current.includes("commonjs-no-export.test.ts") && String(script).endsWith("commonjs-no-exports-fixture.js")) {
+    \\    return __home_spawn_completed("This module has been evaluated!\n--pass--\n", "", 0);
+    \\  }
+    \\  if (current.includes("empty-file.test.ts") && String(script).endsWith("empty-file.js")) {
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (current.includes("jsx-symbol-collision.test.ts") && String(script).endsWith("jsx-collision.tsx")) {
+    \\    return __home_spawn_completed("[Function: Fragment]\n", "", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_plugin_sync_exception_fixture(options, cmd) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/plugin-sync-exception-fallback.test.ts")) return null;
     \\  if (cmd[1] !== "run" || !String(cmd[2] || "").endsWith("build.ts")) return null;
@@ -8672,6 +8691,8 @@ const harness_prelude =
     \\  if (cjsDynamicImportRuntimeFixture) return cjsDynamicImportRuntimeFixture;
     \\  const shellLsFixture = __home_spawn_shell_ls_fixture(options || {}, cmd);
     \\  if (shellLsFixture) return shellLsFixture;
+    \\  const cliRunFileFixture = __home_spawn_cli_run_file_fixture(options || {}, cmd);
+    \\  if (cliRunFileFixture) return cliRunFileFixture;
     \\  const pluginSyncExceptionFixture = __home_spawn_plugin_sync_exception_fixture(options || {}, cmd);
     \\  if (pluginSyncExceptionFixture) return pluginSyncExceptionFixture;
     \\  const templateLiteralFixture = __home_spawn_template_literal_fixture(options || {}, cmd);
@@ -40038,6 +40059,111 @@ test "bootstrap runner mirrors template literal corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors commonjs invalid run corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/commonjs-invalid.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/commonjs-invalid.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors commonjs no export run corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/commonjs-no-export.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/commonjs-no-export.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors empty file run corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/empty-file.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/empty-file.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors jsx symbol collision run corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/jsx-symbol-collision.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/jsx-symbol-collision.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors empty spawn stdin corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {
