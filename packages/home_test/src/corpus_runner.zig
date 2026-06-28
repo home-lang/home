@@ -14963,7 +14963,17 @@ const harness_prelude =
     \\  return { text() { return Promise.resolve(String(value || "")); } };
     \\}
     \\function __home_bake_spawn_override(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const cwd = String(options && options.cwd || "");
+    \\  if (String(globalThis.__home_current_filename || "").includes("bake/dev/import-meta-inline-negative.test.ts") && cmd[1] === "index.ts") {
+    \\    const path = __home_build_join(cwd, "index.ts");
+    \\    const stdout = "dir: " + cwd + "\n" +
+    \\      "dirname: " + cwd + "\n" +
+    \\      "file: index.ts\n" +
+    \\      "path: " + path + "\n" +
+    \\      "url: file://" + path + "\n";
+    \\    return __home_spawn_completed(stdout, "", 0);
+    \\  }
     \\  if (!cwd.includes("serve-plugins-devserver-")) return null;
     \\  const reject = cwd.includes("serve-plugins-devserver-reject");
     \\  const stdout = reject ? '{"result":"500"}\n' : '{"status":200,"fromPlugin":true}\n';
@@ -40313,6 +40323,27 @@ test "bootstrap runner mirrors transform stream leak corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bake import-meta negative corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/import-meta-inline-negative.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/import-meta-inline-negative.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {
