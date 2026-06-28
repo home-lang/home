@@ -100,6 +100,7 @@ const exported_ordinals = struct {
     export const BUN_SOCKET_KIND_UWS_HTTP_TLS: u8 = @intFromEnum(SocketKind.uws_http_tls);
     export const BUN_SOCKET_KIND_UWS_WS: u8 = @intFromEnum(SocketKind.uws_ws);
     export const BUN_SOCKET_KIND_UWS_WS_TLS: u8 = @intFromEnum(SocketKind.uws_ws_tls);
+    export const BUN_SOCKET_KIND_BUN_SOCKET_TLS: u8 = @intFromEnum(SocketKind.bun_socket_tls);
 };
 comptime {
     _ = exported_ordinals;

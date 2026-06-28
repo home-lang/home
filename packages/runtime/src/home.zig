@@ -1644,6 +1644,24 @@ pub const cpp = if (enable_jsc_link) @import(".generated/cpp.zig") else struct {
         return .dead;
     }
 
+    pub fn BunString__toWTFString(this: ?*String) void {
+        _ = this;
+        @panic("home_rt.cpp.BunString__toWTFString needs the C++ FFI bridge (Phase 12.2)");
+    }
+
+    pub fn WTF__dtoa(buf_124_bytes: ?*u8, number: f64) usize {
+        var buf: [*]u8 = @ptrCast(buf_124_bytes orelse return 0);
+        const out = std.fmt.bufPrint(buf[0..124], "{d}", .{number}) catch
+            std.fmt.bufPrint(buf[0..124], "{e}", .{number}) catch return 0;
+        return out.len;
+    }
+
+    pub fn Bun__performTask(globalObject: *jsc.JSGlobalObject, task: ?*jsc.CppTask) error{JSError}!void {
+        _ = globalObject;
+        _ = task;
+        @panic("home_rt.cpp.Bun__performTask needs the C++ FFI bridge (Phase 12.2)");
+    }
+
     pub fn JSC__JSValue__isCallable(value: anytype) bool {
         _ = value;
         return false;
@@ -1694,7 +1712,7 @@ pub const cpp = if (enable_jsc_link) @import(".generated/cpp.zig") else struct {
     pub fn JSC__JSValue__jsEmptyString(_: anytype) jsc.JSValue { @panic("home_rt.cpp.JSC__JSValue__jsEmptyString needs the C++ FFI bridge (Phase 12.2)"); }
     pub fn JSC__JSValue__jsNumberFromU16(_: anytype) jsc.JSValue { @panic("home_rt.cpp.JSC__JSValue__jsNumberFromU16 needs the C++ FFI bridge (Phase 12.2)"); }
     pub fn JSC__JSValue__putMayBeIndex(_: anytype, _: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSValue__putMayBeIndex needs the C++ FFI bridge (Phase 12.2)"); }
-    pub fn JSC__JSValue__toInt64(_: anytype) i64 { @panic("home_rt.cpp.JSC__JSValue__toInt64 needs the C++ FFI bridge (Phase 12.2)"); }
+    pub fn JSC__JSValue__toInt64(_: jsc.JSValue) callconv(.c) i64 { @panic("home_rt.cpp.JSC__JSValue__toInt64 needs the C++ FFI bridge (Phase 12.2)"); }
     pub fn JSC__JSValue__toMatch(_: anytype, _: anytype, _: anytype) error{JSError}!bool { @panic("home_rt.cpp.JSC__JSValue__toMatch needs the C++ FFI bridge (Phase 12.2)"); }
     pub fn JSC__JSValue__toStringOrNull(_: anytype, _: anytype) error{JSError}!*jsc.JSString { @panic("home_rt.cpp.JSC__JSValue__toStringOrNull needs the C++ FFI bridge (Phase 12.2)"); }
     pub fn JSC__JSValue__toZigException(_: anytype, _: anytype, _: anytype) error{JSError}!void { @panic("home_rt.cpp.JSC__JSValue__toZigException needs the C++ FFI bridge (Phase 12.2)"); }

@@ -13,6 +13,18 @@ fn noopSize() callconv(.c) usize {
 fn noopPtr() callconv(.c) ?*anyopaque {
     return null;
 }
+fn noopBool() callconv(.c) bool {
+    return false;
+}
+fn noopEncoded() callconv(.c) usize {
+    return 0;
+}
+fn noopDetached(_: ?*anyopaque, _: usize) callconv(.c) void {}
+fn noopDispatch(_: ?*anyopaque, _: ?*const u8, _: c_int) callconv(.c) void {}
+extern fn u_hasBinaryProperty(c: c_int, which: c_int) callconv(.c) u8;
+fn icuHasBinaryProperty(c: u32, which: c_uint) callconv(.c) bool {
+    return u_hasBinaryProperty(@intCast(c), @intCast(which)) != 0;
+}
 fn abortingPanic(_: [*]u8, _: usize) callconv(.c) noreturn {
     @panic("Bun crash handler called");
 }
@@ -21,44 +33,63 @@ comptime {
     @export(&abortingPanic, .{ .name = "Bun__crashHandler" });
     @export(&noopInt, .{ .name = "Bun__doesMacOSVersionSupportSendRecvMsgX" });
     @export(&noopSize, .{ .name = "NetworkSink__memoryCost" });
+    @export(&noopBool, .{ .name = "Bun__CryptoHasherExtern__isXof" });
+    @export(&noopBool, .{ .name = "Bun__streamIterEnabled" });
+    @export(&icuHasBinaryProperty, .{ .name = "icu_hasBinaryProperty" });
+
+    for ([_][]const u8{
+        "ArrayBufferSink__controllerDetached",
+        "FileSink__controllerDetached",
+        "H3ResponseSink__controllerDetached",
+        "HTTPResponseSink__controllerDetached",
+        "HTTPSResponseSink__controllerDetached",
+        "NetworkSink__controllerDetached",
+    }) |name| {
+        @export(&noopDetached, .{ .name = name });
+    }
+
+    for ([_][]const u8{
+        "us_dispatch_keylog",
+        "us_dispatch_session",
+    }) |name| {
+        @export(&noopDispatch, .{ .name = name });
+    }
+
+    for ([_][]const u8{
+        "BunObject_lazyPropCb_isStandaloneExecutable",
+        "H2FrameParserPrototype__pushPromise",
+        "JS2Zig___src_collections_linear_fifo_zig__TestingAPIs_orderedRemoveProbe",
+        "JS2Zig___src_sys_sys_zig__TestingAPIs_translateNtStatusToE",
+        "SecureContextClass__create_private",
+        "SecureContextClass__parse_pkcs12",
+        "SecureContextPrototype__add_ca_cert",
+        "TCPSocketPrototype__getTypeOfService",
+        "TCPSocketPrototype__resumeSNI",
+        "TCPSocketPrototype__setKeyCert",
+        "TCPSocketPrototype__setTypeOfService",
+        "TLSSocketPrototype__getTypeOfService",
+        "TLSSocketPrototype__resumeSNI",
+        "TLSSocketPrototype__setKeyCert",
+        "TLSSocketPrototype__setTypeOfService",
+    }) |name| {
+        @export(&noopEncoded, .{ .name = name });
+    }
 
     for ([_][]const u8{
         "Bake__bundleNewRouteJSFunctionImpl",
         "Bake__getNewRouteParamsJSFunctionImpl",
         "Bun__dns_internal_registerQuic",
-        "Bun__HTTPRequestContextDebugH3__onReject",
-        "Bun__HTTPRequestContextDebugH3__onRejectStream",
-        "Bun__HTTPRequestContextDebugH3__onResolve",
-        "Bun__HTTPRequestContextDebugH3__onResolveStream",
-        "Bun__HTTPRequestContextDebugTLS__onReject",
-        "Bun__HTTPRequestContextDebugTLS__onRejectStream",
-        "Bun__HTTPRequestContextDebugTLS__onResolve",
-        "Bun__HTTPRequestContextDebugTLS__onResolveStream",
-        "Bun__HTTPRequestContextDebug__onReject",
-        "Bun__HTTPRequestContextDebug__onRejectStream",
-        "Bun__HTTPRequestContextDebug__onResolve",
-        "Bun__HTTPRequestContextDebug__onResolveStream",
-        "Bun__HTTPRequestContextH3__onReject",
-        "Bun__HTTPRequestContextH3__onRejectStream",
-        "Bun__HTTPRequestContextH3__onResolve",
-        "Bun__HTTPRequestContextH3__onResolveStream",
-        "Bun__HTTPRequestContextTLS__onReject",
-        "Bun__HTTPRequestContextTLS__onRejectStream",
-        "Bun__HTTPRequestContextTLS__onResolve",
-        "Bun__HTTPRequestContextTLS__onResolveStream",
-        "Bun__HTTPRequestContext__onReject",
-        "Bun__HTTPRequestContext__onRejectStream",
-        "Bun__HTTPRequestContext__onResolve",
-        "Bun__HTTPRequestContext__onResolveStream",
         "Bun__InspectorBunFrontendDevServerAgent__setEnabled",
         "Bun__Secrets__scheduleJob",
         "Bun__eventLoop__incrementRefConcurrently",
         "Bun__onRejectEntryPointResult",
         "Bun__onResolveEntryPointResult",
         "Bun__queueJSCDeferredWorkTaskConcurrently",
+        "BlockList__onStructuredCloneDestroy",
         "CrashHandler__setDlOpenAction",
         "CrashHandler__setInsideNativePlugin",
         "CrashHandler__unsupportedUVFunction",
+        "CryptoClass__finalize",
         "FileSink__assertLive",
         "NetworkSink__close",
         "NetworkSink__construct",
@@ -75,6 +106,8 @@ comptime {
         // jsc/resolve_path_jsc.zig + jsc/resolver_jsc.zig (force-linked from
         // home.zig). The no-ops made relative Bun.pathToFileURL collapse to
         // file:/// and require.resolve.paths()/_nodeModulePaths return garbage.
+        // HTTPRequestContext onResolve/onReject exports now have their real
+        // request lifecycle callbacks in runtime/server/RequestContext.zig.
     }) |name| {
         @export(&noop, .{ .name = name });
     }

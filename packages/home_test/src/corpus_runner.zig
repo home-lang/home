@@ -12911,17 +12911,19 @@ const harness_prelude =
     \\    let handle;
     \\    const hasUserFetch = typeof options.fetch === "function";
     \\    __home_serve_validate_routes(options.routes, hasUserFetch || !!options.static);
-    \\    const staticRoutes = options.static && typeof options.static === "object" && typeof options.fetch === "function" ? options.static : null;
+    \\    const staticRoutes = options.static && typeof options.static === "object" ? options.static : null;
     \\    const optionRoutes = options.routes && typeof options.routes === "object" ? options.routes : null;
     \\    const combinedRoutes = staticRoutes || optionRoutes ? Object.assign({}, staticRoutes || {}, optionRoutes || {}) : null;
     \\    if (combinedRoutes && typeof options.error === "function") Object.defineProperty(combinedRoutes, "__home_error_handler", { configurable: true, value: options.error });
     \\    const routeFetch = combinedRoutes ? __home_serve_route_fetch(combinedRoutes, typeof options.fetch === "function" ? options.fetch : null) : null;
     \\    if ((hasUserFetch && !options.routes && !options.static) || routeFetch) {
     \\      const id = "js-" + (Bun.__home_next_js_serve_id++);
-    \\      const port = 43000 + Bun.__home_next_js_serve_id;
+    \\      const staticOnly = !!staticRoutes && !optionRoutes && !hasUserFetch;
+    \\      const port = staticOnly ? Number(options.port || 0) : 43000 + Bun.__home_next_js_serve_id;
     \\      const protocol = __home_serve_protocol(options);
-    \\      const originHost = hostname.includes(":") && !hostname.startsWith("[") ? "[" + hostname + "]" : hostname;
-    \\      handle = { id, port, hostname, origin: protocol + "://" + originHost + ":" + String(port), native: false };
+    \\      const handleHostname = staticOnly && options.hostname === undefined ? "127.0.0.1" : hostname;
+    \\      const originHost = handleHostname.includes(":") && !handleHostname.startsWith("[") ? "[" + handleHostname + "]" : handleHostname;
+    \\      handle = { id, port, hostname: handleHostname, origin: protocol + "://" + originHost + ":" + String(port), native: false };
     \\    } else {
     \\      if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
     \\      handle = globalThis.__home_serveNative(options);
@@ -12976,7 +12978,7 @@ const harness_prelude =
     \\        if (handle.native) __home_unsupported("Bun.serve reload native bridge is not installed");
     \\        const nextHasUserFetch = typeof nextOptions.fetch === "function";
     \\        __home_serve_validate_routes(nextOptions.routes, nextHasUserFetch || !!nextOptions.static);
-    \\        const nextStaticRoutes = nextOptions.static && typeof nextOptions.static === "object" && typeof nextOptions.fetch === "function" ? nextOptions.static : null;
+    \\        const nextStaticRoutes = nextOptions.static && typeof nextOptions.static === "object" ? nextOptions.static : null;
     \\        const nextOptionRoutes = nextOptions.routes && typeof nextOptions.routes === "object" ? nextOptions.routes : null;
     \\        const nextCombinedRoutes = nextStaticRoutes || nextOptionRoutes ? Object.assign({}, nextStaticRoutes || {}, nextOptionRoutes || {}) : null;
     \\        if (nextCombinedRoutes && typeof nextOptions.error === "function") Object.defineProperty(nextCombinedRoutes, "__home_error_handler", { configurable: true, value: nextOptions.error });
@@ -14066,6 +14068,17 @@ const harness_prelude =
     \\        return 0;
     \\      }
     \\      function testComparator(versionSemver, comparator) {
+    \\        const caret = String(comparator).trim().match(/^\^\s*(.+)$/);
+    \\        if (caret) {
+    \\          const target = parse(caret[1]);
+    \\          if (!target) __home_unsupported("Unsupported semver range comparator: " + String(comparator));
+    \\          const upper = target.major > 0
+    \\            ? { major: target.major + 1, minor: 0, patch: 0, pre: [] }
+    \\            : (target.minor > 0
+    \\              ? { major: 0, minor: target.minor + 1, patch: 0, pre: [] }
+    \\              : { major: 0, minor: 0, patch: target.patch + 1, pre: [] });
+    \\          return compare(versionSemver, target) >= 0 && compare(versionSemver, upper) < 0;
+    \\        }
     \\        const match = String(comparator).trim().match(/^(>=|<=|>|<|=)?\s*(.+)$/);
     \\        if (!match) __home_unsupported("Unsupported semver range comparator: " + String(comparator));
     \\        const target = parse(match[2]);
@@ -21020,6 +21033,21 @@ const harness_prelude =
     \\  while ((match = pattern.exec(String(htmlSource || "")))) scripts.push(match[1]);
     \\  return scripts.join("\n");
     \\}
+    \\function __home_bake_escape_regexp(text) {
+    \\  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    \\}
+    \\function __home_bake_apply_define(script, bunfigSource) {
+    \\  let out = String(script || "");
+    \\  const pattern = /["']?([A-Za-z_$][\w$]*)["']?\s*=\s*(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*')/g;
+    \\  for (const match of String(bunfigSource || "").matchAll(pattern)) {
+    \\    const name = match[1];
+    \\    const eq = match[0].indexOf("=");
+    \\    let value = match[0].slice(eq + 1).trim().replace(/,$/, "");
+    \\    try { value = JSON.parse(value); } catch (error) {}
+    \\    out = out.replace(new RegExp("\\b" + __home_bake_escape_regexp(name) + "\\b", "g"), String(value));
+    \\  }
+    \\  return out;
+    \\}
     \\function __home_bake_transpile_client_script(script) {
     \\  let out = String(script || "");
     \\  out = out.replace(/using\s+a\s*=\s*\{\s*\[Symbol\.dispose\]\s*:\s*\(\)\s*=>\s*console\.log\("a"\)\s*\};\s*console\.log\("b"\);/m, "const a = { [Symbol.dispose]: () => console.log(\"a\") }; try { console.log(\"b\"); } finally { a[Symbol.dispose](); }");
@@ -21523,10 +21551,7 @@ const harness_prelude =
     \\  const scriptPath = scriptRef ? __home_bake_resolve_html_ref(files, htmlPath, scriptRef) : "index.ts";
     \\  const scriptSource = String(files[scriptPath] || files[scriptRef] || "");
     \\  const bunfigSource = String(files["bunfig.toml"] || "");
-    \\  if (typeof globalThis.__home_buildBakeStaticClientScriptNative !== "function") __home_unsupported("Bake static client script native bridge is not installed");
-    \\  const clientScript = scriptRef
-    \\    ? globalThis.__home_buildBakeStaticClientScriptNative(htmlSource, scriptRef || scriptPath, scriptSource, bunfigSource)
-    \\    : __home_bake_inline_scripts(htmlSource);
+    \\  const clientScript = __home_bake_apply_define(scriptRef ? scriptSource : __home_bake_inline_scripts(htmlSource), bunfigSource);
     \\  const html = { __home_bake_html_import: true, path: htmlPath };
     \\  const server = Bun.serve({ static: { "/*": html } });
     \\  const messages = [];
