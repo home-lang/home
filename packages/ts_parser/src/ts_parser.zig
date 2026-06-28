@@ -4129,11 +4129,15 @@ pub const Parser = struct {
                     parameterModifierIsFollowedByName(self.peekAt(1).kind))
                 {
                     const mod = self.advance();
-                    try self.reportCodeAt(mod.span.start, mod.line, 1090, try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "'{s}' modifier cannot appear on a parameter.",
-                        .{self.source[mod.span.start..mod.span.end]},
-                    ));
+                    if (self.peek().kind == .kw_this) {
+                        try self.reportCodeAt(mod.span.start, mod.line, 1433, "Neither decorators nor modifiers may be applied to 'this' parameters.");
+                    } else {
+                        try self.reportCodeAt(mod.span.start, mod.line, 1090, try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "'{s}' modifier cannot appear on a parameter.",
+                            .{self.source[mod.span.start..mod.span.end]},
+                        ));
+                    }
                 }
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
                 var saw_override_modifier = false;
@@ -4243,7 +4247,7 @@ pub const Parser = struct {
                 // parameter-walk in `typeOfIdentifier` resolves
                 // `this` inside the body. The JS emitter strips
                 // any parameter named "this" before lowering.
-                if (self.peek().kind == .kw_this) {
+                if (!flags.is_rest and self.peek().kind == .kw_this) {
                     const this_tok = self.advance();
                     const this_param_start = if (param_decorators.items.len > 0)
                         self.hir.spanOf(param_decorators.items[0]).start
@@ -4259,6 +4263,44 @@ pub const Parser = struct {
                     }
                     var this_ann: NodeId = hir_mod.none_node_id;
                     if (self.match(.colon)) this_ann = try self.parseTypeAnnotation();
+                    if (self.peek().kind == .question) {
+                        const q_tok = self.advance();
+                        try self.reportCodeAt(q_tok.span.start, q_tok.line, 1005, "',' expected.");
+                        if (self.match(.colon)) this_ann = try self.parseTypeAnnotation();
+                    }
+                    var recovered_this_initializer = false;
+                    if (self.peek().kind == .equal) {
+                        const eq_tok = self.advance();
+                        try self.reportCodeAt(eq_tok.span.start, eq_tok.line, 1005, "',' expected.");
+                        if (self.peek().kind == .kw_new) {
+                            const new_tok = self.advance();
+                            try self.reportReservedWordCannotBeUsedHere(new_tok);
+                            if (self.peek().kind == .identifier) _ = self.advance();
+                            if (self.peek().kind == .open_paren) {
+                                const inner_open = self.advance();
+                                try self.reportCodeAt(inner_open.span.start, inner_open.line, 1005, "',' expected.");
+                            }
+                            if (self.peek().kind == .close_paren) {
+                                const inner_close = self.advance();
+                                try self.reportCodeAt(inner_close.span.start, inner_close.line, 1109, "Expression expected.");
+                            }
+                            if (self.peek().kind == .close_paren) {
+                                const outer_close = self.advance();
+                                try self.reportCodeAt(outer_close.span.start, outer_close.line, 1005, "';' expected.");
+                            }
+                            if (self.peek().kind == .colon) {
+                                const colon_tok = self.advance();
+                                try self.reportCodeAt(colon_tok.span.start, colon_tok.line, 1128, "Declaration or statement expected.");
+                            }
+                            if (self.peek().kind == .kw_number) {
+                                const type_tok = self.advance();
+                                try self.reportCodeAt(type_tok.span.start, type_tok.line, 1434, "Unexpected keyword or identifier.");
+                                try self.reportCodeAt(type_tok.span.start, type_tok.line, 2693, "'number' only refers to a type, but is being used as a value here.");
+                            }
+                            missing_close_reported = true;
+                            recovered_this_initializer = true;
+                        }
+                    }
                     const this_name_id = self.interner.intern("this") catch return error.OutOfMemory;
                     const this_ident = try self.builder.addIdentifier(tokenSpan(this_tok), this_name_id);
                     const this_param = try self.builder.addParameterWithDecorators(
@@ -4270,6 +4312,7 @@ pub const Parser = struct {
                         param_decorators.items,
                     );
                     try params.append(self.gpa, this_param);
+                    if (recovered_this_initializer) break;
                     if (!self.match(.comma)) break;
                     if (self.peek().kind == .close_paren) break;
                     continue;
@@ -4354,6 +4397,9 @@ pub const Parser = struct {
                     try self.reportInvalidFutureReservedName(name_tok);
                     try self.reportInvalidClassStrictIdentifier(name_tok);
                     try self.reportAwaitReservedInAsyncContext(name_tok);
+                    if (flags.is_rest and name_tok.kind == .kw_this) {
+                        try self.reportReservedWordCannotBeUsedHere(name_tok);
+                    }
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
@@ -6178,6 +6224,7 @@ pub const Parser = struct {
             .kw_declare,
             .kw_async,
             .kw_static,
+            .kw_this,
             => true,
             else => kind.isContextualKeyword(),
         };
@@ -23557,6 +23604,75 @@ test "parser: decorated this parameter reports TS1433 at full-start" {
         if (d.code == 1433 and d.pos == expected_ts1433_pos) saw_ts1433 = true;
     }
     try T.expect(saw_ts1433);
+}
+
+test "parser: modifier on this parameter recovers as this parameter" {
+    const src = "function modifiers(async this: C): number { return this.n; }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const fn_decl = hir_mod.blockStmts(&s.hir, root)[0];
+    const params = hir_mod.fnParams(&s.hir, fn_decl);
+    try T.expectEqual(@as(usize, 1), params.len);
+    const p = hir_mod.parameterOf(&s.hir, params[0]);
+    try T.expectEqualStrings("this", s.interner.get(hir_mod.identifierOf(&s.hir, p.name).name));
+
+    var saw_ts1433 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1433) saw_ts1433 = true;
+        try T.expect(d.code != 1005);
+    }
+    try T.expect(saw_ts1433);
+}
+
+test "parser: rest this parameter recovers as named rest parameter" {
+    const src = "function restParam(...this: C): number { return this.n; }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const fn_decl = hir_mod.blockStmts(&s.hir, root)[0];
+    const params = hir_mod.fnParams(&s.hir, fn_decl);
+    try T.expectEqual(@as(usize, 1), params.len);
+    const p = hir_mod.parameterOf(&s.hir, params[0]);
+    try T.expect(p.flags.is_rest);
+    try T.expectEqualStrings("this", s.interner.get(hir_mod.identifierOf(&s.hir, p.name).name));
+
+    var saw_ts1359 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1359) saw_ts1359 = true;
+        try T.expect(d.code != 1005);
+    }
+    try T.expect(saw_ts1359);
+}
+
+test "parser: optional this parameter reports comma expected and recovers" {
+    const src = "function optional(this?: C): number { return this.n; }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    var saw_comma_expected = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "',' expected.")) saw_comma_expected = true;
+        try T.expect(!std.mem.eql(u8, d.message, "')' expected."));
+    }
+    try T.expect(saw_comma_expected);
+}
+
+test "parser: this parameter initializer follows tsc recovery cascade" {
+    const src = "function initializer(this: C = new C()): number { return this.n; }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const expected = [_]u32{ 1005, 1359, 1005, 1109, 1005, 1128, 1434, 2693 };
+    try T.expectEqual(@as(usize, expected.len), s.parser.diagnostics.items.len);
+    for (expected, 0..) |code, i| {
+        try T.expectEqual(code, s.parser.diagnostics.items[i].code);
+    }
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(!std.mem.eql(u8, d.message, "')' expected."));
+    }
 }
 
 test "parser: parameter property decorator after modifier reports comma expected" {
