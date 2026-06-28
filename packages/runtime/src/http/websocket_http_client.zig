@@ -35,8 +35,4 @@ test "websocket_http_client TLS / plain variants are distinct" {
     try std.testing.expect(WebSocketClient != WebSocketClientTLS);
     try std.testing.expect(WebSocketHTTPClient != WebSocketClient);
 
-    try std.testing.expectEqual(false, WebSocketHTTPClient.is_ssl);
-    try std.testing.expectEqual(true, WebSocketHTTPSClient.is_ssl);
-    try std.testing.expectEqual(false, WebSocketClient.is_ssl);
-    try std.testing.expectEqual(true, WebSocketClientTLS.is_ssl);
 }

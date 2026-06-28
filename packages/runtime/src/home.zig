@@ -113,6 +113,16 @@ comptime {
         // former native_stubs no-ops). Without an explicit force the block is
         // lazily skipped and the WS native API silently no-ops.
         _ = @import("runtime/webcore.zig");
+        // Force concrete server RequestContext types so the
+        // Bun__HTTPRequestContext* promise callbacks are emitted for native
+        // Bun object bundles in executable builds, not only test roots.
+        const server_module = @import("runtime/server/server.zig");
+        _ = server_module.HTTPServer.RequestContext;
+        _ = server_module.HTTPSServer.RequestContext;
+        _ = server_module.DebugHTTPServer.RequestContext;
+        _ = server_module.DebugHTTPSServer.RequestContext;
+        _ = server_module.HTTPSServer.H3RequestContext;
+        _ = server_module.DebugHTTPSServer.H3RequestContext;
         _ = @import("jsc/js2native_workarounds.zig");
     }
 }
