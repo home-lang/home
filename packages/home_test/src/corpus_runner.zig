@@ -36988,6 +36988,21 @@ test "bundler core itBundled subset names the first tranche" {
     try std.testing.expectEqualStrings("bundler/esbuild/metafile.test.ts", files[4]);
 }
 
+test "bootstrap runner mirrors bundler core itBundled subset" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runSubset(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", .bundler_core_itbundled);
+    defer summary.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 5), summary.files);
+    try std.testing.expectEqual(@as(usize, 296), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 16), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
     try std.testing.expectEqual(@as(usize, 22), files.len);
