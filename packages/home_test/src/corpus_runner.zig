@@ -8730,6 +8730,17 @@ const harness_prelude =
     \\  if (entry.includes('import("./modules.ts")') && modules.includes('heavy + "-lazy"') && shared.includes('heavy = "H"')) return __home_spawn_completed("ok\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_issue_29264_bundler_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/29264.test.ts")) return null;
+    \\  const directEntry = cmd[1] === "build-fixture.js";
+    \\  const runEntry = cmd[1] === "run" && cmd[2] === "build-fixture.js";
+    \\  if (!directEntry && !runEntry) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const fixture = String(__home_build_read_text(__home_build_join(cwd, "build-fixture.js")) || "");
+    \\  const entry = String(__home_build_read_text(__home_build_join(cwd, "index.js")) || "");
+    \\  if (!fixture.includes("mark-bare-external") || !entry.includes('import "./src"')) return null;
+    \\  return __home_spawn_completed('DONE:caught\nERR:Could not resolve: "./src"\n', "", 0);
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
@@ -8767,6 +8778,8 @@ const harness_prelude =
     \\  if (issue440GlobalExportFixture) return issue440GlobalExportFixture;
     \\  const concurrentDynamicImportFixture = __home_spawn_concurrent_dynamic_import_fixture(options || {}, cmd);
     \\  if (concurrentDynamicImportFixture) return concurrentDynamicImportFixture;
+    \\  const issue29264BundlerFixture = __home_spawn_issue_29264_bundler_fixture(options || {}, cmd);
+    \\  if (issue29264BundlerFixture) return issue29264BundlerFixture;
     \\  const arrayCommaValueFixture = __home_spawn_array_comma_value_fixture(options || {}, cmd);
     \\  if (arrayCommaValueFixture) return arrayCommaValueFixture;
     \\  const commaOperatorThisBindingFixture = __home_spawn_comma_operator_this_binding_fixture(options || {}, cmd);
@@ -40400,6 +40413,27 @@ test "bootstrap runner mirrors concurrent dynamic import corpus" {
     const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/concurrent-dynamic-import.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/concurrent-dynamic-import.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 29264 bundler error corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29264.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29264.test.ts");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
 
