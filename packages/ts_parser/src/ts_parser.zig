@@ -12496,8 +12496,11 @@ pub const Parser = struct {
         // close-paren is followed by `=>` or `:` (typed return) before
         // committing.
         if (self.peek().kind == .open_paren) {
-            if (try self.tryParseArrowAfterParen(start_tok, is_async, &.{})) |arrow| return arrow;
-            if (try self.tryParseArrowWithMissingCloseParen(start_tok, is_async, &.{})) |arrow| return arrow;
+            const first_inside = self.peekAt(1).kind;
+            if (first_inside != .kw_function and first_inside != .kw_class) {
+                if (try self.tryParseArrowAfterParen(start_tok, is_async, &.{})) |arrow| return arrow;
+                if (try self.tryParseArrowWithMissingCloseParen(start_tok, is_async, &.{})) |arrow| return arrow;
+            }
         }
         // Not an arrow — restore and fall through.
         self.cursor = checkpoint;
@@ -18558,6 +18561,18 @@ test "parser: contextual and type keywords remain valid parameter names (no TS13
     defer destroyTestSetup(s);
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1390);
+    }
+}
+
+test "parser: parenthesized function expression is not parsed as arrow parameters" {
+    var s = try newTestSetup("(function init() { return 1; })();");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(top));
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1005);
         try T.expect(d.code != 1390);
     }
 }
