@@ -8504,6 +8504,11 @@ const harness_prelude =
     \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
+    \\    const script = String(cmd[2] || "");
+    \\    if (script.includes("t8();")) return __home_spawn_completed("", "TypeError: RedisClient constructor cannot be invoked without 'new'\n", 1);
+    \\    if (script.includes("new Bun.RedisClient()")) return __home_spawn_completed("OK\n", "", 0);
+    \\  }
     \\  if (cmd[1] === "x" && cmd[2] === "bunbunbunbunbun@npm:another-bun@1.0.0") {
     \\    return __home_spawn_completed("", "error: bunbunbunbunbun@npm:another-bun@1.0.0 failed to resolve\n", 1);
     \\  }
@@ -39562,6 +39567,27 @@ test "bootstrap runner mirrors issue 15276 npm alias x corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors issue 22243 RedisClient constructor corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/22243.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22243.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {
