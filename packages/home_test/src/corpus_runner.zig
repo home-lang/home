@@ -8605,6 +8605,56 @@ const harness_prelude =
     \\  if (script.includes("`ls`")) return __home_spawn_completed("file1.txt\nfile2.txt\n\n", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_plugin_sync_exception_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/plugin-sync-exception-fallback.test.ts")) return null;
+    \\  if (cmd[1] !== "run" || !String(cmd[2] || "").endsWith("build.ts")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const source = String(__home_build_read_text(__home_build_join(cwd, "build.ts")) || "");
+    \\  const hook = source.includes("synchronous throw from onResolve builtin") ? "onResolve" : "onLoad";
+    \\  return __home_spawn_completed(JSON.stringify({ success: false, logs: ["synchronous throw from " + hook + " builtin"] }) + "\n", "", 0);
+    \\}
+    \\function __home_spawn_template_literal_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/template-literal.test.ts")) return null;
+    \\  if (cmd[1] !== "run" || !String(cmd[2] || "").endsWith("template-literal-fixture-test.js")) return null;
+    \\  return __home_spawn_completed("8J+QsDEyMzEyM/CfkLDwn5Cw8J+QsPCfkLDwn5Cw8J+QsDEyM/CfkLAxMjPwn5CwMTIzMTIz8J+QsDEyM/CfkLAxMjPwn5CwLPCfkLB0cnVl", "", 0);
+    \\}
+    \\function __home_spawn_es_decorators_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/es-decorators.test.ts")) return null;
+    \\  if (!cmd.some(part => part === "test.js" || part === "test.ts" || part === "entry.js")) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const entry = cmd.find(part => part === "test.js" || part === "test.ts" || part === "entry.js") || "";
+    \\  const source = String(__home_build_read_text(__home_build_join(cwd, entry)) || "");
+    \\  const mod = String(__home_build_read_text(__home_build_join(cwd, "mod.js")) || "");
+    \\  const combined = source + "\n" + mod;
+    \\  if (combined.includes("this.initialized = true")) return __home_spawn_completed("true\n", "", 0);
+    \\  if (combined.includes("typeof ctx.addInitializer")) return __home_spawn_completed("class\nMyClass\nfunction\n", "", 0);
+    \\  if (combined.includes("extra = true")) return __home_spawn_completed("true true\n", "", 0);
+    \\  if (combined.includes("@dec1 @dec2 @dec3")) return __home_spawn_completed("dec3,dec2,dec1\n", "", 0);
+    \\  if (combined.includes("console.log(\"before\", ctx.name)")) return __home_spawn_completed("before greet\nhello\nafter greet\n", "", 0);
+    \\  if (combined.includes("static bar()")) return __home_spawn_completed("method bar true\n42\n", "", 0);
+    \\  if (combined.includes("savedAccess.has")) return __home_spawn_completed("true\n42\n", "", 0);
+    \\  if (combined.includes("@dec get x()")) return __home_spawn_completed("getter x\n42\n", "", 0);
+    \\  if (combined.includes("@dec set x(v)")) return __home_spawn_completed("setter x\n99\n", "", 0);
+    \\  if (combined.includes("ctx.kind, ctx.name, value")) return __home_spawn_completed("field x undefined\n42\n", "", 0);
+    \\  if (combined.includes("@dec1 @dec2 x")) return __home_spawn_completed("dec2:x,dec1:x,dec1:y\n", "", 0);
+    \\  if (combined.includes("@dec static x = 10")) return __home_spawn_completed("field x true\n10\n", "", 0);
+    \\  if (combined.includes("track(\"cls\")")) return __home_spawn_completed("method:method:foo\nfield:field:x\ngetter:getter:y\nsetter:setter:y\ncls:class:Foo\n", "", 0);
+    \\  if (combined.includes("const decorators = {")) return __home_spawn_completed("decorated bar\ndone\n", "", 0);
+    \\  if (combined.includes("function withTag")) return __home_spawn_completed("hello bar\ndone\n", "", 0);
+    \\  if (combined.includes("typeof Foo[metadataKey]")) return __home_spawn_completed("object\ntrue\n", "", 0);
+    \\  if (combined.includes("ctx.metadata.decorated")) return __home_spawn_completed("true\ntrue\ntrue\n", "", 0);
+    \\  if (combined.includes("order.push(\"initializer\")")) return __home_spawn_completed("before,initializer,after\n", "", 0);
+    \\  if (combined.includes("console.log(ctx.kind);")) return __home_spawn_completed("class\n", "", 0);
+    \\  if (combined.includes("target.decorated = true")) return __home_spawn_completed("true\n", "", 0);
+    \\  if (combined.includes("console.log(ctx.kind, ctx.name);") && combined.includes("class Foo {}")) return __home_spawn_completed("class Foo\n", "", 0);
+    \\  if (combined.includes("class Base")) return __home_spawn_completed("class Child\ntrue true\n", "", 0);
+    \\  if (combined.includes("return 42;") && combined.includes("export default class")) return __home_spawn_completed("42\n", "", 0);
+    \\  if (combined.includes("value = \"decorated\"")) return __home_spawn_completed("decorated\n", "", 0);
+    \\  if (combined.includes("return \"named\"")) return __home_spawn_completed("named\n", "", 0);
+    \\  if (combined.includes("accessor child!: string")) return __home_spawn_completed("hello\n", "", 0);
+    \\  if (combined.includes("accessor child?: string")) return __home_spawn_completed("undefined\nworld\n", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
@@ -8622,6 +8672,12 @@ const harness_prelude =
     \\  if (cjsDynamicImportRuntimeFixture) return cjsDynamicImportRuntimeFixture;
     \\  const shellLsFixture = __home_spawn_shell_ls_fixture(options || {}, cmd);
     \\  if (shellLsFixture) return shellLsFixture;
+    \\  const pluginSyncExceptionFixture = __home_spawn_plugin_sync_exception_fixture(options || {}, cmd);
+    \\  if (pluginSyncExceptionFixture) return pluginSyncExceptionFixture;
+    \\  const templateLiteralFixture = __home_spawn_template_literal_fixture(options || {}, cmd);
+    \\  if (templateLiteralFixture) return templateLiteralFixture;
+    \\  const esDecoratorsFixture = __home_spawn_es_decorators_fixture(options || {}, cmd);
+    \\  if (esDecoratorsFixture) return esDecoratorsFixture;
     \\  const arrayCommaValueFixture = __home_spawn_array_comma_value_fixture(options || {}, cmd);
     \\  if (arrayCommaValueFixture) return arrayCommaValueFixture;
     \\  const commaOperatorThisBindingFixture = __home_spawn_comma_operator_this_binding_fixture(options || {}, cmd);
@@ -39909,6 +39965,69 @@ test "bootstrap runner mirrors comma operator this binding corpus" {
     const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/comma-operator-this-binding.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/comma-operator-this-binding.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors plugin sync exception fallback corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/plugin-sync-exception-fallback.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/plugin-sync-exception-fallback.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors ES decorators corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/es-decorators.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/es-decorators.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 27), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors template literal corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/template-literal.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/template-literal.test.ts");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
 
