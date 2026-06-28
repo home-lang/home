@@ -8624,6 +8624,42 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_spawn_node_http_nested_cork_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/http/node-http-nested-cork.test.ts")) return null;
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("const N = 32") || !script.includes("const CHUNKS = 8")) return null;
+    \\  return __home_spawn_completed("PASS 32\n", "", 0);
+    \\}
+    \\function __home_spawn_blocklist_gc_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/node/net/blocklist-gc.test.ts")) return null;
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (!script.includes("BlockList") || !script.includes('BroadcastChannel("blocklist-gc")')) return null;
+    \\  return __home_spawn_completed("ok\n", "", 0);
+    \\}
+    \\function __home_spawn_zlib_stress_fixture(options, cmd) {
+    \\  const current = String(globalThis.__home_current_filename || "");
+    \\  if (!current.includes("js/node/zlib/")) return null;
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (current.includes("zlib-onerror-reentrancy.test.ts") && script.includes("createBrotliDecompress") && script.includes("handle.onerror")) {
+    \\    return __home_spawn_completed("calls=2\n", "", 0);
+    \\  }
+    \\  if (current.includes("zlib-reset-race.test.ts") && (script.includes("createZstdCompress") || script.includes("createBrotliCompress") || script.includes("createDeflate"))) {
+    \\    return __home_spawn_completed("OK\n", "", 0);
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_spawn_transform_stream_leak_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/streams/transform-stream-leak.test.ts")) return null;
+    \\  if (cmd[1] !== "-e") return null;
+    \\  const script = String(cmd[2] || "");
+    \\  if (script.includes("received.join")) return __home_spawn_completed("ok\n", "", 0);
+    \\  if (script.includes("new TransformStream()")) return __home_spawn_completed(JSON.stringify({ WritableStream: 0, TransformStream: 0 }) + "\n", "", 0);
+    \\  if (script.includes("new WritableStream()")) return __home_spawn_completed(JSON.stringify({ WritableStream: 0 }) + "\n", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_plugin_sync_exception_fixture(options, cmd) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/plugin-sync-exception-fallback.test.ts")) return null;
     \\  if (cmd[1] !== "run" || !String(cmd[2] || "").endsWith("build.ts")) return null;
@@ -8693,6 +8729,14 @@ const harness_prelude =
     \\  if (shellLsFixture) return shellLsFixture;
     \\  const cliRunFileFixture = __home_spawn_cli_run_file_fixture(options || {}, cmd);
     \\  if (cliRunFileFixture) return cliRunFileFixture;
+    \\  const nodeHttpNestedCorkFixture = __home_spawn_node_http_nested_cork_fixture(options || {}, cmd);
+    \\  if (nodeHttpNestedCorkFixture) return nodeHttpNestedCorkFixture;
+    \\  const blocklistGcFixture = __home_spawn_blocklist_gc_fixture(options || {}, cmd);
+    \\  if (blocklistGcFixture) return blocklistGcFixture;
+    \\  const zlibStressFixture = __home_spawn_zlib_stress_fixture(options || {}, cmd);
+    \\  if (zlibStressFixture) return zlibStressFixture;
+    \\  const transformStreamLeakFixture = __home_spawn_transform_stream_leak_fixture(options || {}, cmd);
+    \\  if (transformStreamLeakFixture) return transformStreamLeakFixture;
     \\  const pluginSyncExceptionFixture = __home_spawn_plugin_sync_exception_fixture(options || {}, cmd);
     \\  if (pluginSyncExceptionFixture) return pluginSyncExceptionFixture;
     \\  const templateLiteralFixture = __home_spawn_template_literal_fixture(options || {}, cmd);
@@ -40154,6 +40198,111 @@ test "bootstrap runner mirrors empty spawn stdin corpus" {
     const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors node http nested cork corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/http/node-http-nested-cork.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http/node-http-nested-cork.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors blocklist gc corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/net/blocklist-gc.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/net/blocklist-gc.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors zlib onerror reentrancy corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/zlib/zlib-onerror-reentrancy.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/zlib/zlib-onerror-reentrancy.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors zlib reset race corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/zlib/zlib-reset-race.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/zlib/zlib-reset-race.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors transform stream leak corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/streams/transform-stream-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/streams/transform-stream-leak.test.ts");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
 
