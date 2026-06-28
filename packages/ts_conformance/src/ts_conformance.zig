@@ -360,6 +360,8 @@ fn runnerDirectiveKey(trimmed_line: []const u8) ?[]const u8 {
 fn isRunnerDirectiveKey(key: []const u8) bool {
     return std.ascii.eqlIgnoreCase(key, "allowJs") or
         std.ascii.eqlIgnoreCase(key, "allowSyntheticDefaultImports") or
+        std.ascii.eqlIgnoreCase(key, "allowUnreachableCode") or
+        std.ascii.eqlIgnoreCase(key, "allowUnusedLabels") or
         std.ascii.eqlIgnoreCase(key, "alwaysStrict") or
         std.ascii.eqlIgnoreCase(key, "checkJs") or
         std.ascii.eqlIgnoreCase(key, "customConditions") or
