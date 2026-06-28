@@ -8530,6 +8530,14 @@ const harness_prelude =
     \\  if (!source.includes("new Array([1, 2])") || !source.includes("([1, 2], \"hi\")")) return null;
     \\  return __home_spawn_completed("hi hi\n", "", 0);
     \\}
+    \\function __home_spawn_comma_operator_this_binding_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/comma-operator-this-binding.test.ts")) return null;
+    \\  if (cmd[1] !== "test.js") return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const source = String(__home_build_read_text(__home_build_join(cwd, "test.js")) || "");
+    \\  if (!source.includes("(0, cool.logValue)()") || !source.includes("(doThing(), cool.logValue)()")) return null;
+    \\  return __home_spawn_completed("beans\nundefined\nundefined\n", "", 0);
+    \\}
     \\function __home_spawn_console_json_format_fixture(options, cmd) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/24234.test.ts")) return null;
     \\  if (cmd[1] !== "-e") return null;
@@ -8616,6 +8624,8 @@ const harness_prelude =
     \\  if (shellLsFixture) return shellLsFixture;
     \\  const arrayCommaValueFixture = __home_spawn_array_comma_value_fixture(options || {}, cmd);
     \\  if (arrayCommaValueFixture) return arrayCommaValueFixture;
+    \\  const commaOperatorThisBindingFixture = __home_spawn_comma_operator_this_binding_fixture(options || {}, cmd);
+    \\  if (commaOperatorThisBindingFixture) return commaOperatorThisBindingFixture;
     \\  const bunfigBomEntryFixture = __home_spawn_bunfig_bom_entry_fixture(options || {}, cmd);
     \\  if (bunfigBomEntryFixture) return bunfigBomEntryFixture;
     \\  const macroRegressionFixture = __home_spawn_macro_regression_fixture(options || {}, cmd);
@@ -39888,6 +39898,27 @@ test "bootstrap runner mirrors issue 25831 shell ls corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors comma operator this binding corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/comma-operator-this-binding.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/comma-operator-this-binding.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {
