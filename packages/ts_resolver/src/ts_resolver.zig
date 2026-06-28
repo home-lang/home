@@ -1104,6 +1104,12 @@ pub const Resolver = struct {
             candidates: []const []const u8,
         };
         const substitution: Substitution = blk: {
+            if (std.mem.endsWith(u8, path, ".d.ts"))
+                break :blk .{ .stem = path[0 .. path.len - ".d.ts".len], .candidates = &.{ ".ts", ".tsx", ".d.ts" } };
+            if (std.mem.endsWith(u8, path, ".d.mts"))
+                break :blk .{ .stem = path[0 .. path.len - ".d.mts".len], .candidates = &.{ ".mts", ".d.mts" } };
+            if (std.mem.endsWith(u8, path, ".d.cts"))
+                break :blk .{ .stem = path[0 .. path.len - ".d.cts".len], .candidates = &.{ ".cts", ".d.cts" } };
             if (std.mem.endsWith(u8, path, ".ts") and !std.mem.endsWith(u8, path, ".d.ts"))
                 break :blk .{ .stem = path[0 .. path.len - ".ts".len], .candidates = &.{ ".tsx", ".d.ts" } };
             if (std.mem.endsWith(u8, path, ".tsx"))
@@ -3663,6 +3669,19 @@ test "Resolver: explicit extension match" {
     defer r.deinit();
     const res = try r.resolve("./foo.ts", "/proj/main.ts");
     try T.expectEqualStrings("/proj/foo.ts", res.path);
+}
+
+test "Resolver: explicit declaration extension can resolve source implementation" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/foo.ts", "");
+    try vfs.addFile("/proj/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("./foo.d.ts", "/proj/main.ts");
+    try T.expectEqualStrings("/proj/foo.ts", res.path);
+    try T.expect(!res.is_declaration);
 }
 
 test "Resolver: relative emitted js specifier maps to ts source input" {
