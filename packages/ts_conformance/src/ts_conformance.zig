@@ -322,7 +322,7 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
         {}
         if (name_end == 0) break;
         const key = body[0..name_end];
-        if (std.mem.startsWith(u8, key, "ts-")) break;
+        if (!isRunnerDirectiveKey(key)) break;
         const rest = body[name_end..];
         if (rest.len > 0 and rest[0] != ':' and !std.ascii.isWhitespace(rest[0])) break;
         // Promote any pending blank lines into the strip count once we
@@ -351,10 +351,56 @@ fn runnerDirectiveKey(trimmed_line: []const u8) ?[]const u8 {
     {}
     if (name_end == 0) return null;
     const key = body[0..name_end];
-    if (std.mem.startsWith(u8, key, "ts-")) return null;
+    if (!isRunnerDirectiveKey(key)) return null;
     const rest = body[name_end..];
     if (rest.len > 0 and rest[0] != ':' and !std.ascii.isWhitespace(rest[0])) return null;
     return key;
+}
+
+fn isRunnerDirectiveKey(key: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(key, "allowJs") or
+        std.ascii.eqlIgnoreCase(key, "allowSyntheticDefaultImports") or
+        std.ascii.eqlIgnoreCase(key, "alwaysStrict") or
+        std.ascii.eqlIgnoreCase(key, "checkJs") or
+        std.ascii.eqlIgnoreCase(key, "customConditions") or
+        std.ascii.eqlIgnoreCase(key, "declaration") or
+        std.ascii.eqlIgnoreCase(key, "esModuleInterop") or
+        std.ascii.eqlIgnoreCase(key, "experimentalDecorators") or
+        std.ascii.eqlIgnoreCase(key, "exactOptionalPropertyTypes") or
+        std.ascii.eqlIgnoreCase(key, "filename") or
+        std.ascii.eqlIgnoreCase(key, "importHelpers") or
+        std.ascii.eqlIgnoreCase(key, "isolatedDeclarations") or
+        std.ascii.eqlIgnoreCase(key, "isolatedModules") or
+        std.ascii.eqlIgnoreCase(key, "jsx") or
+        std.ascii.eqlIgnoreCase(key, "jsxFactory") or
+        std.ascii.eqlIgnoreCase(key, "jsxFragmentFactory") or
+        std.ascii.eqlIgnoreCase(key, "jsxImportSource") or
+        std.ascii.eqlIgnoreCase(key, "lib") or
+        std.ascii.eqlIgnoreCase(key, "module") or
+        std.ascii.eqlIgnoreCase(key, "moduleResolution") or
+        std.ascii.eqlIgnoreCase(key, "noEmit") or
+        std.ascii.eqlIgnoreCase(key, "noFallthroughCasesInSwitch") or
+        std.ascii.eqlIgnoreCase(key, "noImplicitAny") or
+        std.ascii.eqlIgnoreCase(key, "noImplicitOverride") or
+        std.ascii.eqlIgnoreCase(key, "noImplicitReturns") or
+        std.ascii.eqlIgnoreCase(key, "noPropertyAccessFromIndexSignature") or
+        std.ascii.eqlIgnoreCase(key, "noUncheckedIndexedAccess") or
+        std.ascii.eqlIgnoreCase(key, "noUnusedLocals") or
+        std.ascii.eqlIgnoreCase(key, "noUnusedParameters") or
+        std.ascii.eqlIgnoreCase(key, "outDir") or
+        std.ascii.eqlIgnoreCase(key, "resolveJsonModule") or
+        std.ascii.eqlIgnoreCase(key, "resolvePackageJsonExports") or
+        std.ascii.eqlIgnoreCase(key, "resolvePackageJsonImports") or
+        std.ascii.eqlIgnoreCase(key, "rootDir") or
+        std.ascii.eqlIgnoreCase(key, "skipLibCheck") or
+        std.ascii.eqlIgnoreCase(key, "strict") or
+        std.ascii.eqlIgnoreCase(key, "strictFunctionTypes") or
+        std.ascii.eqlIgnoreCase(key, "strictNullChecks") or
+        std.ascii.eqlIgnoreCase(key, "strictPropertyInitialization") or
+        std.ascii.eqlIgnoreCase(key, "target") or
+        std.ascii.eqlIgnoreCase(key, "types") or
+        std.ascii.eqlIgnoreCase(key, "useUnknownInCatchVariables") or
+        std.ascii.eqlIgnoreCase(key, "verbatimModuleSyntax");
 }
 
 fn countLeadingDirectiveCommentLines(source: []const u8) u32 {
@@ -54850,6 +54896,18 @@ test "conformance: baselineDirectiveOffsetBeforeLine strips later runner directi
     ;
     try T.expectEqual(@as(u32, 1), countLeadingDirectiveLines(banner_shape));
     try T.expectEqual(@as(u32, 1), baselineDirectiveOffsetBeforeLine(banner_shape, 4));
+
+    const ordinary_at_comment_shape =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\let before = 1;
+        \\// @todo: this is documentation, not a runner directive
+        \\// @reference: https://example.test/
+        \\let after = before;
+    ;
+    try T.expectEqual(@as(u32, 3), countLeadingDirectiveLines(ordinary_at_comment_shape));
+    try T.expectEqual(@as(u32, 3), baselineDirectiveOffsetBeforeLine(ordinary_at_comment_shape, 7));
 }
 
 test "conformance: directiveTargetDeprecated detects es3 / es5 targets" {
