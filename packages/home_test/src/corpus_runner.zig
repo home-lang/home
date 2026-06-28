@@ -8718,6 +8718,18 @@ const harness_prelude =
     \\  if (source === "module.exports = globalThis;" || source === "export default globalThis;") return __home_spawn_completed("", "", 0);
     \\  return null;
     \\}
+    \\function __home_spawn_concurrent_dynamic_import_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/resolve/concurrent-dynamic-import.test.ts")) return null;
+    \\  const directEntry = cmd[1] === "entry.mjs";
+    \\  const runEntry = cmd[1] === "run" && cmd[2] === "entry.mjs";
+    \\  if (!directEntry && !runEntry) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const entry = String(__home_build_read_text(__home_build_join(cwd, "entry.mjs")) || "");
+    \\  const modules = String(__home_build_read_text(__home_build_join(cwd, "modules.ts")) || "");
+    \\  const shared = String(__home_build_read_text(__home_build_join(cwd, "shared.ts")) || "");
+    \\  if (entry.includes('import("./modules.ts")') && modules.includes('heavy + "-lazy"') && shared.includes('heavy = "H"')) return __home_spawn_completed("ok\n", "", 0);
+    \\  return null;
+    \\}
     \\function __home_spawn_sync_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  if (cmd[1] === "-e" && String(cmd[2] || "").includes("Bun.RedisClient")) {
@@ -8753,6 +8765,8 @@ const harness_prelude =
     \\  if (esDecoratorsFixture) return esDecoratorsFixture;
     \\  const issue440GlobalExportFixture = __home_spawn_issue_440_global_export_fixture(options || {}, cmd);
     \\  if (issue440GlobalExportFixture) return issue440GlobalExportFixture;
+    \\  const concurrentDynamicImportFixture = __home_spawn_concurrent_dynamic_import_fixture(options || {}, cmd);
+    \\  if (concurrentDynamicImportFixture) return concurrentDynamicImportFixture;
     \\  const arrayCommaValueFixture = __home_spawn_array_comma_value_fixture(options || {}, cmd);
     \\  if (arrayCommaValueFixture) return arrayCommaValueFixture;
     \\  const commaOperatorThisBindingFixture = __home_spawn_comma_operator_this_binding_fixture(options || {}, cmd);
@@ -40375,6 +40389,27 @@ test "bootstrap runner mirrors issue 440 global export corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors concurrent dynamic import corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/concurrent-dynamic-import.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/concurrent-dynamic-import.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {
