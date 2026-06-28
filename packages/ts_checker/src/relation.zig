@@ -441,6 +441,25 @@ pub const Engine = struct {
         return if (elem != Primitive.none) elem else param;
     }
 
+    const SignatureParamPosition = struct {
+        ty: TypeId,
+        physical_index: usize,
+    };
+
+    fn signatureParamAtComparePosition(
+        self: *Engine,
+        sig: TypeId,
+        params: []const TypeId,
+        index: usize,
+        rest_tuple_expanded: bool,
+    ) ?SignatureParamPosition {
+        if (index < params.len) return .{ .ty = params[index], .physical_index = index };
+        if (rest_tuple_expanded or params.len == 0) return null;
+        const rs = self.rest_signatures orelse return null;
+        if (!rs.contains(sig)) return null;
+        return .{ .ty = params[params.len - 1], .physical_index = params.len - 1 };
+    }
+
     fn typeContainsTypeParameter(self: *Engine, t: TypeId) bool {
         if (t >= self.pool().typeCount()) return false;
         const flags = self.pool().flagsOf(t);
@@ -1547,15 +1566,18 @@ pub const Engine = struct {
         const reject_target_type_parameter = self.typeContainsTypeParameter(source) and
             self.typeContainsTypeParameter(target);
 
-        const compare_len = @min(sp.len, tp.len);
-        for (sp[0..compare_len], 0..) |s_param_raw, i| {
+        const compare_len = @max(sp.len, tp.len);
+        var i: usize = 0;
+        while (i < compare_len) : (i += 1) {
+            const s_pos = self.signatureParamAtComparePosition(source, sp, i, source_rest_tuple_expanded) orelse continue;
+            const t_pos = self.signatureParamAtComparePosition(target, tp, i, target_rest_tuple_expanded) orelse continue;
             // A malformed signature can carry an out-of-range parameter
             // TypeId (e.g. a partially-lowered nested generic construct
             // signature); recover to `unknown` rather than indexing the
             // type pool out of bounds, matching `substituteTpDeep`'s
             // `validOrUnknown` idiom above.
-            const s_param = self.validOrUnknown(s_param_raw);
-            const t_param = self.validOrUnknown(tp[i]);
+            const s_param = self.validOrUnknown(s_pos.ty);
+            const t_param = self.validOrUnknown(t_pos.ty);
             const sf = self.pool().flagsOf(s_param);
             const tf = self.pool().flagsOf(t_param);
             // Contextually instantiate a generic source callback
@@ -1591,18 +1613,17 @@ pub const Engine = struct {
             }
             const t_param_ctx_raw = try self.substituteTpDeep(t_param, tp_map_buf[0..tp_map_len]);
             const s_param_cmp = if (!source_rest_tuple_expanded)
-                self.restArrayElementParam(source, sp, i, s_param_ctx)
+                self.restArrayElementParam(source, sp, s_pos.physical_index, s_param_ctx)
             else
                 s_param_ctx;
             const t_param_cmp = if (!target_rest_tuple_expanded)
-                self.restArrayElementParam(target, tp, i, t_param_ctx_raw)
+                self.restArrayElementParam(target, tp, t_pos.physical_index, t_param_ctx_raw)
             else
                 t_param_ctx_raw;
             const comparing_rest_array_elements = !source_rest_tuple_expanded and
                 !target_rest_tuple_expanded and
-                i + 1 == compare_len and
-                ((self.rest_signatures != null and self.rest_signatures.?.contains(source)) or
-                    (self.rest_signatures != null and self.rest_signatures.?.contains(target)));
+                ((self.rest_signatures != null and self.rest_signatures.?.contains(source) and s_pos.physical_index + 1 == sp.len) or
+                    (self.rest_signatures != null and self.rest_signatures.?.contains(target) and t_pos.physical_index + 1 == tp.len));
             const reject_param_inference = reject_target_type_parameter and comparing_rest_array_elements;
             // Strict mode: target's param must be assignable to
             // source's (contravariant). Non-strict: bivariant —
@@ -2775,6 +2796,39 @@ test "Engine: structural object — function properties stay strict under strict
     const tgt = try ti.internObjectType(&.{
         .{ .name = compare, .type = animal_sig, .is_optional = false, .is_readonly = false, .is_method = false },
     });
+    try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: constructor signature with required parameter is not assignable to zero-arg target" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+
+    const src = try ti.internSignature(&.{Primitive.number_t}, Primitive.number_t, true);
+    const tgt = try ti.internSignature(&.{}, Primitive.number_t, true);
+    try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: rest signature assignment compares array element types" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const number_array = try ti.internArrayType(&sint, Primitive.number_t);
+    const string_array = try ti.internArrayType(&sint, Primitive.string_t);
+    const src = try ti.internSignature(&.{string_array}, Primitive.number_t, false);
+    const tgt = try ti.internSignature(&.{number_array}, Primitive.number_t, false);
+    var rest: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest.deinit(T.allocator);
+    try rest.put(T.allocator, src, {});
+    try rest.put(T.allocator, tgt, {});
+    e.setRestSignatures(&rest);
+
     try T.expect(!try e.isAssignableTo(src, tgt));
 }
 
