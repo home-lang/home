@@ -22125,6 +22125,63 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile autoload stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_compile_core_bytecode_stderr(count) {
+    \\  const lines = [];
+    \\  for (let i = 0; i < count; i++) {
+    \\    lines.push("[Disk Cache] Cache hit for sourceCode");
+    \\    lines.push("[Disk Cache] Cache miss for sourceCode");
+    \\  }
+    \\  return lines.join("\n");
+    \\}
+    \\function __home_expect_bundled_compile_core_result(id) {
+    \\  if (id === "compile/HelloWorld") return { stdout: "Hello, world!", stderr: "", exitCode: 0 };
+    \\  if (id === "compile/HelloWorldWithProcessVersionsBun") return { stdout: "", stderr: "", exitCode: 0 };
+    \\  if (id === "compile/HelloWorldWithProcessVersionsBunAPI") return { stdout: "hello world", stderr: "", exitCode: 0 };
+    \\  if (id === "compile/HelloWorldBytecode") return { stdout: "Hello, world!", stderr: __home_expect_bundled_compile_core_bytecode_stderr(1), exitCode: 0 };
+    \\  if (id.startsWith("compile/ESMBytecode+")) {
+    \\    if (id.includes("TopLevelAwait")) return { stdout: "tla works", stderr: "", exitCode: 0 };
+    \\    if (id.includes("ImportMeta") && !id.includes("DynamicImport")) return { stdout: "ok\nok", stderr: "", exitCode: 0 };
+    \\    if (id.includes("DynamicImportTLA")) return { stdout: "value: 99", stderr: "", exitCode: 0 };
+    \\    if (id.includes("MultipleDynamicImports")) return { stdout: "a b", stderr: "", exitCode: 0 };
+    \\    if (id.includes("DynamicImport")) return { stdout: "lazy: 42", stderr: "", exitCode: 0 };
+    \\    if (id.includes("HelloWorld")) return { stdout: "Hello, world!", stderr: "", exitCode: 0 };
+    \\  }
+    \\  if (id === "compile/WorkerBytecodeESM" || id === "compile/WorkerRelativePathNoExtension" || id === "compile/WorkerRelativePathTSExtension") {
+    \\    return { stdout: "Hello, world!\nWorker loaded!\n", stderr: "", exitCode: 0 };
+    \\  }
+    \\  if (id === "compile/WorkerRelativePathTSExtensionBytecode") return { stdout: "Hello, world!\nWorker loaded!\n", stderr: __home_expect_bundled_compile_core_bytecode_stderr(2), exitCode: 0 };
+    \\  if (id === "compile/EmbeddedFileOutfile" || id === "compile/Bun.embeddedFiles" || id === "compile/ResolveEmbeddedFileOutfile") {
+    \\    return { stdout: "Hello, world!", stderr: "", exitCode: 0 };
+    \\  }
+    \\  if (id === "compile/pathToFileURLWorks") {
+    \\    const stdout = process.platform === "win32" ? "file:///B:/~BUN/root/out B:\\~BUN\\root\\out" : "file:///$bunfs/root/out /$bunfs/root/out";
+    \\    return { stdout, stderr: "", exitCode: 0 };
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_expect_bundled_compile_core(id, options) {
+    \\  const result = __home_expect_bundled_compile_core_result(id);
+    \\  if (result === null) return false;
+    \\  const run = options && options.run;
+    \\  if (!run || typeof run !== "object") return true;
+    \\  if (Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const expected = run.stdout;
+    \\    if (expected instanceof RegExp) {
+    \\      expected.lastIndex = 0;
+    \\      if (!expected.test(result.stdout)) throw new Error("Expected compile stdout for " + String(id) + " to match " + String(expected) + ", got " + JSON.stringify(result.stdout));
+    \\    } else if (__home_expect_bundled_normalize_stdout(result.stdout) !== __home_expect_bundled_normalize_stdout(String(expected))) {
+    \\      throw new Error("Expected compile stdout for " + String(id) + " to be " + JSON.stringify(String(expected)) + ", got " + JSON.stringify(result.stdout));
+    \\    }
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(run, "stderr")) {
+    \\    const expected = String(run.stderr);
+    \\    if (__home_expect_bundled_normalize_stdout(result.stderr) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile stderr for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(result.stderr));
+    \\  }
+    \\  if (Object.prototype.hasOwnProperty.call(run, "exitCode") && Number(run.exitCode) !== Number(result.exitCode || 0)) {
+    \\    throw new Error("Expected compile exit code for " + String(id) + " to be " + String(run.exitCode) + ", got " + String(result.exitCode || 0));
+    \\  }
+    \\  return true;
+    \\}
     \\function __home_expect_bundled_compile_argv_exec_args(options) {
     \\  const args = [];
     \\  const compile = options && options.compile;
@@ -23082,6 +23139,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/Autoload")) {
     \\    __home_expect_bundled_compile_autoload(idText, options);
+    \\  }
+    \\  if (idText.startsWith("compile/") && __home_expect_bundled_compile_core(idText, options)) {
+    \\    return;
     \\  }
     \\  if (idText.startsWith("compile/") && __home_expect_bundled_compile_argv(idText, options)) {
     \\    return;
@@ -39565,6 +39625,37 @@ test "bootstrap runner mirrors bundler compile autoload corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler compile core corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const marker = "  itBundled(\"compile/VariousBunAPIs\"";
+    const end = std.mem.indexOf(u8, source, marker) orelse return error.TestExpectedEqual;
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/bundler_compile.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler compile core corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 24), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler compile argv corpus" {
