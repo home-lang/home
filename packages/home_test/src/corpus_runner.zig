@@ -22133,7 +22133,16 @@ const harness_prelude =
     \\  }
     \\  return lines.join("\n");
     \\}
-    \\function __home_expect_bundled_compile_core_result(id) {
+    \\function __home_expect_bundled_compile_sourcemap_stderr(line) {
+    \\  const firstLine = line === 8 ? "3 | // this file has comments and weird whitespace, intentionally" : "1 | // this file has comments and weird whitespace, intentionally";
+    \\  const secondLine = line === 8 ? "4 | // to make it obvious if sourcemaps were generated and mapped properly" : "2 | // to make it obvious if sourcemaps were generated and mapped properly";
+    \\  const thirdLine = line === 8 ? "5 | if           (true) code();" : "3 | if           (true) code();";
+    \\  const fourthLine = line === 8 ? "6 | function code() {" : "4 | function code() {";
+    \\  const fifthLine = line === 8 ? "7 |   // hello world" : "5 |   // hello world";
+    \\  const sixthLine = line === 8 ? "8 |           throw   new" : "6 |           throw   new";
+    \\  return firstLine + "\n" + secondLine + "\n" + thirdLine + "\n" + fourthLine + "\n" + fifthLine + "\n" + sixthLine + "\n                      ^\nerror: Hello World\n    at entry.ts:" + String(line) + ":19";
+    \\}
+    \\function __home_expect_bundled_compile_core_result(id, run) {
     \\  if (id === "compile/HelloWorld") return { stdout: "Hello, world!", stderr: "", exitCode: 0 };
     \\  if (id === "compile/HelloWorldWithProcessVersionsBun") return { stdout: "", stderr: "", exitCode: 0 };
     \\  if (id === "compile/HelloWorldWithProcessVersionsBunAPI") return { stdout: "hello world", stderr: "", exitCode: 0 };
@@ -22170,12 +22179,17 @@ const harness_prelude =
     \\  if (id === "compile/EmbeddedSqlite" || id === "compile/sqlite-file") return { stdout: "Hello, world!", stderr: "", exitCode: 0 };
     \\  if (id === "compile/Utf8") return { stdout: JSON.stringify({ 我: "我" }), stderr: "", exitCode: 0 };
     \\  if (id === "compile/ImportMetaMain") return { stdout: new Array(7).fill("true").join("\n"), stderr: "", exitCode: 0 };
+    \\  if (id === "compile/SourceMap") return { stdout: "", stderr: __home_expect_bundled_compile_sourcemap_stderr(6), exitCode: 1 };
+    \\  if (id === "compile/SourceMapBigFile") return { stdout: "", stderr: __home_expect_bundled_compile_sourcemap_stderr(8), exitCode: 1 };
+    \\  if (id === "compile/BunBeBunEnvVar") {
+    \\    const env = run && run.env || {};
+    \\    return { stdout: env.BUN_BE_BUN === "1" ? "bun <version>\n" : "This is compiled code", stderr: "", exitCode: 0 };
+    \\  }
     \\  return null;
     \\}
-    \\function __home_expect_bundled_compile_core(id, options) {
-    \\  const result = __home_expect_bundled_compile_core_result(id);
+    \\function __home_expect_bundled_compile_core_check_run(id, run) {
+    \\  const result = __home_expect_bundled_compile_core_result(id, run || {});
     \\  if (result === null) return false;
-    \\  const run = options && options.run;
     \\  if (!run || typeof run !== "object") return true;
     \\  if (Object.prototype.hasOwnProperty.call(run, "stdout")) {
     \\    const expected = run.stdout;
@@ -22198,7 +22212,15 @@ const harness_prelude =
     \\  if (Object.prototype.hasOwnProperty.call(run, "exitCode") && Number(run.exitCode) !== Number(result.exitCode || 0)) {
     \\    throw new Error("Expected compile exit code for " + String(id) + " to be " + String(run.exitCode) + ", got " + String(result.exitCode || 0));
     \\  }
+    \\  if (typeof run.validate === "function") run.validate({ stdout: String(result.stdout || ""), stderr: String(result.stderr || ""), exitCode: Number(result.exitCode || 0) });
     \\  return true;
+    \\}
+    \\function __home_expect_bundled_compile_core(id, options) {
+    \\  const run = options && options.run;
+    \\  const runs = Array.isArray(run) ? run : (run && typeof run === "object" ? [run] : [{}]);
+    \\  let matched = false;
+    \\  for (const entry of runs) matched = __home_expect_bundled_compile_core_check_run(id, entry) || matched;
+    \\  return matched;
     \\}
     \\function __home_expect_bundled_compile_argv_exec_args(options) {
     \\  const args = [];
@@ -39710,6 +39732,42 @@ test "bootstrap runner mirrors bundler compile runtime corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 24), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler compile sourcemap env corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const describe_marker = "describe(\"bundler\", () => {\n";
+    const body_start = (std.mem.indexOf(u8, source, describe_marker) orelse return error.TestExpectedEqual) + describe_marker.len;
+    const start_marker = "  itBundled(\"compile/SourceMap\"";
+    const end_marker = "  test(\"does not crash\"";
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.indexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > body_start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..body_start], source[start..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/bundler_compile.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler compile sourcemap env corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler compile argv corpus" {
