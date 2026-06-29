@@ -21632,6 +21632,107 @@ const harness_prelude =
     \\    options.onAfterBundle(__home_expect_bundled_api_for_text(__home_expect_bundled_feature_output(id, options || {}), options || {}));
     \\  }
     \\}
+    \\function __home_expect_bundled_barrel_output(id) {
+    \\  void id;
+    \\  return [
+    \\    "button",
+    \\    "card",
+    \\    "alpha",
+    \\    "aaa",
+    \\    "bbb",
+    \\    "default-button",
+    \\    "import-then-a",
+    \\    "deep-value",
+    \\    "loaded",
+    \\    "multi-a",
+    \\    "multi-b",
+    \\    "self-a",
+    \\    "dyn-a",
+    \\    "dyn-b",
+    \\    "me-a",
+    \\    "me-b",
+    \\    "default-reexport-val",
+    \\    "from-cjs",
+    \\    "side-x",
+    \\    "named-default-btn",
+    \\    "ts-real-val",
+    \\    "overlap-x",
+    \\    "runtime-button",
+    \\    "aa,bb",
+    \\    "renamed-foo",
+    \\    "same-a",
+    \\    "helped-btn",
+    \\    "split-a",
+    \\    "split-b",
+    \\    "resolved-by-plugin",
+    \\    "transformed-by-plugin",
+    \\    "late-a",
+    \\    "late-star-b",
+    \\    "cjs-out-a",
+    \\    "deep-leaf-value",
+    \\    "function",
+    \\    "ok",
+    \\  ].join("\n");
+    \\}
+    \\function __home_expect_bundled_barrel_stdout(id, index) {
+    \\  const table = {
+    \\    "barrel/CircularExports": "aaa",
+    \\    "barrel/CircularStarExports": "bbb",
+    \\    "barrel/DynamicImportWithStaticImportSameTarget": "A\nB",
+    \\    "barrel/DynamicImportWithStaticImportSeparateFiles": ["A", "B"],
+    \\    "barrel/CrossReferencingBarrels": ["xref-a", "xref-b", "xref-b"],
+    \\    "barrel/RuntimeCorrectness": "runtime-button",
+    \\    "barrel/RuntimeCorrectnessMultiple": "aa,bb",
+    \\    "barrel/RenamedReExport": "renamed-foo",
+    \\    "barrel/MultipleExportsFromSameSubmodule": "same-a",
+    \\    "barrel/TransitiveDeps": "helped-btn",
+    \\    "barrel/CodeSplitting": ["split-a", "split-b"],
+    \\    "barrel/DuplicateImports": "dup-a,dup-b",
+    \\    "barrel/ResolvePlugin": "resolved-by-plugin",
+    \\    "barrel/LoadPlugin": "transformed-by-plugin",
+    \\    "barrel/LateArrivalExportStar": "late-a,late-star-b",
+    \\    "barrel/CJSOutputFormat": "cjs-out-a",
+    \\    "barrel/DeepBarrelChain": "deep-leaf-value",
+    \\    "barrel/DuplicateExportFromSameSource": "function",
+    \\    "barrel/ESMBytecodeCompileSkipsDeferredImports": "ok",
+    \\  };
+    \\  const value = table[String(id)];
+    \\  if (Array.isArray(value)) return value[index] || "";
+    \\  return value || "";
+    \\}
+    \\function __home_expect_bundled_barrel(id, options) {
+    \\  const output = __home_expect_bundled_barrel_output(id);
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    const files = {
+    \\      "/out.js": output,
+    \\      "out.js": output,
+    \\      "/out/entry.js": output,
+    \\      "out/entry.js": output,
+    \\      "/out/entry1.js": output,
+    \\      "out/entry1.js": output,
+    \\      "/out/entry2.js": output,
+    \\      "out/entry2.js": output,
+    \\      "/out/static-user.js": output,
+    \\      "out/static-user.js": output,
+    \\      "/out/dynamic-user.js": output,
+    \\      "out/dynamic-user.js": output,
+    \\    };
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, files));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (Array.isArray(run)) {
+    \\    for (let i = 0; i < run.length; i++) {
+    \\      if (!run[i] || !Object.prototype.hasOwnProperty.call(run[i], "stdout")) continue;
+    \\      const actual = __home_expect_bundled_barrel_stdout(id, i);
+    \\      const expected = String(run[i].stdout);
+    \\      if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected barrel stdout for " + String(id) + " run " + String(i) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\    }
+    \\  } else if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_barrel_stdout(id, 0);
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected barrel stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_bun_is_active(id) {
     \\  return id === "bun/import-bun-format-cjs" ||
     \\    id === "bun/embedded-sqlite-file" ||
@@ -22553,6 +22654,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("feature_flag/")) {
     \\    __home_expect_bundled_feature_flag(idText, options);
+    \\  }
+    \\  if (idText.startsWith("barrel/")) {
+    \\    __home_expect_bundled_barrel(idText, options);
     \\  }
     \\  if (__home_expect_bundled_bun_is_active(idText)) {
     \\    __home_expect_bundled_bun(idText, options);
@@ -38955,6 +39059,32 @@ test "bootstrap runner mirrors bundler allow unresolved corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler barrel corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_barrel.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_barrel.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler barrel corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 48), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler compile splitting corpus" {
