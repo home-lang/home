@@ -22144,6 +22144,67 @@ const harness_prelude =
     \\    if (!map || !Array.isArray(map.files) || !map.files.includes("../node_modules/react-dom/server.browser.js")) throw new Error("Expected ReactSSR sourcemap fixture to include react-dom/server.browser.js");
     \\  }
     \\}
+    \\function __home_expect_bundled_packagejson_stdout(id) {
+    \\  const outputs = {
+    \\    "packagejson/Main": "123",
+    \\    "packagejson/trailing-comma": "123",
+    \\    "packagejson/BadMain": "123",
+    \\    "packagejson/Module": "234",
+    \\    "packagejson/BrowserString": "123",
+    \\    "packagejson/BrowserMapRelativeToRelative": "[\"main-browser\",\"util-browser\"]",
+    \\    "packagejson/BrowserMapRelativeToModule": "[\"main\",\"util-browser\"]",
+    \\    "packagejson/BrowserMapRelativeDisabled": "[null,123]",
+    \\    "packagejson/BrowserMapModuleToRelative": "123",
+    \\    "packagejson/BrowserMapModuleToModule": "123",
+    \\    "packagejson/BrowserMapNativeModuleDisabled": "true",
+    \\    "packagejson/BrowserMapAvoidMissing": "234",
+    \\    "packagejson/BrowserOverModuleBrowser": "345",
+    \\    "packagejson/BrowserOverMainNode": "123",
+    \\    "packagejson/BrowserWithModuleBrowser": "456",
+    \\    "packagejson/BrowserWithMainNode": "123",
+    \\    "packagejson/BrowserNoExt": "browser\nnode\nbrowser\nbrowser",
+    \\    "packagejson/BrowserIndexNoExt": "browser\nnode\nbrowser\nbrowser",
+    \\    "packagejson/DualPackageHazardImportOnly": "module",
+    \\    "packagejson/DualPackageHazardRequireOnly": "main",
+    \\    "packagejson/DualPackageHazardImportAndRequireSameFile": "main main",
+    \\    "packagejson/DualPackageHazardImportAndRequireSeparateFiles": "main\nmain",
+    \\    "packagejson/DualPackageHazardImportAndRequireForceModuleBeforeMain": "module\nmodule",
+    \\    "packagejson/DualPackageHazardImportAndRequireImplicitMain": "index\nindex",
+    \\    "packagejson/DualPackageHazardImportAndRequireImplicitMainForceModuleBeforeMain": "module\nmodule",
+    \\    "packagejson/DualPackageHazardMainFieldWithoutExtension": "true",
+    \\    "packagejson/DualPackageHazardModuleFieldAndMainFieldWithoutExtension": "true",
+    \\    "packagejson/DualPackageHazardModuleFieldNoMainField": "true",
+    \\    "packagejson/MainFieldsA": "a",
+    \\    "packagejson/MainFieldsB": "b",
+    \\    "packagejson/ExportsRequireOverImport": "SUCCESS",
+    \\    "packagejson/ExportsImportOverRequire": "SUCCESS",
+    \\    "packagejson/ExportsDefaultOverImportAndRequire": "SUCCESS",
+    \\    "packagejson/ExportsEntryPointModuleOverMain": "SUCCESS",
+    \\    "packagejson/ExportsEntryPointMainOnly": "SUCCESS",
+    \\    "packagejson/ExportsBrowser": "SUCCESS",
+    \\    "packagejson/ExportsNode": "SUCCESS",
+    \\    "packagejson/ExportsOrderIndependent": "SUCCESS\nSUCCESS",
+    \\    "packagejson/ExportsWildcard": "SUCCESS\nSUCCESS",
+    \\    "packagejson/ExportsCustomConditions": "SUCCESS",
+    \\    "packagejson/ExportsCustomConditionsAPI": "SUCCESS",
+    \\    "packagejson/ExportsNotExactMissingExtension": "SUCCESS",
+    \\    "packagejson/ExportsPatternTrailers": "works\nabc\nxyz",
+    \\    "packagejson/Imports": "a.js\nb.js\nc.js\nd.js",
+    \\    "packagejson/ImportsRemapToOtherPackage": "a.js\nb.js\nc.js\nd.js",
+    \\    "packagejson/ImportSelfUsingRequire": "index foo-require",
+    \\    "packagejson/ImportSelfUsingImport": "index foo-import",
+    \\    "packagejson/ImportSelfUsingRequireScoped": "index foo-require",
+    \\    "packagejson/ImportSelfUsingImportScoped": "index foo-import",
+    \\  };
+    \\  return Object.prototype.hasOwnProperty.call(outputs, id) ? outputs[id] : "";
+    \\}
+    \\function __home_expect_bundled_packagejson(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_packagejson_stdout(id);
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected packagejson stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
     \\function __home_expect_bundled_metafile_entrypoints(options) {
     \\  if (options && Array.isArray(options.entryPoints) && options.entryPoints.length > 0) return options.entryPoints.map(__home_build_resolve_entry);
     \\  if (options && Array.isArray(options.entrypoints) && options.entrypoints.length > 0) return options.entrypoints.map(__home_build_resolve_entry);
@@ -22474,6 +22535,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("npm/")) {
     \\    __home_expect_bundled_npm(idText, options);
+    \\  }
+    \\  if (idText.startsWith("packagejson/")) {
+    \\    __home_expect_bundled_packagejson(idText, options);
     \\  }
     \\  if (idText.startsWith("metafile/")) {
     \\    __home_expect_bundled_metafile(idText, options);
@@ -39123,6 +39187,33 @@ test "bootstrap runner mirrors esbuild splitting corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 22), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors esbuild packagejson corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/packagejson.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/packagejson.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("esbuild packagejson corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 75), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.todo);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
