@@ -38494,6 +38494,145 @@ test "bootstrap runner mirrors transpiler scan and parser corpus" {
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler jsx cjs scanImports corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  const transpiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    define: {
+        \\      "process.env.NODE_ENV": JSON.stringify("development"),
+        \\    },
+        \\    platform: "browser",
+        \\  });
+        \\
+        \\  const code = `import { useParams } from "remix";
+        \\  import type { LoaderFunction, ActionFunction } from "remix";
+        \\  import { type xx } from 'mod';
+        \\  import { type xx as yy } from 'mod';
+        \\  import { type 'xx' as yy } from 'mod';
+        \\  import { type if as yy } from 'mod';
+        \\  import React, { type ReactNode, Component as Romponent, Component } from 'react';
+        \\
+        \\  export const loader: LoaderFunction = async ({
+        \\    params
+        \\  }) => {
+        \\    console.log(params.postId);
+        \\  };
+        \\
+        \\  export const action: ActionFunction = async ({
+        \\    params
+        \\  }) => {
+        \\    console.log(params.postId);
+        \\  };
+        \\
+        \\  export default function PostRoute() {
+        \\    const params = useParams();
+        \\    console.log(params.postId);
+        \\  }
+        \\  `;
+        \\
+        \\  it("JSX spread children", () => {
+        \\    var bun = new Bun.Transpiler({
+        \\      loader: "jsx",
+        \\      define: {
+        \\        "process.env.NODE_ENV": JSON.stringify("development"),
+        \\      },
+        \\    });
+        \\    expect(bun.transformSync("export var foo = <div>{...a}b</div>")).toBe(
+        \\      `export var foo = jsxDEV_7x81h0kn("div", {
+        \\  children: [
+        \\    ...a,
+        \\    "b"
+        \\  ]
+        \\}, undefined, true, undefined, this);
+        \\`,
+        \\    );
+        \\
+        \\    expect(bun.transformSync("export var foo = <div>{...a}</div>")).toBe(
+        \\      `export var foo = jsxDEV_7x81h0kn("div", {
+        \\  children: [...a]
+        \\}, undefined, true, undefined, this);
+        \\`,
+        \\    );
+        \\  });
+        \\
+        \\  it("require with a dynamic non-string expression", () => {
+        \\    var nodeTranspiler = new Bun.Transpiler({ platform: "node" });
+        \\    expect(nodeTranspiler.transformSync("require('hi' + bar)")).toBe('require("hi" + bar);\n');
+        \\  });
+        \\
+        \\  it("CommonJS", () => {
+        \\    var nodeTranspiler = new Bun.Transpiler({ platform: "node", minify: { syntax: false } });
+        \\
+        \\    expect(nodeTranspiler.transformSync("module.require('hi' + 123)")).toBe('require("hi123");\n');
+        \\
+        \\    expect(nodeTranspiler.transformSync("module.require(1 ? 'foo' : 'bar')")).toBe('require("foo");\n');
+        \\    expect(nodeTranspiler.transformSync("require(1 ? 'foo' : 'bar')")).toBe('require("foo");\n');
+        \\
+        \\    expect(nodeTranspiler.transformSync("module.require(unknown ? 'foo' : 'bar')")).toBe(
+        \\      'unknown ? require("foo") : require("bar");\n',
+        \\    );
+        \\  });
+        \\
+        \\  describe("regressions", () => {
+        \\    it("unexpected super", () => {
+        \\      const input = `
+        \\      'use strict';
+        \\
+        \\      const ErrorReportingMixinBase = require('./mixin-base');
+        \\      const PositionTrackingPreprocessorMixin = require('../position-tracking/preprocessor-mixin');
+        \\      const Mixin = require('../../utils/mixin');
+        \\
+        \\      class ErrorReportingPreprocessorMixin extends ErrorReportingMixinBase {
+        \\          constructor(preprocessor, opts) {
+        \\              super(preprocessor, opts);
+        \\
+        \\              this.posTracker = Mixin.install(preprocessor, PositionTrackingPreprocessorMixin);
+        \\              this.lastErrOffset = -1;
+        \\          }
+        \\
+        \\          _reportError(code) {
+        \\              if (this.lastErrOffset !== this.posTracker.offset) {
+        \\                  this.lastErrOffset = this.posTracker.offset;
+        \\                  super._reportError(code);
+        \\              }
+        \\          }
+        \\      }
+        \\
+        \\      module.exports = ErrorReportingPreprocessorMixin;
+        \\      `;
+        \\      expect(transpiler.transformSync(input, "js").length > 0).toBe(true);
+        \\    });
+        \\  });
+        \\
+        \\  describe("scanImports", () => {
+        \\    it("reports import paths, excluding types", () => {
+        \\      const imports = transpiler.scanImports(code, "tsx");
+        \\      expect(imports.filter(({ path }) => path === "remix")).toHaveLength(1);
+        \\      expect(imports.filter(({ path }) => path === "mod")).toHaveLength(0);
+        \\      expect(imports.filter(({ path }) => path === "react")).toHaveLength(1);
+        \\      expect(imports).toHaveLength(2);
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
