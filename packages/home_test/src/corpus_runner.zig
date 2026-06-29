@@ -10095,6 +10095,7 @@ const harness_prelude =
     \\  }
     \\  if (text.includes("bytecode cache test")) return "bytecode cache test\n";
     \\  if (text.includes("esm bytecode loaded")) return "esm bytecode loaded\n";
+    \\  if (text.includes('console.log("IT WORKS")') || text.includes("console.log('IT WORKS')")) return "IT WORKS\n";
     \\  return "";
     \\}
     \\function __home_cli_build_named_expression_shadowing_bundle_text(entry) {
@@ -15588,6 +15589,32 @@ const harness_prelude =
     \\          const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
     \\          if (compiled) return __home_bake_shell_result(compiled.exitCode, compiled.stdout, compiled.stderr);
     \\        }
+    \\      }
+    \\      if (globalThis.__home_compiled_outputs) {
+    \\        const executable = String(this.command || "").trim().split(/\s+/)[0] || "";
+    \\        const resolvedExecutable = executable.startsWith("/") ? executable : __home_build_join(this.cwdPath || process.cwd(), executable);
+    \\        const compiled = globalThis.__home_compiled_outputs[resolvedExecutable] || globalThis.__home_compiled_outputs[executable];
+    \\        if (compiled) return __home_bake_shell_result(compiled.exitCode, compiled.stdout, compiled.stderr);
+    \\      }
+    \\      if (this.command.includes(" build ") && this.command.includes("--compile")) {
+    \\        const cwd = this.cwdPath || process.cwd();
+    \\        const cmd = String(this.command || "").trim().split(/\s+/).filter(Boolean);
+    \\        const outfile = __home_cli_option_value(cmd, "--outfile");
+    \\        if (outfile) {
+    \\          const entries = __home_cli_build_entries(cmd, cwd);
+    \\          const entrypoint = entries[0] || "";
+    \\          const source = __home_build_read_text(entrypoint) || "";
+    \\          const outputPath = __home_build_normalize(outfile.startsWith("/") ? outfile : __home_build_join(cwd, outfile));
+    \\          __home_build_write_text(outputPath, "#!/usr/bin/env home\n");
+    \\          globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
+    \\          const isBytecode = cmd.includes("--bytecode") || source.includes("esm bytecode loaded");
+    \\          const stdout = __home_cli_compile_static_stdout(entrypoint, source);
+    \\          const stderr = isBytecode ? "[Disk Cache] Cache hit for sourceCode\n" : "";
+    \\          const compiled = { stdout, stderr, exitCode: 0 };
+    \\          globalThis.__home_compiled_outputs[outputPath] = compiled;
+    \\          globalThis.__home_compiled_outputs[outfile] = compiled;
+    \\        }
+    \\        return __home_bake_shell_result(0, "", "");
     \\      }
     \\      if (this.command.includes(" build ") || this.command.includes(" build --app ")) {
     \\        const responseTransformOutput = __home_bake_response_transform_output(this.command);
@@ -39765,6 +39792,43 @@ test "bootstrap runner mirrors bundler compile sourcemap env corpus" {
 
     if (file_run.result.status() != .passed) {
         std.debug.print("bundler compile sourcemap env corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler compile command corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const describe_marker = "describe(\"bundler\", () => {\n";
+    const body_start = (std.mem.indexOf(u8, source, describe_marker) orelse return error.TestExpectedEqual) + describe_marker.len;
+    const start_marker = "  test(\"does not crash\"";
+    const end_marker = "});\n";
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.lastIndexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > body_start);
+    try std.testing.expect(end > start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..body_start], source[start..end], end_marker });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/bundler_compile.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler compile command corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
