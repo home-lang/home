@@ -37899,6 +37899,135 @@ test "bootstrap runner mirrors transpiler await diagnostics corpus" {
     try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler arrow scope corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("arrow function parsing after const declaration (scope mismatch bug)", () => {
+        \\  const transpiler = new Bun.Transpiler({ loader: "tsx" });
+        \\
+        \\  it("reproduces the original scope mismatch bug with JSX", () => {
+        \\    const code = `
+        \\const Layout = () => {
+        \\  return (
+        \\    <html>
+        \\    </html>
+        \\  )
+        \\}
+        \\
+        \\['1', 'p'].forEach(i =>
+        \\  app.get(\`/\${i === 'home' ? '' : i}\`, c => c.html(
+        \\    <Layout selected={i}>
+        \\      Hello {i}
+        \\    </Layout>
+        \\  ))
+        \\)`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("forEach");
+        \\    expect(result).not.toContain(')["');
+        \\    expect(result).not.toContain('}["');
+        \\  });
+        \\
+        \\  it("correctly parses array literal on next line after block body arrow function", () => {
+        \\    const code = `const Layout = () => {
+        \\  return 1
+        \\}
+        \\['1', 'p'].forEach(i => console.log(i))`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("forEach");
+        \\    expect(result).not.toContain(')["');
+        \\  });
+        \\
+        \\  it("correctly parses JSX arrow function followed by array literal", () => {
+        \\    const code = `const Layout = () => {
+        \\  return (
+        \\    <html>
+        \\    </html>
+        \\  )
+        \\}
+        \\
+        \\['1', 'p'].forEach(i => console.log(i))`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("forEach");
+        \\    expect(result).not.toContain("Layout[");
+        \\  });
+        \\
+        \\  it("rejects indexing directly into block body arrow function without parens", () => {
+        \\    const code = `const Layout = () => {return 1}['x']`;
+        \\    expect(() => transpiler.transformSync(code)).toThrow();
+        \\  });
+        \\
+        \\  it("allows indexing into parenthesized arrow function", () => {
+        \\    const code = `const x = (() => {return {a: 1}})['a']`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain('["a"]');
+        \\  });
+        \\
+        \\  it("correctly handles expression body arrow functions", () => {
+        \\    const code = `const Layout = () => 1
+        \\['1', 'p'].forEach(i => console.log(i))`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("forEach");
+        \\  });
+        \\
+        \\  it("correctly handles arrow function with comma operator", () => {
+        \\    const code = `const a = () => {return 1}, b = 2`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("b = 2");
+        \\  });
+        \\
+        \\  it("correctly handles multiple arrow functions in const declaration", () => {
+        \\    const code = `const a = () => {return 1}, b = () => {return 2}
+        \\['1', '2'].forEach(x => console.log(x))`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("forEach");
+        \\    expect(result).not.toContain("b[");
+        \\  });
+        \\
+        \\  it("preserves intentional array access with explicit semicolon", () => {
+        \\    const code = `const Layout = () => {return 1};
+        \\['1', 'p'].forEach(i => console.log(i))`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("forEach");
+        \\    expect(result).not.toContain("Layout[");
+        \\  });
+        \\
+        \\  it("handles nested arrow functions correctly", () => {
+        \\    const code = `const outer = () => {
+        \\  const inner = () => {
+        \\    return 1
+        \\  }
+        \\  return inner
+        \\}
+        \\['test'].forEach(x => x)`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("forEach");
+        \\  });
+        \\
+        \\  it("handles arrow function followed by object literal", () => {
+        \\    const code = `const fn = () => {return 1}
+        \\({a: 1, b: 2}).a`;
+        \\    const result = transpiler.transformSync(code);
+        \\    expect(result).toContain("a: 1");
+        \\    expect(result).not.toContain("fn(");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
