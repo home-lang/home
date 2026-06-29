@@ -38385,6 +38385,115 @@ test "bootstrap runner mirrors transpiler transform corpus" {
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler scan and parser corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  const transpiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    define: {
+        \\      "process.env.NODE_ENV": JSON.stringify("development"),
+        \\    },
+        \\    platform: "browser",
+        \\  });
+        \\
+        \\  const code = `import { useParams } from "remix";
+        \\  import type { LoaderFunction, ActionFunction } from "remix";
+        \\  import { type xx } from 'mod';
+        \\  import { type xx as yy } from 'mod';
+        \\  import { type 'xx' as yy } from 'mod';
+        \\  import { type if as yy } from 'mod';
+        \\  import React, { type ReactNode, Component as Romponent, Component } from 'react';
+        \\
+        \\  export const loader: LoaderFunction = async ({
+        \\    params
+        \\  }) => {
+        \\    console.log(params.postId);
+        \\  };
+        \\
+        \\  export const action: ActionFunction = async ({
+        \\    params
+        \\  }) => {
+        \\    console.log(params.postId);
+        \\  };
+        \\
+        \\  export default function PostRoute() {
+        \\    const params = useParams();
+        \\    console.log(params.postId);
+        \\  }
+        \\  `;
+        \\
+        \\  describe("scan", () => {
+        \\    it("reports all export names", () => {
+        \\      const { imports, exports } = transpiler.scan(code);
+        \\
+        \\      expect(exports[0]).toBe("action");
+        \\      expect(exports[2]).toBe("loader");
+        \\      expect(exports[1]).toBe("default");
+        \\      expect(exports).toHaveLength(3);
+        \\
+        \\      expect(imports.filter(({ path }) => path === "remix")).toHaveLength(1);
+        \\      expect(imports.filter(({ path }) => path === "mod")).toHaveLength(0);
+        \\      expect(imports.filter(({ path }) => path === "react")).toHaveLength(1);
+        \\      expect(imports).toHaveLength(2);
+        \\    });
+        \\  });
+        \\
+        \\  it('logLevel: "error" throws', () => {
+        \\    var bun = new Bun.Transpiler({
+        \\      loader: "jsx",
+        \\      define: {
+        \\        "process.env.NODE_ENV": JSON.stringify("development"),
+        \\      },
+        \\      logLevel: "error",
+        \\    });
+        \\
+        \\    expect(() => bun.transformSync("bad??!?!?!")).toThrow("Unexpected ?");
+        \\  });
+        \\
+        \\  it("invalid logLevel throws", () => {
+        \\    expect(
+        \\      () =>
+        \\        new Bun.Transpiler({
+        \\          loader: "jsx",
+        \\          define: {
+        \\            "process.env.NODE_ENV": JSON.stringify("development"),
+        \\          },
+        \\          logLevel: "poop",
+        \\        }),
+        \\    ).toThrow();
+        \\  });
+        \\
+        \\  it("parses TSX arrow functions correctly", () => {
+        \\    var transpiler = new Bun.Transpiler({
+        \\      loader: "tsx",
+        \\    });
+        \\    expect(transpiler.transformSync("console.log(A = <T = unknown,>() => null)")).toBe(
+        \\      "console.log(A = () => null);\n",
+        \\    );
+        \\    expect(transpiler.transformSync("const B = <T extends string>() => null")).toBe("const B = () => null;\n");
+        \\    expect(transpiler.transformSync("const element = <T extends/>")).toContain("jsxDEV");
+        \\    expect(transpiler.transformSync("const element2 = <T extends={true}/>")).toContain("jsxDEV");
+        \\    expect(transpiler.transformSync("const element3 = <T extends></T>")).toContain("jsxDEV");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
