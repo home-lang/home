@@ -40211,6 +40211,43 @@ test "bootstrap runner mirrors Bun.build API loader and plugin corpus" {
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors Bun.build API hash and html plugin corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const describe_marker = "describe(\"Bun.build\", () => {\n";
+    const start_marker = "  test.concurrent(\"hash considers cross chunk imports\"";
+    const end_marker = "\n});\n\ntest.concurrent(\"macro with nested object\"";
+    const body_start = (std.mem.indexOf(u8, source, describe_marker) orelse return error.TestExpectedEqual) + describe_marker.len;
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.indexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > body_start);
+    try std.testing.expect(end > start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..body_start], source[start..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/bun-build-api.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Bun.build API hash and html plugin corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors bundler compile argv corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
