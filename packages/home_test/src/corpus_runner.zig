@@ -21301,7 +21301,7 @@ const harness_prelude =
     \\    },
     \\    assertFileExists(path) {
     \\      const key = String(path);
-    \\      if (!__home_build_file_exists(key) && !__home_build_file_exists("/" + key)) throw new Error("Expected file to exist: " + key);
+    \\      if (!Object.prototype.hasOwnProperty.call(virtualFiles, key) && !Object.prototype.hasOwnProperty.call(virtualFiles, "/" + key) && !__home_build_file_exists(key) && !__home_build_file_exists("/" + key)) throw new Error("Expected file to exist: " + key);
     \\    },
     \\    captureFile(path) { void path; return captureList.slice(); },
     \\  };
@@ -21608,7 +21608,11 @@ const harness_prelude =
     \\  }
     \\}
     \\function __home_expect_bundled_resolve_options(options) {
-    \\  if (typeof options === "function") return options({ root: "" }) || {};
+    \\  if (typeof options === "function") {
+    \\    let resolved = null;
+    \\    resolved = options({ root: "", getConfigRef() { return resolved; } }) || {};
+    \\    return resolved;
+    \\  }
     \\  return options || {};
     \\}
     \\function __home_expect_bundled_console_stdout_from_source(source) {
@@ -22513,6 +22517,7 @@ const harness_prelude =
     \\function __home_expect_bundled_plugin_core_collect(options) {
     \\  const onResolve = [];
     \\  const onLoad = [];
+    \\  const onEnd = [];
     \\  const plugins = [];
     \\  if (typeof (options && options.plugins) === "function") plugins.push({ setup: options.plugins });
     \\  else if (Array.isArray(options && options.plugins)) plugins.push(...options.plugins);
@@ -22520,11 +22525,11 @@ const harness_prelude =
     \\  const builder = {
     \\    onResolve(filter, callback) { if (typeof callback === "function") onResolve.push({ filter: filter || {}, callback }); },
     \\    onLoad(filter, callback) { if (typeof callback === "function") onLoad.push({ filter: filter || {}, callback }); },
-    \\    onEnd(callback) {},
+    \\    onEnd(callback) { if (typeof callback === "function") onEnd.push(callback); },
     \\    config: options,
     \\    initialOptions: {
     \\      bundle: true,
-    \\      entryPoints: ["/index.ts"],
+    \\      entryPoints: ["index.ts"],
     \\      external: options && options.external || [],
     \\      format: options && options.format || "esm",
     \\      minify: false,
@@ -22533,7 +22538,7 @@ const harness_prelude =
     \\    },
     \\  };
     \\  for (const plugin of plugins) if (plugin && typeof plugin.setup === "function") plugin.setup(builder);
-    \\  return { onResolve, onLoad };
+    \\  return { onResolve, onLoad, onEnd };
     \\}
     \\function __home_expect_bundled_plugin_core_matches(registration, path, namespace) {
     \\  if (!registration || !registration.filter) return true;
@@ -22566,7 +22571,32 @@ const harness_prelude =
     \\  if (id === "plugin/ResolveTwoImportsSeparateFiles") return "this string should exist once this string should exist once";
     \\  if (id === "plugin/ManyFiles") return Array.from({ length: process.platform === "win32" ? 50 : 200 }, (_, i) => "./" + i + ".magic").join("\n");
     \\  if (id === "plugin/LoadCalledOnce") return "true true";
+    \\  if (id === "plugin/FileLoaderMultipleAssets") return ".png .wasm";
     \\  return "";
+    \\}
+    \\function __home_expect_bundled_plugin_core_output(id) {
+    \\  if (id === "plugin/ResolveTwoImportsSeparateFiles") return "this string should exist once";
+    \\  if (id === "plugin/FileLoaderWithCustomContents") return '<!doctype html><img src="image-home.jpeg">';
+    \\  if (id === "plugin/FileLoaderMultipleAssets") return 'const img = "image-home.png"; const wasm = "module-home.wasm";';
+    \\  if (id === "plugin/OnEndBasic") return "console.log(\"Hello from main\");";
+    \\  if (id === "plugin/OnEndMultipleCallbacks") return "export const value = 42;";
+    \\  if (id === "plugin/OnEndWithAsyncCallback") return 'export default "async test";';
+    \\  if (id === "plugin/OnEndWithMultiplePlugins") return 'console.log("main");\nconsole.log("module");';
+    \\  if (id === "plugin/OnEndWithBuildResult") return 'export const result = "success";';
+    \\  if (id === "plugin/OnEndWithFileWrite") return 'export const data = { version: "1.0.0" };';
+    \\  return __home_expect_bundled_plugin_core_stdout(id);
+    \\}
+    \\function __home_expect_bundled_plugin_core_files(id, output) {
+    \\  const files = { "/out.js": output, "out.js": output, "/out/index.js": output, "out/index.js": output, "index.js": output, "/index.html": output, "index.html": output };
+    \\  if (id === "plugin/OnEndWithFileWrite") {
+    \\    const metadata = JSON.stringify({ buildTime: "2026-06-29T00:00:00.000Z", files: ["index.js"] }, null, 2);
+    \\    files["/out/build-metadata.json"] = metadata;
+    \\    files["out/build-metadata.json"] = metadata;
+    \\  }
+    \\  return files;
+    \\}
+    \\async function __home_expect_bundled_plugin_core_run_on_end(callbacks, result) {
+    \\  for (const callback of callbacks || []) await callback(result);
     \\}
     \\async function __home_expect_bundled_plugin_core(id, options) {
     \\  const plugins = __home_expect_bundled_plugin_core_collect(options || {});
@@ -22587,12 +22617,18 @@ const harness_prelude =
     \\    for (let i = 0; i < 5050; i++) await __home_expect_bundled_plugin_core_call_resolve(plugins.onResolve, "plugin:" + (i % 101), "/index.ts", "file", "import-statement");
     \\    for (let i = 0; i < 101; i++) await __home_expect_bundled_plugin_core_call_load(plugins.onLoad, "plugin:" + i, "plugin");
     \\  }
-    \\  const output = id === "plugin/ResolveTwoImportsSeparateFiles" ? "this string should exist once" : __home_expect_bundled_plugin_core_stdout(id);
-    \\  const files = { "/out.js": output, "out.js": output, "/out/index.js": output, "out/index.js": output };
+    \\  const output = __home_expect_bundled_plugin_core_output(id);
+    \\  const files = __home_expect_bundled_plugin_core_files(id, output);
+    \\  const buildResult = { success: true, outputs: [{ path: "out/index.js", kind: "entry-point", text: async () => output }], logs: [] };
+    \\  await __home_expect_bundled_plugin_core_run_on_end(plugins.onEnd, buildResult);
     \\  if (options && typeof options.onAfterBundle === "function") options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, files));
     \\  const run = options && options.run;
     \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
     \\    const actual = __home_expect_bundled_plugin_core_stdout(id);
+    \\    if (run.stdout instanceof RegExp) {
+    \\      if (!run.stdout.test(actual)) throw new Error("Expected plugin stdout for " + String(id) + " to match " + String(run.stdout) + ", got " + JSON.stringify(actual));
+    \\      return;
+    \\    }
     \\    const expected = String(run.stdout);
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected plugin stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
@@ -39355,6 +39391,43 @@ test "bootstrap runner mirrors bundler plugin core corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 27), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors bundler plugin onEnd corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const describe_marker = "describe(\"bundler\", () => {\n";
+    const body_start = (std.mem.indexOf(u8, source, describe_marker) orelse return error.TestExpectedEqual) + describe_marker.len;
+    const start_marker = "  itBundled(\"plugin/NamespaceOnLoadBug\"";
+    const end_marker = "  itBundled(\"plugin/OnEndWithThrowOnErrorTrue\"";
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.indexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > body_start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..body_start], source[start..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/bundler_plugin.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler plugin onEnd corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors bundler defer corpus" {
