@@ -6677,10 +6677,6 @@ fn diagnosticIsOptionValidation(d: anytype) bool {
 /// outside the option-validation family that upstream baselines drop?
 /// Used by `runOneEntry` so a fixture whose only emissions are
 /// `TS5101 outFile` / `TS5107 module=AMD` still counts as clean.
-fn compilationHasNonOptionValidationError(compilation: anytype) bool {
-    return countNonOptionValidationDiagnostics(compilation) > 0;
-}
-
 fn countNonOptionValidationDiagnostics(compilation: anytype) u32 {
     var count: u32 = 0;
     for (compilation.diagnostics.items) |d| {
@@ -6797,6 +6793,14 @@ fn hasNoLibReferenceLib(source: []const u8) bool {
 }
 
 fn hasCompilerOptionCompatibilityDiagnostic(source: []const u8) bool {
+    if ((directiveBool(source, "allowJs") orelse false) and
+        !(directiveBool(source, "noEmit") orelse false) and
+        directiveValue(source, "outdir") == null and
+        directiveValue(source, "outfile") == null and
+        sourceHasJsVirtualFilename(source))
+    {
+        return true;
+    }
     if (moduleResolutionMentions(source, "classic") and
         (directiveBool(source, "resolvePackageJsonExports") == true or
             directiveBool(source, "resolvePackageJsonImports") == true))
@@ -6827,6 +6831,22 @@ fn hasCompilerOptionCompatibilityDiagnostic(source: []const u8) bool {
             directiveValueMentions(source, "module", "node20")))
     {
         return true;
+    }
+    return false;
+}
+
+fn sourceHasJsVirtualFilename(source: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        const path = virtualFilename(line) orelse continue;
+        if (std.mem.endsWith(u8, path, ".js") or
+            std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".mjs") or
+            std.mem.endsWith(u8, path, ".cjs"))
+        {
+            return true;
+        }
     }
     return false;
 }
