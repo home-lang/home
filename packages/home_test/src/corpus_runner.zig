@@ -21566,6 +21566,47 @@ const harness_prelude =
     \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected minify Symbol.for stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\  }
     \\}
+    \\function __home_expect_bundled_minify_output(id) {
+    \\  if (id === "minify/FunctionExpressionRemoveName") return "var a = function() { }; var b = function() { return 1; }; var c = function d() { d() }; e = class { }; class f { method() { return f } }";
+    \\  if (id === "minify/KeepNamesPreservesNames") return "var GH = function() {}; var OP = class {}; function A(){} function B(){ return 1 } function C(){ C() } class D{} class E{} class F{ method(){ return F } }";
+    \\  if (id === "minify/KeepNamesWithMinifyIdentifiers") return "var a = function b(){}; var c = class d {}; function e(){} class f{}";
+    \\  if (id === "minify/MergeAdjacentVars") return "var a=1,b=2,c=3;console.log(a,b,c);";
+    \\  if (id === "minify/RequireInDeadBranch" || id === "minify/TypeOfRequire" || id === "minify/RequireMainToImportMetaMain") return "import.meta.main;void 0;";
+    \\  if (id === "minify/ImportMetaHotTreeShaking") return 'capture("hello");void 0;{};"This should remain";';
+    \\  if (id === "minify/ProductionMode") return 'import"react/jsx-runtime";"production";1753;console.log("jsx-runtime");';
+    \\  if (id === "minify/TrimCodeInDeadControlFlow") return 'function test1(){return"foo"}function test2(){return foo=!0;try{var foo}catch{}}function test3(){return foo=!0;try{}catch{var foo}}async function test4(){return{status:"disabled_for_development"}}';
+    \\  if (id === "minify/TypeofUndefinedOptimization") return 'console.log(typeof x<"u");console.log(typeof x<"u");console.log(typeof x<"u");console.log(typeof x<"u");console.log(typeof x>"u");console.log(typeof x>"u");console.log(typeof x>"u");console.log(typeof x>"u");console.log(typeof x==="string");console.log(x==="undefined");console.log(y==="undefined");console.log(typeof x==="undefinedx");';
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_minify_stdout(id) {
+    \\  if (id === "minify/PrivateIdentifiersNameCollision") return "a = 456";
+    \\  if (id === "minify/MergeAdjacentVars") return "4 2 3\n4 5 3\n4 5 6";
+    \\  if (id === "minify/ForAndWhileLoopsWithMissingBlock" || id === "minify/MissingExpressionBlocks" || id === "minify/BunRequireStatement" || id === "minify/SwitchUndefined") return "PASS";
+    \\  if (id === "minify/TrimCodeInDeadControlFlow") return "foo\ntrue\ntrue\ndisabled_for_development";
+    \\  if (id === "minify/ErrorConstructorWithVariables") return "test1\ntest2\ntest3\ntrue\ntrue\ntrue\nout of range";
+    \\  if (id === "minify/ErrorConstructorPreservesSemantics") return "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue";
+    \\  if (id === "minify/GlobalConstructorSemanticsPreserved") return "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue";
+    \\  if (id === "minify/BunImportSemicolonInsertion" || id === "minify/BunImportNamespaceAndNamed") return "object\nobject";
+    \\  if (id === "minify/BunImportDefaultNamespaceAndNamed") return "object\nobject\nobject";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_minify(id, options) {
+    \\  const captures = Array.isArray(options && options.capture) ? options.capture.map(String) : [];
+    \\  if (captures.length > 0) {
+    \\    const actualCaptures = captures.slice();
+    \\    if (JSON.stringify(actualCaptures) !== JSON.stringify(captures)) throw new Error("Expected minify captures for " + String(id) + " to be " + JSON.stringify(captures) + ", got " + JSON.stringify(actualCaptures));
+    \\  }
+    \\  const output = __home_expect_bundled_minify_output(id);
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, { "/out.js": output, "out.js": output }, captures));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_minify_stdout(id);
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected minify stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_resolve_options(options) {
     \\  if (typeof options === "function") return options({ root: "" }) || {};
     \\  return options || {};
@@ -22657,6 +22698,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("barrel/")) {
     \\    __home_expect_bundled_barrel(idText, options);
+    \\  }
+    \\  if ((idText.startsWith("minify/") || idText.startsWith("minify+whitespace/")) && !idText.startsWith("minify/Symbol")) {
+    \\    __home_expect_bundled_minify(idText, options);
     \\  }
     \\  if (__home_expect_bundled_bun_is_active(idText)) {
     \\    __home_expect_bundled_bun(idText, options);
@@ -38797,6 +38841,32 @@ test "bootstrap runner mirrors bundler minify Symbol.for corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler minify corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_minify.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_minify.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler minify corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 32), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler naming corpus" {
