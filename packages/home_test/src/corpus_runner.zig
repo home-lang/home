@@ -38028,6 +38028,66 @@ test "bootstrap runner mirrors transpiler arrow scope corpus" {
     try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler crash regression corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\import { join } from "path";
+        \\
+        \\describe("malformed function definition does not crash due to invalid scope initialization", () => {
+        \\  it("fails with a parse error and exits cleanly", async () => {
+        \\    const tests = ["function:", "function a() {function:}"];
+        \\    for (const code of tests) {
+        \\      for (const loader of ["js", "ts"]) {
+        \\        const transpiler = new Bun.Transpiler({ loader });
+        \\        expect(() => transpiler.transformSync(code)).toThrow("Parse error");
+        \\      }
+        \\    }
+        \\  });
+        \\});
+        \\
+        \\it("does not crash with 9 comments and typescript type skipping", () => {
+        \\  const cmd = [bunExe(), "build", "--minify-identifiers", join(import.meta.dir, "fixtures", "9-comments.ts")];
+        \\  const { stdout, stderr, exitCode } = Bun.spawnSync({
+        \\    cmd,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\
+        \\  expect(stderr.toString()).toBe("");
+        \\  expect(stdout.toString()).toContain("success!");
+        \\  expect(exitCode).toBe(0);
+        \\});
+        \\
+        \\it("does not crash with --minify-syntax and revisiting dot expressions", () => {
+        \\  const { stdout, stderr, exitCode } = Bun.spawnSync({
+        \\    cmd: [bunExe(), "-p", "[(()=>{})()][''+'c']"],
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\
+        \\  expect(stderr.toString()).toBe("");
+        \\  expect(stdout.toString()).toBe("undefined\n");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
