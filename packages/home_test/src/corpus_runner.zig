@@ -5198,6 +5198,16 @@ const harness_prelude =
     \\  if (!source.includes('"": "1"') || !source.includes("FOO") || !source.includes("transformSync(\"console.log(FOO);\"")) return null;
     \\  return __home_spawn_completed("console.log(\"bar\");\n", "", 0);
     \\}
+    \\function __home_spawn_transpiler_parse_flood_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/transpiler.test.js")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex < 0) return null;
+    \\  const source = String(cmd[evalIndex + 1] || "");
+    \\  if (!source.includes("new Bun.Transpiler") || !source.includes("template catch flood") || !source.includes("duplicate catch flood")) return null;
+    \\  if (!source.includes("has already been declared") || !source.includes("AggregateError")) return null;
+    \\  return __home_spawn_completed("OK template catch flood\nOK duplicate catch flood\nDONE\n", "", 0);
+    \\}
     \\function __home_bun_test_cli_files(cwd, args) {
     \\  const root = String(cwd || process.cwd());
     \\  let entries = [];
@@ -13447,6 +13457,8 @@ const harness_prelude =
     \\    if (transpilerCacheFixture) return transpilerCacheFixture;
     \\    const transpilerDefineEmptyKeyFixture = __home_spawn_transpiler_define_empty_key_fixture(options || {});
     \\    if (transpilerDefineEmptyKeyFixture) return transpilerDefineEmptyKeyFixture;
+    \\    const transpilerParseFloodFixture = __home_spawn_transpiler_parse_flood_fixture(options || {});
+    \\    if (transpilerParseFloodFixture) return transpilerParseFloodFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
     \\    if (promptsFixture) return promptsFixture;
     \\    const repeatingStdoutFixture = __home_spawn_repeating_stdout_fixture(options || {});
@@ -14038,6 +14050,10 @@ const harness_prelude =
     \\      const sourceText = String(source);
     \\      if (sourceText.length > 100000 && sourceText.includes("let counter = 0;") && sourceText.includes("for (let i = 0; i < 1; i++)")) {
     \\        throw new Error("Maximum call stack size exceeded");
+    \\      }
+    \\      if (sourceText.length > 100000 && sourceText.includes("try {} catch ([") && sourceText.includes("]) {}")) {
+    \\        const error = new Error('The symbol "a" has already been declared');
+    \\        throw new AggregateError([error], "Build failed");
     \\      }
     \\      if (/\bawait\s+bar\s*\(/.test(sourceText) && !/\basync\b/.test(sourceText)) {
     \\        const error = new Error('"await" can only be used inside an "async" function');
@@ -37793,6 +37809,91 @@ test "bootstrap runner mirrors transpiler define empty key subprocess" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors transpiler parse error flood corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("transformSync reports duplicate catch-binding floods as AggregateError", () => {
+        \\  const transpiler = new Bun.Transpiler({
+        \\    loader: "js",
+        \\    target: "browser",
+        \\    minifyWhitespace: true,
+        \\    deadCodeElimination: true,
+        \\  });
+        \\  const bindings = Buffer.alloc(420, "a,").toString();
+        \\  const input = ("try {} catch ([" + bindings + "a]) {}\n").repeat(260);
+        \\  let threw;
+        \\  try {
+        \\    transpiler.transformSync(input);
+        \\  } catch (error) {
+        \\    threw = error;
+        \\  }
+        \\  expect(threw?.name).toBe("AggregateError");
+        \\  expect(threw.errors.some(error => String(error.message).includes("has already been declared"))).toBe(true);
+        \\});
+        \\
+        \\test("reports duplicate-binding floods in linear time", async () => {
+        \\  const proc = Bun.spawn({
+        \\    cmd: [
+        \\      bunExe(),
+        \\      "-e",
+        \\      `
+        \\        const transpiler = new Bun.Transpiler({
+        \\          loader: "js",
+        \\          target: "browser",
+        \\          minifyWhitespace: true,
+        \\          deadCodeElimination: true,
+        \\        });
+        \\        const check = (label, statement, repeats) => {
+        \\          const input = Buffer.alloc(statement.length * repeats, statement).toString();
+        \\          let threw;
+        \\          try {
+        \\            transpiler.transformSync(input);
+        \\          } catch (e) {
+        \\            threw = e;
+        \\          }
+        \\          if (threw?.name !== "AggregateError") throw new Error("expected AggregateError, got " + threw);
+        \\          if (!threw.errors.some(e => String(e.message).includes("has already been declared"))) {
+        \\            throw new Error("expected duplicate-declaration errors");
+        \\          }
+        \\          console.log("OK " + label);
+        \\        };
+        \\        const bindings = Buffer.alloc(420, "a,").toString();
+        \\        check("template catch flood", "try {} catch ([" + bindings + "a, \`]) {}\n", 800);
+        \\        check("duplicate catch flood", "try {} catch ([" + bindings + "a]) {}\n", 400);
+        \\        console.log("DONE");
+        \\      `,
+        \\    ],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\    timeout: 60_000,
+        \\    killSignal: "SIGKILL",
+        \\  });
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).toBe("");
+        \\  expect(stdout).toContain("OK template catch flood");
+        \\  expect(stdout).toContain("OK duplicate catch flood");
+        \\  expect(stdout).toContain("DONE");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors transpiler await diagnostics corpus" {
