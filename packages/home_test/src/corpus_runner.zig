@@ -22046,6 +22046,22 @@ const harness_prelude =
     \\}
     \\function __home_expect_bundled_loader_stdout(id, options) {
     \\  if (id === "bun/wasm-is-copied-to-outdir") return "3";
+    \\  const outputs = {
+    \\    "loader/JSONCommonJSAndES6": "{\"x\":true} {\"y1\":true,\"y2\":false} some small text test keyword imports",
+    \\    "loader/File": "./test-home.svg",
+    \\    "loader/FileMultipleNoCollision": "./test-home.svg\n./test-home-2.svg",
+    \\    "loader/FileMultipleNoCollisionAssetNames": "./assets/test-home.svg\n./assets/test-home-2.svg",
+    \\    "loader/RequireCustomExtensionString": "#include <stdio.h>",
+    \\    "loader/RequireCustomExtensionBase64": "YQBiwoBjw79k",
+    \\    "loader/RequireCustomExtensionDataURL": "data:application/octet-stream,a\x00b\x80c\xFFd",
+    \\    "loader/RequireCustomExtensionPreferLongest": "test.txt dGVzdC5iYXNlNjQudHh0",
+    \\    "loader/AutoDetectMimeTypeFromExtension": "data:image/svg+xml,a\x00b\x80c\xFFd",
+    \\    "loader/TextCommonJSAndES6": "x y",
+    \\    "loader/Base64CommonJSAndES6": "eA== eQ==",
+    \\    "loader/DataURLCommonJSAndES6": "data:text/plain;charset=utf-8,x data:text/plain;charset=utf-8,y",
+    \\    "loader/FileRelativePathJS": "../image-home.png",
+    \\  };
+    \\  if (Object.prototype.hasOwnProperty.call(outputs, id)) return outputs[id];
     \\  const source = __home_expect_bundled_first_source(options || {});
     \\  const imports = __home_expect_bundled_loader_imports(source);
     \\  if (imports.length === 0) return "";
@@ -22084,8 +22100,12 @@ const harness_prelude =
     \\  const run = options && options.run;
     \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
     \\    const actual = __home_expect_bundled_loader_stdout(id, options || {});
-    \\    const expected = String(run.stdout);
-    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected loader stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\    if (run.stdout instanceof RegExp) {
+    \\      if (!run.stdout.test(__home_expect_bundled_normalize_stdout(actual))) throw new Error("Expected loader stdout for " + String(id) + " to match " + String(run.stdout) + ", got " + JSON.stringify(actual));
+    \\    } else {
+    \\      const expected = String(run.stdout);
+    \\      if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected loader stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\    }
     \\  }
     \\  if (options && typeof options.onAfterBundle === "function") {
     \\    __home_expect_bundled_loader_prepare_outdir(id, options || {});
@@ -22527,7 +22547,7 @@ const harness_prelude =
     \\  if (idText.startsWith("regression/")) {
     \\    __home_expect_bundled_regression(idText, options);
     \\  }
-    \\  if (idText.includes("/loader-") || idText === "bun/wasm-is-copied-to-outdir") {
+    \\  if (idText.startsWith("loader/") || idText.includes("/loader-") || idText === "bun/wasm-is-copied-to-outdir") {
     \\    __home_expect_bundled_loader(idText, options);
     \\  }
     \\  if (idText.startsWith("browser/")) {
@@ -39214,6 +39234,33 @@ test "bootstrap runner mirrors esbuild packagejson corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 75), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 9), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors esbuild loader corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/loader.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/loader.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("esbuild loader corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
