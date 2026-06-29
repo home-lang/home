@@ -391,6 +391,7 @@ pub const Program = struct {
 
         try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
+        try self.appendProgramGlobalDeclareVarDiagnostics();
 
         try self.resolveImports();
     }
@@ -2210,6 +2211,117 @@ pub const Program = struct {
             if (f.redirect_target != null) continue;
             try self.appendMissingImportedHelperDiagnosticsForFile(f, options);
         }
+    }
+
+    const ProgramDeclareVar = struct {
+        name: []const u8,
+        type_text: []const u8,
+    };
+
+    fn appendProgramGlobalDeclareVarDiagnostics(self: *Program) ProgramError!void {
+        var seen: std.StringHashMapUnmanaged(ProgramDeclareVar) = .empty;
+        defer {
+            var it = seen.iterator();
+            while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
+            seen.deinit(self.gpa);
+        }
+
+        for (self.files.items) |f| {
+            if (f.redirect_target != null or !f.is_declaration) continue;
+            if (sourceLooksExternalModule(f.source)) continue;
+            const c = f.compilation orelse continue;
+            var offset: usize = 0;
+            var lines = std.mem.splitScalar(u8, f.source, '\n');
+            while (lines.next()) |raw_line| {
+                defer offset += raw_line.len + 1;
+                const line_without_cr = std.mem.trim(u8, raw_line, "\r");
+                var leading: usize = 0;
+                while (leading < line_without_cr.len and
+                    (line_without_cr[leading] == ' ' or line_without_cr[leading] == '\t')) : (leading += 1)
+                {}
+                const line = line_without_cr[leading..];
+                const decl = parseDeclareVarLine(line) orelse continue;
+                const gop = try seen.getOrPut(self.gpa, decl.name);
+                if (!gop.found_existing) {
+                    gop.key_ptr.* = try self.gpa.dupe(u8, decl.name);
+                    gop.value_ptr.* = .{
+                        .name = gop.key_ptr.*,
+                        .type_text = decl.type_text,
+                    };
+                    continue;
+                }
+                const prior = gop.value_ptr.*;
+                if (std.mem.eql(u8, prior.type_text, decl.type_text)) continue;
+                if (diagnosticExistsAt(c, 2403, @intCast(offset + leading + decl.name_start))) continue;
+                const msg = try std.fmt.allocPrint(
+                    self.gpa,
+                    "Subsequent variable declarations must have the same type.  Variable '{s}' must be of type '{s}', but here has type '{s}'.",
+                    .{ decl.name, prior.type_text, decl.type_text },
+                );
+                try c.diagnostics.append(self.gpa, .{
+                    .phase = .bind,
+                    .pos = @intCast(offset + leading + decl.name_start),
+                    .line = 0,
+                    .span_len = @intCast(decl.name.len),
+                    .code = 2403,
+                    .message = msg,
+                });
+                c.has_errors = true;
+            }
+        }
+    }
+
+    const ParsedDeclareVar = struct {
+        name: []const u8,
+        name_start: usize,
+        type_text: []const u8,
+    };
+
+    fn parseDeclareVarLine(line: []const u8) ?ParsedDeclareVar {
+        const prefix = "declare var";
+        if (!std.mem.startsWith(u8, line, prefix)) return null;
+        var i: usize = prefix.len;
+        if (i >= line.len or (line[i] != ' ' and line[i] != '\t')) return null;
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+        if (i >= line.len or !isIdentifierStart(line[i])) return null;
+        const name_start = i;
+        i += 1;
+        while (i < line.len and isIdentifierContinue(line[i])) : (i += 1) {}
+        const name = line[name_start..i];
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+        if (i >= line.len or line[i] != ':') return .{
+            .name = name,
+            .name_start = name_start,
+            .type_text = "any",
+        };
+        i += 1;
+        const type_start_raw = i;
+        const semi = std.mem.indexOfScalarPos(u8, line, i, ';') orelse line.len;
+        const type_text = std.mem.trim(u8, line[type_start_raw..semi], " \t\r");
+        if (type_text.len == 0) return null;
+        return .{
+            .name = name,
+            .name_start = name_start,
+            .type_text = type_text,
+        };
+    }
+
+    fn sourceLooksExternalModule(source: []const u8) bool {
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (std.mem.startsWith(u8, line, "import ")) return true;
+            if (std.mem.startsWith(u8, line, "export ")) return true;
+            if (std.mem.eql(u8, line, "export {}") or std.mem.eql(u8, line, "export {};")) return true;
+        }
+        return false;
+    }
+
+    fn diagnosticExistsAt(c: *const ts_driver.Compilation, code: u32, pos: u32) bool {
+        for (c.diagnostics.items) |d| {
+            if (d.code == code and d.pos == pos) return true;
+        }
+        return false;
     }
 
     fn appendMissingImportedHelperDiagnosticsForFile(self: *Program, f: *File, options: ts_driver.CompileOptions) ProgramError!void {

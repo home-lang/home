@@ -729,6 +729,12 @@ const VirtualFile = struct {
     extra_strip: u32,
 };
 
+const ProgramFileEntry = struct {
+    path: []const u8,
+    diag_path: []const u8,
+    extra_strip: u32,
+};
+
 const ActualDiagnosticLine = struct {
     file: []const u8,
     line: u32,
@@ -891,6 +897,7 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // shared-source ambient resolution and surfaces brand-new
     // "Cannot find module" diagnostics they should not have.
     if (c.expected_errors.len == 0) {
+        if (rawSourceHasTypeReferenceProgramRoute(c.raw_source)) return true;
         // Exception: a clean fixture whose `node_modules/<pkg>/
         // package.json` points `types`/`typings` at an ABSOLUTE path
         // (the harness-mounted-lib shape, e.g.
@@ -936,6 +943,7 @@ fn shouldRouteThroughProgram(c: Case) bool {
         if (parserSuiteNeedsVirtualFileBoundaries(c)) return true;
         if (rawSourceHasRelativeModuleAugmentation(c.raw_source)) return true;
         if (rawSourceHasAmbientExternalModuleAndBareImport(c.raw_source)) return true;
+        if (rawSourceHasTypeReferenceProgramRoute(c.raw_source)) return true;
         if ((directiveBool(c.raw_source, "declaration") orelse false) and
             rawSourceHasNodeModulesCodeMarker(c.raw_source)) return true;
         return false;
@@ -1117,6 +1125,17 @@ fn rawSourceHasNodeModulesCodeMarker(raw: []const u8) bool {
         const line = std.mem.trim(u8, line_with_cr, "\r");
         const path = virtualFilename(line) orelse continue;
         if (isCodeVirtualFile(path) and isNodeModulesVirtualPath(path)) return true;
+    }
+    return false;
+}
+
+fn rawSourceHasTypeReferenceProgramRoute(raw: []const u8) bool {
+    if (directiveValue(raw, "types") != null) return true;
+    if (std.mem.indexOf(u8, raw, "<reference") != null and
+        std.mem.indexOf(u8, raw, "types") != null and
+        rawSourceHasNodeModulesCodeMarker(raw))
+    {
+        return true;
     }
     return false;
 }
@@ -1917,40 +1936,98 @@ const TripleSlashTypesReference = struct {
     mode: ?ts_resolver.TypeReferenceResolutionMode,
 };
 
+fn preloadConfiguredTypeReferences(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    program: *ts_program.Program,
+    names: []const []const u8,
+    known_names: *std.ArrayListUnmanaged([]const u8),
+    owned_sources: *std.ArrayListUnmanaged([]u8),
+) !void {
+    const containing = "/.src/__inferred type names__.ts";
+    for (names) |name| {
+        const resolved = resolver.resolveTypeReferenceDirective(name, containing) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
+        try addResolvedTypeReference(gpa, resolver, program, known_names, owned_sources, name, resolved.path);
+    }
+}
+
 fn preloadTripleSlashTypeReferences(
     gpa: std.mem.Allocator,
-    files: []const VirtualFile,
     resolver: *ts_resolver.Resolver,
     program: *ts_program.Program,
     known_names: *std.ArrayListUnmanaged([]const u8),
+    owned_sources: *std.ArrayListUnmanaged([]u8),
 ) !void {
-    for (files) |f| {
-        if (!isCodeVirtualFile(f.path)) continue;
-        if (isNodeModulesVirtualPath(f.path)) continue;
-        const containing = try canonicalVfsPath(gpa, f.path);
-        defer gpa.free(containing);
-
+    var file_index: usize = 0;
+    while (file_index < program.files.items.len) : (file_index += 1) {
+        const file = program.files.items[file_index];
         var search_start: usize = 0;
-        while (nextTripleSlashTypesReference(f.source, &search_start)) |ref| {
+        while (nextTripleSlashTypesReference(file.source, &search_start)) |ref| {
             const res = if (ref.mode) |mode|
-                resolver.resolveTypeReferenceDirectiveWithMode(ref.name, containing, mode)
+                resolver.resolveTypeReferenceDirectiveWithMode(ref.name, file.path, mode)
             else
-                resolver.resolveTypeReferenceDirective(ref.name, containing);
+                resolver.resolveTypeReferenceDirective(ref.name, file.path);
             const resolved = res catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => continue,
             };
-            if (!knownTypeReferenceName(known_names.items, ref.name)) {
-                try known_names.append(gpa, try gpa.dupe(u8, ref.name));
-            }
-            if (program.lookupPath(resolved.path) != null) continue;
-            const src = resolver.fs.readFile(gpa, resolved.path) catch continue;
-            defer gpa.free(src);
-            _ = program.add(resolved.path, src) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => continue,
-            };
+            try addResolvedTypeReference(gpa, resolver, program, known_names, owned_sources, ref.name, resolved.path);
         }
+    }
+}
+
+fn addResolvedTypeReference(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    program: *ts_program.Program,
+    known_names: *std.ArrayListUnmanaged([]const u8),
+    owned_sources: *std.ArrayListUnmanaged([]u8),
+    name: []const u8,
+    path: []const u8,
+) !void {
+    if (!knownTypeReferenceName(known_names.items, name)) {
+        try known_names.append(gpa, try gpa.dupe(u8, name));
+    }
+    if (program.lookupPath(path) != null) return;
+    const src = resolver.fs.readFile(gpa, path) catch return;
+    var src_owned_by_list = false;
+    errdefer if (!src_owned_by_list) gpa.free(src);
+    _ = program.add(path, src) catch |err| switch (err) {
+        error.OutOfMemory => {
+            gpa.free(src);
+            src_owned_by_list = true;
+            return error.OutOfMemory;
+        },
+        else => {
+            gpa.free(src);
+            src_owned_by_list = true;
+            return;
+        },
+    };
+    try owned_sources.append(gpa, src);
+    src_owned_by_list = true;
+}
+
+fn appendPreloadedProgramFileDiagnostics(
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    program_files: *std.ArrayListUnmanaged(ProgramFileEntry),
+) !void {
+    var i = program_files.items.len;
+    while (i < program.files.items.len) : (i += 1) {
+        const file = program.files.items[i];
+        const path = try gpa.dupe(u8, file.path);
+        errdefer gpa.free(path);
+        const diag_path = try gpa.dupe(u8, file.path);
+        errdefer gpa.free(diag_path);
+        try program_files.append(gpa, .{
+            .path = path,
+            .diag_path = diag_path,
+            .extra_strip = 0,
+        });
     }
 }
 
@@ -2041,11 +2118,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         tsconfig_options.type_roots = try dupeDirectiveStringList(gpa, c.raw_source, "typeRoots");
     }
     defer tsconfig_options.deinit(gpa);
+    const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
+    const configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
+    defer freeStringList(gpa, configured_type_names);
     const resolver_strategy = if (tsconfig_options.module_resolution.len > 0)
         (strategyFromLabel(tsconfig_options.module_resolution) orelse resolverStrategyFromCase(c, tsconfig_options.module))
     else
         resolverStrategyFromCase(c, tsconfig_options.module);
-    const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
     const module_kind_raw = directiveValue(directive_source, "module") orelse
         directiveValue(directive_source, "Module") orelse
         tsconfig_options.module;
@@ -2062,6 +2141,12 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     });
     defer resolver.deinit();
 
+    var owned_program_sources: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned_program_sources.items) |src| gpa.free(src);
+        owned_program_sources.deinit(gpa);
+    }
+
     var program = ts_program.Program.init(gpa, &resolver);
     defer program.deinit();
 
@@ -2076,11 +2161,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     // headers using whichever form the fixture wrote, so a fixture
     // declaring `@filename: index.ts` (no leading slash) gets
     // `index.ts(...)` headers — not `/index.ts(...)`.
-    var program_files: std.ArrayListUnmanaged(struct {
-        path: []const u8,
-        diag_path: []const u8,
-        extra_strip: u32,
-    }) = .empty;
+    var program_files: std.ArrayListUnmanaged(ProgramFileEntry) = .empty;
     // Defers run LIFO. Free per-element paths FIRST (registered
     // second below), then deinit the list (registered first below).
     // Reversing the registration order would let `deinit` run first
@@ -2093,6 +2174,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     for (virtual_files.items) |f| {
         if (!isCodeVirtualFile(f.path)) continue;
         if (isNodeModulesVirtualPath(f.path)) continue;
+        if (configured_type_names.len != 0 and virtualFileIsUnderAnyTypeRoot(f.path, tsconfig_options.type_roots)) continue;
         const canon = try canonicalVfsPath(gpa, f.path);
         _ = program.add(canon, f.source) catch |err| switch (err) {
             error.OutOfMemory => {
@@ -2125,13 +2207,16 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         for (known_type_reference_names.items) |name| gpa.free(name);
         known_type_reference_names.deinit(gpa);
     }
-    try preloadTripleSlashTypeReferences(
+    try preloadConfiguredTypeReferences(
         gpa,
-        virtual_files.items,
         &resolver,
         &program,
+        configured_type_names,
         &known_type_reference_names,
+        &owned_program_sources,
     );
+    try preloadTripleSlashTypeReferences(gpa, &resolver, &program, &known_type_reference_names, &owned_program_sources);
+    try appendPreloadedProgramFileDiagnostics(gpa, &program, &program_files);
 
     // Compile every code file in the program. The driver's
     // `compileAll` runs each file through the same lex/parse/bind/
@@ -2311,7 +2396,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                     }
                 }
             }
-            if (code == 2304 and prefix == .TS) {
+            if ((code == 2304 or code == 2592) and prefix == .TS) {
                 if (cannotFindNameDiagnosticName(message)) |missing_name| {
                     if (script_globals.hasValue(missing_name)) {
                         continue;
@@ -5776,6 +5861,22 @@ fn isNodeModulesVirtualPath(path: []const u8) bool {
         std.mem.indexOf(u8, p, "/node_modules/") != null;
 }
 
+fn virtualFileIsUnderAnyTypeRoot(path: []const u8, roots: []const []const u8) bool {
+    var p = path;
+    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    for (roots) |raw_root| {
+        var root = raw_root;
+        while (std.mem.startsWith(u8, root, "/")) root = root[1..];
+        while (std.mem.startsWith(u8, root, "./")) root = root[2..];
+        while (root.len > 0 and root[root.len - 1] == '/') root = root[0 .. root.len - 1];
+        if (root.len == 0) continue;
+        if (!std.mem.startsWith(u8, p, root)) continue;
+        if (p.len == root.len or p[root.len] == '/') return true;
+    }
+    return false;
+}
+
 fn isJsLikeVirtualFile(path: []const u8) bool {
     return std.mem.endsWith(u8, path, ".js") or
         std.mem.endsWith(u8, path, ".jsx") or
@@ -7567,6 +7668,31 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     }
 
     const name_owned = try gpa.dupe(u8, entry.name);
+    if (entry.expects_error and entry.raw_source.len != 0 and rawSourceHasTypeReferenceProgramRoute(entry.raw_source)) {
+        const program_result = try run(gpa, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = if (entry.path.len > 0) entry.path else entry.name,
+            .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
+            .strict_flags = entry.strict_flags,
+            .always_strict = entry.always_strict,
+            .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
+            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
+        });
+        defer if (program_result.detail.len > 0) gpa.free(program_result.detail);
+        if (program_result.actual_diag_count > 0) {
+            return .{ .name = name_owned, .outcome = .passed };
+        }
+        return .{
+            .name = name_owned,
+            .outcome = .failed,
+            .detail = try gpa.dupe(u8, "expected at least one diagnostic; got none"),
+        };
+    }
     var compilation = ts_driver.compileSource(gpa, entry.source, .{
         .is_tsx = entry.is_tsx,
         .is_declaration_file = entry.is_declaration_file,

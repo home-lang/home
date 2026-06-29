@@ -731,16 +731,28 @@ pub const Resolver = struct {
     ) ResolveError!TypeReferenceLookup {
         if (self.config.type_roots.len > 0) {
             self.traceMsg(6121, "Resolving with primary search path '{s}'.", .{self.typeRootsTraceText()});
+            var saw_existing_root = false;
             for (self.config.type_roots) |root| {
                 if (root.len == 0) continue;
+                if (self.fs.directoryExists(root)) saw_existing_root = true;
                 if (try self.tryTypeReferenceRoot(root, directive)) |r| {
                     return .{ .resolution = r, .primary = true };
                 }
             }
-            self.traceMsg(6265, "Resolving type reference directive for program that specifies custom typeRoots, skipping lookup in 'node_modules' folder.", .{});
-            return error.NotFound;
+            if (saw_existing_root) {
+                self.traceMsg(6265, "Resolving type reference directive for program that specifies custom typeRoots, skipping lookup in 'node_modules' folder.", .{});
+                return error.NotFound;
+            }
         }
 
+        return self.resolveTypeReferenceDirectiveFromNodeModules(directive, containing_file);
+    }
+
+    fn resolveTypeReferenceDirectiveFromNodeModules(
+        self: *Resolver,
+        directive: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!TypeReferenceLookup {
         if (containing_file.len == 0) {
             self.traceMsg(6122, "Root directory cannot be determined, skipping primary search paths.", .{});
             return error.NotFound;
@@ -751,6 +763,9 @@ pub const Resolver = struct {
             const nm = try self.joinPath(dir, "node_modules");
             const at_types = try self.joinPath(nm, "@types");
             if (try self.tryTypeReferenceAtTypesRoot(at_types, directive)) |r| {
+                return .{ .resolution = r, .primary = false };
+            }
+            if (try self.tryTypeReferencePackageRoot(nm, directive)) |r| {
                 return .{ .resolution = r, .primary = false };
             }
             if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
@@ -1708,6 +1723,16 @@ pub const Resolver = struct {
             return self.tryTypeReferenceAtTypesRoot(root, directive);
         }
         const candidate = try self.joinPath(root, directive);
+        const resolution = (try self.tryTypeRootCandidate(candidate)) orelse return null;
+        return try self.withTypeReferencePackageId(resolution, candidate);
+    }
+
+    fn tryTypeReferencePackageRoot(
+        self: *Resolver,
+        node_modules: []const u8,
+        directive: []const u8,
+    ) ResolveError!?Resolution {
+        const candidate = try self.joinPath(node_modules, directive);
         const resolution = (try self.tryTypeRootCandidate(candidate)) orelse return null;
         return try self.withTypeReferencePackageId(resolution, candidate);
     }
