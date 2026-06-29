@@ -38028,6 +38028,73 @@ test "bootstrap runner mirrors transpiler arrow scope corpus" {
     try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler block scoped export corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("export of a block-scoped function declaration", () => {
+        \\  const code = "{\n  function encrypt() {}\n}\nexport { encrypt }";
+        \\
+        \\  function expectNotDeclaredError(loader) {
+        \\    const transpiler = new Bun.Transpiler({ loader });
+        \\    try {
+        \\      transpiler.transformSync(code);
+        \\      expect.unreachable();
+        \\    } catch (e) {
+        \\      const error = e instanceof AggregateError ? e.errors[0] : e;
+        \\      expect(error.message).toBe('"encrypt" is not declared in this file');
+        \\    }
+        \\  }
+        \\
+        \\  it("is a parse error for JavaScript", () => {
+        \\    expectNotDeclaredError("js");
+        \\  });
+        \\
+        \\  it("is a parse error for JSX", () => {
+        \\    expectNotDeclaredError("jsx");
+        \\  });
+        \\
+        \\  it("is stripped like a type-only export for TypeScript", () => {
+        \\    const transpiler = new Bun.Transpiler({ loader: "ts" });
+        \\    const out = transpiler.transformSync(code);
+        \\    expect(out).not.toContain("export { encrypt }");
+        \\  });
+        \\
+        \\  it("still allows exporting a top-level function declaration", () => {
+        \\    const transpiler = new Bun.Transpiler({ loader: "js" });
+        \\    const out = transpiler.transformSync("function encrypt() {}\nexport { encrypt }");
+        \\    expect(out).toContain("export { encrypt }");
+        \\  });
+        \\
+        \\  it("still allows exporting a var declared inside a block", () => {
+        \\    const transpiler = new Bun.Transpiler({ loader: "js" });
+        \\    const out = transpiler.transformSync("{\n  var encrypt = 1;\n}\nexport { encrypt }");
+        \\    expect(out).toContain("export { encrypt }");
+        \\  });
+        \\
+        \\  it("does not affect block-level function declarations in sloppy mode", () => {
+        \\    const transpiler = new Bun.Transpiler({ loader: "js" });
+        \\    const out = transpiler.transformSync("{\n  function f() {}\n}\nmodule.exports = f;");
+        \\    expect(out).toContain("let f = function");
+        \\    expect(out).toContain("module.exports = f");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors transpiler crash regression corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 

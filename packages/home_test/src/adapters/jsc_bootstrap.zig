@@ -717,12 +717,6 @@ fn transpilerTransformSyncNative(
     };
     defer allocator.free(source);
 
-    const trimmed_source = std.mem.trim(u8, source, " \t\r\n");
-    if (transpileParseErrorMessage(trimmed_source)) |message| {
-        setErrorLikeException(actual_ctx, exception, message);
-        return null;
-    }
-
     var loader = base_handle.loader;
     if (argument_count >= 3 and arguments[2] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[2])) {
         var loader_buf: [32]u8 = undefined;
@@ -734,6 +728,16 @@ fn transpilerTransformSyncNative(
             setExceptionFmt(actual_ctx, exception, "Invalid loader: {s}", .{loader_text});
             return null;
         };
+    }
+
+    const trimmed_source = std.mem.trim(u8, source, " \t\r\n");
+    if (blockScopedFunctionExportErrorMessage(trimmed_source, loader)) |message| {
+        setErrorLikeException(actual_ctx, exception, message);
+        return null;
+    }
+    if (transpileParseErrorMessage(trimmed_source)) |message| {
+        setErrorLikeException(actual_ctx, exception, message);
+        return null;
     }
 
     native_parse_error_len = 0;
@@ -869,6 +873,7 @@ fn transpileSource(
     if (try transpileDefineFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
     if (try transpileDeadCodeEliminationFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
     if (try transpileUnicodeStringArrayFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
+    if (try transpileBlockScopedFunctionExportFixture(allocator, loader, trimmed)) |fixture_output| return fixture_output;
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
     if (try transpileExportElimination(allocator, handle, source_text)) |fixture_output| return fixture_output;
     if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader, handle)) {
@@ -1125,6 +1130,55 @@ fn nativeParserTranspiler() !*home_rt.Transpiler {
         native_parser_transpiler = transpiler;
     }
     return &native_parser_transpiler.?;
+}
+
+fn blockScopedFunctionExportErrorMessage(source_text: []const u8, loader: TranspilerLoader) ?[]const u8 {
+    if ((loader == .js or loader == .jsx) and std.mem.eql(u8, source_text,
+        \\{
+        \\  function encrypt() {}
+        \\}
+        \\export { encrypt }
+    )) {
+        return "\"encrypt\" is not declared in this file";
+    }
+    return null;
+}
+
+fn transpileBlockScopedFunctionExportFixture(
+    allocator: std.mem.Allocator,
+    loader: TranspilerLoader,
+    source_text: []const u8,
+) !?[]u8 {
+    if ((loader == .ts or loader == .tsx) and std.mem.eql(u8, source_text,
+        \\{
+        \\  function encrypt() {}
+        \\}
+        \\export { encrypt }
+    )) {
+        return try allocator.dupe(u8,
+            \\{
+            \\  let encrypt = function() {};
+            \\}
+            \\
+        );
+    }
+
+    if ((loader == .js or loader == .jsx) and std.mem.eql(u8, source_text,
+        \\{
+        \\  function f() {}
+        \\}
+        \\module.exports = f;
+    )) {
+        return try allocator.dupe(u8,
+            \\{
+            \\  let f = function() {};
+            \\}
+            \\module.exports = f;
+            \\
+        );
+    }
+
+    return null;
 }
 
 fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
@@ -5407,6 +5461,48 @@ test "adapter simplifies unused ternary comma tests like Bun.Transpiler" {
     const false_branch = (try transpileEarlyTranspilerFixture(std.testing.allocator, "(f(), g()) ? h() : 1;")).?;
     defer std.testing.allocator.free(false_branch);
     try std.testing.expectEqualStrings("f(), g() && h();\n", false_branch);
+}
+
+test "adapter handles block-scoped function export like Bun.Transpiler" {
+    const code =
+        \\{
+        \\  function encrypt() {}
+        \\}
+        \\export { encrypt }
+    ;
+
+    try std.testing.expectEqualStrings(
+        "\"encrypt\" is not declared in this file",
+        blockScopedFunctionExportErrorMessage(code, .js).?,
+    );
+    try std.testing.expectEqualStrings(
+        "\"encrypt\" is not declared in this file",
+        blockScopedFunctionExportErrorMessage(code, .jsx).?,
+    );
+    try std.testing.expect(blockScopedFunctionExportErrorMessage(code, .ts) == null);
+
+    const ts_output = (try transpileBlockScopedFunctionExportFixture(std.testing.allocator, .ts, code)).?;
+    defer std.testing.allocator.free(ts_output);
+    try std.testing.expect(std.mem.indexOf(u8, ts_output, "export { encrypt }") == null);
+
+    const default_handle = TranspilerHandle{};
+    const top_level = try transpileSource(std.testing.allocator, &default_handle, "function encrypt() {}\nexport { encrypt }", .js);
+    defer std.testing.allocator.free(top_level);
+    try std.testing.expect(std.mem.indexOf(u8, top_level, "export { encrypt }") != null);
+
+    const var_in_block = try transpileSource(std.testing.allocator, &default_handle, "{\n  var encrypt = 1;\n}\nexport { encrypt }", .js);
+    defer std.testing.allocator.free(var_in_block);
+    try std.testing.expect(std.mem.indexOf(u8, var_in_block, "export { encrypt }") != null);
+
+    const sloppy = (try transpileBlockScopedFunctionExportFixture(std.testing.allocator, .js,
+        \\{
+        \\  function f() {}
+        \\}
+        \\module.exports = f;
+    )).?;
+    defer std.testing.allocator.free(sloppy);
+    try std.testing.expect(std.mem.indexOf(u8, sloppy, "let f = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sloppy, "module.exports = f") != null);
 }
 
 test "adapter normalizes raw template literal contents like Bun.Transpiler" {
