@@ -6795,6 +6795,7 @@ fn hasNoLibReferenceLib(source: []const u8) bool {
 fn hasCompilerOptionCompatibilityDiagnostic(source: []const u8) bool {
     if ((directiveBool(source, "allowJs") orelse false) and
         !(directiveBool(source, "noEmit") orelse false) and
+        !(directiveBool(source, "emitDeclarationOnly") orelse false) and
         directiveValue(source, "outdir") == null and
         directiveValue(source, "outfile") == null and
         sourceHasJsVirtualFilename(source))
