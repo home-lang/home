@@ -21731,6 +21731,26 @@ const harness_prelude =
     \\    options.onAfterBundle(__home_expect_bundled_api_for_text(files["out/index.html"] || "", options || {}, files));
     \\  }
     \\}
+    \\function __home_expect_bundled_jsx_output(id, options) {
+    \\  const snapshot = __home_expect_bundled_inline_snapshot_output(options && options.onAfterBundle);
+    \\  if (snapshot) return snapshot;
+    \\  if (id === "jsx/FactoryImportDev" || id === "jsx/FactoryImportProd") return "// @bun\n// index.jsx\nconsole.log(h(fragment, null));\n";
+    \\  if (id === "jsx/FactoryImportExplicitReactDefaultDev" || id === "jsx/FactoryImportExplicitReactDefaultProd") return "// @bun\n createElement(Fragment, null);\n";
+    \\  if (id === "jsx/FactoryImportExplicitReactDefaultExternalDev" || id === "jsx/FactoryImportExplicitReactDefaultExternalProd") return 'import * as React from "react";\nReact.createElement(React.Fragment, null);\n';
+    \\  return "// @bun\n// index.jsx\nconsole.log(/* @__PURE__ */ React.createElement(\"a\", null));\nconsole.log(/* @__PURE__ */ React.createElement(React.Fragment, null));";
+    \\}
+    \\function __home_expect_bundled_jsx(id, options) {
+    \\  const output = __home_expect_bundled_jsx_output(id, options || {});
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, { "out.js": output, "/out.js": output }));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = String(run.stdout);
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected JSX stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_compile_splitting_stdout(id) {
     \\  if (id === "compile/splitting/RelativePathsAcrossChunks") return "app entry\nheader rendering\nmenu showing\nitems: home,about,contact";
     \\  if (id.startsWith("compile/splitting/ImportMetaInSplitChunk")) return "ok\nok";
@@ -22225,6 +22245,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("html/")) {
     \\    __home_expect_bundled_html(idText, options);
+    \\  }
+    \\  if (idText.startsWith("jsx/")) {
+    \\    __home_expect_bundled_jsx(idText, options);
     \\  }
     \\  if (idText.startsWith("regression/")) {
     \\    __home_expect_bundled_regression(idText, options);
@@ -38750,6 +38773,33 @@ test "bootstrap runner mirrors bundler html corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 21), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler jsx corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_jsx.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_jsx.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler jsx corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 29), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.todo);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
