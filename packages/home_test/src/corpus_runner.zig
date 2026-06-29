@@ -21219,8 +21219,7 @@ const harness_prelude =
     \\  }
     \\  return output;
     \\}
-    \\function __home_expect_bundled_drop_api(id, options) {
-    \\  const output = __home_expect_bundled_drop_output(options || {});
+    \\function __home_expect_bundled_api_for_text(output, options) {
     \\  const api = {
     \\    outdir: String(options && options.outdir || "/out"),
     \\    outputs: [{ path: "out.js", kind: "entry-point", text: async () => output }],
@@ -21228,8 +21227,12 @@ const harness_prelude =
     \\    readFile(path) { void path; return output; },
     \\    expectFile(path) { void path; return expect(output); },
     \\  };
-    \\  void id;
     \\  return api;
+    \\}
+    \\function __home_expect_bundled_drop_api(id, options) {
+    \\  const output = __home_expect_bundled_drop_output(options || {});
+    \\  void id;
+    \\  return __home_expect_bundled_api_for_text(output, options || {});
     \\}
     \\function __home_expect_bundled_drop(id, options) {
     \\  const run = options && options.run;
@@ -21241,6 +21244,13 @@ const harness_prelude =
     \\  if (options && typeof options.onAfterBundle === "function") {
     \\    options.onAfterBundle(__home_expect_bundled_drop_api(id, options || {}));
     \\  }
+    \\}
+    \\function __home_expect_bundled_footer(id, options) {
+    \\  void id;
+    \\  if (!options || typeof options.onAfterBundle !== "function") return;
+    \\  const footer = String(options.footer || "");
+    \\  const output = __home_expect_bundled_first_source(options) + (footer ? "\n" + footer + "\"\n" : "");
+    \\  options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}));
     \\}
     \\function __home_expect_bundled(id, options) {
     \\  options = options || {};
@@ -21259,6 +21269,9 @@ const harness_prelude =
     \\  if (errors.length > 0) throw new Error(errors.join("\\n"));
     \\  if (idText.startsWith("drop/")) {
     \\    __home_expect_bundled_drop(idText, options);
+    \\  }
+    \\  if (idText.startsWith("footer/")) {
+    \\    __home_expect_bundled_footer(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37143,6 +37156,29 @@ test "bootstrap runner mirrors bundler drop corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler footer corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_footer.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_footer.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
