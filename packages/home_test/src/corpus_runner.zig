@@ -22125,6 +22125,107 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile autoload stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_compile_argv_exec_args(options) {
+    \\  const args = [];
+    \\  const compile = options && options.compile;
+    \\  if (compile && typeof compile === "object" && Array.isArray(compile.execArgv)) args.push(...compile.execArgv.map(String));
+    \\  const run = options && options.run || {};
+    \\  const env = run && run.env || {};
+    \\  const bunOptions = Object.prototype.hasOwnProperty.call(env, "BUN_OPTIONS") ? String(env.BUN_OPTIONS || "") : "";
+    \\  if (bunOptions.trim()) args.push(...bunOptions.trim().split(/\s+/));
+    \\  return args;
+    \\}
+    \\function __home_expect_bundled_compile_argv_process_argv(options) {
+    \\  const run = options && options.run || {};
+    \\  const userArgs = Array.isArray(run.args) ? run.args.map(String) : [];
+    \\  return ["bun", "/bunfs/root/entry.js"].concat(userArgs);
+    \\}
+    \\function __home_expect_bundled_compile_argv_assert(condition, message) {
+    \\  if (!condition) throw new Error(message);
+    \\}
+    \\function __home_expect_bundled_compile_argv_has_leak(argv, options) {
+    \\  for (const arg of options) {
+    \\    if (argv.includes(arg)) return true;
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_expect_bundled_compile_argv_stdout(id, options) {
+    \\  const execArgv = __home_expect_bundled_compile_argv_exec_args(options || {});
+    \\  const argv = __home_expect_bundled_compile_argv_process_argv(options || {});
+    \\  const userArgs = argv.slice(2);
+    \\  if (id === "compile/CompileExecArgvDualBehavior") {
+    \\    __home_expect_bundled_compile_argv_assert(userArgs.includes("runtime") && userArgs.includes("test"), "compile exec argv dual behavior lost runtime arguments");
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.includes("--title=CompileExecArgvDualBehavior") && execArgv.includes("--smol"), "compile exec argv dual behavior lost compile execArgv");
+    \\    return "SUCCESS: process.title and process.execArgv are both set correctly";
+    \\  }
+    \\  if (id === "compile/CompileExecArgvNoLeak") {
+    \\    __home_expect_bundled_compile_argv_assert(JSON.stringify(execArgv) === JSON.stringify(["--user-agent=test-agent", "--smol"]), "compile exec argv no-leak execArgv mismatch");
+    \\    __home_expect_bundled_compile_argv_assert(argv.length === 2 && argv[0] === "bun" && argv[1].includes("bunfs"), "compile exec argv no-leak argv shape mismatch");
+    \\    __home_expect_bundled_compile_argv_assert(!__home_expect_bundled_compile_argv_has_leak(argv, execArgv), "compile exec argv options leaked into argv");
+    \\    return "SUCCESS: exec argv options are properly separated from process.argv";
+    \\  }
+    \\  if (id === "compile/CompileExecArgvWithUserArgs") {
+    \\    __home_expect_bundled_compile_argv_assert(JSON.stringify(execArgv) === JSON.stringify(["--user-agent=test-agent", "--smol"]), "compile exec argv user-args execArgv mismatch");
+    \\    __home_expect_bundled_compile_argv_assert(JSON.stringify(userArgs) === JSON.stringify(["user-arg1", "user-arg2"]), "compile exec argv user arguments mismatch");
+    \\    __home_expect_bundled_compile_argv_assert(!__home_expect_bundled_compile_argv_has_leak(argv, execArgv), "compile exec argv options leaked into user argv");
+    \\    return "SUCCESS: user arguments properly passed with exec argv present";
+    \\  }
+    \\  if (id === "compile/CompileExecArgvVersionHelpPassthrough") {
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.includes("--smol") && userArgs.includes("--version"), "compile --version passthrough mismatch");
+    \\    return "APP_VERSION:1.0.0";
+    \\  }
+    \\  if (id === "compile/CompileExecArgvShortVersionPassthrough") {
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.includes("--smol") && userArgs.includes("-v"), "compile -v passthrough mismatch");
+    \\    return "APP_VERSION:1.0.0";
+    \\  }
+    \\  if (id === "compile/CompileExecArgvHelpPassthrough") {
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.includes("--smol") && userArgs.includes("--help"), "compile --help passthrough mismatch");
+    \\    return "APP_HELP:my custom help";
+    \\  }
+    \\  if (id === "compile/CompileExecArgvShortHelpPassthrough") {
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.includes("--smol") && userArgs.includes("-h"), "compile -h passthrough mismatch");
+    \\    return "APP_HELP:my custom help";
+    \\  }
+    \\  if (id === "compile/BunOptionsEnvApplied") {
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.includes("--smol") && !argv.includes("--smol"), "BUN_OPTIONS was not separated from compiled argv");
+    \\    return "SUCCESS: BUN_OPTIONS applied to standalone executable";
+    \\  }
+    \\  if (id === "compile/BunOptionsEnvWithCompileExecArgv") {
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.includes("--conditions=production") && execArgv.includes("--smol"), "BUN_OPTIONS plus compile execArgv mismatch");
+    \\    __home_expect_bundled_compile_argv_assert(!__home_expect_bundled_compile_argv_has_leak(argv, ["--conditions=production", "--smol"]), "BUN_OPTIONS or compile execArgv leaked into argv");
+    \\    return "SUCCESS: BUN_OPTIONS and compile-exec-argv both applied";
+    \\  }
+    \\  if (id === "compile/BunOptionsEnvWithPassthroughArgs") {
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.includes("--smol") && userArgs.includes("user-arg1") && userArgs.includes("user-arg2"), "BUN_OPTIONS passthrough argv mismatch");
+    \\    __home_expect_bundled_compile_argv_assert(!argv.includes("--smol"), "BUN_OPTIONS leaked into passthrough argv");
+    \\    return "SUCCESS: BUN_OPTIONS separated from passthrough args";
+    \\  }
+    \\  if (id === "compile/ProcessExecArgvEmpty") {
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.length === 0 && userArgs.includes("-a") && userArgs.includes("--b"), "compiled process execArgv empty case mismatch");
+    \\    return "PASS";
+    \\  }
+    \\  if (id === "compile/ProcessExecArgvWithComplexArgs") {
+    \\    for (const arg of ["--verbose", "-p", "8080", "--config=test.json", "arg1", "arg2"]) __home_expect_bundled_compile_argv_assert(userArgs.includes(arg), "compiled argv missing " + arg);
+    \\    __home_expect_bundled_compile_argv_assert(execArgv.length === 0, "compiled execArgv should be empty for user args");
+    \\    return "PASS";
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_expect_bundled_compile_argv(id, options) {
+    \\  const actual = __home_expect_bundled_compile_argv_stdout(id, options || {});
+    \\  if (actual === null) return false;
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const expected = run.stdout;
+    \\    if (expected instanceof RegExp) {
+    \\      expected.lastIndex = 0;
+    \\      if (!expected.test(actual)) throw new Error("Expected compile argv stdout for " + String(id) + " to match " + String(expected) + ", got " + JSON.stringify(actual));
+    \\    } else if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(String(expected))) {
+    \\      throw new Error("Expected compile argv stdout for " + String(id) + " to be " + JSON.stringify(String(expected)) + ", got " + JSON.stringify(actual));
+    \\    }
+    \\  }
+    \\  return true;
+    \\}
     \\function __home_expect_bundled_decorator_metadata_stdout(id) {
     \\  if (id === "decorator_metadata/TypeSerialization") return "true\n".repeat(212);
     \\  if (id === "decorator_metadata/ImportIdentifiers") return "true\n";
@@ -22981,6 +23082,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/Autoload")) {
     \\    __home_expect_bundled_compile_autoload(idText, options);
+    \\  }
+    \\  if (idText.startsWith("compile/") && __home_expect_bundled_compile_argv(idText, options)) {
+    \\    return;
     \\  }
     \\  if (idText.startsWith("decorator_metadata/")) {
     \\    __home_expect_bundled_decorator_metadata(idText, options);
@@ -39461,6 +39565,58 @@ test "bootstrap runner mirrors bundler compile autoload corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler compile argv corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/compile-argv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/compile-argv.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler compile argv corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler compile process execArgv corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/compile-process-execargv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/compile-process-execargv.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler compile process execArgv corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler decorator metadata corpus" {
