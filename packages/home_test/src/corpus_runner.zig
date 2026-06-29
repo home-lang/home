@@ -38633,6 +38633,98 @@ test "bootstrap runner mirrors transpiler jsx cjs scanImports corpus" {
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler define browser corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  const transpiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    define: {
+        \\      "process.env.NODE_ENV": JSON.stringify("development"),
+        \\      user_undefined: "undefined",
+        \\      user_nested: "location.origin",
+        \\      "hello.earth": "hello.mars",
+        \\      "Math.log": "console.error",
+        \\    },
+        \\    platform: "browser",
+        \\  });
+        \\  const bunTranspiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    define: {
+        \\      "process.env.NODE_ENV": JSON.stringify("development"),
+        \\      user_undefined: "undefined",
+        \\      user_nested: "location.origin",
+        \\      "hello.earth": "hello.mars",
+        \\      "Math.log": "console.error",
+        \\    },
+        \\    platform: "bun",
+        \\    minify: {
+        \\      syntax: true,
+        \\    },
+        \\  });
+        \\
+        \\  const parsed = (code, trim = true, autoExport = false, transpiler_ = transpiler) => {
+        \\    if (autoExport) code = "export default (" + code + ")";
+        \\
+        \\    var out = transpiler_.transformSync(code, "js");
+        \\    if (autoExport && out.startsWith("export default ")) out = out.substring("export default ".length);
+        \\
+        \\    if (trim) {
+        \\      out = out.trim();
+        \\      if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\      return out.trim();
+        \\    }
+        \\
+        \\    return out;
+        \\  };
+        \\  const expectPrinted_ = (code, out) => {
+        \\    expect(parsed(code, !out.endsWith(";\n"), false)).toBe(out);
+        \\  };
+        \\  const expectBunPrinted_ = (code, out) => {
+        \\    expect(parsed(code, !out.endsWith(";\n"), false, bunTranspiler)).toBe(out);
+        \\  };
+        \\
+        \\  describe("Browsers", () => {
+        \\    it('require.resolve("my-module") is untouched', () => {
+        \\      expectPrinted_(
+        \\        `export const foo = require.resolve('my-module')`,
+        \\        `export const foo = require.resolve("my-module")`,
+        \\      );
+        \\    });
+        \\  });
+        \\
+        \\  it("define", () => {
+        \\    expectPrinted_(`export default typeof user_undefined === 'undefined';`, `export default true`);
+        \\    expectPrinted_(`export default typeof user_undefined !== 'undefined';`, `export default false`);
+        \\    expectPrinted_(`export default typeof user_undefined !== 'undefined';`, `export default false`);
+        \\    expectPrinted_(`export default !user_undefined;`, `export default true`);
+        \\
+        \\    expectPrinted_(`export default user_nested;`, `export default location.origin`);
+        \\    expectPrinted_("hello.earth('hi')", 'hello.mars("hi")');
+        \\    expectPrinted_("Math.log('hi')", 'console.error("hi")');
+        \\  });
+        \\
+        \\  it("jsx symbol should work", () => {
+        \\    expectBunPrinted_(`var x = jsx; export default x;`, "var x = jsx;\nexport default x");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
