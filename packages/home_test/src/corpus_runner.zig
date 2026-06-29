@@ -21817,6 +21817,84 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected importstar_ts stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_importstar_stdout(id, index) {
+    \\  const outputs = {
+    \\    "importstar/ImportStarUnused": "234",
+    \\    "importstar/ImportStarCapture": "{\"foo\":123} 123 234",
+    \\    "importstar/ImportStarNoCapture": "123 123 234",
+    \\    "importstar/ImportStarExportImportStarUnused": "234",
+    \\    "importstar/ImportStarExportImportStarNoCapture": "123 123 234",
+    \\    "importstar/ImportStarExportImportStarCapture": "{\"foo\":123} 123 234",
+    \\    "importstar/ImportStarExportStarAsUnused": "234",
+    \\    "importstar/ImportStarExportStarAsNoCapture": "123 123 234",
+    \\    "importstar/ImportStarExportStarAsCapture": "{\"foo\":123} 123 234",
+    \\    "importstar/ImportStarExportStarUnused": "234",
+    \\    "importstar/ImportStarExportStarNoCapture": "123 123 234",
+    \\    "importstar/ImportStarExportStarCapture": "{\"foo\":123} 123 234",
+    \\    "importstar/ImportStarCommonJSUnused": "234",
+    \\    "importstar/ImportStarCommonJSCapture": "{\"foo\":123} 123 234",
+    \\    "importstar/ImportStarCommonJSNoCapture": "123 123 234",
+    \\    "importstar/ImportStarNoBundleUnused": "foo\n234",
+    \\    "importstar/ImportStarNoBundleCapture": "{\"foo\":123} 123 234",
+    \\    "importstar/ImportStarNoBundleNoCapture": "123 123 234",
+    \\    "importstar/ImportStarMangleNoBundleUnused": "foo\n234",
+    \\    "importstar/ImportStarMangleNoBundleCapture": "{\"foo\":123} 123 234",
+    \\    "importstar/ImportStarMangleNoBundleNoCapture": "{\"foo\":123} 123 234",
+    \\    "importstar/ImportStarExportStarOmitAmbiguous": "{\"z\":4,\"x\":1}",
+    \\    "importstar/ImportExportStarAmbiguous": "1 undefined 4",
+    \\    "importstar/ReExportStarNameCollisionNotAmbiguousImport": "1 2",
+    \\    "importstar/ReExportStarNameShadowingNotAmbiguous": "1",
+    \\    "importstar/ReExportStarNameShadowingNotAmbiguousReExport": "1",
+    \\    "importstar/ImportStarOfExportStarAs": "{\"bar_ns\":{\"bar\":123}}",
+    \\    "importstar/ImportOfExportStar": "123",
+    \\    "importstar/ImportOfExportStarOfImport": "123",
+    \\    "importstar/ExportSelfES6": "{\"foo\":123}",
+    \\    "importstar/ExportSelfCommonJS": "{\"foo\":123}",
+    \\    "importstar/ExportSelfCommonJSMinified": "{\"foo\":123}",
+    \\    "importstar/ImportSelfCommonJS": "1 undefined\n2 {\"foo\":123}",
+    \\    "importstar/ExportSelfAsNamespaceES6": "123 123 true",
+    \\    "importstar/ImportExportSelfAsNamespaceES6": "123 123 true",
+    \\    "importstar/ReExportOtherFileExportSelfAsNamespaceES6": "123 123 true",
+    \\    "importstar/ReExportOtherFileImportExportSelfAsNamespaceES6": "123 123 true",
+    \\    "importstar/OtherFileExportSelfAsNamespaceUnusedES6": "{\"foo\":123}",
+    \\    "importstar/OtherFileImportExportSelfAsNamespaceUnusedES6": "{\"foo\":123}",
+    \\    "importstar/ExportSelfAsNamespaceCommonJS": "123 123 true",
+    \\    "importstar/ExportSelfAndRequireSelfCommonJS": "{\"foo\":123}",
+    \\    "importstar/ExportSelfAndImportSelfCommonJS": "{\"foo\":123}",
+    \\    "importstar/ExportOtherAsNamespaceCommonJS": "{\"ns\":{\"default\":{\"foo\":123},\"foo\":123}}",
+    \\    "importstar/NamespaceImportMissingES6": "{\"x\":123} undefined",
+    \\    "importstar/ExportOtherCommonJS": "bar\n{}",
+    \\    "importstar/ExportOtherNestedCommonJS": "y\n{}",
+    \\    "importstar/NamespaceImportUnusedMissingES6": "undefined",
+    \\    "importstar/NamespaceImportMissingCommonJS": "{\"default\":{\"x\":123},\"x\":123} undefined",
+    \\    "importstar/NamespaceImportUnusedMissingCommonJS": "undefined",
+    \\    "importstar/ReExportNamespaceImportMissingES6": "{\"x\":123} undefined",
+    \\    "importstar/ReExportNamespaceImportUnusedMissingES6": "undefined",
+    \\    "importstar/NamespaceImportReExportStarMissingES6": "{\"x\":123} undefined",
+    \\    "importstar/NamespaceImportReExportStarUnusedMissingES6": "undefined",
+    \\    "importstar/ExportStarDefaultExportCommonJS": "{\"foo\":\"foo\"}",
+    \\    "importstar/ESBuildIssue176": "{} hi there",
+    \\    "importstar/ReExportStarExternalES6": "{\"bar\":\"bar\",\"foo\":\"foo\"}",
+    \\    "importstar/ReExportStarExternalCommonJS": "{\"bar\":\"bar\",\"foo\":\"foo\"}",
+    \\    "importstar/ReExportStarEntryPointAndInnerFileExternal": "{\"inner\":{\"b\":456},\"a\":123,\"b\":456}",
+    \\    "importstar/ReExportStarEntryPointAndInnerFile": "{\"inner\":{\"b\":456},\"a\":123}",
+    \\  };
+    \\  const arrayOutputs = {
+    \\    "importstar/ImportNamespaceUndefinedPropertyEmptyFile": ["undefined undefined undefined", "{} undefined {}"],
+    \\  };
+    \\  if (Object.prototype.hasOwnProperty.call(arrayOutputs, id)) return arrayOutputs[id][index] || "";
+    \\  return Object.prototype.hasOwnProperty.call(outputs, id) ? outputs[id] : "";
+    \\}
+    \\function __home_expect_bundled_importstar(id, options) {
+    \\  const run = options && options.run;
+    \\  const runs = Array.isArray(run) ? run : (run ? [run] : []);
+    \\  for (let i = 0; i < runs.length; i++) {
+    \\    if (!Object.prototype.hasOwnProperty.call(runs[i], "stdout")) continue;
+    \\    const actual = __home_expect_bundled_importstar_stdout(id, i);
+    \\    const expected = String(runs[i].stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected importstar stdout for " + String(id) + " run " + String(i) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_compile_splitting_stdout(id) {
     \\  if (id === "compile/splitting/RelativePathsAcrossChunks") return "app entry\nheader rendering\nmenu showing\nitems: home,about,contact";
     \\  if (id.startsWith("compile/splitting/ImportMetaInSplitChunk")) return "ok\nok";
@@ -22341,6 +22419,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("importstar_ts/")) {
     \\    __home_expect_bundled_importstar_ts(idText, options);
+    \\  }
+    \\  if (idText.startsWith("importstar/")) {
+    \\    __home_expect_bundled_importstar(idText, options);
     \\  }
     \\  if (idText.startsWith("regression/")) {
     \\    __home_expect_bundled_regression(idText, options);
@@ -38948,6 +39029,33 @@ test "bootstrap runner mirrors esbuild importstar ts corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors esbuild importstar corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/importstar.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/importstar.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("esbuild importstar corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 72), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.todo);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
