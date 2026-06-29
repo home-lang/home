@@ -459,7 +459,6 @@ pub const minimal_js_files = [_][]const u8{
     "bake/dev/import-meta-inline.test.ts",
     "bake/dev/import-meta-inline-negative.test.ts",
     "bake/dev/incremental-graph-edge-deletion.test.ts",
-    "bake/dev/plugins.test.ts",
 };
 
 pub const bundler_core_itbundled_files = [_][]const u8{
@@ -46397,7 +46396,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bake/dev/import-meta-inline.test.ts",
         "bake/dev/import-meta-inline-negative.test.ts",
         "bake/dev/incremental-graph-edge-deletion.test.ts",
-        "bake/dev/plugins.test.ts",
         "js/bun/test/skip-test-fixture.js",
         "js/bun/test/expect-type-doctest.test.ts",
         "js/bun/test/todo-test-fixture.js",
@@ -47390,6 +47388,31 @@ test "bootstrap runner mirrors bake production corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors bake plugins dev corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/plugins.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/plugins.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bake plugins dev corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
