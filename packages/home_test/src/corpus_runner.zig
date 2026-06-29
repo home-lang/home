@@ -38901,6 +38901,72 @@ test "bootstrap runner mirrors transpiler simplification scopes corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler comma operator corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  describe("simplification", () => {
+        \\    const transpilerMinifySyntax = new Bun.Transpiler({
+        \\      loader: "tsx",
+        \\      platform: "browser",
+        \\      minify: { syntax: true },
+        \\    });
+        \\
+        \\    const parsed = (code, trim = true, autoExport = false, transpiler_ = transpilerMinifySyntax) => {
+        \\      if (autoExport) code = "export default (" + code + ")";
+        \\
+        \\      var out = transpiler_.transformSync(code, "js");
+        \\      if (autoExport && out.startsWith("export default ")) {
+        \\        out = out.substring("export default ".length);
+        \\      }
+        \\
+        \\      if (trim) {
+        \\        out = out.trim();
+        \\        if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\        return out.trim();
+        \\      }
+        \\
+        \\      return out;
+        \\    };
+        \\
+        \\    it("comma operator transforms", () => {
+        \\      const expectPrinted = (code, out) => {
+        \\        expect(parsed(code, true, true, transpilerMinifySyntax)).toBe(out);
+        \\      };
+        \\
+        \\      expectPrinted("(0, 1)", "1");
+        \\      expectPrinted("(0, foo)", "foo");
+        \\      expectPrinted("(sideEffect(), foo)", "(sideEffect(), foo)");
+        \\      expectPrinted("(0, obj.method)()", "(0, obj.method)()");
+        \\      expectPrinted("(0, obj[key])()", "(0, obj[key])()");
+        \\      expectPrinted("(0, obj?.method)()", "(0, obj?.method)()");
+        \\      expectPrinted("(0, obj?.[key])()", "(0, obj?.[key])()");
+        \\      expectPrinted("(sideEffect(), obj.method)()", "(sideEffect(), obj.method)()");
+        \\      expectPrinted("(0, func)()", "func()");
+        \\      expectPrinted("(0, getValue())()", "getValue()()");
+        \\      expectPrinted("(0, obj.method)", "obj.method");
+        \\      expectPrinted("(0, obj[key])", "obj[key]");
+        \\      expectPrinted("(0, func())", "func()");
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors transpiler dead code option corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
