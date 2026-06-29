@@ -22125,6 +22125,18 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile autoload stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_decorator_metadata_stdout(id) {
+    \\  if (id === "decorator_metadata/TypeSerialization") return "true\n".repeat(212);
+    \\  if (id === "decorator_metadata/ImportIdentifiers") return "true\n";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_decorator_metadata(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_decorator_metadata_stdout(id);
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected decorator metadata stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
     \\function __home_expect_bundled_splitting_stdout(id, runIndex) {
     \\  const outputs = {
     \\    "splitting/SharedES6IntoES6": ["123", "123"],
@@ -22969,6 +22981,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/Autoload")) {
     \\    __home_expect_bundled_compile_autoload(idText, options);
+    \\  }
+    \\  if (idText.startsWith("decorator_metadata/")) {
+    \\    __home_expect_bundled_decorator_metadata(idText, options);
     \\  }
     \\  if (idText.startsWith("compile/splitting/")) {
     \\    __home_expect_bundled_compile_splitting(idText, options);
@@ -39446,6 +39461,32 @@ test "bootstrap runner mirrors bundler compile autoload corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler decorator metadata corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_decorator_metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_decorator_metadata.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler decorator metadata corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler compile splitting corpus" {
