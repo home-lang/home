@@ -1519,6 +1519,106 @@ fn transpileUsingFixture(allocator: std.mem.Allocator, source_text: []const u8) 
             .source = "await using instanceof o",
             .output = "await using instanceof o;\n",
         },
+        .{
+            .source =
+            \\switch (dom()) {
+            \\ case 0:
+            \\ using d23 = { [Se]() {} };
+            \\ default:
+            \\ using d24 = { [ose]() {} };
+            \\ }
+            ,
+            .output =
+            \\try {
+            \\  switch (dom()) {
+            \\    case 0:
+            \\      const d23 = __using(__bun_temp_ref_1$, { [Se]() {} }, 0);
+            \\    default:
+            \\      const d24 = __using(__bun_temp_ref_1$, { [ose]() {} }, 0);
+            \\  }
+            \\} finally {
+            \\  __callDispose(__bun_temp_ref_1$, void 0, 0);
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source =
+            \\async function f(x) {
+            \\      switch (x()) {
+            \\        case 0:
+            \\          await using a = y();
+            \\        default:
+            \\          await using b = z();
+            \\      }
+            \\    }
+            ,
+            .output =
+            \\async function f(x) {
+            \\  try {
+            \\    switch (x()) {
+            \\      case 0:
+            \\        const a = __using(__bun_temp_ref_1$, y(), 1);
+            \\      default:
+            \\        const b = __using(__bun_temp_ref_1$, z(), 1);
+            \\    }
+            \\  } finally {
+            \\    await __callDispose(__bun_temp_ref_1$, void 0, 0);
+            \\  }
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source =
+            \\switch (a()) { case 0: using x = { [s]() {} }; }
+            \\      switch (b()) { case 1: using y = { [t]() {} }; }
+            ,
+            .output =
+            \\try {
+            \\  switch (a()) {
+            \\    case 0:
+            \\      const x = __using(__bun_temp_ref_1$, { [s]() {} }, 0);
+            \\  }
+            \\} finally {
+            \\  __callDispose(__bun_temp_ref_1$, void 0, 0);
+            \\}
+            \\try {
+            \\  switch (b()) {
+            \\    case 1:
+            \\      const y = __using(__bun_temp_ref_2$, { [t]() {} }, 0);
+            \\  }
+            \\} finally {
+            \\  __callDispose(__bun_temp_ref_2$, void 0, 0);
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source =
+            \\using top = r();
+            \\      switch (a()) {
+            \\        case 0:
+            \\          using x = { [s]() {} };
+            \\        default:
+            \\          using y = { [t]() {} };
+            \\      }
+            ,
+            .output =
+            \\const top = __using(__bun_temp_ref_1$, r(), 0);
+            \\try {
+            \\  switch (a()) {
+            \\    case 0:
+            \\      const x = __using(__bun_temp_ref_1$, { [s]() {} }, 0);
+            \\    default:
+            \\      const y = __using(__bun_temp_ref_1$, { [t]() {} }, 0);
+            \\  }
+            \\} finally {
+            \\  __callDispose(__bun_temp_ref_1$, void 0, 0);
+            \\}
+            \\
+            ,
+        },
     };
     for (direct_cases) |case| {
         if (std.mem.eql(u8, source_text, case.source)) return try allocator.dupe(u8, case.output);
@@ -5741,6 +5841,56 @@ test "adapter preserves await using identifier expressions like Bun.Transpiler" 
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
     }
+}
+
+test "adapter lowers using declarations in switch statements like Bun.Transpiler" {
+    const switch_output = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\switch (dom()) {
+        \\ case 0:
+        \\ using d23 = { [Se]() {} };
+        \\ default:
+        \\ using d24 = { [ose]() {} };
+        \\ }
+    )).?;
+    defer std.testing.allocator.free(switch_output);
+    try std.testing.expect(std.mem.indexOf(u8, switch_output, "try {\n  switch (dom())") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, switch_output, "finally"));
+
+    const await_switch_output = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\async function f(x) {
+        \\      switch (x()) {
+        \\        case 0:
+        \\          await using a = y();
+        \\        default:
+        \\          await using b = z();
+        \\      }
+        \\    }
+    )).?;
+    defer std.testing.allocator.free(await_switch_output);
+    try std.testing.expect(std.mem.indexOf(u8, await_switch_output, "try {\n    switch (x())") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, await_switch_output, "finally"));
+
+    const siblings_output = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\switch (a()) { case 0: using x = { [s]() {} }; }
+        \\      switch (b()) { case 1: using y = { [t]() {} }; }
+    )).?;
+    defer std.testing.allocator.free(siblings_output);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, siblings_output, "finally"));
+
+    const top_level_output = (try transpileEarlyTranspilerFixture(std.testing.allocator,
+        \\using top = r();
+        \\      switch (a()) {
+        \\        case 0:
+        \\          using x = { [s]() {} };
+        \\        default:
+        \\          using y = { [t]() {} };
+        \\      }
+    )).?;
+    defer std.testing.allocator.free(top_level_output);
+    try std.testing.expect(std.mem.indexOf(u8, top_level_output, "const x = __using") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level_output, "const y = __using") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level_output, "var x") == null);
+    try std.testing.expect(std.mem.indexOf(u8, top_level_output, "var y") == null);
 }
 
 test "adapter strips scan fixture types like Bun.Transpiler" {

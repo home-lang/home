@@ -38095,6 +38095,83 @@ test "bootstrap runner mirrors transpiler block scoped export corpus" {
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler using switch corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("using declarations in switch statements", () => {
+        \\  const reparse = out => new Bun.Transpiler({ loader: "js" }).transformSync(out);
+        \\
+        \\  it("lowers by wrapping the entire switch in a single try/finally", () => {
+        \\    const input =
+        \\      "switch (dom()) {\n case 0:\n using d23 = { [Se]() {} };\n default:\n using d24 = { [ose]() {} };\n }";
+        \\
+        \\    for (const minifyWhitespace of [false, true]) {
+        \\      const out = new Bun.Transpiler({ loader: "jsx", target: "node", minifyWhitespace }).transformSync(input);
+        \\      expect(() => reparse(out)).not.toThrow();
+        \\      expect(out).toMatch(/try\s*\{\s*switch\s*\(dom\(\)\)/);
+        \\      expect(out.match(/finally/g)).toHaveLength(1);
+        \\    }
+        \\  });
+        \\
+        \\  it("lowers `await using` in switch cases the same way", () => {
+        \\    const input = `async function f(x) {
+        \\      switch (x()) {
+        \\        case 0:
+        \\          await using a = y();
+        \\        default:
+        \\          await using b = z();
+        \\      }
+        \\    }`;
+        \\    const out = new Bun.Transpiler({ loader: "js", target: "node" }).transformSync(input);
+        \\    expect(() => reparse(out)).not.toThrow();
+        \\    expect(out).toMatch(/try\s*\{\s*switch\s*\(x\(\)\)/);
+        \\    expect(out.match(/finally/g)).toHaveLength(1);
+        \\  });
+        \\
+        \\  it("keeps generated temp refs unique across sibling switches in the same scope", () => {
+        \\    const input = `
+        \\      switch (a()) { case 0: using x = { [s]() {} }; }
+        \\      switch (b()) { case 1: using y = { [t]() {} }; }
+        \\    `;
+        \\    const out = new Bun.Transpiler({ loader: "js", target: "node", minifyWhitespace: true }).transformSync(input);
+        \\    expect(() => reparse(out)).not.toThrow();
+        \\    expect(out.match(/finally/g)).toHaveLength(2);
+        \\  });
+        \\
+        \\  it("keeps case bindings const when combined with top-level using declarations", () => {
+        \\    const input = `
+        \\      using top = r();
+        \\      switch (a()) {
+        \\        case 0:
+        \\          using x = { [s]() {} };
+        \\        default:
+        \\          using y = { [t]() {} };
+        \\      }
+        \\    `;
+        \\    const out = new Bun.Transpiler({ loader: "js", target: "node", minifyWhitespace: true }).transformSync(input);
+        \\    expect(() => reparse(out)).not.toThrow();
+        \\    expect(out).toMatch(/const x\s*=\s*__using/);
+        \\    expect(out).toMatch(/const y\s*=\s*__using/);
+        \\    expect(out).not.toMatch(/var [xy]\b/);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors transpiler crash regression corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
