@@ -3586,6 +3586,63 @@ test "driver: checkJs virtual js surfaces checker diagnostics" {
     try T.expect(c.has_errors);
 }
 
+test "driver: checkJs virtual computed prototype object literal surfaces index diagnostics" {
+    const source_lf =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @target: es6
+        \\// @filename: lateBoundAssignmentDeclarationSupport5.js
+        \\// currently unsupported
+        \\const _sym = Symbol();
+        \\const _str = "my-fake-sym";
+        \\
+        \\function F() {
+        \\}
+        \\F.prototype = {
+        \\    [_sym]: "ok",
+        \\    [_str]: "ok"
+        \\}
+        \\const inst =  new F();
+        \\const _y = inst[_str];
+        \\const _z = inst[_sym];
+        \\module.exports.F = F;
+        \\module.exports.S = _sym;
+        \\// @filename: usage.js
+        \\const x = require("./lateBoundAssignmentDeclarationSupport5.js");
+        \\const inst =  new x.F();
+        \\const y = inst["my-fake-sym"];
+        \\const z = inst[x.S];
+    ;
+    try T.expect(virtualFilenameIsJs(source_lf));
+    try T.expect(!sourceIsUncheckedJs(source_lf));
+    var c = try compileSource(T.allocator, source_lf, .{
+        .no_emit = true,
+        .continue_on_error = true,
+        .allow_js = true,
+        .syntax_target_es2015 = true,
+        .strict_flags = .{
+            .no_implicit_any = true,
+            .strict_function_types = true,
+            .strict_null_checks = true,
+            .strict_property_initialization = true,
+            .use_unknown_in_catch_variables = true,
+        },
+        .importer_path = "lateBoundAssignmentDeclarationSupport5.js",
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var index_count: u32 = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == ts_checker.check.TsCodes.element_implicitly_any) index_count += 1;
+    }
+    try T.expect(index_count >= 2);
+    try T.expect(c.has_errors);
+}
+
 test "driver: checkJs virtual js JSDoc array assignment in class method" {
     var c = try compileSource(T.allocator,
         \\// @allowJs: true

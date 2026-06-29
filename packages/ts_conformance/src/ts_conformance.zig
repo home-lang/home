@@ -1691,6 +1691,153 @@ test "conformance: runProgram resolves package self-name through declarationDir 
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: direct run keeps checkJs diagnostics for late-bound computed prototype fixture" {
+    const source =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @noEmit: true
+        \\// @strict: true
+        \\// @target: es6
+        \\// @filename: lateBoundAssignmentDeclarationSupport5.js
+        \\const _sym = Symbol();
+        \\const _str = "my-fake-sym";
+        \\function F() {
+        \\}
+        \\F.prototype = {
+        \\  [_sym]: "ok",
+        \\  [_str]: "ok",
+        \\}
+        \\const inst =  new F();
+        \\const _y = inst[_str];
+        \\const _z = inst[_sym];
+        \\module.exports.F = F;
+        \\module.exports.S = _sym;
+        \\// @filename: usage.js
+        \\const x = require("./lateBoundAssignmentDeclarationSupport5.js");
+        \\const inst =  new x.F();
+        \\const y = inst["my-fake-sym"];
+        \\const z = inst[x.S];
+    ;
+    const expected =
+        "lateBoundAssignmentDeclarationSupport5.js(12,12): error TS7053: Element implicitly has an 'any' type because expression of type '\"my-fake-sym\"' can't be used to index type 'F'.\n" ++
+        "lateBoundAssignmentDeclarationSupport5.js(13,12): error TS7053: Element implicitly has an 'any' type because expression of type 'unique symbol' can't be used to index type 'F'.\n" ++
+        "usage.js(3,11): error TS7053: Element implicitly has an 'any' type because expression of type '\"my-fake-sym\"' can't be used to index type 'F'.\n" ++
+        "usage.js(4,11): error TS7053: Element implicitly has an 'any' type because expression of type 'unique symbol' can't be used to index type 'F'.";
+    const stripped = (try stripNonCodeVirtualSections(T.allocator, source)).?;
+    defer T.allocator.free(stripped);
+    const result = try run(T.allocator, .{
+        .name = "lateBoundAssignmentDeclarationSupport5",
+        .source = stripped,
+        .path = "lateBoundAssignmentDeclarationSupport5.js",
+        .expected_errors = expected,
+        .strict_flags = ts_driver.StrictFlags{ .no_implicit_any = true },
+        .syntax_target_es2015 = true,
+        .raw_source = source,
+    });
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+
+    try T.expect(result.actual_diag_count > 0);
+}
+
+test "conformance: loaded corpus keeps checkJs diagnostics for late-bound computed prototype fixture" {
+    const paths_or_null = try resolveTsCorpusPaths(T.allocator);
+    if (paths_or_null == null) return;
+    const paths = paths_or_null.?;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+    const salsa_dir = try std.fmt.allocPrint(T.allocator, "{s}/salsa", .{paths.cases});
+    defer T.allocator.free(salsa_dir);
+    const corpus = try loadDirectoryWithOptions(T.allocator, salsa_dir, .{
+        .baseline_root = paths.baselines,
+        .strict_default_for_expected_errors = true,
+        .exact_error_headers = true,
+    });
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(corpus);
+    }
+    for (corpus) |entry| {
+        if (!std.mem.eql(u8, entry.name, "lateBoundAssignmentDeclarationSupport5")) continue;
+        try T.expect(std.mem.indexOf(u8, entry.expected_errors, "TS7053") != null);
+        const result = try runOneEntry(T.allocator, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = entry.path,
+            .expects_error = entry.expects_error,
+            .expected_errors = entry.expected_errors,
+            .use_exact_errors = entry.use_exact_errors,
+            .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
+            .strict_flags = entry.strict_flags,
+            .always_strict = entry.always_strict,
+            .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
+            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
+        });
+        defer {
+            T.allocator.free(result.name);
+            if (result.detail.len > 0) T.allocator.free(result.detail);
+        }
+        try T.expect(result.actual_diag_count > 0);
+        return;
+    }
+    return error.TestExpectedEqual;
+}
+
+test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound computed prototype fixture" {
+    const paths_or_null = try resolveTsCorpusPaths(T.allocator);
+    if (paths_or_null == null) return;
+    const paths = paths_or_null.?;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+    const salsa_dir = try std.fmt.allocPrint(T.allocator, "{s}/salsa", .{paths.cases});
+    defer T.allocator.free(salsa_dir);
+    const corpus = try loadDirectoryWithOptions(T.allocator, salsa_dir, .{
+        .baseline_root = paths.baselines,
+        .strict_default_for_expected_errors = true,
+        .exact_error_headers = false,
+    });
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(corpus);
+    }
+    for (corpus) |entry| {
+        if (!std.mem.eql(u8, entry.name, "lateBoundAssignmentDeclarationSupport5")) continue;
+        try T.expect(entry.expects_error);
+        const result = try runOneEntry(T.allocator, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = entry.path,
+            .expects_error = entry.expects_error,
+            .expected_errors = entry.expected_errors,
+            .use_exact_errors = entry.use_exact_errors,
+            .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
+            .strict_flags = entry.strict_flags,
+            .always_strict = entry.always_strict,
+            .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
+            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
+        });
+        defer {
+            T.allocator.free(result.name);
+            if (result.detail.len > 0) T.allocator.free(result.detail);
+        }
+        try T.expectEqual(Outcome.passed, result.outcome);
+        try T.expect(result.actual_diag_count > 0);
+        return;
+    }
+    return error.TestExpectedEqual;
+}
+
 test "conformance: clean package self-name output mappings route through program" {
     const raw =
         \\// @filename: tsconfig.json
@@ -5616,7 +5763,7 @@ pub fn loadDirectoryWithOptions(
             .always_strict = expects_error and (baselineAlwaysStrictValue(baseline_path) orelse directiveBool(case_src, "alwaysStrict") orelse false),
             .syntax_target_es2015 = directiveTargetEs2015OrLater(case_src),
             .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
-            .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, case_src),
+            .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, directive_source),
             .raw_source = raw_source,
             .baseline_module_resolution = baseline_mr,
         });
@@ -6531,10 +6678,15 @@ fn diagnosticIsOptionValidation(d: anytype) bool {
 /// Used by `runOneEntry` so a fixture whose only emissions are
 /// `TS5101 outFile` / `TS5107 module=AMD` still counts as clean.
 fn compilationHasNonOptionValidationError(compilation: anytype) bool {
+    return countNonOptionValidationDiagnostics(compilation) > 0;
+}
+
+fn countNonOptionValidationDiagnostics(compilation: anytype) u32 {
+    var count: u32 = 0;
     for (compilation.diagnostics.items) |d| {
-        if (!diagnosticIsOptionValidation(d)) return true;
+        if (!diagnosticIsOptionValidation(d)) count += 1;
     }
-    return false;
+    return count;
 }
 
 /// Return the first diagnostic that should be surfaced in failure
@@ -7706,12 +7858,14 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .detail = try gpa.dupe(u8, "expected at least one diagnostic; got none"),
         };
     }
+    const directive_source = if (entry.raw_source.len > 0) entry.raw_source else entry.source;
     var compilation = ts_driver.compileSource(gpa, entry.source, .{
         .is_tsx = entry.is_tsx,
         .is_declaration_file = entry.is_declaration_file,
         .strict_flags = entry.strict_flags,
         .always_strict = entry.always_strict,
         .syntax_target_es2015 = entry.syntax_target_es2015,
+        .allow_js = directiveBool(directive_source, "allowJs") orelse false,
         .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
@@ -7730,8 +7884,9 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     // `isOptionValidationDiagnostic` / `baselineHasOnlyOptionDeprecation`)
     // so a fixture whose only "errors" are TS5101/TS5107 deprecation
     // notices counts as clean both in baseline and here.
-    const driver_has_non_option_errors = !entry.expects_error and compilationHasNonOptionValidationError(compilation);
-    const driver_has_errors = if (entry.expects_error) compilation.has_errors else driver_has_non_option_errors;
+    const non_option_diag_count = countNonOptionValidationDiagnostics(compilation);
+    const driver_has_non_option_errors = non_option_diag_count > 0;
+    const driver_has_errors = driver_has_non_option_errors;
     const had_errors = !modeled_clean and (driver_has_errors or
         hasNoLibReferenceLib(entry.source) or
         hasCompilerOptionCompatibilityDiagnostic(entry.source) or
@@ -7750,7 +7905,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     gpa.destroy(compilation);
     const passed = if (entry.expects_error) had_errors else !had_errors;
     if (passed) {
-        return .{ .name = name_owned, .outcome = .passed };
+        return .{ .name = name_owned, .outcome = .passed, .actual_diag_count = non_option_diag_count };
     }
     const detail = if (entry.expects_error)
         try gpa.dupe(u8, "expected at least one diagnostic; got none")
@@ -7762,6 +7917,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         .name = name_owned,
         .outcome = .failed,
         .detail = detail,
+        .actual_diag_count = non_option_diag_count,
     };
 }
 
