@@ -903,7 +903,7 @@ fn transpileSource(
 
 fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader, handle: *const TranspilerHandle) bool {
     if (std.mem.indexOfScalar(u8, source_text, '#') != null) return true;
-    if (handle.minify_syntax or handle.minify_identifiers) return true;
+    if (handle.minify_syntax or handle.minify_whitespace or handle.minify_identifiers) return true;
     if (loader == .js and std.mem.indexOf(u8, source_text, "String.raw`") != null) return true;
     return switch (loader) {
         .ts, .tsx => true,
@@ -5986,6 +5986,25 @@ test "adapter folds numeric constants like Bun.Transpiler minify syntax" {
         try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
         const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
+}
+
+test "adapter preserves keyword operator spacing when minifying whitespace like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .source = "x instanceof y", .output = "x instanceof y;" },
+        .{ .source = "x in y", .output = "x in y;" },
+        .{ .source = "1 in y", .output = "1 in y;" },
+    };
+
+    const minify_handle = TranspilerHandle{ .loader = .js, .minify_whitespace = true };
+    for (cases) |case| {
+        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .js);
         defer std.testing.allocator.free(output);
         try std.testing.expectEqualStrings(case.output, output);
     }

@@ -822,6 +822,7 @@ fn NewPrinter(
                 }
 
                 if (entry.is_keyword) {
+                    p.maybePrintSpace();
                     p.printSpaceBeforeIdentifier();
                     p.print(entry.text);
                 } else {

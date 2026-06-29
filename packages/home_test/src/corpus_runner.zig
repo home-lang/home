@@ -13986,9 +13986,9 @@ const harness_prelude =
     \\    if (options && Object.prototype.hasOwnProperty.call(options, "logLevel") && !/^(debug|verbose|info|warn|error|silent)$/i.test(String(options.logLevel))) throw new TypeError("Invalid logLevel: " + String(options.logLevel));
     \\    const compilerOptions = compilerOptionsFromTSConfig(options && options.tsconfig);
     \\    const minifyOption = options && options.minify;
-    \\    const minifySyntax = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.syntax);
-    \\    const minifyWhitespace = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.whitespace);
-    \\    const minifyIdentifiers = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.identifiers);
+    \\    const minifySyntax = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.syntax) || !!(options && options.minifySyntax);
+    \\    const minifyWhitespace = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.whitespace) || !!(options && options.minifyWhitespace);
+    \\    const minifyIdentifiers = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.identifiers) || !!(options && options.minifyIdentifiers);
     \\    const deadCodeElimination = options && Object.prototype.hasOwnProperty.call(options, "deadCodeElimination") ? !!options.deadCodeElimination : true;
     \\    const treeShaking = !!(options && options.treeShaking);
     \\    const trimUnusedImports = options && Object.prototype.hasOwnProperty.call(options, "trimUnusedImports") ? !!options.trimUnusedImports : treeShaking;
@@ -38170,6 +38170,41 @@ test "bootstrap runner mirrors transpiler using switch corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors transpiler keyword operator minify whitespace corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("minifyWhitespace keeps the space before keyword operators", () => {
+        \\  const minifier = new Bun.Transpiler({ loader: "js", minifyWhitespace: true });
+        \\
+        \\  it("between a single-character identifier and 'instanceof'", () => {
+        \\    expect(minifier.transformSync("x instanceof y")).toBe("x instanceof y;");
+        \\  });
+        \\
+        \\  it("between a single-character identifier and 'in'", () => {
+        \\    expect(minifier.transformSync("x in y")).toBe("x in y;");
+        \\  });
+        \\
+        \\  it("between a numeric literal and 'in'", () => {
+        \\    expect(minifier.transformSync("1 in y")).toBe("1 in y;");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors transpiler crash regression corpus" {
