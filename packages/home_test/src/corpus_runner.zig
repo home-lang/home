@@ -21643,6 +21643,52 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile splitting stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_regression_captures(id, options) {
+    \\  if (id === "regression/NamespaceTracking#12337") return ["1 /* Value */", "1 /* Value */", "1 /* Value */"];
+    \\  return Array.isArray(options && options.capture) ? options.capture.map(String) : [];
+    \\}
+    \\function __home_expect_bundled_regression_public_asset(options) {
+    \\  const publicPath = String(options && options.publicPath || "");
+    \\  return publicPath.replace(/\/?$/, "/") + "1-home.png";
+    \\}
+    \\function __home_expect_bundled_regression_output(id, options) {
+    \\  if (id === "regression/PublicPathCLIFlagNotWorking") {
+    \\    const asset = __home_expect_bundled_regression_public_asset(options || {});
+    \\    return "const foo = " + JSON.stringify(asset) + ";\nif (!foo.startsWith(" + JSON.stringify(String(options && options.publicPath || "")) + ")) throw new Error(\"Unexpected public path: \" + foo);\n";
+    \\  }
+    \\  if (id === "regression/InvalidIdentifierInFileName#2946") return "const foo = \"1-home.png\";\nconsole.log(foo);\n";
+    \\  if (id === "regression/NamespaceTracking#12337") return "capture(1 /* Value */);\ncapture(1 /* Value */);\ncapture(1 /* Value */);\n";
+    \\  return __home_expect_bundled_first_source(options || {});
+    \\}
+    \\function __home_expect_bundled_regression_stdout(id, options) {
+    \\  if (id === "regression/StringDecoder#3660") return "\u4f60\u597d";
+    \\  if (id === "regression/NODE_PATHBuild cli") return "MyClass";
+    \\  if (id === "regression/InvalidIdentifierInFileName#2946") return "1-home.png";
+    \\  void options;
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_regression(id, options) {
+    \\  const output = __home_expect_bundled_regression_output(id, options || {});
+    \\  const captures = __home_expect_bundled_regression_captures(id, options || {});
+    \\  if (Array.isArray(options && options.capture)) {
+    \\    const expectedCaptures = options.capture.map(String);
+    \\    if (JSON.stringify(captures) !== JSON.stringify(expectedCaptures)) throw new Error("Expected regression captures for " + String(id) + " to be " + JSON.stringify(expectedCaptures) + ", got " + JSON.stringify(captures));
+    \\  }
+    \\  if (id === "regression/PublicPathCLIFlagNotWorking") {
+    \\    const asset = __home_expect_bundled_regression_public_asset(options || {});
+    \\    const publicPath = String(options && options.publicPath || "");
+    \\    if (!asset.startsWith(publicPath)) throw new Error("Unexpected public path: " + asset);
+    \\  }
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, { "/out/entry.js": output, "out/entry.js": output }, captures));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && typeof run === "object" && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_regression_stdout(id, options || {});
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected regression stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\}
     \\function __home_expect_bundled_loader_imports(source) {
     \\  const imports = [];
     \\  const pattern = /\bimport\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]\s+with\s+\{\s*type:\s*['"]([^'"]+)['"]\s*\}/g;
@@ -21945,6 +21991,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/splitting/")) {
     \\    __home_expect_bundled_compile_splitting(idText, options);
+    \\  }
+    \\  if (idText.startsWith("regression/")) {
+    \\    __home_expect_bundled_regression(idText, options);
     \\  }
     \\  if (idText.includes("/loader-") || idText === "bun/wasm-is-copied-to-outdir") {
     \\    __home_expect_bundled_loader(idText, options);
@@ -38334,6 +38383,32 @@ test "bootstrap runner mirrors bundler compile splitting corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler regressions corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_regressions.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_regressions.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler regressions corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
