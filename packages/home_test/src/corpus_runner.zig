@@ -38088,6 +38088,90 @@ test "bootstrap runner mirrors transpiler crash regression corpus" {
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler edge cases corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\const transpilerMinifySyntax = new Bun.Transpiler({
+        \\  loader: "tsx",
+        \\  minify: { syntax: true },
+        \\  platform: "browser",
+        \\});
+        \\
+        \\const ts = {
+        \\  parsedMin: (code, trim = true, autoExport = false) => {
+        \\    if (autoExport) code = "export default (" + code + ")";
+        \\    var out = transpilerMinifySyntax.transformSync(code, "ts");
+        \\    if (autoExport && out.startsWith("export default ")) out = out.substring("export default ".length);
+        \\    if (!trim) return out;
+        \\    out = out.trim();
+        \\    if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\    return out.trim();
+        \\  },
+        \\  expectPrintedMin_: (code, out) => {
+        \\    expect(ts.parsedMin(code, !out.endsWith(";\n"), false)).toBe(out);
+        \\  },
+        \\};
+        \\
+        \\describe("edge cases", () => {
+        \\  it('`str` + "``"', () => {
+        \\    ts.expectPrintedMin_('const x = `str` + "``";', 'const x = "str``"');
+        \\    ts.expectPrintedMin_('const x = `` + "`";', 'const x = "`"');
+        \\    ts.expectPrintedMin_('const x = `` + "``";', 'const x = "``"');
+        \\    ts.expectPrintedMin_('const x = "``" + ``;', 'const x = "``"');
+        \\  });
+        \\});
+        \\
+        \\it("scan on empty file does not segfault", () => {
+        \\  new Bun.Transpiler().scan("");
+        \\});
+        \\
+        \\it("scanImports on empty file does not segfault", () => {
+        \\  new Bun.Transpiler().scanImports("");
+        \\});
+        \\
+        \\it("preserves exotic directives", () => {
+        \\  expect(
+        \\    new Bun.Transpiler().transformSync(`"use client";
+        \\console.log("boop");
+        \\`),
+        \\  ).toBe(
+        \\    `"use client";
+        \\console.log("boop");
+        \\`,
+        \\  );
+        \\});
+        \\
+        \\it("does not preserve use strict (for now)", () => {
+        \\  expect(
+        \\    new Bun.Transpiler().transformSync(`"use strict";
+        \\  console.log("boop");
+        \\  `),
+        \\  ).toBe(
+        \\    `console.log("boop");
+        \\`,
+        \\  );
+        \\});
+        \\
+        \\it("can parse 'a<b>' as typescript", () => {
+        \\  expect(new Bun.Transpiler({ loader: "ts" }).transformSync(`a<b>`)).toBe(`a;\n`);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
