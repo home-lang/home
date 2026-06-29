@@ -40942,6 +40942,26 @@ test "bootstrap runner mirrors esbuild tsconfig corpus" {
     try std.testing.expectEqual(@as(usize, 3), file_run.result.todo);
 }
 
+test "bootstrap runner mirrors transpiler constant fold eqeq corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/bun-corpus",
+        "bundler/transpiler_constant_fold_eqeq.test.ts",
+    );
+    defer summary.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
     try std.testing.expectEqual(@as(usize, 22), files.len);
