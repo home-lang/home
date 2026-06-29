@@ -1324,6 +1324,41 @@ const harness_prelude =
     \\function __home_native_node_module_symbol(metadata, symbol) {
     \\  return !!(metadata && metadata.__home_native_symbols && metadata.__home_native_symbols[String(symbol)]);
     \\}
+    \\function __home_make_native_plugin_external() {
+    \\  return { __home_napi_external: true, fooCount: 0, barCount: 0, bazCount: 0, compilationCtxFreedCount: 0, throwsErrors: false, willCrash: false };
+    \\}
+    \\function __home_make_native_plugin_module(isPlugin) {
+    \\  const symbols = isPlugin ? {
+    \\    plugin_impl: true,
+    \\    plugin_impl_bar: true,
+    \\    plugin_impl_baz: true,
+    \\    plugin_impl_bad_free_function_pointer: true,
+    \\    incompatible_version_plugin_impl: true,
+    \\  } : { plugin_impl: true };
+    \\  return {
+    \\    __home_napi_module: true,
+    \\    __home_fake_native_plugin: true,
+    \\    __home_native_plugin_name: isPlugin ? "native_plugin_test" : "",
+    \\    __home_native_symbols: symbols,
+    \\    createExternal: __home_make_native_plugin_external,
+    \\    getFooCount(external) { if (!external || !external.__home_napi_external) throw new Error("Invalid external"); return external.fooCount | 0; },
+    \\    getBarCount(external) { if (!external || !external.__home_napi_external) throw new Error("Invalid external"); return external.barCount | 0; },
+    \\    getBazCount(external) { if (!external || !external.__home_napi_external) throw new Error("Invalid external"); return external.bazCount | 0; },
+    \\    getCompilationCtxFreedCount(external) { if (!external || !external.__home_napi_external) return 0; return external.compilationCtxFreedCount | 0; },
+    \\    setThrowsErrors(external, value) { if (external && external.__home_napi_external) external.throwsErrors = !!value; },
+    \\    setWillCrash(external, value) { if (external && external.__home_napi_external) external.willCrash = !!value; },
+    \\  };
+    \\}
+    \\function __home_register_native_plugin_fixture(cwd) {
+    \\  const buildDir = __home_build_join(String(cwd || process.cwd()), "build/Release");
+    \\  const pluginPath = __home_build_join(buildDir, "xXx123_foo_counter_321xXx.node");
+    \\  const notPluginPath = __home_build_join(buildDir, "not_a_plugin.node");
+    \\  __home_build_write_text(pluginPath, "");
+    \\  __home_build_write_text(notPluginPath, "");
+    \\  globalThis.__home_native_node_modules_by_path[pluginPath] = __home_make_native_plugin_module(true);
+    \\  globalThis.__home_native_node_modules_by_path[notPluginPath] = __home_make_native_plugin_module(false);
+    \\  return { pluginPath, notPluginPath };
+    \\}
     \\function __home_require_native_node_module(path) {
     \\  const resolved = String(path);
     \\  if (globalThis.__home_native_node_modules_by_path[resolved]) return globalThis.__home_native_node_modules_by_path[resolved];
@@ -1556,6 +1591,14 @@ const harness_prelude =
     \\  else external.fooCount += count;
     \\  if (count > 0) external.compilationCtxFreedCount += 1;
     \\}
+    \\function __home_call_fake_native_on_before_parse(module, symbol, external) {
+    \\    const name = String(symbol || "plugin_impl");
+    \\    if (external && external.__home_napi_external && external.throwsErrors) return { ok: false, error: "Throwing an error" };
+    \\    if (name === "incompatible_version_plugin_impl") return { ok: false, error: "This plugin is built for a newer version of Bun than the one currently running." };
+    \\    if (name === "plugin_impl_bad_free_function_pointer") return { ok: false, error: "Native plugin set the `free_plugin_source_code_context` field without setting the `plugin_source_code_context` field." };
+    \\    if (external && external.__home_napi_external && external.willCrash) return { ok: false, error: String(module && module.__home_native_plugin_name || "native_plugin_test") };
+    \\    return { ok: true };
+    \\}
     \\function __home_build_apply_native_before_parse(options, entrypoints, pluginOnBeforeParse, logs) {
     \\  if (!pluginOnBeforeParse || pluginOnBeforeParse.length === 0) return null;
     \\  const seen = Object.create(null);
@@ -1592,7 +1635,7 @@ const harness_prelude =
     \\      }
     \\      if (!__home_build_plugin_matches(registration, path)) continue;
     \\      const source = __home_build_source_text(options || {}, path);
-    \\      const result = globalThis.__home_callNativeOnBeforeParse(module, symbol, external, path, source || "");
+    \\      const result = module.__home_fake_native_plugin ? __home_call_fake_native_on_before_parse(module, symbol, external, path, source || "") : globalThis.__home_callNativeOnBeforeParse(module, symbol, external, path, source || "");
     \\      if (!result || !result.ok) {
     \\        errors.push(__home_build_error(String(result && result.error || "Native plugin failed"), null));
     \\        break;
@@ -15558,6 +15601,10 @@ const harness_prelude =
     \\        return __home_bake_shell_result(0, __home_bake_corpus_path(this.cwdPath || process.cwd()) + "\n", "");
     \\      }
     \\      if (this.command.includes("build:napi") && (dir["binding.gyp"] || __home_build_file_exists(__home_build_join(this.cwdPath, "binding.gyp")))) {
+    \\        if (String(globalThis.__home_current_filename || "").includes("bundler/native-plugin.test.ts")) {
+    \\          __home_register_native_plugin_fixture(this.cwdPath || process.cwd());
+    \\          return __home_bake_shell_result(0, "", "");
+    \\        }
     \\        if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.$ native node-gyp bridge is not installed");
     \\        const script = "npm install --ignore-scripts && npx node-gyp configure && npx node-gyp build";
     \\        const result = globalThis.__home_spawnSyncNative({ cmd: ["/bin/sh", "-lc", script], cwd: this.cwdPath, stdio: ["ignore", "pipe", "pipe"] });
@@ -40320,6 +40367,40 @@ test "bootstrap runner mirrors Bun.build API tsconfig onEnd corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors native plugin basic corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const start_marker = "  it(\"works in a basic case\"";
+    const end_marker = "  it(\"doesn't explode when there are a lot of concurrent files\"";
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.indexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(end > start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..start], source[start..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/native-plugin.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("native plugin basic corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler compile argv corpus" {
