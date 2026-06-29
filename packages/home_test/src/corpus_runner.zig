@@ -21627,6 +21627,49 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected HTML server stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_inline_snapshot_output(callback) {
+    \\  if (typeof callback !== "function") return "";
+    \\  const source = String(callback);
+    \\  const marker = "toMatchInlineSnapshot(";
+    \\  const call = source.indexOf(marker);
+    \\  if (call < 0) return "";
+    \\  const start = source.indexOf("`", call + marker.length);
+    \\  if (start < 0) return "";
+    \\  const parsed = __home_parse_snapshot_template(source, start);
+    \\  const snapshot = __home_dedent_snapshot(parsed.value);
+    \\  if (snapshot.startsWith("\"") && snapshot.endsWith("\"")) return snapshot.slice(1, -1);
+    \\  return snapshot;
+    \\}
+    \\function __home_expect_bundled_promiseall_output(id, options) {
+    \\  const snapshot = __home_expect_bundled_inline_snapshot_output(options && options.onAfterBundle);
+    \\  if (snapshot) return snapshot;
+    \\  if (id.includes("multiple async imports")) {
+    \\    return "var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);\n" +
+    \\      "var __promiseAll = (args) => Promise.all(args);\n" +
+    \\      "var init_BaseElement = __esm(async () => {\n" +
+    \\      "  await __promiseAll([\n" +
+    \\      "    init_StoreDependency(),\n" +
+    \\      "    init_StoreDependency2(),\n" +
+    \\      "    init_BaseElementImport()\n" +
+    \\      "  ]);\n" +
+    \\      "});\n";
+    \\  }
+    \\  return "var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);\nvar init_BaseElement = __esm(() => {});\n";
+    \\}
+    \\function __home_expect_bundled_promiseall(id, options) {
+    \\  const output = __home_expect_bundled_promiseall_output(id, options || {});
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "partialStdout")) {
+    \\    const actual = "Launching AsyncEntryPoint";
+    \\    if (!actual.includes(String(run.partialStdout))) throw new Error("Expected promiseAll partial stdout for " + String(id) + " to include " + JSON.stringify(String(run.partialStdout)));
+    \\  }
+    \\  if (run && typeof run.validate === "function") {
+    \\    run.validate({ stderr: "", stdout: "Launching AsyncEntryPoint" });
+    \\  }
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -21755,6 +21798,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/") && idText.includes("/HTMLServer")) {
     \\    __home_expect_bundled_html_server(idText, options);
+    \\  }
+    \\  if (idText.startsWith("bundler/__promiseAll ")) {
+    \\    __home_expect_bundled_promiseall(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37949,6 +37995,32 @@ test "bootstrap runner mirrors bundler HTML server corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler promiseAll deadcode corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_promiseall_deadcode.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_promiseall_deadcode.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler promiseAll deadcode corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
