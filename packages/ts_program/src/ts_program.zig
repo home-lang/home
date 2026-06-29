@@ -346,6 +346,8 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
+        const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
+        defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len);
         defer self.gpa.free(known_reference_paths);
         for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
@@ -358,6 +360,7 @@ pub const Program = struct {
             per_file.script_object_expandos = script_object_expandos;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
+            per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
             per_file.known_reference_paths = known_reference_paths;
             per_file.suppress_import_helper_diagnostics = true;
             // Per-file declaration-file flag. Multi-file fixtures
@@ -415,6 +418,8 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
+        const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
+        defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             if (f.compilation != null) {
@@ -431,6 +436,7 @@ pub const Program = struct {
             per_file.script_object_expandos = script_object_expandos;
             per_file.module_interface_augmentations = module_interface_augmentations;
             per_file.program_exported_classes = program_exported_classes;
+            per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
             per_file.suppress_import_helper_diagnostics = true;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
@@ -531,6 +537,150 @@ pub const Program = struct {
             class.static_members = try merged.toOwnedSlice(self.gpa);
         }
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectAmbientModuleInterfaceExports(self: *const Program) ProgramError![]const ts_driver.ProgramAmbientModuleInterfaceExport {
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport) = .empty;
+        errdefer {
+            for (out.items) |item| {
+                self.gpa.free(item.specifier);
+                self.gpa.free(item.name);
+                freeProgramAmbientInterfaceMembers(self.gpa, item.members);
+            }
+            out.deinit(self.gpa);
+        }
+        for (self.files.items) |f| {
+            if (f.redirect_target != null) continue;
+            try collectAmbientModuleInterfaceExportsFromSource(self.gpa, f.source, &out);
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectAmbientModuleInterfaceExportsFromSource(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
+    ) ProgramError!void {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_start, "declare")) |declare_pos| {
+            search_start = declare_pos + "declare".len;
+            if (!identifierKeywordAt(source, declare_pos, "declare")) continue;
+            var module_pos = declare_pos + "declare".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (!identifierKeywordAt(source, module_pos, "module")) continue;
+            module_pos += "module".len;
+            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
+            if (module_pos >= source.len or (source[module_pos] != '"' and source[module_pos] != '\'')) continue;
+            const quote = source[module_pos];
+            const spec_start = module_pos + 1;
+            const spec_end = std.mem.indexOfScalarPos(u8, source, spec_start, quote) orelse continue;
+            const spec = source[spec_start..spec_end];
+            if (spec.len == 0 or spec[0] == '.' or spec[0] == '/') continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, spec_end + 1, '{') orelse continue;
+            const body_close = findMatchingBrace(source, body_open) orelse continue;
+            try collectAmbientModuleInterfacesFromBody(gpa, source, spec, body_open + 1, body_close, out);
+            search_start = body_close + 1;
+        }
+    }
+
+    fn collectAmbientModuleInterfacesFromBody(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        spec: []const u8,
+        body_start: usize,
+        body_end: usize,
+        out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
+    ) ProgramError!void {
+        var search_start = body_start;
+        while (search_start < body_end) {
+            const iface_pos = std.mem.indexOfPos(u8, source, search_start, "interface") orelse break;
+            if (iface_pos >= body_end) break;
+            search_start = iface_pos + "interface".len;
+            if (!identifierKeywordAt(source, iface_pos, "interface")) continue;
+            var name_start = iface_pos + "interface".len;
+            while (name_start < body_end and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
+            const name_end = parseIdentifierEnd(source, name_start, body_end) orelse continue;
+            const iface_open = std.mem.indexOfScalarPos(u8, source, name_end, '{') orelse continue;
+            if (iface_open >= body_end) continue;
+            const iface_close = findMatchingBrace(source, iface_open) orelse continue;
+            if (iface_close > body_end) continue;
+            const members = try collectAmbientInterfaceMembers(gpa, source, iface_open + 1, iface_close);
+            errdefer freeProgramAmbientInterfaceMembers(gpa, members);
+            const spec_copy = try gpa.dupe(u8, spec);
+            errdefer gpa.free(spec_copy);
+            const name_copy = try gpa.dupe(u8, source[name_start..name_end]);
+            errdefer gpa.free(name_copy);
+            try out.append(gpa, .{
+                .specifier = spec_copy,
+                .name = name_copy,
+                .members = members,
+            });
+            search_start = iface_close + 1;
+        }
+    }
+
+    fn collectAmbientInterfaceMembers(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        body_start: usize,
+        body_end: usize,
+    ) ProgramError![]const ts_driver.ProgramAmbientInterfaceMember {
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramAmbientInterfaceMember) = .empty;
+        errdefer {
+            for (out.items) |item| {
+                gpa.free(item.name);
+                gpa.free(item.type_name);
+            }
+            out.deinit(gpa);
+        }
+        var i = body_start;
+        while (i < body_end) {
+            while (i < body_end and (std.ascii.isWhitespace(source[i]) or source[i] == ';' or source[i] == ',')) : (i += 1) {}
+            if (i >= body_end) break;
+            var is_readonly = false;
+            if (identifierKeywordAt(source, i, "readonly")) {
+                is_readonly = true;
+                i += "readonly".len;
+                while (i < body_end and std.ascii.isWhitespace(source[i])) : (i += 1) {}
+            }
+            if (i >= body_end or !isIdentifierStart(source[i])) {
+                i += 1;
+                continue;
+            }
+            const member_start = i;
+            const member_end = parseIdentifierEnd(source, member_start, body_end) orelse {
+                i += 1;
+                continue;
+            };
+            i = member_end;
+            while (i < body_end and std.ascii.isWhitespace(source[i])) : (i += 1) {}
+            const is_optional = if (i < body_end and source[i] == '?') blk: {
+                i += 1;
+                while (i < body_end and std.ascii.isWhitespace(source[i])) : (i += 1) {}
+                break :blk true;
+            } else false;
+            if (i >= body_end or source[i] != ':') {
+                while (i < body_end and source[i] != ';' and source[i] != '\n' and source[i] != '\r') : (i += 1) {}
+                continue;
+            }
+            i += 1;
+            while (i < body_end and std.ascii.isWhitespace(source[i])) : (i += 1) {}
+            const type_start = i;
+            const type_end = parseIdentifierEnd(source, type_start, body_end) orelse type_start;
+            const type_name = if (type_end > type_start) source[type_start..type_end] else "any";
+            const name_copy = try gpa.dupe(u8, source[member_start..member_end]);
+            errdefer gpa.free(name_copy);
+            const type_copy = try gpa.dupe(u8, type_name);
+            errdefer gpa.free(type_copy);
+            try out.append(gpa, .{
+                .name = name_copy,
+                .type_name = type_copy,
+                .is_optional = is_optional,
+                .is_readonly = is_readonly,
+            });
+            i = type_end;
+        }
+        return try out.toOwnedSlice(gpa);
     }
 
     const ProgramNamespaceStaticAugmentation = struct {
@@ -1366,6 +1516,23 @@ pub const Program = struct {
         gpa.free(items);
     }
 
+    fn freeProgramAmbientModuleInterfaceExports(gpa: std.mem.Allocator, items: []const ts_driver.ProgramAmbientModuleInterfaceExport) void {
+        for (items) |item| {
+            gpa.free(item.specifier);
+            gpa.free(item.name);
+            freeProgramAmbientInterfaceMembers(gpa, item.members);
+        }
+        gpa.free(items);
+    }
+
+    fn freeProgramAmbientInterfaceMembers(gpa: std.mem.Allocator, items: []const ts_driver.ProgramAmbientInterfaceMember) void {
+        for (items) |item| {
+            gpa.free(item.name);
+            gpa.free(item.type_name);
+        }
+        if (items.len > 0) gpa.free(items);
+    }
+
     /// One `declare global { … }` block discovered at a file's top
     /// level. The eventual cross-file symbol-table merge — driven by
     /// `binder.Module.augment` — needs to know which files contribute
@@ -1480,9 +1647,12 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
+        const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
+        defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
         var shared_options = options;
         shared_options.module_interface_augmentations = module_interface_augmentations;
         shared_options.program_exported_classes = program_exported_classes;
+        shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const n = workers orelse @min(cpu_count, 8);
 
@@ -2798,11 +2968,22 @@ pub fn ambientModuleExportFacts(
         const ns = hir_mod_ns.namespaceOf(&compilation.hir, stmt);
         if (ns.name == hir_mod_ns.none_node_id or compilation.hir.kindOf(ns.name) != .literal_string) continue;
         const lit = hir_mod_ns.literalStringOf(&compilation.hir, ns.name);
-        if (!std.mem.eql(u8, compilation.interner.get(lit.value), specifier)) continue;
+        if (!moduleNameMatchesSpecifier(compilation.interner.get(lit.value), specifier)) continue;
         found_module = true;
         collectAmbientModuleExportFacts(&compilation.hir, name_id, hir_mod_ns.namespaceBody(&compilation.hir, stmt), &facts);
     }
     return if (found_module) facts else null;
+}
+
+fn moduleNameMatchesSpecifier(pattern: []const u8, spec: []const u8) bool {
+    if (std.mem.eql(u8, pattern, spec)) return true;
+    const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return false;
+    if (std.mem.indexOfScalarPos(u8, pattern, star + 1, '*') != null) return false;
+    const prefix = pattern[0..star];
+    const suffix = pattern[star + 1 ..];
+    return spec.len >= prefix.len + suffix.len and
+        std.mem.startsWith(u8, spec, prefix) and
+        std.mem.endsWith(u8, spec, suffix);
 }
 
 fn collectAmbientModuleExportFacts(

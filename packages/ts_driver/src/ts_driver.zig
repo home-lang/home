@@ -28,6 +28,8 @@ pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
 pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
+pub const ProgramAmbientModuleInterfaceExport = ts_checker.ProgramAmbientModuleInterfaceExport;
+pub const ProgramAmbientInterfaceMember = ts_checker.ProgramAmbientInterfaceMember;
 
 /// One nested elaboration entry under a unified diagnostic, mirroring
 /// tsc's `messageChain`. `message` and any `children` array are
@@ -342,6 +344,9 @@ pub const CompileOptions = struct {
     module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
     /// Program-level exported classes discovered in sibling files.
     program_exported_classes: []const ProgramExportedClass = &.{},
+    /// Program-level exported interfaces declared inside ambient external
+    /// modules in sibling files.
+    program_ambient_module_interface_exports: []const ProgramAmbientModuleInterfaceExport = &.{},
     /// Program-level virtual file paths that are known to exist. Used
     /// to satisfy per-file triple-slash path diagnostics after a
     /// multi-file fixture has been split into individual sources.
@@ -1931,6 +1936,9 @@ pub fn compileSource(
     }
     if (options.program_exported_classes.len > 0) {
         checker.setProgramExportedClasses(options.program_exported_classes);
+    }
+    if (options.program_ambient_module_interface_exports.len > 0) {
+        checker.setProgramAmbientModuleInterfaceExports(options.program_ambient_module_interface_exports);
     }
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);

@@ -90,7 +90,7 @@ const CheckerResolverAdapter = struct {
         containing_file: []const u8,
     ) ?[]const u8 {
         for (self.ambient_modules) |m| {
-            if (!std.mem.eql(u8, m.specifier, specifier)) continue;
+            if (!moduleNameMatchesSpecifier(m.specifier, specifier)) continue;
             if (!ambientAtTypesModuleVisibleFrom(m.path, containing_file)) continue;
             return m.path;
         }
@@ -791,7 +791,7 @@ fn freeAmbientModuleResolutions(gpa: std.mem.Allocator, items: []const AmbientMo
     gpa.free(items);
 }
 
-fn collectAmbientAtTypesModules(
+fn collectAmbientModules(
     gpa: std.mem.Allocator,
     files: []const VirtualFile,
 ) ![]const AmbientModuleResolution {
@@ -806,9 +806,10 @@ fn collectAmbientAtTypesModules(
 
     for (files) |file| {
         if (!isCodeVirtualFile(file.path)) continue;
-        if (!std.mem.endsWith(u8, file.path, ".d.ts")) continue;
         var search_start: usize = 0;
         while (ambientDeclareModuleName(file.source, &search_start)) |module_name| {
+            if (module_name.len == 0) continue;
+            if (module_name[0] == '.' or module_name[0] == '/') continue;
             const canon = try canonicalVfsPath(gpa, file.path);
             errdefer gpa.free(canon);
             const spec = try gpa.dupe(u8, module_name);
@@ -821,6 +822,17 @@ fn collectAmbientAtTypesModules(
     }
 
     return try out.toOwnedSlice(gpa);
+}
+
+fn moduleNameMatchesSpecifier(pattern: []const u8, spec: []const u8) bool {
+    if (std.mem.eql(u8, pattern, spec)) return true;
+    const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return false;
+    if (std.mem.indexOfScalarPos(u8, pattern, star + 1, '*') != null) return false;
+    const prefix = pattern[0..star];
+    const suffix = pattern[star + 1 ..];
+    return spec.len >= prefix.len + suffix.len and
+        std.mem.startsWith(u8, spec, prefix) and
+        std.mem.endsWith(u8, spec, suffix);
 }
 
 fn ambientDeclareModuleName(source: []const u8, search_start: *usize) ?[]const u8 {
@@ -2231,7 +2243,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     // installs it on every per-file checker so bare-module
     // resolution and TS7016 enrichment delegate to `ts_resolver`
     // instead of the in-source `@filename:` heuristic.
-    const ambient_modules = try collectAmbientAtTypesModules(gpa, virtual_files.items);
+    const ambient_modules = try collectAmbientModules(gpa, virtual_files.items);
     defer freeAmbientModuleResolutions(gpa, ambient_modules);
 
     var resolver_adapter = CheckerResolverAdapter{
