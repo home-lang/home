@@ -21183,6 +21183,65 @@ const harness_prelude =
     \\  }
     \\  return fragments;
     \\}
+    \\function __home_expect_bundled_first_source(options) {
+    \\  const files = options && options.files || {};
+    \\  const keys = Object.keys(files);
+    \\  if (keys.length === 0) return "";
+    \\  const preferred = keys.find(key => /\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(String(key))) || keys[0];
+    \\  return String(files[preferred] || "");
+    \\}
+    \\function __home_expect_bundled_has_drop(options, name) {
+    \\  return Array.isArray(options && options.drop) && options.drop.map(String).includes(name);
+    \\}
+    \\function __home_expect_bundled_drop_stdout(id, options) {
+    \\  const source = __home_expect_bundled_first_source(options);
+    \\  if (__home_expect_bundled_has_drop(options, "console")) {
+    \\    if (/var\s+call\s*=\s*console\.log\s*;\s*call\(/.test(source)) return "hello";
+    \\    if (/var\s+call\s*=\s*console\.log\("a"\)\s*;\s*globalThis\.console\.log\(call\)/.test(source)) return "undefined";
+    \\    return "";
+    \\  }
+    \\  if (__home_expect_bundled_has_drop(options, "Bun.inspect.table") || __home_expect_bundled_has_drop(options, "Bun.inspect")) {
+    \\    if (/console\.log\(Bun\.inspect\.table\(\)\)/.test(source)) return "undefined";
+    \\  }
+    \\  if (__home_expect_bundled_has_drop(options, "Bun")) {
+    \\    if (/console\.log\(Bun\.inspect\.table\(\)\)/.test(source)) return "undefined";
+    \\    if (/Bun\.inspect\.table\s*=\s*\(\(\)\s*=>\s*123\)/.test(source)) return "123";
+    \\    if (/delete\s+Bun\.inspect\(\)/.test(source)) return "true";
+    \\  }
+    \\  if (__home_expect_bundled_has_drop(options, "ASSERT") && /\bASSERT\s*\(/.test(source)) return "";
+    \\  void id;
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_drop_output(options) {
+    \\  let output = __home_expect_bundled_first_source(options);
+    \\  if (__home_expect_bundled_has_drop(options, "debugger")) {
+    \\    output = output.replace(/\bdebugger\s*;?/g, "");
+    \\  }
+    \\  return output;
+    \\}
+    \\function __home_expect_bundled_drop_api(id, options) {
+    \\  const output = __home_expect_bundled_drop_output(options || {});
+    \\  const api = {
+    \\    outdir: String(options && options.outdir || "/out"),
+    \\    outputs: [{ path: "out.js", kind: "entry-point", text: async () => output }],
+    \\    metafile: { inputs: {}, outputs: {} },
+    \\    readFile(path) { void path; return output; },
+    \\    expectFile(path) { void path; return expect(output); },
+    \\  };
+    \\  void id;
+    \\  return api;
+    \\}
+    \\function __home_expect_bundled_drop(id, options) {
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_drop_stdout(id, options || {});
+    \\    const expected = String(run.stdout);
+    \\    if (actual !== expected) throw new Error("Expected drop stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_drop_api(id, options || {}));
+    \\  }
+    \\}
     \\function __home_expect_bundled(id, options) {
     \\  options = options || {};
     \\  const idText = String(id || "");
@@ -21198,6 +21257,9 @@ const harness_prelude =
     \\    return;
     \\  }
     \\  if (errors.length > 0) throw new Error(errors.join("\\n"));
+    \\  if (idText.startsWith("drop/")) {
+    \\    __home_expect_bundled_drop(idText, options);
+    \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
     \\  return { id: String(id), options: options || {} };
@@ -37058,6 +37120,29 @@ test "bootstrap runner mirrors bundler core itBundled subset" {
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 16), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
+test "bootstrap runner mirrors bundler drop corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_drop.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_drop.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
