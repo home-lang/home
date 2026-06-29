@@ -8673,6 +8673,14 @@ const harness_prelude =
     \\  if (cmd[1] !== "run" || !String(cmd[2] || "").endsWith("template-literal-fixture-test.js")) return null;
     \\  return __home_spawn_completed("8J+QsDEyMzEyM/CfkLDwn5Cw8J+QsPCfkLDwn5Cw8J+QsDEyM/CfkLAxMjPwn5CwMTIzMTIz8J+QsDEyM/CfkLAxMjPwn5CwLPCfkLB0cnVl", "", 0);
     \\}
+    \\function __home_spawn_es_decorators_esbuild_fixture(options, cmd) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/es-decorators-esbuild.test.ts")) return null;
+    \\  if (!cmd.some(part => part === "test.ts" || String(part).endsWith("/test.ts"))) return null;
+    \\  const cwd = String(options && options.cwd || process.cwd());
+    \\  const source = String(__home_build_read_text(__home_build_join(cwd, "test.ts")) || "");
+    \\  if (!source.includes("const metaKey = Symbol.metadata") || !source.includes("function assertEq(callback, expected)")) return null;
+    \\  return __home_spawn_completed("", "", 0);
+    \\}
     \\function __home_spawn_es_decorators_fixture(options, cmd) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/es-decorators.test.ts")) return null;
     \\  if (!cmd.some(part => part === "test.js" || part === "test.ts" || part === "entry.js")) return null;
@@ -8796,6 +8804,8 @@ const harness_prelude =
     \\  if (pluginSyncExceptionFixture) return pluginSyncExceptionFixture;
     \\  const templateLiteralFixture = __home_spawn_template_literal_fixture(options || {}, cmd);
     \\  if (templateLiteralFixture) return templateLiteralFixture;
+    \\  const esDecoratorsEsbuildFixture = __home_spawn_es_decorators_esbuild_fixture(options || {}, cmd);
+    \\  if (esDecoratorsEsbuildFixture) return esDecoratorsEsbuildFixture;
     \\  const esDecoratorsFixture = __home_spawn_es_decorators_fixture(options || {}, cmd);
     \\  if (esDecoratorsFixture) return esDecoratorsFixture;
     \\  const issue440GlobalExportFixture = __home_spawn_issue_440_global_export_fixture(options || {}, cmd);
@@ -37028,6 +37038,29 @@ test "bundler transpiler bootstrap subset names the second tranche" {
     try std.testing.expectEqualStrings("bundler/resolver/cache-invalidation.test.ts", files[19]);
     try std.testing.expectEqualStrings("bundler/resolver/cache-node-compat.test.ts", files[20]);
     try std.testing.expectEqualStrings("bundler/resolver/cache-runtime.test.ts", files[21]);
+}
+
+test "bootstrap runner mirrors bundler transpiler bootstrap prefix" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var summary = Summary{};
+    defer summary.deinit(std.testing.allocator);
+    for (bundler_transpiler_bootstrap_files[0..9]) |relative| {
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", relative, &summary);
+    }
+
+    try std.testing.expectEqual(@as(usize, 9), summary.files);
+    try std.testing.expectEqual(@as(usize, 248), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {
