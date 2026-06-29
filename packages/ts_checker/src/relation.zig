@@ -645,6 +645,26 @@ pub const Engine = struct {
         return result;
     }
 
+    fn homomorphicMappedOperandsMatch(self: *Engine, source: TypeId, target: TypeId) bool {
+        const source_operand = self.homomorphicMappedOperand(source) orelse return false;
+        const target_operand = self.homomorphicMappedOperand(target) orelse return false;
+        return source_operand == target_operand;
+    }
+
+    fn homomorphicMappedOperand(self: *Engine, mapped_t: TypeId) ?TypeId {
+        if (mapped_t >= self.pool().typeCount()) return null;
+        if (!self.pool().flagsOf(mapped_t).is_mapped) return null;
+        const mapped = self.interner.mappedPayload(mapped_t);
+        if (mapped.constraint >= self.pool().typeCount()) return null;
+        if (!self.pool().flagsOf(mapped.constraint).is_keyof) return null;
+        const keyof_payload = self.pool().keyof_payloads.items[self.pool().payloadOf(mapped.constraint)];
+        if (mapped.template >= self.pool().typeCount()) return null;
+        if (!self.pool().flagsOf(mapped.template).is_indexed_access) return null;
+        const indexed = self.pool().indexed_access_payloads.items[self.pool().payloadOf(mapped.template)];
+        if (indexed.object != keyof_payload.operand) return null;
+        return keyof_payload.operand;
+    }
+
     fn isDeeplyNestedPair(self: *Engine, source: TypeId, target: TypeId) bool {
         return self.isDeeplyNestedType(source, self.source_stack.items, 3) and
             self.isDeeplyNestedType(target, self.target_stack.items, 3);
@@ -868,6 +888,13 @@ pub const Engine = struct {
         }
         if ((sf.is_template_literal or sf.is_string_mapping) and target == Primitive.string_t) return true;
         if (tf.is_template_literal or tf.is_string_mapping) return false;
+
+        if (sf.is_mapped and tf.is_mapped and self.homomorphicMappedOperandsMatch(source, target)) {
+            const source_m = self.interner.mappedPayload(source);
+            const target_m = self.interner.mappedPayload(target);
+            if (source_m.optional == .add and target_m.optional != .add) return false;
+            return true;
+        }
 
         // `null` and `undefined` assign to themselves only under
         // `strictNullChecks`. Without it, tsc treats both as
