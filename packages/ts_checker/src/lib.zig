@@ -1072,8 +1072,8 @@ pub fn booleanGlobal(
 
 /// Build (or fetch from cache) the `BigInt` global — call coercion
 /// plus the `asIntN(bits, value)` / `asUintN(bits, value)` static
-/// helpers. Modeled with loose `any`-typed args since the checker
-/// doesn't yet distinguish a `bigint` literal type.
+/// helpers. The call coercion accepts the same primitive union as
+/// lib.es2020.bigint.d.ts: string | number | bigint | boolean.
 pub fn bigintGlobal(
     cache: *LibCache,
     ti: *interner_mod.Interner,
@@ -1083,7 +1083,13 @@ pub fn bigintGlobal(
 
     const bigint_t = types.Primitive.bigint_t;
     const any_t = types.Primitive.any;
-    const sig_call = try ti.internSignature(&[_]TypeId{any_t}, bigint_t, false);
+    const bigint_value_t = try ti.internUnion(&[_]TypeId{
+        types.Primitive.string_t,
+        types.Primitive.number_t,
+        bigint_t,
+        types.Primitive.boolean_t,
+    });
+    const sig_call = try ti.internSignature(&[_]TypeId{bigint_value_t}, bigint_t, false);
     const sig_as_n = try ti.internSignature(&[_]TypeId{ any_t, any_t }, bigint_t, false);
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("__call"), .type = sig_call, .is_optional = false, .is_readonly = false, .is_method = true },
