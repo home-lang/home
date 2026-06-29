@@ -38259,6 +38259,68 @@ test "bootstrap runner mirrors transpiler using snapshots corpus" {
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler await using identifier corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  const transpiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    platform: "browser",
+        \\  });
+        \\  const bunTranspiler = new Bun.Transpiler({
+        \\    loader: "tsx",
+        \\    platform: "bun",
+        \\  });
+        \\
+        \\  const parsed = (code, trim = true, autoExport = false, transpiler_ = transpiler) => {
+        \\    if (autoExport) code = "export default (" + code + ")";
+        \\    var out = transpiler_.transformSync(code, "ts");
+        \\    if (autoExport && out.startsWith("export default ")) out = out.substring("export default ".length);
+        \\    if (!trim) return out;
+        \\    out = out.trim();
+        \\    if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\    return out.trim();
+        \\  };
+        \\
+        \\  const expectPrinted_ = (code, out) => {
+        \\    expect(parsed(code, !out.endsWith(";\n"), false)).toBe(out);
+        \\  };
+        \\  const expectBunPrinted_ = (code, out) => {
+        \\    expect(parsed(code, !out.endsWith(";\n"), false, bunTranspiler)).toBe(out);
+        \\  };
+        \\
+        \\  it("await of the identifier 'using' is not an await using declaration", () => {
+        \\    expectPrinted_(
+        \\      "async function f() { await using instanceof o }",
+        \\      "async function f() {\n  await using instanceof o;\n}",
+        \\    );
+        \\    expectPrinted_("async function f() { await using }", "async function f() {\n  await using;\n}");
+        \\    expectPrinted_("async function f() { await using\n x = 1 }", "async function f() {\n  await using;\n  x = 1;\n}");
+        \\    expectPrinted_("async function f() { await using.foo() }", "async function f() {\n  await using.foo();\n}");
+        \\    expectPrinted_(
+        \\      "async function f() { for (await using instanceof o;;); }",
+        \\      "async function f() {\n  for (await using instanceof o;; )\n    ;\n}",
+        \\    );
+        \\    expectBunPrinted_("await using instanceof o", "await using instanceof o");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap runner mirrors transpiler transform corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 

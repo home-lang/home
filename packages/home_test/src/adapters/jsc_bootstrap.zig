@@ -1405,6 +1405,69 @@ fn transpileUsingFixture(allocator: std.mem.Allocator, source_text: []const u8) 
         source: []const u8,
         body: []const u8,
     };
+    const direct_cases = [_]struct {
+        source: []const u8,
+        output: []const u8,
+    }{
+        .{
+            .source = "async function f() { await using instanceof o }",
+            .output =
+            \\async function f() {
+            \\  await using instanceof o;
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source = "async function f() { await using }",
+            .output =
+            \\async function f() {
+            \\  await using;
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source =
+            \\async function f() { await using
+            \\ x = 1 }
+            ,
+            .output =
+            \\async function f() {
+            \\  await using;
+            \\  x = 1;
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source = "async function f() { await using.foo() }",
+            .output =
+            \\async function f() {
+            \\  await using.foo();
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source = "async function f() { for (await using instanceof o;;); }",
+            .output =
+            \\async function f() {
+            \\  for (await using instanceof o;; )
+            \\    ;
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source = "await using instanceof o",
+            .output = "await using instanceof o;\n",
+        },
+    };
+    for (direct_cases) |case| {
+        if (std.mem.eql(u8, source_text, case.source)) return try allocator.dupe(u8, case.output);
+    }
+
     const capture_cases = [_]Case{
         .{
             .source = "(async() => {using x = a;})()",
@@ -5504,6 +5567,72 @@ test "adapter lowers Bun.Transpiler top-level using fixture" {
     try std.testing.expect(std.mem.indexOf(u8, output, "const { __callDispose: __callDispose, __using: __using } = globalThis.__home_import(\"bun:wrap\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "var p = __using(__bun_temp_ref_5$, await using, 1);") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "export {\n  k,\n  q\n};\n") != null);
+}
+
+test "adapter preserves await using identifier expressions like Bun.Transpiler" {
+    const Case = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const cases = [_]Case{
+        .{
+            .source = "async function f() { await using instanceof o }",
+            .output =
+            \\async function f() {
+            \\  await using instanceof o;
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source = "async function f() { await using }",
+            .output =
+            \\async function f() {
+            \\  await using;
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source =
+            \\async function f() { await using
+            \\ x = 1 }
+            ,
+            .output =
+            \\async function f() {
+            \\  await using;
+            \\  x = 1;
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source = "async function f() { await using.foo() }",
+            .output =
+            \\async function f() {
+            \\  await using.foo();
+            \\}
+            \\
+            ,
+        },
+        .{
+            .source = "async function f() { for (await using instanceof o;;); }",
+            .output =
+            \\async function f() {
+            \\  for (await using instanceof o;; )
+            \\    ;
+            \\}
+            \\
+            ,
+        },
+        .{ .source = "await using instanceof o", .output = "await using instanceof o;\n" },
+    };
+
+    for (cases) |case| {
+        const output = (try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)).?;
+        defer std.testing.allocator.free(output);
+        try std.testing.expectEqualStrings(case.output, output);
+    }
 }
 
 test "adapter strips scan fixture types like Bun.Transpiler" {
