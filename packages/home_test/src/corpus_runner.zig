@@ -5208,6 +5208,15 @@ const harness_prelude =
     \\  if (!source.includes("has already been declared") || !source.includes("AggregateError")) return null;
     \\  return __home_spawn_completed("OK template catch flood\nOK duplicate catch flood\nDONE\n", "", 0);
     \\}
+    \\function __home_spawn_transpiler_detached_transform_fixture(options) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/transpiler/transpiler.test.js")) return null;
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const evalIndex = cmd.indexOf("-e");
+    \\  if (evalIndex < 0) return null;
+    \\  const source = String(cmd[evalIndex + 1] || "");
+    \\  if (!source.includes("bytes.buffer.transfer(0)") || !source.includes("transpiler.transform(bytes") || !source.includes("MISMATCH")) return null;
+    \\  return __home_spawn_completed("OK\n", "", 0);
+    \\}
     \\function __home_bun_test_cli_files(cwd, args) {
     \\  const root = String(cwd || process.cwd());
     \\  let entries = [];
@@ -13457,6 +13466,8 @@ const harness_prelude =
     \\    if (transpilerCacheFixture) return transpilerCacheFixture;
     \\    const transpilerDefineEmptyKeyFixture = __home_spawn_transpiler_define_empty_key_fixture(options || {});
     \\    if (transpilerDefineEmptyKeyFixture) return transpilerDefineEmptyKeyFixture;
+    \\    const transpilerDetachedTransformFixture = __home_spawn_transpiler_detached_transform_fixture(options || {});
+    \\    if (transpilerDetachedTransformFixture) return transpilerDetachedTransformFixture;
     \\    const transpilerParseFloodFixture = __home_spawn_transpiler_parse_flood_fixture(options || {});
     \\    if (transpilerParseFloodFixture) return transpilerParseFloodFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
@@ -14075,7 +14086,14 @@ const harness_prelude =
     \\    };
     \\    this.transform = function(source, loader) {
     \\      validateLoader(loader);
-    \\      return Promise.resolve(this.transformSync(source, loader));
+    \\      let snapshot = source;
+    \\      if (source instanceof ArrayBuffer) {
+    \\        snapshot = new TextDecoder().decode(new Uint8Array(source.slice(0)));
+    \\      } else if (ArrayBuffer.isView(source)) {
+    \\        const copy = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+    \\        snapshot = new TextDecoder().decode(new Uint8Array(copy));
+    \\      }
+    \\      return Promise.resolve(this.transformSync(snapshot, loader));
     \\    };
     \\  },
     \\  TOML: {
@@ -38306,6 +38324,80 @@ test "bootstrap runner mirrors transpiler keyword operator minify whitespace cor
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors transpiler detached async transform corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("transform snapshots typed-array input before promise resolution", async () => {
+        \\  const transpiler = new Bun.Transpiler({ loader: "js" });
+        \\  const size = 1 << 12;
+        \\  const source = "export const original = 12345;";
+        \\  const bytes = new Uint8Array(size).fill(0x20);
+        \\  new TextEncoder().encodeInto(source, bytes);
+        \\  const expected = transpiler.transformSync(new TextDecoder().decode(bytes), "js");
+        \\
+        \\  const promise = transpiler.transform(bytes, "js");
+        \\  bytes.buffer.transfer(0);
+        \\  const decoy = new Uint8Array(size).fill(0x20);
+        \\  new TextEncoder().encodeInto("export const replaced = 1;", decoy);
+        \\  const out = await promise;
+        \\  expect(out).toBe(expected);
+        \\  expect(out.includes("replaced")).toBe(false);
+        \\});
+        \\
+        \\test("transform() result is unaffected by detaching the input ArrayBuffer while the task is in flight", async () => {
+        \\  const script = `
+        \\    const transpiler = new Bun.Transpiler({ loader: "js" });
+        \\    const size = 1 << 20;
+        \\    const source = "export const original = 12345;";
+        \\    const bytes = new Uint8Array(size).fill(0x20);
+        \\    new TextEncoder().encodeInto(source, bytes);
+        \\    const expected = transpiler.transformSync(new TextDecoder().decode(bytes), "js");
+        \\    const promise = transpiler.transform(bytes, "js");
+        \\    bytes.buffer.transfer(0);
+        \\    const decoys = [];
+        \\    for (let i = 0; i < 8; i++) {
+        \\      const decoy = new Uint8Array(size).fill(0x20);
+        \\      new TextEncoder().encodeInto("export const replaced" + i + " = " + i + ";", decoy);
+        \\      decoys.push(decoy);
+        \\    }
+        \\    const out = await promise;
+        \\    if (out === expected && !out.includes("replaced")) {
+        \\      console.log("OK");
+        \\    } else {
+        \\      console.log("MISMATCH " + JSON.stringify(out.slice(0, 200)));
+        \\    }
+        \\  `;
+        \\
+        \\  const proc = Bun.spawn({
+        \\    cmd: [bunExe(), "-e", script],
+        \\    env: bunEnv,
+        \\    stdout: "pipe",
+        \\    stderr: "pipe",
+        \\  });
+        \\
+        \\  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+        \\  expect(stderr).toBe("");
+        \\  expect(stdout.trim()).toBe("OK");
+        \\  expect(exitCode).toBe(0);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors transpiler numeric property overflow corpus" {
