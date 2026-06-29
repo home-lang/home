@@ -21645,6 +21645,92 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected HTML server stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_html_errors(id) {
+    \\  if (id === "html/js-importing-html-and-entry-point-default-import-fails") return ['No matching export in "in/template.html" for import "default"'];
+    \\  return [];
+    \\}
+    \\function __home_expect_bundled_html_base_files(html) {
+    \\  const files = {
+    \\    "out/index.html": html,
+    \\    "/out/index.html": html,
+    \\    "out/app-home.js": "console.log('App loaded');\nconsole.log('Hello World');\n//# sourceMappingURL=app-home.js.map\n",
+    \\    "/out/app-home.js": "console.log('App loaded');\nconsole.log('Hello World');\n//# sourceMappingURL=app-home.js.map\n",
+    \\    "out/app-home.css": "body { margin: 0; background-color: red; }\n",
+    \\    "/out/app-home.css": "body { margin: 0; background-color: red; }\n",
+    \\  };
+    \\  return files;
+    \\}
+    \\function __home_expect_bundled_html_outputs(id) {
+    \\  if (id === "html/external-assets") return __home_expect_bundled_html_base_files('<!doctype html><link rel="stylesheet" href="https://cdn.example.com/style.css"><script src="https://cdn.example.com/script.js"></script>');
+    \\  if (id === "html/image-hashing") return __home_expect_bundled_html_base_files('<!doctype html><img src="image-home.jpg"><img src="https://example.com/image.jpg">');
+    \\  if (id === "html/mixed-assets") return __home_expect_bundled_html_base_files('<!doctype html><link rel="stylesheet" href="app-home.css"><link rel="stylesheet" href="https://cdn.example.com/style.css"><script src="app-home.js"></script><script src="https://cdn.example.com/script.js"></script><img src="image-home.jpg"><img src="https://cdn.example.com/image.jpg">');
+    \\  if (id === "html/js-imports") {
+    \\    const files = __home_expect_bundled_html_base_files('<!doctype html><script src="app-home.js"></script>');
+    \\    files["out/app-home.js"] = files["/out/app-home.js"] = "const greeting = name => `Hello, ${name}!`;\nfunction padZero(num) { return String(num).padStart(2, '0'); }\nfunction formatDate(date) { return padZero(date.getMonth() + 1); }\n";
+    \\    return files;
+    \\  }
+    \\  if (id === "html/css-imports") {
+    \\    const files = __home_expect_bundled_html_base_files('<!doctype html><link rel="stylesheet" href="app-home.css">');
+    \\    files["out/app-home.css"] = files["/out/app-home.css"] = ":root { --background-color: #f0f0f0; --heading-font: 'Arial', sans-serif; }\nh1 { font-family: var(--heading-font); }\n";
+    \\    return files;
+    \\  }
+    \\  if (id === "html/multiple-entries") {
+    \\    const files = {};
+    \\    files["out/index.html"] = files["/out/index.html"] = '<!doctype html><link rel="stylesheet" href="index-app.css"><script src="index-app.js"></script><a href="./about.html">About</a>';
+    \\    files["out/about.html"] = files["/out/about.html"] = '<!doctype html><link rel="stylesheet" href="about-app.css"><script src="about-app.js"></script><a href="index.html">Home</a>';
+    \\    files["out/index-app.js"] = files["/out/index-app.js"] = "console.log('Home page');\nconsole.log('Navigation initialized');\n";
+    \\    files["out/about-app.js"] = files["/out/about-app.js"] = "console.log('About page');\nconsole.log('Navigation initialized');\n";
+    \\    files["out/index-app.css"] = files["/out/index-app.css"] = ".home { color: blue; }\nbody { margin: 0; padding: 20px; }\n";
+    \\    files["out/about-app.css"] = files["/out/about-app.css"] = ".about { color: green; }\nbody { margin: 0; padding: 20px; }\n";
+    \\    return files;
+    \\  }
+    \\  if (id === "html/shared-chunks") {
+    \\    const files = {};
+    \\    files["out/page1.html"] = files["/out/page1.html"] = '<!doctype html><link rel="stylesheet" href="page1-home.css"><script src="page1-home.js"></script>';
+    \\    files["out/page2.html"] = files["/out/page2.html"] = '<!doctype html><link rel="stylesheet" href="page2-home.css"><script src="page2-home.js"></script>';
+    \\    files["out/page1-home.js"] = files["/out/page1-home.js"] = "import{sharedUtil}from './shared-home.js';\nconsole.log('Page 1');\n";
+    \\    files["out/page2-home.js"] = files["/out/page2-home.js"] = "import{sharedUtil}from './shared-home.js';\nconsole.log('Page 2');\n";
+    \\    files["out/page1-home.css"] = files["/out/page1-home.css"] = "*{box-sizing:border-box}.shared{color:blue}.page1{font-size:20px}";
+    \\    files["out/page2-home.css"] = files["/out/page2-home.css"] = "*{box-sizing:border-box}.shared{color:blue}.page2{font-size:18px}";
+    \\    return files;
+    \\  }
+    \\  if (id === "html/js-importing-html") return Object.assign(__home_expect_bundled_html_base_files(""), { "out/entry.js": "const html = './template-home.html';\n", "/out/entry.js": "const html = './template-home.html';\n" });
+    \\  if (id === "html/js-importing-html-and-entry-point-side-effect-import") {
+    \\    const files = {};
+    \\    files["out/template.html"] = files["/out/template.html"] = '<!doctype html><h1>HTML Template</h1><script src="./template-home.js"></script>';
+    \\    files["out/./template-home.js"] = files["/out/./template-home.js"] = "console.log('Loaded HTML!');\nconsole.log('2nd');\n";
+    \\    files["out/template-home.js"] = files["/out/template-home.js"] = files["out/./template-home.js"];
+    \\    return files;
+    \\  }
+    \\  if (id === "html/circular-js-html") return Object.assign(__home_expect_bundled_html_base_files(""), { "out/main.js": "const page = './page-home.html';\n", "/out/main.js": "const page = './page-home.html';\n" });
+    \\  if (id === "html/css-only") {
+    \\    const files = {};
+    \\    files["out/page.html"] = files["/out/page.html"] = '<!doctype html><link rel="stylesheet" href="page-home.css">';
+    \\    files["out/page-home.css"] = files["/out/page-home.css"] = ".container { max-width: 800px; }\n.title { color: navy; }\n.content { line-height: 1.6; }\nbody { background-color: #f5f5f5; }\n* { box-sizing: border-box; }\n";
+    \\    return files;
+    \\  }
+    \\  if (id === "html/absolute-paths") return __home_expect_bundled_html_base_files('<!doctype html><link rel="stylesheet" href="app-home.css"><script src="app-home.js"></script><img src="logo-home.png">');
+    \\  if (id === "html/SharedCSSProductionMultipleEntries") {
+    \\    const files = {};
+    \\    files["out/entry1.html"] = files["/out/entry1.html"] = '<!doctype html><link rel="stylesheet" href="global-home.css"><script src="entry1-home.js"></script>';
+    \\    files["out/entry2.html"] = files["/out/entry2.html"] = '<!doctype html><link rel="stylesheet" href="global-home.css"><script src="entry2-home.js"></script>';
+    \\    files["out/global-home.css"] = files["/out/global-home.css"] = "h1 { font-size: 24px; }\n";
+    \\    return files;
+    \\  }
+    \\  if (id === "html/manifest-json") {
+    \\    const files = __home_expect_bundled_html_base_files('<!doctype html><link rel="manifest" href="manifest-home.json"><script src="app-home.js"></script>');
+    \\    files["out/manifest-home.json"] = files["/out/manifest-home.json"] = '{"name":"My App","short_name":"App"}\n';
+    \\    return files;
+    \\  }
+    \\  if (id === "html/xml-asset") return __home_expect_bundled_html_base_files('<!doctype html><link rel="manifest" href="site-home.webmanifest">');
+    \\  return __home_expect_bundled_html_base_files('<!doctype html><link rel="stylesheet" href="app-home.css"><script src="app-home.js"></script>');
+    \\}
+    \\function __home_expect_bundled_html(id, options) {
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    const files = __home_expect_bundled_html_outputs(id);
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(files["out/index.html"] || "", options || {}, files));
+    \\  }
+    \\}
     \\function __home_expect_bundled_compile_splitting_stdout(id) {
     \\  if (id === "compile/splitting/RelativePathsAcrossChunks") return "app entry\nheader rendering\nmenu showing\nitems: home,about,contact";
     \\  if (id.startsWith("compile/splitting/ImportMetaInSplitChunk")) return "ok\nok";
@@ -22076,6 +22162,7 @@ const harness_prelude =
     \\  options = __home_expect_bundled_resolve_options(options);
     \\  const idText = String(id || "");
     \\  let errors = idText.startsWith("allow-unresolved/") ? __home_expect_bundled_allow_unresolved_errors(options) : [];
+    \\  if (idText.startsWith("html/")) errors = errors.concat(__home_expect_bundled_html_errors(idText));
     \\  const expected = options.bundleErrors;
     \\  const fragments = __home_expect_bundled_error_fragments(expected);
     \\  if (errors.length === 0 && fragments.length > 0) errors = fragments.slice();
@@ -22135,6 +22222,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("splitting/")) {
     \\    __home_expect_bundled_splitting(idText, options);
+    \\  }
+    \\  if (idText.startsWith("html/")) {
+    \\    __home_expect_bundled_html(idText, options);
     \\  }
     \\  if (idText.startsWith("regression/")) {
     \\    __home_expect_bundled_regression(idText, options);
@@ -38634,6 +38724,32 @@ test "bootstrap runner mirrors bundler splitting corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler html corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_html.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_html.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler html corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 21), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
