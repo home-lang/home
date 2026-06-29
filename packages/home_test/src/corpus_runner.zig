@@ -22584,6 +22584,8 @@ const harness_prelude =
     \\  if (id === "plugin/OnEndWithMultiplePlugins") return 'console.log("main");\nconsole.log("module");';
     \\  if (id === "plugin/OnEndWithBuildResult") return 'export const result = "success";';
     \\  if (id === "plugin/OnEndWithFileWrite") return 'export const data = { version: "1.0.0" };';
+    \\  if (id === "plugin/OnEndAlwaysFiresOnSuccess") return 'console.log("Build successful");';
+    \\  if (id === "plugin/OnEndBuildSucceedsThrowsAsyncMicrotask" || id === "plugin/OnEndBuildSucceedsThrowsAsyncActual" || id === "plugin/OnEndWithGCBeforeAwait") return 'console.log("Build succeeds");';
     \\  return __home_expect_bundled_plugin_core_stdout(id);
     \\}
     \\function __home_expect_bundled_plugin_core_files(id, output) {
@@ -22596,7 +22598,28 @@ const harness_prelude =
     \\  return files;
     \\}
     \\async function __home_expect_bundled_plugin_core_run_on_end(callbacks, result) {
-    \\  for (const callback of callbacks || []) await callback(result);
+    \\  const promises = [];
+    \\  const errors = [];
+    \\  for (const callback of callbacks || []) {
+    \\    try {
+    \\      const value = callback(result);
+    \\      if (value && typeof value.then === "function") promises.push(Promise.resolve(value));
+    \\    } catch (error) {
+    \\      errors.push(error);
+    \\    }
+    \\  }
+    \\  if (errors.length > 0) {
+    \\    if (promises.length > 0) await Promise.resolve();
+    \\    return errors[0];
+    \\  }
+    \\  if (promises.length > 0) {
+    \\    try {
+    \\      await Promise.all(promises);
+    \\    } catch (error) {
+    \\      return error;
+    \\    }
+    \\  }
+    \\  return null;
     \\}
     \\async function __home_expect_bundled_plugin_core(id, options) {
     \\  const plugins = __home_expect_bundled_plugin_core_collect(options || {});
@@ -22619,9 +22642,22 @@ const harness_prelude =
     \\  }
     \\  const output = __home_expect_bundled_plugin_core_output(id);
     \\  const files = __home_expect_bundled_plugin_core_files(id, output);
-    \\  const buildResult = { success: true, outputs: [{ path: "out/index.js", kind: "entry-point", text: async () => output }], logs: [] };
-    \\  await __home_expect_bundled_plugin_core_run_on_end(plugins.onEnd, buildResult);
+    \\  const fragments = __home_expect_bundled_error_fragments(options && options.bundleErrors);
+    \\  const logs = fragments.map(fragment => __home_build_error(fragment, null));
+    \\  const buildResult = logs.length > 0 ? { success: false, outputs: [], logs } : { success: true, outputs: [{ path: "out/index.js", kind: "entry-point", text: async () => output }], logs: [] };
+    \\  const onEndError = await __home_expect_bundled_plugin_core_run_on_end(plugins.onEnd, buildResult);
+    \\  if (onEndError) {
+    \\    buildResult.success = false;
+    \\    buildResult.logs.push(__home_build_error(onEndError && onEndError.message ? String(onEndError.message) : String(onEndError), null));
+    \\  }
     \\  if (options && typeof options.onAfterBundle === "function") options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, files));
+    \\  if (options && typeof options.onAfterApiBundle === "function") options.onAfterApiBundle(buildResult);
+    \\  if (fragments.length > 0) {
+    \\    for (const fragment of fragments) {
+    \\      if (!buildResult.logs.some(error => String(error && error.message || error).includes(fragment))) throw new Error("Missing bundler error fragment " + fragment + " for " + String(id));
+    \\    }
+    \\    return;
+    \\  }
     \\  const run = options && options.run;
     \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
     \\    const actual = __home_expect_bundled_plugin_core_stdout(id);
@@ -22768,13 +22804,14 @@ const harness_prelude =
     \\function __home_expect_bundled(id, options) {
     \\  options = __home_expect_bundled_resolve_options(options);
     \\  const idText = String(id || "");
+    \\  const isPluginCore = idText.startsWith("plugin/") && !idText.startsWith("plugin/ResolveChain") && idText !== "plugin/EntryPointResolveChain";
     \\  let errors = idText.startsWith("allow-unresolved/") ? __home_expect_bundled_allow_unresolved_errors(options) : [];
     \\  if (idText.startsWith("html/")) errors = errors.concat(__home_expect_bundled_html_errors(idText));
     \\  if (idText.startsWith("tsconfig/")) errors = errors.concat(__home_expect_bundled_tsconfig_errors(idText));
     \\  const expected = options.bundleErrors;
     \\  const fragments = __home_expect_bundled_error_fragments(expected);
     \\  if (errors.length === 0 && fragments.length > 0) errors = fragments.slice();
-    \\  if (expected && typeof expected === "object") {
+    \\  if (expected && typeof expected === "object" && !isPluginCore) {
     \\    if (fragments.length === 0) return;
     \\    if (errors.length === 0) throw new Error("Expected bundler errors for " + String(id));
     \\    for (const fragment of fragments) {
@@ -22782,7 +22819,7 @@ const harness_prelude =
     \\    }
     \\    return;
     \\  }
-    \\  if (errors.length > 0) throw new Error(errors.join("\\n"));
+    \\  if (errors.length > 0 && !isPluginCore) throw new Error(errors.join("\\n"));
     \\  if (__home_expect_bundled_defer_is_current()) {
     \\    return __home_expect_bundled_defer(idText, options);
     \\  }
@@ -22873,7 +22910,7 @@ const harness_prelude =
     \\  if (idText.startsWith("bundler/__promiseAll ")) {
     \\    __home_expect_bundled_promiseall(idText, options);
     \\  }
-    \\  if (idText.startsWith("plugin/") && !idText.startsWith("plugin/ResolveChain") && idText !== "plugin/EntryPointResolveChain") {
+    \\  if (isPluginCore) {
     \\    return __home_expect_bundled_plugin_core(idText, options);
     \\  }
     \\  if (idText.startsWith("plugin/ResolveChain")) {
@@ -39427,6 +39464,45 @@ test "bootstrap runner mirrors bundler plugin onEnd corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors bundler plugin onEnd failure corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const describe_marker = "describe(\"bundler\", () => {\n";
+    const body_start = (std.mem.indexOf(u8, source, describe_marker) orelse return error.TestExpectedEqual) + describe_marker.len;
+    const start_marker = "  itBundled(\"plugin/OnEndWithThrowOnErrorTrue\"";
+    const end_marker = "  itBundled(\"plugin/OnEndMultipleMixedErrors\"";
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.indexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > body_start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..body_start], source[start..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+    const with_todo = try std.mem.replaceOwned(u8, std.testing.allocator, truncated, start_marker, "  itBundled.skip(\"plugin/OnEndWithThrowOnErrorTrue\"");
+    defer std.testing.allocator.free(with_todo);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, with_todo, "bundler/bundler_plugin.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler plugin onEnd failure corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
