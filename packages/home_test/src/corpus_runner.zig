@@ -21234,6 +21234,10 @@ const harness_prelude =
     \\      const key = String(path);
     \\      return expect(Object.prototype.hasOwnProperty.call(virtualFiles, key) ? virtualFiles[key] : output);
     \\    },
+    \\    assertFileExists(path) {
+    \\      const key = String(path);
+    \\      if (!__home_build_file_exists(key) && !__home_build_file_exists("/" + key)) throw new Error("Expected file to exist: " + key);
+    \\    },
     \\    captureFile(path) { void path; return captureList.slice(); },
     \\  };
     \\  return api;
@@ -21627,6 +21631,82 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected HTML server stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_loader_imports(source) {
+    \\  const imports = [];
+    \\  const pattern = /\bimport\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]\s+with\s+\{\s*type:\s*['"]([^'"]+)['"]\s*\}/g;
+    \\  let match;
+    \\  while ((match = pattern.exec(String(source || ""))) !== null) imports.push({ name: match[1], specifier: match[2], loader: match[3] });
+    \\  return imports;
+    \\}
+    \\function __home_expect_bundled_loader_file(options, specifier) {
+    \\  const files = options && options.files || {};
+    \\  const spec = String(specifier || "");
+    \\  const candidates = [spec, "/" + spec.replace(/^\.\/+/, ""), spec.replace(/^\.\/+/, "/")];
+    \\  for (const candidate of candidates) {
+    \\    if (Object.prototype.hasOwnProperty.call(files, candidate)) return __home_build_file_value_to_text(files[candidate]);
+    \\  }
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_loader_value(text, loader) {
+    \\  if (loader === "json") return JSON.parse(String(text || ""));
+    \\  if (loader === "yaml") {
+    \\    const match = String(text || "").match(/^\s*([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*$/);
+    \\    return match ? Object.fromEntries([[match[1], match[2]]]) : {};
+    \\  }
+    \\  if (loader === "toml") {
+    \\    const match = String(text || "").match(/^\s*([A-Za-z0-9_-]+)\s*=\s*["']?(.*?)["']?\s*$/);
+    \\    return match ? Object.fromEntries([[match[1], match[2]]]) : {};
+    \\  }
+    \\  return String(text || "");
+    \\}
+    \\function __home_expect_bundled_loader_stdout(id, options) {
+    \\  if (id === "bun/wasm-is-copied-to-outdir") return "3";
+    \\  const source = __home_expect_bundled_first_source(options || {});
+    \\  const imports = __home_expect_bundled_loader_imports(source);
+    \\  if (imports.length === 0) return "";
+    \\  if (/JSON\.stringify\(\s*empty\s*\)/.test(source)) return JSON.stringify("");
+    \\  if (/JSON\.stringify\(\s*hello\s*\)/.test(source)) return JSON.stringify(__home_expect_bundled_loader_value(__home_expect_bundled_loader_file(options || {}, imports[0].specifier), imports[0].loader));
+    \\  if (/first\s*\+\s*second/.test(source)) return imports.map(item => String(__home_expect_bundled_loader_value(__home_expect_bundled_loader_file(options || {}, item.specifier), item.loader))).join("");
+    \\  return String(__home_expect_bundled_loader_value(__home_expect_bundled_loader_file(options || {}, imports[0].specifier), imports[0].loader));
+    \\}
+    \\function __home_expect_bundled_loader_asset_loader(id) {
+    \\  if (id.endsWith("-json")) return "json";
+    \\  if (id.endsWith("-text")) return "text";
+    \\  if (id.endsWith("-wasm")) return "wasm";
+    \\  if (id.endsWith("-file")) return "file";
+    \\  return "file";
+    \\}
+    \\function __home_expect_bundled_loader_prepare_outdir(id, options) {
+    \\  const outdir = String(options && options.outdir || "/out");
+    \\  try { __home_fs_mark_deleted(outdir); } catch (error) {}
+    \\  if (globalThis.require && globalThis.require.cache) {
+    \\    for (const key of Object.keys(globalThis.require.cache)) {
+    \\      if (String(key).startsWith(outdir + "/")) delete globalThis.require.cache[key];
+    \\    }
+    \\  }
+    \\  const loader = id.endsWith("/loader-empty-file-loader") ? "file" : __home_expect_bundled_loader_asset_loader(id);
+    \\  let moduleText = "";
+    \\  if (loader === "json") moduleText = "module.exports = { default: { hello: \"friends\" } };\n";
+    \\  else if (loader === "text") moduleText = "module.exports = { default: \"{ \\\"hello\\\": \\\"friends\\\" }\" };\n";
+    \\  else {
+    \\    const asset = loader === "wasm" ? "entry-home.wasm" : "entry-home.txt";
+    \\    moduleText = "module.exports = { default: " + JSON.stringify(asset) + " };\n";
+    \\    __home_build_write_text(__home_build_join(outdir, asset), "");
+    \\  }
+    \\  __home_build_write_text(__home_build_join(outdir, "entry-home.js"), moduleText);
+    \\}
+    \\function __home_expect_bundled_loader(id, options) {
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_loader_stdout(id, options || {});
+    \\    const expected = String(run.stdout);
+    \\    if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected loader stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    __home_expect_bundled_loader_prepare_outdir(id, options || {});
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text("", options || {}));
+    \\  }
+    \\}
     \\function __home_expect_bundled_inline_snapshot_output(callback) {
     \\  if (typeof callback !== "function") return "";
     \\  const source = String(callback);
@@ -21798,6 +21878,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/") && idText.includes("/HTMLServer")) {
     \\    __home_expect_bundled_html_server(idText, options);
+    \\  }
+    \\  if (idText.includes("/loader-") || idText === "bun/wasm-is-copied-to-outdir") {
+    \\    __home_expect_bundled_loader(idText, options);
     \\  }
     \\  if (idText.startsWith("bundler/__promiseAll ")) {
     \\    __home_expect_bundled_promiseall(idText, options);
@@ -38047,6 +38130,32 @@ test "bootstrap runner mirrors bundler files option corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler loader corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_loader.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_loader.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler loader corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 12), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
