@@ -472,7 +472,6 @@ pub const minimal_js_files = [_][]const u8{
     "bake/dev/vfile.test.ts",
     "bake/fixtures/deinitialization/test.ts",
     "bake/framework-router.test.ts",
-    "bundler/bun-build-compile.test.ts",
     "bundler/compile-sourcemap-internal.test.ts",
     "bundler/compile-windows-metadata.test.ts",
     "bundler/html-import-manifest.test.ts",
