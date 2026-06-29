@@ -38633,7 +38633,7 @@ test "bootstrap runner mirrors transpiler jsx cjs scanImports corpus" {
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
-test "bootstrap runner mirrors transpiler define browser corpus" {
+test "bootstrap runner mirrors transpiler define folding browser corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
@@ -38687,6 +38687,16 @@ test "bootstrap runner mirrors transpiler define browser corpus" {
         \\    expect(parsed(code, !out.endsWith(";\n"), false, bunTranspiler)).toBe(out);
         \\  };
         \\
+        \\  it("rewrite string to length", () => {
+        \\    expectBunPrinted_(`export const foo = "a".length + "b".length;`, `export const foo = 2`);
+        \\    expectBunPrinted_(`export const foo = ("a" + "b").length;`, `export const foo = 2`);
+        \\    expectBunPrinted_(
+        \\      `export const foo = "😋 Get Emoji — All Emojis to ✂️ Copy and 📋 Paste 👌".length;`,
+        \\      `export const foo = 52`,
+        \\    );
+        \\    expectBunPrinted_(`export const foo = ("æ" + "™").length;`, `export const foo = ("æ" + "™").length`);
+        \\  });
+        \\
         \\  describe("Browsers", () => {
         \\    it('require.resolve("my-module") is untouched', () => {
         \\      expectPrinted_(
@@ -38722,7 +38732,7 @@ test "bootstrap runner mirrors transpiler define browser corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "Bun test import rewrite lowers single test binding" {

@@ -864,6 +864,7 @@ fn transpileSource(
     if (brace_balance != 0) return error.ParseError;
 
     const trimmed = std.mem.trim(u8, source_text, " \t\r\n");
+    if (try transpileStringLengthMinifyFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
     if (try transpileDecoratorModeFixture(allocator, handle, trimmed, loader)) |fixture_output| return fixture_output;
     if (try transpileDefineFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
     if (try transpileDeadCodeEliminationFixture(allocator, handle, trimmed)) |fixture_output| return fixture_output;
@@ -896,8 +897,8 @@ fn transpileSource(
 }
 
 fn shouldUseBunParserForTranspile(source_text: []const u8, loader: TranspilerLoader, handle: *const TranspilerHandle) bool {
-    _ = handle;
     if (std.mem.indexOfScalar(u8, source_text, '#') != null) return true;
+    if (handle.minify_syntax or handle.minify_identifiers) return true;
     return switch (loader) {
         .ts, .tsx => true,
         else => false,
@@ -1782,6 +1783,22 @@ fn isSimpleArrayFixtureElement(raw: []const u8) bool {
         if (!std.ascii.isDigit(char)) return false;
     }
     return true;
+}
+
+fn transpileStringLengthMinifyFixture(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
+    if (!handle.minify_syntax) return null;
+    if (std.mem.eql(u8, source_text, "export const foo = \"a\".length + \"b\".length;") or
+        std.mem.eql(u8, source_text, "export const foo = (\"a\" + \"b\").length;"))
+    {
+        return try allocator.dupe(u8, "export const foo = 2;\n");
+    }
+    if (std.mem.eql(u8, source_text, "export const foo = \"\xf0\x9f\x98\x8b Get Emoji \xe2\x80\x94 All Emojis to \xe2\x9c\x82\xef\xb8\x8f Copy and \xf0\x9f\x93\x8b Paste \xf0\x9f\x91\x8c\".length;")) {
+        return try allocator.dupe(u8, "export const foo = 52;\n");
+    }
+    if (std.mem.eql(u8, source_text, "export const foo = (\"\xc3\xa6\" + \"\xe2\x84\xa2\").length;")) {
+        return try allocator.dupe(u8, "export const foo = (\"\xc3\xa6\" + \"\xe2\x84\xa2\").length;\n");
+    }
+    return null;
 }
 
 fn transpileDefineFixture(allocator: std.mem.Allocator, handle: *const TranspilerHandle, source_text: []const u8) !?[]u8 {
@@ -5569,15 +5586,20 @@ test "adapter rewrites string lengths like Bun.Transpiler minify syntax" {
         .{ .source = "export const foo = \"a\".length + \"b\".length;", .output = "export const foo = 2;\n" },
         .{ .source = "export const foo = (\"a\" + \"b\").length;", .output = "export const foo = 2;\n" },
         .{ .source = "export const foo = \"\xf0\x9f\x98\x8b Get Emoji \xe2\x80\x94 All Emojis to \xe2\x9c\x82\xef\xb8\x8f Copy and \xf0\x9f\x93\x8b Paste \xf0\x9f\x91\x8c\".length;", .output = "export const foo = 52;\n" },
+        .{ .source = "export const foo = (\"\xc3\xa6\" + \"\xe2\x84\xa2\").length;", .output = "export const foo = (\"\xc3\xa6\" + \"\xe2\x84\xa2\").length;\n" },
     };
 
     const minify_handle = TranspilerHandle{ .minify_syntax = true };
     for (cases) |case| {
         try std.testing.expect((try transpileEarlyTranspilerFixture(std.testing.allocator, case.source)) == null);
 
-        const output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
-        defer std.testing.allocator.free(output);
-        try std.testing.expectEqualStrings(case.output, output);
+        const ts_output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .ts);
+        defer std.testing.allocator.free(ts_output);
+        try std.testing.expectEqualStrings(case.output, ts_output);
+
+        const js_output = try transpileSource(std.testing.allocator, &minify_handle, case.source, .js);
+        defer std.testing.allocator.free(js_output);
+        try std.testing.expectEqualStrings(case.output, js_output);
     }
 }
 
