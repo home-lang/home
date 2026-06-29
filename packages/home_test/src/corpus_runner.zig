@@ -37052,12 +37052,12 @@ test "bootstrap runner mirrors bundler transpiler bootstrap prefix" {
 
     var summary = Summary{};
     defer summary.deinit(std.testing.allocator);
-    for (bundler_transpiler_bootstrap_files[0..9]) |relative| {
+    for (bundler_transpiler_bootstrap_files[0..13]) |relative| {
         try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", relative, &summary);
     }
 
-    try std.testing.expectEqual(@as(usize, 9), summary.files);
-    try std.testing.expectEqual(@as(usize, 248), summary.passed);
+    try std.testing.expectEqual(@as(usize, 13), summary.files);
+    try std.testing.expectEqual(@as(usize, 260), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
