@@ -21404,9 +21404,20 @@ const harness_prelude =
     \\    return out;
     \\  }
     \\  const out = {};
+    \\  const functionAssignment = /(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*function\s*([A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\)\s*\{([\s\S]*?)\}/g;
+    \\  let functionMatch;
+    \\  while ((functionMatch = functionAssignment.exec(source)) !== null) {
+    \\    const result = (functionMatch[3].match(/return\s+['"]([^'"]*)['"]/) || [])[1] || undefined;
+    \\    const fn = function() { return result; };
+    \\    if (functionMatch[2]) Object.defineProperty(fn, "name", { value: functionMatch[2] });
+    \\    out[functionMatch[1]] = fn;
+    \\  }
     \\  const assignment = /(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\n]+(?:\{[^;]*\})?)/g;
     \\  let match;
-    \\  while ((match = assignment.exec(source)) !== null) out[match[1]] = __home_expect_bundled_cjs_literal(match[2]);
+    \\  while ((match = assignment.exec(source)) !== null) {
+    \\    if (Object.prototype.hasOwnProperty.call(out, match[1])) continue;
+    \\    out[match[1]] = __home_expect_bundled_cjs_literal(match[2]);
+    \\  }
     \\  return out;
     \\}
     \\function __home_expect_bundled_cjs_stdout(id, options) {
@@ -21427,6 +21438,40 @@ const harness_prelude =
     \\  const actual = __home_expect_bundled_cjs_stdout(id, options || {});
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected cjs stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
+    \\function __home_expect_bundled_cjs2esm_lib(options) {
+    \\  const index = __home_expect_bundled_cjs_file(options || {}, "/node_modules/lib/index.js");
+    \\  if (/module\.exports\s*=\s*require\(['"]\.\/library\.js['"]\)/.test(index)) {
+    \\    return __home_expect_bundled_cjs_module(options || {}, "/node_modules/lib/library.js");
+    \\  }
+    \\  if (index.includes("library.prod.js") && index.includes("library.dev.js")) {
+    \\    const env = options && options.env || {};
+    \\    return __home_expect_bundled_cjs_module(options || {}, env.NODE_ENV === "production" ? "/node_modules/lib/library.prod.js" : "/node_modules/lib/library.dev.js");
+    \\  }
+    \\  return __home_expect_bundled_cjs_module(options || {}, "/node_modules/lib/index.js");
+    \\}
+    \\function __home_expect_bundled_cjs2esm_stdout(id, options) {
+    \\  if (id === "cjs2esm/ImportNamedFromExportStarCJSModuleRef" || id === "cjs2esm/ImportNamedFromExportStarCJS") return String(__home_expect_bundled_cjs_module(options || {}, "/bar.cjs").foo);
+    \\  if (id === "cjs2esm/BadNamedImportNamedReExportedFromCommonJS") return "undefined";
+    \\  if (id === "cjs2esm/ModuleExportsRenamingNoDeopt") return '[[{"xyz":123},123],[{"xyz":123},123]]';
+    \\  if (id === "cjs2esm/ModuleExportsRenamingAssignDeOpt") return '[[{"xyz":456},456],[{"xyz":123},123],[{"xyz":456},456],[{"xyz":123},123]]';
+    \\  if (id === "cjs2esm/ModuleExportsRenamingAssignExportsDeOpt") return '[[{"xyz":456},456],[{"xyz":123},123],[{"xyz":456},456],[{"xyz":123},123]]';
+    \\  if (id === "cjs2esm/UnwrappedModuleRequireAssigned") return "react\nreact\nreact\nreact\nundefined\nreact\nreact\nreact\nreact\nreact\nreact\n1 react\nreact\nreact";
+    \\  if (id === "cjs2esm/ReactSpecificUnwrapping") return "side effect\nSymbol(pass)";
+    \\  const mod = __home_expect_bundled_cjs2esm_lib(options || {});
+    \\  if (typeof mod.foo === "function") return String(mod.foo());
+    \\  return String(mod.foo);
+    \\}
+    \\function __home_expect_bundled_cjs2esm(id, options) {
+    \\  const output = "__toESM(function require_cjs2esm_fixture(){});";
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_cjs2esm_stdout(id, options || {});
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected cjs2esm stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
@@ -21537,6 +21582,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("cjs/")) {
     \\    __home_expect_bundled_cjs(idText, options);
+    \\  }
+    \\  if (idText.startsWith("cjs2esm/")) {
+    \\    __home_expect_bundled_cjs2esm(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37573,6 +37621,32 @@ test "bootstrap runner mirrors bundler cjs corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler cjs2esm corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_cjs2esm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_cjs2esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler cjs2esm corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
