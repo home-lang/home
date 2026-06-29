@@ -38099,8 +38099,21 @@ test "bootstrap runner mirrors transpiler edge cases corpus" {
         \\  minify: { syntax: true },
         \\  platform: "browser",
         \\});
+        \\const transpilerTs = new Bun.Transpiler({
+        \\  loader: "ts",
+        \\  platform: "browser",
+        \\});
         \\
         \\const ts = {
+        \\  parsed: (code, trim = true, autoExport = false) => {
+        \\    if (autoExport) code = "export default (" + code + ")";
+        \\    var out = transpilerTs.transformSync(code, "ts");
+        \\    if (autoExport && out.startsWith("export default ")) out = out.substring("export default ".length);
+        \\    if (!trim) return out;
+        \\    out = out.trim();
+        \\    if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\    return out.trim();
+        \\  },
         \\  parsedMin: (code, trim = true, autoExport = false) => {
         \\    if (autoExport) code = "export default (" + code + ")";
         \\    var out = transpilerMinifySyntax.transformSync(code, "ts");
@@ -38112,6 +38125,9 @@ test "bootstrap runner mirrors transpiler edge cases corpus" {
         \\  },
         \\  expectPrintedMin_: (code, out) => {
         \\    expect(ts.parsedMin(code, !out.endsWith(";\n"), false)).toBe(out);
+        \\  },
+        \\  expectPrinted: (code, out) => {
+        \\    expect(ts.parsed(code, true, true)).toBe(out);
         \\  },
         \\};
         \\
@@ -38156,6 +38172,7 @@ test "bootstrap runner mirrors transpiler edge cases corpus" {
         \\});
         \\
         \\it("can parse 'a<b>' as typescript", () => {
+        \\  ts.expectPrinted("a<b>", "a");
         \\  expect(new Bun.Transpiler({ loader: "ts" }).transformSync(`a<b>`)).toBe(`a;\n`);
         \\});
     ;
