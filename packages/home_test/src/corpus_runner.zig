@@ -511,6 +511,7 @@ pub const bundler_core_itbundled_files = [_][]const u8{
     "bundler/bundler_loader.test.ts",
     "bundler/esbuild/extra.test.ts",
     "bundler/esbuild/metafile.test.ts",
+    "bundler/bundler_allow_unresolved.test.ts",
 };
 
 pub const bundler_transpiler_bootstrap_files = [_][]const u8{
@@ -37035,12 +37036,13 @@ test "harness prelude defines process.setgroups with faithful validation" {
 
 test "bundler core itBundled subset names the first tranche" {
     const files = filesForSubset(.bundler_core_itbundled);
-    try std.testing.expectEqual(@as(usize, 5), files.len);
+    try std.testing.expectEqual(@as(usize, 6), files.len);
     try std.testing.expectEqualStrings("bundler/bundler_html.test.ts", files[0]);
     try std.testing.expectEqualStrings("bundler/bundler_jsx.test.ts", files[1]);
     try std.testing.expectEqualStrings("bundler/bundler_loader.test.ts", files[2]);
     try std.testing.expectEqualStrings("bundler/esbuild/extra.test.ts", files[3]);
     try std.testing.expectEqualStrings("bundler/esbuild/metafile.test.ts", files[4]);
+    try std.testing.expectEqualStrings("bundler/bundler_allow_unresolved.test.ts", files[5]);
 }
 
 test "bootstrap runner mirrors bundler core itBundled subset" {
@@ -37051,8 +37053,8 @@ test "bootstrap runner mirrors bundler core itBundled subset" {
     var summary = try runSubset(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", .bundler_core_itbundled);
     defer summary.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(usize, 5), summary.files);
-    try std.testing.expectEqual(@as(usize, 296), summary.passed);
+    try std.testing.expectEqual(@as(usize, 6), summary.files);
+    try std.testing.expectEqual(@as(usize, 312), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 16), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
