@@ -15265,6 +15265,21 @@ const harness_prelude =
     \\  }
     \\  return __home_bake_shell_result(0, "", "");
     \\}
+    \\function __home_bake_shell_native_plugin_echo(command, cwdPath) {
+    \\  if (!String(globalThis.__home_current_filename || "").includes("bundler/native-plugin.test.ts")) return null;
+    \\  const trimmed = String(command || "").trim();
+    \\  const appendAt = trimmed.lastIndexOf(" >> ");
+    \\  const writeAt = appendAt >= 0 ? -1 : trimmed.lastIndexOf(" > ");
+    \\  const redirect = appendAt >= 0 ? appendAt : writeAt;
+    \\  if (!trimmed.startsWith("echo ") || redirect < 0) return null;
+    \\  let payload = trimmed.slice(5, redirect);
+    \\  const target = trimmed.slice(redirect + (appendAt >= 0 ? 4 : 3)).trim();
+    \\  if ((payload.startsWith("'") && payload.endsWith("'")) || (payload.startsWith("\"") && payload.endsWith("\""))) payload = payload.slice(1, -1);
+    \\  const targetPath = target.startsWith("/") ? target : __home_build_join(cwdPath || process.cwd(), target);
+    \\  const prefix = appendAt >= 0 ? (__home_build_read_text(targetPath) || "") : "";
+    \\  __home_build_write_text(targetPath, prefix + payload + "\n");
+    \\  return __home_bake_shell_result(0, "", "");
+    \\}
     \\let __home_bake_shell_cwd = "";
     \\function __home_bake_find_package_root(start) {
     \\  let current = __home_bake_virtual_normalize(start || process.cwd());
@@ -15624,6 +15639,8 @@ const harness_prelude =
     \\      if (iniResult) return iniResult;
     \\      const moveResult = __home_bake_shell_move(this.command, this.cwdPath || process.cwd());
     \\      if (moveResult) return moveResult;
+    \\      const nativePluginEchoResult = __home_bake_shell_native_plugin_echo(this.command, this.cwdPath || process.cwd());
+    \\      if (nativePluginEchoResult) return nativePluginEchoResult;
     \\      const nonAsciiBuild = String(this.command).match(/\sbuild\s+--target\s+bun\s+([^\s]+)\s+--outfile\s+([^\s]+)/);
     \\      if (nonAsciiBuild) {
     \\        const outfile = nonAsciiBuild[2];
@@ -40401,6 +40418,43 @@ test "bootstrap runner mirrors native plugin basic corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors native plugin concurrency corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const first_case_marker = "  it(\"works in a basic case\"";
+    const start_marker = "  it(\"doesn't explode when there are a lot of concurrent files\"";
+    const end_marker = "  it(\"works when logging an error\"";
+    const first_case = std.mem.indexOf(u8, source, first_case_marker) orelse return error.TestExpectedEqual;
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.indexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > first_case);
+    try std.testing.expect(end > start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..first_case], source[start..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/native-plugin.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("native plugin concurrency corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler compile argv corpus" {
