@@ -472,7 +472,6 @@ pub const minimal_js_files = [_][]const u8{
     "bake/dev/vfile.test.ts",
     "bake/fixtures/deinitialization/test.ts",
     "bake/framework-router.test.ts",
-    "bake/serve-plugins-dev-server.test.ts",
     "bundler/bun-build-compile-sourcemap.test.ts",
     "bundler/bun-build-compile-wasm.test.ts",
     "bundler/bun-build-compile.test.ts",
@@ -46428,7 +46427,6 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bake/dev/stress.test.ts",
         "bake/dev/vfile.test.ts",
         "bake/framework-router.test.ts",
-        "bake/serve-plugins-dev-server.test.ts",
         "js/bun/test/skip-test-fixture.js",
         "js/bun/test/expect-type-doctest.test.ts",
         "js/bun/test/todo-test-fixture.js",
@@ -47609,6 +47607,28 @@ test "bootstrap runner mirrors Deno V8 error stack corpus" {
     const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/v8/error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/v8/error.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors bake serve plugins dev server corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/serve-plugins-dev-server.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/serve-plugins-dev-server.test.ts");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
 
