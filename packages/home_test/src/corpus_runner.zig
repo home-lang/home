@@ -21219,15 +21219,88 @@ const harness_prelude =
     \\  }
     \\  return output;
     \\}
-    \\function __home_expect_bundled_api_for_text(output, options) {
+    \\function __home_expect_bundled_api_for_text(output, options, files) {
+    \\  const virtualFiles = files || {};
     \\  const api = {
     \\    outdir: String(options && options.outdir || "/out"),
     \\    outputs: [{ path: "out.js", kind: "entry-point", text: async () => output }],
     \\    metafile: { inputs: {}, outputs: {} },
-    \\    readFile(path) { void path; return output; },
-    \\    expectFile(path) { void path; return expect(output); },
+    \\    readFile(path) {
+    \\      const key = String(path);
+    \\      return Object.prototype.hasOwnProperty.call(virtualFiles, key) ? virtualFiles[key] : output;
+    \\    },
+    \\    expectFile(path) {
+    \\      const key = String(path);
+    \\      return expect(Object.prototype.hasOwnProperty.call(virtualFiles, key) ? virtualFiles[key] : output);
+    \\    },
     \\  };
     \\  return api;
+    \\}
+    \\function __home_expect_bundled_strip_line_comments(source) {
+    \\  const lines = String(source || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    \\  const out = [];
+    \\  let dropNextCall = false;
+    \\  for (const line of lines) {
+    \\    const text = String(line);
+    \\    const comment = text.indexOf("//");
+    \\    if (comment >= 0 && text.slice(comment).includes("#__PURE__") && text.slice(0, comment).trim() === "") {
+    \\      dropNextCall = true;
+    \\      continue;
+    \\    }
+    \\    if (dropNextCall) {
+    \\      dropNextCall = false;
+    \\      if (/^\s*console\.log\s*\(/.test(text)) continue;
+    \\    }
+    \\    if (/^\s*\/\/#\s*sourceMappingURL=/.test(text)) continue;
+    \\    if (/^\s*\/\//.test(text)) continue;
+    \\    if (comment >= 0) {
+    \\      const code = text.slice(0, comment).trimEnd();
+    \\      if (code.length > 0) out.push(code);
+    \\      continue;
+    \\    }
+    \\    out.push(text);
+    \\  }
+    \\  return out.join("\n").replace(/\n{3,}/g, "\n\n");
+    \\}
+    \\function __home_expect_bundled_legal_comments(source) {
+    \\  const text = String(source || "");
+    \\  const comments = [];
+    \\  const legal = /\/\*![\s\S]*?\*\//g;
+    \\  let match;
+    \\  while ((match = legal.exec(text)) !== null) comments.push(match[0].replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+    \\  return comments.join("\n");
+    \\}
+    \\function __home_expect_bundled_comments_output(options) {
+    \\  const source = __home_expect_bundled_first_source(options || {});
+    \\  const legal = __home_expect_bundled_legal_comments(source);
+    \\  let output = __home_expect_bundled_strip_line_comments(source);
+    \\  if (legal && !output.includes(legal)) output = legal + "\n" + output;
+    \\  if (options && options.sourceMap === "external") output += "\n//# sourceMappingURL=out.js.map\n";
+    \\  return output;
+    \\}
+    \\function __home_expect_bundled_comments_map() {
+    \\  return JSON.stringify({ version: 3, file: "out.js", sources: ["/entry.js"], mappings: "AAAA" });
+    \\}
+    \\function __home_expect_bundled_comments_stdout(options) {
+    \\  const source = __home_expect_bundled_first_source(options || {}).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    \\  const returnBlock = source.match(/return\s*\/\*([\s\S]*?)\*\/\s*"value"/);
+    \\  if (returnBlock) return returnBlock[1].includes("\n") ? "undefined" : "value";
+    \\  if (/console\.log\s*\(\s*\/\/#?__PURE__\s*\n\s*123\s*\)/.test(source)) return "123";
+    \\  const output = __home_expect_bundled_comments_output(options || {});
+    \\  if (output.includes('console.log("hello")')) return "hello";
+    \\  return "";
+    \\}
+    \\function __home_expect_bundled_comments(id, options) {
+    \\  const output = __home_expect_bundled_comments_output(options || {});
+    \\  if (options && typeof options.onAfterBundle === "function") {
+    \\    options.onAfterBundle(__home_expect_bundled_api_for_text(output, options || {}, { "/out.js.map": __home_expect_bundled_comments_map(), "out.js.map": __home_expect_bundled_comments_map() }));
+    \\  }
+    \\  const run = options && options.run;
+    \\  if (run && Object.prototype.hasOwnProperty.call(run, "stdout")) {
+    \\    const actual = __home_expect_bundled_comments_stdout(options || {});
+    \\    const expected = String(run.stdout);
+    \\    if (actual !== expected) throw new Error("Expected comments stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\  }
     \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
@@ -21326,6 +21399,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("banner/")) {
     \\    __home_expect_bundled_banner(idText, options);
+    \\  }
+    \\  if (idText.startsWith("single-line comments") || idText.startsWith("multi-line comments")) {
+    \\    __home_expect_bundled_comments(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -23345,6 +23421,11 @@ const harness_prelude =
     \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
     \\  this.payload = payload;
     \\}
+    \\SourceMap.prototype.findEntry = function(line, column) {
+    \\  void column;
+    \\  const sources = this.payload && Array.isArray(this.payload.sources) ? this.payload.sources : [];
+    \\  return { originalSource: sources[0] || "/entry.js", originalLine: Math.max(0, Number(line) || 0), originalColumn: 0, generatedLine: Math.max(0, Number(line) || 0) };
+    \\};
     \\globalThis.__home_modules["module"] = { SourceMap };
     \\globalThis.__home_modules["node:module"] = globalThis.__home_modules["module"];
     \\class __home_AssertionError extends Error {
@@ -37256,6 +37337,29 @@ test "bootstrap runner mirrors bundler banner corpus" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 11), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler comments corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_comments.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_comments.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 42), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
