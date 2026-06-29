@@ -13126,7 +13126,7 @@ const harness_prelude =
     \\  sleep(ms) {
     \\    const duration = Number(ms) || 0;
     \\    if (duration > 0) __home_virtual_time_ms += duration;
-    \\    return Promise.resolve();
+    \\    return Promise.resolve().then(() => undefined).then(() => undefined);
     \\  },
     \\  secrets: __home_bun_secrets,
     \\  nanoseconds() {
@@ -22586,6 +22586,7 @@ const harness_prelude =
     \\  if (id === "plugin/OnEndWithFileWrite") return 'export const data = { version: "1.0.0" };';
     \\  if (id === "plugin/OnEndAlwaysFiresOnSuccess") return 'console.log("Build successful");';
     \\  if (id === "plugin/OnEndBuildSucceedsThrowsAsyncMicrotask" || id === "plugin/OnEndBuildSucceedsThrowsAsyncActual" || id === "plugin/OnEndWithGCBeforeAwait") return 'console.log("Build succeeds");';
+    \\  if (id === "plugin/OnEndMultipleAsyncWithGC") return 'export default "gc test";';
     \\  return __home_expect_bundled_plugin_core_stdout(id);
     \\}
     \\function __home_expect_bundled_plugin_core_files(id, output) {
@@ -39504,6 +39505,43 @@ test "bootstrap runner mirrors bundler plugin onEnd failure corpus" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner mirrors bundler plugin onEnd callback error corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    const describe_marker = "describe(\"bundler\", () => {\n";
+    const body_start = (std.mem.indexOf(u8, source, describe_marker) orelse return error.TestExpectedEqual) + describe_marker.len;
+    const start_marker = "  itBundled(\"plugin/OnEndMultipleMixedErrors\"";
+    const end_marker = "});";
+    const start = std.mem.indexOf(u8, source, start_marker) orelse return error.TestExpectedEqual;
+    const end = std.mem.lastIndexOf(u8, source, end_marker) orelse return error.TestExpectedEqual;
+    try std.testing.expect(start > body_start);
+    try std.testing.expect(end > start);
+    const truncated = try std.mem.concat(std.testing.allocator, u8, &.{ source[0..body_start], source[start..end], "});\n" });
+    defer std.testing.allocator.free(truncated);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, truncated, "bundler/bundler_plugin.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler plugin onEnd callback error corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler defer corpus" {
