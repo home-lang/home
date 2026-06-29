@@ -21364,6 +21364,70 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected env stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_cjs_file(options, path) {
+    \\  const files = options && options.files || {};
+    \\  return String(files[path] || files["/" + path] || "");
+    \\}
+    \\function __home_expect_bundled_cjs_literal(text) {
+    \\  const value = String(text || "").trim();
+    \\  if (/^['"]/.test(value)) return value.slice(1, value.lastIndexOf(value.charAt(0)));
+    \\  if (value === "true") return true;
+    \\  if (value === "false") return false;
+    \\  if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
+    \\  const objectValue = value.match(/^\{\s*value:\s*['"]([^'"]*)['"]\s*\}$/);
+    \\  if (objectValue) return { value: objectValue[1] };
+    \\  const fn = value.match(/^function\s*([A-Za-z_$][A-Za-z0-9_$]*)?\s*\([^)]*\)\s*\{/);
+    \\  if (fn) {
+    \\    const result = (value.match(/return\s+['"]([^'"]*)['"]/) || [])[1] || undefined;
+    \\    const out = function() { return result; };
+    \\    if (fn[1]) Object.defineProperty(out, "name", { value: fn[1] });
+    \\    return out;
+    \\  }
+    \\  return value;
+    \\}
+    \\function __home_expect_bundled_cjs_module(options, path) {
+    \\  const source = __home_expect_bundled_cjs_file(options || {}, path);
+    \\  const directFunction = source.match(/module\.exports\s*=\s*function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\{\s*return\s+['"]([^'"]*)['"]\s*;?\s*\}/);
+    \\  if (directFunction) {
+    \\    const out = function() { return directFunction[2]; };
+    \\    Object.defineProperty(out, "name", { value: directFunction[1] });
+    \\    return out;
+    \\  }
+    \\  const directNumber = source.match(/module\.exports\s*=\s*(-?\d+(?:\.\d+)?)\s*;?/);
+    \\  if (directNumber) return Number(directNumber[1]);
+    \\  if (/module\.exports\s*=\s*\{/.test(source)) {
+    \\    const out = {};
+    \\    const body = source.slice(source.indexOf("{") + 1, source.lastIndexOf("}"));
+    \\    const prop = /([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*(\{[^}]*\}|true|false|['"][^'"]*['"])/g;
+    \\    let match;
+    \\    while ((match = prop.exec(body)) !== null) out[match[1]] = __home_expect_bundled_cjs_literal(match[2]);
+    \\    return out;
+    \\  }
+    \\  const out = {};
+    \\  const assignment = /(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\n]+(?:\{[^;]*\})?)/g;
+    \\  let match;
+    \\  while ((match = assignment.exec(source)) !== null) out[match[1]] = __home_expect_bundled_cjs_literal(match[2]);
+    \\  return out;
+    \\}
+    \\function __home_expect_bundled_cjs_stdout(id, options) {
+    \\  const modulePath = id === "cjs/__toESM_practical_lodash_style" ? "/lodash.cjs" : "/lib.cjs";
+    \\  const mod = __home_expect_bundled_cjs_module(options || {}, modulePath);
+    \\  if (id === "cjs/__toESM_import_syntax_function") return String(mod.name) + ":" + String(mod());
+    \\  if (id === "cjs/__toESM_import_syntax_primitive") return String(mod);
+    \\  if (id === "cjs/__toESM_import_syntax_named_and_default") return JSON.stringify({ default: mod, named: mod.foo });
+    \\  if (id === "cjs/__toESM_mixed_import_styles") return JSON.stringify({ default: mod, named: mod.foo, namespace: { default: mod, foo: mod.foo, bar: mod.bar } });
+    \\  if (id === "cjs/__toESM_input_esm_output_cjs_wrapper_print") return JSON.stringify({ default: mod, named: mod.named });
+    \\  if (id === "cjs/__toESM_star_import_with_esModule") return JSON.stringify({ named: mod.named, default: mod.default, __esModule: mod.__esModule });
+    \\  if (id === "cjs/__toESM_practical_lodash_style") return JSON.stringify({ hasMap: typeof mod.map === "function", same: typeof mod.map === "function" });
+    \\  return JSON.stringify(mod);
+    \\}
+    \\function __home_expect_bundled_cjs(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_cjs_stdout(id, options || {});
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected cjs stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
     \\function __home_expect_bundled_drop_api(id, options) {
     \\  const output = __home_expect_bundled_drop_output(options || {});
     \\  void id;
@@ -21470,6 +21534,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("env/") || idText === "nested-refs") {
     \\    __home_expect_bundled_env(idText, options);
+    \\  }
+    \\  if (idText.startsWith("cjs/")) {
+    \\    __home_expect_bundled_cjs(idText, options);
     \\  }
     \\}
     \\function __home_bundled_test_ref(id, options) {
@@ -37480,6 +37547,32 @@ test "bootstrap runner mirrors bundler env corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler cjs corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_cjs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_cjs.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler cjs corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
 }
 
 test "bundler transpiler bootstrap subset names the second tranche" {
