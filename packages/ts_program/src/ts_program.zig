@@ -2218,14 +2218,13 @@ pub const Program = struct {
         if (legacyDecoratorsEnabled(f.source, options)) return;
         const c = f.compilation orelse return;
         const tslib = self.findTslibDeclaration() orelse {
-            if (sourceRequiresExternalEmitHelper(f.source)) {
+            if (sourceExternalEmitHelperPosition(f.source, options.emit.module_kind == .commonjs)) |pos| {
                 try c.diagnostics.append(self.gpa, .{
                     .phase = .bind,
-                    .pos = 0,
+                    .pos = @intCast(pos),
                     .line = 0,
                     .span_len = 0,
                     .code = 2354,
-                    .is_global = true,
                     .message = try self.gpa.dupe(u8, "This syntax requires an imported helper but module 'tslib' cannot be found."),
                 });
                 c.has_errors = true;
@@ -2292,8 +2291,37 @@ pub const Program = struct {
         }
     }
 
-    fn sourceRequiresExternalEmitHelper(source: []const u8) bool {
-        return findStage3DecoratedClassExpression(source, 0) != null or firstPrivateIdentifierHash(source) != null;
+    fn sourceExternalEmitHelperPosition(source: []const u8, commonjs_module: bool) ?usize {
+        var best: ?usize = null;
+        if (findStage3DecoratedClassExpression(source, 0)) |decorated| best = decorated.at_pos;
+        if (firstPrivateIdentifierHash(source)) |hash| best = minOptionalPos(best, hash);
+        if (commonjs_module) {
+            if (firstExportStarAsNamespace(source)) |export_pos| best = minOptionalPos(best, export_pos);
+        }
+        return best;
+    }
+
+    fn minOptionalPos(current: ?usize, candidate: usize) usize {
+        return if (current) |pos| @min(pos, candidate) else candidate;
+    }
+
+    fn firstExportStarAsNamespace(source: []const u8) ?usize {
+        var i: usize = 0;
+        while (std.mem.indexOfPos(u8, source, i, "export")) |export_pos| {
+            i = export_pos + "export".len;
+            if (positionInLineComment(source, export_pos) or positionInBlockComment(source, export_pos)) continue;
+            if (export_pos > 0 and isIdentifierContinue(source[export_pos - 1])) continue;
+            if (i < source.len and isIdentifierContinue(source[i])) continue;
+
+            var p = skipTrivia(source, i);
+            if (p >= source.len or source[p] != '*') continue;
+            p = skipTrivia(source, p + 1);
+            if (p + "as".len > source.len or !std.mem.eql(u8, source[p .. p + "as".len], "as")) continue;
+            if (p > 0 and isIdentifierContinue(source[p - 1])) continue;
+            if (p + "as".len < source.len and isIdentifierContinue(source[p + "as".len])) continue;
+            return export_pos;
+        }
+        return null;
     }
 
     fn firstPrivateIdentifierHash(source: []const u8) ?usize {
@@ -4147,6 +4175,29 @@ test "Program: importHelpers reports missing tslib module for helper syntax" {
     var saw_2354 = false;
     for (c.diagnostics.items) |d| {
         if (d.code == 2354 and std.mem.indexOf(u8, d.message, "module 'tslib' cannot be found") != null) {
+            saw_2354 = true;
+        }
+    }
+    try T.expect(saw_2354);
+}
+
+test "Program: importHelpers reports missing tslib for commonjs namespace re-export helper" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "export {}\n");
+    _ = try p.add("/b.ts", "export * as ns from \"./a\";\n");
+    try p.compileAll(.{ .emit = .{ .import_helpers = true, .module_kind = .commonjs } });
+
+    const c = p.fileById(1).compilation.?;
+    var saw_2354 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2354 and d.pos == 0 and
+            std.mem.indexOf(u8, d.message, "module 'tslib' cannot be found") != null)
+        {
             saw_2354 = true;
         }
     }

@@ -2182,6 +2182,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .known_type_reference_names = known_type_reference_names.items,
     };
     compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse false;
+    if (std.ascii.eqlIgnoreCase(module_kind_label, "commonjs") or
+        std.ascii.eqlIgnoreCase(module_kind_label, "amd") or
+        std.ascii.eqlIgnoreCase(module_kind_label, "system") or
+        std.ascii.eqlIgnoreCase(module_kind_label, "umd"))
+    {
+        compile_options.emit.module_kind = .commonjs;
+    }
     program.compileAll(compile_options) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
