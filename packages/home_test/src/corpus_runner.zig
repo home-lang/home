@@ -38735,6 +38735,67 @@ test "bootstrap runner mirrors transpiler define folding browser corpus" {
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
+test "bootstrap runner mirrors transpiler type export corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler", () => {
+        \\  const ts = new Bun.Transpiler({ loader: "ts" });
+        \\  const transpiler = new Bun.Transpiler({ loader: "tsx" });
+        \\
+        \\  const parsed = (code, trim = true, loader = "ts") => {
+        \\    var out = (loader === "ts" ? ts : transpiler).transformSync(code, loader);
+        \\    if (!trim) return out;
+        \\    out = out.trim();
+        \\    if (out.endsWith(";")) out = out.substring(0, out.length - 1);
+        \\    return out.trim();
+        \\  };
+        \\  const expectPrinted_ = (code, out) => {
+        \\    expect(parsed(code, !out.endsWith(";\n"), "ts")).toBe(out);
+        \\  };
+        \\
+        \\  it("type only exports", () => {
+        \\    expectPrinted_("export type {foo, bar as baz} from 'bar'", "");
+        \\    expectPrinted_("export type {foo, bar as baz}", "");
+        \\    expectPrinted_("export type {foo} from 'bar'; x", "x");
+        \\    expectPrinted_("export type {foo} from 'bar'\nx", "x");
+        \\    expectPrinted_("export type {default} from 'bar'", "");
+        \\    expectPrinted_("export { type } from 'mod'; type", 'export { type } from "mod";\ntype');
+        \\    expectPrinted_("export { type, as } from 'mod'", 'export { type, as } from "mod"');
+        \\    expectPrinted_("export { x, type foo } from 'mod'; x", 'export { x } from "mod";\nx');
+        \\    expectPrinted_("export { x, type as } from 'mod'; x", 'export { x } from "mod";\nx');
+        \\    expectPrinted_("export { x, type foo as bar } from 'mod'; x", 'export { x } from "mod";\nx');
+        \\    expectPrinted_("export { x, type foo as as } from 'mod'; x", 'export { x } from "mod";\nx');
+        \\    expectPrinted_("export { type as as } from 'mod'; as", 'export { type as as } from "mod";\nas');
+        \\    expectPrinted_("export { type as foo } from 'mod'; foo", 'export { type as foo } from "mod";\nfoo');
+        \\    expectPrinted_("export { type as type } from 'mod'; type", 'export { type } from "mod";\ntype');
+        \\    expectPrinted_("export { x, type if } from 'mod'", 'export { x } from "mod"');
+        \\    expectPrinted_("export { x, type y as if }; let x", "export { x };\nlet x");
+        \\    expectPrinted_("export { type x };", "");
+        \\  });
+        \\
+        \\  it("delete + optional chain", () => {
+        \\    expectPrinted_("delete foo.bar.baz", "delete foo.bar.baz");
+        \\    expectPrinted_("delete foo?.bar.baz", "delete foo?.bar.baz");
+        \\    expectPrinted_("delete foo?.bar?.baz", "delete foo?.bar?.baz");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
 test "Bun test import rewrite lowers single test binding" {
     const source =
         \\import { test } from "bun:test";
