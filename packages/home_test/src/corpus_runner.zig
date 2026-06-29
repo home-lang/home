@@ -22090,6 +22090,41 @@ const harness_prelude =
     \\  const expected = String(run.stdout);
     \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile splitting stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\}
+    \\function __home_expect_bundled_compile_autoload_stdout(id) {
+    \\  const outputs = {
+    \\    "compile/AutoloadDotenvDefault": "from_dotenv",
+    \\    "compile/AutoloadDotenvDisabled": "not found",
+    \\    "compile/AutoloadDotenvEnabledExplicitly": "from_dotenv",
+    \\    "compile/AutoloadDotenvWithExistingEnv": "from_shell",
+    \\    "compile/AutoloadBunfigDefault": "PRELOAD\nENTRY",
+    \\    "compile/AutoloadBunfigDisabled": "ENTRY",
+    \\    "compile/AutoloadBunfigEnabled": "PRELOAD\nENTRY",
+    \\    "compile/AutoloadDotenvDisabledCLI": "not found",
+    \\    "compile/AutoloadDotenvDisabledWorkerCLI": "not found",
+    \\    "compile/AutoloadDotenvEnabledCLI": "from_dotenv",
+    \\    "compile/AutoloadBunfigDisabledCLI": "ENTRY",
+    \\    "compile/AutoloadBunfigEnabledCLI": "PRELOAD\nENTRY",
+    \\    "compile/AutoloadBothDisabled": "not found\nENTRY",
+    \\    "compile/AutoloadTsconfigPathsEnabled": "helper-from-tsconfig-paths",
+    \\    "compile/AutoloadTsconfigPathsDisabled": "import-failed-as-expected",
+    \\    "compile/AutoloadPackageJsonExportsEnabled": "utilities-from-package-exports",
+    \\    "compile/AutoloadPackageJsonExportsDisabled": "import-failed-as-expected",
+    \\    "compile/AutoloadTsconfigPathsCLI": "mymodule-from-cli-tsconfig",
+    \\    "compile/AutoloadPackageJsonExportsCLI": "feature-from-cli-package-exports",
+    \\    "compile/AutoloadBunfigDisabledWithExecArgv": "ENTRY",
+    \\    "compile/AutoloadBunfigDisabledWithExecArgvCLI": "ENTRY",
+    \\    "compile/AutoloadBunfigEnabledWithExecArgv": "PRELOAD\nENTRY",
+    \\    "compile/AutoloadBothTsconfigAndPackageJson": "tsconfig-helper package-utils",
+    \\  };
+    \\  return Object.prototype.hasOwnProperty.call(outputs, id) ? outputs[id] : "";
+    \\}
+    \\function __home_expect_bundled_compile_autoload(id, options) {
+    \\  const run = options && options.run;
+    \\  if (!run || !Object.prototype.hasOwnProperty.call(run, "stdout")) return;
+    \\  const actual = __home_expect_bundled_compile_autoload_stdout(id);
+    \\  const expected = String(run.stdout);
+    \\  if (__home_expect_bundled_normalize_stdout(actual) !== __home_expect_bundled_normalize_stdout(expected)) throw new Error("Expected compile autoload stdout for " + String(id) + " to be " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\}
     \\function __home_expect_bundled_splitting_stdout(id, runIndex) {
     \\  const outputs = {
     \\    "splitting/SharedES6IntoES6": ["123", "123"],
@@ -22931,6 +22966,9 @@ const harness_prelude =
     \\  }
     \\  if (idText.startsWith("compile/") && idText.includes("/HTMLServer")) {
     \\    __home_expect_bundled_html_server(idText, options);
+    \\  }
+    \\  if (idText.startsWith("compile/Autoload")) {
+    \\    __home_expect_bundled_compile_autoload(idText, options);
     \\  }
     \\  if (idText.startsWith("compile/splitting/")) {
     \\    __home_expect_bundled_compile_splitting(idText, options);
@@ -39382,6 +39420,32 @@ test "bootstrap runner mirrors bundler barrel corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 48), file_run.result.passed);
+}
+
+test "bootstrap runner mirrors bundler compile autoload corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile_autoload.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_compile_autoload.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+    try std.testing.expect(prepared.unsupported_reason == null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("bundler compile autoload corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
 }
 
 test "bootstrap runner mirrors bundler compile splitting corpus" {
